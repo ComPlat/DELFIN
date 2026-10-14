@@ -14903,8 +14903,13 @@ class _DocToolExecutor:
             recs = _cj.list_changes(sid) or []
             start = max((int(r.get("seq", 0) or 0) for r in recs),
                         default=0)
+            # Read-only and calc roots: the cage refuses writes there,
+            # and calc folders are the largest trees a session has.
+            skip = (tuple(getattr(perms, "read_only_workspace_dirs", ())
+                          or ())
+                    + tuple(getattr(perms, "confirm_write_dirs", ()) or ()))
             return _sc.before(perms.all_workspace_roots(),
-                              session_id=sid, start_seq=start)
+                              session_id=sid, start_seq=start, skip=skip)
         except Exception:
             return None
 

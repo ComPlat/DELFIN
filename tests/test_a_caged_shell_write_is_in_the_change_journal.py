@@ -227,8 +227,94 @@ def test_a_huge_tree_is_capped_and_said_once(box, monkeypatch):
     first = _bash(perms, "python3 gen.py")
     assert "too many files to track" in json.dumps(first), first
     second = _bash(perms, "python3 gen.py")
+    # The reason once; afterwards a short reminder, so the model is not
+    # left reading the second result as journalled.
     assert "too many files to track" not in json.dumps(second), second
+    assert "still not journalled" in second.get("untracked_changes", "")
     assert _records(perms) == []
+
+
+def _counting_slow_scandir(monkeypatch, SC, delay: float) -> list[str]:
+    """A slow filesystem stand-in: every directory listing costs
+    ``delay`` s. Returns the list of directories listed."""
+    listed: list[str] = []
+    real = os.scandir
+
+    def _slow(path="."):
+        listed.append(str(path))
+        time.sleep(delay)
+        return real(path)
+
+    monkeypatch.setattr(SC.os, "scandir", _slow)
+    return listed
+
+
+def test_a_slow_root_is_not_walked_again_on_the_next_command(box,
+                                                            monkeypatch):
+    from delfin.agent import shell_changes as SC
+    monkeypatch.setattr(SC, "MAX_WALK_SECONDS", 0.2)
+    ws, perms, _ = box
+    for d in range(12):
+        (ws / f"d{d}").mkdir()
+        (ws / f"d{d}" / "x.txt").write_text("x")
+    _write(perms, ws, "gen.py", "open('out.txt','w').write('z')\n")
+    listed = _counting_slow_scandir(monkeypatch, SC, 0.05)
+
+    t0 = time.monotonic()
+    first = _bash(perms, "python3 gen.py")
+    first_s = time.monotonic() - t0
+    assert "too many files to track" in json.dumps(first), first
+    # The walk stops at its budget instead of finishing: 13 listings
+    # at 0.05 s would be 0.65 s per walk.
+    assert len(listed) < 13, listed
+    assert first_s < 5, first_s
+
+    listed.clear()
+    second = _bash(perms, "python3 gen.py")
+    assert listed == [], "the remembered root was walked again"
+    assert "still not journalled" in second.get("untracked_changes", ""), \
+        second
+    assert _records(perms) == []
+
+
+def test_a_remembered_root_is_walked_again_after_the_recheck_time(
+        box, monkeypatch):
+    from delfin.agent import shell_changes as SC
+    monkeypatch.setattr(SC, "MAX_FILES_PER_ROOT", 5)
+    ws, perms, _ = box
+    for i in range(8):
+        (ws / f"f{i}.txt").write_text(str(i))
+    _write(perms, ws, "gen.py", "open('out.txt','w').write('z')\n")
+    _bash(perms, "python3 gen.py")
+    assert _records(perms) == []
+    # Below the bound again, and the memory has expired.
+    for i in range(8):
+        (ws / f"f{i}.txt").unlink()
+    monkeypatch.setattr(SC, "RECHECK_SECONDS", 0.0)
+    (ws / "out.txt").unlink()
+    _bash(perms, "python3 gen.py")
+    assert [Path(r["path"]).name for r in _records(perms)] == ["out.txt"]
+
+
+def test_calc_and_read_only_roots_are_never_walked(box, monkeypatch):
+    from delfin.agent import shell_changes as SC
+    ws, perms, _ = box
+    calc = ws / "calc"
+    calc.mkdir()
+    (calc / "orca.out").write_text("big output\n")
+    ro = ws.parent / "ro"
+    ro.mkdir()
+    perms.confirm_write_dirs = (calc.resolve(),)
+    perms.read_only_workspace_dirs = (ro.resolve(),)
+    perms.extra_workspace_dirs = (ro.resolve(),)
+    listed = _counting_slow_scandir(monkeypatch, SC, 0.0)
+    _write(perms, ws, "gen.py",
+           "open('calc/new.out','w').write('n')\n"
+           "open('kept.txt','w').write('k')\n")
+    _bash(perms, "python3 gen.py")
+    assert not [d for d in listed
+                if str(calc.resolve()) in d or str(ro.resolve()) in d], listed
+    assert [Path(r["path"]).name for r in _records(perms)] == ["kept.txt"]
 
 
 def test_a_background_job_is_journalled_when_it_ends(box):

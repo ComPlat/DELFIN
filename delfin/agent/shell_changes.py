@@ -24,7 +24,15 @@ Bounds, each said rather than silently applied:
   with more than ``MAX_ENTRIES_PER_DIR`` entries is not walked either.
 * a root with more than ``MAX_FILES_PER_ROOT`` files, or whose walk
   takes longer than ``MAX_WALK_SECONDS``, is not tracked; the note says
-  so once per session and root.
+  why once per session and root, and "still not journalled" on every
+  later command. The walk stops at the time limit rather than finishing.
+* a root or directory found over a bound is remembered and not walked
+  again for ``RECHECK_SECONDS`` (10 min): on a large NFS tree only the
+  first command pays the walk budget, the following ones about nothing.
+* read-only and calc roots (``read_only_workspace_dirs``,
+  ``confirm_write_dirs``) are never walked: the cage refuses writes
+  there, and calc folders are the largest trees a session has. A write
+  an approved, uncaged command makes there is not journalled.
 * a changed file whose pre-image was not held (over the per-file cap,
   or the held budget was spent) is journalled WITHOUT undo, with the
   reason, rather than not at all.
@@ -70,6 +78,12 @@ _HELD: dict[str, tuple[_Sig, bytes]] = {}
 _HELD_TOTAL = 0
 # (session, root, reason) already said.
 _SAID: set[tuple[str, str, str]] = set()
+# A root or directory found over a bound is not walked again until this
+# many seconds have passed: a large tree on NFS otherwise costs every
+# command the whole walk budget before it is given up on.
+RECHECK_SECONDS = 600.0
+# path -> (reason, monotonic time it was found over the bound)
+_OVER: dict[str, tuple[str, float]] = {}
 
 
 @dataclass
@@ -82,6 +96,8 @@ class Snapshot:
     untracked: dict[str, str] = field(default_factory=dict)
     start_seq: int = 0
     session_id: str = ""
+    # Directories never walked: read-only and calc roots.
+    skip: tuple = ()
 
 
 @dataclass
@@ -92,27 +108,66 @@ class Change:
     reason: str = ""              # why there is no undo ("" if there is)
 
 
+def _over_limit(path: str) -> str:
+    """The remembered reason ``path`` (a root or a directory) is over a
+    bound, "" when it is not remembered or the memory has expired."""
+    with _LOCK:
+        hit = _OVER.get(path)
+        if hit is None:
+            return ""
+        if time.monotonic() - hit[1] > RECHECK_SECONDS:
+            _OVER.pop(path, None)
+            return ""
+        return hit[0]
+
+
+def _remember_over(path: str, reason: str) -> None:
+    with _LOCK:
+        _OVER[path] = (reason, time.monotonic())
+
+
 def _walk(root: str, other_roots: tuple[str, ...], deadline: float,
-          skipped: dict[str, str]) -> tuple[dict[str, _Sig], str]:
+          skipped: dict[str, str], skip: tuple[str, ...] = ()
+          ) -> tuple[dict[str, _Sig], str]:
     """(files, reason) under one root; reason non-empty = not tracked.
-    A directory over ``MAX_ENTRIES_PER_DIR`` goes into ``skipped``."""
+
+    A directory over ``MAX_ENTRIES_PER_DIR`` goes into ``skipped`` and is
+    remembered, so later walks do not list it again until the memory
+    expires. ``skip``: directories never walked (read-only and calc
+    roots). The deadline is checked every 256 entries, so a slow
+    filesystem costs at most about ``MAX_WALK_SECONDS``."""
     files: dict[str, _Sig] = {}
     stack = [root]
+    seen = 0
     while stack:
         d = stack.pop()
+        known = _over_limit(d) if d != root else ""
+        if known:
+            skipped[d] = known
+            continue
         try:
             with os.scandir(d) as it:
-                entries = list(it)
+                entries = []
+                for e in it:
+                    entries.append(e)
+                    if len(entries) > MAX_ENTRIES_PER_DIR:
+                        break
         except OSError:
             continue
         if len(entries) > MAX_ENTRIES_PER_DIR and d != root:
-            skipped[d] = (f"too many files to track (more than "
-                          f"{MAX_ENTRIES_PER_DIR} entries in one directory)")
+            reason = (f"too many files to track (more than "
+                      f"{MAX_ENTRIES_PER_DIR} entries in one directory)")
+            skipped[d] = reason
+            _remember_over(d, reason)
             continue
         for e in entries:
+            seen += 1
+            if not seen & 255 and time.monotonic() > deadline:
+                break
             try:
                 if e.is_dir(follow_symlinks=False):
-                    if e.name in _SKIP_DIR_NAMES or e.path in other_roots:
+                    if (e.name in _SKIP_DIR_NAMES or e.path in other_roots
+                            or e.path in skip):
                         continue
                     stack.append(e.path)
                     continue
@@ -153,20 +208,36 @@ def _read(path: str, limit: int) -> Optional[bytes]:
     return data if len(data) <= limit else None
 
 
-def before(roots, *, session_id: str = "", start_seq: int = 0) -> Snapshot:
-    """Snapshot the roots before a command. Never raises."""
+def before(roots, *, session_id: str = "", start_seq: int = 0,
+           skip=()) -> Snapshot:
+    """Snapshot the roots before a command. Never raises.
+
+    ``skip``: directories not walked at all (read-only and calc roots,
+    where the cage refuses writes); a root that is one of them, or lies
+    under one, is left out. A root remembered over a bound is not walked
+    (``RECHECK_SECONDS``) and is untracked for this command at no cost."""
     global _HELD_TOTAL
-    snap = Snapshot(roots=_norm_roots(roots), start_seq=int(start_seq or 0),
-                    session_id=str(session_id or ""))
+    skip_dirs = tuple(_norm_roots(skip))
+    skip_pre = tuple(s.rstrip(os.sep) + os.sep for s in skip_dirs)
+    snap = Snapshot(
+        roots=[r for r in _norm_roots(roots)
+               if r not in skip_dirs and not r.startswith(skip_pre)],
+        start_seq=int(start_seq or 0), session_id=str(session_id or ""),
+        skip=skip_dirs)
     try:
         all_roots = tuple(snap.roots)
         for root in snap.roots:
+            known = _over_limit(root)
+            if known:
+                snap.untracked[root] = known
+                continue
             others = tuple(r for r in all_roots if r != root)
             files, reason = _walk(root, others,
                                   time.monotonic() + MAX_WALK_SECONDS,
-                                  snap.untracked)
+                                  snap.untracked, snap.skip)
             if reason:
                 snap.untracked[root] = reason
+                _remember_over(root, reason)
                 continue
             snap.files.update(files)
 
@@ -226,9 +297,10 @@ def after(snap: Snapshot) -> list[Change]:
             others = tuple(r for r in all_roots if r != root)
             files, reason = _walk(root, others,
                                   time.monotonic() + MAX_WALK_SECONDS,
-                                  snap.untracked)
+                                  snap.untracked, snap.skip)
             if reason:
                 snap.untracked[root] = reason
+                _remember_over(root, reason)
                 continue
             now.update(files)
         tracked = tuple(r.rstrip(os.sep) + os.sep for r in snap.roots
@@ -282,12 +354,14 @@ def _no_pre(sig: _Sig) -> str:
 
 
 def take_notes(snap: Snapshot) -> list[str]:
-    """One line per untracked root, each said once per session."""
+    """One line per untracked root or directory: the reason in full the
+    first time in a session, a short reminder on every later command."""
     out: list[str] = []
     with _LOCK:
         for root, reason in snap.untracked.items():
             key = (snap.session_id, root, reason.split(" (")[0])
             if key in _SAID:
+                out.append(f"{root}: still not journalled")
                 continue
             _SAID.add(key)
             out.append(
