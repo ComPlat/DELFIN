@@ -70,6 +70,8 @@ CASES = [
     ('sh -c "$(cat d/p)"', "d/p"),
     ('bash -c "$(< d/p)"', "d/p"),
     ("sh -c \"`cat d/p`\"", "d/p"),
+    ('cd d && sh -c "$(cat p)"', "d/p"),
+    ("python3 -c \"$(cat 'd/x.py')\"", "d/x.py"),
 ]
 
 

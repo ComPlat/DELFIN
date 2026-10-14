@@ -18067,6 +18067,17 @@ class _DocToolExecutor:
     # Commands that run whatever they are handed. The token after one of
     # these -- past its own flags and arguments -- is in execution
     # position exactly as the head of a segment is.
+    #: An interpreter's -c/-e argument that is exactly one file's text
+    #: substituted in: ``$(cat f)``, ``$(< f)``, `` `cat f` ``. Group 1
+    #: (``$(...)``) or 2 (backticks) is the file operand, still
+    #: shell-quoted. Anything else in the
+    #: substitution (a pipe, a second file, a flag) is not matched: the
+    #: scan stays a heuristic, and opaque spellings are left to the cage.
+    _SUBSTITUTED_FILE_RE = re.compile(
+        r"(?:\$\(\s*(?:cat\s+(?:--\s+)?|<\s*)([^()`|;&<>$]+?)\s*\)"
+        r"|`\s*cat\s+(?:--\s+)?([^()`|;&<>$]+?)\s*`)"
+    )
+
     _EXEC_WRAPPER_RE = re.compile(
         r"^(?:env|nohup|time|timeout|nice|ionice|setsid|stdbuf|exec|xargs|"
         r"sudo|doas|watch|source|\.)$"
@@ -18129,6 +18140,20 @@ class _DocToolExecutor:
                         inline = True
                         break
                     if nt in ("-m", "-c", "-e", "-"):  # inline → no file
+                        # ...unless the inline program is a file's text
+                        # substituted in: `sh -c "$(cat f)"` runs f.
+                        if nt in ("-c", "-e") and j + 1 < len(toks):
+                            sub = self._SUBSTITUTED_FILE_RE.fullmatch(
+                                toks[j + 1].strip())
+                            if sub:
+                                import shlex as _shlex
+                                try:
+                                    named = _shlex.split(
+                                        sub.group(1) or sub.group(2))
+                                except ValueError:
+                                    named = []
+                                if len(named) == 1:
+                                    out.append(("file", named[0]))
                         inline = True
                         break
                     if nt.startswith("-"):
