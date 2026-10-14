@@ -385,6 +385,23 @@ describe("the agent view", () => {
     expect(titles.at(-1)).toBe("DELFIN")
   })
 
+  test("a sleeping session is listed as asleep, and enter wakes it in this window", async () => {
+    const { w, opened, push } = await mount()
+    push(summary("z1", { title: "old scan", state: "sleeping", answer: "The scan finished.", createdAt: 1005 }))
+    await w.settle()
+    await left()
+    expect(panel()).toMatch(/☾ old scan\s+asleep · The scan finished\./)
+    expect(panel()).toContain("5 sessions · 1 needs input · 1 working")
+    w.keys.pressArrow("up")                             // DONE: z1 is the newest there
+    w.keys.pressArrow("up")
+    await w.settle()
+    expect(panel()).toMatch(/›\s+☾ old scan/)
+    w.keys.pressEnter()
+    await w.settle()
+    expect(opened).toEqual([["z1", "/work/z1"]])
+    expect(panel()).toContain("waking old scan…")
+  })
+
   test("its keys can be rebound, and /keys lists them", () => {
     const km = new Keymap({ agentsPeek: ["ctrl+e"] })
     expect(km.matches("agentsPeek", { name: "e", ctrl: true, meta: false, shift: false })).toBe(true)

@@ -193,7 +193,10 @@ export function App(props: AppProps): JSX.Element {
       say(pins.toggle(id) ? "pinned: it stays at the top" : "unpinned")
       setPinned((n) => n + 1)
     },
-    open: (row) => props.onResume?.(row.id, row.workspace),
+    open: (row) => {
+      if (row.status === "sleeping") say(`waking ${row.name}…`)
+      props.onResume?.(row.id, row.workspace)
+    },
     peek: async (id) => {
       const got = await props.client.request("session.replay", { sessionId: id, turns: 1 })
       return peekLines((got?.events ?? []) as Record<string, any>[])

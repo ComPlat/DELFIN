@@ -34,7 +34,9 @@ export interface SessionStatusParams {}
 export interface SessionReplayParams {
   "turns"?: number | null
 }
-export interface SessionShutdownParams {}
+export interface SessionShutdownParams {
+  "ifIdle"?: boolean | null
+}
 export interface PermissionReplyParams {
   "requestId": string
   "choice"?: string | null
@@ -97,6 +99,7 @@ export interface SessionReplayResult {
 }
 export interface SessionShutdownResult {
   "closing": boolean
+  "busy"?: string | null
 }
 export interface PermissionReplyResult {
   "applied": boolean
@@ -407,7 +410,9 @@ export interface SessionsPastParams {
   "limit"?: number | null
 }
 export interface ServiceStatusParams {}
-export interface ServiceShutdownParams {}
+export interface ServiceShutdownParams {
+  "restart"?: boolean | null
+}
 export interface ServiceRequests {
   "hello": HelloParams
   "sessions.list": SessionsListParams
@@ -483,6 +488,13 @@ export interface SessionSummaryEvent {
   "session": string
   "ts": number
 }
+export interface ServiceStoppingEvent {
+  "reason": string
+  "restart": boolean
+  "type": "service.stopping"
+  "session": string
+  "ts": number
+}
 export interface SessionRemovedEvent {
   "reason": string
   "exitCode"?: number | null
@@ -492,6 +504,7 @@ export interface SessionRemovedEvent {
 }
 export interface ServiceEvents {
   "session.summary": SessionSummaryEvent
+  "service.stopping": ServiceStoppingEvent
   "session.removed": SessionRemovedEvent
 }
 export interface SessionSummary {

@@ -6,7 +6,9 @@
  * the socket with Bun, says hello, and reconnects when the service goes
  * away and comes back (an upgrade, a restart): requests fail while it is
  * down, events stop, and `onUp` runs again once it is back, so the app can
- * attach to its sessions again.
+ * attach to its sessions again. A service that vanishes without a word (it
+ * crashed) is started again (`startService`); one that says it stops on
+ * purpose (`service.stopping`) is let go: the connection closes for good.
  */
 import type { AnyEvent, Requests, Results } from "../protocol/generated"
 import { ERRORS, PROTOCOL_VERSION } from "../protocol/generated"
@@ -145,18 +147,39 @@ export interface ServiceHello {
 /** How long a service gets to answer hello. */
 export const HELLO_TIMEOUT_MS = 10_000
 
+/** Failed reconnects before a vanished service is started again, and how
+ *  many more before the next try if that did not bring one up. */
+export const START_AFTER_ATTEMPTS = 2
+export const START_AGAIN_EVERY = 10
+
+export interface ConnectionOptions {
+  /** Start the next service (one vanished without a word); true when one
+   *  runs. Never called after a stop on purpose. */
+  startService?: () => Promise<boolean>
+}
+
 export class ServiceConnection {
   readonly rpc = new RpcClient()
   state: ConnectionState = "connecting"
   hello: ServiceHello | null = null
   /** Why the connection closed for good, when it did on its own. */
   problem = ""
+  /** It closed because the service stopped on purpose (not a crash). */
+  stoppedOnPurpose = false
   private closing = false
   private socket: any = null
+  /** What the service said before it went: it stops on purpose. */
+  private stopping: { reason: string; restart: boolean } | null = null
   private readonly stateListeners = new Set<(state: ConnectionState) => void>()
   private readonly upListeners = new Set<(hello: ServiceHello) => void>()
 
-  constructor(readonly path: string, private readonly retryMs: number[] = [200, 500, 1000, 2000, 5000]) {}
+  constructor(readonly path: string, private readonly retryMs: number[] = [200, 500, 1000, 2000, 5000],
+              private readonly options: ConnectionOptions = {}) {
+    this.rpc.onEvent((event) => {
+      const e = event as { type?: string; reason?: string; restart?: boolean }
+      if (e.type === "service.stopping") this.stopping = { reason: String(e.reason ?? "stop"), restart: Boolean(e.restart) }
+    })
+  }
 
   onState(listener: (state: ConnectionState) => void): () => void {
     this.stateListeners.add(listener)
@@ -170,6 +193,9 @@ export class ServiceConnection {
   }
 
   private setState(state: ConnectionState): void {
+    // Said once per change: a listener that closes the connection on
+    // "closed" must not hear "closed" again (it would never end).
+    if (this.state === state) return
     this.state = state
     for (const listener of this.stateListeners) listener(state)
   }
@@ -250,6 +276,18 @@ export class ServiceConnection {
       this.setState("closed")
       return
     }
+    const stopped = this.stopping
+    this.stopping = null
+    if (stopped && !stopped.restart) {
+      // Stopped on purpose (`service stop`, an emergency stop): starting
+      // another would undo it. The sessions are saved.
+      this.problem = `the agent service stopped (${stopped.reason}); the sessions are saved, `
+        + "and `delfin-agent tui` offers them again"
+      this.stoppedOnPurpose = true
+      this.closing = true
+      this.setState("closed")
+      return
+    }
     this.setState("reconnecting")
     void this.reconnect()
   }
@@ -259,6 +297,14 @@ export class ServiceConnection {
       const wait = this.retryMs[Math.min(attempt, this.retryMs.length - 1)]!
       await Bun.sleep(wait)
       if (this.closing) return
+      // Still not back: start the next one (the launcher waits for one
+      // that is starting or stopping, and starts one only when none is).
+      const failed = attempt
+      if (this.options.startService && failed >= START_AFTER_ATTEMPTS
+          && (failed - START_AFTER_ATTEMPTS) % START_AGAIN_EVERY === 0) {
+        await this.options.startService().catch(() => false)
+        if (this.closing) return
+      }
       try {
         await this.open()
         await this.greet()

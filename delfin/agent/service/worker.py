@@ -737,6 +737,31 @@ def _agent_class():
 # Opening a session the way `delfin-agent chat` does
 # ---------------------------------------------------------------------------
 
+def busy_reason(agent, broker) -> str:
+    """What an idle shutdown would cut, or "": a turn, queued messages, an
+    open question, a background shell of this process (a local calculation
+    started in the background must not end because nobody looked)."""
+    if agent is None:
+        return ""
+    if getattr(agent, "busy", False):
+        return "a turn runs"
+    if getattr(agent, "inbox", None) or getattr(agent, "queued", None):
+        return "messages are queued"
+    try:
+        if broker is not None and broker.pending():
+            return "a question is open"
+    except Exception:
+        pass
+    try:
+        from .. import bash_jobs
+        running = bash_jobs.get_registry().list_jobs(include_finished=False)
+    except Exception:
+        running = []
+    if running:
+        return f"{len(running)} background shell{'s' * (len(running) != 1)} running"
+    return ""
+
+
 def chat_namespace(args: argparse.Namespace, workspace: Path) -> argparse.Namespace:
     """The namespace `delfin-agent chat` would have, from the worker's args.
 
@@ -1023,6 +1048,11 @@ class Worker:
                                             "initialize first"))
             return
         if method == "session.shutdown":
+            busy = busy_reason(self.agent, self.broker) if params.get("ifIdle") else ""
+            if busy:
+                if msg_id is not None:
+                    self.writer.send(protocol.result(msg_id, {"closing": False, "busy": busy}))
+                return
             # Answered first: once the session is told to close, the
             # process may be gone before a later answer is written.
             if msg_id is not None:

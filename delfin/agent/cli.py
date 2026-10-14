@@ -4595,10 +4595,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     svc = sub.add_parser(
         "service",
-        help="The agent service behind `delfin-agent tui`: status, stop, logs",
+        help="The agent service behind `delfin-agent tui`: status, stop, restart, logs",
     )
     svc.add_argument("action", nargs="?", default="status",
-                     choices=["status", "stop", "logs"])
+                     choices=["status", "stop", "restart", "logs"])
     svc.add_argument("--lines", type=int, default=40,
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)

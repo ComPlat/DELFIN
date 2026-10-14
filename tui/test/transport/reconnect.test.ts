@@ -99,3 +99,61 @@ test("a service of another protocol version: no sockets left open, and the reaso
   expect(conn.state).toBe("closed")
   expect(conn.problem).toContain("protocol 2")
 })
+
+test("a service that says it stops on purpose is let go: no reconnect, no new service", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "tui-rc-")), "s.sock")
+  let starts = 0
+  const svc = server(path, () => `"result":${HELLO}`, (socket, n) => {
+    if (n !== 1) return
+    socket.write('{"jsonrpc":"2.0","method":"event","params":{"type":"service.stopping","session":"","ts":0,"reason":"stop","restart":false}}\n')
+    setTimeout(() => socket.end(), 30)
+  })
+  const conn = new ServiceConnection(path, [20], { startService: async () => { starts++; return true } })
+  await conn.connect()
+  await Bun.sleep(400)
+  const attempts = svc.opened() - 1
+  svc.stop()
+  expect(conn.state).toBe("closed")
+  expect(conn.stoppedOnPurpose).toBe(true)
+  expect(conn.problem).toContain("stopped (stop)")
+  expect(attempts).toBe(0)
+  expect(starts).toBe(0)
+})
+
+test("a restart is followed: the window reconnects to the next service", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "tui-rc-")), "s.sock")
+  const svc = server(path, () => `"result":${HELLO}`, (socket, n) => {
+    if (n !== 1) return
+    socket.write('{"jsonrpc":"2.0","method":"event","params":{"type":"service.stopping","session":"","ts":0,"reason":"restart","restart":true}}\n')
+    setTimeout(() => socket.end(), 30)
+  })
+  const conn = new ServiceConnection(path, [20])
+  await conn.connect()
+  await Bun.sleep(400)
+  svc.stop()
+  expect(conn.state).toBe("up")
+  expect(conn.stoppedOnPurpose).toBe(false)
+  conn.close()
+})
+
+test("a service that vanished without a word is started again, then reconnected to", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "tui-rc-")), "s.sock")
+  let first = server(path, () => `"result":${HELLO}`, (socket) => { setTimeout(() => socket.end(), 30) })
+  let next: ReturnType<typeof server> | null = null
+  let starts = 0
+  const conn = new ServiceConnection(path, [30], {
+    startService: async () => {
+      starts++
+      next = server(path, () => `"result":${HELLO}`)
+      return true
+    },
+  })
+  await conn.connect()
+  await Bun.sleep(60)
+  first.stop()                                              // gone, and nothing listens
+  await Bun.sleep(600)
+  expect(starts).toBe(1)
+  expect(conn.state).toBe("up")
+  conn.close()
+  next!.stop()
+})

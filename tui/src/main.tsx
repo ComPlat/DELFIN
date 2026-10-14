@@ -59,7 +59,30 @@ step("start")
 const loaded = await loadConfig()
 const keymap = new Keymap(loaded.config.keys)
 const store = createAppStore()
-const connection = new ServiceConnection(socket)
+
+/** What starts the next service when this one vanished (the launcher's
+ *  command, DELFIN_TUI_SERVICE); its error, when it could not, is said. */
+const serviceCommand: unknown = (() => {
+  try {
+    return JSON.parse(process.env.DELFIN_TUI_SERVICE ?? "null")
+  } catch {
+    return null
+  }
+})()
+const startService = Array.isArray(serviceCommand) && serviceCommand.length && serviceCommand.every((a) => typeof a === "string")
+  ? async (): Promise<boolean> => {
+      const proc = Bun.spawn(serviceCommand as string[], { stdin: "ignore", stdout: "ignore", stderr: "pipe" })
+      const timer = setTimeout(() => proc.kill(), 150_000)
+      const code = await proc.exited
+      clearTimeout(timer)
+      if (code !== 0) {
+        const said = (await new Response(proc.stderr).text()).trim().split("\n").slice(-3).join(" ")
+        view.note(`the agent service could not be started again${said ? `: ${said}` : ""}`)
+      }
+      return code === 0
+    }
+  : undefined
+const connection = new ServiceConnection(socket, undefined, { startService })
 connection.rpc.onEvent((event) => store.push(event))
 connection.onState((state) => store.update((d) => { d.connection = state }))
 
@@ -268,6 +291,22 @@ function leaveNow(): void {
   setTimeout(() => process.exit(0), 100)
 }
 
+// A signal -- a hangup when the SSH connection drops, a SIGTERM -- ends the
+// window. OpenTUI destroys the renderer on it but leaves the process to
+// the app: with the service's socket open it would never end (and its
+// session, still shown "in a window", would never sleep).
+let signalled = 0
+for (const [name, number] of [["SIGHUP", 1], ["SIGINT", 2], ["SIGQUIT", 3], ["SIGTERM", 15]] as const) {
+  process.on(name, () => { signalled ||= number })
+}
+renderer.on("destroy", () => {
+  if (quitting) return
+  quitting = true
+  connection.close()
+  view.stop()
+  ;(setTimeout(() => process.exit(signalled ? 128 + signalled : 0), 1500) as { unref?: () => void }).unref?.()
+})
+
 // Made once: a JSX prop is read through a getter, each read running its
 // expression again.
 const pins = Pins.load()
@@ -310,18 +349,44 @@ try {
   step(current ? "session open" : "no session")
 }
 
-// After a reconnect: the session is attached again; what this window has
-// already shown is not shown twice (the store drops seen sequence numbers).
-connection.onUp(async () => {
+// After a reconnect: the session is attached again (a new service wakes it
+// from where the old one left it); what this window has already shown is
+// not shown twice (the store drops seen sequence numbers), and what it
+// knew of a turn that ended meanwhile is let go.
+connection.onUp(async (again) => {
+  for (const summary of (again.sessions ?? []) as { sessionId?: string }[]) {
+    if (summary?.sessionId) {
+      store.push({ type: "session.summary", session: summary.sessionId, ts: Date.now() / 1000, summary } as never)
+    }
+  }
   if (!current) return
+  const id = current
   try {
     await withReplay(store,
-      () => connection.rpc.request("session.attach", { sessionId: current, turns: 0 }),
-      (attached) => attached.events as unknown as AnyEvent[])
+      () => connection.rpc.request("session.attach", { sessionId: id, turns: 0 }),
+      (attached) => {
+        store.update((d) => {
+          const s = ensureSession(d, id, attached.session)
+          s.state = attached.state
+          s.pending = attached.pending as unknown as Asked[]
+          if (attached.state !== "running") {
+            s.turn = null
+            s.tail = ""
+            s.thinking = ""
+            s.wait = ""
+          }
+        })
+        return attached.events as unknown as AnyEvent[]
+      })
   } catch (error) {
     view.note(`the session is not in the agent service any more: ${(error as Error).message}`)
   }
 })
+let saidClosed = false
 connection.onState((state) => {
-  if (state === "closed" && connection.problem) view.note(connection.problem)
+  if (state !== "closed" || !connection.problem || saidClosed) return
+  saidClosed = true
+  view.note(connection.problem)
+  // Stopped on purpose: there is nothing to come back to here.
+  if (connection.stoppedOnPurpose) quit()
 })

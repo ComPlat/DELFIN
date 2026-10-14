@@ -56,7 +56,10 @@ REQUESTS: dict[str, dict[str, str]] = {
     # The durable events of the last ``turns`` turns, for a window that
     # attaches to a session already in progress.
     "session.replay": {"turns": "integer?"},
-    "session.shutdown": {},
+    # ifIdle: only if nothing would be cut -- no turn, nothing queued, no
+    # question open, no background shell running (the service putting an
+    # unused session to sleep); else answered closing: false, with why.
+    "session.shutdown": {"ifIdle": "boolean?"},
     # The answer to a permission.asked event: ``choice`` is one of the
     # option keys it offered (confirm, plan); ``answers`` the chosen labels
     # of a question (ask). ``persist`` is the second "yes" the keys that
@@ -95,7 +98,7 @@ RESULTS: dict[str, dict[str, str]] = {
     "session.status": {"state": "string", "approval": "string",
                        "queued": "integer"},
     "session.replay": {"events": "[object]"},
-    "session.shutdown": {"closing": "boolean"},
+    "session.shutdown": {"closing": "boolean", "busy": "string?"},
     "permission.reply": {"applied": "boolean", "message": "string"},
     # name, summary, category, takesArgs, source: builtin | user | skill |
     # subagent -- in the order a typed line tries them.
@@ -204,7 +207,9 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "sessions.past": {"workspace": "string?", "query": "string?",
                       "limit": "integer?"},
     "service.status": {},
-    "service.shutdown": {},
+    # restart: a new service follows at once (an update); windows reconnect
+    # to it instead of leaving.
+    "service.shutdown": {"restart": "boolean?"},
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
@@ -233,8 +238,17 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
 #: Events from the service itself, to every window.
 SERVICE_EVENTS: dict[str, dict[str, str]] = {
     # sessionId, title?, workspace, provider, model, approval, state,
-    # pending (open questions), costUsd, createdAt, lastActivity, pid
+    # pending (open questions), costUsd, createdAt, lastActivity, pid. A
+    # summary's state may also be "sleeping": the session has no worker (it
+    # slept, or a service before this one stopped or died) and wakes when
+    # used -- attached, sent a prompt, resumed; a replay of it reads its log.
     "session.summary": {"summary": "object"},
+    # The service stops on purpose -- `service stop`, an emergency stop, its
+    # idle end, a signal -- and says so before it closes: a window then
+    # leaves (its sessions are saved) instead of starting a new service, as
+    # it does when a service vanishes without a word. restart: a new one
+    # follows at once; reconnect to it.
+    "service.stopping": {"reason": "string", "restart": "boolean"},
     "session.removed": {"reason": "string", "exitCode": "integer?"},
 }
 

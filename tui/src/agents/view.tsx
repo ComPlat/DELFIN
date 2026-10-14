@@ -42,8 +42,10 @@ export interface AgentRow {
   /** The session id, or an elsewhere session's presence key. */
   id: string
   group: Group
-  /** What the session needs or does, whatever group it is shown in. */
-  status: Exclude<Group, "pinned" | "elsewhere"> | "ended" | "elsewhere"
+  /** What the session needs or does, whatever group it is shown in.
+   *  "sleeping": no worker (it slept, or a service before stopped); it
+   *  wakes when opened or sent a message. */
+  status: Exclude<Group, "pinned" | "elsewhere"> | "ended" | "sleeping" | "elsewhere"
   name: string
   activity: string
   age: string
@@ -62,6 +64,7 @@ export function ageOf(seconds: number, now: number): string {
 
 function statusOf(s: SessionState): AgentRow["status"] {
   if (s.state === "ended") return "ended"
+  if (s.state === "sleeping") return "sleeping"
   const pending = s.pending.length || Number(s.summary?.pending ?? 0)
   if (pending > 0 || s.state === "needs_input") return "needs"
   if (s.state === "running" || s.state === "starting" || s.turn) return "working"
@@ -76,6 +79,10 @@ export function needsInput(s: SessionState): boolean {
 function activityOf(s: SessionState, status: AgentRow["status"]): string {
   const summary = (s.summary ?? {}) as Record<string, any>
   if (status === "ended") return `ended${s.ended?.reason ? ` (${s.ended.reason})` : ""}`
+  if (status === "sleeping") {
+    const last = String(summary.answer || summary.lastPrompt || "").split("\n")[0]
+    return `asleep${last ? ` · ${last}` : ""}`
+  }
   if (status === "needs") return `waiting for you: ${s.pending[0] ? askedWhat(s.pending[0]) : summary.waiting || "a question"}`
   if (status === "working") return String(summary.activity || s.turn?.label || "working")
   return String(summary.answer || summary.lastPrompt || "idle").split("\n")[0]!
@@ -92,7 +99,7 @@ export function agentRows(state: AppState, pins: ReadonlySet<string>, now: numbe
     const cost = Math.max(Number(summary.costUsd ?? 0), s.usage.costUsd)
     rows.push({
       kind: "session", id, status,
-      group: pins.has(id) ? "pinned" : status === "ended" ? "done" : status,
+      group: pins.has(id) ? "pinned" : status === "ended" || status === "sleeping" ? "done" : status,
       // An untitled session is named by what it was first asked: a name
       // that does not change with every prompt.
       name: s.title || String(summary.title || "") || String(summary.firstPrompt || summary.lastPrompt || "").split("\n")[0]
@@ -392,11 +399,12 @@ export function AgentViewPanel(props: { view: AgentView; theme: () => Theme; wid
   }
   const glyph = (row: AgentRow) => row.status === "elsewhere" ? "◇"
     : row.status === "ended" ? "◼"
+    : row.status === "sleeping" ? "☾"
     : row.status === "needs" ? "◉"
     : row.status === "working" ? SPINNER[props.tick() % SPINNER.length]!
     : "✓"
   const tone = (row: AgentRow) => row.status === "elsewhere" ? t().muted
-    : row.status === "ended" ? t().faint
+    : row.status === "ended" || row.status === "sleeping" ? t().faint
     : row.status === "needs" ? t().warn
     : row.status === "done" ? t().ok : t().accent
   const summary = () => {

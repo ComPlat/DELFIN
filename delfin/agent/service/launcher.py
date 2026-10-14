@@ -117,6 +117,26 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
                              f"{_log_tail()}")
 
 
+def main(argv: list[str] | None = None) -> int:
+    """`python -m delfin.agent.service.launcher`: make sure the service
+    runs (a window whose service vanished starts the next one this way)."""
+    from .. import state_paths
+
+    state_paths.scratch_state_from_environment()
+    try:
+        hello = ensure_service()
+    except (ServiceDidNotStart, rundir.UnsafeRuntimeDir) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 3
+    print(hello.get("pid", ""))
+    return 0
+
+
+def service_command() -> list[str]:
+    """The command that starts the service when none runs: for a window."""
+    return [sys.executable, "-m", "delfin.agent.service.launcher"]
+
+
 def why_in_words(why: str) -> str:
     """probe()'s reason, said: "none" there is a service that holds the
     host and does not listen (yet, or any more)."""
@@ -158,3 +178,7 @@ def tui_command() -> list[str] | None:
     if main.is_file() and Path(bun).is_file():
         return [bun, str(main)]
     return None
+
+
+if __name__ == "__main__":
+    sys.exit(main())

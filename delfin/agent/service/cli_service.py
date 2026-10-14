@@ -82,6 +82,8 @@ def cmd_tui(args: argparse.Namespace) -> int:
         return 2
     env = dict(os.environ)
     env["DELFIN_TUI_SOCKET"] = str(rundir.socket_path())
+    # What starts the next service, should this one vanish under the window.
+    env["DELFIN_TUI_SERVICE"] = json.dumps(launcher.service_command())
     # Settings first: the workspace is where `delfin-agent tui` was typed.
     env["DELFIN_TUI_START"] = json.dumps(_start_settings(args))
     os.chdir(launcher.tui_root())
@@ -129,18 +131,22 @@ def _service(action: str) -> int:
         if pid:
             print(f"an agent service runs on {rundir.hostname()} (pid {pid}), "
                   f"but {launcher.why_in_words(why)}")
-            if action == "stop":
-                return _stop_unanswering(pid)
+            if action in ("stop", "restart"):
+                code = _stop_unanswering(pid)
+                return _start_again() if action == "restart" and code == 0 else code
             print("  `delfin-agent service stop` ends it (its sessions save)")
             return 1
+        if action == "restart":
+            return _start_again()
         print(f"no agent service runs on {rundir.hostname()}")
         for other in rundir.other_hosts():
             print(f"  one runs on {_plain(other.get('host'), 60)} "
                   f"(pid {_plain(other.get('pid'), 12)}): "
                   "log in there to reach its sessions")
         return 0 if action == "status" else 1
-    if action == "stop":
-        return _stop()
+    if action in ("stop", "restart"):
+        code = _stop(restart=action == "restart")
+        return _start_again() if action == "restart" and code == 0 else code
     with client.ServiceClient(client="delfin-agent service") as svc:
         status = svc.request("service.status")
         listing = svc.request("sessions.list")
@@ -155,6 +161,12 @@ def _service(action: str) -> int:
         pending = f", {s['pending']} waiting" if s.get("pending") else ""
         print(f"  {_plain(s.get('sessionId'), 8)}  {title:28}  "
               f"{_plain(s.get('state', '?'), 11):11} {_plain(s.get('workspace'))}{pending}")
+    asleep = [s for s in listing.get("sessions") or [] if s.get("state") == "sleeping"]
+    if asleep:
+        print("asleep (saved; they wake when opened or sent a message):")
+        for s in asleep:
+            title = _plain(s.get("title") or s.get("firstPrompt") or "(untitled)", 28)
+            print(f"  {_plain(s.get('sessionId'), 8)}  {title:28}  {_plain(s.get('workspace'))}")
     elsewhere = listing.get("elsewhere") or []
     if elsewhere:
         print("elsewhere (dashboards, terminals):")
@@ -164,13 +176,24 @@ def _service(action: str) -> int:
     return 0
 
 
-def _stop() -> int:
+def _start_again() -> int:
+    try:
+        hello = launcher.ensure_service()
+    except (launcher.ServiceDidNotStart, rundir.UnsafeRuntimeDir) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 3
+    print(f"the agent service runs again (pid {hello.get('pid')}): windows "
+          "reconnect, and its sessions wake when used")
+    return 0
+
+
+def _stop(*, restart: bool = False) -> int:
     pid = rundir.service_pid()
     with client.ServiceClient(client="delfin-agent service") as svc:
-        reply = svc.request("service.shutdown")
+        reply = svc.request("service.shutdown", {"restart": True} if restart else {})
     n = int(reply.get("sessions", 0) or 0)
     print(f"stopping the agent service ({n} session{'s' * (n != 1)} end and "
-          "are saved)...", flush=True)
+          "are saved; the next service offers them again)...", flush=True)
     # Stopped when the process is gone, not when it stops listening: it
     # stops listening first, and its sessions take a while to save.
     if _gone(pid, 60):
