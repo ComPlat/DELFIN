@@ -2635,11 +2635,15 @@ class AgentEngine:
                 prompt, updates = self._held_system_prompt(
                     role, sections,
                     can_update="_steer" not in _last)
-                tail = volatile + updates
+                # Updates first: the permission classifier cuts a user
+                # row at "[System prompt update", so nothing after it in
+                # the tail is ever read as the user's own words.
+                tail = updates + volatile
                 if tail:
-                    self._attach_turn_tail("\n\n".join(tail))
+                    text = "\n\n".join(tail)
+                    self._attach_turn_tail(text)
                     if updates:
-                        self._held_prompt["carriers"].append(_last)
+                        self._held_prompt["carriers"].append(text)
                 return prompt
             except Exception:
                 if volatile:
@@ -2717,10 +2721,13 @@ class AgentEngine:
             cur[s.name] = (cur[s.name] + "\n\n" + s.content
                            if s.name in cur else s.content)
         held = getattr(self, "_held_prompt", None)
+        # A carrier is the tail text that delivered an update; it is intact
+        # while some user message still holds that tail (compared by text:
+        # a history handed back as copies is the same history).
+        tails = {str(m.get("_steer")) for m in self.messages
+                 if isinstance(m, dict) and m.get("_steer")}
         intact = held is not None and held.get("role") == role and all(
-            isinstance(c, dict) and c.get("_steer")
-            and any(m is c for m in self.messages)
-            for c in held.get("carriers", ()))
+            c in tails for c in held.get("carriers", ()))
         if not intact:
             prompt = "\n\n".join(s.content for s in sections)
             self._held_prompt = {"role": role, "prompt": prompt,
@@ -5566,12 +5573,21 @@ class AgentEngine:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
                 row = {k: v for k, v in m.items()
                        if not str(k).startswith("_")}
-                if m.get(HARNESS_KEY) is True:
+                # Any mark, not only the key: a HarnessText content loses
+                # its type when the tail is appended below, and with it the
+                # only sign that the harness, not the user, wrote the row.
+                if is_harness_row(m):
                     row = HarnessRow(row)
                 tail = m.get("_steer")
                 if tail:
                     row["content"] = self._with_turn_tail(
                         row.get("content"), str(tail))
+                    # The text type is a mark too, and the one that
+                    # survives a consumer copying the row into a plain
+                    # dict (the client's tool-loop request list does).
+                    if (isinstance(row, HarnessRow)
+                            and isinstance(row["content"], str)):
+                        row["content"] = HarnessText(row["content"])
                 out.append(row)
             else:
                 out.append(m)

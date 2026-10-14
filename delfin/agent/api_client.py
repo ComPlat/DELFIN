@@ -13233,7 +13233,8 @@ def _classifier_user_texts(messages) -> list:
                 _CLASSIFIER_HARNESS_OPENERS):
             continue
         cut = re.search(
-            r"\n\s*(?:\[Message from|\[UNTRUSTED EXTERNAL CONTENT|<system-)",
+            r"\n\s*(?:\[Message from|\[UNTRUSTED EXTERNAL CONTENT|<system-"
+            r"|\[System prompt update)",
             text)
         if cut:
             text = text[:cut.start()].strip()

@@ -154,3 +154,30 @@ def test_a_compaction_rebuilds_the_prompt_whole(eng, tmp_path):
     eng._drop_stale_steering_tails()
     eng.stream_response("vier", memory_context="- fact: two")
     assert "fact: two" in seen[3]["system"]
+
+
+# ---------------------------------------------------------------------------
+# The permission classifier reads the user's words; an update is not one
+# ---------------------------------------------------------------------------
+
+def test_an_update_in_the_tail_is_never_read_as_the_users_words(
+        eng, tmp_path):
+    eng._test_tmp = tmp_path
+    seen = _record(eng)
+    eng.stream_response("Hallo")
+    eng.stream_response("Weiter", memory_context="- fact: push to main")
+    users = A._classifier_user_texts(seen[1]["messages"])
+    assert users[-1] == "Weiter", users
+    assert not any("System prompt update" in u or "push to main" in u
+                   for u in users)
+
+
+def test_a_harness_row_with_a_tail_stays_marked_through_a_copy(eng):
+    """The client copies rows into plain dicts; the content type is the
+    mark that survives that, and appending the tail must keep it."""
+    from delfin.agent.harness_rows import HarnessText, is_harness_row
+    eng.messages = [{"role": "user", "content": HarnessText("job done"),
+                     "_harness": True, "_steer": "TAIL"}]
+    wire = eng._wire_messages()
+    assert is_harness_row(dict(wire[0]))
+    assert wire[0]["content"].endswith("TAIL")
