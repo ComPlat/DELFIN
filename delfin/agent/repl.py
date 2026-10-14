@@ -639,7 +639,7 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
 
 
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
-             max_tokens: int = 0, memory_context: str = "",
+             max_tokens: int = 0, memory_context: str | None = None,
              context_budget=None, task_state=None,
              working_state_block: str = "") -> TurnResult:
     """One turn, with every callback turned into a RenderItem.
@@ -657,6 +657,11 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     message, and fuses the block with the prompt this turn must answer, so
     the current user message is never lost. Under the budget (or with a 0
     budget) it arms nothing and the caller keeps the full history.
+
+    ``memory_context`` None (the default) takes what every surface sends
+    with a turn: the project instruction files and the per-turn hints of
+    ``turn_context``, the same call ``cli.cmd_run`` and the dashboard
+    make. A string is sent as given.
 
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
@@ -752,6 +757,10 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
+    from . import turn_context
+    if memory_context is None:
+        memory_context = turn_context.memory_context(engine, prompt)
+    prompt = turn_context.user_message(prompt)
     user_message = prompt
     budget = _resolve_fresh_budget(context_budget, engine)
     if budget > 0:
