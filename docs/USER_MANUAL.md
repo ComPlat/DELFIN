@@ -1545,6 +1545,7 @@ width changed instead).
 
 **Settings: `~/.delfin/tui.json`** (`DELFIN_TUI_CONFIG` moves it):
 
+<!-- recipe: not-runnable — an excerpt of the window's settings file, not a command; tui/src/config/config.ts reads it -->
 ```json
 {
   "theme": "auto",

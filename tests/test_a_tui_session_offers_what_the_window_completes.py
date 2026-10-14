@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from delfin.agent.service import choices, protocol
+from conftest import child_env
 from tui_service import ServiceProcess
 from tui_worker_client import WorkerClient, WorkerError
 
@@ -140,12 +141,14 @@ def test_a_providers_model_list_shows_where_each_runs_and_what_it_costs(monkeypa
 def _store_dir(service: ServiceProcess) -> Path:
     """Where the service's session store is: asked the way the service
     finds it, scratch state and all."""
+    env = child_env(service.tmp)                 # the service's own home and scratch state
+    env.update(DELFIN_RUNTIME_DIR=service.env["DELFIN_RUNTIME_DIR"], PYTHONPATH=service.env["PYTHONPATH"])
     out = subprocess.run([sys.executable, "-c",
                           "from delfin.agent import state_paths; "
                           "state_paths.scratch_state_from_environment(); "
                           "from delfin.agent import session_store as s; "
                           "print(s._SESSIONS_DIR)"],
-                         env=service.env, capture_output=True, text=True, check=True)
+                         env=env, capture_output=True, text=True, check=True)
     return Path(out.stdout.strip())
 
 

@@ -23,6 +23,9 @@ clean up on the VM. Each item says why it could not be closed here.
    - Two real login nodes sharing the home: the window's note about the
      other node's sessions, and each node keeping its own service.
    - The cluster's own tmux and GNU screen versions.
+   - The binary there: it needs glibc 2.17 at most (checked: Bun's runtime
+     and the native library), but whether the node's kernel suits Bun is
+     only known by running it.
 3. **xterm.js terminals**: VS Code Remote-SSH and JupyterLab's terminal.
    The scrollback was checked in xterm.js headless (phase 0); a look in the
    real ones is still due.

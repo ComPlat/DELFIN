@@ -376,3 +376,25 @@ def test_an_emergency_stop_is_said_to_the_windows_and_keeps_the_sessions(tmp_pat
         assert row["state"] == "sleeping"
     finally:
         svc.stop()
+
+
+def test_an_attach_while_a_busy_session_refuses_to_sleep_is_answered():
+    # Asked to sleep, the worker says it is busy: an attach waiting for the
+    # session to go to sleep must not wait for an end that will not come.
+    import asyncio
+    from types import SimpleNamespace
+
+    async def run():
+        sup = supervisor.Supervisor()
+        loop = asyncio.get_running_loop()
+        session = SimpleNamespace(id="s1", sleeping=True, done=loop.create_future())
+        sup.sessions["s1"] = session
+
+        async def refuse():
+            await asyncio.sleep(0.2)
+            session.sleeping = False             # the worker said: busy
+
+        asyncio.ensure_future(refuse())
+        return await asyncio.wait_for(sup._awake(SimpleNamespace(may_act=True), "s1"), 5)
+
+    assert asyncio.run(run()).id == "s1"

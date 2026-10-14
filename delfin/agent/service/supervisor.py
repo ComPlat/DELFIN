@@ -1284,8 +1284,13 @@ class Supervisor:
         """The session ``sid`` with a worker: as it runs, or woken."""
         session = self.sessions.get(sid)
         if session is not None and session.sleeping:
-            # Going to sleep right now: let it, then wake it.
-            await asyncio.shield(session.done)
+            # Being asked to sleep right now: it either goes (then it is
+            # woken) or says it is busy and stays -- never wait for an end
+            # that a refusal means will not come.
+            while session.sleeping and not session.done.done():
+                await asyncio.sleep(0.05)
+            if session.done.done():
+                await asyncio.sleep(0)       # let session_ended file it as dormant
             session = self.sessions.get(sid)
         if session is not None:
             return session

@@ -18,6 +18,7 @@ import sys
 import textwrap
 import time
 
+from conftest import child_env
 from tui_service import ServiceProcess, turn
 
 LAUNCH = """
@@ -28,6 +29,14 @@ try:
 except launcher.ServiceDidNotStart as e:
     print(json.dumps({"error": str(e)}))
 """
+
+
+def _env(svc: ServiceProcess) -> dict:
+    """The test's own home and scratch state (child_env), with the
+    service's private runtime directory and this checkout."""
+    env = child_env(svc.tmp)
+    env.update(DELFIN_RUNTIME_DIR=svc.env["DELFIN_RUNTIME_DIR"], PYTHONPATH=svc.env["PYTHONPATH"])
+    return env
 
 
 def _old_release(svc: ServiceProcess, *, protocol_version: int | None = None) -> subprocess.Popen:
@@ -42,7 +51,7 @@ def _old_release(svc: ServiceProcess, *, protocol_version: int | None = None) ->
         import delfin.agent.service.supervisor as supervisor
         sys.exit(supervisor.main(["--idle-exit", "120"]))
     """)
-    proc = subprocess.Popen([sys.executable, "-c", code], env=svc.env, start_new_session=True,
+    proc = subprocess.Popen([sys.executable, "-c", code], env=_env(svc), start_new_session=True,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     svc.proc = proc
     deadline = time.monotonic() + 30
@@ -54,7 +63,7 @@ def _old_release(svc: ServiceProcess, *, protocol_version: int | None = None) ->
 def _launch(svc: ServiceProcess) -> tuple[dict, str]:
     import json
 
-    out = subprocess.run([sys.executable, "-c", LAUNCH], env=svc.env, capture_output=True,
+    out = subprocess.run([sys.executable, "-c", LAUNCH], env=_env(svc), capture_output=True,
                          text=True, timeout=180)
     return json.loads(out.stdout.strip().splitlines()[-1]), out.stderr
 

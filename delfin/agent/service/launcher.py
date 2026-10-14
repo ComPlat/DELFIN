@@ -312,8 +312,11 @@ def tui_binary() -> Path | None:
         return shipped
     built = tui_root() / "dist" / name
     if built.is_file() and os.access(built, os.X_OK):
-        newest = max((f.stat().st_mtime for f in (tui_root() / "src").rglob("*") if f.is_file()),
-                     default=0.0)
+        # Built from the sources, the dependencies and their patches.
+        root = tui_root()
+        sources = [*(root / "src").rglob("*"), *(root / "patches").rglob("*"),
+                   root / "package.json", root / "bun.lock"]
+        newest = max((f.stat().st_mtime for f in sources if f.is_file()), default=0.0)
         if built.stat().st_mtime >= newest:
             return built
     return None
