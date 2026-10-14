@@ -108,10 +108,15 @@ def test_no_job_stays_unaddressable_after_a_concurrent_index_write(tmp_path):
     assert len(data["jobs"]) == PROCS * WRITES
 
 
-def test_no_job_record_is_lost_from_the_workspace_registry(tmp_path):
+def test_no_job_record_is_lost_from_the_workspace_registry(tmp_path,
+                                                           monkeypatch):
     _run_concurrently(_REGISTRY, tmp_path)
+    # The children's home is tmp_path; resolve the registry as they did.
+    from delfin.agent import state_paths
+    monkeypatch.setattr(state_paths, "workspace_state_root",
+                        lambda: tmp_path / ".delfin" / "workspace_state")
     data = json.loads(
-        (tmp_path / ".delfin" / "bash_jobs.json").read_text("utf-8"))
+        bash_jobs._registry_path(tmp_path).read_text("utf-8"))
     assert len(data["jobs"]) == PROCS * WRITES
 
 

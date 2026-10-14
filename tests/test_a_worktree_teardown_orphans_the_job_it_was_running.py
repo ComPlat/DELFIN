@@ -105,9 +105,9 @@ def test_a_dead_pid_holds_nothing(tmp_path):
 
 def test_an_unreadable_registry_reports_nothing(tmp_path):
     ws = tmp_path / "wt"
-    (ws / ".delfin").mkdir(parents=True)
-    (ws / ".delfin" / "bash_jobs.json").write_text("{not json",
-                                                   encoding="utf-8")
+    ws.mkdir(parents=True)
+    bj._registry_path(ws).parent.mkdir(parents=True, exist_ok=True)
+    bj._registry_path(ws).write_text("{not json", encoding="utf-8")
     assert bj.running_jobs_for_workspace(ws) == []
 
 
@@ -149,7 +149,7 @@ def test_the_job_registry_survives_the_run(tmp_path, live_child):
     tree = tmp_path / "delfin-wt-2"
     tree.mkdir()
     _register(tree, "ab12", pid=live_child.pid)
-    registry = tree / ".delfin" / "bash_jobs.json"
+    registry = bj._registry_path(tree)
     assert registry.is_file()
 
     # What the teardown decision does when jobs are still running: nothing.
@@ -238,7 +238,7 @@ def test_a_whole_isolated_run_keeps_the_tree_its_job_lives_in(
     try:
         assert tree != repo, "the run was not isolated, so this proves nothing"
         assert tree.is_dir(), "the tree was removed while its job was running"
-        assert (tree / ".delfin" / "bash_jobs.json").is_file()
+        assert bj._registry_path(tree).is_file()
         assert res.worktree["cleaned_up"] is False
         assert "ab12" in res.worktree["warning"]
     finally:
