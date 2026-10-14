@@ -91,7 +91,7 @@ def test_the_domain_state_names_the_worktree_not_the_launch_checkout(
     sent = []
 
     def _answer(self, system="", messages=None, **kw):
-        sent.append(list(messages or []))
+        sent.append((str(system or ""), list(messages or [])))
         return
         yield
 
@@ -123,11 +123,14 @@ def test_the_domain_state_names_the_worktree_not_the_launch_checkout(
         engine = refs["state"]["engine"]
         assert str(engine.kit_permissions.workspace) == str(wt.resolve()) or \
             str(engine.kit_permissions.workspace) == str(wt)
-        text = _wire_text(sent[0])
+        system, messages = sent[0]
+        text = _wire_text(messages)
+        # The first-send primer rides in the system prompt (memory context):
+        # its branch is the worktree's.
+        assert "launch-branch" not in system + text
+        assert "session-branch" in system + text
         assert "--- Domain State ---" in text
         assert "ONLY_IN_WORKTREE.py" in text, text[-2000:]
         assert "TASK_FROM_LAUNCH.md" not in text, text[-2000:]
-        assert "launch-branch" not in text
-        assert "session-branch" in text
     finally:
         refs["shutdown"](save=False)
