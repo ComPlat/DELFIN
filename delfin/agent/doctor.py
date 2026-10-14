@@ -737,6 +737,14 @@ def _isolation_mechanism() -> str:
     answer is what will actually run rather than what is installed.
     """
     try:
+        from delfin.agent import container_exec as _ce
+        if _ce._configured_mode() == "container":
+            choice = _ce.choose()
+            if choice.runtime:
+                return f"container ({choice.runtime})"
+    except Exception:
+        pass
+    try:
         from delfin.agent.api_client import (
             _bwrap_functional, _landlock_functional, _seatbelt_functional)
     except Exception:
@@ -862,6 +870,21 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     no_mechanism = ("install bubblewrap, or run on a kernel with Landlock "
                     "(Linux 5.13+); the write-target gate stays active "
                     "either way")
+    if mode == "container":
+        if held_by.startswith("container"):
+            return [_row("bash isolation", PASS,
+                         f"{held_by} for every command")]
+        reason = ""
+        try:
+            from delfin.agent import container_exec as _ce
+            reason = _ce.choose().reason
+        except Exception:
+            pass
+        return [_row("bash isolation", WARN,
+                     f"container requested, not used: {reason}; commands "
+                     f"fall back to {held_by or 'the write-target gate only'}",
+                     "install apptainer, podman or docker and the image "
+                     "(docs/USER_MANUAL.md, container isolation)")]
     if mode == "bwrap":
         if held_by:
             return [{"check": "bash isolation", "status": "PASS",

@@ -73,7 +73,8 @@ def detect_site_profile() -> str:
     except Exception:
         fqdn = ''
     hostname = os.environ.get('HOSTNAME', '').lower() or fqdn.split('.')[0]
-    if 'scc.kit.edu' in fqdn or hostname.startswith('uc3'):
+    if fqdn == 'scc.kit.edu' or fqdn.endswith('.scc.kit.edu') \
+            or hostname.startswith('uc3'):
         return 'bwunicluster3'
     return ''
 

@@ -145,8 +145,13 @@ def test_bash_background_sandbox_cwd_check(workspace, tmp_path):
     assert "error" in out
 
 
-def test_bash_background_default_mode_needs_auto_allow(workspace):
-    """Same gate as foreground bash: default mode without auto_allow rejects."""
+def test_bash_background_default_mode_needs_auto_allow(workspace, monkeypatch):
+    """Same gate as foreground bash: default mode without auto_allow
+    rejects, where the caged rule does not apply (under it the job runs in
+    the cage: test_a_caged_command_runs_without_asking.py)."""
+    import delfin.agent.api_client as _A
+    monkeypatch.setattr(_A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
     perms = KitToolPermissions(workspace=workspace, mode="default")
     out = json.loads(_doc_executor.execute("bash_background", {
         "command": "rare-custom-cmd --flag",

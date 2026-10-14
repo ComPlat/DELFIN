@@ -203,7 +203,7 @@ def put_exported_keys_away(names=(), *, home=None) -> str:
     parts: list[str] = []
     if stored:
         parts.append(f"{', '.join(stored)} taken into "
-                     f"{_cred.credentials_path()} (0600)")
+                     f"{_cred.describe_store(stored[0])}")
     for name, where in cleaned:
         parts.append(f"the line exporting {name} in {where['file']}:"
                      f"{where['line']} is commented out "

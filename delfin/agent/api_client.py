@@ -3184,6 +3184,22 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"(?=[^;|&]*\s(?:~|\$\{?HOME\}?|/))"
     r"(?=[^;|&]*\s-(?:delete\b|(?:exec|execdir|ok|okdir)\s+"
     r"(?:rm|rmdir|unlink|shred|truncate|dd)\b))",
+    # Reading the OS credential store, where DELFIN keeps API keys when
+    # agent.credentials.store selects it. The keyring is read by the DELFIN
+    # process only; a command that prints an entry hands the key to the
+    # transcript. Command position for the CLIs (a grep for the word
+    # stays free), anywhere for the Python call and the D-Bus service name.
+    # Not a boundary on its own: the sandbox unsets DBUS_SESSION_BUS_ADDRESS
+    # and the socket guard refuses the bus socket; an obfuscated python -c
+    # is caught there, not here.
+    r"""(?:^|[;|&`(])[\s'\"]*(?:sudo\s+)?(?:/\S*/)?"""
+    r"(?:secret-tool\s+(?:lookup|search)|"
+    r"security\s+(?:find-(?:generic|internet)-password|dump-keychain)|"
+    r"keyring\s+get)\b",
+    r"\bpython[\w.]*\s+(?:-\S+\s+)*-m\s+keyring\b",
+    r"\bkeyring\s*\.\s*get_(?:password|credential)\b",
+    r"\borg\.freedesktop\.secrets\b",
+    r"\bGet-StoredCredential\b",
 )
 
 # Bash patterns that are auto-approved in mode="default" without callback.
@@ -12618,6 +12634,36 @@ def _record_security_event(kind: str, tool: str, detail: str,
         pass
 
 
+def _report_file_changed(path) -> None:
+    """Tell the turn observers a write tool changed ``path``. Never raises.
+
+    Called from the change capture every write tool goes through, so the
+    headless ``files_changed`` lists what the undo journal can see; a file
+    a shell command writes is in neither.
+    """
+    try:
+        from . import turn_outcome
+        turn_outcome.file_changed(str(path))
+    except Exception:
+        pass
+
+
+def _record_gate_refusal(code: str, tool: str, detail: str) -> None:
+    """Report a refusal the containment panel does not record.
+
+    ``code`` is one of ``turn_outcome.LOCAL_REASON_CODES`` (or an existing
+    containment kind the panel deliberately skips at this site). Reaches
+    only the turn observers -- the headless result and stream-json --
+    never the panel or the attention inbox, where a plan-mode refusal is
+    routine noise. Best-effort: never affects the gate's decision.
+    """
+    try:
+        from . import turn_outcome
+        turn_outcome.denied(tool, code, detail)
+    except Exception:
+        pass
+
+
 # --- The action classifier: a model's second opinion behind the rules -------
 # The rules decide first and alone. This runs only where they let an action
 # through that NO HUMAN SAW (Bypass, the bash auto-allow list, an
@@ -14685,6 +14731,7 @@ class _DocToolExecutor:
         """Record the pre-image of a just-applied file change in the undo
         journal (change_journal). Never raises — undo bookkeeping must not
         break the write path it observes."""
+        _report_file_changed(resolved)
         try:
             from . import change_journal as _cj
             rec = _cj.record_change(
@@ -14714,6 +14761,7 @@ class _DocToolExecutor:
 
         Never raises, like its text sibling.
         """
+        _report_file_changed(resolved)
         try:
             from . import change_journal as _cj
             if deleted:
@@ -15062,6 +15110,7 @@ class _DocToolExecutor:
                     _action_protocol.extract_slash_command(name, arguments),
                     role=auth_role, tool_name=name)
             else:
+                _record_gate_refusal("role_denied", name, auth_role)
                 result = json.dumps({"error": (
                     f"Tool '{name}' is not available to the '{auth_role}' role. "
                     "The dashboard guide operates the UI via ACTION: slash-commands "
@@ -15073,6 +15122,7 @@ class _DocToolExecutor:
             # rule the mode check states: report the more permanent reason
             # first. A role denial holds for every session; a session list
             # holds for this whole run; the mode can change within it.
+            _record_gate_refusal("session_denied", name, session_refusal)
             result = json.dumps({"error": (
                 f"Tool '{name}' was excluded from this session — "
                 f"{session_refusal}. The list was set when the session "
@@ -15097,9 +15147,11 @@ class _DocToolExecutor:
             # NEVER use a tool should be told that, not told it is merely
             # the wrong mode. The more permanent reason is more useful.
             # A check_only call is a dry run and stays allowed.
+            _record_gate_refusal("plan_mode", name, "")
             result = json.dumps({"error": _plan_mode_refusal(
                 _bare_tool_name(name))})
         elif block_reason:
+            _record_gate_refusal("blocked_by_hook", name, block_reason[:300])
             result = json.dumps({
                 "error": "blocked_by_hook",
                 "reason": block_reason[:1200],
@@ -15552,10 +15604,13 @@ class _DocToolExecutor:
             # bash_background reuses the bash gate verbatim — the
             # command, cwd, deny-list, secret scanner, and auto-allow
             # check are identical; only the execution model differs.
+            _caged: list = []
             if permissions is not None:
                 gate_name = "bash" if name == "bash_background" else name
                 gate_err = self._run_permission_gate(
-                    gate_name, arguments, permissions)
+                    gate_name, arguments, permissions,
+                    **({"caged_admission": _caged} if gate_name == "bash"
+                       else {}))
                 if gate_err is not None:
                     return json.dumps({"error": gate_err})
             # The network tools and run_tests only needed the gate; their
@@ -15568,8 +15623,14 @@ class _DocToolExecutor:
             if name == "multi_edit":
                 return self._execute_multi_edit(arguments, permissions)
             if name == "bash":
+                if _caged:
+                    return self._execute_bash(arguments, permissions,
+                                              caged_unasked=True)
                 return self._execute_bash(arguments, permissions)
             if name == "bash_background":
+                if _caged:
+                    return self._execute_bash_background(
+                        arguments, permissions, caged_unasked=True)
                 return self._execute_bash_background(arguments, permissions)
 
         # Document writes. The per-path write gate runs inside the
@@ -17240,6 +17301,8 @@ class _DocToolExecutor:
     ) -> "bool | str":
         """Ask the user about a document write. True, or an error string."""
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval", name,
+                                 str((arguments or {}).get("path") or ""))
             return json.dumps({"error": (
                 f"diff-approval mode: '{name}' changes a document, which "
                 "cannot be staged as a text diff, and no approval dialog is "
@@ -18347,6 +18410,8 @@ class _DocToolExecutor:
         if _rule_answers(perms, "read", "read_file", resolved):
             return None
         if perms.confirm_callback is None:
+            _record_gate_refusal("outside_ws", "",
+                                 str(label or resolved))
             return (
                 f"read denied: '{label or resolved}' is outside the allowed "
                 "workspace roots and no confirm callback is configured. "
@@ -19171,9 +19236,18 @@ class _DocToolExecutor:
             return None
 
     def _run_permission_gate(
-        self, name: str, args: dict, perms: "KitToolPermissions"
+        self, name: str, args: dict, perms: "KitToolPermissions",
+        *, caged_admission: Optional[list] = None,
     ) -> Optional[str]:
-        """Run the policy + callback gate. Returns error string or None."""
+        """Run the policy + callback gate. Returns error string or None.
+
+        ``caged_admission``: passed (an empty list) only by the native
+        shell dispatch, whose executor runs the command in the cage. When
+        the bash gate admits a command off the auto-allow list because the
+        cage holds it (``_caged_command_may_run_unasked``), it appends True,
+        and the executor then runs it with ``caged_unasked=True``. Without
+        the list (an MCP shell, any other caller) that rule never applies.
+        """
         mode = effective_mode(perms)
         # A reason never outlives its refusal: anything left on the
         # broker from an earlier dialog is dropped before this gate run
@@ -19806,6 +19880,20 @@ class _DocToolExecutor:
                     "read_only_shape", "bash",
                     f"{_ros_shape}: {cmd[:80]}", blocked=False)
                 return self._classifier_second_opinion(perms, name, args, mode)
+            # Off the list, but held by the cage: writes confined to the
+            # session's roots with the protected files read-only, no process
+            # outside visible, network through the egress policy. Every tier
+            # above has already passed; the classifier still has its look,
+            # and the read and write path gates run in the executor.
+            if (caged_admission is not None and not _approved_here
+                    and _caged_command_may_run_unasked(cmd, perms, mode)):
+                verdict = self._classifier_second_opinion(
+                    perms, name, args, mode)
+                if verdict is None:
+                    _record_security_event(
+                        "caged_unasked", "bash", cmd[:80], blocked=False)
+                    caged_admission.append(True)
+                return verdict
             # Not auto-allowed. Whenever a per-action approval dialog is
             # wired (the dashboard KitConfirmBroker), ask the user to
             # approve THIS command — one click — instead of dead-ending
@@ -20027,6 +20115,10 @@ class _DocToolExecutor:
                 # not on the list. The route names what the same check
                 # allows, and the spellings of the command it refuses too.
                 hint = _allow_list_route(cmd, args, perms)
+            _record_gate_refusal(
+                "not_allowlisted", "bash",
+                f"bash: '{cmd[:120]}' is not on the auto-allow list "
+                f"(mode={mode})")
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "
@@ -20931,6 +21023,8 @@ class _DocToolExecutor:
 
         # Always require user confirmation regardless of mode.
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval", "remember_permission",
+                                 f"{kind}: {value}")
             return json.dumps({"error": (
                 "remember_permission needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
@@ -21118,6 +21212,8 @@ class _DocToolExecutor:
         preview = "\n".join(preview_lines)
 
         if perms.confirm_callback is None:
+            _record_gate_refusal("needs_approval",
+                                 "remember_permission_bundle", str(profile))
             return json.dumps({"error": (
                 "remember_permission_bundle needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
@@ -21616,7 +21712,8 @@ class _DocToolExecutor:
         return None
 
     def _execute_bash(
-        self, arguments: dict, perms: "KitToolPermissions"
+        self, arguments: dict, perms: "KitToolPermissions",
+        caged_unasked: bool = False,
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
@@ -21740,7 +21837,10 @@ class _DocToolExecutor:
                 # at the timeout. subprocess.run killed only bash itself.
                 from . import contained_run as _contained
                 proc = _contained.run(
-                    _bash_isolation_argv(cmd, run_cwd, perms),
+                    _bash_isolation_argv(cmd, run_cwd, perms)
+                    if not caged_unasked
+                    else _bash_isolation_argv(cmd, run_cwd, perms,
+                                              caged_unasked=True),
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
@@ -21845,7 +21945,8 @@ class _DocToolExecutor:
     # ------- Background bash jobs ----------------------------------------
 
     def _execute_bash_background(
-        self, arguments: dict, perms: "KitToolPermissions"
+        self, arguments: dict, perms: "KitToolPermissions",
+        caged_unasked: bool = False,
     ) -> str:
         """Start a long-running shell command in the background.
 
@@ -21905,7 +22006,10 @@ class _DocToolExecutor:
                 workspace=str(perms.workspace),
                 # In the process cage like a foreground command: what the
                 # job starts ends with it, and the job with its kernel.
-                argv=_bash_isolation_argv(cmd, run_cwd, perms),
+                argv=_bash_isolation_argv(cmd, run_cwd, perms)
+                if not caged_unasked
+                else _bash_isolation_argv(cmd, run_cwd, perms,
+                                          caged_unasked=True),
                 **({"session_id": _job_sid} if _job_sid else {}),
             )
         except ValueError as exc:
@@ -24719,7 +24823,7 @@ def _git_metadata_roots(workspace) -> list[str]:
 _SLURM_CONTROLLERS: Optional[list[str]] = None
 
 
-def _sandbox_network_args(perms=None) -> tuple[list[str], str]:
+def _sandbox_network_args(perms=None, allow_slurm: bool = True) -> tuple[list[str], str]:
     """Helper flags for an isolated command's network, and the directory of
     the egress proxy's socket ("" without one).
 
@@ -24728,10 +24832,23 @@ def _sandbox_network_args(perms=None) -> tuple[list[str], str]:
     for the session ``perms`` belongs to (``EgressProxy.settle``), plus the
     direct TCP endpoints that are not HTTP (SLURM controller, git remotes
     over SSH, license servers); "none" -- no network; "open" --
-    unrestricted, cloud metadata still refused."""
+    unrestricted, cloud metadata still refused.
+
+    ``allow_slurm=False`` is the profile of a command the gate admitted
+    without a question (``caged_unasked``). A job runs outside the cage,
+    and an SSH remote or a license server is a door to another host's
+    processes, so it gets NO direct TCP endpoint at all -- only HTTP(S)
+    through the proxy. A configured "open" becomes "proxy" for it: a
+    command nobody saw never gets an unrestricted network.
+
+    Rejected: keeping the SSH git remotes for it. Whether a remote can
+    start work (a forced command, a hook on the server) is not visible
+    from here, so the conservative answer is none."""
     global _SLURM_CONTROLLERS
     from . import egress_proxy as _ep
     mode = _ep.network_mode()
+    if not allow_slurm and mode == "open":
+        mode = "proxy"
     args = ["--net", mode]
     proxy_dir = ""
     if mode == "proxy":
@@ -24747,11 +24864,13 @@ def _sandbox_network_args(perms=None) -> tuple[list[str], str]:
                 _SLURM_CONTROLLERS = _ep.slurm_controllers()
             except Exception:
                 _SLURM_CONTROLLERS = []
-        direct = list(_SLURM_CONTROLLERS)
-        try:
-            direct += _ep.direct_tcp_endpoints(getattr(perms, "workspace", None))
-        except Exception:
-            pass
+        direct: list[str] = []
+        if allow_slurm:
+            direct = list(_SLURM_CONTROLLERS)
+            try:
+                direct += _ep.direct_tcp_endpoints(getattr(perms, "workspace", None))
+            except Exception:
+                pass
         for hp in sorted(set(direct)):
             args += ["--allow-tcp", hp]
     return args, proxy_dir
@@ -25407,12 +25526,304 @@ def _on_another_sessions_branch(path_arg: str, workspace) -> str:
         return ""
 
 
+def _bash_isolation_decision(perms, mode: str | None = None) -> tuple[str, str]:
+    """Which confinement the agent's shell command gets on this host.
+
+    Input: the permissions (``scope_locked``, ``mode``) and an explicit
+    isolation mode or None (then ``--isolate``, else
+    ``agent.bash_isolation``, default "auto").
+    Output: ``(kind, resolved_mode)``; kind is "bwrap", "landlock",
+    "seatbelt" (writes confined to the session's roots), "refuse" (the
+    command is not run) or "none" (process cage at most, filesystem as it
+    is). ``_bash_isolation_argv`` builds its argv from exactly this
+    answer, and the bash gate reads it to decide whether a command off the
+    auto-allow list may run unasked -- one decision, so the two cannot
+    drift. No side effects beyond the cached host probes. Never raises.
+    """
+    if mode is None and _BASH_ISOLATION_OVERRIDE:
+        mode = _BASH_ISOLATION_OVERRIDE
+    if mode is None:
+        try:
+            from delfin.user_settings import load_settings
+            mode = str(((load_settings() or {}).get("agent") or {})
+                       .get("bash_isolation", "auto") or "auto")
+        except Exception:
+            mode = "auto"
+    mode = mode.strip().lower()
+    if getattr(perms, "scope_locked", False):
+        if _bwrap_functional():
+            return "bwrap", mode
+        if _landlock_functional():
+            return "landlock", mode
+        if _seatbelt_functional():
+            return "seatbelt", mode
+        return "refuse", mode
+    if mode == "auto":
+        if _bwrap_functional():
+            return "bwrap", mode
+        if _landlock_functional():
+            return "landlock", mode
+        if _seatbelt_functional():
+            return "seatbelt", mode
+        return "none", mode
+    if mode == "bwrap":
+        if shutil.which("bwrap"):
+            return "bwrap", mode
+        if _landlock_functional():
+            return "landlock", mode
+        if _seatbelt_functional():
+            return "seatbelt", mode
+        return "refuse", mode
+    return "none", mode
+
+
+# Words that keep a command off the caged rule (_caged_command_may_run_unasked)
+# wherever they occur in its text, not only as a segment's program: network
+# clients, publishing and package tools (their network subcommands have
+# rules of their own), job schedulers (a job runs outside the cage),
+# signals, privilege changes, deletion and desktop launchers. A version
+# suffix is ignored (pip3.11). Matching a word in a string or a file name
+# only keeps the old dialog.
+_CAGED_UNASKED_EXCLUDED_WORDS: frozenset[str] = frozenset({
+    "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat",
+    "socat", "telnet", "ftp", "lftp", "tftp", "aria2c", "httpie", "xh",
+    "nmap", "ping", "traceroute", "dig", "nslookup", "whois", "mail",
+    "mailx", "sendmail", "mutt", "s3cmd", "aws", "gcloud", "gsutil", "az",
+    "rclone",
+    "git", "gh", "glab", "hub", "svn", "hg",
+    "pip", "pipx", "uv", "poetry", "conda", "mamba", "micromamba", "npm",
+    "npx", "yarn", "pnpm", "cargo", "go", "gem", "bundle", "apt", "apt-get",
+    "dnf", "yum", "brew", "snap", "flatpak", "spack", "docker", "podman",
+    "singularity", "apptainer",
+    "kill", "pkill", "killall", "skill", "xkill", "nohup", "setsid",
+    "disown", "screen", "tmux", "crontab", "systemctl", "launchctl",
+    "service",
+    "sudo", "su", "doas", "pkexec", "runuser",
+    "rm", "rmdir", "unlink", "shred", "truncate", "dd", "wipefs", "mkfs",
+    "sbatch", "srun", "salloc", "scancel", "scontrol", "qsub", "qdel",
+    "qrsh", "bsub", "bkill",
+    "xdg-open", "notify-send", "dbus-send", "osascript",
+})
+
+_CAGED_UNASKED_EXCLUDED_RE = re.compile(
+    r"://|/dev/(?:tcp|udp)/"
+    r"|\b(?:socket|urllib\d?|requests|httpx|aiohttp|http\.client|http\.server"
+    r"|smtplib|ftplib|telnetlib|paramiko|xmlrpc|websockets?|ssl"
+    r"|os\.(?:kill|killpg|remove|unlink|rmdir|removedirs|set[ug]id)"
+    r"|signal\.(?:pthread_kill|raise_signal)|rmtree)\b"
+    r"|\.unlink\(|(?:^|\s)-delete\b")
+
+# Authoring a file or a program in the command text: a here-document, or
+# tee / cat / printf / echo writing a file. These have a sanctioned
+# control the refusal names (write_file, then `python3 <file>`), and the
+# file then goes through the write gate and the change journal as a file.
+_CAGED_UNASKED_AUTHORING_RE = re.compile(
+    r"<<|(?:^|[;&|('\"]|\$\()\s*(?:tee|cat|printf|echo)\b[^;&|]*(?:>|\btee\b)"
+    r"|(?:^|[;&|(])\s*tee\b")
+
+
+def _caged_command_names_excluded(cmd: str) -> bool:
+    """True when ``cmd`` names anything the caged rule leaves to the
+    existing dialog (``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``), or
+    authors a file in its own text (``_CAGED_UNASKED_AUTHORING_RE``)."""
+    if _CAGED_UNASKED_EXCLUDED_RE.search(cmd):
+        return True
+    if _CAGED_UNASKED_AUTHORING_RE.search(cmd):
+        return True
+    for tok in re.findall(r"[A-Za-z0-9_+.-]+", cmd.lower()):
+        tok = tok.lstrip("-")
+        if tok in _CAGED_UNASKED_EXCLUDED_WORDS:
+            return True
+        if re.sub(r"[\d.]+$", "", tok) in _CAGED_UNASKED_EXCLUDED_WORDS:
+            return True
+    return False
+
+
+def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
+    """Whether a bash command that is NOT on the auto-allow list may run
+    without a question because the filesystem cage holds it.
+
+    Consulted by the bash gate only at its final "not on the auto-allow
+    list" point, after every other tier said yes, and only for the native
+    shell executor. True when all hold:
+      - ``mode`` is "default" or "acceptEdits" (plan, diff_approval and
+        bypass are unchanged);
+      - ``agent.caged_commands_run_unasked`` is not false;
+      - ``_bash_isolation_decision`` answers "bwrap" -- the decision
+        ``_bash_isolation_argv`` builds the argv from -- the process cage
+        is active (``--unshare-pid``: no process outside the command is
+        visible to signal) and the network mode is not "open";
+      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``.
+    The command then runs with ``caged_unasked=True``: protected files
+    read-only, no SLURM route, refused if the cage is gone by then.
+
+    Rejected: Landlock and Seatbelt as cages for this rule. Landlock cannot
+    make a file read-only inside a writable root (git hooks and config
+    stay writable there), and Seatbelt has no test host here; both keep
+    the dialog. Rejected: admitting by a program allow-list -- the
+    refusals measured were scripts, interpreters, compilers and
+    chemistry programs, an open set; the cage is what bounds them.
+    Never raises; any failure answers False.
+    """
+    try:
+        if mode not in ("default", "acceptEdits"):
+            return False
+        try:
+            from delfin.user_settings import load_settings
+            agent_cfg = (load_settings() or {}).get("agent") or {}
+            if agent_cfg.get("caged_commands_run_unasked", True) is False:
+                return False
+        except Exception:
+            pass
+        if _caged_command_names_excluded(cmd):
+            return False
+        _kind, _iso_mode = _bash_isolation_decision(perms)
+        # A container session runs its commands in the container, whose
+        # mounts are not the cage this admission relies on: asked instead.
+        if _kind != "bwrap" or _iso_mode == "container":
+            return False
+        if not _process_cage_enabled():
+            return False
+        # Reads are confined by Landlock inside the cage; without it the
+        # command could read outside the roots unseen, which default mode
+        # asks about. No Landlock, no admission.
+        if not _landlock_functional():
+            return False
+        from . import egress_proxy as _ep
+        if _ep.network_mode() == "open":
+            return False
+        return True
+    except Exception:
+        return False
+
+
+_CAGED_SYSTEM_READ_PATHS: tuple[str, ...] = (
+    "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc",
+    "/opt", "/tmp", "/proc", "/dev", "/sys", "/run", "/var/lib/sss",
+)
+
+# Environment variables naming tool installs a command may need to read.
+_CAGED_ENV_READ_VARS: tuple[str, ...] = (
+    "PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "CONDA_PREFIX", "VIRTUAL_ENV",
+    "MAMBA_ROOT_PREFIX", "XTBPATH", "XTBHOME", "ORCA_PATH", "ORCADIR",
+)
+
+
+def _caged_read_paths(perms) -> list[str]:
+    """Where a command admitted by the caged rule may read, besides its
+    write roots (which landlock_exec adds itself).
+
+    The session's roots (workspace, extra, read-only, calc, granted read
+    directories, git metadata), the system paths a program needs
+    (``_CAGED_SYSTEM_READ_PATHS``; /etc's secret-bearing files are not
+    readable by the user anyway), this interpreter's prefixes, and every
+    directory named by ``_CAGED_ENV_READ_VARS`` (a ``bin`` entry grants
+    its parent prefix, so an environment's ``lib`` and headers come with
+    it). An entry that would grant ``/``, the home directory or an
+    ancestor of it is skipped: the rest of the home stays unreadable.
+    Credential paths are hidden on top (``--hide``). Real paths,
+    existing only, deduplicated. Never raises."""
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        home = os.path.realpath(str(Path.home()))
+    except Exception:
+        home = "/"
+    too_broad = {"/", home}
+    p = home
+    while p not in ("/", ""):
+        p = os.path.dirname(p)
+        too_broad.add(p)
+
+    def _add(path) -> None:
+        try:
+            rp = os.path.realpath(str(path))
+        except OSError:
+            return
+        if (not rp or rp in seen or rp in too_broad
+                or not os.path.exists(rp)):
+            return
+        seen.add(rp)
+        out.append(rp)
+
+    try:
+        for r in perms.all_workspace_roots():
+            _add(r)
+    except Exception:
+        _add(getattr(perms, "workspace", "."))
+    for attr in ("read_only_workspace_dirs", "confirm_write_dirs",
+                 "session_read_dirs", "extra_workspace_dirs"):
+        for d in tuple(getattr(perms, attr, ()) or ()):
+            _add(d)
+    for g in _git_metadata_roots(getattr(perms, "workspace", ".")):
+        _add(g)
+    for d in _CAGED_SYSTEM_READ_PATHS:
+        _add(d)
+    for d in (sys.prefix, sys.base_prefix, sys.exec_prefix,
+              os.path.dirname(os.path.dirname(os.path.realpath(sys.executable)))):
+        _add(d)
+    for var in _CAGED_ENV_READ_VARS:
+        for entry in str(os.environ.get(var) or "").split(os.pathsep):
+            if not entry or not os.path.isabs(entry):
+                continue
+            rp = os.path.realpath(entry)
+            _add(os.path.dirname(rp) if os.path.basename(rp) == "bin" else rp)
+    return out
+
+
+def _caged_readonly_paths(perms) -> list[str]:
+    """Existing paths bound read-only for a command admitted by the caged
+    rule: the git metadata directories, every non-wildcard entry of
+    ``perms.path_protected_globs`` under each workspace root (``.git``,
+    ``.github``, ``.gitattributes``, ``.gitmodules``, ``.delfin/settings*.json``,
+    the agent's own source files), and the calc / read-only roots. Real
+    paths (bwrap cannot mount through a symlink), deduplicated. A path
+    that does not exist yet is not covered; see the PR notes. Never raises.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p) -> None:
+        try:
+            rp = os.path.realpath(str(p))
+            if rp in seen or not os.path.exists(rp):
+                return
+        except OSError:
+            return
+        seen.add(rp)
+        out.append(rp)
+
+    try:
+        roots = [Path(r) for r in perms.all_workspace_roots()]
+    except Exception:
+        roots = [Path(getattr(perms, "workspace", "."))]
+    for g in _git_metadata_roots(getattr(perms, "workspace", ".")):
+        _add(g)
+    rels: set[str] = set()
+    for g in tuple(getattr(perms, "path_protected_globs", ()) or ()):
+        g = str(g)
+        while g.startswith("**/"):
+            g = g[3:]
+        if g.endswith("/**"):
+            g = g[:-3]
+        if g and not any(ch in g for ch in "*?["):
+            rels.add(g)
+    for r in roots:
+        for rel in sorted(rels):
+            _add(r / rel)
+    for d in (tuple(getattr(perms, "confirm_write_dirs", ()) or ())
+              + tuple(getattr(perms, "read_only_workspace_dirs", ()) or ())):
+        _add(d)
+    return out
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
     perms,
     mode: str | None = None,
     extra_write=(),
+    caged_unasked: bool = False,
 ) -> list[str]:
     """argv for the agent's bash tool, optionally bwrap-isolated.
 
@@ -25442,22 +25853,39 @@ def _bash_isolation_argv(
     (bypass) run there proceeds and says so in the security panel.
     ``extra_write`` names directories a caller needs writable besides the
     workspace roots (the test runner's report directory).
+
+    ``caged_unasked``: the gate admitted this command without a question
+    because the cage holds it (``_caged_command_may_run_unasked``). It
+    then runs only under bubblewrap -- any other decision now refuses it
+    -- with ``_caged_readonly_paths`` bound read-only and without the
+    SLURM controller route.
     """
     plain = ["/bin/bash", "-c", cmd]
     _announce_child_network()
-    if mode is None and _BASH_ISOLATION_OVERRIDE:
-        # Set once per process by `delfin-agent --isolate`. It comes before
-        # the settings file on purpose: a session-scoped choice must not
-        # have to write a setting that outlives the session making it.
-        mode = _BASH_ISOLATION_OVERRIDE
-    if mode is None:
-        try:
-            from delfin.user_settings import load_settings
-            mode = str(((load_settings() or {}).get("agent") or {})
-                       .get("bash_isolation", "auto") or "auto")
-        except Exception:
-            mode = "auto"
-    mode = mode.strip().lower()
+    # The --isolate override (set once per process by `delfin-agent
+    # --isolate`) comes before the settings file on purpose: a
+    # session-scoped choice must not have to write a setting that outlives
+    # the session making it. Resolved in _bash_isolation_decision.
+    kind, mode = _bash_isolation_decision(perms, mode)
+    if mode == "container":
+        # A container where one can run (container_exec); otherwise the
+        # layers "auto" picks, with a recorded notice -- never a plain shell.
+        # Never for a caged_unasked command: that admission was made for
+        # the bubblewrap cage, which the container is not.
+        boxed = None
+        if not caged_unasked:
+            try:
+                from . import container_exec as _ce
+                boxed = _ce.session_argv(cmd, run_cwd, perms, extra_write)
+            except Exception:
+                boxed = None
+        if boxed:
+            return boxed
+        kind, mode = _bash_isolation_decision(perms, "auto")
+    if caged_unasked and (kind != "bwrap" or not _landlock_functional()):
+        return _refusal_argv(
+            "this command was admitted without a question because the "
+            "filesystem cage holds it, and the cage is no longer available")
     # "auto" (default): hard-isolate ONLY in the unattended/permissive
     # permission mode (bypassPermissions) where no human approves each
     # command — that's where containment matters most. Interactive modes keep
@@ -25471,12 +25899,12 @@ def _bash_isolation_argv(
     # instead of relying on that parsing — the promise is only worth
     # what the weakest path enforces.
     if getattr(perms, "scope_locked", False):
-        if _bwrap_functional():
+        if kind == "bwrap":
             mode = "bwrap"
-        elif _landlock_functional():
+        elif kind == "landlock":
             _announce_isolation_via_landlock("locked session")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
-        elif _seatbelt_functional():
+        elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         else:
             # Say it. A locked scope promises the agent cannot leave one
@@ -25505,15 +25933,15 @@ def _bash_isolation_argv(
         # which is exactly the argument the locked branch above already
         # makes. It does not stop being true because somebody is watching.
         perm_mode = str(getattr(perms, "mode", "") or "").strip()
-        if _bwrap_functional():
+        if kind == "bwrap":
             mode = "bwrap"
             _announce_auto_isolation()
-        elif _landlock_functional():
+        elif kind == "landlock":
             _announce_isolation_via_landlock(
                 "unattended (bypass) run"
                 if perm_mode == "bypassPermissions" else "attended session")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
-        elif _seatbelt_functional():
+        elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
@@ -25526,18 +25954,18 @@ def _bash_isolation_argv(
             # what tells the user which of the two they have. Its network
             # is still held where the socket guard works.
             return _in_process_cage(_network_only(plain, perms), run_cwd)
-    if mode == "bwrap" and not shutil.which("bwrap"):
+    if mode == "bwrap" and kind != "bwrap":
         # Isolation was asked for by name. Landlock gives the same promise;
         # without it the command is refused rather than run without.
-        if _landlock_functional():
+        if kind == "landlock":
             _announce_isolation_via_landlock("forced isolation")
             return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
-        if _seatbelt_functional():
+        if kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         return _refusal_argv(
             "filesystem isolation is switched on, and neither bubblewrap "
             "nor Landlock nor Seatbelt can provide it on this host")
-    if mode != "bwrap":
+    if kind != "bwrap":
         return _in_process_cage(plain, run_cwd)
 
     try:
@@ -25587,6 +26015,12 @@ def _bash_isolation_argv(
     # command: existing hooks stay readable, new ones cannot be written.
     for g in git_roots:
         args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+    if caged_unasked:
+        # Nobody saw this command. The files whose write is asked about in
+        # every mode (git metadata, CI and workspace configuration, the
+        # agent's own source and settings, calc) are read-only for it.
+        for p in _caged_readonly_paths(perms):
+            args += ["--ro-bind-try", p, p]
     # Where approvals are answered stays read-only inside a writable root
     # (a granted ~/.delfin): a command that builds the answer path at run
     # time is held by the mount, not by reading its text. A room outside
@@ -25610,10 +26044,17 @@ def _bash_isolation_argv(
     try:
         from . import landlock_exec as _ll
         from . import socket_guard as _sg
-        net_args, proxy_dir = _sandbox_network_args(perms)
+        # A caged_unasked command: no SLURM or other direct endpoint, and
+        # never an open network (_sandbox_network_args, allow_slurm=False).
+        net_args, proxy_dir = _sandbox_network_args(
+            perms, allow_slurm=not caged_unasked)
+        if caged_unasked and net_args[1] == "open":
+            raise RuntimeError("a caged_unasked command got an open network")
         guard = _sg.available()
-        if guard or net_args[1] != "open":
+        if guard or caged_unasked or net_args[1] != "open":
             if not guard:
+                # A network namespace of its own holds it; the helper's
+                # forwarder inside leads to the proxy (none: no way out).
                 args += ["--unshare-net"]
                 net_args = net_args + ["--guard", "0", "--netns", "1"]
             if proxy_dir:
@@ -25626,12 +26067,40 @@ def _bash_isolation_argv(
                            str(Path(sys.prefix).resolve())}:
                 if needed.startswith("/tmp/") or needed == "/tmp":
                     args += ["--ro-bind", needed, needed]
+            if caged_unasked:
+                # Reads confined too (Landlock inside the namespace): the
+                # workspace roots and the paths a program needs, nothing
+                # of other users or of the rest of the home directory.
+                fs_part = []
+                for r in roots + [str(Path(p).resolve()) for p in extra_write] \
+                        + ["/tmp"]:
+                    fs_part += ["--write", r]
+                for h in _home_secret_paths():
+                    # The cage's /tmp is a fresh tmpfs: a host path under it
+                    # is not there unless a root brings it in. Naming it
+                    # anyway would make Landlock grant /tmp entry by entry,
+                    # and nothing created in /tmp later would be writable.
+                    if (h.startswith("/tmp/") and not any(
+                            h == r or h.startswith(r.rstrip("/") + "/")
+                            for r in roots)):
+                        continue
+                    fs_part += ["--hide", h]
+                for p in _caged_readonly_paths(perms):
+                    fs_part += ["--read-only", p]
+                for p in _caged_read_paths(perms):
+                    fs_part += ["--read", p]
+            else:
+                fs_part = ["--fs", "0"]
             inner = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                     "--fs", "0", *net_args, "--strict", "1"]
+                     *fs_part, *net_args, "--strict", "1"]
             for r in roots + [str(Path(p).resolve()) for p in extra_write] + ["/tmp"]:
                 inner += ["--allow-socket", r]
             return args + inner + ["--"] + plain
     except Exception:
+        if caged_unasked:
+            return _refusal_argv(
+                "the read confinement for a command run without a question "
+                "could not be built")
         args += ["--unshare-net"]
     return args + plain
 

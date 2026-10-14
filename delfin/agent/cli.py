@@ -35,6 +35,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -297,17 +298,45 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     live there.  It is PASSED to the engine only when given: a stub
     engine with a fixed ``stream_response`` signature (the scheduler
     and benchmark test doubles) must keep working, and the return
-    contract stays exactly the five keys the JSON tests pin -- the
-    benchmark runner collects results through this callback instead
-    of a sixth key.
+    contract stays the keys of ``repl.TURN_KEYS`` -- the benchmark
+    runner collects results through this callback instead of a key of
+    its own.
 
     ``on_permission_denied`` (optional) receives ``(tool_name)`` each
-    time the harness refused a call -- same forward-only pattern, so
-    the benchmark can count interventions without a sixth key.
+    time the backend refused a call -- same forward-only pattern, so
+    the benchmark can count interventions without a key of its own.
+
+    The gate's own decisions are collected by a ``turn_outcome``
+    observer for the length of the call: they become
+    ``permission_request`` / ``permission_denied`` events on ``emit``
+    and the ``schema_version`` / ``stop_reason`` / ``denials`` /
+    ``files_changed`` keys of the result.
     """
+    from . import turn_outcome
+
     chunks: list[str] = []
     tool_calls: list[dict] = []
     error = ""
+
+    if emit is not None:
+        # Gate decisions arrive on whichever thread runs the tool; one
+        # line must not be written into the middle of another.
+        _emit_lock = threading.Lock()
+        _raw_emit = emit
+
+        def emit(event: dict) -> None:  # noqa: F811 - the locked wrapper
+            with _emit_lock:
+                _raw_emit(event)
+
+    def _mode() -> str:
+        perms = getattr(engine, "kit_permissions", None)
+        return str(getattr(perms, "mode", "") or "")
+
+    observer = turn_outcome.TurnObserver(
+        emit=emit, mode=_mode,
+        workspace=(getattr(getattr(engine, "kit_permissions", None),
+                           "workspace", None)
+                   or getattr(engine, "repo_dir", None)))
 
     def _forward_tool_result(name: str, output: str) -> None:
         if on_tool_result is not None:
@@ -347,8 +376,16 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
+        observer.saw_tool_use(name)
         if emit is not None:
             emit({"type": "tool_use", "name": name, "input": inp})
+
+    def _on_backend_denied(name: str) -> None:
+        # The CLI backend's gate reports a refusal with a tool name and
+        # no category, so it gets the one code that says exactly that.
+        turn_outcome.denied(name, "backend_denied", "")
+        if on_permission_denied is not None:
+            on_permission_denied(name)
 
     in_before = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_before = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -394,13 +431,25 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         kwargs["on_wait"] = _on_wait
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
-    if on_permission_denied is not None:
-        kwargs["on_permission_denied"] = on_permission_denied
+    # The same probe once more: the backend's refusals are wanted for the
+    # result even when no caller asked for them, but only an engine that
+    # takes the keyword may be handed it.
     try:
-        full_text = engine.stream_response(**kwargs) or ""
-    except Exception as exc:
-        error = str(exc)
-        full_text = ""
+        import inspect as _inspect3
+        _sig3 = _inspect3.signature(engine.stream_response)
+        _takes_denied = ("on_permission_denied" in _sig3.parameters or any(
+            prm.kind is _inspect3.Parameter.VAR_KEYWORD
+            for prm in _sig3.parameters.values()))
+    except (TypeError, ValueError):
+        _takes_denied = True
+    if on_permission_denied is not None or _takes_denied:
+        kwargs["on_permission_denied"] = _on_backend_denied
+    with observer:
+        try:
+            full_text = engine.stream_response(**kwargs) or ""
+        except Exception as exc:
+            error = str(exc)
+            full_text = ""
 
     in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -411,6 +460,10 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,
+        **observer.summary(
+            error=error,
+            engine_stop_reason=str(
+                getattr(engine, "last_turn_stop_reason", "") or "")),
     }
 
 
@@ -525,7 +578,9 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         print(_note, file=sys.stderr)
     if prepare is None:
         _resume_or_create(engine, args)
+        _bind_supervised_approvals(engine, args)
     elif not prepare(engine):
+        # chat -p: the shared set-up binds --supervised (_bind_supervised).
         return 2
     import time as _time
     _t0 = _time.monotonic()
@@ -644,6 +699,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         "eval loop",
         lambda: _eval_stage())
 
+    from .repl import TURN_KEYS
     if stream_json:
         # The last line closes the stream and carries the same payload the
         # one-object format prints, so a reader that only wants the answer
@@ -651,12 +707,14 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         # TURN_KEYS rather than from a second list here: that frozenset is
         # what `_run_once` returns and therefore what both formats promise,
         # and two hand-kept lists would drift into two shapes of one answer.
-        from .repl import TURN_KEYS
         _json_line({"type": "result",
                     **{k: out.get(k) for k in sorted(TURN_KEYS)},
                     "session_id": sid})
     elif args.json:
-        payload = {**out, "session_id": sid}
+        # The same key list as the stream's last line, so the two formats
+        # are one object with and without its "type".
+        payload = {**{k: out.get(k) for k in sorted(TURN_KEYS)},
+                   "session_id": sid}
         print(json.dumps(payload, ensure_ascii=False))
     else:
         if out["text"]:
@@ -669,7 +727,29 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
                 f"{out['output_tokens']}  tools={len(out['tool_calls'])}",
                 file=sys.stderr,
             )
-    return 0 if not out["error"] else 1
+    # One exit code per stop reason (turn_outcome.EXIT_CODES): 0 and 1
+    # keep their meaning for a clean turn and an error; the ceilings and a
+    # turn that ended on a refusal used to exit 0 and now say which.
+    # A result without a stop reason (an injected _run_once) keeps the
+    # old two-way answer.
+    from .turn_outcome import EXIT_CODES
+    reason = out.get("stop_reason") or ("error" if out["error"] else "done")
+    return EXIT_CODES.get(reason, 1)
+
+
+def _bind_supervised_approvals(engine, args: argparse.Namespace) -> bool:
+    """``--supervised`` on a one-shot run: questions go to the approvals
+    directory. True when a broker was bound.
+
+    Without the flag nothing is bound and a call that needs a human is
+    refused, which is what the scheduler and the benchmark rely on. With
+    it the run asks through ``file_confirm.FileConfirmBroker``, whose
+    request id the stream-json ``permission_request`` event carries.
+    Lives outside ``cmd_run`` so that function binds no dialog of its own.
+    """
+    if not getattr(args, "supervised", False):
+        return False
+    return _bind_supervised(engine, args)
 
 
 def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
@@ -2463,12 +2543,15 @@ def cmd_bug(args: argparse.Namespace) -> int:
 
 
 def cmd_credentials(args: argparse.Namespace) -> int:
-    """Manage credentials in ~/.delfin/credentials.json (chmod 0600).
+    """Manage API keys: the OS keyring or ~/.delfin/credentials.json (0600).
 
-    No subcommand here echoes a stored value — `list` masks every key
-    so the user can verify WHICH credentials are stored without exposing
-    them.  Input is read via getpass so the value is never visible on
-    screen and never lands in shell history.
+    Where `set` writes is agent.credentials.store (auto|keyring|file).
+    No subcommand here echoes a stored value — `list` masks every key and
+    names its store, so the user can verify WHICH credentials are stored
+    without exposing them. `migrate` moves file entries into the keyring
+    and removes each from the file only after an equal read-back. Input is
+    read via getpass so the value is never visible on screen and never
+    lands in shell history.
     """
     import getpass
     from . import credentials as _cred
@@ -2484,14 +2567,43 @@ def cmd_credentials(args: argparse.Namespace) -> int:
                   "KIT_TOOLBOX_API_KEY")
             print("Other well-known names: OPENAI_API_KEY, ANTHROPIC_API_KEY")
             return 0
-        print(f"Credentials (file: {_cred.credentials_path()})")
+        mode = _cred.configured_store()
+        status = _cred.keyring_status() if mode != "file" else None
+        if status is None:
+            kr = "not used (agent.credentials.store = file)"
+        elif status["usable"]:
+            kr = status["backend"]
+        else:
+            kr = f"unavailable: {status['reason']}"
+        print(f"Credentials (store setting: {mode})")
+        print(f"  file:    {_cred.credentials_path()}")
+        print(f"  keyring: {kr}")
         print()
         for name in sorted(items):
             info = items[name]
             src = info.get("source", "?")
-            tag = "[env]" if src == "env" else "[file]"
-            print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}")
+            tag = f"[{src}]"
+            extra = [s for s in info.get("stores") or [] if s != src]
+            also = f"  (also in: {', '.join(extra)})" if extra else ""
+            print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}{also}")
         return 0
+
+    if action == "migrate":
+        names = list(getattr(args, "names", None) or [])
+        try:
+            rows = _cred.migrate_to_keyring(names)
+        except _cred.CredentialStoreUnavailable as exc:
+            print(f"Nothing moved: {exc}", file=sys.stderr)
+            return 1
+        if not rows:
+            print("No file entries to move.")
+            return 0
+        bad = 0
+        for row in rows:
+            reason = f" ({row['reason']})" if row.get("reason") else ""
+            print(f"  {row['name']:<28}  {row['action']}{reason}")
+            bad += row["action"] in ("failed", "differs")
+        return 1 if bad else 0
 
     name = (getattr(args, "name", "") or "").strip()
     if not name:
@@ -2499,7 +2611,12 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         return 2
 
     if action == "delete":
-        if _cred.delete_credential(name):
+        try:
+            removed = _cred.delete_credential(name)
+        except _cred.CredentialStoreUnavailable as exc:
+            print(f"{name} is still in the keyring: {exc}", file=sys.stderr)
+            return 1
+        if removed:
             print(f"Removed {name}.")
             return 0
         print(f"No credential named {name}.", file=sys.stderr)
@@ -2518,12 +2635,17 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             return 1
         try:
             ok = _cred.set_credential(name, value)
-        except _cred.CredentialStoreNotPrivate as exc:
+        except (_cred.CredentialStoreNotPrivate,
+                _cred.CredentialStoreUnavailable) as exc:
             print(f"Not stored: {exc}", file=sys.stderr)
             return 1
         if ok:
             print(f"Stored {name} = {_cred.mask(value)} "
-                  f"in {_cred.credentials_path()} (chmod 0600)")
+                  f"in {_cred.describe_store(name)}")
+            if _cred.stored_in(name) == ["keyring", "file"]:
+                print(f"An older copy of {name} is still in "
+                      f"{_cred.credentials_path()}; `delfin-agent credentials "
+                      "migrate` or `delete` removes it.")
         else:
             print(f"{name} already stored with this value (no change).")
         return 0
@@ -4133,13 +4255,21 @@ def build_parser() -> argparse.ArgumentParser:
     # credentials — secure key management
     cred = sub.add_parser(
         "credentials",
-        help=("Manage API keys in ~/.delfin/credentials.json (chmod 0600); "
-              "no stored value is ever echoed back"),
+        help=("Manage API keys in the OS keyring or ~/.delfin/credentials.json "
+              "(0600); no stored value is ever echoed back"),
     )
     cred_sub = cred.add_subparsers(dest="cred_action", required=False)
 
-    cred_ls = cred_sub.add_parser("list", help="List stored credentials (masked)")
+    cred_ls = cred_sub.add_parser(
+        "list", help="List stored credentials (masked) and their store")
     cred_ls.set_defaults(cred_action="list")
+
+    cred_mig = cred_sub.add_parser(
+        "migrate",
+        help=("Move file entries into the OS keyring; each leaves the file "
+              "only after an equal read-back"))
+    cred_mig.add_argument("names", nargs="*",
+                          help="Credential names (default: every file entry)")
 
     cred_set = cred_sub.add_parser(
         "set", help="Store a credential (value read via getpass, no echo)",

@@ -2902,6 +2902,12 @@ class AgentEngine:
                     "hard_stop",
                     "Run stopped: budget ceiling reached",
                     _msg)
+                # The setting that stopped it, as the turn's stop reason
+                # (run_budget_usd / run_budget_s / run_budget_turns). Set
+                # here because this return precedes the per-turn reset
+                # below, so the previous turn's reason would stand.
+                self.last_turn_stop_reason = (
+                    (_bdim or "agent.run_budget_usd").rsplit(".", 1)[-1])
                 _notice(_msg)
                 return _msg
         except Exception:

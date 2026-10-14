@@ -106,6 +106,15 @@ class FileConfirmBroker:
         except OSError:
             # No way to ask is not permission to act.
             return False
+        # The question exists now, under this id: the moment a headless
+        # run's stream-json reader is told a human is being asked.
+        try:
+            from . import turn_outcome
+            turn_outcome.requested(request_id=request_id, tool=tool_name,
+                                   args=args, preview=preview,
+                                   approvals_dir=True)
+        except Exception:
+            pass
         answer = self._wait_for(request_id, path)
         if answer is None:
             self.last_timed_out = True
