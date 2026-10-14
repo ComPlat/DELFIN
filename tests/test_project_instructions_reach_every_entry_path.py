@@ -1,14 +1,13 @@
 """AGENTS.md, CONTRIBUTING.md and CLAUDE.md reach every entry path once.
 
-Input: a workspace with the three files and an engine (or a bare prompt
-loader) rooted in it. Output: the built system prompt.
+Input: a workspace with the three files and a real api/kit engine rooted
+in it (no request sent). Output: what ``turn_context`` -- the one turn
+composition the terminal session, ``-p``/run and the dashboard share --
+puts into the system prompt, and what a sub-agent inherits.
 
-Before: the instruction-file loader had two callers, the dashboard turn
-and the sub-agent spawn. The terminal CLI and ``-p`` runs -- which build
-their prompt through ``AgentEngine._build_current_system_prompt`` --
-never read AGENTS.md, although ``delfin-agent init`` writes one.
-CONTRIBUTING.md and CLAUDE.md were read by nobody. Measured with the
-foreign-repo probe: the agentsrepo prompt held none of its AGENTS.md.
+Before: CONTRIBUTING.md and CLAUDE.md were read by nobody, so a
+repository's branch, sign-off and test conventions never reached the
+model; the instruction loader read a file whole whatever its size.
 """
 from __future__ import annotations
 
@@ -31,48 +30,41 @@ def _ws(tmp_path: Path) -> Path:
     return ws
 
 
-def _engine(ws: Path, mode: str = "solo"):
+def _engine(ws: Path):
     from delfin.agent.engine import AgentEngine
     eng = AgentEngine(repo_dir=ws, backend="api", provider="kit",
-                      api_key="stub-key", model="kit.glm-5.3", mode=mode,
+                      api_key="stub-key", model="kit.glm-5.3", mode="solo",
                       permission_mode="default")
     eng.messages = [{"role": "user", "content": "fix the failing test"}]
     return eng
 
 
-def test_the_terminal_engine_prompt_carries_all_three(tmp_path):
-    prompt = _engine(_ws(tmp_path))._build_current_system_prompt(
-        task_text="fix the failing test")
+def _turn_prompt(eng) -> str:
+    from delfin.agent import turn_context
+    memory = turn_context.memory_context(eng, "fix the failing test")
+    return eng._build_current_system_prompt(
+        memory_context=memory, task_text="fix the failing test")
+
+
+def test_the_terminal_turn_carries_all_three_once(tmp_path):
+    prompt = _turn_prompt(_engine(_ws(tmp_path)))
     for rule in (AGENTS, CONTRIB, OTHER):
         assert prompt.count(rule) == 1, rule
 
 
 def test_they_arrive_fenced(tmp_path):
-    prompt = _engine(_ws(tmp_path))._build_current_system_prompt(
-        task_text="fix the failing test")
-    start = prompt.index("UNTRUSTED EXTERNAL CONTENT — repository text")
-    inner = untrusted.unwrap(prompt[start - 1:])
+    prompt = _turn_prompt(_engine(_ws(tmp_path)))
+    start = prompt.index("[UNTRUSTED EXTERNAL CONTENT — repository text")
+    inner = untrusted.unwrap(prompt[start:])
     for rule in (AGENTS, CONTRIB, OTHER):
         assert rule in inner
 
 
-def test_the_section_is_byte_stable(tmp_path):
+def test_the_block_is_byte_stable_between_turns(tmp_path):
+    from delfin.agent import turn_context
     eng = _engine(_ws(tmp_path))
-    a = eng._build_current_system_prompt(task_text="fix the failing test")
-    b = eng._build_current_system_prompt(task_text="fix the failing test")
-    block = a[a.index("--- Project Instructions ---"):]
-    block = block[:block.index("[END UNTRUSTED EXTERNAL CONTENT")]
-    assert block in b
-
-
-def test_a_pipeline_role_gets_them_too(tmp_path):
-    from delfin.agent.prompt_loader import PromptLoader
-    loader = PromptLoader()
-    loader.workspace_root = _ws(tmp_path)
-    loader.is_delfin_workspace = False
-    prompt = loader.build_system_prompt(
-        role_id="builder_agent", mode_id="solo", task_text="fix it")
-    assert AGENTS in prompt and CONTRIB in prompt
+    assert (turn_context.project_instructions(eng)
+            == turn_context.project_instructions(eng))
 
 
 def test_contributing_is_capped(tmp_path):
@@ -101,6 +93,16 @@ def test_contributing_and_claude_md_are_read_from_the_workspace_only(
     assert CONTRIB not in out and OTHER not in out
 
 
+def test_a_file_linking_out_of_the_workspace_is_not_read(tmp_path):
+    from delfin.agent.project_memory import load_project_memory
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    secret = tmp_path / "key.txt"
+    secret.write_text("PRIVATE-KEY-MATERIAL", encoding="utf-8")
+    (ws / "AGENTS.md").symlink_to(secret)
+    assert "PRIVATE-KEY-MATERIAL" not in load_project_memory(ws)
+
+
 def test_the_sub_agent_inherits_contributing_too(tmp_path):
     from delfin.agent.subagents import _inherited_context
     text = _inherited_context(_ws(tmp_path), "do the task")
@@ -108,8 +110,8 @@ def test_the_sub_agent_inherits_contributing_too(tmp_path):
 
 
 def test_one_loader_two_callers():
-    """The dashboard turn no longer loads the files itself: the engine's
-    prompt does, so a dashboard prompt does not carry them twice."""
+    """turn_context for the three entry paths, the sub-agent spawn for a
+    child; nothing else reads the files on its own."""
     root = pathlib.Path(__file__).resolve().parents[1]
     callers = set()
     for path in sorted(root.joinpath("delfin").rglob("*.py")):
@@ -117,12 +119,5 @@ def test_one_loader_two_callers():
         if "load_project_memory(" in text:
             callers.add(str(path.relative_to(root)))
     assert callers == {"delfin/agent/project_memory.py",
-                       "delfin/agent/prompt_loader.py",
+                       "delfin/agent/turn_context.py",
                        "delfin/agent/subagents.py"}, sorted(callers)
-
-
-def test_no_workspace_no_section():
-    """A loader nobody rooted in a workspace reads nothing (the budget
-    tests build exactly that)."""
-    from delfin.agent.prompt_loader import PromptLoader
-    assert PromptLoader()._load_project_instructions() == ""
