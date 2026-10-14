@@ -4955,6 +4955,15 @@ def _reviewed_source_named_like_a_secret(perms: Any, resolved: Path, rel: str) -
     (not .env, *.key, .ssh, ...); the file is Python source; git tracks it
     and it is unmodified (``_is_reviewed_project_file``, fails closed). Its
     contents are then in the repository history anyway.
+
+    Or, instead of unmodified: every change since HEAD is this session's
+    own (``_session_owned_source``). The session then wrote what differs
+    from the history, so reading, diffing, staging or restoring it shows
+    the model nothing it did not already hold. The exception used to end
+    the moment the agent edited the module it was working on: `git diff`,
+    `git checkout` and `git reset` of delfin/agent/credentials.py were
+    refused mid-edit (bug archive, 3 calls, then 4 more reworking around
+    it).
     """
     try:
         import fnmatch as _fn
@@ -4965,7 +4974,215 @@ def _reviewed_source_named_like_a_secret(perms: Any, resolved: Path, rel: str) -
                 for sp in spellings if _fn.fnmatchcase(sp.lower(), g.lower())}
         if not hits or not hits <= _NAME_ONLY_SECRET_GLOBS:
             return False
-        return bool(_DocToolExecutor._is_reviewed_project_file(Path(resolved)))
+        return bool(_DocToolExecutor._is_reviewed_project_file(Path(resolved))
+                    or _session_owned_source(perms, Path(resolved)))
+    except Exception:
+        return False
+
+
+def _session_journal_by_path(perms: Any) -> dict:
+    """{realpath: [records, oldest first]} of this session's change
+    journal. {} without a session id or on any error."""
+    try:
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        if not sid:
+            return {}
+        from . import change_journal as _cj
+        out: dict = {}
+        for rec in _cj.list_changes(sid) or []:
+            p = rec.get("path")
+            if p:
+                out.setdefault(os.path.realpath(str(p)), []).append(rec)
+        for recs in out.values():
+            recs.sort(key=lambda r: int(r.get("seq", 0) or 0))
+        return out
+    except Exception:
+        return {}
+
+
+#: The deny patterns that refuse a recursive forced delete (the first two
+#: of _DEFAULT_BASH_DENY_PATTERNS, flags together and apart).
+_RM_RF_PATTERNS = frozenset(_DEFAULT_BASH_DENY_PATTERNS[:2])
+
+#: Entries a scratch-ownership walk may visit before it answers "not own".
+_OWN_SCRATCH_WALK_BUDGET = 5000
+
+
+def _rm_rf_flags(words: list) -> tuple:
+    """(recursive, force, targets) of an ``rm`` word list."""
+    rec = force = False
+    targets: list = []
+    opts = True
+    for w in words[1:]:
+        if opts and w == "--":
+            opts = False
+            continue
+        if opts and w.startswith("--"):
+            rec = rec or w == "--recursive"
+            force = force or w == "--force"
+            continue
+        if opts and w.startswith("-") and len(w) > 1:
+            rec = rec or "r" in w or "R" in w
+            force = force or "f" in w
+            continue
+        targets.append(w)
+    return rec, force, targets
+
+
+def _own_scratch_target(perms: Any, target: str, cwd: Path, journal: dict,
+                        made_here: set) -> bool:
+    """Whether ``rm -rf target`` deletes only what this session made.
+
+    True for a path strictly inside the workspace, named literally (no
+    glob, variable, ~ or substitution), not a symlink anywhere on its way,
+    not tracked by git, and either (a) absent now but created by a
+    ``mkdir`` earlier in the same command (``made_here``), or (b) a file,
+    or a directory all of whose files, whose oldest journal record of this
+    session says the session created it. An empty directory holds nothing
+    and qualifies. Fails closed."""
+    try:
+        if not target or any(c in target for c in "*?[]{}$~`\\"):
+            return False
+        ws = Path(perms.workspace).resolve()
+        raw = Path(target)
+        lexical = Path(os.path.normpath(str(raw if raw.is_absolute() else cwd / raw)))
+        if os.path.islink(str(lexical)) or target.endswith("/") and os.path.islink(
+                str(lexical).rstrip("/")):
+            return False
+        parent = Path(os.path.realpath(str(lexical.parent)))
+        full = parent / lexical.name
+        if full == ws or not full.is_relative_to(ws) or os.path.islink(str(full)):
+            return False
+        if not os.path.lexists(str(full)):
+            return str(full) in made_here
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        tracked = subprocess.run(
+            ["git", "-C", str(ws), "ls-files", "--", str(full)],
+            capture_output=True, text=True, timeout=5, env=env)
+        if tracked.returncode == 0 and tracked.stdout.strip():
+            return False
+
+        def _created(path: str) -> bool:
+            recs = journal.get(os.path.realpath(path))
+            return bool(recs) and bool(recs[0].get("created"))
+
+        if full.is_file():
+            return _created(str(full))
+        seen = 0
+        for root, dirs, files in os.walk(str(full), followlinks=False):
+            seen += len(dirs) + len(files)
+            if seen > _OWN_SCRATCH_WALK_BUDGET:
+                return False
+            for name in files:
+                p = os.path.join(root, name)
+                if os.path.islink(p):
+                    continue        # rm removes the link, not its target
+                if not _created(p):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
+def _own_scratch_rm_rest(cmd: str, perms: Any, cwd) -> Optional[str]:
+    """The command with its ``rm -rf`` of the session's own scratch taken
+    out, or None when any recursive forced delete in it is not that.
+
+    Input: a shell command the rm deny pattern matched. Output: the rest
+    of the command (operators kept, redirections dropped, words
+    re-quoted), which the caller runs through the deny list again, so a
+    second destructive pattern in the same line still refuses it. None
+    as well when a ``cd`` precedes the delete (the target's directory is
+    then not known from the text) or when another part of the command
+    names the target outside an assignment (``mv data d/ && rm -rf d``
+    moves foreign files into it first).
+
+    Bug archive 2026-09-16..10-14: 11 rm-deny refusals in 7 sessions,
+    mostly scratch the session had just made (`mkdir -p .tmpdir && ...;
+    rm -rf .tmpdir`, `bench_trial/`)."""
+    try:
+        from . import long_runs as _lr
+        segs = _lr._segments(cmd)
+        base = Path(cwd).resolve()
+        journal = _session_journal_by_path(perms)
+        made_here: set = set()
+        kept: list = []
+        removed_targets: list = []
+        seen_cd = False
+        for seg in segs:
+            if len(seg) == 1 and seg[0] in _lr._OPERATORS:
+                kept.append(seg[0])
+                continue
+            words = _lr._strip_words(seg)
+            head = words[0] if words else ""
+            if head in ("cd", "pushd", "popd"):
+                seen_cd = True
+            if head == "mkdir":
+                for w in words[1:]:
+                    if not w.startswith("-"):
+                        made_here.add(os.path.normpath(str(base / w))
+                                      if not os.path.isabs(w) else os.path.normpath(w))
+            if head == "rm":
+                rec, force, targets = _rm_rf_flags(words)
+                if rec and force:
+                    if seen_cd or not targets:
+                        return None
+                    if not all(_own_scratch_target(perms, t, base, journal,
+                                                   made_here)
+                               for t in targets):
+                        return None
+                    removed_targets.extend(targets)
+                    continue
+            kept.append(shlex.join(seg))
+        if not removed_targets:
+            return None
+        # Nothing else may name the target, except a mkdir of it and a
+        # NAME=value assignment (TMPDIR=$PWD/.tmpdir): a mv or cp into it
+        # would make foreign files the session's to delete.
+        names = {Path(t.rstrip("/")).name for t in removed_targets}
+        for part in kept:
+            if part in _lr._OPERATORS:
+                continue
+            words = _lr._strip_words(shlex.split(part))
+            if words and words[0] == "mkdir":
+                continue
+            for tok in words:
+                if any(re.search(r"(?:^|/)" + re.escape(n) + r"(?:/|$)", tok)
+                       for n in names):
+                    return None
+        return " ".join(kept)
+    except Exception:
+        return None
+
+
+def _session_owned_source(perms: Any, resolved: Path) -> bool:
+    """True when a git-tracked file differs from HEAD only by this
+    session's own journalled writes.
+
+    Input: the session's permissions and a resolved path. Holds when the
+    session's change journal has records for the path, the oldest one's
+    pre-image hashes to the HEAD blob (the session started from the
+    committed text, not from someone's uncommitted edit), and the file's
+    current bytes hash to the newest record's post-image (nothing wrote
+    it since). Fails closed: no session, no journal, no git, any error."""
+    try:
+        recs = _session_journal_by_path(perms).get(os.path.realpath(str(resolved)))
+        if not recs:
+            return False
+        first, last = recs[0], recs[-1]
+        if first.get("created") or first.get("truncated"):
+            return False
+        from . import change_journal as _cj
+        if _cj.sha256_file_bytes(Path(resolved)) != last.get("post_hash"):
+            return False
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        blob = subprocess.run(
+            ["git", "-C", str(Path(resolved).parent), "show",
+             f"HEAD:./{Path(resolved).name}"],
+            capture_output=True, timeout=5, env=env)
+        if blob.returncode != 0:
+            return False
+        return _cj.sha256_bytes(blob.stdout) == first.get("pre_hash")
     except Exception:
         return False
 
@@ -19928,6 +20145,18 @@ class _DocToolExecutor:
             # matched the words of a commit message refused work that
             # never ran anything.
             denied = perms.matches_bash_deny(_prose_blanked(cmd))
+            if denied in _RM_RF_PATTERNS:
+                # A recursive delete of scratch this session made is its
+                # own cleanup; the rest of the line is judged as before.
+                _rm_cwd = Path(perms.workspace)
+                if args.get("cwd"):
+                    _rm_cwd = _rm_cwd / str(args.get("cwd"))
+                _rest = _own_scratch_rm_rest(cmd, perms, _rm_cwd)
+                if _rest is not None:
+                    _record_security_event(
+                        "own_scratch_delete", "bash", cmd[:80], blocked=False)
+                    denied = (perms.matches_bash_deny(_prose_blanked(_rest))
+                              if _rest.strip() else None)
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")

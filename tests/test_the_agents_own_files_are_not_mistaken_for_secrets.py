@@ -74,12 +74,13 @@ def ws(tmp_path, monkeypatch):
 
 
 def _agent_edits(root, rel, new):
-    """An edit as the write tools journal it: pre-image, then the write."""
+    """An edit as the write tools journal it: the write, then the record
+    (record_change hashes the post-image from the file itself)."""
     p = root / rel
     old = p.read_text(encoding="utf-8")
+    p.write_text(new, encoding="utf-8")
     cj.record_change("sess-own", tool="edit_file", path=str(p.resolve()),
                      old_text=old, new_text=new)
-    p.write_text(new, encoding="utf-8")
 
 
 def _refused_as_secret(out):
@@ -137,9 +138,9 @@ def test_the_credential_stores_stay_refused(ws, cmd):
 def _agent_creates(root, rel, text="x\n"):
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
     cj.record_change("sess-own", tool="bash", path=str(p.resolve()),
                      old_text=None, new_text=text)
-    p.write_text(text, encoding="utf-8")
 
 
 def _refused_as_delete(out):
