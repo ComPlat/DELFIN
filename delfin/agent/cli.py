@@ -533,6 +533,12 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
             "model", str(getattr(getattr(engine, "client", None), "model", "")
                          or ""))
         estate.setdefault("provider", str(getattr(engine, "provider", "") or ""))
+        # The save guard compares this record with the stored one: a new
+        # record explains a shorter history. The dashboard passes it; this
+        # saver (terminal, -p/run, scheduler) did not, and restore_state
+        # reads it back so a resumed session compares against its own.
+        estate.setdefault("last_compaction_info",
+                          getattr(engine, "last_compaction_info", None))
         _ss.save_session(chat_messages=_display_messages(engine),
                          workspace=str(repo_root), **estate)
     except Exception as exc:

@@ -7684,6 +7684,12 @@ class AgentEngine:
         # from outside afterwards; the headless path did not, so a headless
         # resume filtered tasks on a throwaway id and saw zero open tasks.
         self._sync_task_session()
+        # The compaction record the session was saved with. The save guard
+        # treats a record that differs from the stored one as the
+        # explanation for a shorter history, so a resumed engine holding
+        # None against a stored record would let any shorter save pass.
+        _lci = data.get("last_compaction_info")
+        self.last_compaction_info = dict(_lci) if isinstance(_lci, dict) else None
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")

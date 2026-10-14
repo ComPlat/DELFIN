@@ -135,6 +135,8 @@ def test_the_markers_the_guard_reads_are_the_ones_the_compaction_writes():
     import inspect
     from delfin.agent import in_turn_compaction as itc
     assert ss._WORKING_STATE_HEADER == ws._HEADER
+    assert ss._WORKING_STATE_MAX_CHARS > ws._MAX_BLOCK_CHARS
+    assert ss._WORKING_STATE_MAX_CHARS < ws._MAX_BLOCK_CHARS + 64
     assert ss._IN_TURN_SUMMARY_MARKER == itc._SUMMARY_HEADER
     assert ss._SUMMARY_MARKER in inspect.getsource(
         AgentEngine._compact_history)

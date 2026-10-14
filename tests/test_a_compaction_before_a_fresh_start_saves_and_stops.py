@@ -155,7 +155,7 @@ def test_an_answered_compaction_is_saved_as_the_compacted_history(
     loaded = ss.load_session(SID)["engine_messages"]
 
     assert len(loaded) < len(before)
-    assert str(loaded[0]["content"]).startswith(ss._SUMMARY_PREFIX), (
+    assert str(loaded[0]["content"]).startswith(ss._SUMMARY_MARKER), (
         str(loaded[0]["content"])[:120])
     assert "cobalt" in loaded[0]["content"]
     assert loaded[-1]["content"] == "continuing the task"
@@ -191,7 +191,7 @@ def test_a_stop_after_a_compaction_keeps_the_compacted_history(home, tmp_path):
     assert engine.messages, "the stop emptied the engine"
     assert _contents(engine.messages) == _contents(compacted), (
         "the stop took back more (or less) than the turn's own row")
-    assert str(engine.messages[0]["content"]).startswith(ss._SUMMARY_PREFIX)
+    assert str(engine.messages[0]["content"]).startswith(ss._SUMMARY_MARKER)
     assert not getattr(engine, "start_fresh", False)
     # Nothing lost: the summarised rows are in the archive, the recent
     # ones are still in the engine.
@@ -236,7 +236,7 @@ def test_a_stop_after_a_compaction_that_did_not_fit_restores_the_compacted(
     engine.stream_response(user_message=msg)
 
     assert engine.messages, "the stop emptied the engine"
-    assert str(engine.messages[0]["content"]).startswith(ss._SUMMARY_PREFIX)
+    assert str(engine.messages[0]["content"]).startswith(ss._SUMMARY_MARKER)
     recent = before[-engine._KEEP_RECENT:]
     assert _contents(engine.messages[-len(recent):]) == _contents(recent)
     cut = _records("fresh_restart")[-1]["messages"]
