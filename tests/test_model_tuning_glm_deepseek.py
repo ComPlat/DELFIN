@@ -107,6 +107,144 @@ def test_glm_answers_are_left_as_they_are(settings):
     assert mp.MODEL_NOTES["concise_answers"] not in _solo_prompt(_GLM)
 
 
+def test_session_affinity_is_a_glm_knob(settings):
+    assert mp.get_profile(_GLM).session_affinity is True
+    assert mp.get_profile("kit.glm-5.3").session_affinity is True
+    assert mp.get_profile(_DEEPSEEK).session_affinity is False
+
+
+# --- session affinity: the request carries a stable opaque `user` -----------
+#
+# Archive: 408 of 2066 kit.glm-5.3 requests went cold (cached/input < 0.2)
+# with the system prompt and the turn prefix unchanged and under 300 s
+# since the previous request -- ~740 min of time to first token, the
+# largest single cost in the data. Same bytes, short gap, still cold fits
+# replica load-balancing without prefix affinity. The OpenAI `user` field
+# is what an OpenAI-compatible router can key a sticky route on; the KIT
+# endpoint accepts it (probed 2026-10-14 on kit.glm-5.3-flash and
+# kit.deepseek-v4-flash, HTTP 200). Whether it routes on it is what the
+# A/B measures.
+
+class _Delta:
+    def __init__(self, content=None):
+        self.content = content
+        self.tool_calls = None
+
+
+class _Choice:
+    def __init__(self, delta, finish=None):
+        self.delta = delta
+        self.finish_reason = finish
+
+
+class _Usage:
+    prompt_tokens = 5
+    completion_tokens = 3
+    prompt_tokens_details = None
+
+
+class _Chunk:
+    def __init__(self, choices, usage=None):
+        self.choices = choices
+        self.usage = usage
+
+
+class _Stream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __iter__(self):
+        return iter(self._chunks)
+
+    def close(self):
+        pass
+
+
+class _FakeRegistry:
+    def discover_all(self):
+        return []
+
+    def discover_resources(self):
+        return []
+
+    def discover_prompts(self):
+        return []
+
+
+@pytest.fixture
+def kit_client(monkeypatch, tmp_path, settings):
+    from delfin.agent import mcp_client as M
+    from delfin.agent import model_capabilities as mc
+    import delfin.agent.api_client as A
+
+    monkeypatch.setenv("KIT_TOOLBOX_API_KEY", "sk-test-not-a-key")
+    monkeypatch.setattr(M, "get_registry", lambda *a, **k: _FakeRegistry())
+    monkeypatch.setattr(A.time, "sleep", lambda *a, **k: None)
+
+    def _make(model: str, session: str = "trace-1234"):
+        caps = mc.ModelCapabilities(model=model, provider="kit",
+                                    context_window=131_072,
+                                    supports_tools=True)
+        monkeypatch.setattr(mc, "resolve", lambda *a, **k: caps)
+        client = A.create_client(backend="api", provider="kit", model=model,
+                                 cwd=str(tmp_path))
+        client.metrics_session = session
+        sent: list[dict] = []
+
+        def _create(**kwargs):
+            sent.append(kwargs)
+            return _Stream([_Chunk([_Choice(_Delta("ok"), finish="stop")],
+                                   usage=_Usage())])
+
+        client.client.chat.completions.create = _create
+        return client, sent
+
+    return _make
+
+
+def _turn(client):
+    return [ev for ev in client.stream_message(
+        "sys", [{"role": "user", "content": "hallo"}], max_tokens=100)]
+
+
+def test_glm_requests_carry_a_stable_opaque_user(kit_client):
+    client, sent = kit_client(_GLM, session="trace-1234")
+    _turn(client)
+    _turn(client)
+    users = [k.get("user") for k in sent]
+    assert len(users) == 2 and users[0] and users[0] == users[1]
+    assert users[0].startswith("delfin-")
+    # Opaque: the session key itself never leaves the machine.
+    assert "trace-1234" not in users[0] and "1234" not in users[0]
+
+
+def test_another_session_gets_another_route_key(kit_client):
+    a, sent_a = kit_client(_GLM, session="trace-a")
+    _turn(a)
+    b, sent_b = kit_client(_GLM, session="trace-b")
+    _turn(b)
+    assert sent_a[0]["user"] != sent_b[0]["user"]
+
+
+def test_deepseek_requests_are_unchanged(kit_client):
+    client, sent = kit_client(_DEEPSEEK)
+    _turn(client)
+    assert "user" not in sent[0]
+
+
+def test_session_affinity_switches_off(kit_client, settings):
+    settings({"kit.glm": {"session_affinity": False}})
+    client, sent = kit_client(_GLM)
+    _turn(client)
+    assert "user" not in sent[0]
+
+
+def test_no_session_key_sends_no_user(kit_client):
+    client, sent = kit_client(_GLM, session="")
+    _turn(client)
+    assert "user" not in sent[0]
+
+
 def test_each_note_switches_alone(settings):
     settings({"kit.deepseek": {"concise_answers": False}})
     text = _solo_prompt(_DEEPSEEK)
