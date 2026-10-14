@@ -15,6 +15,7 @@ against the real system; the real ``~/.delfin`` is never touched.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -100,21 +101,113 @@ def test_a_normal_persisted_default_is_still_inherited(provider, persisted,
     assert getattr(c._permissions, "mode", None) == persisted
 
 
-def test_the_scheduler_factory_does_not_inherit_bypass(home, ws, monkeypatch):
-    """The real unattended entry: scheduler_daemon builds its engine with no
-    permission_mode. Driven here through the same engine factory with a
-    persisted bypass default, the client the engine wraps is not in bypass."""
-    (home / ".delfin" / "settings.json").write_text(
-        json.dumps({"kit": {"default_mode": "bypassPermissions"},
-                    "agent": {"provider": "ollama", "backend": "api",
-                              "model": "m"}}))
+# The scheduler's own opt-in. After the fix above the persisted default no
+# longer reaches the scheduler, so it gets an explicit, user-only switch
+# mirroring `--permission-mode bypassPermissions --unattended`:
+# agent.scheduler.permission_mode + agent.scheduler.unattended in the user
+# settings file. The managed policy's disallowed_modes still wins.
+
+_AGENT = {"provider": "ollama", "backend": "api", "model": "m"}
+
+
+@pytest.fixture
+def scheduler(home, monkeypatch):
+    from delfin.agent import isolation_posture as IP
+    from delfin.agent import managed_policy as MP
     from delfin.agent import scheduler_daemon as SD
-    # No key resolution and no real endpoint: the factory only has to build
-    # the client whose mode we read.
+    # No key resolution and no real endpoint: the factory only builds the
+    # client whose mode is read.
     monkeypatch.setattr(SD._jm, "_resolve_provider_and_key",
                         lambda model, prov: ("ollama", "x"))
-    engine = SD._default_engine_factory(str(ws))
-    assert getattr(engine.client._permissions, "mode", None) == "default"
+    # The isolation start check is pinned to "isolated" so the mode tests
+    # do not depend on this host; its own test below unpins it.
+    monkeypatch.setattr(IP, "isolation_status",
+                        lambda perms=None: IP.IsolationStatus(True, layer="bwrap"))
+    monkeypatch.delenv(MP.ENV_VAR, raising=False)
+    monkeypatch.setattr(MP, "_PATHS_OVERRIDE", ())
+    MP.clear_cache()
+    yield SD
+    MP.clear_cache()
+
+
+def _scheduled_mode(SD, ws, settings):
+    engine = SD._default_engine_factory(str(ws), settings)
+    return getattr(engine.client._permissions, "mode", None)
+
+
+def test_the_scheduler_factory_does_not_inherit_bypass(home, ws, scheduler):
+    """The real unattended entry: a persisted kit.default_mode of bypass
+    and no scheduler opt-in -> default."""
+    (home / ".delfin" / "settings.json").write_text(
+        json.dumps({"kit": {"default_mode": "bypassPermissions"}}))
+    assert _scheduled_mode(scheduler, ws, {"agent": dict(_AGENT)}) == "default"
+
+
+def test_the_scheduler_opt_in_starts_a_scheduled_run_in_bypass(ws, scheduler):
+    settings = {"agent": dict(_AGENT, scheduler={
+        "permission_mode": "bypassPermissions", "unattended": True})}
+    assert _scheduled_mode(scheduler, ws, settings) == "bypassPermissions"
+
+
+def test_the_scheduler_opt_in_is_read_from_the_user_settings_file(
+        ws, scheduler):
+    """settings=None: the factory reads the user settings file itself."""
+    from delfin import user_settings as US
+    US.get_settings_path().write_text(json.dumps({"agent": dict(
+        _AGENT, scheduler={"permission_mode": "bypassPermissions",
+                           "unattended": True})}))
+    assert _scheduled_mode(scheduler, ws, None) == "bypassPermissions"
+
+
+@pytest.mark.parametrize("cfg", [
+    {"permission_mode": "bypassPermissions"},
+    {"permission_mode": "bypassPermissions", "unattended": False},
+    {"permission_mode": "bypassPermissions", "unattended": "yes"},
+    {"unattended": True},
+    {"permission_mode": "bypass", "unattended": True},
+    {},
+])
+def test_without_both_halves_of_the_opt_in_a_scheduled_run_is_default(
+        cfg, ws, scheduler):
+    settings = {"agent": dict(_AGENT, scheduler=cfg)}
+    assert _scheduled_mode(scheduler, ws, settings) == "default"
+
+
+@pytest.mark.parametrize("mode", ["plan", "acceptEdits"])
+def test_the_scheduler_honours_a_named_non_bypass_mode(mode, ws, scheduler):
+    settings = {"agent": dict(_AGENT, scheduler={"permission_mode": mode})}
+    assert _scheduled_mode(scheduler, ws, settings) == mode
+
+
+def test_a_managed_policy_disallowing_bypass_wins_over_the_opt_in(
+        tmp_path, ws, scheduler, monkeypatch):
+    from delfin.agent import managed_policy as MP
+    etc = tmp_path / "etc" / "delfin"
+    etc.mkdir(parents=True)
+    for d in (etc, etc.parent):
+        d.chmod(0o755)
+    policy = etc / "managed_policy.json"
+    policy.write_text(json.dumps({"disallowed_modes": ["bypassPermissions"]}))
+    policy.chmod(0o644)
+    monkeypatch.setattr(MP, "_PATHS_OVERRIDE", (str(policy),))
+    monkeypatch.setattr(MP, "_ADMIN_UIDS_OVERRIDE", frozenset({0, os.getuid()}))
+    MP.clear_cache()
+    settings = {"agent": dict(_AGENT, scheduler={
+        "permission_mode": "bypassPermissions", "unattended": True})}
+    assert _scheduled_mode(scheduler, ws, settings) == "default"
+
+
+def test_the_opt_in_is_lowered_where_nothing_isolates_a_command(
+        ws, scheduler, monkeypatch):
+    """The `delfin-agent run` start check: bypass with no isolation layer
+    and nobody to confirm it runs in default."""
+    from delfin.agent import isolation_posture as IP
+    monkeypatch.setattr(IP, "isolation_status", lambda perms=None:
+                        IP.IsolationStatus(False, reason="no layer here"))
+    monkeypatch.setattr(IP, "_BYPASS_CONFIRMED", False)
+    settings = {"agent": dict(_AGENT, scheduler={
+        "permission_mode": "bypassPermissions", "unattended": True})}
+    assert _scheduled_mode(scheduler, ws, settings) == "default"
 
 
 # ===========================================================================
