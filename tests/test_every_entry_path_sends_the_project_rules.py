@@ -105,7 +105,19 @@ def drive(monkeypatch, tmp_path):
                         lambda engine, root, **kw: "sid-1")
     real_build = agent_cli._build_engine
 
+    def _fresh_home() -> None:
+        # Each run starts from the same empty home at the same path: what
+        # one run's session end writes (outcome history, episodes) is read
+        # by the next run's briefing, and two runs compared must not see
+        # each other.
+        import shutil
+        shutil.rmtree(home)
+        ws.mkdir(parents=True)
+        (ws / "AGENTS.md").write_text(f"# Project rules\n\n{_RULE}\n")
+        monkeypatch.chdir(ws)
+
     def run(*, interactive: bool, prompt: str = "do the task") -> dict:
+        _fresh_home()
         requests: list[dict] = []
 
         def _create(**kwargs):
