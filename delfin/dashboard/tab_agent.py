@@ -17886,6 +17886,7 @@ def create_tab(ctx):
                            or str(getattr(engine, "repo_dir", "") or "")
                            or None),
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
+                surface="dashboard",
             )
             short = str(report_dir).replace(str(Path.home()), "~")
             # Ship it to the shared remote archive over SSH (same transfer

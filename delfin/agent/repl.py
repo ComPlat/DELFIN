@@ -1646,7 +1646,13 @@ class TerminalAgent:
         from . import repl_commands as rc
         return rc.ReplContext(
             engine=self.engine, workspace=self.opts.cwd,
-            session_id=str(getattr(self.engine, "session_id", "") or ""))
+            session_id=str(getattr(self.engine, "session_id", "") or ""),
+            ask=self._read_line, say=self._say_chrome)
+
+    def _say_chrome(self, text: str) -> None:
+        """Print a handler's mid-command text as chrome, line by line."""
+        for line in str(text or "").splitlines():
+            self.transcript.chrome(line)
 
     def _start_fresh(self) -> None:
         try:
