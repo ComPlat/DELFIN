@@ -362,6 +362,7 @@ HEADER_CSS = """
 .delfin-hdr .delfin-cleanup-rows .widget-checkbox { width: auto; }
 .delfin-hdr .delfin-cleanup-rows .widget-checkbox label { white-space: normal; }
 .delfin-hdr .delfin-count { color: var(--dh-muted); font-size: 12px; white-space: nowrap; }
+.delfin-hdr .delfin-panel .widget-inline-hbox input[type="number"] { min-width: 56px; }
 /* the message area */
 .delfin-toasts {
   position: fixed; bottom: 16px; right: 16px; z-index: 1000; gap: 4px;

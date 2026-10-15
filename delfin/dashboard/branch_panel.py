@@ -378,7 +378,7 @@ class BranchPanel:
         if r.kind != "main" and not r.mine and not r.hidden:
             row.pin = HU.icon_button("📌", "Add to your list" + (
                 " (fetches it from origin)" if r.kind in ("remote", "lookup") else ""),
-                "delfin-icon-btn")
+                "delfin-icon-btn", "delfin-brow-act")
             row.pin.on_click(lambda _b, rr=r: self.add(rr))
             acts.append(row.pin)
         if refusal == "":
@@ -408,8 +408,14 @@ class BranchPanel:
     # -- the menu ------------------------------------------------------------
 
     def open_menu(self) -> None:
+        """Open unfiltered in the default view (a menu that reopens with an
+        old search looks like branches went missing), refreshed."""
         self.confirm_box.children = ()
         self.confirm_box.layout.display = "none"
+        if self.search.value:
+            self.search.value = ""
+        if self.view.value != "Mine":
+            self.view.value = "Mine"
         self.pop.layout.display = ""
         self.refresh()
 
@@ -739,7 +745,7 @@ class BranchPanel:
         self.stale_days = W.BoundedIntText(value=BC.DEFAULT_STALE_DAYS, min=1, max=3650,
                                            description="Unused folders after (days)",
                                            style={"description_width": "initial"})
-        self.stale_days.layout.width = "220px"
+        self.stale_days.layout.width = "250px"
         self.scan_btn = HU.icon_button("⟳", "List again", "delfin-icon-btn")
         self.cleanup_close = HU.icon_button("✕", "Close Clean up", "delfin-icon-btn")
         self.cleanup_list = HU.classed(W.VBox([]), "delfin-cleanup-rows")
