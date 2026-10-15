@@ -342,6 +342,7 @@ class AutoController:
         self._user_turn = False
         self.user_waiting: Callable[[], bool] = lambda: False
         self._defaults: list[str] = ["main", "master"]
+        self._ssh_hosts: list[str] = []
         self.log_path = self._log_path("auto")
 
     # -- small helpers -------------------------------------------------------
@@ -624,7 +625,7 @@ class AutoController:
             name, args or {}, workspace=str(self.workspace),
             measure=spec.measure if spec else (),
             touch=spec.touch if spec else (),
-            default_branches=self._defaults)
+            default_branches=self._defaults, ssh_hosts=self._ssh_hosts)
         if verdict is None:
             return None
         if verdict.queue:
@@ -779,6 +780,7 @@ class AutoController:
         # Read once per iteration: the veto runs on every tool call.
         self._defaults = sorted(self.git.defaults()) if self.iteration.head \
             else ["main", "master"]
+        self._ssh_hosts = auto_guard.allowed_ssh_hosts()
         self._arm(engine)
         return HarnessText(self._prompt(wake, item))
 
@@ -838,8 +840,9 @@ class AutoController:
         return "\n".join(parts)
 
     def _check(self, engine, command: str) -> tuple[int, str]:
-        verdict = auto_guard.classify_call("bash", {"command": command},
-                                           workspace=str(self.workspace))
+        verdict = auto_guard.classify_call(
+            "bash", {"command": command}, workspace=str(self.workspace),
+            ssh_hosts=auto_guard.allowed_ssh_hosts())
         if verdict is not None and verdict.queue:
             return 126, (f"the check was not run: {verdict.reason}; a loop's "
                          "commands stay local")

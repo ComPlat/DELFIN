@@ -429,7 +429,8 @@ def parse(text: str, *, stem: str = "", workspace=None,
     # The harness runs these itself, after the iteration's veto is off: a
     # command that publishes would publish unattended. Classified by the
     # same rules the veto uses.
-    from .auto_guard import classify_call
+    from .auto_guard import allowed_ssh_hosts, classify_call
+    ssh_hosts = allowed_ssh_hosts()
     commands = [("check", spec.check)] + [
         (f"step {i} {k}", getattr(st, k)) for i, st in enumerate(spec.steps, 1)
         for k in ("check", "run") if getattr(st, k)]
@@ -437,7 +438,8 @@ def parse(text: str, *, stem: str = "", workspace=None,
         if not command:
             continue
         verdict = classify_call("bash", {"command": command},
-                                workspace=str(workspace or ""))
+                                workspace=str(workspace or ""),
+                                ssh_hosts=ssh_hosts)
         if verdict is not None and verdict.queue:
             errors.append(f"{label}: {command!r} would publish or send "
                           f"({verdict.reason}); a loop's commands stay local")

@@ -114,10 +114,148 @@ _RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
               r"--request\s+(?:POST|PUT|PATCH|DELETE))", "uploads data"),
         (_G + r"wget\b[^;&|\n]*--(?:post|body)-(?:data|file)", "uploads data"),
         (_G + r"(?:mail|mailx|sendmail|mutt|ssmtp|msmtp)\b", "sends mail"),
-        (_G + r"(?:scp|sftp)\b[^;&|\n]*\S+:\S*", "copies to another host"),
-        (_G + r"rsync\b[^;&|\n]*\s\S*[\w.-]+:\S*", "copies to another host"),
-        (_G + r"ssh\s", "runs a command on another host"),
     ]))
+_REMOTE_PROGRAMS = ("ssh", "scp", "sftp", "rsync")
+_SSH_ARG_OPTS = set("bcDEeFIiJLlmOoPpQRSWw")
+_SCP_ARG_OPTS = set("cFiJloPSXD")
+_SEGMENT_SPLIT = re.compile(r"\|\||&&|[;|&\n()`]")
+
+
+def ssh_host_allowed(host: str, entries: Iterable[str]) -> bool:
+    """*host* fits *entries*: a plain entry exactly (case folded), an
+    explicit ``*.domain`` entry any subdomain of domain (not domain
+    itself). No other wildcard matches anything."""
+    h = str(host or "").strip().lower().rstrip(".")
+    if not h:
+        return False
+    for raw in entries or ():
+        e = str(raw or "").strip().lower().rstrip(".")
+        if e.startswith("*.") and len(e) > 2 and "*" not in e[2:]:
+            if h.endswith(e[1:]) and h != e[2:]:
+                return True
+        elif e and "*" not in e and h == e:
+            return True
+    return False
+
+
+def _entry_within(entry: str, ceiling: Iterable[str]) -> bool:
+    """Every host *entry* admits is admitted by *ceiling*."""
+    e = str(entry or "").strip().lower().rstrip(".")
+    if e.startswith("*."):
+        dom = e[2:]
+        for c in ceiling:
+            c = str(c).strip().lower().rstrip(".")
+            if c.startswith("*.") and (dom == c[2:] or dom.endswith("." + c[2:])):
+                return True
+        return False
+    return ssh_host_allowed(e, ceiling)
+
+
+def allowed_ssh_hosts(settings: Optional[dict] = None) -> list[str]:
+    """The user's ``agent.auto_ssh_hosts`` (a list of strings; anything else
+    is no list), narrowed by every ``auto_ssh_hosts_max`` ceiling of the
+    managed policy. Never raises; an error allows no host."""
+    try:
+        if settings is None:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        raw = ((settings or {}).get("agent") or {}).get("auto_ssh_hosts")
+        if not isinstance(raw, list):
+            return []
+        entries = [str(x).strip() for x in raw
+                   if isinstance(x, str) and x.strip()]
+        from . import managed_policy
+        for ceiling in managed_policy.load().auto_ssh_hosts_max:
+            entries = [e for e in entries if _entry_within(e, ceiling)]
+        return entries
+    except Exception:
+        return []
+
+
+def _host_of(spec: str) -> str:
+    """``[user@]host[:...]`` -> host; bracketed IPv6 kept without brackets."""
+    s = spec.split("@", 1)[-1]
+    if s.startswith("["):
+        return s[1:s.find("]")] if "]" in s else ""
+    return s.split(":", 1)[0]
+
+
+def _remote_hosts(text: str) -> tuple[list[str], str]:
+    """(destination hosts, why it cannot be told) of every ssh, scp, sftp
+    and rsync in *text*; ([], "") when there is none."""
+    hosts: list[str] = []
+    for segment in _SEGMENT_SPLIT.split(text):
+        try:
+            words = shlex.split(segment, posix=True)
+        except ValueError:
+            words = segment.split()
+        idx = next((i for i, w in enumerate(words)
+                    if w.rsplit("/", 1)[-1] in _REMOTE_PROGRAMS), None)
+        if idx is None:
+            continue
+        prog = words[idx].rsplit("/", 1)[-1]
+        args = words[idx + 1:]
+        if prog == "rsync":
+            i = 0
+            while i < len(args):
+                a = args[i]
+                rsh = None
+                if a == "-e" or a == "--rsh":
+                    rsh = args[i + 1] if i + 1 < len(args) else ""
+                    i += 1
+                elif a.startswith("--rsh="):
+                    rsh = a.split("=", 1)[1]
+                elif a.startswith("-e") and len(a) > 2:
+                    rsh = a[2:]
+                if rsh is not None:
+                    if any(t.startswith("-") for t in rsh.split()[1:]):
+                        return hosts, "an rsync remote shell with options"
+                elif a.startswith("rsync://"):
+                    hosts.append(_host_of(a[len("rsync://"):].split("/", 1)[0]))
+                elif not a.startswith("-") and ":" in a and not a.startswith(("/", "./", "../")):
+                    hosts.append(_host_of(a))
+                i += 1
+            continue
+        opts = _SSH_ARG_OPTS if prog == "ssh" else _SCP_ARG_OPTS
+        i = 0
+        dest_seen = False
+        while i < len(args):
+            a = args[i]
+            if a.startswith("-") and len(a) > 1 and not dest_seen:
+                j = 1
+                while j < len(a):
+                    ch = a[j]
+                    if ch in opts:
+                        val = a[j + 1:] or (args[i + 1] if i + 1 < len(args) else "")
+                        if not a[j + 1:]:
+                            i += 1
+                        if ch == "J":
+                            hosts.extend(_host_of(h) for h in val.split(",") if h)
+                        elif ch == "o":
+                            key = val.split("=", 1)[0].strip().lower()
+                            if key in ("proxycommand", "localcommand"):
+                                return hosts, f"an ssh {key}"
+                            if key == "proxyjump":
+                                hosts.extend(_host_of(h) for h in
+                                             val.split("=", 1)[-1].split(",") if h)
+                        break
+                    j += 1
+            elif prog == "ssh":
+                if not dest_seen:
+                    hosts.append(_host_of(a.replace("ssh://", "", 1)))
+                    dest_seen = True       # the rest is the remote command
+            else:
+                if prog == "sftp" and not dest_seen:
+                    hosts.append(_host_of(a.replace("sftp://", "", 1)))
+                    dest_seen = True
+                elif ":" in a and not a.startswith(("/", "./", "../")):
+                    hosts.append(_host_of(a))
+            i += 1
+        if prog in ("ssh", "sftp") and not dest_seen:
+            return hosts, f"{prog} without a destination it can read"
+    return [h for h in hosts if h] if hosts else [], ""
+
+
 _LEAVE_BRANCH = re.compile(
     _GIT + r"(?:switch|checkout)\s+(?!-[bBc]\b)(?:--\S+\s+)*(\S+)")
 _DEFAULT_NAMES = frozenset({"main", "master", "trunk"})
@@ -186,11 +324,23 @@ def _command(args: dict) -> str:
 
 
 def _shell_verdict(cmd: str, workspace: str, measure: Iterable[str],
-                   default_branches: Iterable[str]) -> Optional[Verdict]:
+                   default_branches: Iterable[str],
+                   ssh_hosts: Iterable[str] = ()) -> Optional[Verdict]:
     text = _unwrapped(cmd)
     for rx, why in _RULES:
         if rx.search(text):
             return Verdict("outward", f"the command {why}", True)
+    if re.search(_G + r"(?:ssh|scp|sftp|rsync)\b", text):
+        hosts, unclear = _remote_hosts(text)
+        if unclear:
+            return Verdict("outward", f"the command reaches a host through "
+                           f"{unclear}, which cannot be checked", True)
+        allowed = list(ssh_hosts or ())
+        refused = [h for h in hosts if not ssh_host_allowed(h, allowed)]
+        if refused or not hosts:
+            return Verdict("outward", "the command reaches "
+                           + (", ".join(sorted(set(refused))) or "a host")
+                           + ", which is not in agent.auto_ssh_hosts", True)
     defaults = set(default_branches) | _DEFAULT_NAMES
     for m in _LEAVE_BRANCH.finditer(text):
         target = m.group(1).strip("'\"")
@@ -219,22 +369,27 @@ def _shell_verdict(cmd: str, workspace: str, measure: Iterable[str],
 
 def classify_call(name: str, args: Optional[dict], *, workspace: str = "",
                   measure: Iterable[str] = (), touch: Iterable[str] = (),
-                  default_branches: Iterable[str] = ()) -> Optional[Verdict]:
-    """See the module docstring. Never raises (an error refuses)."""
+                  default_branches: Iterable[str] = (),
+                  ssh_hosts: Iterable[str] = ()) -> Optional[Verdict]:
+    """See the module docstring. ``ssh_hosts``: the hosts ssh, scp, sftp and
+    rsync may reach (allowed_ssh_hosts); none by default. Never raises (an
+    error refuses)."""
     try:
         return _classify(name, dict(args or {}), str(workspace or ""),
                          list(measure or ()), list(touch or ()),
-                         list(default_branches or ()))
+                         list(default_branches or ()),
+                         list(ssh_hosts or ()))
     except Exception as exc:
         return Verdict("outward", f"the call could not be classified ({exc})",
                        True)
 
 
-def _classify(name, args, workspace, measure, touch, defaults):
+def _classify(name, args, workspace, measure, touch, defaults, ssh_hosts=()):
     full = str(name or "")
     bare = _bare(full)
     if bare in _SHELL_TOOLS or (full.startswith("mcp__") and _command(args)):
-        return _shell_verdict(_command(args), workspace, measure, defaults)
+        return _shell_verdict(_command(args), workspace, measure, defaults,
+                              ssh_hosts)
     if bare in _OUTWARD_TOOLS:
         return Verdict("outward", _OUTWARD_TOOLS[bare], True)
     if bare in _WIDEN_TOOLS:
