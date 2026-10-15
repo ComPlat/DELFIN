@@ -174,7 +174,6 @@ def test_without_proc_or_lsof_a_recent_change_counts(tmp_path):
 
 
 def test_close_preview_keeps_a_worktree_still_in_use(repo, tmp_path, monkeypatch):
-    from delfin.agent import proc_identity
     from delfin.dashboard import branch_preview as BP
     target, _ = BP.resolve_target(repo, "main")
     ok, _m, wt, _a = BP.ensure_worktree(repo, target)

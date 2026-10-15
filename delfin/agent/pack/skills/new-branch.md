@@ -18,9 +18,8 @@ default branch.
    there is nothing to derive it from, ask the user for a name.
 3. `git fetch origin`. In DELFIN's own checkout (it stays on main):
    `git branch <name> <start>` without switching, then work in
-   `enter_worktree(base_ref="<name>")` and push with
-   `git push -u origin HEAD:<name>`; the user tries it with the dashboard
-   header's Test branch. Elsewhere: `git switch -c <name> <start>`. The
+   `enter_worktree(base_ref="<name>")`; the user tries it with the
+   dashboard header's Test branch. Elsewhere: `git switch -c <name> <start>`. The
    start is the `from` branch (its `origin/` version when it exists there),
    else the default branch from `git symbolic-ref --short refs/remotes/origin/HEAD`.
    If the name exists already, say so and ask whether to use it.
