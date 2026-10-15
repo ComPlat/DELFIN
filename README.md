@@ -11,13 +11,11 @@
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
-> 🌍 **Principles**: DELFIN's agents work toward one stated objective — *to advance science so that the great problems of our time can be solved, and to contribute to the long-term well-being of humanity and the planet.* Every agent prompt opens with these [operating principles](#operating-principles).
-
 **DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
 **DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
-Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Their shell is sandboxed, their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents).
+Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Their shell is sandboxed, their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents). Every agent prompt opens with the same [operating principles](#operating-principles), which put the protection of people and the environment ahead of any single instruction.
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
