@@ -839,6 +839,24 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     """
     import json
 
+    # The user's own settings file first (``agent.permission_mode``, what
+    # the dashboard's control and a hand edit write): a kit file's
+    # ``default_mode`` -- one a permissions tool call persisted, or a
+    # checked-out repository's -- does not override what the user set
+    # there. Read raw, like the kit files: load_settings() fills in a
+    # value nobody chose. A value that is no mode (an old profile name)
+    # is no setting.
+    try:
+        from delfin.user_settings import get_settings_path
+        from .launch_guard import _VALID_MODES
+        own = get_settings_path()
+        if own.exists():
+            agent_block = json.loads(own.read_text()).get("agent") or {}
+            declared = agent_block.get("permission_mode")
+            if isinstance(declared, str) and declared in _VALID_MODES:
+                return declared, _tilde(own)
+    except Exception:
+        pass
     try:
         from . import kit_settings
         candidates = [kit_settings.USER_SETTINGS_PATH,

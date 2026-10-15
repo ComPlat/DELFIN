@@ -60,7 +60,7 @@ _EDIT_DIFF = """--- a/delfin/xtb.py
 class FakePermissions:
     """The parts of KitToolPermissions the worker and the REPL touch."""
 
-    def __init__(self, mode: str = "plan"):
+    def __init__(self, mode: str = "default"):
         self.mode = mode
         self.confirm_callback: Callable[[str, dict, str], bool] | None = None
         self.ask_user_callback: Callable[[dict], dict] | None = None

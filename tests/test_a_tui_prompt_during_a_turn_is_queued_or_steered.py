@@ -109,7 +109,7 @@ def test_cancel_ends_the_turn_early(tmp_path):
 
 def test_the_posture_moves_along_the_ladder_but_never_onto_bypass(tmp_path):
     with WorkerClient(tmp_path) as w:
-        assert w.init_result["session"]["approval"] == "plan"
+        assert w.init_result["session"]["approval"] == "default"
         start = len(w.events)
         assert w.request("session.setMode", {"mode": "acceptEdits"}) == \
             {"approval": "acceptEdits"}
