@@ -245,8 +245,13 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
     # -- answering --------------------------------------------------------------
     def answer(self, request_id: str, *, choice: str = "",
                answers: list[str] | None = None,
-               reason: str = "", persist: bool = False) -> tuple[bool, str]:
+               reason: str = "", persist: bool = False,
+               text: str = "") -> tuple[bool, str]:
         """Apply a window's answer the way the REPL applies a key.
+
+        ``text`` is a line typed for a question (ask): resolved as the
+        REPL's dialog resolves a typed line (``typed_answer``). Any other
+        request refuses it -- typed text is never an approval.
 
         Returns ``(landed, message)``: ``landed`` is False only when the
         request ended some other way in the meantime (answered from
@@ -264,19 +269,28 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
             return self._apply(req, choice=str(choice or ""),
                                answers=list(answers or []),
                                reason=str(reason or ""),
-                               persist=bool(persist))
+                               persist=bool(persist), text=str(text or ""))
         finally:
             self._answered_by.value = ""
 
     def _apply(self, req: tc.ConfirmRequest, *, choice: str,
                answers: list[str], reason: str,
-               persist: bool = False) -> tuple[bool, str]:
+               persist: bool = False, text: str = "") -> tuple[bool, str]:
         if req.kind == tc.ASK:
             # Answered with labels; no answers at all is Esc: dismissed.
             if choice:
                 raise InvalidAnswer("a question is answered with 'answers' "
                                     "(the chosen labels), not a 'choice'")
             payload = req.payload or {}
+            if text.strip():
+                # A typed line: an option when it names one, else the
+                # answer as typed -- what the REPL's dialog and the
+                # dashboard's chat input send for the same line.
+                if answers:
+                    raise InvalidAnswer("a question is answered with "
+                                        "'answers' or 'text', not both")
+                from delfin.agent.approval_answers import typed_answer
+                return self.resolve(req, typed_answer(text, payload)), "answered"
             offered = [label for label, _ in _choices(payload)]
             if any(a not in offered for a in answers):
                 raise InvalidAnswer("not one of the offered answers")
@@ -287,6 +301,11 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
             return self.resolve(req, {"answers": list(answers)}), \
                 ("answered" if answers else "dismissed")
 
+        if text:
+            # Checked before the choice: a request carrying typed text is
+            # refused whole, whatever key came with it.
+            raise InvalidAnswer("an approval is answered with one of its "
+                                "keys, never with typed text")
         options = tc.options_for(req, suggestion=self._suggestion(req))
         if choice not in {o.key for o in options}:
             raise InvalidAnswer(f"{choice!r} is not an option for this request")

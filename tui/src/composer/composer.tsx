@@ -69,6 +69,9 @@ export interface ComposerDeps {
    *  for something else: the agent view's names, answers and messages).
    *  Always, when not given. */
   shellAllowed?: () => boolean
+  /** Just before a paste goes into the prompt (a key held by an open
+   *  question goes in first: approval.tsx HOLD_MS). */
+  beforePaste?: () => void
 }
 
 interface Popup {
@@ -105,6 +108,8 @@ export interface Composer {
   submit(how?: "steer"): boolean
   clear(): void
   setText(text: string, pastes?: Record<string, string>): void
+  /** Text typed at the cursor, as if by keys (a key an open question held). */
+  insert(text: string): void
   /** Re-measure after a width change. */
   remeasure(): void
   /** Leave a ctrl+r search, the draft put back (a question opened). */
@@ -533,6 +538,7 @@ export function createComposer(deps: ComposerDeps): Composer {
   }
 
   const handlePaste = (raw: string): boolean => {
+    deps.beforePaste?.()
     if (!area || search()) return false
     const text = normalisePaste(raw)
     if (!shouldCollapse(text)) return false
@@ -568,6 +574,9 @@ export function createComposer(deps: ComposerDeps): Composer {
     setText(value, p) {
       pastes.restore(p)
       setAreaText(value)
+    },
+    insert(value) {
+      if (alive()) area!.insertText(value)
     },
     remeasure: measure,
     clickAt(index) {

@@ -1483,7 +1483,8 @@ class Worker:
                 choice=str(params.get("choice") or ""),
                 answers=list(params.get("answers") or []),
                 reason=str(params.get("reason") or ""),
-                persist=bool(params.get("persist", False)))
+                persist=bool(params.get("persist", False)),
+                text=str(params.get("text") or ""))
         except UnknownRequest as exc:
             raise _Refusal(protocol.UNKNOWN_REQUEST, str(exc)) from None
         except InvalidAnswer as exc:
