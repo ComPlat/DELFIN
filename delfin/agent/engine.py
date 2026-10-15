@@ -4688,6 +4688,8 @@ class AgentEngine:
             if not defs:
                 return
             from . import exists_first as _xf
+            if not _xf.enabled():
+                return
             perms = getattr(self, "kit_permissions", None)
             ws = str(getattr(perms, "workspace", "") or "")
             if not ws:
