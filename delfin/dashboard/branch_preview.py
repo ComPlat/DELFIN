@@ -453,6 +453,31 @@ def _url_path(worktree: Path) -> str:
         return f"/voila/render/{RUNTIME_DIR}/{NOTEBOOK}"
 
 
+def _served_url_path(port: int, token: str) -> str:
+    """The address ``/`` redirects to (the server's default_url), or "".
+
+    Asked rather than computed: where the launcher puts the notebook
+    depends on what it finds (a notebook on the search path is staged
+    into ``delfin_voila_runtime/``; the packaged one inside the root is
+    served in place), and that differs between branches."""
+    import http.client
+    from urllib.parse import quote, urlsplit
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+        conn.request("GET", "/?token=" + quote(token, safe=""))
+        resp = conn.getresponse()
+        location = resp.getheader("Location") or ""
+        conn.close()
+    except (OSError, http.client.HTTPException):
+        return ""
+    if resp.status not in (301, 302, 303, 307, 308) or not location:
+        return ""
+    path = urlsplit(location).path
+    if not path.startswith("/") or path.startswith("/login"):
+        return ""
+    return path
+
+
 def start(repo, ref: str, *, python: Optional[str] = None,
           base_env: Optional[dict] = None, shared_checkout: str = "",
           wait_s: float = 180.0, progress=None) -> tuple[bool, str, Optional[Preview]]:
@@ -532,7 +557,9 @@ def start(repo, ref: str, *, python: Optional[str] = None,
     preview = Preview(
         slug=s, ref=target.ref, sha=target.sha, branch=target.branch,
         repo=str(main_worktree(repo)), worktree=str(path), port=port,
-        token=token, url_path=_url_path(Path(path)), pid=proc.pid,
+        token=token,
+        url_path=_served_url_path(port, token) or _url_path(Path(path)),
+        pid=proc.pid,
         proc_start=proc_identity.process_start(proc.pid),
         ticks=proc_identity.start_ticks(proc.pid),
         host=socket.gethostname(), started_at=time.time(),
