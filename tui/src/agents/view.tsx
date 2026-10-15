@@ -1,6 +1,6 @@
 /**
  * The agent view: ← on an empty prompt. Every session the agent service
- * runs, grouped the way Claude Code groups them, what needs the user from
+ * runs, grouped by state, what needs the user from
  * every other DELFIN process (attention.ts: parked questions, failed
  * jobs, alerts, notices), and the other open DELFIN sessions (dashboards,
  * `delfin-agent chat`) as rows to watch and message:

@@ -6,6 +6,7 @@
  *   tail      the answer's unfinished block, as markdown (≤ 6 rows), after
  *             the blocks that finished but are not in the rows yet
  *   status    spinner · what it does · elapsed · tokens · cost · esc
+ *   tasks     the session's task list while a task is open (tasks.tsx)
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above)
  *   hints     posture · model · keys; at its right, quietly, what needs
@@ -32,6 +33,7 @@ import { TranscriptView, themedStyle, type ScreenItems } from "../scrollback/scr
 import { fenceOf, liveBlocks, liveRows } from "./live"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
 import { PickerView, type Picker } from "./picker"
+import { TasksPanel, taskLines } from "./tasks"
 
 export { TAIL_MAX } from "./live"
 
@@ -47,6 +49,8 @@ export interface FooterProps {
   composer: Composer
   approval: ApprovalUi
   picker?: Picker
+  /** The task list folded to one line (ctrl+t). */
+  tasksFolded?: () => boolean
   /** The agent view; while open it has the footer. */
   agents?: AgentView
   /** The view is drawn on the alternate screen: all of it is the view's,
@@ -74,31 +78,33 @@ export function agentFooterRows(term: { height: number }): number {
 
 
 /** The rows everything but the approval panel takes. */
-function fixedRows(s: SessionState | null, message: string, composerRows: number, pickerRows: number): number {
-  return 3 + composerRows + pickerRows + (s?.turn || s?.wait ? 1 : 0) + (message ? 1 : 0)
+function fixedRows(s: SessionState | null, message: string, composerRows: number, pickerRows: number,
+                   taskRows: number): number {
+  return 3 + composerRows + pickerRows + taskRows + (s?.turn || s?.wait ? 1 : 0) + (message ? 1 : 0)
 }
 
 /** What the approval panel may take: the rest of the terminal (less one
  *  row: the footer never fills it), so its keys are always on screen. */
 export function approvalBudget(s: SessionState | null, term: { width: number; height: number }, message: string,
-                               composerRows = 1, pickerRows = 0): number {
+                               composerRows = 1, pickerRows = 0, taskRows = 0): number {
   // Less a block on its way into the rows (there for a moment): the panel
   // must not push it out of sight.
   const live = s ? liveRows(s, term.width - GUTTER) : 0
-  return Math.max(3, term.height - 1 - fixedRows(s, message, composerRows, pickerRows) - live)
+  return Math.max(3, term.height - 1 - fixedRows(s, message, composerRows, pickerRows, taskRows) - live)
 }
 
 /** Rows the footer needs; never more than the terminal has (less one). */
 export function footerRows(s: SessionState | null, term: { width: number; height: number }, message: string,
-                           composerRows = 1, approval: ApprovalUi | null = null, pickerRows = 0): number {
-  let rows = fixedRows(s, message, composerRows, pickerRows)
+                           composerRows = 1, approval: ApprovalUi | null = null, pickerRows = 0,
+                           taskRows = 0): number {
+  let rows = fixedRows(s, message, composerRows, pickerRows, taskRows)
   const asked = s?.pending[0]
   // With a question open the turn waits: its tail is empty (a question
   // closes the text part) -- what is left is a block on its way into the
   // rows, there for a moment.
   if (s) rows += liveRows(s, term.width - GUTTER)
   rows += approvalRows(asked, approval?.state ?? null, term.width - GUTTER,
-                       approvalBudget(s, term, message, composerRows, pickerRows))
+                       approvalBudget(s, term, message, composerRows, pickerRows, taskRows))
   return Math.max(4, Math.min(rows, Math.max(4, term.height - 1)))
 }
 
@@ -185,7 +191,7 @@ export function Footer(props: FooterProps): JSX.Element {
   const liveText = (key: string) => live().find((b) => b.key === key)?.text ?? ""
   const liveHeight = () => liveRows(props.session(), cols())
   /** The prompt box's top border, with the session's name on it at the
-   *  right (/rename, -n), as Claude Code shows it; not in the agent view,
+   *  right (/rename, -n); not in the agent view,
    *  whose box is for another session. */
   const topRule = () => {
     const s = props.session()
@@ -196,6 +202,11 @@ export function Footer(props: FooterProps): JSX.Element {
     return { left: "─".repeat(Math.max(1, total - width(chip) - 1)), chip, right: "─" }
   }
 
+  /** The task list's lines: none in the agent view, which is another
+   *  session's place. */
+  const tasks = createMemo(() => viewOpen() ? []
+    : taskLines(props.session()?.tasks ?? [], Boolean(props.tasksFolded?.()), cols(), term().height,
+                props.keymap.label("tasks") || "ctrl+t"))
   const full = () => Boolean(props.screen)
   createEffect(() => {
     // Full screen has no footer of a height: the window is all of it.
@@ -203,7 +214,7 @@ export function Footer(props: FooterProps): JSX.Element {
     props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
       ? agentFooterRows(term())
       : footerRows(props.session(), term(), props.message(), props.composer.height(),
-                   props.approval, props.picker?.height() ?? 0)
+                   props.approval, props.picker?.height() ?? 0, tasks().length)
   })
   /** The agent view's list: its rows less the message, the composer and
    *  its rules, and the hints. */
@@ -229,7 +240,7 @@ export function Footer(props: FooterProps): JSX.Element {
   })
 
   const budget = () => approvalBudget(props.session(), term(), props.message(), props.composer.height(),
-                                      props.picker?.height() ?? 0)
+                                      props.picker?.height() ?? 0, tasks().length)
 
   // Nothing in the footer shrinks: what does not fit is cut at the top
   // (the composer and the keys are at the bottom), never drawn over.
@@ -293,6 +304,7 @@ export function Footer(props: FooterProps): JSX.Element {
           </text>
         )}
       </Show>
+      <TasksPanel lines={tasks} theme={t} />
       <Show when={asked()} keyed>
         {(a: Asked) => <ApprovalPanel asked={a} ui={props.approval} theme={t} width={cols} maxRows={budget} />}
       </Show>
