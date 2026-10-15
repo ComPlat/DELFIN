@@ -26508,6 +26508,17 @@ def _announce_child_network() -> None:
         pass
 
 
+def _agent_service_door() -> str:
+    """The agent service's socket directory (``delfin-agent tui``): a window
+    answers a session's approvals and sends it prompts through it, so a
+    command must not reach it, like the tmux and screen sockets."""
+    try:
+        from .service import rundir as _rd
+        return str(_rd.runtime_dir())
+    except Exception:
+        return os.path.join("/tmp", f"delfin-{os.getuid()}")
+
+
 def _session_doors() -> list[str]:
     """The sockets through which a command would reach the user's sessions:
     the same set the bubblewrap process cage masks."""
@@ -26516,7 +26527,8 @@ def _session_doors() -> list[str]:
     doors = [f"/run/user/{uid}", "/run/screen", str(home / ".screen"),
              str(home / ".ssh"),
              os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
-             "/var/run/docker.sock", "/run/docker.sock", "/tmp/.X11-unix"]
+             "/var/run/docker.sock", "/run/docker.sock", "/tmp/.X11-unix",
+             _agent_service_door()]
     agent = os.environ.get("SSH_AUTH_SOCK", "")
     if agent and os.path.basename(os.path.dirname(agent)).startswith("ssh-"):
         doors.append(os.path.dirname(agent))
@@ -26911,6 +26923,7 @@ def _process_cage_options() -> list[str]:
         str(home / ".screen"),
         str(home / ".ssh"),
         os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
+        _agent_service_door(),
     ]
     agent_socket = os.environ.get("SSH_AUTH_SOCK", "")
     # OpenSSH keeps an agent's socket in a directory of its own, ssh-XXXX.

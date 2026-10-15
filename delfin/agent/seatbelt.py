@@ -116,6 +116,13 @@ def session_doors() -> list[str]:
     doors = [f"/private/tmp/tmux-{uid}", os.path.join(home, ".ssh"),
              r"regex:^/private/tmp/com\.apple\.launchd\.", "/var/run/docker.sock",
              os.path.join(home, ".docker", "run"), "/private/tmp/.X11-unix"]
+    try:
+        # The agent service's socket directory (delfin-agent tui), resolved:
+        # /tmp is /private/tmp here.
+        from .service import rundir as _rd
+        doors.append(os.path.realpath(str(_rd.runtime_dir())))
+    except Exception:
+        doors.append(f"/private/tmp/delfin-{uid}")
     agent = os.environ.get("SSH_AUTH_SOCK", "")
     if agent:
         doors.append(os.path.dirname(agent))

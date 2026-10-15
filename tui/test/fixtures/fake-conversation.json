@@ -1,0 +1,1011 @@
+{
+ "script": [
+  {
+   "prompt": "hello there"
+  },
+  {
+   "prompt": "please edit the parser",
+   "reply": {
+    "choice": "y"
+   }
+  },
+  {
+   "prompt": "ask me which solvent",
+   "reply": {
+    "answers": [
+     "SMD"
+    ]
+   }
+  }
+ ],
+ "session": {
+  "sessionId": "s1",
+  "workspace": "/home/user/project",
+  "provider": "fake",
+  "model": "fake-model",
+  "mode": "solo",
+  "approval": "default",
+  "banner": [
+   "delfin-agent · fake/fake-model · solo",
+   "workspace  /home/user/project",
+   "approval   default"
+  ],
+  "notices": [],
+  "title": null
+ },
+ "events": [
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "idle",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.57,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "user.message",
+   "session": "s1",
+   "ts": 0,
+   "text": "hello there",
+   "source": "user",
+   "seq": 2
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "running"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.574,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "turn.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "source": "user",
+   "seq": 3
+  },
+  {
+   "type": "reasoning.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "partId": "t1.r1"
+  },
+  {
+   "type": "reasoning.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.r1",
+   "delta": "Reading the request and deciding what to look at first."
+  },
+  {
+   "type": "reasoning.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "partId": "t1.r1",
+   "text": "Reading the request and deciding what to look at first.",
+   "seq": 4
+  },
+  {
+   "type": "tool.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "callId": "t1.c2",
+   "name": "read_file",
+   "input": {
+    "path": "README.md"
+   },
+   "seq": 5
+  },
+  {
+   "type": "tool.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "callId": "t1.c2",
+   "name": "read_file",
+   "output": "# tui_demo\n",
+   "meta": {
+    "ok": true,
+    "chars": 11,
+    "truncated": false
+   },
+   "seq": 6
+  },
+  {
+   "type": "text.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "partId": "t1.t3"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "## Sum"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "mary\n\n"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "The wo"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "rkspac"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "e hold"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "s **on"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "e** RE"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "ADME a"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "nd not"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "hing e"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "lse to"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": " chang"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "e.\n\n(r"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "e: hel"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "lo the"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t1.t3",
+   "delta": "re)\n"
+  },
+  {
+   "type": "text.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "partId": "t1.t3",
+   "text": "## Summary\n\nThe workspace holds **one** README and nothing else to change.\n\n(re: hello there)\n",
+   "seq": 7
+  },
+  {
+   "type": "turn.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t1",
+   "durationMs": 400,
+   "inputTokens": 122,
+   "outputTokens": 16,
+   "costUsd": 0.0,
+   "toolCalls": 1,
+   "seq": 8
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.653,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "idle"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "idle",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.654,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "user.message",
+   "session": "s1",
+   "ts": 0,
+   "text": "please edit the parser",
+   "source": "user",
+   "seq": 9
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "running"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.655,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "turn.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "source": "user",
+   "seq": 10
+  },
+  {
+   "type": "reasoning.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "partId": "t2.r4"
+  },
+  {
+   "type": "reasoning.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.r4",
+   "delta": "Reading the request and deciding what to look at first."
+  },
+  {
+   "type": "reasoning.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "partId": "t2.r4",
+   "text": "Reading the request and deciding what to look at first.",
+   "seq": 11
+  },
+  {
+   "type": "tool.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "callId": "t2.c5",
+   "name": "read_file",
+   "input": {
+    "path": "delfin/xtb.py"
+   },
+   "seq": 12
+  },
+  {
+   "type": "tool.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "callId": "t2.c5",
+   "name": "read_file",
+   "output": "212 lines",
+   "meta": {
+    "ok": true,
+    "chars": 9,
+    "truncated": false
+   },
+   "seq": 13
+  },
+  {
+   "type": "permission.asked",
+   "session": "s1",
+   "ts": 0,
+   "requestId": "p925e62-1",
+   "kind": "confirm",
+   "tool": "edit_file",
+   "preview": "--- a/delfin/xtb.py\n+++ b/delfin/xtb.py\n@@ -41,5 +41,8 @@ def read_final_energy(path):\n     for line in lines:\n         if \"FINAL SINGLE POINT ENERGY\" in line:\n-            energy = float(line.split()[3])\n+            match = _ENERGY_RE.search(line)\n+            if match is None:\n+                raise ValueError(f\"no energy on line: {line!r}\")\n+            energy = float(match.group(1))\n             break\n     return energy",
+   "options": [
+    {
+     "key": "y",
+     "label": "yes",
+     "detail": "this one action"
+    },
+    {
+     "key": "n",
+     "label": "no",
+     "detail": "refused, and the model is told not to retry"
+    },
+    {
+     "key": "e",
+     "label": "stop asking about writes this session",
+     "detail": "acceptEdits until this session ends"
+    },
+    {
+     "key": "a",
+     "label": "abort",
+     "detail": "deny this and end the turn"
+    },
+    {
+     "key": "?",
+     "label": "explain",
+     "detail": "what each option does here"
+    }
+   ],
+   "flags": {
+    "shell": false,
+    "write": true,
+    "protected": false,
+    "outsideRead": false
+   },
+   "seq": 14
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 1,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.668,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "needs_input"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "needs_input",
+    "pending": 1,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.668,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "permission.resolved",
+   "session": "s1",
+   "ts": 0,
+   "requestId": "p925e62-1",
+   "decision": "approved",
+   "by": "client",
+   "seq": 15
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "needs_input",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.672,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "running"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.672,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "tool.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "callId": "t2.c6",
+   "name": "edit_file",
+   "input": {
+    "path": "delfin/xtb.py"
+   },
+   "seq": 16
+  },
+  {
+   "type": "tool.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "callId": "t2.c6",
+   "name": "edit_file",
+   "output": "--- a/delfin/xtb.py\n+++ b/delfin/xtb.py\n@@ -41,5 +41,8 @@ def read_final_energy(path):\n     for line in lines:\n         if \"FINAL SINGLE POINT ENERGY\" in line:\n-            energy = float(line.split()[3])\n+            match = _ENERGY_RE.search(line)\n+            if match is None:\n+                raise ValueError(f\"no energy on line: {line!r}\")\n+            energy = float(match.group(1))\n             break\n     return energy\n",
+   "meta": {
+    "ok": true,
+    "chars": 429,
+    "truncated": false
+   },
+   "seq": 17
+  },
+  {
+   "type": "text.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "partId": "t2.t7"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "The pa"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "rser n"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "ow rea"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "ds the"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": " energ"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "y with"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": " a reg"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "ular e"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "xpress"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t2.t7",
+   "delta": "ion."
+  },
+  {
+   "type": "text.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "partId": "t2.t7",
+   "text": "The parser now reads the energy with a regular expression.",
+   "seq": 18
+  },
+  {
+   "type": "turn.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t2",
+   "durationMs": 400,
+   "inputTokens": 125,
+   "outputTokens": 10,
+   "costUsd": 0.0,
+   "toolCalls": 2,
+   "seq": 19
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.73,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "idle"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "idle",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.73,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "user.message",
+   "session": "s1",
+   "ts": 0,
+   "text": "ask me which solvent",
+   "source": "user",
+   "seq": 20
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "running"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.731,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "turn.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t3",
+   "source": "user",
+   "seq": 21
+  },
+  {
+   "type": "reasoning.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t3",
+   "partId": "t3.r8"
+  },
+  {
+   "type": "reasoning.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t3.r8",
+   "delta": "Reading the request and deciding what to look at first."
+  },
+  {
+   "type": "reasoning.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t3",
+   "partId": "t3.r8",
+   "text": "Reading the request and deciding what to look at first.",
+   "seq": 22
+  },
+  {
+   "type": "permission.asked",
+   "session": "s1",
+   "ts": 0,
+   "requestId": "p925e62-2",
+   "kind": "ask",
+   "tool": "ask_user_question",
+   "preview": "",
+   "options": [
+    {
+     "key": "y",
+     "label": "yes",
+     "detail": "this one action"
+    },
+    {
+     "key": "n",
+     "label": "no",
+     "detail": "refused, and the model is told not to retry"
+    },
+    {
+     "key": "a",
+     "label": "abort",
+     "detail": "deny this and end the turn"
+    },
+    {
+     "key": "?",
+     "label": "explain",
+     "detail": "what each option does here"
+    }
+   ],
+   "flags": {
+    "shell": false,
+    "write": false,
+    "protected": false,
+    "outsideRead": false
+   },
+   "question": "Which solvent model?",
+   "header": "Solvent",
+   "choices": [
+    "CPCM",
+    "SMD",
+    "none"
+   ],
+   "choiceDetails": [
+    "conductor-like",
+    "density-based",
+    "gas phase"
+   ],
+   "multiSelect": false,
+   "seq": 23
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 1,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.733,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "needs_input"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "needs_input",
+    "pending": 1,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.733,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "permission.resolved",
+   "session": "s1",
+   "ts": 0,
+   "requestId": "p925e62-2",
+   "decision": "answered",
+   "by": "client",
+   "seq": 24
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "needs_input",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.734,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "running"
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.734,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "text.started",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t3",
+   "partId": "t3.t9"
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t3.t9",
+   "delta": "Using "
+  },
+  {
+   "type": "text.delta",
+   "session": "s1",
+   "ts": 0,
+   "partId": "t3.t9",
+   "delta": "SMD."
+  },
+  {
+   "type": "text.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t3",
+   "partId": "t3.t9",
+   "text": "Using SMD.",
+   "seq": 25
+  },
+  {
+   "type": "turn.ended",
+   "session": "s1",
+   "ts": 0,
+   "turnId": "t3",
+   "durationMs": 400,
+   "inputTokens": 125,
+   "outputTokens": 2,
+   "costUsd": 0.0,
+   "toolCalls": 0,
+   "seq": 26
+  },
+  {
+   "type": "session.summary",
+   "session": "s1",
+   "ts": 0,
+   "summary": {
+    "sessionId": "s1",
+    "title": null,
+    "workspace": "/home/user/project",
+    "provider": "fake",
+    "model": "fake-model",
+    "approval": "default",
+    "state": "running",
+    "pending": 0,
+    "costUsd": 0.0,
+    "createdAt": 1791929326.199,
+    "lastActivity": 1791929326.744,
+    "pid": 744818
+   }
+  },
+  {
+   "type": "session.state",
+   "session": "s1",
+   "ts": 0,
+   "state": "idle"
+  }
+ ]
+}

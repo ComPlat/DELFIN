@@ -2023,12 +2023,17 @@ class AgentEngine:
         try:
             perms = self.kit_permissions
             sid = str(getattr(perms, "task_session_id", "") or "") if perms else ""
+            # The folder the questions were parked with (api_client parks
+            # them with perms.workspace): an answer about one project is
+            # not for a session working in another. Unscoped, the next
+            # session anywhere took it -- told to "act on them now".
+            ws = str(getattr(perms, "workspace", "") or "") if perms else ""
         except Exception:
-            sid = ""
+            sid, ws = "", ""
         lines: list[str] = []
         try:
             from delfin.agent.attention import drain_resolved
-            for ev in drain_resolved(sid) or []:
+            for ev in drain_resolved(sid, workspace=ws or None) or []:
                 ans = ev.get("answer")
                 ans_txt = ", ".join(map(str, ans)) if isinstance(ans, list) \
                     else str(ans or "").strip()

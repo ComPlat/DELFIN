@@ -1489,6 +1489,36 @@ def delete_session(session_id: str) -> bool:
     return False
 
 
+def rename_session(session_id: str, title: str) -> bool:
+    """Give a saved session another title, changing nothing else.
+
+    For a session no process runs (a running one saves its title with its
+    next save). Under the writer lock :func:`save_session` takes, so it
+    never tears a file another process writes; False when there is no such
+    session, another live process holds it, or it cannot be written.
+    """
+    if not session_id:
+        return False
+    path = _SESSIONS_DIR / f"{session_id}.json"
+    if not path.exists():
+        return False
+    try:
+        acquire_session_lock(session_id)
+    except SessionLockedError:
+        return False
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return False
+        data["title"] = str(title or "")
+        _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=1))
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        release_session_lock(session_id)
+
+
 def fork_session(
     source_id: str,
     new_id: str | None = None,

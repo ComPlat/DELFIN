@@ -951,8 +951,18 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
 
     if sid and getattr(args, "fork_session", False):
         try:
-            forked = _ss.fork_session(sid)
-            sid = str((forked or {}).get("session_id", "") or sid)
+            # The copy's id (session_store.fork_session returns it, not a
+            # record: reading it as a dict raised, the warning below said
+            # "fork failed", and every --fork-session resumed the original).
+            # An id of its own: the store's default has one-second steps,
+            # and two copies of one session in a second would share a file.
+            import uuid
+            forked = _ss.fork_session(sid, new_id=uuid.uuid4().hex)
+            if isinstance(forked, dict):
+                forked = forked.get("session_id")
+            if not forked:
+                raise ValueError(f"session {sid} could not be read")
+            sid = str(forked)
             print(f"Forked to {sid}; the original is untouched.",
                   file=sys.stderr)
         except Exception as exc:
@@ -1760,6 +1770,156 @@ def _cmd_chat_one_shot(args: argparse.Namespace, report, workspace: Path,
     return cmd_run(args, prepare=_prepare)
 
 
+class InteractiveStartRefused(Exception):
+    """An interactive session that does not start, and why.
+
+    ``message`` is the text for the person ("" when the step that refused
+    has said it already), ``code`` the exit status ``cmd_chat`` returns
+    (2 refused, 3 the engine could not be built), ``detail`` the
+    underlying exception's text where there is one.
+    """
+
+    def __init__(self, message: str, code: int = 2, detail: str = ""):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.detail = detail
+
+
+class InteractiveStart:
+    """What ``_start_interactive_session`` built: the engine, the reason
+    for its starting mode, the isolation flag line and the start notes
+    (isolation_posture.apply_at_start)."""
+
+    def __init__(self, engine, why: str, isolation_note: str,
+                 start_notes: tuple):
+        self.engine = engine
+        self.why = why
+        self.isolation_note = isolation_note
+        self.start_notes = start_notes
+
+    def banner(self, args: argparse.Namespace, report, workspace: Path) -> str:
+        return _startup_banner(self.engine, report, workspace, self.why,
+                               self.isolation_note,
+                               tuple(_bounding_notices(args, self.engine))
+                               + self.start_notes)
+
+
+def _start_interactive_session(args: argparse.Namespace, report,
+                               workspace: Path, *,
+                               can_ask: bool) -> InteractiveStart:
+    """The set-up of an attended, interactive session, after the launch
+    directory was inspected and its questions answered.
+
+    Callers: ``cmd_chat`` (``can_ask`` = stdin is a terminal) and the agent
+    service's worker (``service.worker.open_real_session``, ``can_ask``
+    False: nobody can answer a yes/no before the window attaches). One
+    function, so a step added here reaches both entry paths.
+
+    Steps, in order: the managed policy's start decision (a mode named on
+    the command line that the policy disallows, or a required isolation
+    layer the host lacks, refuses the start); chdir to ``workspace``; the
+    launch grants; the isolation flags; the engine; the session open
+    (resume / continue / fork / claim); the starting posture
+    (launch_guard.resolve_posture, then managed_policy.coerce_mode); the
+    isolation start check (isolation_posture.apply_at_start).
+
+    Output: an ``InteractiveStart``. Raises ``InteractiveStartRefused``;
+    the working directory is then the one before the call. On success the
+    process stays in ``workspace``; the caller moves it back.
+    """
+    from . import launch_guard
+
+    # The administrator's managed policy, before anything is built: a mode
+    # the person named on the command line that the policy disallows, or a
+    # required isolation layer this host lacks, ends an attended start here
+    # with the reason. A mode from a settings file falls back instead.
+    try:
+        from . import managed_policy as _mp
+        _flag_mode = str(getattr(args, "permission_mode", "") or "")
+        _, _managed_note, _managed_refuse = _mp.launch_decision(
+            _flag_mode or "default", explicit=bool(_flag_mode),
+            attended=True)
+    except Exception:
+        _managed_note, _managed_refuse = "", False
+    if _managed_refuse:
+        raise InteractiveStartRefused(_managed_note, 2)
+
+    _cwd_before = os.getcwd()
+    os.chdir(workspace)
+    try:
+        _apply_launch_grants(args, report)
+        isolation_note = _apply_isolation_flags(args)
+        try:
+            engine = _build_engine(args)
+        except Exception as exc:
+            raise InteractiveStartRefused(f"ERROR: engine init failed: {exc}",
+                                          3, detail=str(exc)) from exc
+        if not _open_session(engine, args, workspace):
+            raise InteractiveStartRefused("", 2)
+    except BaseException:
+        try:
+            os.chdir(_cwd_before)
+        except Exception:
+            pass
+        raise
+
+    persisted, persisted_from = _persisted_default_mode(workspace)
+    posture, why = launch_guard.resolve_posture(
+        flag_mode=getattr(args, "permission_mode", "") or "",
+        persisted_mode=persisted,
+        unattended_opt_in=bool(getattr(args, "unattended", False)),
+        settings_path=persisted_from or "~/.delfin/settings.json",
+    )
+    try:
+        from . import managed_policy as _mp
+        _managed_posture = _mp.coerce_mode(posture)
+        if _managed_posture != posture:
+            why = (f"{why}; {posture} disallowed by the managed policy, "
+                   f"so {_managed_posture}")
+            posture = _managed_posture
+    except Exception:
+        pass
+    try:
+        # The starting rule, not a switch: no turn is running to be told.
+        try:
+            engine.set_kit_permission_mode(posture, announce=False)
+        except TypeError:
+            # An engine without the keyword still gets the posture; only
+            # the note is lost. Swallowing the TypeError below would leave
+            # the session in the mode it was built with.
+            engine.set_kit_permission_mode(posture)
+    except Exception:
+        pass          # a backend with no gate has no posture to set
+    # The same start check as cmd_run: bypass without isolation is
+    # confirmed once here, else the session starts in default.
+    from .isolation_posture import apply_at_start
+    start_notes = tuple(apply_at_start(engine, can_ask=can_ask))
+    return InteractiveStart(engine, why, isolation_note, start_notes)
+
+
+def _finish_interactive_session(engine, agent, workspace: Path, *,
+                                title: str, t0: float | None,
+                                learn: bool = True) -> str:
+    """The end of an interactive session: save it, then ``_end_session``'s
+    stages (report, skill learning, indexing, cycle outcome, episode, eval
+    loop). The task is the first prompt typed in this process, the verdict
+    the last turn's. ``learn`` False saves only (a scripted session of the
+    agent service's tests). Callers: ``cmd_chat`` and the agent service's
+    worker. Returns the saved session id ("" when the save failed)."""
+    sid = _save_session(engine, workspace, title=title)
+    if not learn:
+        return sid or ""
+    _last = getattr(agent, "_last_turn_result", None)
+    _end_session(
+        engine, sid or str(getattr(engine, "session_id", "") or ""),
+        workspace,
+        task=str(getattr(agent, "first_task", "") or ""),
+        failed=bool(getattr(_last, "error", "")),
+        t0=t0)
+    return sid or ""
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     """The ``delfin-agent`` front door: a session in the current directory.
 
@@ -1816,22 +1976,6 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
         return 2
 
-    # The administrator's managed policy, before anything is built: a mode
-    # the person named on the command line that the policy disallows, or a
-    # required isolation layer this host lacks, ends an attended start here
-    # with the reason. A mode from a settings file falls back instead.
-    try:
-        from . import managed_policy as _mp
-        _flag_mode = str(getattr(args, "permission_mode", "") or "")
-        _, _managed_note, _managed_refuse = _mp.launch_decision(
-            _flag_mode or "default", explicit=bool(_flag_mode),
-            attended=True)
-    except Exception:
-        _managed_note, _managed_refuse = "", False
-    if _managed_refuse:
-        print(_managed_note, file=sys.stderr)
-        return 2
-
     # An interactive session is a conversation, not a document. The flag
     # is accepted on this subcommand because the one-shot half lives here
     # too; taking it silently and then emitting text is the shape of a
@@ -1848,50 +1992,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # read a different file, and that is only harmless until it is called
     # from somewhere else.
     _cwd_before = os.getcwd()
-    os.chdir(workspace)
-    _apply_launch_grants(args, report)
-    isolation_note = _apply_isolation_flags(args)
     try:
-        engine = _build_engine(args)
-    except Exception as exc:
-        print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
-        os.chdir(_cwd_before)
-        return 3
-    if not _open_session(engine, args, workspace):
-        os.chdir(_cwd_before)
-        return 2
-
-    persisted, persisted_from = _persisted_default_mode(workspace)
-    posture, why = launch_guard.resolve_posture(
-        flag_mode=getattr(args, "permission_mode", "") or "",
-        persisted_mode=persisted,
-        unattended_opt_in=bool(getattr(args, "unattended", False)),
-        settings_path=persisted_from or "~/.delfin/settings.json",
-    )
-    try:
-        from . import managed_policy as _mp
-        _managed_posture = _mp.coerce_mode(posture)
-        if _managed_posture != posture:
-            why = (f"{why}; {posture} disallowed by the managed policy, "
-                   f"so {_managed_posture}")
-            posture = _managed_posture
-    except Exception:
-        pass
-    try:
-        # The starting rule, not a switch: no turn is running to be told.
-        try:
-            engine.set_kit_permission_mode(posture, announce=False)
-        except TypeError:
-            # An engine without the keyword still gets the posture; only
-            # the note is lost. Swallowing the TypeError below would leave
-            # the session in the mode it was built with.
-            engine.set_kit_permission_mode(posture)
-    except Exception:
-        pass          # a backend with no gate has no posture to set
-    # The same start check as cmd_run: bypass without isolation is
-    # confirmed once here, else the session starts in default.
-    from .isolation_posture import apply_at_start
-    start_notes = tuple(apply_at_start(engine, can_ask=sys.stdin.isatty()))
+        start = _start_interactive_session(args, report, workspace,
+                                           can_ask=sys.stdin.isatty())
+    except InteractiveStartRefused as refused:
+        if refused.message:
+            print(refused.message, file=sys.stderr)
+        return refused.code
+    engine = start.engine
 
     from .repl import ReplOptions, TerminalAgent
     from .terminal_confirm import TerminalConfirmBroker
@@ -1946,10 +2054,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
         session_name=getattr(args, "session_name", "") or "",
-        banner=(_startup_banner(engine, report, workspace, why,
-                                isolation_note,
-                                tuple(_bounding_notices(args, engine))
-                                + start_notes)
+        banner=(start.banner(args, report, workspace)
                 + (f"\n\n{notices}" if notices else "")),
     ))
     import time as _time
@@ -1957,17 +2062,9 @@ def cmd_chat(args: argparse.Namespace) -> int:
     try:
         return agent.run(positional)
     finally:
-        sid = _save_session(engine, workspace,
-                            title=getattr(args, "session_name", "") or "")
-        # The stages cmd_run runs, in its order: the task is the first
-        # prompt typed in this process, the verdict the last turn's.
-        _last = getattr(agent, "_last_turn_result", None)
-        _end_session(
-            engine, sid or str(getattr(engine, "session_id", "") or ""),
-            workspace,
-            task=str(getattr(agent, "first_task", "") or ""),
-            failed=bool(getattr(_last, "error", "")),
-            t0=_t0)
+        _finish_interactive_session(
+            engine, agent, workspace,
+            title=getattr(args, "session_name", "") or "", t0=_t0)
         try:
             os.chdir(_cwd_before)
         except Exception:
@@ -5037,6 +5134,57 @@ def build_parser() -> argparse.ArgumentParser:
     t6.add_argument("--run-dir", default=".",
                     help="Dir to write the job and collect logs")
     t6.set_defaults(func=_cmd_test_on_slurm)
+
+    # The terminal UI and the service its sessions live in. The handlers
+    # live in delfin/agent/service/cli_service.py, imported on use like
+    # test-on-slurm's.
+    def _cmd_tui(args):
+        from delfin.agent.service.cli_service import cmd_tui
+        return cmd_tui(args)
+
+    def _cmd_service(args):
+        from delfin.agent.service.cli_service import cmd_service
+        return cmd_service(args)
+
+    tui = sub.add_parser(
+        "tui",
+        help="The terminal UI: one window over all your sessions, which keep "
+             "running when it closes (sessions live in `delfin-agent service`)",
+    )
+    tui.add_argument("--cwd", default="", help="Workspace of the first session")
+    tui.add_argument("-n", "--name", dest="session_name", default="",
+                     help="Name of the first session")
+    tui.add_argument("--model", default="")
+    tui.add_argument("--provider", default="")
+    tui.add_argument("--effort", default="")
+    tui.add_argument("--permission-mode", default="",
+                     choices=["", "plan", "default", "acceptEdits"])
+    tui.add_argument("--session", "--resume", dest="session", default="",
+                     help="Resume this saved session")
+    tui.add_argument("--continue", dest="continue_session", action="store_true",
+                     help="Resume the latest session in the workspace")
+    tui.add_argument("--add-dir", dest="add_dirs", action="append", default=[])
+    tui.add_argument("--read-dir", dest="read_dirs", action="append", default=[])
+    tui.add_argument("--isolate", action="store_true")
+    tui.add_argument("--no-isolate", action="store_true")
+    tui.add_argument("-v", "--verbose", action="store_true",
+                     help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--inline", action="store_true",
+                     help="Draw under the shell's last line, the conversation in the "
+                          "terminal's own scrollback, instead of taking the whole terminal")
+    # Scripted sessions, no model: for working on the window and its tests.
+    tui.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
+    tui.set_defaults(func=_cmd_tui)
+
+    svc = sub.add_parser(
+        "service",
+        help="The agent service behind `delfin-agent tui`: status, stop, restart, logs",
+    )
+    svc.add_argument("action", nargs="?", default="status",
+                     choices=["status", "stop", "restart", "logs"])
+    svc.add_argument("--lines", type=int, default=40,
+                     help="Lines of the log to show (logs)")
+    svc.set_defaults(func=_cmd_service)
 
     return p
 

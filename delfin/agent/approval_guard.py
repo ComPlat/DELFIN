@@ -74,6 +74,14 @@ _ANSWER_COMMAND_RE = re.compile(
     r"(?<![\w.-])approvals\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
     r"(" + "|".join(_ANSWER_VERBS) + r")(?![\w-])", re.IGNORECASE)
 
+# ``service stop|restart`` under any program name, after the same
+# unquoting: it ends the agent service and every session in it, and when
+# the socket does not answer it does so by signal, past the service's
+# watch-only rule for an agent's processes. ``status`` and ``logs`` read.
+_SERVICE_STOP_RE = re.compile(
+    r"(?<![\w.-])service\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
+    r"(stop|restart)(?![\w-])", re.IGNORECASE)
+
 # The Python functions that write an answer. Names only these functions
 # carry match anywhere; the generic ``answer`` matches only together with
 # an import of one of the answering modules, so ``grep -n "answer("
@@ -84,6 +92,16 @@ _ANSWER_MODULE_RE = re.compile(
     r"\b(?:file_confirm|approval_answers|terminal_confirm|cli_gate)\b")
 _ANSWER_CALL_RE = re.compile(r"\banswer\s*\(|\bimport\b[^\n;]*\banswer\b")
 _IMPORT_RE = re.compile(r"\bimport\b|__import__|importlib")
+
+# The agent service's socket and run files, where a window answers a
+# session's approvals: ``/…/delfin-<uid>/agent.sock`` and
+# ``.delfin/agent_service/run``, joined the same three ways. A literal
+# path only, like the rooms above; what keeps a command away from the
+# socket itself is the cage's session doors (api_client._session_doors).
+_SERVICE_ROOM_RE = re.compile(
+    r"(?<=/)delfin-\d+[\s/,]+agent\.sock\b"
+    r"|\.delfin[\s/,]+agent_service[\s/,]+run(?![\w-])",
+    re.IGNORECASE)
 
 # Names only an answer file or an answer location carry: ``<id>.answer
 # .json`` (and its partial), and a room joined under ``.delfin`` by a
@@ -141,6 +159,14 @@ def answer_rooms() -> tuple[Path, ...]:
             _add(home / ".delfin" / name)
     except Exception:
         pass
+    try:
+        # The agent service (delfin-agent tui): a window answers a session's
+        # approvals through its socket, found by its run files.
+        from .service import rundir as _rd
+        _add(_rd.runtime_dir())
+        _add(_rd.run_file().parent)
+    except Exception:
+        pass
     return tuple(found)
 
 
@@ -188,19 +214,23 @@ def answer_command(cmd: str) -> Optional[str]:
     """What in *cmd* answers an approval, or None.
 
     Input: a shell command, commit-message prose already blanked by the
-    caller. Output: a short description of the match. Three shapes:
+    caller. Output: a short description of the match. Four shapes:
     the ``approvals approve|deny|answer`` subcommand under any program
-    name, the Python functions that write an answer, and any naming of
-    an answer file or answer location.
+    name, ``service stop|restart`` (the agent service holds the sessions
+    whose approvals a window answers), the Python functions that write
+    an answer, and any naming of an answer file or answer location.
     """
     if _ANSWER_COMMAND_RE.search(_unquoted(cmd)):
         return "the command answers a pending approval"
+    if _SERVICE_STOP_RE.search(_unquoted(cmd)):
+        return ("the command stops the agent service, which holds the "
+                "user's sessions and the approvals they wait on")
     text = _dequoted(cmd)
     if _ANSWER_ONLY_NAMES_RE.search(text) or (
             _ANSWER_MODULE_RE.search(text) and _ANSWER_CALL_RE.search(text)
             and _IMPORT_RE.search(text)):
         return "the command calls the function that answers a pending approval"
-    if _ANSWER_FILE_RE.search(text):
+    if _ANSWER_FILE_RE.search(text) or _SERVICE_ROOM_RE.search(text):
         return ("the command names the location where approvals are "
                 "answered")
     return None
