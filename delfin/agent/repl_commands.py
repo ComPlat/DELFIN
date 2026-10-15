@@ -1832,6 +1832,20 @@ def _bug(ctx, args: str) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
+def _loop(ctx, args: str) -> CommandResult:
+    from . import loop_commands
+    text, prompt = loop_commands.loop_command(
+        args, getattr(ctx, "auto", None), ctx.engine, ctx.workspace,
+        ask=ctx.ask, say=ctx.say)
+    return CommandResult(output=text, prompt=prompt)
+
+
+def _auto(ctx, args: str) -> CommandResult:
+    from . import loop_commands
+    return CommandResult(output=loop_commands.auto_command(
+        args, getattr(ctx, "auto", None), ctx.engine))
+
+
 def _clear(ctx, _args: str) -> CommandResult:
     return CommandResult(output="starting a fresh conversation", clear=True)
 
@@ -1991,6 +2005,12 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/attention", "workspace",
                     "The attention inbox; `clear [kind]` empties it",
                     _attention, True),
+        ReplCommand("/loop", "workspace",
+                    "Loops: list | show | confirm | run | stop | new | log",
+                    _loop, True),
+        ReplCommand("/auto", "workspace",
+                    "Auto mode: on | off | needs — work on without input",
+                    _auto, True),
     ]
 }
 
@@ -2021,6 +2041,9 @@ class ReplContext:
     # where such a handler refuses instead of acting unconfirmed.
     ask: Callable[[str], str] | None = None
     say: Callable[[str], None] | None = None
+    # The session's auto_mode.AutoController; None on a surface without
+    # one, where /loop and /auto say so.
+    auto: Any = None
 
 
 def dispatch(text: str, ctx: ReplContext) -> CommandResult:
