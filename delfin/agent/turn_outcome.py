@@ -78,6 +78,7 @@ LOCAL_REASON_CODES: frozenset[str] = frozenset({
     "not_allowlisted",    # bash outside the auto-allow list, nobody to ask
     "needs_approval",     # a dialog was required and none is bound
     "backend_denied",     # the CLI backend's own gate (no category given)
+    "running_job",        # a file a running background job of the session uses
 })
 
 try:

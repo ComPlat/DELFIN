@@ -804,6 +804,9 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # resolves it: a test or a benchmark attempt that hands a skill over
     # would otherwise add uses to the record the user reads in the panel.
     ("delfin.agent.skill_usage", "_usage_dir", "skills/_usage"),
+    # Saved experiment stamps are written once and never replaced: a test
+    # that saved one would take that name in the real store for good.
+    ("delfin.agent.paired_compare", "stamp_dir", "provenance"),
     # Skill proposals, patches included: a run that proposes one must not
     # leave it in the queue the user accepts from.
     ("delfin.agent.skill_proposals", "_proposals_dir", "skills/_proposals"),
