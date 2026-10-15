@@ -77,6 +77,9 @@ export interface AppProps {
   onLines?: (title: string, lines: string[]) => void
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
+  /** The pause before a click answers a question or picks from a list
+   *  (mouse.ts CLICK_PAUSE_MS); tests set 0. */
+  clickPauseMs?: number
   /** How long a new item names itself at the bottom right, and for how
    *  long after the window opens nothing is news (tests shorten them). */
   arrival?: { shownMs: number; quietMs: number }
@@ -213,7 +216,7 @@ export function App(props: AppProps): JSX.Element {
     return true
   }
 
-  const picker = createPicker()
+  const picker = createPicker({ clickPauseMs: props.clickPauseMs })
 
   // Prompts sent while a session starts (the first one, or a new one from
   // the agent view): they go out to it once it is up.
@@ -613,7 +616,7 @@ export function App(props: AppProps): JSX.Element {
   let typingAt = 0
   setFullPreviewKey(props.keymap.label("details") || props.keymap.label("expand"))
   const approval = createApprovalUi({ reply, say, lastKey: () => typingAt,
-                                      pauseMs: props.answerPauseMs })
+                                      pauseMs: props.answerPauseMs, clickPauseMs: props.clickPauseMs })
   // The question's own state starts when it appears (its typeahead pause
   // counts from then), and ends with it.
   createEffect(() => {

@@ -1607,8 +1607,15 @@ If you ask for the pull-request route in a message ("über PR", "per Pull Reques
 takes the whole terminal: the conversation scrolls inside the window -- the
 mouse wheel, PgUp/PgDn, ctrl+home/end -- above the prompt, which stays at
 the bottom; a drag selects text and copies it (OSC 52, also over SSH;
-shift+drag gives the terminal's own selection). Closing it gives the shell
-its lines back as they were, with a line on how to come back.
+shift+drag gives the terminal's own selection). A click answers what a key
+answers: an approval's options (`[y] yes`, `[n] no`, ...), a question's
+choices, a row of a list (`/model`, the palette, `/resume`) -- the left
+button pressed and let go on the option itself; a click within 0.3 s of
+the panel appearing or changing is not taken, and an "always" rule still
+asks a second time before it is saved. The wheel and a drag never answer.
+Inline the window takes no mouse (the terminal's wheel and selection stay
+the terminal's). Closing it prints what became of the session and the
+command that opens it again (`resume with: delfin-agent tui --resume <id>`).
 `delfin-agent tui --inline` (or `"screen": "inline"` in `tui.json`) draws
 the way `delfin-agent chat` does instead: under the shell's last line,
 finished output in the terminal's own scrollback, only the bottom live --
@@ -1779,6 +1786,7 @@ scrollback, a divider says the width changed instead).
 | `replayTurns` | turns written again on opening a session or after a resize (0: all) |
 | `showThinking` | show the model's thinking (as `-v`) |
 | `screen` | `auto` (the whole terminal; inline under GNU screen), `full` or `inline`; `DELFIN_TUI_SCREEN` and `--inline` come first |
+| `mouse` | `true` (default): full screen takes the mouse -- wheel, drag to copy, clicks on options; `false` leaves the mouse to the terminal (also with `TERM=dumb`) |
 
 A setting that cannot be read is reported in the window and the default
 applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`

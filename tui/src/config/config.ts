@@ -7,7 +7,8 @@
  *     "keys": { "steer": ["ctrl+g"], ... },          // keymap overrides
  *     "replayTurns": 20,                              // turns shown on attach
  *     "showThinking": false,
- *     "screen": "auto" | "full" | "inline"           // see screenModeOf()
+ *     "screen": "auto" | "full" | "inline",          // see screenModeOf()
+ *     "mouse": true                                   // see mouseOn()
  *   }
  *
  * A file that cannot be read or does not parse costs its settings, never
@@ -23,6 +24,7 @@ export interface Config {
   replayTurns: number
   showThinking: boolean
   screen: "auto" | "full" | "inline"
+  mouse: boolean
 }
 
 export const DEFAULTS: Config = {
@@ -32,6 +34,7 @@ export const DEFAULTS: Config = {
   replayTurns: 20,
   showThinking: false,
   screen: "auto",
+  mouse: true,
 }
 
 export function configPath(env: Record<string, string | undefined> = process.env): string {
@@ -94,6 +97,10 @@ export function parseConfig(text: string): Loaded {
         if (value === "auto" || value === "full" || value === "inline") config.screen = value
         else problems.push(`screen must be "auto", "full" or "inline"`)
         break
+      case "mouse":
+        if (typeof value === "boolean") config.mouse = value
+        else problems.push("mouse must be true or false")
+        break
       default:
         problems.push(`unknown setting ${JSON.stringify(key)}`)
     }
@@ -129,4 +136,18 @@ export function screenModeOf(setting: Config["screen"],
   if (asked === "full" || asked === "inline") return asked
   if (setting === "full" || setting === "inline") return setting
   return env.STY ? "inline" : "full"
+}
+
+/**
+ * Whether the window asks the terminal for mouse reports: the wheel
+ * scrolls the conversation, a drag selects and copies, a click answers a
+ * question or picks from a list (mouse.ts). Only full screen: inline, the
+ * conversation is in the terminal's own scrollback, which its own wheel
+ * and selection must keep. Off with tui.json "mouse": false, and on a
+ * terminal that reports no mouse (TERM=dumb). While it is on, shift+drag
+ * is the terminal's own selection.
+ */
+export function mouseOn(setting: boolean, screen: "full" | "inline",
+                        env: Record<string, string | undefined> = process.env): boolean {
+  return screen === "full" && setting && (env.TERM ?? "") !== "dumb"
 }

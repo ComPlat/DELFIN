@@ -19,7 +19,7 @@ import { Pins } from "./agents/pins"
 import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
-import { loadConfig, screenModeOf } from "./config/config"
+import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
 import { leavingNote } from "./leaving"
@@ -115,10 +115,11 @@ const renderer = await createCliRenderer({
   // the window itself never writes to stdout while it runs.
   externalOutputMode: full ? "passthrough" : "capture-stdout",
   // Full screen takes the mouse: the wheel scrolls the conversation, a
-  // drag selects and copies (shift+drag is the terminal's own selection).
+  // drag selects and copies (shift+drag is the terminal's own selection),
+  // a click answers a question or picks from a list (config.ts mouseOn).
   // Buttons and drags only (no reports of every move: nothing hovers), and
   // a click never takes the keys from the prompt (its focus is the app's).
-  useMouse: full,
+  useMouse: mouseOn(loaded.config.mouse, full ? "full" : "inline"),
   enableMouseMovement: false,
   autoFocus: false,
   exitOnCtrlC: false,
