@@ -76,6 +76,10 @@ jobs:
     # runs the same files.
     name: tests (py3.11, shard ${{ matrix.shard }} of ${{ strategy.job-total }})
     runs-on: ubuntu-latest
+    # A shard is a quarter of the suite (about 12 min expected); 30 is
+    # 2.5 times that. The unsharded job needed 60 on 2026-10-15 (#276)
+    # after reaching 100 % at 49.5 min. Each test keeps its own 300 s
+    # limit (--timeout below), so a hang still fails at once.
     timeout-minutes: 30
     strategy:
       fail-fast: false
