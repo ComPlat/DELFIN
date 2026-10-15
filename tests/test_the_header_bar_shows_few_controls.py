@@ -394,3 +394,14 @@ def test_the_header_style_never_sets_visibility_with_important():
     css = HU.HEADER_CSS
     assert not re.search(r"display\s*:[^;{}]*!important", css)
     assert "var(--jp-layout-color1" in css and "var(--jp-ui-font-color1" in css
+
+
+def test_a_preview_closed_elsewhere_leaves_the_bar_without_a_reload(repo):
+    panel, fake, *_ = _panel(repo)
+    panel.select("feat")
+    panel.test_btn.click()
+    assert panel.chip_widgets("feat") is not None
+    assert panel.poll_previews() is False          # nothing changed
+    BP._record_path("feat").unlink()               # closed from its own tab
+    assert panel.poll_previews() is True
+    assert panel.chip_widgets("feat") is None
