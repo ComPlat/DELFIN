@@ -777,6 +777,20 @@ _IMPORT_ORDER_PAIRS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _installed(module: str) -> bool:
+    """Whether *module* can be found, without importing it.
+
+    ``find_spec`` on a top-level name reads the path entries only, so it
+    cannot map a shared library into this interpreter -- the reason the
+    pair itself is imported in a subprocess.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _check_loader_path(ctx: dict) -> list[dict]:
     """Can the native stack load in one interpreter, in both orders.
 
@@ -797,6 +811,15 @@ def _check_loader_path(ctx: dict) -> list[dict]:
     rows: list[dict] = []
     py = sys.executable or _sh.which("python3") or "python3"
     for first, second, what in _IMPORT_ORDER_PAIRS:
+        # pymupdf is the optional [pdf] extra. Absent, there is nothing to
+        # load first, and the subprocess would report ModuleNotFoundError
+        # with a remedy about LD_LIBRARY_PATH that does not apply.
+        if not _installed(first):
+            rows.append(_row(
+                "loader path", PASS,
+                f"{first} is not installed, so nothing in the {what} "
+                "pair can load first"))
+            continue
         code = (f"import {first}\n"
                 f"import {second}\n"
                 "print('ok')")

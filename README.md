@@ -1014,6 +1014,11 @@ The code and license are available here: https://github.com/crest-lab/crest (fil
 ## Other programs the installers download
 `install_qm_tools.sh` and the terminal-window setup can also fetch xtb4stda and stda, std2, DFTB+ (LGPL-3.0-or-later), g-xTB (GPL-3.0), MOPAC (Apache-2.0) and Bun (MIT, with JavaScriptCore under LGPL-2.0) from their upstream. None of them is part of a DELFIN wheel or sdist. Their licences, and the notices of the code DELFIN does ship from other authors (3Dmol.js, the OpenTUI patches), are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Whoever redistributes a prepared installation that contains these programs (a container image, an environment archive, a cluster module) conveys them under their own licences.
 
+## Python dependencies with copyleft licences
+- **Open Babel** (`openbabel-wheel`, a core dependency) is licensed GPL-2.0-only. That does not restrict your own installation. It does mean that a bundle shipping DELFIN together with Open Babel (a container image, an environment archive, a cluster module) cannot meet both licences at once, so such a bundle should not be redistributed; let the target environment install Open Babel itself.
+- **PyMuPDF** is licensed AGPL-3.0 (or commercially by Artifex) and is therefore not installed by default. The file browser's PDF viewer, OCR page images and PDF previews in the chat need it: `pip install "delfin-complat[pdf]"`. Without it the viewer and the OCR check say that PyMuPDF is missing and a chat card shows the file without a preview; PDF text, forms and merging keep working through pypdf.
+- The full list, with the reasoning, is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) section 3.
+
 **Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, CREST or any other external program. Users must comply with the individual license terms of each external software package.
 
 ## Warranty and Liability

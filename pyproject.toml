@@ -102,10 +102,9 @@ dependencies = [
     # construction needs it.
     "voila>=0.5,<0.6",
     "Pillow>=10,<13",
-    # Page rendering and in-document search for the file browser's PDF
-    # viewer. A dashboard feature, so it belongs with the other core
-    # dashboard dependencies rather than in an extra.
-    "pymupdf>=1.24,<2",
+    # PyMuPDF (the PDF viewer) is the [pdf] extra below, not a core
+    # dependency: it is AGPL-3.0, stronger copyleft than DELFIN's own
+    # licence.
     "mammoth>=1.6,<2",
     "openpyxl>=3.1,<4",
     "pexpect>=4.8,<5",
@@ -123,6 +122,20 @@ dependencies = [
 # The reference lock still pins its version for whoever can install it.
 pymol = [
     "pymol-open-source>=2.5,<4",
+]
+# Page rendering, in-document search and form-field geometry for the file
+# browser's PDF viewer (delfin/dashboard/pdf_view.py), page images for OCR
+# and chat previews (delfin/agent/office.py, tab_agent.py). PyMuPDF is
+# "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License". AGPL
+# section 13 adds a source offer to users of a modified version over a
+# network, and whether a dashboard served to other users (the multi-user
+# login deployment) is such a use is a legal question, not a packaging one.
+# An extra, so whoever installs it takes that on by choice.
+# Without it every import site degrades: the viewer says why it cannot show
+# the page, the OCR check names the missing renderer, a chat card shows no
+# preview, and PDF text, forms and merging keep working through pypdf.
+pdf = [
+    "pymupdf>=1.24,<2",
 ]
 # API keys in the operating system's credential store (macOS Keychain,
 # Secret Service, Windows Credential Manager) instead of the 0600 file
@@ -263,6 +276,9 @@ dev = [
     "pytest>=6.0",
     "pytest-timeout",
     "pytest-cov",
+    # The [pdf] extra, written out for the same reason, so the PDF tests
+    # run in CI (which installs dev) instead of skipping.
+    "pymupdf>=1.24,<2",
     "black",
     "flake8",
     "ruff",
