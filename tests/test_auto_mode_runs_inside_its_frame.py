@@ -662,3 +662,21 @@ def test_the_same_item_without_a_change_is_named_as_such(repo):
         ctl.finish_iteration(eng, "LOOP: progress none")
     assert not ctl.enabled
     assert "twice in a row without a change" in ctl.stop_report
+
+
+def test_a_preempted_iteration_counts_against_nothing_but_the_budget(repo):
+    clock = Clock()
+    ctl = _ctl(repo, clock, repeat_failures=2, plateau=2)
+    eng = Engine()
+    ctl.enable(eng)
+    work = [am.WorkItem(1, "task", "task 1 in progress: parser", True)]
+    clock.advance(120)
+    ctl.next_prompt(eng, work=work)
+    ctl.note_user_input(eng)
+    ctl.finish_iteration(eng, "stopping")
+    ctl.resume()
+    clock.advance(120)
+    ctl.next_prompt(eng, work=work)
+    ctl.finish_iteration(eng, "LOOP: progress none")
+    assert ctl.enabled, ctl.stop_report
+    assert ctl.state()["iteration"] == 2
