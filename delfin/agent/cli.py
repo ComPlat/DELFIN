@@ -2283,7 +2283,10 @@ def cmd_bench(args: argparse.Namespace) -> int:
         print("ERROR: --model is required for `bench run`",
               file=sys.stderr)
         return 2
-    max_tokens = int(getattr(args, "max_tokens", 1024) or 1024)
+    # 0 = the role's own output limit, as in a session (engine
+    # _ROLE_MAX_TOKENS; solo 32768). 1024 cut every write_file longer than
+    # about four kilobytes into invalid JSON in the benchmark only.
+    max_tokens = int(getattr(args, "max_tokens", 0) or 0)
     backend = getattr(args, "backend", "") or "api"
     provider = getattr(args, "provider", "") or ""
     repeats = max(1, int(getattr(args, "repeats", 1) or 1))
@@ -2371,7 +2374,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
         # output read as a crash rather than as a queue.
         print(f"\nbenchmark not started: {exc}", file=sys.stderr)
         return 3
-    path = _bm.write_run(results, model=model)
+    path = _bm.write_run(results, model=model, run_args={
+        "max_tokens": max_tokens, "repeats": repeats, "backend": backend,
+        "provider": provider})
     s = _bm.summarise_run(results)
     _pm = s.get("process_means") or {}
     if _pm:
@@ -4499,7 +4504,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help=("Prompt language. en runs each selected "
                                  "task's prompt_en under the id <id>.en and "
                                  "skips tasks without one (default: de)"))
-    bench_run.add_argument("--max-tokens", type=int, default=1024,
+    bench_run.add_argument("--max-tokens", type=int, default=0,
                            dest="max_tokens")
     bench_run.add_argument(
         "--repeats", type=int, default=1,

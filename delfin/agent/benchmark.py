@@ -2653,6 +2653,7 @@ def write_run(
     runs_dir: Path | None = None,
     run_id: str | None = None,
     header: Optional[dict] = None,
+    run_args: Optional[dict] = None,
 ) -> Path:
     """Persist all results from one benchmark run as JSONL.
 
@@ -2666,6 +2667,12 @@ def write_run(
     rows = [json.dumps(asdict(r), ensure_ascii=False) for r in results]
     try:
         _head = header if header is not None else run_provenance(model=model)
+        if run_args:
+            # The run's own arguments (max_tokens, repeats, ...): they
+            # change what an attempt can do and belong to the provenance
+            # comparison like the settings.
+            _head = {**_head, "settings": {**(_head.get("settings") or {}),
+                                           "run_args": dict(run_args)}}
         rows.insert(0, json.dumps({_HEADER_KEY: _head}, ensure_ascii=False,
                                   default=str))
     except Exception:

@@ -12998,6 +12998,33 @@ _VERIFY_NUDGE_TEXT = {
 }
 
 
+_CONTINUE_TEXT = {
+    "unexecuted": ("[Continue] Your last tool call did not run (its "
+                   "arguments were not valid JSON), so its step is not "
+                   "done. Do it now -- a long file in parts, with "
+                   "write_file(..., mode=\"append\") -- or say in your "
+                   "answer that it is not done."),
+    "cut_call": ("[Continue] Your last tool call was cut at the output "
+                 "limit and did not run. Write a long file in parts: "
+                 "write_file(path, <first part>), then write_file(path, "
+                 "<next part>, mode=\"append\")."),
+    "cut": ("[Continue] Your answer was cut at the output limit. Continue "
+            "from where it stopped; do not repeat what you already wrote."),
+    "announced": ("[Continue] Your answer announces a step you did not "
+                  "take. Take it now, or say in your answer that it is "
+                  "not done."),
+}
+
+
+def _tv_has_code_edit(acc) -> bool:
+    """Whether a turn_verification account holds a code edit."""
+    try:
+        from . import turn_verification as _tvm
+        return _tvm.account(acc.events).anchor is not None
+    except Exception:
+        return False
+
+
 def _resolve_verify_nudge() -> str:
     """off | honest | test. ``DELFIN_VERIFY_NUDGE`` (the benchmark runner
     pins it per attempt) over ``agent.verify_nudge`` over
@@ -29513,6 +29540,10 @@ class OpenAIClient(_BaseClient):
         _verify_gave_up_notified = False
         # The turn-end verification line fires at most once per turn.
         _verify_nudged = False
+        # One continuation per turn when it would end on an unexecuted
+        # call, a cut answer, or an announced step after an edit.
+        _continued_once = False
+        _last_round_unexecuted = False
         _verify_nudge = _resolve_verify_nudge()
         # Per-turn verification mechanics, read by the engine after the turn:
         # the structured verdict from the report_verdict tool, the
@@ -30367,12 +30398,31 @@ class OpenAIClient(_BaseClient):
                     # itself rather than dispatching {} (which yields a
                     # misleading downstream error naming a missing field).
                     if _args_parse_error:
-                        result = json.dumps({"error": (
-                            f"invalid JSON in arguments for '{fn_name}': "
-                            f"{_args_parse_error}. Re-emit the call as ONE "
-                            "JSON object with double-quoted keys/strings and "
-                            "no trailing commas."
-                        )})
+                        # Cut at the output limit, the same call cuts again:
+                        # the write has to go in parts. Measured: 34 of 646
+                        # DeepSeek attempts had an invalid write_file or
+                        # edit_file call, and 9 turns ENDED on it with "Let
+                        # me write the file properly" (diagnosis 2026-10-15).
+                        _cut = (finish_reason == "length"
+                                or "Unterminated string" in _args_parse_error)
+                        if _cut and fn_name in ("write_file", "edit_file",
+                                                "multi_edit", "apply_patch"):
+                            result = json.dumps({"error": (
+                                f"invalid JSON in arguments for '{fn_name}': "
+                                f"{_args_parse_error}. The call was cut at "
+                                "the output limit and did NOT run; the same "
+                                "call cuts again. Write a long file in "
+                                "parts: write_file(path, <first part>), then "
+                                "write_file(path, <next part>, "
+                                "mode=\"append\") for each further part."
+                            )})
+                        else:
+                            result = json.dumps({"error": (
+                                f"invalid JSON in arguments for '{fn_name}': "
+                                f"{_args_parse_error}. Re-emit the call as ONE "
+                                "JSON object with double-quoted keys/strings "
+                                "and no trailing commas."
+                            )})
                         yield StreamEvent(
                             type="tool_result",
                             tool_name=fn_name,
@@ -31195,6 +31245,12 @@ class OpenAIClient(_BaseClient):
                     )
                     return
 
+                # Whether a call of this round never ran (its arguments
+                # were not valid JSON): the turn must not end on it.
+                _last_round_unexecuted = any(
+                    "invalid JSON in arguments" in str(_r)[:200]
+                    for _r in _round_results)
+
                 # Loop back to get the model's next response
                 continue
 
@@ -31308,6 +31364,52 @@ class OpenAIClient(_BaseClient):
                 _record_security_event(
                     "auto_verify_exhausted", "verify",
                     _last_verify_problem[:80], blocked=False)
+
+            # Not ending on work that did not happen: the last tool call of
+            # the turn never ran (invalid JSON), the answer was cut at the
+            # output limit, or the answer closes by announcing a step it
+            # did not take while the turn edited code. One harness row, at
+            # most once per turn, not in plan mode; the model either does
+            # the step or says it is not done. Measured cause (diagnosis
+            # 2026-10-15): 9 DeepSeek turns ended on an invalid write_file
+            # call, 4 science_pipeline answers ended mid-sentence, 2 long
+            # tasks ended on "...:" with the step undone.
+            if (not _continued_once
+                    and str(getattr(self._permissions, "mode", "") or "")
+                    != "plan"):
+                _cont_reason = ""
+                _ans_c = "".join(_text_chunks) if _text_chunks else ""
+                if _last_round_unexecuted:
+                    _cont_reason = "unexecuted"
+                elif finish_reason == "length" and _tool_calls:
+                    # The response ended inside a tool call: only a
+                    # finish of "tool_calls" executes calls, so it was
+                    # dropped unseen.
+                    _cont_reason = "cut_call"
+                elif finish_reason == "length":
+                    _cont_reason = "cut"
+                elif (_ans_c.rstrip().rstrip("*_`").rstrip().endswith(":")
+                        and not _announces_an_action(_ans_c)
+                        and self._turn_verification is not None
+                        and _tv_has_code_edit(self._turn_verification)):
+                    # A closing colon after a code edit ("tests/test_x.py
+                    # -- Persistenz:") promises what follows. The
+                    # first-person announcements are the existing
+                    # announced-action continuation's, further down.
+                    _cont_reason = "announced"
+                if _cont_reason:
+                    _continued_once = True
+                    try:
+                        from . import channels as _channels
+                        _channels.fire(f"turn_end_continue:{_cont_reason}")
+                    except Exception:
+                        pass
+                    if _ans_c.strip():
+                        api_messages.append(
+                            {"role": "assistant", "content": _ans_c})
+                    api_messages.append(_harness_row(
+                        _CONTINUE_TEXT[_cont_reason]))
+                    continue
 
             # The turn-end verification line (agent.verify_nudge): the model
             # is about to answer, and the last code edit of this turn has no
