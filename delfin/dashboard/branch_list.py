@@ -204,7 +204,13 @@ def _ci_state(rollup) -> str:
     return "passing"
 
 
+#: ``off`` keeps the list git-only (no gh, no network); the test suite sets it.
+GH_ENV = "DELFIN_BRANCH_LIST_GH"
+
+
 def default_gh() -> Optional[str]:
+    if str(os.environ.get(GH_ENV) or "").strip().lower() in ("off", "0", "no", "false"):
+        return None
     return shutil.which("gh")
 
 
