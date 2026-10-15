@@ -1,4 +1,4 @@
-"""``delfin-agent tui`` and ``delfin-agent service status|stop|logs``.
+"""``delfin-agent tui`` and ``delfin-agent service status|end|stop|restart|logs``.
 
 Registered by ``cli.build_parser``; the work happens here, so the CLI module
 only gains its parser lines.
@@ -182,12 +182,81 @@ def _age(seconds: float) -> str:
     return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
 
 
+def state_words(summary: dict) -> str:
+    """What a session does, in the words `service status` prints: working,
+    waiting for you (a question or an approval is open), idle, sleeping
+    (saved, no worker; it wakes when opened or sent a message), ended."""
+    state = str(summary.get("state") or "")
+    if state in ("sleeping", "ended"):
+        return state
+    if int(summary.get("pending") or 0) > 0 or state == "needs_input":
+        return "waiting for you"
+    if state in ("running", "starting"):
+        return "working"
+    return "idle"
+
+
+def short_workspace(path: str, width: int = 32) -> str:
+    """``path`` with the home as ``~``, cut in the middle to ``width``."""
+    text = _plain(path)
+    home = os.path.expanduser("~").rstrip("/")
+    if home and (text == home or text.startswith(home + "/")):
+        text = "~" + text[len(home):]
+    if width and len(text) > width:
+        head = (width - 1) // 3
+        text = text[:head] + "…" + text[len(text) - (width - 1 - head):]
+    return text
+
+
+def matching(rows: list[dict], prefix: str) -> list[dict]:
+    """The rows whose id is ``prefix`` or starts with it (an exact id wins)."""
+    if not prefix:
+        return []
+    exact = [r for r in rows if r["id"] == prefix]
+    return exact or [r for r in rows if str(r["id"]).startswith(prefix)]
+
+
+def _session_rows(svc: "client.ServiceClient") -> tuple[list[dict], dict]:
+    """Every session of the service, one row each -- the running ones, then
+    the sleeping ones -- and the service's status (with ``elsewhere``)."""
+    status = svc.request("service.status")
+    listing = svc.request("sessions.list")
+    now = time.time()
+    live = list(status.get("sessions") or [])
+    ids = {s.get("sessionId") for s in live}
+    asleep = [s for s in listing.get("sessions") or []
+              if s.get("state") == "sleeping" and s.get("sessionId") not in ids]
+    rows = []
+    for s in [*live, *asleep]:
+        created = float(s.get("createdAt") or now)
+        active = float(s.get("lastActivity") or created)
+        rows.append({
+            "id": _plain(s.get("sessionId")),
+            "title": _plain(str(s.get("title") or s.get("firstPrompt") or "(untitled)").split("\n")[0]),
+            "workspace": _plain(s.get("workspace")),
+            "state": state_words(s),
+            "rawState": _plain(s.get("state")),
+            "pending": int(s.get("pending") or 0),
+            "windows": int(s.get("windows") or 0),
+            "model": _plain(s.get("model")),
+            "createdAt": created,
+            "lastActivity": active,
+            "ageS": round(max(0.0, now - created), 1),
+            "lastActivityS": round(max(0.0, now - active), 1),
+        })
+    return rows, {**status, "elsewhere": listing.get("elsewhere") or []}
+
+
 def cmd_service(args: argparse.Namespace) -> int:
     action = getattr(args, "action", "status") or "status"
     if action == "logs":
         return _logs(int(getattr(args, "lines", 40) or 40))
     try:
-        return _service(action)
+        if action == "end":
+            return _end(str(getattr(args, "target", "") or "").strip(),
+                        all_idle=bool(getattr(args, "all_idle", False)),
+                        yes=bool(getattr(args, "yes", False)))
+        return _service(action, as_json=bool(getattr(args, "json", False)))
     except client.ServiceError as exc:
         # Refused (this shell is an agent session's own: watch only), or
         # the service went away in between: said, not a traceback.
@@ -195,22 +264,34 @@ def cmd_service(args: argparse.Namespace) -> int:
         return 1
 
 
-def _service(action: str) -> int:
-    if action in ("stop", "restart"):
-        # An agent session's own process: over the socket the service
-        # answers it watch-only, and the signal fallback below would end
-        # the service (and every session in it) past that rule.
-        from ..approval_guard import inside_agent_session
-        if inside_agent_session():
-            print(f"ERROR: `delfin-agent service {action}` is refused: this "
-                  "process was started by an agent session: it may watch, not "
-                  "act. Only the user "
-                  "stops the agent service; ask them to run it.",
-                  file=sys.stderr)
-            return 1
+def _refused_inside_an_agent(action: str) -> bool:
+    """True (and said) when this process was started by an agent session:
+    over the socket the service answers it watch-only, and stop's signal
+    fallback would end the service past that rule. Only the user stops
+    the service or ends a session."""
+    from ..approval_guard import inside_agent_session
+    if not inside_agent_session():
+        return False
+    what = "ends sessions" if action == "end" else "stops the agent service"
+    print(f"ERROR: `delfin-agent service {action}` is refused: this "
+          "process was started by an agent session: it may watch, not "
+          f"act. Only the user {what}; ask them to run it.",
+          file=sys.stderr)
+    return True
+
+
+def _service(action: str, *, as_json: bool = False) -> int:
+    if action in ("stop", "restart") and _refused_inside_an_agent(action):
+        return 1
     hello, why = client.probe()
     if hello is None:
         pid = rundir.service_pid()
+        if as_json and action == "status":
+            print(json.dumps({"host": rundir.hostname(), "service": None, "sessions": [],
+                              "unanswering": {"pid": pid, "why": launcher.why_in_words(why)} if pid else None,
+                              "otherHosts": [{"host": _plain(o.get("host"), 60), "pid": o.get("pid")}
+                                             for o in rundir.other_hosts()]}, indent=2))
+            return 1 if pid else 0
         if pid:
             print(f"an agent service runs on {rundir.hostname()} (pid {pid}), "
                   f"but {launcher.why_in_words(why)}")
@@ -231,32 +312,153 @@ def _service(action: str) -> int:
         code = _stop(restart=action == "restart")
         return _start_again() if action == "restart" and code == 0 else code
     with client.ServiceClient(client="delfin-agent service") as svc:
-        status = svc.request("service.status")
-        listing = svc.request("sessions.list")
+        rows, status = _session_rows(svc)
+    elsewhere = status.get("elsewhere") or []
+    if as_json:
+        print(json.dumps({
+            "host": _plain(status.get("host")),
+            "service": {"pid": status.get("pid"), "host": _plain(status.get("host")),
+                        "startedAt": status.get("startedAt"), "windows": status.get("windows", 0),
+                        "socket": _plain(status.get("socket"))},
+            "sessions": rows,
+            "elsewhere": [{k: _plain(e.get(k)) for k in ("key", "sessionId", "title", "workspace", "host")}
+                          for e in elsewhere]}, indent=2))
+        return 0
     now = time.time()
-    sessions = status.get("sessions") or []
-    print(f"agent service on {status.get('host')}: pid {status.get('pid')}, "
+    running = [r for r in rows if r["state"] != "sleeping"]
+    asleep = len(rows) - len(running)
+    windows = int(status.get("windows") or 0)
+    print(f"agent service on {_plain(status.get('host'))}: pid {status.get('pid')}, "
           f"up {_age(now - float(status.get('startedAt') or now))}, "
-          f"{len(sessions)} session{'s' * (len(sessions) != 1)}, "
-          f"{status.get('windows', 0)} window{'s' * (status.get('windows') != 1)}")
-    for s in sessions:
-        title = _plain(s.get("title") or "(untitled)", 28)
-        pending = f", {s['pending']} waiting" if s.get("pending") else ""
-        print(f"  {_plain(s.get('sessionId'), 8)}  {title:28}  "
-              f"{_plain(s.get('state', '?'), 11):11} {_plain(s.get('workspace'))}{pending}")
-    asleep = [s for s in listing.get("sessions") or [] if s.get("state") == "sleeping"]
-    if asleep:
-        print("asleep (saved; they wake when opened or sent a message):")
-        for s in asleep:
-            title = _plain(s.get("title") or s.get("firstPrompt") or "(untitled)", 28)
-            print(f"  {_plain(s.get('sessionId'), 8)}  {title:28}  {_plain(s.get('workspace'))}")
-    elsewhere = listing.get("elsewhere") or []
+          f"{len(running)} session{'s' * (len(running) != 1)}, "
+          f"{windows} window{'s' * (windows != 1)}"
+          + (f", {asleep} asleep" if asleep else ""))
+    if rows:
+        print(f"  {'ID':8}  {'TITLE':28}  {'WORKSPACE':32}  {'STATE':15}  "
+              f"{'AGE':6}  {'ACTIVE':8}  WINDOWS")
+        for r in rows:
+            print(f"  {r['id'][:8]:8}  {r['title'][:28]:28}  {short_workspace(r['workspace']):32}  "
+                  f"{r['state']:15}  {_age(r['ageS']):6}  {_age(r['lastActivityS']) + ' ago':8}  "
+                  f"{r['windows']}")
+        if asleep:
+            print("  sleeping: saved, without a worker; it wakes when opened or sent a message")
+        print("  `delfin-agent service end <id>` ends one (it is saved and can be resumed)")
     if elsewhere:
         print("elsewhere (dashboards, terminals):")
         for e in elsewhere:
             print(f"  {_plain(e.get('key'), 12):12}  {_plain(e.get('title'), 28):28}  "
                   f"{_plain(e.get('workspace'))}")
     return 0
+
+
+#: How long `service end` waits for an ended session to have saved.
+END_WAIT_S = 60.0
+
+
+def _end(target: str, *, all_idle: bool, yes: bool) -> int:
+    """`delfin-agent service end <id>|--all-idle`: each session ends as the
+    agent view's ctrl+x twice ends it (``session.shutdown``): a running
+    turn is stopped, open questions are refused, the session is saved and
+    can be resumed. The service and the other sessions go on. Never a
+    signal: a service that does not answer ends nothing here."""
+    if _refused_inside_an_agent("end"):
+        return 1
+    if all_idle == bool(target):
+        print("ERROR: name one session (`delfin-agent service end <id>`, a unique "
+              "prefix is enough; `service status` lists them) or --all-idle",
+              file=sys.stderr)
+        return 2
+    hello, why = client.probe()
+    if hello is None:
+        print(f"ERROR: no agent service answers on {rundir.hostname()} "
+              f"({launcher.why_in_words(why)}): no session to end", file=sys.stderr)
+        return 1
+    with client.ServiceClient(client="delfin-agent service") as svc:
+        rows, _status = _session_rows(svc)
+        if all_idle:
+            chosen = [r for r in rows if r["state"] == "idle"]
+            if not chosen:
+                print("no idle session to end")
+                return 0
+        else:
+            chosen = matching(rows, target)
+            if not chosen:
+                print(f"ERROR: no session {_plain(target, 40)!r} in the agent service "
+                      "(`delfin-agent service status` lists them)", file=sys.stderr)
+                return 2
+            if len(chosen) > 1:
+                print(f"ERROR: {_plain(target, 40)!r} names {len(chosen)} sessions; "
+                      "give more of the id:", file=sys.stderr)
+                for r in chosen:
+                    print(f"  {r['id']}  {r['title'][:40]}", file=sys.stderr)
+                return 2
+        if not yes:
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                print("ERROR: not asked: this is no terminal; `--yes` ends without asking",
+                      file=sys.stderr)
+                return 2
+            if not _confirm(chosen):
+                return 1
+        mark = len(svc.events)
+        ended: list[dict] = []
+        kept: list[tuple[dict, str]] = []
+        for r in chosen:
+            params = {"sessionId": r["id"]}
+            if all_idle:
+                # Idle when listed; one that started to work since is left.
+                params["ifIdle"] = True
+            try:
+                reply = svc.request("session.shutdown", params, timeout=END_WAIT_S)
+            except client.ServiceError as exc:
+                kept.append((r, exc.message))
+                continue
+            if isinstance(reply, dict) and reply.get("closing") is False:
+                kept.append((r, str(reply.get("busy") or "it is busy")))
+                continue
+            ended.append(r)
+        saving = _wait_removed(svc, {r["id"] for r in ended}, mark, END_WAIT_S)
+    for r in ended:
+        still = " (still saving)" if r["id"] in saving else ""
+        print(f"ended {r['id'][:8]}  {r['title'][:40]}: saved{still}; "
+              f"`delfin-agent tui --resume {r['id']}` resumes it")
+    for r, why in kept:
+        print(f"not ended {r['id'][:8]}  {r['title'][:40]}: {_plain(why, 200)}", file=sys.stderr)
+    return 0 if ended or not kept else 1
+
+
+def _confirm(chosen: list[dict]) -> bool:
+    """y/N on the terminal: what is ended, and what that stops."""
+    for r in chosen:
+        note = {"working": " -- it works now: its turn is stopped",
+                "waiting for you": " -- it waits for you: its open question is refused"}.get(r["state"], "")
+        print(f"  {r['id'][:8]}  {r['title'][:40]}  ({r['state']}){note}")
+    n = len(chosen)
+    try:
+        answer = input(f"End {'this session' if n == 1 else f'these {n} sessions'}? "
+                       "It is saved and can be resumed. [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    print("nothing ended")
+    return False
+
+
+def _wait_removed(svc: "client.ServiceClient", ids: set[str], after: int,
+                  seconds: float) -> set[str]:
+    """Wait until the service says each of ``ids`` is gone (its worker
+    ended and saved); the ones it did not say within ``seconds``."""
+    left = set(ids)
+    deadline = time.monotonic() + seconds
+    while left:
+        try:
+            event, at = svc.wait_for(lambda e: e.get("type") == "session.removed"
+                                     and e.get("session") in left, after=after,
+                                     timeout=max(0.0, deadline - time.monotonic()))
+        except TimeoutError:
+            break
+        left.discard(event.get("session"))
+    return left
 
 
 def _start_again() -> int:

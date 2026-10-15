@@ -5337,10 +5337,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     svc = sub.add_parser(
         "service",
-        help="The agent service behind `delfin-agent tui`: status, stop, restart, logs",
+        help="The agent service behind `delfin-agent tui`: status (its sessions), "
+             "end a session, stop, restart, logs",
     )
     svc.add_argument("action", nargs="?", default="status",
-                     choices=["status", "stop", "restart", "logs"])
+                     choices=["status", "end", "stop", "restart", "logs"])
+    svc.add_argument("target", nargs="?", default="",
+                     help="end: the session's id, or a unique prefix of it")
+    svc.add_argument("--all-idle", dest="all_idle", action="store_true",
+                     help="end: every idle session (none that works or waits for you)")
+    svc.add_argument("--yes", "-y", action="store_true",
+                     help="end: without asking (for scripts)")
+    svc.add_argument("--json", action="store_true",
+                     help="status: as JSON, for scripts")
     svc.add_argument("--lines", type=int, default=40,
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)

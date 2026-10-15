@@ -1126,12 +1126,16 @@ class Supervisor:
         return {"sent": True}
 
     async def _m_service_status(self, _client: Client, _params: dict) -> dict:
+        def windows(clients) -> int:
+            # TUI windows, not this request or other probes.
+            return sum(1 for c in clients if c.greeted and c.name == "delfin-tui")
+
         return {"pid": os.getpid(), "host": rundir.hostname(),
                 "startedAt": round(self.started_at, 3),
-                "sessions": [s.summary() for s in self.sessions.values()],
-                # TUI windows, not this request or other probes.
-                "windows": sum(1 for c in self.clients
-                               if c.greeted and c.name == "delfin-tui"),
+                # Each with the windows attached to it (`service status`).
+                "sessions": [{**s.summary(), "windows": windows(s.subscribers)}
+                             for s in self.sessions.values()],
+                "windows": windows(self.clients),
                 "socket": str(rundir.socket_path())}
 
     async def _m_service_shutdown(self, _client: Client, params: dict) -> dict:
