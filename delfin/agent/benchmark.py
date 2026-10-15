@@ -2491,10 +2491,16 @@ def _git_head(package_dir: Path) -> dict[str, Any]:
 
 
 def _process_start_time() -> Optional[float]:
-    """Epoch seconds this process started, from /proc; None elsewhere."""
+    """Epoch seconds this process started; None where it cannot be told.
+
+    The start ticks come from proc_identity.start_ticks, the one reader of
+    a process start time (tests/test_one_reader_of_a_process_start_time);
+    the boot time and the tick rate turn them into a date."""
     try:
-        stat = Path("/proc/self/stat").read_text()
-        ticks = int(stat.rsplit(")", 1)[1].split()[19])
+        from . import proc_identity as _pi
+        ticks = _pi.start_ticks(os.getpid())
+        if ticks is None:
+            return None
         hz = os.sysconf("SC_CLK_TCK")
         for line in Path("/proc/stat").read_text().splitlines():
             if line.startswith("btime "):

@@ -144,19 +144,19 @@ def _bash_double(monkeypatch, answer):
     """The bash call run_tests makes, answered by ``answer(args)``; every
     other tool runs for real."""
     seen: list[dict] = []
-    # The class of the executor that will run, looked up now: a test that
-    # reloads api_client earlier in the session leaves a module-level
-    # import pointing at the previous class.
-    cls = type(A._doc_executor)
-    real = cls.execute
+    # Patched on the live executor instance: an instance attribute shadows
+    # the class, and an earlier test of the session may leave one (or a
+    # reloaded api_client a new class) behind.
+    ex = A._doc_executor
+    real = ex.execute
 
-    def fake(self, name, arguments, permissions=None):
+    def fake(name, arguments, permissions=None):
         if name == "bash":
             seen.append(dict(arguments))
             return json.dumps(answer(arguments))
-        return real(self, name, arguments, permissions)
+        return real(name, arguments, permissions)
 
-    monkeypatch.setattr(cls, "execute", fake)
+    monkeypatch.setattr(ex, "execute", fake)
     return seen
 
 
