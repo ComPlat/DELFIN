@@ -57,7 +57,7 @@ _OK_TERMINAL_STATES = frozenset({"COMPLETED"})
 
 # Known error signatures in .err/.out files → short labels the diagnosis
 # prompt (and the notification) can use.  Grown from real cases — the
-# venv/tarball entry IS Jerome's production failure.
+# venv/tarball entry is a production failure from a field report.
 ERROR_SIGNATURES: tuple[tuple[str, str], ...] = (
     (r"bin/activate: No such file or directory", "venv-activation-failed"),
     (r"(?i)out.of.memory|oom-kill|Killed", "out-of-memory"),

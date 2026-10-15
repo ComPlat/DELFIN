@@ -72,12 +72,12 @@ DEFAULT_SETTINGS = {
         # Above 0.99 risks OOM-SIGKILL (Linux cgroup is unforgiving), below
         # 0.50 wastes resources. Set lower (0.85) for correlation methods
         # (DLPNO-CC, MP2) where ORCA's real RSS may exceed %maxcore. Set
-        # higher (0.95) for pure DFT-OPT setups where Fritz' archive shows
+        # higher (0.95) for pure DFT-OPT setups where a user archive shows
         # real RSS = 80-82 % of promised.
         # Historical context: 5edfb89 (2026-05-05) introduced the cap at
         # 0.85 after JEW-R465 OOM (312 GB / 351 GB SLURM, two parallel
         # OCCUPIER jobs SIGKILL after 48 h). Default raised to 0.90 on
-        # 2026-05-12 after Fritz-archive analysis.
+        # 2026-05-12 after a user-archive analysis.
         "slurm_mem_headroom": 0.90,
     },
     "ui": {

@@ -3553,7 +3553,7 @@ def _calc_missing_file_hint(filepath: str, look_dir: Path, calc_dir: Path) -> st
 
     The agent (any model) tends to GUESS output names like ``orca.out``
     that don't match DELFIN's actual filenames, then gets stuck
-    repeating "Not a file" (Jerome's error-detection bug). Instead of a
+    repeating "Not a file" (an error-detection bug from a field report). Instead of a
     dead-end, list what's really in the folder — surfacing
     ``.out``/``.log``/``.inp`` with OK/ERROR markers — and point at the
     structured analysis command so even a weak model self-corrects.
@@ -6015,7 +6015,7 @@ def create_tab(ctx):
 
     # Show only models that actually work for the current auth. When OpenAI runs
     # through the Codex CLI on a ChatGPT-account login (no OPENAI_API_KEY), the
-    # API-only '*-codex' models fail with a 400 (bug 2026-06-25: Jerome picked
+    # API-only '*-codex' models fail with a 400 (bug 2026-06-25: a user picked
     # gpt-5.3-codex → "not supported when using Codex with a ChatGPT account").
     # Drop them from the offered list. A live fetch (which needs an API key, i.e.
     # API mode) overwrites this with the full list, so API users still see all.
@@ -6279,7 +6279,7 @@ def create_tab(ctx):
         tooltip="Export this session's chemistry steps as a Jupyter notebook",
     )
 
-    # Git workflows (requested by Tilmann, 2026-10-09). Each button sends
+    # Git workflows (user feedback, 2026-10-09). Each button sends
     # its slash command -- the same text a person could type, in the
     # dashboard or the terminal -- and the shipped skill of that name
     # (delfin/agent/pack/skills/) is the playbook the model follows:
@@ -6500,7 +6500,7 @@ def create_tab(ctx):
     # Their widget objects stay alive (handlers/toggles still wired), just
     # not placed in any visible row.
     #   Export / Export as notebook -> the bug report downloads a copy of
-    #     everything when it is sent (Tilmann/user, 2026-10-09)
+    #     everything when it is sent (user feedback, 2026-10-09)
     for _hidden in (new_cycle_btn, advance_btn, undo_btn, commit_btn,
                     push_btn, push_confirm_btn, push_cancel_btn,
                     export_btn, nb_export_btn):
@@ -13750,7 +13750,7 @@ def create_tab(ctx):
         if cmd == "/grant" or cmd.startswith("/grant "):
             # Parse the argument from the ORIGINAL-case text, not the
             # lowercased ``cmd`` — paths are case-sensitive on Linux
-            # (Jerome's bug: ``.../Porpoise`` was searched as
+            # (a field report: ``.../Porpoise`` was searched as
             # ``.../porpoise`` and "not found"). The "/grant" token is
             # 6 chars regardless of case.
             arg = text.strip()[len("/grant"):].strip()
@@ -22243,7 +22243,7 @@ def create_tab(ctx):
         The repo to operate on is determined by walking up from the
         edited file until a ``.git`` directory is found \u2014 necessary
         because the agent now writes into extra_workspace_dirs that are
-        unrelated to ``ctx.repo_dir`` (e.g. Jerome's TestOpt project
+        unrelated to ``ctx.repo_dir`` (e.g. a user's TestOpt project
         while the dashboard runs from the DELFIN repo).
 
         If the edit was a fresh ``write_file`` (untracked file in git),

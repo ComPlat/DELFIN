@@ -121,7 +121,7 @@ shows them.
 ```
  ◆ AGENTS  4 sessions · 3 need you
   NEEDS YOU
-  › ◉ scan of benzene      question: which functional for the excited states?   dashboard · uc3n991    2h
+  › ◉ scan of benzene      question: which functional for the excited states?   dashboard · login02    2h
     ✗ job 4711 failed      OUT_OF_MEMORY · diagnosis ready · a fix is prepared    ~/calc/benzene        12m
     ◉ tui-p5-C             waiting for you: bash -> created_by_c.txt              here                   0s
   WORKING
@@ -132,7 +132,7 @@ shows them.
     · job 4702 finished    COMPLETED · ~/calc/water                                                     1h
     · budget nearly spent  long refactor · 80% of $2.00                                                 3h
   ELSEWHERE · watch and message
-    ◇ ORCA builder         dashboard · uc3n991
+    ◇ ORCA builder         dashboard · login02
 ```
 
 - **NEEDS YOU** replaces NEEDS INPUT. It holds what blocks a session or
@@ -171,7 +171,7 @@ window can open a session that started anywhere else.
 |---|---|
 | A session of this service | opens it, as today |
 | A session elsewhere that is closed (no longer open in the dashboard or terminal) | resumes that same session here: its whole history, the same id |
-| A session still open elsewhere | opens a **copy** here: its history up to its last saved turn, under a new id. Opening the original twice would make two programs write one conversation; the session lock would then silently skip one side's saves. The row and the banner say "a copy of … (still open in the dashboard on uc3n991)" |
+| A session still open elsewhere | opens a **copy** here: its history up to its last saved turn, under a new id. Opening the original twice would make two programs write one conversation; the session lock would then silently skip one side's saves. The row and the banner say "a copy of … (still open in the dashboard on login02)" |
 | A parked question | opens its session, as above (resumed or a copy). You answer there as an ordinary message, and the inbox entry is closed, so the answer is never delivered a second time |
 | A failed job the monitor diagnosed | resumes the monitor's diagnosis session, which holds the diagnosis and the prepared fix |
 | Anything with no session behind it: a failed or finished job, a scheduled run, an alert, a budget notice whose session is gone | starts a **new session** in the item's folder, with the item as its opening context, shown as one row you can expand with ctrl+o. For a failed job the context is the job id, the SLURM state, the folder, the error lines found, the diagnosis and the prepared fix. A suggested prompt stands in the prompt box ("Job 4711 failed with OUT_OF_MEMORY. What went wrong, and what should we change?"). Nothing is sent, and nothing costs tokens, until you press enter. The dashboard's `/session handoff new` already works this way |
