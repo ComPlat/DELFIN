@@ -65,9 +65,21 @@ describe("the banner", () => {
     for (let i = 2; i < DOLPHIN.length; i++) expect(scrollback[at + i - 1]!.startsWith(PAD + DOLPHIN[i]!.trimEnd())).toBe(true)
   })
 
+  test("draws the dolphin in braille cells, an empty cell a space", async () => {
+    const { DOLPHIN, DOLPHIN_WIDTH } = await import("../../src/theme/logo")
+    expect(DOLPHIN.length).toBeGreaterThanOrEqual(6)
+    expect(DOLPHIN.length).toBeLessThanOrEqual(8)
+    expect(DOLPHIN_WIDTH).toBeGreaterThanOrEqual(18)
+    expect(DOLPHIN_WIDTH).toBeLessThanOrEqual(22)
+    for (const row of DOLPHIN) {
+      expect(row.length).toBe(DOLPHIN_WIDTH)
+      expect(row).toMatch(/^[ \u2801-\u28ff]+$/)
+    }
+  })
+
   test("is the words alone, under the mark, where there is not", async () => {
     const { scrollback } = await conversation(40)
-    expect(scrollback.some((l) => l.includes("▟"))).toBe(false)
+    expect(scrollback.some((l) => /[\u2801-\u28ff]/.test(l))).toBe(false)
     expect(scrollback.some((l) => l.startsWith(PAD + "◆ DELFIN"))).toBe(true)
   })
 })
@@ -87,7 +99,7 @@ describe("the banner's long lines", () => {
       w.store.push({ type: "session.info", session: "s1", ts: 0, seq: 0, workspace: "/w", ...info } as never)
       await w.settle()
       // Read without the wrapping and without the dolphin beside it.
-      const flat = (t: string) => t.replace(/[\u2580-\u259f]/g, "").replace(/\s+/g, "")
+      const flat = (t: string) => t.replace(/[\u2800-\u28ff]/g, "").replace(/\s+/g, "")
       const text = flat(w.t.externalOutput.takeText())
       for (const words of ["3 uncommitted)", "[from ~/.delfin/settings.json]", "writes only inside the workspace (--no-isolate)",
                            "solvent scan for benzene"]) {

@@ -1,7 +1,7 @@
 /**
  * Every key binding in one registry, like OpenCode's keymap.
  *
- * The defaults are today's keys (the REPL's, which follow Claude Code's);
+ * The defaults are today's keys (the REPL's, which follow the common agent-CLI keys);
  * `~/.delfin/tui.json` may rebind any action ("keys": {"steer": ["ctrl+g"]}).
  * A binding is a key name with modifiers: "ctrl+g", "shift+tab", "escape",
  * "left", "alt+return". The footer asks `matches("steer", key)`; nothing
@@ -25,7 +25,7 @@ export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   steer: ["ctrl+g"],
   cycleMode: ["shift+tab"],
   // A tool call is its headline and what came back; ctrl+o shows what it
-  // printed (Claude Code's key). The last result in full: the palette.
+  // printed (the common agent-CLI key). The last result in full: the palette.
   details: ["ctrl+o"],
   expand: [],
   tasks: ["ctrl+t"],
@@ -163,7 +163,7 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "cycleMode", does: "Next approval posture (never onto bypass)." },
   { action: "details", does: "Show or hide the tool calls' details: what each printed, an edit's diff. Full screen: a click on one shows just its own. Under GNU screen, inline: the last result in full." },
   { action: "expand", does: "The last tool result in full, written into the conversation." },
-  { action: "tasks", does: "Show or hide the open task list at the end of each turn." },
+  { action: "tasks", does: "Fold the task list above the prompt to one line, or open it again." },
   { action: "redraw", does: "Write the session again at the terminal's width." },
   { keys: "backspace / ctrl+u", does: "Edit or clear the line you are typing (ctrl+w a word, ctrl+k to the end)." },
   { action: "historyPrev", does: "On the prompt's first line: the previous prompt from the history." },

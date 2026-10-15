@@ -5,7 +5,7 @@
 Started by ``delfin-agent tui`` when it is not running (``launcher.py``),
 detached from the terminal, so a session keeps working after its window
 closes and the next window attaches to it again -- the way tmux keeps a
-shell, and the way Claude Code keeps its background agents.
+shell, and the way agent CLIs keep their background agents.
 
     window ──socket── supervisor ──pipe── worker (one per session)
     window ──socket──/            \\──pipe── worker

@@ -1,9 +1,11 @@
-▜▄
- ▝▙ ▄▄███▙▄▖         DELFIN  fake/fake-model · solo
-  ▞▀▜███████▙▄       workspace  /home/user/project
-       ▀▀▜█████▖     approval   default
-           ▝▀█▟▙
-              ▝▀█▖
+⠐⢺⣿⣟⣶⣶⣾⣿⣿⣿⣷⣦
+       ⣼⣿⠿⢟⣻⣭⣿⣿⠿⠿⠟⠛⠁   DELFIN  fake/fake-model · solo
+     ⢠⡾⢋⡵⠞⠛⢉⣿⠟         workspace  /home/user/project
+    ⢠⢟⠔⠉   ⠋⠁          approval   default
+   ⣀⣯⠃
+ ⠴⠛⠛⠻⢷  ⢀⣠⣤⣤⣤⠤⢤⣄⡀
+ ⠠⣀⣀⣀⣤⣴⣾⡿⠛⢉⣠⡤⠖⠒⠂⠈
+   ⠉⠉⠉⣉⣁⡤⠾⠋⠁
 
  ❯ hello there
  ⏺ read_file  README.md

@@ -156,6 +156,7 @@ export interface SessionInfoEvent {
   "title"?: string | null
   "banner": string[]
   "notices": string[]
+  "tasks"?: Record<string, unknown>[] | null
   "type": "session.info"
   "session": string
   "ts": number
@@ -166,6 +167,7 @@ export interface SessionUpdatedEvent {
   "model"?: string | null
   "effort"?: string | null
   "title"?: string | null
+  "tasks"?: Record<string, unknown>[] | null
   "type": "session.updated"
   "session": string
   "ts": number

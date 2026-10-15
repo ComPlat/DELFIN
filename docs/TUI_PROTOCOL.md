@@ -104,11 +104,21 @@ the session's:
   from its `/v1/models`, and reused for ten minutes; `detail` says where a
   model runs and, when it has a price, what it costs), the effort levels,
   or the agent modes. It is answered on a thread of its own, so a slow
-  model list never holds up the next request.
+  model list never holds up the next request. When a KIT session's list
+  cannot be read, it offers the curated roster
+  (`model_capabilities._KIT_PREFERENCE`) with a detail saying so; the
+  current model is always among the choices.
 
 A pick is applied by sending what the user would type: `/model <name>`,
 `/effort <level>`, `/mode <name>` as a `session.prompt`, so it is queued
-behind a running turn like any typed command. The approval posture is
+behind a running turn like any typed command. `/model <name>` is the
+REPL's own command (`repl_commands._model`, then the client's
+`switch_model`): on an OpenAI-compatible endpoint a name its
+`/v1/models` does not list as a chat model is refused, with the nearest
+names, and the model stays; when the list cannot be read the switch is
+made and its notice says the name was not checked. A switch changes the
+model only -- a `session.updated` with `model` follows; the approval
+posture, the permission rules and the managed policy stay as they are. The approval posture is
 `session.setMode`.
 
 ### Prompts
@@ -171,8 +181,8 @@ carry their final values.
 | Event | Fields | Durable |
 |---|---|---|
 | `worker.ready` | `protocolVersion`, `pid` | |
-| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]` | ✓ |
-| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?` | ✓ |
+| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]`, `tasks[]?` | ✓ |
+| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?`, `tasks[]?` | ✓ |
 | `session.state` | `state`: `idle`, `running`, `needs_input` or `ended` | |
 | `session.ended` | `reason`, `exitCode` | ✓ |
 | `user.message` | `text`, `source`: `user`, `queued`, `steer` or `harness` | ✓ |
@@ -200,6 +210,16 @@ carry their final values.
 - `session.updated` follows every change of posture, model or effort,
   however it happened: a plan approval, "stop asking about writes",
   `/permissions` or `/model` sent as a prompt, `session.setMode`.
+- `tasks` is the session's task list as it is now, whole: the rows the
+  dashboard and the REPL draw (`task_ticker.rows`), in their order (in
+  progress, blocked, pending, completed), each `num` (the number the user
+  reads), `status` (`pending`, `in_progress`, `blocked`, `completed`) and
+  `label` (the active form while in progress, the reason appended while
+  blocked). A label is the model's text: it arrives as one plain line,
+  escapes and control characters made spaces, at most 160 characters. The
+  worker looks at the task store on every tick and sends a
+  `session.updated` with `tasks` when the rows changed; a replay's header
+  carries the current list.
 - `harness` marks something nobody typed: a finished background job, a
   message from another session, a continuation.
 - `turnId` is `t1`, `t2`, … per session; a resumed session numbers on.
