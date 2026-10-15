@@ -7,9 +7,10 @@
  * (approval.tsx), everything else is typing, and a line sent is the
  * question's typed answer -- or, for an approval, a message; the window's
  * other actions wait. Else the composer (completion, history, search),
- * then the keymap's actions. ctrl+c and ctrl+d work in all of them. Leaving the window (ctrl+d, or ctrl+c twice) never ends
- * a session: it keeps running in the agent service, and the next window
- * attaches to it again.
+ * then the keymap's actions. ctrl+c and ctrl+d work in all of them.
+ * Leaving the window (ctrl+d, or ctrl+c twice) never ends a session: it
+ * keeps running in the agent service, and the next window attaches to it
+ * again.
  */
 import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"

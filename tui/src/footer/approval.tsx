@@ -392,9 +392,10 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       // Any other key: it was the first letter of typing, and this the next.
       if (releaseHeld()) empty = false
     }
-    if (modified(key)) return false               // the prompt's editing keys; never typing either
+    if (modified(key)) return false               // the prompt's editing keys; not counted as typing
     const t = now()
     const char = keyChar(key)
+    const printable = Boolean(key.sequence) && key.sequence!.length === 1 && key.sequence! > " "
     const own = empty && panelKey(asked, state.mode, char, key.name)
     // Answered, waiting for the session to settle it: its keys again (a
     // key pressed twice) are dropped, not typed into the prompt.
@@ -412,12 +413,10 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       if (typeahead) {
         setState({ burst: true, swallowed: true })
         // A letter goes on into the prompt; enter, esc and the arrows are dropped.
-        const printable = Boolean(key.sequence) && key.sequence!.length === 1 && key.sequence! > " "
         return !printable
       }
       if (state.burst) setState({ burst: false })
     }
-    const printable = Boolean(key.sequence) && key.sequence!.length === 1 && key.sequence! > " "
     // Held: every key of an approval (a step as well -- "An..." would be
     // A, then n "just this once") and a question's pick. Not the toggles of
     // a question of several answers: they send nothing, enter does.
