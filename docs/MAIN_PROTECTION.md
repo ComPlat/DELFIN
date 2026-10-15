@@ -50,11 +50,14 @@ new alert of severity *error* or a security alert of *high* or *critical*.
 
 Not required, on purpose:
 
-- `dependency audit` (ci.yml) audits everything already installed. A
-  vulnerability published upstream turns it red on every branch at once,
-  unrelated to the change under review; as a required check it would stop
-  all merges until upstream ships a fix. `dependency review` is the
-  change-scoped half and is required.
+- `dependency audit` (audit.yml, nightly and on demand) audits the closure
+  a user installs (`.[agent,docs]`) and is red while an advisory is open
+  and not recorded in `.github/ci/audit-ignore.txt`. A vulnerability
+  published upstream turns it red on every branch at once, unrelated to the
+  change under review; as a required check, or as a job in ci.yml, whose
+  conclusion is the merge verdict, it would stop all merges until upstream
+  ships a fix. `dependency review` is the change-scoped half and is
+  required.
 - `binary (...)` (tui.yml) builds the window for four platforms, two of them
   on macOS runners that are scarce; it reports, it does not gate.
 - `slow-tests.yml` and `sandbox-macos.yml` run on a schedule or on demand.

@@ -148,6 +148,49 @@ def test_a_required_check_reports_on_every_pull_request(workflow):
     )
 
 
+_DOC = _WORKFLOWS.parents[1] / "docs" / "MAIN_PROTECTION.md"
+
+
+def _documented_checks() -> list[tuple[str, str]]:
+    """(check, workflow) for every table row ``| `check` | wf.yml |`` and
+    every bullet ``- `check` (wf.yml...`` in docs/MAIN_PROTECTION.md."""
+    import re
+    out = []
+    for line in _DOC.read_text(encoding="utf-8").splitlines():
+        row = re.match(r"\|\s*(`[^|]+`)\s*\|\s*([\w-]+\.yml)\s*\|", line)
+        bullet = re.match(r"-\s*`([^`]+)`\s*\(([\w-]+\.yml)\b", line)
+        if row:
+            for check in re.findall(r"`([^`]+)`", row.group(1)):
+                out.append((check, row.group(2)))
+        elif bullet:
+            out.append((bullet.group(1), bullet.group(2)))
+    return out
+
+
+def test_the_protection_document_names_the_workflow_of_each_check():
+    """The document is the reference a maintainer reads when a check is
+    missing; a check filed under the wrong workflow (the dependency audit
+    moved from ci.yml to audit.yml) sends them to a file that does not
+    produce it. A name ending in ``(...)`` stands for its matrix."""
+    documented = _documented_checks()
+    assert ("dependency audit", "audit.yml") in documented, documented
+    wrong = []
+    for check, workflow in documented:
+        rendered = _rendered_check_names(workflow)
+        if check.endswith("(...)"):
+            prefix = check[:-len("(...)")]
+            ok = any(r.startswith(prefix) for r in rendered)
+        else:
+            ok = check in rendered
+        if not ok:
+            wrong.append((check, workflow, sorted(rendered)))
+    assert not wrong, wrong
+    for workflow, checks in _REQUIRED_CHECKS.items():
+        for check in checks:
+            assert (check, workflow) in documented, (
+                f"{check} is required ({workflow}) and not in the document")
+
+
 def test_the_window_tests_are_skipped_only_on_a_definite_no():
     """A job whose `needs` failed is skipped, and a skipped required check
     passes. So the window tests must run when the job deciding whether they
