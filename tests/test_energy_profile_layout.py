@@ -740,3 +740,31 @@ def test_an_admitted_output_that_is_missing_or_no_file_is_named(outputs):
         with pytest.raises(SpecError, match=match):
             plot({"kind": "energy_profile", "series": [
                 {"files": ["hcn.out", name]}]}, out_dir=str(outputs))
+
+
+@pytest.mark.parametrize("where", ["outside", "secret", "inside"])
+def test_make_plot_reads_outputs_only_through_the_read_gate(tmp_path, where):
+    """_execute_make_plot with files: outside the roots and under .ssh
+    refused before anything is written, inside the workspace read."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    folder = {"outside": tmp_path / "elsewhere", "secret": ws / ".ssh",
+              "inside": ws / "calc"}[where]
+    folder.mkdir()
+    (folder / "hcn.out").write_text(_out("C N H", -92.25649008),
+                                    encoding="utf-8")
+    (folder / "hnc.out").write_text(_out("C N H", -92.23316966),
+                                    encoding="utf-8")
+    out = _dispatch({"kind": "energy_profile", "series": [
+        {"x": ["HCN", "HNC"],
+         "files": [str(folder / "hcn.out"), str(folder / "hnc.out")]}]}, ws)
+    if where == "inside":
+        assert out.startswith("DELFIN_CARD:"), out
+        assert "-> 14.63" in out
+        assert (ws / "plot_energy_profile.png").is_file()
+    else:
+        assert not out.startswith("DELFIN_CARD:")
+        assert "refused: read denied" in out
+        assert ("secret deny-glob" in out) == (where == "secret")
+        assert "Eh" not in out
+        assert not list(ws.glob("*.png"))
