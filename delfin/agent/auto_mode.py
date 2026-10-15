@@ -958,6 +958,13 @@ class AutoController:
         for f in soft:
             self._queue("review", f"iteration {it.n} changed {f.path}: "
                         f"{f.detail}", "kept, but a person should look")
+        claims, claims_source = auto_guard.claim_findings(
+            answer, check_command=spec.check if not hard else "",
+            check_exit=code, edited=bool(changed))
+        if claims:
+            self._queue("review", f"iteration {it.n} claims "
+                        f"'{claims[0][:120]}' but `{spec.check}` exits {code}",
+                        "a claim the harness's measurement does not back")
         # repeated identical failure
         fp = ""
         if error:
@@ -1000,6 +1007,7 @@ class AutoController:
                    "marker": list(marker) if marker else None,
                    "tokens": self._tokens_used_cache,
                    "measure_source": auto_guard.measure_source(),
+                   "claims": claims, "claims_source": claims_source,
                    "preempted": it.preempted, "error": error[:300]})
         digest = (f"auto · {spec.name} · iteration {it.n}: {result}"
                   + (f" — {why}" if why else "")
