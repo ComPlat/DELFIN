@@ -1652,9 +1652,35 @@ delfin-agent service logs
 The window runs as one executable when there is one -- `DELFIN_TUI_BINARY`,
 one shipped with the package, or one built in a checkout with
 `cd tui && bun scripts/build-binary.ts` (used while it is newer than the
-sources) -- and otherwise from source with [Bun](https://bun.sh) (`tui/`,
-`bun install` once). The executable needs no Bun and opens in about a
-third of a second.
+sources) -- and otherwise from source with [Bun](https://bun.sh). The
+executable needs no Bun and opens in about a third of a second.
+
+**First start.** When there is neither, the first `delfin-agent tui` sets
+the window up by itself and says so in one line: Bun 1.4.3 from its GitHub
+release (about 42 MB; size and SHA-256 pinned in DELFIN, checked before the
+archive is opened) into `~/.delfin/tools/bun-1.4.3`, then the window's npm
+packages with `bun install --frozen-lockfile --ignore-scripts --production`
+(about 21 MB, exactly the versions of `bun.lock`, each checked against its
+integrity hash, no install scripts) -- into `tui/node_modules` of a
+checkout, or, for a wheel install or a checkout you cannot write, into a
+copy of the window's sources in `~/.delfin/tools/tui-<digest>`. Proxies
+come from `HTTPS_PROXY`/`NO_PROXY`. It is refused as root and inside an
+agent session: the window is set up by you, in your own shell.
+
+```bash
+delfin-agent tui --setup        # set it up now and exit (also when automatic setup is off)
+delfin-agent doctor             # the "terminal window" row says what is there
+DELFIN_TUI_AUTO_INSTALL=0 delfin-agent tui   # no automatic setup: prints the manual commands
+```
+
+`"agent": {"tui_auto_install": false}` in `~/.delfin_settings.json` switches
+the automatic setup off for good. On a host without network, build the
+binary elsewhere (`cd tui && bun install && bun scripts/build-binary.ts`)
+and point `DELFIN_TUI_BINARY` at it. The window set up this way uses
+OpenTUI's prebuilt native library; `scripts/build-opentui-native.sh` in the
+window's folder builds the patched one (needs Zig, minutes), which keeps
+every row in the scrollback of xterm.js terminals (VS Code, JupyterLab)
+when the footer grows.
 
 **In a session** the REPL's keys apply: enter sends (during a turn it is
 queued), ctrl+g sends into the running turn, esc ends the turn, shift+tab
