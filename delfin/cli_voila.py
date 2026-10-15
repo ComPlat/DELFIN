@@ -683,6 +683,13 @@ def _reexec_under_tmux(argv) -> "int | None":
     return int(proc.returncode or 0)
 
 
+def _announces_where(env) -> bool:
+    """False for a branch preview (branch_preview.preview_env sets the
+    markers): the note says where *the* dashboard runs, and a preview
+    closes with its branch."""
+    return not (env.get("DELFIN_PREVIEW_BRANCH") and env.get("DELFIN_PREVIEW_WORKTREE"))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -1220,6 +1227,8 @@ def main(argv=None):
     try:
         from delfin.agent import where as _where
 
+        if not _announces_where(os.environ):
+            raise RuntimeError("a branch preview leaves the note alone")
         _where.announce_dashboard(
             port=args.port, token=_token, url=dashboard_url,
             resume_path=resume_url_path.split("?")[0] if resume_url_path else "")
