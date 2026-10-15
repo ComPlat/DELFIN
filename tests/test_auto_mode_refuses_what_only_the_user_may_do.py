@@ -210,3 +210,54 @@ def test_a_redirect_into_the_measure_is():
     v = _c("bash", {"command": "printf 'ok' >> tests/test_table.py"},
            measure=MEASURE)
     assert v is not None and v.kind == "measure"
+
+
+def test_a_claim_the_failed_check_contradicts_is_found():
+    out, source = ag.claim_findings(
+        "Fixed it. All tests pass now.\nLOOP: progress",
+        check_command="pytest -q", check_exit=1, edited=True)
+    assert out and "tests pass" in out[0].lower()
+    assert source in ("verification_claims", "builtin")
+    # A passing check backs it; no check, nothing to contradict.
+    assert ag.claim_findings("All tests pass now.", check_command="pytest -q",
+                             check_exit=0, edited=True)[0] == []
+    assert ag.claim_findings("All tests pass now.", check_command="",
+                             check_exit=None, edited=True)[0] == []
+
+
+def test_claim_findings_use_verification_claims_when_present(monkeypatch):
+    import sys
+    import types
+    from dataclasses import dataclass
+
+    @dataclass
+    class Claim:
+        kind: str
+        sentence: str
+
+    @dataclass
+    class Run:
+        kind: str
+        outcome: str
+
+    @dataclass
+    class Verdict:
+        claim: Claim
+        reason: str
+
+    fake = types.ModuleType("delfin.agent.verification_claims")
+    fake.Claim, fake.Run, fake.Verdict = Claim, Run, Verdict
+    seen = {}
+    fake.find_claims = lambda text: [Claim("test", "it is verified")]
+
+    def judge(claims, runs, *, edited, tried_tests=True):
+        seen["runs"] = list(runs)
+        return [Verdict(c, "no passing run") for c in claims]
+
+    fake.judge = judge
+    monkeypatch.setitem(sys.modules, "delfin.agent.verification_claims", fake)
+    out, source = ag.claim_findings("it is verified", check_command="make check",
+                                    check_exit=2, edited=True)
+    assert source == "verification_claims"
+    assert out == ["it is verified — no passing run"]
+    assert seen["runs"][0].outcome == "failed"
