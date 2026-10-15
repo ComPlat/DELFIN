@@ -610,6 +610,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         notes.append(f"{energy} energies relative to {' + '.join(ref_file)} "
                      f"({ref_eh:.6f} Eh), x {factor:g} {units}/Eh")
         _check_balance(parsed, outputs, ref_file, notes)
+        if energy == "gibbs":
+            _standard_state_note(parsed, notes)
 
     typed = any(not files for *_, files in parsed)
     from_user = spec.get("from_user") is True or any(
@@ -768,6 +770,25 @@ def _check_balance(parsed, outputs, ref_key, notes) -> None:
                  f"{ep.formula(*want)}" + (
                      f"; NOT checked for {', '.join(unread)} (no geometry)"
                      if unread else ""))
+
+
+def _standard_state_note(parsed, notes) -> None:
+    """Say so when the number of separate molecules changes along a profile.
+
+    Free energies from outputs refer to 1 atm; in solution the reference is
+    1 M, RT ln 24.46 = 1.89 kcal/mol per molecule at 298.15 K, which does
+    not cancel when molecules associate or dissociate. Not applied: the
+    temperature, the phase and whether the outputs already include it are
+    the caller's to state.
+    """
+    counts = [len(key) for *_, files in parsed for key in files or []
+              if key is not None]
+    if counts and min(counts) != max(counts):
+        notes.append(
+            f"number of molecules changes ({counts[0]} -> "
+            f"{next(c for c in counts if c != counts[0])}): the 1 atm -> 1 M "
+            f"standard-state correction (RT ln 24.46 = 1.89 kcal/mol per "
+            f"molecule at 298.15 K) is NOT applied")
 
 
 def _frequency_note(state: str, imag) -> str:
@@ -934,9 +955,10 @@ def _plot_energy_profile(spec, out_path, out_dir_path, reader, *,
                f"{', '.join(map(str, starts))}, highest {highest[0]:.2f} "
                f"{units} at state {highest[1]}")
     if notes:
-        # What contradicts the picture first, so a cut caption keeps it.
-        notes = ([n for n in notes if "WARNING" in n or "NOT" in n]
-                 + [n for n in notes if not ("WARNING" in n or "NOT" in n)])
+        # What contradicts the picture first, then what was not checked or
+        # applied, so a cut caption keeps both.
+        notes = sorted(notes, key=lambda n: (0 if "WARNING" in n else
+                                             1 if "NOT" in n else 2))
         shown = notes[:_MAX_NOTES]
         if len(notes) > _MAX_NOTES:
             shown.append(f"... {len(notes) - _MAX_NOTES} more states")

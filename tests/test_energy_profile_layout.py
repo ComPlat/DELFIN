@@ -766,3 +766,19 @@ def test_make_plot_reads_outputs_only_through_the_read_gate(tmp_path, where):
         assert ("secret deny-glob" in out) == (where == "secret")
         assert "Eh" not in out
         assert not list(ws.glob("*.png"))
+
+
+def test_a_change_in_the_number_of_molecules_names_the_standard_state(outputs):
+    """Association in solution: free energies from gas-phase 1 atm outputs
+    need RT ln 24.46 per molecule lost; the tool says it did not apply it."""
+    spec = {"kind": "energy_profile", "series": [
+        {"x": ["BH3 + NH3", "H3N-BH3"],
+         "files": [["bh3.out", "nh3.out"], "adduct.out"]}]}
+    res = plot(spec, out_dir=str(outputs))
+    assert "1 atm -> 1 M" in res.caption and "2 -> 1" in res.caption
+    assert "1.89 kcal/mol" in res.caption
+    res = plot(dict(spec, energy="electronic"), out_dir=str(outputs))
+    assert "1 atm" not in res.caption
+    res = plot({"kind": "energy_profile", "series": [
+        {"files": ["hcn.out", "ts.out", "hnc.out"]}]}, out_dir=str(outputs))
+    assert "1 atm" not in res.caption

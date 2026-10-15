@@ -55,7 +55,8 @@ same atoms and the same total charge.
 - When the number of separate molecules changes (association,
   dissociation) in solution, the 1 atm -> 1 M standard-state correction
   (RT ln 24.46 = 1.89 kcal/mol per molecule at 298.15 K) matters. Point it
-  out and ask; the tool does not apply it.
+  out and ask; the tool does not apply it (with `files` its caption says
+  when the count changes).
 
 ## 3. Transition states
 - **Computed TS**: a state like any other, named `TS1`, `TS2-3` ... and
