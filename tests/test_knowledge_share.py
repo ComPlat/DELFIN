@@ -343,3 +343,22 @@ def test_the_admin_identity_is_the_account_not_the_chosen_handle(
     assert not ks.is_admin()
     monkeypatch.setattr(ks, "_identities", lambda: {"bob"})
     assert ks.is_admin()
+
+
+def test_a_public_entry_needs_a_public_evidence_pointer(env):
+    les = kp.propose(LESSON, evidence=["job:812345"], source="agent",
+                     topic="tools-and-sandbox",
+                     title="Serial re-run before believing failures")
+    d = _share(env, les)
+    assert d.blocked
+    assert any("public pointer" in f for f in d.findings), d.findings
+    kp.edit(les.id, evidence="commit:75caa295")
+    assert kp.get(les.id).evidence == ["commit:75caa295"]
+    d2 = _share(env, kp.get(les.id))
+    assert not d2.blocked, d2.preview()
+
+
+def test_an_edited_evidence_must_still_be_a_pointer(env):
+    les = _lesson(env)
+    with pytest.raises(ValueError):
+        kp.edit(les.id, evidence="see the chat above")
