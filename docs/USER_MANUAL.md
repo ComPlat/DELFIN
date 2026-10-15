@@ -1792,6 +1792,11 @@ A setting that cannot be read is reported in the window and the default
 applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`
 (it also reads the REPL's history) and its pins in `~/.delfin/tui_state.json`.
 `DELFIN_RUNTIME_DIR` moves the service's socket (default `/tmp`).
+The banner's logo is drawn as a picture, the disc in colour, where the
+terminal says it draws colours (`COLORTERM=truecolor` or `24bit`: 24-bit;
+a `TERM` with `256color`: the nearest of the 256 colours), and as a braille
+outline in the accent otherwise and under `NO_COLOR`; `DELFIN_TUI_LOGO`
+(`rgb`, `256` or `mono`) overrides what the terminal says.
 
 ### Subagents
 

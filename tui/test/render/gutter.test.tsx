@@ -77,6 +77,64 @@ describe("the banner", () => {
     }
   })
 
+  test("is the logo's disc in half blocks where the terminal draws colours", async () => {
+    const logo = await import("../../src/theme/logo")
+    logo.setLogoDepth("rgb")
+    try {
+      const { scrollback } = await conversation(100)
+      const rows = scrollback.filter((l) => /[\u2580\u2584]/.test(l))
+      expect(rows.length).toBe(logo.LOGO_RUNS.length)
+      expect(rows.length).toBeGreaterThanOrEqual(11)
+      expect(rows.length).toBeLessThanOrEqual(13)
+      expect(logo.LOGO_WIDTH).toBeGreaterThanOrEqual(22)
+      expect(logo.LOGO_WIDTH).toBeLessThanOrEqual(26)
+      for (const row of rows) expect(row.startsWith(PAD)).toBe(true)
+      // The session's words beside it; no braille.
+      expect(rows.some((l) => l.includes("DELFIN  fake/fake-model"))).toBe(true)
+      expect(scrollback.some((l) => /[\u2801-\u28ff]/.test(l))).toBe(false)
+      // Every run is one glyph, its width the logo's.
+      for (const runs of logo.LOGO_RUNS) {
+        expect(runs.reduce((n, r) => n + r.text.length, 0)).toBe(logo.LOGO_WIDTH)
+        for (const r of runs) expect(new Set(r.text).size).toBe(1)
+      }
+    } finally {
+      logo.setLogoDepth("mono")
+    }
+  })
+
+  test("picks the picture by COLORTERM and TERM, braille under NO_COLOR and the mono theme", async () => {
+    const { logoDepthFor } = await import("../../src/theme/logo")
+    expect(logoDepthFor({ COLORTERM: "truecolor" }, "dark")).toBe("rgb")
+    expect(logoDepthFor({ COLORTERM: "24bit", TERM: "xterm" }, "light")).toBe("rgb")
+    expect(logoDepthFor({ TERM: "xterm-256color" }, "dark")).toBe("256")
+    expect(logoDepthFor({ TERM: "tmux-256color" }, "dark")).toBe("256")
+    expect(logoDepthFor({ TERM: "xterm" }, "dark")).toBe("mono")
+    expect(logoDepthFor({}, "dark")).toBe("mono")
+    expect(logoDepthFor({ COLORTERM: "truecolor", NO_COLOR: "1" }, "dark")).toBe("mono")
+    expect(logoDepthFor({ COLORTERM: "truecolor" }, "mono")).toBe("mono")
+    expect(logoDepthFor({ COLORTERM: "truecolor", DELFIN_TUI_LOGO: "mono" }, "dark")).toBe("mono")
+    expect(logoDepthFor({ TERM: "xterm", DELFIN_TUI_LOGO: "256" }, "dark")).toBe("256")
+    expect(logoDepthFor({ TERM: "xterm", DELFIN_TUI_LOGO: "rgb", NO_COLOR: "1" }, "dark")).toBe("mono")
+  })
+
+  test("in 256 colours takes the nearest of the cube and the grey ramp that keeps the hue", async () => {
+    const { logoPalette, nearest256 } = await import("../../src/theme/logo")
+    expect(nearest256("#ffffff")).toBe(231)
+    expect(nearest256("#000000")).toBe(16)
+    expect(nearest256("#5f87af")).toBe(67)
+    expect(nearest256("#808080")).toBe(244)
+    // A pale blue stays blue (by distance alone 152, a green-grey).
+    expect(nearest256("#b0c6de")).toBe(153)
+    const indexed = logoPalette("256")
+    expect(indexed.length).toBe(logoPalette("rgb").length)
+    for (const i of indexed) {
+      expect(typeof i).toBe("number")
+      expect(i as number).toBeGreaterThanOrEqual(16)
+    }
+    expect(indexed[0]).toBe(67)                       // the disc's blue
+    expect(indexed[indexed.length - 1]).toBe(231)     // white
+  })
+
   test("is the words alone, under the mark, where there is not", async () => {
     const { scrollback } = await conversation(40)
     expect(scrollback.some((l) => /[\u2801-\u28ff]/.test(l))).toBe(false)

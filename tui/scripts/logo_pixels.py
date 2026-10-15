@@ -22,9 +22,24 @@ pixels) merges the body's upper and lower halves and the fin into one
 blob; the braille grid (40x32) keeps the fin, the beak, the flukes and
 both waves apart.
 
+Colour (--cell halfblock): the disc itself, for a terminal that draws
+colours. Each cell is an upper-half block U+2580 with the upper pixel as
+its foreground and the lower one as its background, so pixels are square
+on screen: --cols 26 --rows 26 is 26 x 13 cells. A pixel belongs to the
+figure where at least half its area lies inside the disc (the page
+around it stays the terminal's own background). Its tone is the white
+fraction of its area, stretched from --lo..--hi to 0..1 (a box average
+alone turns the strokes, a pixel or less wide here, into pale blue) and
+cut to --levels steps between the disc's mean blue and white. Output: the
+COLOR_PIXELS rows ('.' outside the disc, '0'.. the step) and the
+COLOR_PALETTE hex colours of logo.ts. Compared at 22x11, 24x12 and 26x13
+cells, rendered to an image: 26x13 is the smallest at which the fin, the
+beak and both waves stay apart.
+
 Usage (from the repository root):
-    python tui/scripts/logo_pixels.py                 # the rows in logo.ts
+    python tui/scripts/logo_pixels.py                 # the braille rows in logo.ts
     python tui/scripts/logo_pixels.py --preview
+    python tui/scripts/logo_pixels.py --cell halfblock  # the colour rows in logo.ts
     python tui/scripts/logo_pixels.py --cell quadrant --cols 40 --rows 16
 """
 
@@ -33,7 +48,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 QUADRANTS = " ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█"
 # (dy, dx, bit) of the eight braille dots, in Unicode's numbering.
@@ -136,16 +151,123 @@ def as_braille(px: list[str]) -> list[str]:
     return out
 
 
+def disc_box(rgb: Image.Image) -> tuple[float, float, float]:
+    """Centre and radius of the blue disc (blue channel 40 above red)."""
+    w, h = rgb.size
+    px = rgb.load()
+    blue = Image.new("L", (w, h), 0)
+    bp = blue.load()
+    for y in range(h):
+        for x in range(w):
+            r, _, b = px[x, y]
+            if b > r + 40:
+                bp[x, y] = 255
+    box = blue.getbbox()
+    if box is None:
+        raise SystemExit("no blue disc found")
+    return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, min(box[2] - box[0], box[3] - box[1]) / 2
+
+
+def color_rows(path: Path, cols: int, rows: int, white: int, lo: float, hi: float,
+               levels: int) -> tuple[list[str], list[str]]:
+    """The disc as `rows` x `cols` pixels: '.' outside it, else the tone
+    step '0'..; and the palette, one hex colour per step (the disc's mean
+    blue to white)."""
+    rgb = Image.open(path).convert("RGB")
+    cx, cy, rad = disc_box(rgb)
+    box = (round(cx - rad), round(cy - rad), round(cx + rad), round(cy + rad))
+    crop = rgb.crop(box)
+    side = crop.size[0]
+    inside = Image.new("L", crop.size, 0)
+    ImageDraw.Draw(inside).ellipse((0, 0, side - 1, crop.size[1] - 1), fill=255)
+    # White only well inside the rim: the page's white beyond the disc's
+    # antialiased edge would read as a pale ring.
+    rim = Image.new("L", crop.size, 0)
+    m = 0.03 * side / 2
+    ImageDraw.Draw(rim).ellipse((m, m, side - 1 - m, crop.size[1] - 1 - m), fill=255)
+    cp, ip, rp = crop.load(), inside.load(), rim.load()
+    wmask = Image.new("L", crop.size, 0)
+    wp = wmask.load()
+    total = [0, 0, 0]
+    count = 0
+    for y in range(crop.size[1]):
+        for x in range(side):
+            r, g, b = cp[x, y]
+            if rp[x, y] and min(r, g, b) > white:
+                wp[x, y] = 255
+            elif ip[x, y] and b > r + 40:
+                total[0] += r
+                total[1] += g
+                total[2] += b
+                count += 1
+    blue = [round(c / max(1, count)) for c in total]
+    tone = wmask.resize((cols, rows), Image.Resampling.BOX)
+    area = inside.resize((cols, rows), Image.Resampling.BOX)
+    out = []
+    for y in range(rows):
+        line = ""
+        for x in range(cols):
+            if area.getpixel((x, y)) < 128:
+                line += "."
+                continue
+            v = min(1.0, max(0.0, (tone.getpixel((x, y)) / 255 - lo) / (hi - lo)))
+            line += str(round(v * (levels - 1)))
+        out.append(line)
+    palette = []
+    for i in range(levels):
+        t = i / (levels - 1)
+        palette.append("#" + "".join(f"{round(c + (255 - c) * t):02x}" for c in blue))
+    return out, palette
+
+
+def as_halfblocks(px: list[str], palette: list[str]) -> list[str]:
+    """ANSI truecolour lines of the colour rows (the preview)."""
+    def rgb(ch: str) -> str:
+        h = palette[int(ch)]
+        return f"{int(h[1:3], 16)};{int(h[3:5], 16)};{int(h[5:7], 16)}"
+    out = []
+    for y in range(0, len(px), 2):
+        line = ""
+        for x in range(len(px[y])):
+            top, low = px[y][x], px[y + 1][x] if y + 1 < len(px) else "."
+            if top == "." and low == ".":
+                line += "\x1b[0m "
+            elif low == ".":
+                line += f"\x1b[0m\x1b[38;2;{rgb(top)}m\u2580"
+            elif top == ".":
+                line += f"\x1b[0m\x1b[38;2;{rgb(low)}m\u2584"
+            else:
+                line += f"\x1b[38;2;{rgb(top)};48;2;{rgb(low)}m\u2580"
+        out.append(line + "\x1b[0m")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--cell", choices=("braille", "quadrant"), default="braille")
-    ap.add_argument("--cols", type=int, default=40, help="pixel columns (two per cell)")
-    ap.add_argument("--rows", type=int, default=32, help="pixel rows (four per braille cell, two per quadrant cell)")
+    ap.add_argument("--cell", choices=("braille", "quadrant", "halfblock"), default="braille")
+    ap.add_argument("--cols", type=int, default=None,
+                    help="pixel columns (two per braille or quadrant cell, one per halfblock cell); 40, halfblock 26")
+    ap.add_argument("--rows", type=int, default=None,
+                    help="pixel rows (four per braille cell, two per quadrant or halfblock cell); 32, halfblock 26")
+    ap.add_argument("--lo", type=float, default=0.1, help="halfblock: white fraction drawn as the disc's blue")
+    ap.add_argument("--hi", type=float, default=0.6, help="halfblock: white fraction drawn as white")
+    ap.add_argument("--levels", type=int, default=5, help="halfblock: tone steps from blue to white")
     ap.add_argument("--cover", type=float, default=0.45, help="white fraction of a pixel's area that sets it")
     ap.add_argument("--white", type=int, default=200, help="level all three channels exceed in a white pixel")
     ap.add_argument("--preview", action="store_true", help="also print the cells the window draws")
     ap.add_argument("--logo", type=Path, default=LOGO)
     a = ap.parse_args()
+    if a.cell == "halfblock":
+        px, palette = color_rows(a.logo, a.cols or 26, a.rows or 26, a.white, a.lo, a.hi, a.levels)
+        print("palette:", ", ".join(f'"{c}"' for c in palette))
+        for row in px:
+            print(f'  "{row}",')
+        if a.preview:
+            print()
+            print("\n".join(as_halfblocks(px, palette)))
+        return
+    a.cols = a.cols or 40
+    a.rows = a.rows or 32
     px = pixel_rows(a.logo, a.cols, a.rows, a.cover, a.white, a.cell)
     for row in px:
         print(f'  "{row}",')

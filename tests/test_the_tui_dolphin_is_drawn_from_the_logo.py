@@ -44,3 +44,35 @@ def test_the_rows_fill_eighteen_to_twenty_two_braille_cells_by_six_to_eight():
 
 def test_logo_ts_names_the_script_that_made_it():
     assert "tui/scripts/logo_pixels.py" in LOGO_TS.read_text(encoding="utf-8")
+
+
+def _pasted_color() -> tuple[list[str], list[str]]:
+    text = LOGO_TS.read_text(encoding="utf-8")
+    block = re.search(r"const COLOR_PIXELS = \[(.*?)\]", text, re.S)
+    palette = re.search(r"const COLOR_PALETTE = \[(.*?)\]", text, re.S)
+    assert block and palette, "logo.ts has no COLOR_PIXELS or COLOR_PALETTE"
+    return re.findall(r'"([.0-9]+)"', block.group(1)), re.findall(r'"(#[0-9a-f]{6})"', palette.group(1))
+
+
+def _script_color() -> tuple[list[str], list[str]]:
+    out = subprocess.run([sys.executable, str(SCRIPT), "--cell", "halfblock"],
+                         capture_output=True, text=True, check=True).stdout
+    palette = re.search(r"palette: (.*)", out)
+    assert palette
+    return re.findall(r'"([.0-9]+)"', out.split("\n", 1)[1]), re.findall(r'"(#[0-9a-f]{6})"', palette.group(1))
+
+
+def test_the_pasted_colour_rows_and_palette_are_the_scripts_output():
+    assert _pasted_color() == _script_color()
+
+
+def test_the_colour_logo_is_twenty_two_to_twenty_six_cells_by_eleven_to_thirteen():
+    rows, palette = _pasted_color()
+    assert len({len(r) for r in rows}) == 1 and len(rows) % 2 == 0
+    cols, lines = len(rows[0]), len(rows) // 2
+    assert 22 <= cols <= 26 and 11 <= lines <= 13, (cols, lines)
+    # The disc's blue first, white last; every step in a row is in the palette.
+    assert palette[-1] == "#ffffff"
+    r, g, b = (int(palette[0][i:i + 2], 16) for i in (1, 3, 5))
+    assert b > r + 40
+    assert {int(c) for r_ in rows for c in r_ if c != "."} <= set(range(len(palette)))

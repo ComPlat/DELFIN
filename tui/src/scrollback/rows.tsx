@@ -7,11 +7,11 @@
  * settle before the rows are committed (writers.ts); everything else is a
  * few styled lines.
  */
-import { TextAttributes, type CliRenderer, type MouseEvent, type Renderable } from "@opentui/core"
+import { RGBA, TextAttributes, type CliRenderer, type MouseEvent, type Renderable } from "@opentui/core"
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
 import { fit, middle, width } from "../text"
-import { DOLPHIN, DOLPHIN_WIDTH } from "../theme/logo"
+import { DOLPHIN, DOLPHIN_WIDTH, LOGO_RUNS, LOGO_WIDTH, logoDepth, logoPalette } from "../theme/logo"
 import { GUTTER, markdownStyles, type Theme } from "../theme/theme"
 import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
@@ -58,12 +58,27 @@ export function Row(props: RowProps): JSX.Element {
       // the words alone (under the mark ◆) where they do not.
       // A function: a full-screen row follows the width (rows.tsx is drawn
       // once into the scrollback, but lives on in the window).
-      const logo = () => props.width >= DOLPHIN_WIDTH + LOGO_GAP + BANNER_TEXT_MIN
+      // In colour the logo itself (the disc, half blocks); in mono braille.
+      const depth = t.name === "mono" ? "mono" : logoDepth()
+      const logoWidth = depth === "mono" ? DOLPHIN_WIDTH : LOGO_WIDTH
+      const logo = () => props.width >= logoWidth + LOGO_GAP + BANNER_TEXT_MIN
+      const palette = logoPalette(depth).map((c) => typeof c === "number" ? RGBA.fromIndex(c) : c)
+      const paint = (step: number | null) => step === null ? undefined : palette[step]
       return (
         <box flexDirection="row" paddingTop={1} paddingBottom={1}>
           <Show when={logo()}>
-            <box flexDirection="column" flexShrink={0} width={DOLPHIN_WIDTH + LOGO_GAP}>
-              <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
+            <box flexDirection="column" flexShrink={0} width={logoWidth + LOGO_GAP}>
+              <Show when={depth !== "mono"} fallback={
+                <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
+              }>
+                <For each={LOGO_RUNS}>
+                  {(runs) => (
+                    <text wrapMode="none">
+                      <For each={runs}>{(run) => <span style={{ fg: paint(run.fg), bg: paint(run.bg) }}>{run.text}</span>}</For>
+                    </text>
+                  )}
+                </For>
+              </Show>
             </box>
           </Show>
           {/* A basis of 0: the words wrap at what is left, and every wrapped
