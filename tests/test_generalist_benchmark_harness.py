@@ -205,7 +205,10 @@ def test_an_edit_after_the_last_test_run_is_not_a_tested_end_state():
     calls = [_call("bash", command="cargo test"),
              _call("edit_file", file_path="unitconv/src/lib.rs"),
              _call("bash", command="cat unitconv/src/lib.rs")]
-    results = ['{"exit_code": 0}', '{"error": "old_string not found"}', "x"]
+    # The edit landed; an edit whose result is an error changed nothing and
+    # is not an edit (verification_signals).
+    results = ['{"exit_code": 0}', "Edited unitconv/src/lib.rs",
+               '{"error": "blocked: read scope"}']
     p = bm.process_signals(_task(), _ptraj(calls, results))
     assert p["tested"] == 1.0
     assert p["tested_after_last_edit"] == 0.0

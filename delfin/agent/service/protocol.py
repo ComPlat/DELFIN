@@ -131,7 +131,8 @@ EVENTS: dict[str, dict[str, str]] = {
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",
-                     "bypassBlocked": "string?", "bypassConfirmed": "boolean?"},
+                     "bypassBlocked": "string?", "bypassConfirmed": "boolean?",
+                     "auto": "string?"},
     # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
     # may stop there: the managed policy allows it and isolation holds
     # each command; posture_cycle.bypass_refusal); bypassConfirmed: its
@@ -140,10 +141,12 @@ EVENTS: dict[str, dict[str, str]] = {
     # tasks: the session's task list (task_ticker.rows) as it is now, in
     # display order (in progress, blocked, pending, completed), each row
     # num, status, label -- sent whole whenever any of it changed.
+    # auto: auto mode's one-line state (loop, iteration n/max, last
+    # result, how many items need the user); "" while it is off.
     "session.updated": {"approval": "string?", "model": "string?",
                         "effort": "string?", "title": "string?",
                         "tasks": "[object]?", "bypassBlocked": "string?",
-                        "bypassConfirmed": "boolean?"},
+                        "bypassConfirmed": "boolean?", "auto": "string?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},

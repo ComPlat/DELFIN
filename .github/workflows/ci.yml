@@ -55,7 +55,12 @@ jobs:
     runs-on: ubuntu-latest
     # The fast suite ran 27-34 min on main (2026-10-13) and the open security
     # PRs add a few thousand gate cases; at 35 the job was cancelled mid-run.
-    timeout-minutes: 50
+    # 2026-10-15: after the day's merges the suite reached 100 % at 49.5 min
+    # and the job was cancelled at 50 (main e1f3dd55, PR #264). Each test
+    # keeps its own 300 s limit (--timeout below), so a hang still fails at
+    # once; this only covers the suite's total length. 60 is the ceiling
+    # tests/test_the_gate_can_still_say_it_passed.py holds for the gate.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

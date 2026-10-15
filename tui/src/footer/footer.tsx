@@ -509,6 +509,7 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     if (props.starting?.()) lead.push("starting the session…")
     if (s?.state === "ended") lead.push("session ended")
     const rest: string[] = []
+    if (s?.auto) rest.push(s.auto)
     if (s?.model) rest.push(s.model)
     if (s?.usage.costUsd && !s.turn) rest.push(`$${s.usage.costUsd.toFixed(4)}`)
     rest.push(`${props.keymap.label("cycleMode")} mode`)

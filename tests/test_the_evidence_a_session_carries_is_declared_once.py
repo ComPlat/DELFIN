@@ -193,6 +193,9 @@ _NOT_CARRIED = {
     # The git-errors steering block of the current turn: rebuilt from each
     # user message, nothing a resumed session needs.
     "_repo_errors_hint",
+    # Per turn: what the turn verified (turn_verification), read by the
+    # test-claim caveat of the same turn; the next turn starts its own.
+    "_last_turn_verification",
     # The experiment-discipline steering block of the current turn, the
     # same kind of per-message pointer.
     "_experiment_hint",
@@ -317,7 +320,12 @@ _NOT_CARRIED = {
     #    _system_prompt_chars, which is declared.
     "last_system_prompt",
     # -- resolved per process from the active model / settings ------------
-    "context_window_tokens", "auto_compact_pct", "_active_capabilities",
+    #    _window_tokens / _window_caps are the stores behind the
+    #    context_window_tokens and _active_capabilities properties;
+    #    _window_generation and _window_assigned order the background
+    #    window probe against direct writes in THIS process only.
+    "_window_tokens", "auto_compact_pct", "_window_caps",
+    "_window_generation", "_window_assigned",
     # -- reports about the last operation, not state to continue from -----
     "last_compaction_info",   # persisted by the callers, not the exporter
     "last_restore_report",
