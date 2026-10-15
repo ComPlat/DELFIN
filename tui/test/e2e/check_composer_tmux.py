@@ -10,6 +10,13 @@ service, typed into like a person would.
   up              the history brings the last prompt back
   !               shell mode: "!" as the marker, the border says shell; the
                   line runs as "!echo ..." and the rows head it "$ echo ..."
+  a question      opens while the user types: the typing goes on into the
+                  prompt, and enter answers with the line; on an empty
+                  prompt 2 picks the second choice
+  an approval     opens while the user types: the typing (an option key
+                  among it) goes on into the prompt, enter sends it as a
+                  message, a word typed into the empty prompt is typing --
+                  nothing answers it but a lone key (n)
 
 Usage (from the repository root):
     DELFIN_PYTHON=<python with delfin> python3 tui/test/e2e/check_composer_tmux.py
@@ -34,6 +41,74 @@ from check_tmux import Tmux  # noqa: E402
 from delfin.agent.service.client import ServiceClient  # noqa: E402
 
 PYTHON = os.environ.get("DELFIN_PYTHON") or sys.executable
+
+
+def type_slowly(tmux: Tmux, text: str, gap: float, appears: str) -> int:
+    """Type `text` a key at a time; the index of the key before which
+    `appears` was first on screen (-1: never while typing)."""
+    seen = -1
+    for i, ch in enumerate(text):
+        if seen < 0 and appears in tmux.screen():
+            seen = i
+        tmux.type(ch)
+        time.sleep(gap)
+    return seen
+
+
+def question_keeps_the_prompt(tmux: Tmux, expect) -> list[str]:
+    """The prompt keeps the keys while a question or an approval is open."""
+    problems: list[str] = []
+    # A question that opens while the user types: the typing goes on, and
+    # enter answers with the line.
+    tmux.type("ask about the solvent")
+    tmux.key("Enter")
+    answer = "toluene, implicit please"
+    seen = type_slowly(tmux, answer, 0.12, "Which solvent model?")
+    if seen <= 0:
+        problems.append(f"the question did not open while typing (before key {seen})\n{tmux.screen()}")
+    expect(r"❯ toluene, implicit please", "the typing went on into the prompt")
+    time.sleep(0.6)
+    tmux.key("Enter")
+    expect(r"Using toluene, implicit please\.", "the line typed is the answer", 30)
+    expect(r"❯ ask DELFIN", "the prompt after the answer")
+    # A numbered choice by key, on an empty prompt.
+    tmux.type("ask about the solvent again")
+    tmux.key("Enter")
+    expect(r"Which solvent model\?", "the second question")
+    time.sleep(0.8)
+    tmux.key("2")
+    expect(r"Using SMD\.", "2 on an empty prompt picks the second choice", 30)
+    expect(r"❯ ask DELFIN", "the prompt after the pick")
+    # An approval that opens while the user types: nothing typed answers it.
+    tmux.type("run the bash tests")
+    tmux.key("Enter")
+    seen = type_slowly(tmux, "please wait, yes do it", 0.1, "[y] yes")
+    if seen <= 0:
+        problems.append(f"the approval did not open while typing (before key {seen})\n{tmux.screen()}")
+    time.sleep(1.5)
+    screen = tmux.screen()
+    if "All three tests pass." in screen or "The tests were not run." in screen or "[y] yes" not in screen:
+        problems.append(f"typing in progress answered the approval\n{screen}")
+    expect(r"❯ please wait, yes do it", "the typing went on into the prompt")
+    tmux.key("Enter")                         # a line under an approval: a message, queued
+    time.sleep(1.5)
+    screen = tmux.screen()
+    if "All three tests pass." in screen or "The tests were not run." in screen or "[y] yes" not in screen:
+        problems.append(f"enter with a line answered the approval\n{screen}")
+    time.sleep(1.2)
+    tmux.type("yes")                          # a word into the empty prompt
+    time.sleep(1.5)
+    screen = tmux.screen()
+    if "All three tests pass." in screen or "[y] yes" not in screen:
+        problems.append(f"a word typed into the empty prompt answered the approval\n{screen}")
+    expect(r"❯ yes", "the word is in the prompt")
+    tmux.key("C-u")
+    time.sleep(1.3)
+    tmux.key("n")                             # a lone key, on an empty prompt
+    expect(r"The tests were not run\.", "a lone n on an empty prompt refuses", 30)
+    expect(r"\(re: please wait, yes do it", "the queued line ran after the turn", 30)
+    time.sleep(0.5)
+    return problems
 
 
 def main() -> int:
@@ -130,6 +205,7 @@ def main() -> int:
                "the history")
         tmux.key("C-c")                     # clears what is typed
         time.sleep(0.3)
+        problems.extend(question_keeps_the_prompt(tmux, expect))
         tmux.key("C-d")
         exited = tmux.wait_for(r"TUI_EXIT=(\d+)", 30)
         if not exited or exited.group(1) != "0":
@@ -146,6 +222,11 @@ def main() -> int:
                 problems.append("the paste did not arrive whole")
             if "!echo shell-mode-ok" not in said:
                 problems.append(f"the shell line did not arrive as typed: {said}")
+            if "please wait, yes do it" not in said:
+                problems.append(f"the line sent under the approval did not go out as a message: {said}")
+            decisions = [e.get("decision") for e in events if e.get("type") == "permission.resolved"]
+            if "approved" in decisions:
+                problems.append(f"something was approved, and nothing should have been: {decisions}")
             c.request("service.shutdown")
         history = tmp / "scratch" / ".delfin" / "tui_history.jsonl"
         if not history.exists() or "Pasted text #1" not in history.read_text():
@@ -162,7 +243,8 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: completion, new lines, pastes, the history and shell mode work live")
+    print("PASS: completion, new lines, pastes, the history and shell mode work live; "
+          "a question or an approval keeps the prompt, and typing answers no approval")
     return 0
 
 

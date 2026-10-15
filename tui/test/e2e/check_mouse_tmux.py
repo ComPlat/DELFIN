@@ -4,7 +4,9 @@ them (SGR, ESC [ < b ; x ; y M/m) into the pane.
 
 - a click on "[y] yes" of a shell approval answers it: the command runs;
 - a click on a question's choice answers it with that choice;
-- a click that arrives as the panel appears (within the pause) does not.
+- a click that arrives as the panel appears (within the pause) does not;
+- a click on a choice while a draft is in the prompt answers, and the
+  draft stays in the prompt, which still takes the keys.
 
 Usage (from the repository root):
     DELFIN_PYTHON=<python with delfin> python3 tui/test/e2e/check_mouse_tmux.py
@@ -93,6 +95,27 @@ def main() -> int:
         click(at[0], at[1])
         if not find("Using SMD.", 15):
             problems.append(f"a click on a choice did not answer with it\n{tmux.screen()}")
+        # A draft in the prompt as the question opens: a click answers, the
+        # draft stays, and the prompt still takes the keys.
+        tmux.type("ask about the solvent again")
+        tmux.key("Enter")
+        tmux.type("keep this draft")
+        at = find("density-based")
+        if not at:
+            problems.append(f"no second question panel\n{tmux.screen()}")
+            raise SystemExit
+        time.sleep(0.6)
+        click(at[0], at[1])
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and tmux.screen().count("Using SMD.") < 2:
+            time.sleep(0.1)
+        if tmux.screen().count("Using SMD.") < 2:
+            problems.append(f"a click with a draft in the prompt did not answer\n{tmux.screen()}")
+        tmux.type(" and more")
+        if not find("❯ keep this draft and more", 5):
+            problems.append(f"the draft did not stay in the prompt with the keys\n{tmux.screen()}")
+        tmux.key("C-u")
+        time.sleep(0.3)
         tmux.key("C-d")
         if not find("TUI_EXIT=0", 30):
             problems.append("the window did not leave cleanly")
@@ -112,7 +135,8 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: a click answers an approval and a question, and not as the panel appears")
+    print("PASS: a click answers an approval and a question, and not as the panel appears; "
+          "a draft stays in the prompt")
     return 0
 
 
