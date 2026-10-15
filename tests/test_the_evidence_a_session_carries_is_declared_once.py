@@ -199,6 +199,9 @@ _NOT_CARRIED = {
     # The message that opened the current turn, read by the turn-end
     # edit_signals caveat; a resumed session has no turn behind it.
     "_turn_request",
+    # Per turn: whether the exists-first note was said, and the definition
+    # index it was judged against; rebuilt by the next turn that needs it.
+    "_exists_first_turn",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
     # Per turn: the history a fresh start cut in THIS turn, given back only

@@ -3031,6 +3031,7 @@ class AgentEngine:
             # Per turn: what this turn's changes do to the measure and to
             # the object (edit_signals), judged against this message.
             self._turn_request = str(user_message or "")
+            self._exists_first_turn = {"noted": False, "index": None}
             try:
                 from . import edit_signals as _es
                 _es.reset_turn(self._edit_signal_key())
@@ -3646,6 +3647,8 @@ class AgentEngine:
                     # Commit the held command only if it actually ran.
                     self._commit_exec_command(
                         event.tool_name, event.tool_output or "")
+                    # A function this write added that exists elsewhere.
+                    self._note_new_definitions()
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -4653,6 +4656,38 @@ class AgentEngine:
 
     _GH_CHECKS_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:view|watch|list))\b")
     _GH_FAILED_RE = re.compile(r"\bfail(?:ure|ed|ing)?\b|\bX\s", re.IGNORECASE)
+
+    def _note_new_definitions(self) -> None:
+        """Say it mid-turn when a write defined a function whose name, or
+        nearly its name, is already defined in another file
+        (exists_first). Once per turn, at most five names judged, test
+        files skipped; the definition index is built once per turn.
+        Advises; a second definition can be deliberate. Never raises."""
+        try:
+            from . import edit_signals as _es
+            defs = _es.take_new_defs(self._edit_signal_key())
+            state = getattr(self, "_exists_first_turn", None)
+            if state is None:
+                state = self._exists_first_turn = {"noted": False,
+                                                   "index": None}
+            if not defs or state.get("noted"):
+                return
+            defs = [(p, n) for p, n in defs if _es.role(p) != "test"][:5]
+            if not defs:
+                return
+            from . import exists_first as _xf
+            perms = getattr(self, "kit_permissions", None)
+            ws = str(getattr(perms, "workspace", "") or "")
+            if not ws:
+                return
+            if state.get("index") is None:
+                state["index"] = _xf.build_index(ws)
+            text = _xf.note(defs, state["index"], workspace=ws)
+            if text:
+                state["noted"] = True
+                self.client.push_run_note(text)
+        except Exception:
+            pass
 
     def _append_edit_signal_caveat(
         self, text: str, on_token: Callable[[str], None] | None = None,

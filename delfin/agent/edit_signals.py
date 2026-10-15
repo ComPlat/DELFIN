@@ -110,6 +110,7 @@ class _Turn:
     red_at: Optional[int] = None
     runs: list = field(default_factory=list)   # (seq, command, red)
     last_change_seq: int = 0
+    new_defs: list = field(default_factory=list)
 
 
 _TURNS: dict[str, _Turn] = {}
@@ -406,10 +407,26 @@ def _retries(hunks: list) -> list[str]:
     return out
 
 
+_DEF_RE = re.compile(r"^(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(|"
+                     r"^(?:export\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(|"
+                     r"^func\s+([A-Za-z_]\w*)\s*\(|"
+                     r"^(?:pub\s+)?fn\s+([A-Za-z_]\w*)")
+
+
+def defined_names(text: Optional[str]) -> set:
+    """Top-level function names defined in *text* (Python, JS, Go, Rust)."""
+    out = set()
+    for ln in _lines(text):
+        m = _DEF_RE.match(ln)
+        if m:
+            out.add(next(g for g in m.groups() if g))
+    return out
+
+
 def classify(path: str, old: Optional[str], new: Optional[str], *,
              created: bool = False, deleted: bool = False) -> dict:
     """The findings of one change: ``{"measure": [(kind, detail)],
-    "symptom": [(kind, detail)], "role": ...}``."""
+    "symptom": [(kind, detail)], "role": ..., "new_defs": [...]}``."""
     r = role(path)
     measure: list = []
     symptom: list = []
@@ -418,10 +435,12 @@ def classify(path: str, old: Optional[str], new: Optional[str], *,
             measure.append(("test file deleted", ""))
         elif r == "grader":
             measure.append(("grader file deleted", ""))
-        return {"role": r, "measure": measure, "symptom": symptom}
+        return {"role": r, "measure": measure, "symptom": symptom,
+                "new_defs": []}
     removed, added = _diff(old, new)
     if created:
-        return {"role": r, "measure": [], "symptom": []}
+        return {"role": r, "measure": [], "symptom": [],
+                "new_defs": sorted(defined_names(new))}
     if r == "test" and PurePosixPath(path).suffix.lower() not in _CODE_EXT:
         # A snapshot, a golden file or a fixture under tests/: its content
         # is the expectation, or the input the expectation was made for.
@@ -476,7 +495,9 @@ def classify(path: str, old: Optional[str], new: Optional[str], *,
             symptom.append(("warning or error silenced", _short(ln)))
     for ln in _excess(_RERUN_RE, removed, added):
         symptom.append(("rerun of failing tests added", _short(ln)))
-    return {"role": r, "measure": measure, "symptom": symptom}
+    new_defs = sorted(defined_names(new) - defined_names(old))
+    return {"role": r, "measure": measure, "symptom": symptom,
+            "new_defs": new_defs}
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +535,9 @@ def note_change(session: str, path: str, old: Optional[str],
         for kind, detail in found.get("symptom") or ():
             if len(t.symptom) < _MAX_EVENTS:
                 t.symptom.append(Signal(path, kind, detail, t.seq))
+        for name in found.get("new_defs") or ():
+            if len(t.new_defs) < 50:
+                t.new_defs.append((path, name))
     return found
 
 
@@ -585,6 +609,16 @@ def object_changed(session: str) -> bool:
     with _LOCK:
         t = _TURNS.get(str(session or ""))
         return bool(t and t.object_changed)
+
+
+def take_new_defs(session: str) -> list:
+    """The (path, name) pairs of functions added since the last call."""
+    with _LOCK:
+        t = _TURNS.get(str(session or ""))
+        if not t:
+            return []
+        out, t.new_defs = t.new_defs, []
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -742,6 +776,7 @@ def _rel(path: str) -> str:
         return path
 
 
-__all__ = ["Signal", "role", "classify", "note_change", "note_command",
-           "note_red_check", "reset_turn", "measure_edits", "symptom_fixes",
-           "red_seen", "object_changed", "fix_turn", "turn_caveat"]
+__all__ = ["Signal", "role", "classify", "defined_names", "note_change",
+           "note_command", "note_red_check", "reset_turn", "measure_edits",
+           "symptom_fixes", "red_seen", "object_changed", "take_new_defs",
+           "fix_turn", "turn_caveat"]
