@@ -695,3 +695,25 @@ def test_the_veto_runs_no_git_per_call(repo):
     for _ in range(20):
         ctl.veto("bash", {"command": "pytest -q"})
     assert calls == []
+
+
+def test_the_iteration_reads_the_turn_journal_of_its_session(repo):
+    from delfin.agent import edit_signals
+    clock = Clock()
+    ctl = _ctl(repo, clock, Checks((1, "missing=3"), (1, "missing=2")))
+    eng = Engine()
+    eng.kit_permissions.task_session_id = "journal-key"
+    ctl.start_loop(_loop(repo), eng)
+    clock.advance(10)
+    ctl.next_prompt(eng)
+    edit_signals.reset_turn("journal-key")
+    # A grader change the write path journalled in a file the iteration
+    # then restored: invisible in the diff, recorded in the journal.
+    edit_signals.note_change("journal-key", str(repo / "ci" / "thresholds.yaml"),
+                             "max_fail: 0\n", "max_fail: 5\n")
+    (repo / "results" / "table.csv").write_text("x\n", encoding="utf-8")
+    ctl.finish_iteration(eng, "LOOP: progress")
+    edit_signals.reset_turn("journal-key")
+    rows = [json.loads(l) for l in ctl.log_path.read_text().splitlines()]
+    assert any("ci/thresholds.yaml" in f for f in rows[-1]["flagged"])
+    assert rows[-1]["measure_source"] == "edit_signals"

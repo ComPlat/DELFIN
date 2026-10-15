@@ -176,24 +176,38 @@ def test_measure_findings_hard_and_soft(tmp_path):
     assert "results/energies.csv" not in by_path
 
 
-def test_measure_findings_uses_edit_signals_when_present(monkeypatch):
-    import sys
-    import types
-
-    calls = []
-    fake = types.ModuleType("delfin.agent.edit_signals")
-
-    def classify(path, old, new):
-        calls.append(path)
-        return {"measure": [("threshold", "tolerance loosened")]}
-
-    fake.classify = classify
-    monkeypatch.setitem(sys.modules, "delfin.agent.edit_signals", fake)
-    found = ag.measure_findings({"conf/limits.yaml": ("a: 1\n", "a: 9\n")},
-                                measure=[])
-    assert calls == ["conf/limits.yaml"]
-    assert found and found[0].detail == "tolerance loosened"
+def test_measure_findings_use_the_real_edit_signals():
+    from delfin.agent import edit_signals
+    old = "def test_a():\n    assert f() == 3\n"
+    new = "import pytest\n\n@pytest.mark.skip\ndef test_a():\n    assert f() == 3\n"
+    found = ag.measure_findings({"tests/test_a.py": (old, new)}, measure=[])
     assert ag.measure_source() == "edit_signals"
+    expected = edit_signals.classify("tests/test_a.py", old, new)["measure"]
+    assert expected, "the real classifier finds the skip"
+    assert [(f.kind, f.detail) for f in found] == [tuple(x) for x in expected]
+    assert not any(f.hard for f in found)
+
+
+def test_created_and_deleted_files_are_told_apart():
+    test = "def test_a():\n    assert f() == 3\n"
+    # A test file the iteration created is its work, not a measure edit.
+    assert ag.measure_findings({"tests/test_new.py": (None, test)}) == []
+    gone = ag.measure_findings({"tests/test_a.py": (test, None)})
+    assert gone and "deleted" in gone[0].kind
+
+
+def test_the_turn_journal_adds_what_the_diff_cannot_attribute(tmp_path):
+    from delfin.agent import edit_signals
+    key = "auto-journal-test"
+    edit_signals.reset_turn(key)
+    path = str(tmp_path / "ci" / "thresholds.yaml")
+    edit_signals.note_change(key, path, "max_fail: 0\n", "max_fail: 5\n")
+    try:
+        found = ag.measure_findings({}, session_key=key,
+                                    workspace=str(tmp_path))
+    finally:
+        edit_signals.reset_turn(key)
+    assert any(f.path == "ci/thresholds.yaml" for f in found), found
 
 
 @pytest.mark.parametrize("cmd", [
