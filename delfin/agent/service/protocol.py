@@ -125,13 +125,16 @@ EVENTS: dict[str, dict[str, str]] = {
                      "provider": "string", "model": "string",
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
-                     "notices": "[string]", "tasks": "[object]?"},
+                     "notices": "[string]", "tasks": "[object]?",
+                     "auto": "string?"},
     # tasks: the session's task list (task_ticker.rows) as it is now, in
     # display order (in progress, blocked, pending, completed), each row
     # num, status, label -- sent whole whenever any of it changed.
+    # auto: auto mode's one-line state (loop, iteration n/max, last
+    # result, how many items need the user); "" while it is off.
     "session.updated": {"approval": "string?", "model": "string?",
                         "effort": "string?", "title": "string?",
-                        "tasks": "[object]?"},
+                        "tasks": "[object]?", "auto": "string?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},

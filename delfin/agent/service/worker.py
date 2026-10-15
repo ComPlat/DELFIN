@@ -839,6 +839,7 @@ def _agent_class():
             except Exception:
                 delivered = False
             if delivered:
+                self._auto_note_user(steer=True)
                 with self.cond:
                     self._steered += 1
                 self.post(lambda: self._emit("user.message", text=text,
@@ -1152,7 +1153,19 @@ class Worker:
                 "model": str(getattr(client, "model", "") or ""),
                 "effort": str(getattr(client, "effort", "")
                               or getattr(self.engine, "effort", "") or ""),
-                "tasks": self._task_rows()}
+                "tasks": self._task_rows(),
+                "auto": self._auto_line()}
+
+    def _auto_line(self) -> str:
+        """Auto mode's status line for the window's mode line, "" while it
+        is off or before the session has a controller."""
+        agent = getattr(self, "agent", None)
+        ctl = agent.__dict__.get("_auto") if agent is not None else None
+        try:
+            line = ctl.status_line() if ctl is not None else ""
+        except Exception:
+            line = ""
+        return protocol.clean_line(line, protocol.TASK_LABEL_MAX) if line else ""
 
     def _task_rows(self) -> list[dict[str, Any]]:
         """The session's task list as the window draws it: task_ticker.rows
@@ -1220,7 +1233,8 @@ class Worker:
                 "title": self.title or None,
                 "banner": [l for l in self.banner if l is not None],
                 "notices": list(self.notices),
-                "tasks": facts["tasks"]}
+                "tasks": facts["tasks"],
+                "auto": facts["auto"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""
