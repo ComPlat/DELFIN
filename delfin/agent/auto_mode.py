@@ -576,18 +576,23 @@ class AutoController:
                 self.paused = ""
                 self._resume_after_user = False
 
-    def note_user_input(self, engine=None) -> bool:
-        """A person sent a line. True when it preempts a running iteration."""
+    def note_user_input(self, engine=None, *, steer: bool = False) -> bool:
+        """A person sent a line. True when it preempts a running iteration.
+
+        ``steer``: the line went INTO the running turn (the user directs
+        it); the turn goes on, inside the frame, and auto mode pauses after
+        it instead of refusing its next call."""
         if not self.enabled:
             return False
-        self._user_turn = True
         after = self._run.spec.after_user if self._run else "pause"
         if after == "resume":
             self._resume_after_user = True
         self.paused = "the user sent a message"
-        if self.iteration is not None:
+        if self.iteration is not None and not steer:
             self.iteration.preempted = True
+            self._user_turn = True
             return True
+        self._user_turn = self.iteration is None
         return False
 
     # -- the veto ------------------------------------------------------------
@@ -602,6 +607,7 @@ class AutoController:
             waiting = False
         if it.preempted or waiting:
             it.preempted = True
+            self.paused = self.paused or "the user sent a message"
             if not it.stop_sent:
                 it.stop_sent = True
                 try:

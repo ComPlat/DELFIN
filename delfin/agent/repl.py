@@ -1633,6 +1633,7 @@ class TerminalAgent:
             delivered = False
         self._recall_later(text)
         if delivered:
+            self._auto_note_user(steer=True)
             self.transcript.chrome(self.transcript.theme.cyan(
                 "→ sent into the running turn"))
             return
@@ -1742,7 +1743,110 @@ class TerminalAgent:
             engine=self.engine, workspace=self.opts.cwd,
             session_id=str(getattr(self.engine, "session_id", "") or ""),
             # getattr: an agent built without __init__ (tests) has neither.
-            ask=getattr(self, "_read_line", None), say=self._say_chrome)
+            ask=getattr(self, "_read_line", None), say=self._say_chrome,
+            auto=self._auto_controller())
+
+    # -- auto mode ---------------------------------------------------------
+    def _auto_controller(self):
+        """This session's auto_mode.AutoController, made on first use; None
+        when it cannot be made. The queue probe is the user-first rule: a
+        line waiting in ``queued`` refuses the iteration's next tool call."""
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            try:
+                from . import auto_mode
+                engine = getattr(self, "engine", None)
+                ctl = auto_mode.AutoController(
+                    getattr(getattr(self, "opts", None), "cwd", None)
+                    or Path.cwd(),
+                    session_id=str(getattr(engine, "session_id", "") or ""))
+            except Exception:
+                return None
+            self._auto = ctl
+        if not getattr(ctl, "_probe_of", None) is self:
+            try:
+                ctl.user_waiting = lambda: bool(getattr(self, "queued", None))
+                ctl._probe_of = self
+            except Exception:
+                pass
+        return ctl
+
+    def _say_auto(self, ctl) -> None:
+        """Print what the controller has to say, as chrome. Never raises."""
+        try:
+            for note in ctl.pop_notices():
+                for line in str(note).splitlines():
+                    self.transcript.chrome(self.transcript.theme.dim(
+                        "◆ " + line))
+        except Exception:
+            pass
+
+    def _auto_note_user(self, *, steer: bool = False) -> None:
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            return
+        try:
+            ctl.note_user_input(getattr(self, "engine", None), steer=steer)
+        except Exception:
+            pass
+
+    def _auto_after_turn(self, result) -> None:
+        """An auto turn ended: judge it; any other turn: note its end."""
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            return
+        try:
+            if ctl.iteration is not None:
+                ctl.finish_iteration(self.engine,
+                                     getattr(result, "text", "") or "",
+                                     getattr(result, "error", "") or "")
+            else:
+                ctl.note_turn_end()
+        except Exception:
+            pass
+        self._say_auto(ctl)
+
+    def _auto_wake(self, typed: str, woke: str) -> str:
+        """The idle prompt's turn when auto mode is on: the controller's
+        next iteration (wrapping a job wake into it), else the plain wake.
+        A message from another session's operator is a person: it pauses
+        auto mode and is delivered as it always was."""
+        import time as _time
+
+        ctl = self.__dict__.get("_auto")
+        kind = self.__dict__.pop("_wake_kind", "")
+        if ctl is None or not getattr(ctl, "enabled", False):
+            return woke
+        if woke and kind == "mail":
+            self._auto_note_user()
+            return woke
+        now = _time.monotonic()
+        if not woke and now - self.__dict__.get("_auto_last_look", -1e9) \
+                < self._WAKE_EVERY_S:
+            return ""
+        self._auto_last_look = now
+        try:
+            self._auto_controller()
+            prompt = ctl.next_prompt(self.engine, typed=typed,
+                                     wake=str(woke or ""),
+                                     pause_key=self._presence_key())
+        except Exception:
+            prompt = ""
+        self._say_auto(ctl)
+        return prompt or woke
+
+    def _posture_hint(self) -> str:
+        """The posture for the hint row, and auto mode's line when it is on."""
+        posture = self._posture_now()
+        ctl = self.__dict__.get("_auto")
+        line = ""
+        try:
+            line = ctl.status_line() if ctl is not None else ""
+        except Exception:
+            line = ""
+        if not line:
+            return posture
+        return f"{posture} · {line}" if posture else line
 
     def _say_chrome(self, text: str) -> None:
         """Print a handler's mid-command text as chrome, line by line."""
@@ -2288,7 +2392,7 @@ class TerminalAgent:
             at = len(raw) if cursor is None else int(cursor)
             at = max(0, min(at, len(raw)))
             view = rb.render_box(
-                raw, at, width, _box_hint(self._posture_now()))
+                raw, at, width, _box_hint(self._posture_hint()))
             box_rows = list(view.rows)
             if view.hint_row is not None:
                 box_rows[view.hint_row] = self.transcript.theme.dim(
@@ -2932,10 +3036,13 @@ class TerminalAgent:
                         self.engine.note_person_message()
                     except Exception:
                         pass
+                    # ...and comes before auto mode, which pauses.
+                    self._auto_note_user()
                 woke = False
                 pending_prompt = pending          # visible past the try
+                last = None
                 try:
-                    self.turn(pending)
+                    last = self.turn(pending)
                 except KeyboardInterrupt:
                     self.transcript.chrome("")
                     return 130
@@ -2976,7 +3083,7 @@ class TerminalAgent:
                     # same hatch applies -- leave with 130 instead of
                     # raising out of run() past every handler.
                     try:
-                        self.turn(HarnessText(continuation))
+                        last = self.turn(HarnessText(continuation))
                     except KeyboardInterrupt:
                         self.transcript.chrome("")
                         return 130
@@ -2987,6 +3094,9 @@ class TerminalAgent:
                             self._continue_after_endpoint_failure())
                     if not continuation:
                         continuation = self._continue_after_announcement()
+                # Judged after its follow-ups: an iteration is the turn and
+                # every continuation the harness added to it.
+                self._auto_after_turn(last)
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
@@ -2998,6 +3108,12 @@ class TerminalAgent:
             self._end_what_it_started()
             return left.code
         finally:
+            _ctl = self.__dict__.get("_auto")
+            if _ctl is not None and getattr(_ctl, "enabled", False):
+                try:
+                    _ctl.stop("the session ended")
+                except Exception:
+                    pass
             try:
                 self._teardown_screen()
             except OSError:
@@ -3670,6 +3786,16 @@ class TerminalAgent:
             return True
 
     def _wake_text(self, typed: str) -> str:
+        """The idle prompt's next turn nobody typed, or "": the plain wake
+        (:meth:`_wake_text_plain`), or auto mode's next iteration when it
+        is on (:meth:`_auto_wake`)."""
+        woke = self._wake_text_plain(typed)
+        if self.__dict__.get("_auto") is None:
+            self.__dict__.pop("_wake_kind", None)
+            return woke
+        return self._auto_wake(typed, woke)
+
+    def _wake_text_plain(self, typed: str) -> str:
         """The message a job that finished hands an idle prompt, or "".
 
         Nothing in the terminal used to wake an agent. A background job
@@ -3715,6 +3841,7 @@ class TerminalAgent:
         self._announce_presence()       # the poll doubles as the heartbeat
         mail = self._operator_messages(typed)
         if mail:
+            self._wake_kind = "mail"
             return HarnessText(mail)
         try:
             from . import job_wake
@@ -3755,6 +3882,8 @@ class TerminalAgent:
             # question nobody answered). Consumed on read.
             _note = self.__dict__.pop("_blocked_note", "")
             prompt = job_wake.wake_prompt(done)
+            if prompt:
+                self._wake_kind = "job"
             if _note:
                 prompt = (prompt + "\n\n" + _note) if prompt else _note
             return HarnessText(prompt) if prompt else ""
@@ -3896,7 +4025,7 @@ class TerminalAgent:
             return rb.viewport(
                 rb.render_box(decoder.buffer, decoder.cursor,
                                 self.transcript.width,
-                                _box_hint(self._posture_now()),
+                                _box_hint(self._posture_hint()),
                                 status=self._bg_status_selected(selected)),
                 _BOX_MAX_CONTENT_ROWS)
 

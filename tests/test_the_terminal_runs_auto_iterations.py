@@ -176,6 +176,7 @@ def test_a_line_typed_during_an_iteration_comes_first(ws):
         veto = engine.kit_permissions.auto_veto
         if not isinstance(prompt, HarnessText):
             seen["user_turn_veto"] = veto
+            seen["paused_in_user_turn"] = agent._auto.paused
             return "answered the user"
         seen["before"] = veto("read_file", {"path": "notes.txt"})
         agent.queued.append("what are you doing?")   # typed meanwhile
@@ -194,7 +195,9 @@ def test_a_line_typed_during_an_iteration_comes_first(ws):
     assert not isinstance(eng.prompts[1], HarnessText)
     assert seen["user_turn_veto"] is None
     assert len(eng.prompts) == 2
-    assert agent._auto.paused
+    assert seen["paused_in_user_turn"]
+    # Leaving the session ends auto mode with its report.
+    assert "session ended" in agent._auto.stop_report
 
 
 def test_a_push_inside_an_iteration_is_queued(ws):
