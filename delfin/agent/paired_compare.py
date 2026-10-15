@@ -278,16 +278,6 @@ def code_hash(paths: Sequence[str]) -> dict:
             "newest_mtime": newest, "missing": missing}
 
 
-def _boot_time() -> Optional[float]:
-    try:
-        for line in Path("/proc/stat").read_text().splitlines():
-            if line.startswith("btime "):
-                return float(line.split()[1])
-    except OSError:
-        return None
-    return None
-
-
 def _etime_seconds(text: str) -> Optional[float]:
     """``ps -o etime`` ([[dd-]hh:]mm:ss) in seconds."""
     m = re.fullmatch(r"\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*", text or "")
@@ -299,15 +289,12 @@ def _etime_seconds(text: str) -> Optional[float]:
 
 def process_start_epoch(pid: int) -> Optional[float]:
     """When *pid* started, as epoch seconds; None when it cannot be told.
-    /proc on Linux, ``ps -o etime`` elsewhere."""
-    from . import proc_identity
-    ticks = proc_identity.start_ticks(pid)
-    boot = _boot_time()
-    if ticks is not None and boot is not None:
-        try:
-            return boot + ticks / os.sysconf("SC_CLK_TCK")
-        except (ValueError, OSError):
-            pass
+    /proc on Linux (``stop_all.process_started_at``, the reader the
+    emergency stop uses), ``ps -o etime`` elsewhere."""
+    from .stop_all import process_started_at
+    started = process_started_at(int(pid))
+    if started is not None:
+        return started
     try:
         r = subprocess.run(["ps", "-o", "etime=", "-p", str(int(pid))],
                            capture_output=True, text=True, timeout=5)
