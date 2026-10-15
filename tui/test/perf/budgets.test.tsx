@@ -4,8 +4,8 @@
  * - a keystroke reaches the frame in under 16 ms (median), never over 100;
  * - a session of 1,000 rows is written again (a resize, ctrl+l) in under 1 s.
  *
- * Launch to footer (300 ms with the service running) is measured live:
- * test/e2e/check_startup_tmux.py. Timings on a loaded machine vary, so the
+ * Launch to footer (300 ms with the service running, reported; held relative
+ * to the source launch) is measured live: test/e2e/check_startup_tmux.py. Timings on a loaded machine vary, so the
  * bounds are what a person notices, not the best case.
  */
 import { afterEach, expect, test } from "bun:test"

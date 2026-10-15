@@ -83,11 +83,8 @@ jobs:
           tests/test_a_tui_*.py tests/test_the_tui_*.py tests/test_the_agent_service_*.py
 
       - name: Live checks in tmux
-        env:
-          # A shared runner is slower than a workstation, and not the same
-          # from run to run: the launch budget is 300 ms there and looser
-          # here, still tight enough for a launch that got seconds slower.
-          DELFIN_TUI_STARTUP_BUDGET_MS: "750"
+        # check_startup_tmux holds the binary's launch relative to the source
+        # launch measured in the same job; no wall-clock budget is set here.
         run: |
           sudo apt-get install -y -q tmux
           for check in check_tui_tmux check_composer_tmux check_switch_tmux check_agents_tmux \
