@@ -1153,6 +1153,16 @@ class TerminalAgent:
                  broker=None):
         self.engine = engine
         self.broker = broker
+        # The broker marks its waits on the CURRENT engine's activity
+        # state; read per request, since /model rebuilds the engine.
+        if broker is not None and getattr(broker, "activity", 0) is None:
+            try:
+                broker.activity = lambda: getattr(self.engine, "activity",
+                                                  None)
+            except Exception:
+                pass
+        # The phase whose slow line was already said (activity seq).
+        self._slow_said_seq = -1
         self.opts = opts or ReplOptions()
         try:
             # The name `delfin-agent pause <session>` reaches this engine by.
@@ -1484,6 +1494,10 @@ class TerminalAgent:
                     except Exception:
                         pass
                 try:
+                    self._say_slow_phase()
+                except Exception:
+                    pass
+                try:
                     item = self._q.get(
                         timeout=0.0 if raw.active else _PUMP_TICK_S)
                 except queue.Empty:
@@ -1500,6 +1514,12 @@ class TerminalAgent:
                     # this flag, so the next prompt says what the turn
                     # stopped on even when its own words do not.
                     self._denied_in_turn = True
+                if (item.kind == "wait" and raw.active and self._can_redraw()
+                        and self._activity_snapshot() is not None):
+                    # The status row already says it, with a clock that
+                    # ticks every repaint; the first-byte tick's own row
+                    # above it counted in tenths of the deadline.
+                    continue
                 self._count_streamed(item)
                 self._render_around_bottom(item)
 
@@ -1898,6 +1918,12 @@ class TerminalAgent:
         from . import terminal_confirm as tc
 
         self._clear_bottom()
+        # The status row is down while a dialog waits, so the dialog says
+        # what the turn is doing: nothing, until this is answered.
+        self.transcript.chrome(self.transcript.theme.dim(
+            "⏸ waiting for your "
+            + ("answer" if req.kind == tc.ASK else "approval")
+            + " — the turn is paused until you answer"))
         if req.kind == tc.ASK:
             self._answer_question(req, raw)
             return
@@ -2408,6 +2434,32 @@ class TerminalAgent:
         self._input_cursor = 0
         self._clear_bottom()
 
+    def _activity_snapshot(self):
+        """The engine's activity snapshot, or None without one."""
+        from . import activity as _act
+        target = _act.resolve_attr(getattr(self, "engine", None))
+        if target is None:
+            return None
+        try:
+            return target.snapshot()
+        except Exception:
+            return None
+
+    def _say_slow_phase(self) -> None:
+        """One transcript line when the current phase is past its
+        threshold: what is slow, and how to stop it here. Once per phase
+        (keyed on the activity's seq), never once per repaint."""
+        snap = self._activity_snapshot()
+        if snap is None or not snap.active \
+                or snap.seq == self.__dict__.get("_slow_said_seq", -1):
+            return
+        from . import activity as _act
+        hint = _act.slow_hint(snap, "terminal")
+        if not hint:
+            return
+        self._slow_said_seq = snap.seq
+        self._render_around_bottom(RenderItem("notice", text=hint))
+
     def _status_line(self) -> str:
         """Elapsed, model, posture, what this turn has cost so far.
 
@@ -2446,7 +2498,19 @@ class TerminalAgent:
                     or "?")
         mode = permission_mode(self.engine) or str(status.get("mode", "") or "")
 
-        bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
+        # The phase first, from the engine's own state (activity.py): what
+        # the turn waits on, with that phase's clock, then the turn's.
+        # Without an activity state (a double, a foreign engine) the row
+        # keeps its old head: the turn's seconds and the model.
+        snap = self._activity_snapshot()
+        if snap is not None and snap.active:
+            from . import activity as _act
+            bits = [f"{_SPINNER[self._spin]} {_act.line(snap)}",
+                    f"turn {elapsed:.0f}s"]
+            if snap.phase not in (_act.MODEL_WAIT, _act.STREAMING):
+                bits.append(model)
+        else:
+            bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
             # Said only when a command is not held by a layer; an
