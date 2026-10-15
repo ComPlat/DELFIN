@@ -185,6 +185,33 @@ BRIEF_HEADER = ("What this session was started to look into, from the DELFIN "
 #: Between the brief and the prompt it goes in front of: a line no brief
 #: holds by chance (a job's details may hold a Markdown rule).
 BRIEF_END = "\n\n[end of what this session was started to look into]\n\n"
+#: The source the brief's untrusted-data fence names.
+BRIEF_SOURCE = "DELFIN window: attention item"
+
+
+def _after_brief(text: str) -> str:
+    """The user's words of a first prompt the brief was put in front of.
+
+    The brief is fenced (untrusted.wrap); the cut is made after the
+    fence's own closer -- the last line carrying its nonce, which the
+    brief cannot forge -- so a brief that holds BRIEF_END itself does not
+    cut short. A prompt saved before the fence existed is cut at the
+    first BRIEF_END, as then."""
+    from .. import untrusted
+    rest = text[len(BRIEF_HEADER):]
+    opener = untrusted._OPEN_RE.match(rest)
+    if opener:
+        end = None
+        for m in untrusted._CLOSE_RE.finditer(rest, opener.end()):
+            if m.group(1) == opener.group(1):
+                end = m.end()
+        if end is not None:
+            tail = rest[end:].lstrip("\n")
+            marker = BRIEF_END.strip("\n")
+            if tail.startswith(marker):
+                tail = tail[len(marker):]
+            return tail.strip()
+    return text.split(BRIEF_END, 1)[1].strip()
 
 #: A restored conversation the event log has nothing of -- it ran in the
 #: dashboard or the REPL, or it is a copy -- is shown when the session
@@ -241,7 +268,7 @@ def history_events(messages: Any, turns: int = HISTORY_TURNS) -> list[tuple[str,
             text = _content_text(m.get("content")).strip()
             harness = is_harness_row(m)
             if not harness and text.startswith(BRIEF_HEADER) and BRIEF_END in text:
-                text = text.split(BRIEF_END, 1)[1].strip()
+                text = _after_brief(text)
             if text:
                 out.append([("user.message", {"text": text[:HISTORY_TEXT],
                                               "source": "harness" if harness else "user"})])
@@ -1258,7 +1285,13 @@ class Worker:
         if not self.brief or self._brief_used:
             return prompt
         self._brief_turn = True
-        return f"{BRIEF_HEADER}{self.brief}{BRIEF_END}{prompt}"
+        # Fenced as data with a per-call nonce: the item holds text other
+        # processes wrote (another session's parked question, a job's
+        # output and diagnosis), and it reaches the model in the user's
+        # message.
+        from .. import untrusted
+        return (f"{BRIEF_HEADER}{untrusted.wrap(BRIEF_SOURCE, self.brief)}"
+                f"{BRIEF_END}{prompt}")
 
     def _brief_after_turn(self, error: str, output_tokens: int) -> None:
         """Taken, unless its turn failed before the model said anything
