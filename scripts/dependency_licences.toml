@@ -1,0 +1,78 @@
+# Reviewed exceptions for scripts/check_dependency_licences.py.
+#
+# One entry per package whose declared licence string does not pass the
+# checker's permissive/LGPL rule. `licence` is the exact string pip-licenses
+# reports (--from=mixed); a different string fails the check until someone
+# reads the licence again and updates the entry. `spdx` is what the review
+# found, `reason` says what was read and what follows from it.
+
+[[package]]
+name = "openbabel-wheel"
+licence = "GNU General Public License (GPL)"
+spdx = "GPL-2.0-only"
+reviewed = "2026-10-15"
+reason = """
+Open Babel 3.1.1. The wheel's dist-info/licenses/LICENSE is the GPL version 2
+text, and the installed header openbabel3/openbabel/mol.h grants "version 2
+of the License" without "or later"; upstream openbabel/openbabel ships
+COPYING with the GPL-2.0 text. Linked in-process (from openbabel import
+pybel) by delfin/smiles_converter.py, delfin/manta and
+delfin/common/external_builders.py. Kept as a core dependency: declaring it
+is not distribution, and a user's own installation is not restricted.
+GPL-2.0-only code cannot be combined with GPL-3.0/LGPL-3.0 code in one
+distributed work, so a bundle that ships DELFIN together with Open Babel
+(container image, environment archive, cluster module) has no licence set
+that can all be met. THIRD_PARTY_NOTICES.md section 3 states this.
+"""
+
+[[package]]
+name = "stk"
+licence = "UNKNOWN"
+spdx = "MIT"
+reviewed = "2026-10-15"
+reason = """
+No License field or classifier in the metadata; dist-info/licenses/LICENSE
+of stk 2026.10.11.1 is the MIT text, copyright 2018 Lukas Turcani, Jelfs
+Materials Group, stk contributors (github.com/lukasturcani/stk).
+"""
+
+[[package]]
+name = "atomlite"
+licence = "UNKNOWN"
+spdx = "MIT"
+reviewed = "2026-10-15"
+reason = """
+Dependency of stk. No License field or classifier; dist-info/licenses/LICENSE
+of atomlite 4.5.0 is the MIT text, copyright 2023 Lukas Turcani.
+"""
+
+[[package]]
+name = "MCHammer"
+licence = "UNKNOWN"
+spdx = "MIT"
+reviewed = "2026-10-15"
+reason = """
+Dependency of stk. No License field or classifier; dist-info/LICENSE of
+MCHammer 2024.2.29.0 is the MIT text, copyright 2020 Andrew Tarzia.
+"""
+
+[[package]]
+name = "SpinDry"
+licence = "UNKNOWN"
+spdx = "MIT"
+reviewed = "2026-10-15"
+reason = """
+Dependency of stk. No License field or classifier; dist-info/licenses/LICENSE
+of spindry 2026.3.17.0 is the MIT text, copyright 2020 Andrew Tarzia.
+"""
+
+[[package]]
+name = "vabene"
+licence = "UNKNOWN"
+spdx = "MIT"
+reviewed = "2026-10-15"
+reason = """
+Dependency of stk. The 0.0.5 distribution carries no licence metadata and no
+licence file; the upstream repository github.com/lukasturcani/vabene is MIT
+(GitHub licence API), copyright 2020 Lukas Turcani.
+"""
