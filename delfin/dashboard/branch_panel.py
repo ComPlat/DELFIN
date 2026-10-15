@@ -391,13 +391,20 @@ class BranchPanel:
         self._cands = cands
         self._checks = []
         rows = []
+        try:
+            pinned = set(BL.load_prefs(self.repo)["pinned"])
+        except Exception:
+            pinned = set()
         for c in cands:
+            mine = c.kind == "branch" and c.name in pinned
             label = (f"worktree {c.path} — {c.reason}" if c.kind == "worktree"
                      else f"branch {c.name} ({c.sha[:8]}) — {c.reason}"
                      + (f" — {c.unmerged} commit(s) NOT in origin/main"
                         if c.unmerged else "")
-                     + (f" — after its worktree {c.after}" if c.after else ""))
-            cb = W.Checkbox(value=not c.unmerged, description=label, indent=False,
+                     + (f" — after its worktree {c.after}" if c.after else "")
+                     + (" — pinned in your list" if mine else ""))
+            cb = W.Checkbox(value=not c.unmerged and not mine, description=label,
+                            indent=False,
                             layout=W.Layout(width="auto"))
             self._checks.append(cb)
             rows.append(cb)
@@ -451,7 +458,7 @@ class BranchPanel:
     def _do_cleanup(self, sel, confirm_unmerged: bool) -> None:
         self.cleanup_confirm.children = ()
         report = BC.delete(self.repo, sel, confirm_unmerged=confirm_unmerged)
-        parts = [f"<b>Deleted {len(report.deleted)}</b>"]
+        parts = [f"<b>Deleted {len(report.deleted)}.</b> "]
         if report.undo:
             parts.append("Undo (also in " + _esc(report.log_path or str(BC._log_path()))
                          + "):<pre style='white-space:pre-wrap;'>"
