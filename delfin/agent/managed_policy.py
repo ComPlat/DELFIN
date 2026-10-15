@@ -114,6 +114,7 @@ FAIL_CLOSED_MODES = frozenset({"bypassPermissions", "acceptEdits"})
 UNATTENDED_MODES = frozenset({"bypassPermissions", "acceptEdits"})
 CONTAINER_BACKENDS = ("", "bwrap")
 _KEYS = {"version", "permissions", "disallowed_modes", "require_isolation",
+         "auto_ssh_hosts_max",
          "container_backend", "network", "disable_classifier_off",
          "audit_log", "knowledge_admins", "comment"}
 
@@ -148,6 +149,9 @@ class Policy:
     #: One tuple of domains per file that sets it; a host must fit each.
     allowed_domains_max: tuple = ()
     disable_classifier_off: bool = False
+    #: One tuple of host entries per file that sets it (auto_guard): a host
+    #: auto mode may reach over ssh/scp/rsync must fit each; () = no ceiling.
+    auto_ssh_hosts_max: tuple = ()
     audit_log: tuple = ()
     #: Who curates delfin/agent/pack/knowledge (knowledge_share.is_admin).
     #: Read from trusted files only: an admin list is a grant, and a file
@@ -318,6 +322,11 @@ def _merge(pol: Policy, data: dict, src: Source) -> None:
             for d in _strings(net.get("allowed_domains_max"))),)
     if data.get("disable_classifier_off"):
         pol.disable_classifier_off = True
+    if "auto_ssh_hosts_max" in data:
+        # Present means a ceiling, an empty list included (no host at all).
+        pol.auto_ssh_hosts_max += (tuple(
+            h.strip().lower().rstrip(".")
+            for h in _strings(data.get("auto_ssh_hosts_max"))),)
     audit = str(data.get("audit_log") or "").strip()
     if audit:
         if not src.trusted:

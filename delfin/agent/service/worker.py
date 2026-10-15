@@ -839,6 +839,7 @@ def _agent_class():
             except Exception:
                 delivered = False
             if delivered:
+                self._auto_note_user(steer=True)
                 with self.cond:
                     self._steered += 1
                 self.post(lambda: self._emit("user.message", text=text,
@@ -1159,7 +1160,8 @@ class Worker:
                 # Whether shift+tab may stop on bypass ("" yes, else why
                 # not) and whether its first step was confirmed already.
                 "bypassBlocked": self._bypass_blocked(),
-                "bypassConfirmed": bool(getattr(self, "_bypass_confirmed", False))}
+                "bypassConfirmed": bool(getattr(self, "_bypass_confirmed", False)),
+                "auto": self._auto_line()}
 
     def _bypass_blocked(self) -> str:
         try:
@@ -1167,6 +1169,17 @@ class Worker:
             return protocol.clean_line(posture_cycle.bypass_refusal(self.engine) or "", 200)
         except Exception:
             return "the posture ladder could not be read"
+
+    def _auto_line(self) -> str:
+        """Auto mode's status line for the window's mode line, "" while it
+        is off or before the session has a controller."""
+        agent = getattr(self, "agent", None)
+        ctl = agent.__dict__.get("_auto") if agent is not None else None
+        try:
+            line = ctl.status_line() if ctl is not None else ""
+        except Exception:
+            line = ""
+        return protocol.clean_line(line, protocol.TASK_LABEL_MAX) if line else ""
 
     def _task_rows(self) -> list[dict[str, Any]]:
         """The session's task list as the window draws it: task_ticker.rows
@@ -1236,7 +1249,8 @@ class Worker:
                 "notices": list(self.notices),
                 "tasks": facts["tasks"],
                 "bypassBlocked": facts["bypassBlocked"],
-                "bypassConfirmed": facts["bypassConfirmed"]}
+                "bypassConfirmed": facts["bypassConfirmed"],
+                "auto": facts["auto"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""

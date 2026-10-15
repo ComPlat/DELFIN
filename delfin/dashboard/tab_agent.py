@@ -2357,7 +2357,7 @@ def resolve_office_workspace(configured) -> Path | None:
 _USER_ONLY_SLASH_COMMANDS = frozenset({
     "/perms", "/perm-cycle",
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
-    "/loop", "/forget", "/profile", "/session", "/init",
+    "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",
     # Sharing and curating knowledge are the person's acts. An ACTION line
     # that ran /share would return the dialog -- code included -- to the
@@ -2420,7 +2420,7 @@ _BUILTIN_SLASH_PREFIXES = frozenset({
     "/workspace", "/tab", "/ui",
     "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
     "/check", "/recalc", "/cancel", "/context", "/agents", "/skills",
-    "/trace", "/loop",
+    "/trace", "/loop", "/auto",
     "/undo-file", "/profile", "/skill", "/tools",
     "/memory", "/share", "/unshare", "/lessons", "/swarm", "/knowledge",
 })
@@ -2709,7 +2709,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Session", "/compact", "Summarize context to reduce tokens", False),
     ("Session", "/context", "Show context-window usage + compaction status", False),
     ("Session", "/trace", "Show this session's tool-call trace (/trace N for last N)", True),
-    ("Session", "/loop", "Re-run a prompt on an interval (/loop 30m /check · /loop list · /loop stop <id>)", True),
+    ("Session", "/loop", "Loops: /loop list · show|confirm|run <name> · stop · new <name> · /loop 30m <prompt>", True),
+    ("Session", "/auto", "Auto mode: /auto on|off · /auto needs — keeps working without input, inside its frame", True),
     ("Session", "/agents", "List subagent presets (or /agents stats for telemetry)", False),
     ("Session", "/skills", "List discovered skills (or /skills <name> for body)", False),
     ("Session", "/undo", "Undo last agent turn (drop from context)", False),
@@ -6504,9 +6505,27 @@ def create_tab(ctx):
                     push_btn, push_confirm_btn, push_cancel_btn,
                     export_btn, nb_export_btn):
         _hidden.layout.display = "none"
+    # Auto mode (delfin.agent.auto_mode): the toggle beside the posture it
+    # runs in, and at the foot of the chat a one-line panel -- loop,
+    # iteration n/max, last result, budget left, what needs the user --
+    # with its own stop. Handlers are bound where the controller lives
+    # (_auto_ctl, after _send_on_its_own).
+    auto_toggle_btn = widgets.Button(
+        description="Auto: off",
+        layout=widgets.Layout(width="90px"),
+        tooltip=("Auto mode: when nobody types, start the next item of work "
+                 "in scope by itself. Never pushes, opens pull requests or "
+                 "merges; never widens the posture."))
+    loop_panel_html = widgets.HTML("")
+    loop_panel_html.add_class("delfin-auto-panel")
+    auto_stop_btn = widgets.Button(
+        description="Stop auto", button_style="danger",
+        layout=widgets.Layout(width="90px"))
+    auto_box = widgets.HBox([loop_panel_html, auto_stop_btn],
+                            layout=widgets.Layout(display="none"))
     _controls_hbox = widgets.HBox(
         [mode_dropdown, provider_dropdown, model_dropdown,
-         effort_dropdown, perm_dropdown, stop_btn,
+         effort_dropdown, perm_dropdown, auto_toggle_btn, stop_btn,
          git_group, bug_group, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
@@ -8345,6 +8364,168 @@ def create_tab(ctx):
             state["_on_its_own"] = False
         return True
 
+    # -- auto mode (delfin.agent.auto_mode) ------------------------------
+    # One controller per tab, made under this lock: the tick, the turn's
+    # worker and the UI thread may all ask first. The controller itself
+    # serialises its state (auto_mode.AutoController._lock).
+    _auto_make_lock = threading.Lock()
+
+    def _auto_ctl(create: bool = True):
+        """This tab's AutoController, made on first use for the engine's
+        workspace; remade while off when the workspace changed."""
+        with _auto_make_lock:
+            return _auto_ctl_locked(create)
+
+    def _auto_ctl_locked(create: bool):
+        eng = state.get("engine")
+        ws = (getattr(getattr(eng, "kit_permissions", None), "workspace", None)
+              or _agent_workspace_path())
+        ctl = state.get("_auto")
+        if ctl is not None and (ctl.enabled or str(ctl.workspace) == str(ws)):
+            return ctl
+        if not create or not ws:
+            return ctl
+        try:
+            from delfin.agent import auto_mode as _am
+            ctl = _am.AutoController(
+                Path(ws), session_id=str(getattr(eng, "session_id", "")
+                                         or state.get("active_session_id") or ""))
+            # The user first: a queued message refuses the iteration's
+            # next tool call (auto_mode.AutoController.veto).
+            ctl.user_waiting = lambda: bool(state.get("message_queue"))
+        except Exception:
+            return None
+        state["_auto"] = ctl
+        return ctl
+
+    def _auto_say() -> None:
+        ctl = state.get("_auto")
+        if ctl is None:
+            return
+        for note in ctl.pop_notices():
+            _append_system_message("◆ " + str(note))
+
+    def _refresh_loop_panel() -> None:
+        ctl = state.get("_auto")
+        on = bool(ctl is not None and ctl.enabled)
+        try:
+            auto_toggle_btn.description = "Auto: on" if on else "Auto: off"
+            auto_toggle_btn.button_style = "warning" if on else ""
+        except Exception:
+            pass
+        line = ctl.status_line() if on else ""
+        if not line:
+            loop_panel_html.value = ""
+            auto_box.layout.display = "none"
+            return
+        st = ctl.state()
+        parts = [f"◆ <b>{_html.escape(line)}</b>",
+                 _html.escape(f"left: {st.get('tokens_left', 0)} tokens, "
+                              f"{int(st.get('wall_left_s', 0)) // 60} min")]
+        if st.get("branch"):
+            parts.append(_html.escape(f"branch {st['branch']}"))
+        if st.get("paused"):
+            parts.append(_html.escape(f"paused: {st['paused']} "
+                                      "(Auto: on resumes)"))
+        body = " · ".join(parts)
+        needs = st.get("needs_you") or []
+        if needs:
+            body += "<br>needs you: " + "; ".join(
+                _html.escape(f"#{n['id']} {n['text'][:90]}")
+                for n in needs[-5:])
+        loop_panel_html.value = body
+        auto_box.layout.display = ""
+
+    def _auto_note_user(*, steer: bool = False) -> None:
+        ctl = state.get("_auto")
+        if ctl is None:
+            return
+        try:
+            ctl.note_user_input(state.get("engine"), steer=steer)
+        except Exception:
+            pass
+        _refresh_loop_panel()
+
+    def _auto_tick(send=None):
+        """Idle and auto mode on: the controller's next iteration, sent as a
+        turn nobody typed. Returns the prompt ("" for none)."""
+        ctl = state.get("_auto")
+        eng = state.get("engine")
+        if (ctl is None or not ctl.enabled or eng is None
+                or state.get("streaming") or _awaiting_user_answer(state)):
+            return ""
+        prompt = ctl.next_prompt(
+            eng, typed=input_textarea.value or "",
+            pause_key=str(getattr(ctx, "presence_key", "") or ""))
+        _auto_say()
+        if prompt:
+            started = (send or _send_on_its_own)(str(prompt))
+            if started is False:
+                ctl.cancel_iteration("the turn could not start")
+                _auto_say()
+        _refresh_loop_panel()
+        return prompt
+
+    def _auto_took_wake(prompt: str) -> bool:
+        """A job wake, inside auto mode's next iteration when it is on (a
+        loop with trigger job waits for exactly this). True when auto mode
+        sent it; False leaves it to the caller, which sends it as before.
+        Either way through _send_on_its_own, the one door."""
+        ctl = state.get("_auto")
+        eng = state.get("engine")
+        if ctl is None or not ctl.enabled or eng is None:
+            return False
+        p = ctl.next_prompt(
+            eng, wake=prompt, typed=input_textarea.value or "",
+            pause_key=str(getattr(ctx, "presence_key", "") or ""))
+        _auto_say()
+        if not p:
+            return False
+        if _send_on_its_own(str(p)) is False:
+            ctl.cancel_iteration("the turn could not start")
+        _refresh_loop_panel()
+        return True
+
+    def _auto_after_turn() -> None:
+        ctl = state.get("_auto")
+        if ctl is None:
+            return
+        try:
+            if ctl.iteration is not None:
+                ctl.finish_iteration(state.get("engine"),
+                                     state.get("_last_answer_text") or "", "")
+            else:
+                ctl.note_turn_end()
+        except Exception:
+            pass
+        _auto_say()
+        _refresh_loop_panel()
+
+    def _on_auto_toggle(_button=None) -> None:
+        ctl = _auto_ctl()
+        if ctl is None:
+            _append_system_message("Auto mode is not available here.")
+            return
+        if ctl.enabled and not ctl.paused:
+            _append_system_message(ctl.disable("turned off in the dashboard"))
+        elif state.get("engine") is None:
+            _append_system_message("Auto mode needs a session: send a "
+                                   "message first.")
+        else:
+            _append_system_message(ctl.enable(state.get("engine")))
+        _auto_say()
+        _refresh_loop_panel()
+
+    def _on_auto_stop(_button=None) -> None:
+        ctl = state.get("_auto")
+        if ctl is not None and (ctl.enabled or ctl.loop is not None):
+            _append_system_message(ctl.stop("stopped in the dashboard"))
+        _auto_say()
+        _refresh_loop_panel()
+
+    auto_toggle_btn.on_click(_on_auto_toggle)
+    auto_stop_btn.on_click(_on_auto_stop)
+
 
     def _session_user_text() -> str:
         """Everything the user -- or another session -- wrote in this chat.
@@ -9107,7 +9288,7 @@ def create_tab(ctx):
                         state.setdefault("_woken_shells", set()),
                         _background_owner()))
                     _prompt = _job_wake_prompt(_done)
-                    if _prompt:
+                    if _prompt and not _auto_took_wake(_prompt):
                         _send_on_its_own(_prompt)
             except Exception:
                 pass
@@ -9150,6 +9331,12 @@ def create_tab(ctx):
             try:
                 _refresh_task_ticker()
                 _refresh_next_steps()
+            except Exception:
+                pass
+            # Auto mode: the next iteration when the session is idle.
+            try:
+                _auto_tick()
+                _refresh_loop_panel()
             except Exception:
                 pass
             finally:
@@ -9235,8 +9422,8 @@ def create_tab(ctx):
     # task line at the foot of the chat, not in a row of their own.
     palette_row.add_class("delfin-agent-chat-foot")
     chat_frame = widgets.VBox(
-        [chat_html, working_html, queue_html, task_strip, palette_row,
-         plan_accept_btn, ask_user_box, approval_dock])
+        [chat_html, working_html, queue_html, task_strip, auto_box,
+         palette_row, plan_accept_btn, ask_user_box, approval_dock])
     chat_frame.add_class("delfin-agent-chat-frame")
     # The command palette opens OVER the chat, anchored to the top edge of
     # the input: opening it used to push the input down and squeeze the
@@ -14460,6 +14647,52 @@ def create_tab(ctx):
                     + f"\n\nFull trace: {_tt.trace_path(engine.trace_session())}")
             return True
 
+        if (cmd == "/auto" or cmd.startswith("/auto ")
+                or cmd == "/loop" or cmd.startswith("/loop ")) \
+                and state.get("_on_its_own"):
+            # The send path routes a /token from any origin; these two start
+            # unattended work and are the person's only (security review
+            # 2026-09-16 rule for _USER_ONLY_SLASH_COMMANDS).
+            _append_system_message(
+                f"{cmd.split()[0]} comes only from the person at the "
+                "keyboard; a turn nobody typed cannot run it.")
+            return True
+
+        if cmd == "/auto" or cmd.startswith("/auto "):
+            from delfin.agent import loop_commands as _lc
+            _append_system_message(_lc.auto_command(
+                text.strip()[len("/auto"):].strip(), _auto_ctl(),
+                state.get("engine")))
+            _auto_say()
+            _refresh_loop_panel()
+            return True
+
+        _loop_words = text.strip()[len("/loop"):].split()
+        if cmd.startswith("/loop") and _loop_words and (
+                _loop_words[0].lower() in ("show", "confirm", "run", "resume",
+                                           "new", "log")
+                or (_loop_words[0].lower() == "stop" and len(_loop_words) == 1
+                    and state.get("_auto") is not None
+                    and (state["_auto"].loop is not None
+                         or state["_auto"].enabled))):
+            # Loop definitions (.delfin/loops/<name>.md) through the handler
+            # the terminal and the window use; the interval form below stays
+            # a scheduler entry.
+            from delfin.agent import loop_commands as _lc
+            _eng = state.get("engine")
+            _ws = (getattr(getattr(_eng, "kit_permissions", None),
+                           "workspace", None) or _agent_workspace_path())
+            _out, _prompt = _lc.loop_command(
+                " ".join(_loop_words), _auto_ctl(), _eng, _ws)
+            if _out:
+                _append_system_message(_out)
+            _auto_say()
+            _refresh_loop_panel()
+            if _prompt:
+                input_textarea.value = _prompt
+                _on_send(None)
+            return True
+
         if cmd.startswith("/loop"):
             # Recurring agent loop: re-run a prompt
             # on a fixed interval via the scheduler — the existing fire-callback
@@ -14474,17 +14707,28 @@ def create_tab(ctx):
             _rest = text[len("/loop"):].strip()
             if _rest in ("", "list", "ls"):
                 _loop_list = _loops()
+                _ls = []
                 if not _loop_list:
-                    _append_system_message(
+                    _ls.append(
                         "No active loops. Usage: /loop <5m|2h|1d> <prompt>  ·  "
                         "/loop list  ·  /loop stop <id|all>")
                 else:
-                    _ls = ["🔁 Active loops:"]
+                    _ls.append("🔁 Active loops:")
                     for e in _loop_list:
                         _ls.append(f"  [{e.id}] every {max(1, e.every_seconds // 60)}m"
                                    f" → {e.prompt[:60]}")
                     _ls.append("Stop with /loop stop <id> (or /loop stop all).")
-                    _append_system_message("\n".join(_ls))
+                # The loop definitions beside the scheduled prompts.
+                try:
+                    from delfin.agent import loop_commands as _lc
+                    _eng = state.get("engine")
+                    _ws = (getattr(getattr(_eng, "kit_permissions", None),
+                                   "workspace", None) or _agent_workspace_path())
+                    _ls.append(_lc.loop_command(
+                        "list", state.get("_auto"), _eng, _ws)[0])
+                except Exception:
+                    pass
+                _append_system_message("\n".join(_ls))
                 return True
             if _rest.startswith("stop"):
                 _sa = _rest[4:].strip()
@@ -18655,6 +18899,8 @@ def create_tab(ctx):
             if state.get("_on_its_own"):
                 _steer_text = HarnessText(_steer_text)
             if _seng is not None and hasattr(_seng, "steer") and _seng.steer(_steer_text):
+                if not state.get("_on_its_own"):
+                    _auto_note_user(steer=True)
                 input_textarea.value = ""
                 _append_chat_message(
                     "user", user_text,
@@ -18689,7 +18935,13 @@ def create_tab(ctx):
                 state["message_queue"].append(user_text)
                 input_textarea.value = ""
                 _update_queue_display()
+                if not state.get("_on_its_own"):
+                    _auto_note_user()
                 return
+
+        # A person's message: it comes before auto mode, which pauses.
+        if not state.get("_on_its_own"):
+            _auto_note_user()
 
         # Track user message for safety intent-checking
         state["_last_user_message"] = user_text
@@ -21393,6 +21645,12 @@ def create_tab(ctx):
                                 _append_system_message("\n".join(_lines))
                     except Exception:
                         pass
+                    # Auto mode judges an iteration that just ended (commit,
+                    # check, keep or revert) before anything else starts.
+                    try:
+                        _auto_after_turn()
+                    except Exception:
+                        pass
                     # Process next queued message if any; else run the
                     # announced-but-not-done follow-up the engine noted.
                     if state.get("message_queue"):
@@ -22590,6 +22848,13 @@ def create_tab(ctx):
         if state.get("_closed"):
             return
         state["_closed"] = True
+        # Auto mode ends with its session, with its report.
+        _auto_end = state.get("_auto")
+        if _auto_end is not None and getattr(_auto_end, "enabled", False):
+            try:
+                _auto_end.stop("the session was closed")
+            except Exception:
+                pass
         if save:
             try:
                 _auto_save_session()
@@ -22674,6 +22939,11 @@ def create_tab(ctx):
         "refresh_background": _refresh_subagent_panel,
         "refresh_next_steps": _refresh_next_steps,
         "deliver_messages": _deliver_session_messages,
+        "auto": lambda: state.get("_auto"),
+        "auto_ctl": _auto_ctl,
+        "refresh_loop": _refresh_loop_panel,
+        "auto_tick": _auto_tick,
+        "auto_after_turn": _auto_after_turn,
     }
 
 
