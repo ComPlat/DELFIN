@@ -71,8 +71,11 @@ def test_solo_budget_still_holds():
     copies of one answer drift, and the comment saying where the other
     one lives does not stop it -- it only says who to blame.
     """
-    from test_prompt_token_budget import FILE_BUDGETS
+    from test_prompt_token_budget import FILE_BUDGETS, _selected
 
     budget = FILE_BUDGETS["solo_agent.md"]
-    tokens = (len(_markers_stripped(_SOLO.read_text())) + 3) // 4
+    # Counted the way the budget's own test counts it (the DELFIN
+    # selection of the workspace regions), for the same reason the
+    # number is imported: one measure, one place.
+    tokens = (len(_selected(_markers_stripped(_SOLO.read_text()))) + 3) // 4
     assert tokens <= budget, f"{tokens} tokens (>{budget}). Trim first."

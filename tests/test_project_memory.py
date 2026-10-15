@@ -85,17 +85,21 @@ def test_recognises_all_delfin_filenames():
             assert f"FROM-{name}" in text
 
 
-def test_ignores_other_frameworks_instruction_files():
-    """DELFIN is standalone: instruction files of other agent tools must
-    NOT leak into its prompt."""
+def test_reads_only_the_named_instruction_files():
+    """Only the recognised names are read. CLAUDE.md now is one of them,
+    from a workspace root (a repository's conventions are the
+    repository's, whichever agent they were written for, and every file
+    is fenced as repository text); an arbitrary other agent's file is
+    still not."""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d).resolve()
-        (root / "CLAUDE.md").write_text("FOREIGN-RULES", encoding="utf-8")
         (root / "GEMINI.md").write_text("FOREIGN-RULES", encoding="utf-8")
         assert load_project_memory(root) == ""
+        (root / "CLAUDE.md").write_text("WORKSPACE-RULES", encoding="utf-8")
         (root / "DELFIN.MD").write_text("OWN-RULES", encoding="utf-8")
         text = load_project_memory(root)
         assert "OWN-RULES" in text
+        assert "WORKSPACE-RULES" in text
         assert "FOREIGN-RULES" not in text
 
 

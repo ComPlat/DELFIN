@@ -596,15 +596,39 @@ def _dictates_a_language(rule) -> bool:
         text, re.I)
 
 
+# A profile rule about DELFIN's own tree, tools or chemistry programs.
+# "dashboard" and "provider paths" name DELFIN's own modules in the
+# shipped rules ("before editing agent, dashboard, or provider paths").
+_NAMES_DELFIN_DOMAIN = re.compile(
+    r"\bDELFIN\b|\bORCA\b|search_docs|list_docs|\bSLURM\b|backend_slurm"
+    r"|runtime_setup|qm_runtime|orca_recovery|parallel_classic|\bxtb\b"
+    r"|chemistr|learned_profiles|\bdashboard\b|provider paths",
+    re.IGNORECASE)
+
+
 def format_profile_context(
     provider: str,
     path: Path | None = None,
     *,
     mode_id: str = "",
+    domain: bool = True,
 ) -> str:
-    """Format provider profile as context for the system prompt."""
+    """Format provider profile as context for the system prompt.
+
+    ``domain=False`` (a workspace outside DELFIN's chemistry context)
+    drops every rule that names DELFIN's own files, tools or chemistry
+    programs (``_NAMES_DELFIN_DOMAIN``) before the per-list cut, so the
+    generic rules behind them move up. Measured on the shipped profile:
+    379 -> about 180 tokens on a foreign repo.
+    """
     provider = canonical_provider_name(provider)
     data = _read_all(path or _DEFAULT_PATH)
+
+    def _keep(rules):
+        rules = list(rules or ())
+        if domain:
+            return rules
+        return [r for r in rules if not _NAMES_DELFIN_DOMAIN.search(str(r))]
     shared = _load_shared_profile_from_data(data)
     resolved_local = _resolve_local_state_path(path, None)
     profile = _merge_local_overlay(
@@ -619,13 +643,13 @@ def format_profile_context(
 
     parts = []
 
-    shared_failures = shared.get("common_failures", [])
+    shared_failures = _keep(shared.get("common_failures", []))
     if shared_failures:
         parts.append(
             f"Shared failures: {', '.join(shared_failures[-3:])}"
         )
 
-    shared_rules = shared.get("tool_usage", {}).get("rules", [])
+    shared_rules = _keep(shared.get("tool_usage", {}).get("rules", []))
     if shared_rules:
         parts.append(f"Shared tool rules: {', '.join(shared_rules[:3])}")
 
@@ -642,7 +666,7 @@ def format_profile_context(
                 + ", ".join(f"{k}={v:.0%}" for k, v in top_rates)
             )
 
-    failures = provider_overlay.get("common_failures", [])
+    failures = _keep(provider_overlay.get("common_failures", []))
     if failures:
         parts.append(
             f"Provider failures: {', '.join(failures[-3:])}"
@@ -650,7 +674,7 @@ def format_profile_context(
 
     communication_rules = [
         rule for rule in (
-            provider_overlay.get("communication", {}).get("rules", []) or ())
+            _keep(provider_overlay.get("communication", {}).get("rules", [])))
         if not _dictates_a_language(rule)
     ]
     if communication_rules:
@@ -658,7 +682,7 @@ def format_profile_context(
             "Communication: " + ", ".join(str(rule) for rule in communication_rules[:3])
         )
 
-    provider_tool_rules = (
+    provider_tool_rules = _keep(
         provider_overlay.get("tool_usage", {}).get("rules", [])
     )
     if provider_tool_rules:

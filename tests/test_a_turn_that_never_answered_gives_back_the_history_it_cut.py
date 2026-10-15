@@ -193,6 +193,17 @@ def test_a_stop_after_a_model_switch_does_not_empty_the_saved_session(
         yield
 
     monkeypatch.setattr(A.OpenAIClient, "stream_message", _blocked_until_stopped)
+    # The subject is the fresh start: the forced compaction tried before it
+    # fails here, so the turn takes the fresh-start path (the compaction
+    # path is pinned in test_a_compaction_before_a_fresh_start_saves_and_stops).
+    _original_compact = AgentEngine._compact_history
+
+    def _forced_compaction_fails(self, *, force=False):
+        if force:
+            raise RuntimeError("summariser unavailable")
+        return _original_compact(self, force=force)
+    monkeypatch.setattr(AgentEngine, "_compact_history",
+                        _forced_compaction_fails)
 
     refs, w = _open(tmp_path, "k1")
     state = refs["state"]

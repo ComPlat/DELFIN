@@ -48,7 +48,7 @@ def workspace(tmp_path) -> Path:
 
 
 def _read_record(ws: Path, job_id: str) -> dict:
-    data = json.loads((ws / ".delfin" / "bash_jobs.json").read_text())
+    data = json.loads(BJ._registry_path(ws).read_text())
     return data["jobs"][job_id]
 
 
@@ -64,7 +64,7 @@ def _wait_for_exit_record(ws: Path, job_id: str, timeout: float = 10.0) -> dict:
 
 
 def _write_registry(ws: Path, records: dict) -> None:
-    reg = ws / ".delfin" / "bash_jobs.json"
+    reg = BJ._registry_path(ws)
     reg.parent.mkdir(parents=True, exist_ok=True)
     reg.write_text(json.dumps({"jobs": records}))
 
@@ -172,7 +172,7 @@ def test_old_records_are_pruned_on_drain(workspace):
 
     events = BJ.drain_finished_events(workspace)
     assert [e["job_id"] for e in events] == ["bbbb1111"]   # old one: no event
-    data = json.loads((workspace / ".delfin" / "bash_jobs.json").read_text())
+    data = json.loads(BJ._registry_path(workspace).read_text())
     assert "aaaa0000" not in data["jobs"]                  # pruned from file
 
 

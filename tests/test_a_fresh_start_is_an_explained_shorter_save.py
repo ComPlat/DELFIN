@@ -13,6 +13,11 @@ archived what it cut, and its first message carries the fresh-context
 marker. Restoring the archived history into the engine file would put the
 session over the window again at every resume, and the next turn would cut
 it again.
+
+A forced compaction is tried before a fresh start and replaces it when it
+fits. The subject here is the fresh-start path, so the forced compaction is
+made to fail (``_compaction_fails``); the compaction path and its save are
+pinned in ``test_a_compaction_before_a_fresh_start_saves_and_stops.py``.
 """
 from __future__ import annotations
 
@@ -40,6 +45,19 @@ def home(tmp_path, monkeypatch):
     sessions.mkdir(parents=True)
     with patch("delfin.agent.session_store._SESSIONS_DIR", sessions):
         yield root
+
+
+@pytest.fixture
+def _compaction_fails(monkeypatch):
+    """The forced compaction a fresh start tries first raises; the turn's
+    own unforced compaction check runs unchanged."""
+    original = AgentEngine._compact_history
+
+    def _compact(self, *, force=False):
+        if force:
+            raise RuntimeError("summariser unavailable")
+        return original(self, force=force)
+    monkeypatch.setattr(AgentEngine, "_compact_history", _compact)
 
 
 class _Answer:
@@ -75,7 +93,8 @@ def _chat(n):
              "content": f"line {i}"} for i in range(n)]
 
 
-def test_an_answered_fresh_start_is_saved_as_the_fresh_history(home, tmp_path):
+def test_an_answered_fresh_start_is_saved_as_the_fresh_history(
+        home, tmp_path, _compaction_fails):
     engine = _engine(tmp_path)
     before = _history(60)
     engine.messages = [dict(m) for m in before]

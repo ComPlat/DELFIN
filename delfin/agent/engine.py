@@ -414,6 +414,24 @@ def _merge_user_rows(older: dict, newer: dict) -> dict:
     return merged
 
 
+def _added_lines(old: str, new: str) -> str:
+    """The lines ``new`` adds to ``old`` when it only adds; "" otherwise.
+
+    A role prompt that gains a lazy module keeps every line it had, so
+    the module's lines are the whole update; a section that also lost or
+    rewrote a line is sent whole by the caller."""
+    import difflib
+    a, b = old.splitlines(), new.splitlines()
+    added: list[str] = []
+    for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(
+            None, a, b, autojunk=False).get_opcodes():
+        if tag == "insert":
+            added.extend(b[j1:j2])
+        elif tag != "equal":
+            return ""
+    return "\n".join(added).strip("\n")
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -509,6 +527,11 @@ class AgentEngine:
             _ws = getattr(self.kit_permissions, "workspace", None)
             self.loader.workspace_root = Path(_ws) if _ws else Path(self.repo_dir)
             self.loader.is_delfin_workspace = self._is_delfin_workspace
+            # A getter, not the object: the permissions can be replaced
+            # after construction, and the prompt must follow the ones the
+            # tool list is filtered by.
+            self.loader.toolsets = lambda: getattr(
+                self.kit_permissions, "toolsets", None)
         except Exception:
             self.loader.workspace_root = None
         # Inject-once gating of stable prompt sections is only sound on the
@@ -2205,6 +2228,31 @@ class AgentEngine:
             "correction is about something else, do what the user asked "
             "and leave the skill alone.")
 
+    def _note_repo_errors(self, user_message: str) -> None:
+        """Set this turn's pointer to the git-errors skill, or clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_repo_errors_block`` returns for this turn. Empty unless
+        the message names one of the skill's error texts or asks about
+        checkouts, worktrees, the dashboard's branch or ports, or a pull
+        request (``repo_error_hints.user_hint``), and empty in a session
+        that reads no skills. Cost: about 60 tokens in the turn's tail,
+        only in a turn that matched.
+        """
+        self._repo_errors_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .repo_error_hints import user_hint
+            self._repo_errors_hint = user_hint(user_message or "")
+        except Exception:
+            self._repo_errors_hint = ""
+
+    def _build_repo_errors_block(self) -> str:
+        """This turn's pointer to the git-errors skill (may be empty)."""
+        return str(getattr(self, "_repo_errors_hint", "") or "")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2360,6 +2408,7 @@ class AgentEngine:
         pairs.append(("answered", self._build_answered_attention_block()))
         pairs.append(("skill_correction",
                       self._build_skill_correction_block()))
+        pairs.append(("repo_errors", self._build_repo_errors_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2592,7 +2641,9 @@ class AgentEngine:
         # tail as a private key so every later request repeats the bytes
         # the endpoint already holds.
         volatile = extra_blocks + ([dashboard_state] if dashboard_state else [])
-        if volatile and not self._attach_turn_tail("\n\n".join(volatile)):
+        _last = self.messages[-1] if self.messages else None
+        _has_turn = isinstance(_last, dict) and _last.get("role") == "user"
+        if volatile and not _has_turn:
             # A prompt built with no user message to carry the tail (a
             # build outside a turn): the system prompt is the only place.
             live_state = "\n\n".join(
@@ -2603,7 +2654,40 @@ class AgentEngine:
             _perm_mode = getattr(self.kit_permissions, "mode", "") or ""
         except Exception:
             _perm_mode = ""
+        if _has_turn:
+            # The same rule for the prompt's own per-turn sections: the
+            # system prompt keeps the bytes it had on the session's first
+            # turn, and what changed since rides in this turn's tail.
+            try:
+                sections = self.loader.compose_sections(
+                    **self._prompt_build_args(
+                        role, memory_context, task_text, live_state,
+                        _perm_mode))
+                prompt, updates = self._held_system_prompt(
+                    role, sections,
+                    can_update="_steer" not in _last)
+                # Updates first: the permission classifier cuts a user
+                # row at "[System prompt update", so nothing after it in
+                # the tail is ever read as the user's own words.
+                tail = updates + volatile
+                if tail:
+                    text = "\n\n".join(tail)
+                    self._attach_turn_tail(text)
+                    if updates:
+                        self._held_prompt["carriers"].append(text)
+                return prompt
+            except Exception:
+                if volatile:
+                    self._attach_turn_tail("\n\n".join(volatile))
         return self.loader.build_system_prompt(
+            **self._prompt_build_args(
+                role, memory_context, task_text, live_state, _perm_mode))
+
+    def _prompt_build_args(self, role: str, memory_context: str,
+                           task_text: str, live_state: str,
+                           permission_mode: str) -> dict:
+        """The keyword arguments of one system-prompt build."""
+        return dict(
             role_id=role,
             mode_id=self.mode,
             mode_description=self.mode_description,
@@ -2618,7 +2702,7 @@ class AgentEngine:
             model=getattr(self, "model", "") or "",
             # Plan is a permission profile now (not a mode): inject the plan
             # addendum whenever the active permission profile is "plan".
-            permission_mode=_perm_mode,
+            permission_mode=permission_mode,
             # One authority for the question. The critical anchor claims
             # to override any conflicting prior instruction, so a fixed
             # language there outranks the session pin — and a live GLM
@@ -2628,6 +2712,81 @@ class AgentEngine:
             # before its first turn and would otherwise match itself.
             session_id=str(getattr(self, "session_id", "") or ""),
         )
+
+    def _held_system_prompt(self, role: str, sections: list,
+                            *, can_update: bool) -> tuple[str, list[str]]:
+        """The system prompt to send, and the updates for this turn's tail.
+
+        Input: the role and the freshly composed prompt sections.
+        Output: ``(prompt, updates)``. The prompt is the one built on the
+        session's first turn (held per role); ``updates`` holds, for every
+        section whose text differs from what the model was last given, the
+        section again under a one-line label (a section that grew, such as
+        the role prompt gaining a module, sends only its added lines), and
+        a one-line withdrawal for a section that is gone.
+
+        Semantics: the endpoint caches the longest common prefix of system
+        prompt and messages, so any byte that moves in the system prompt
+        makes the whole history behind it cold. The archived sessions show
+        193 system-prompt changes, 107 followed by a cold request (about
+        140 minutes of GLM time to first token); the moving sections were
+        the briefing (outcome history), memory, past sessions, session
+        environment (git status, commits), the task-selected playbook,
+        decomposition and repo map, and the plan addendum.
+
+        The held prompt is rebuilt whole when the role changes, or when a
+        message that carried an update has lost its tail or left the
+        history (a trim or compaction rewrote the prefix, so the cache is
+        cold anyway and the updates would otherwise be lost).
+        ``can_update`` is False when the turn's message already has its
+        tail: nothing is recorded as delivered then, so the change goes
+        out on the next turn.
+
+        Rejected: rebuilding on a permission-mode switch (one cold start
+        per switch for a section the tail carries as well); sending every
+        per-turn section on every turn (the tails stay in the history, so
+        that would add the whole memory and environment blocks per turn).
+        """
+        cur: dict[str, str] = {}
+        for s in sections:
+            cur[s.name] = (cur[s.name] + "\n\n" + s.content
+                           if s.name in cur else s.content)
+        held = getattr(self, "_held_prompt", None)
+        # A carrier is the tail text that delivered an update; it is intact
+        # while some user message still holds that tail (compared by text:
+        # a history handed back as copies is the same history).
+        tails = {str(m.get("_steer")) for m in self.messages
+                 if isinstance(m, dict) and m.get("_steer")}
+        intact = held is not None and held.get("role") == role and all(
+            c in tails for c in held.get("carriers", ()))
+        if not intact:
+            prompt = "\n\n".join(s.content for s in sections)
+            self._held_prompt = {"role": role, "prompt": prompt,
+                                 "sections": dict(cur), "carriers": []}
+            return prompt, []
+        if not can_update:
+            return held["prompt"], []
+        given = held["sections"]
+        updates: list[str] = []
+        for name, text in cur.items():
+            old = given.get(name)
+            if old == text:
+                continue
+            added = _added_lines(old, text) if old else ""
+            if added:
+                updates.append(
+                    f"[System prompt update: section '{name}', added]\n{added}")
+            else:
+                updates.append(
+                    f"[System prompt update: section '{name}', replaces the "
+                    f"version above]\n{text}")
+        for name in given:
+            if name not in cur:
+                updates.append(
+                    f"[System prompt update: section '{name}' no longer "
+                    f"applies; disregard it]")
+        held["sections"] = dict(cur)
+        return held["prompt"], updates
 
     def _remind_of_waiting_approvals(self) -> None:
         """Tell the turn about an approval that expired while nobody was there.
@@ -2832,6 +2991,9 @@ class AgentEngine:
             # Per turn: does what was just typed correct a skill the turn
             # before it used? Judged here, where a real turn begins.
             self._note_skill_correction(user_message or "")
+            # Per turn: does the message name a repository error or ask
+            # about DELFIN's checkouts? Then the turn points at git-errors.
+            self._note_repo_errors(user_message or "")
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -5452,12 +5614,21 @@ class AgentEngine:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
                 row = {k: v for k, v in m.items()
                        if not str(k).startswith("_")}
-                if m.get(HARNESS_KEY) is True:
+                # Any mark, not only the key: a HarnessText content loses
+                # its type when the tail is appended below, and with it the
+                # only sign that the harness, not the user, wrote the row.
+                if is_harness_row(m):
                     row = HarnessRow(row)
                 tail = m.get("_steer")
                 if tail:
                     row["content"] = self._with_turn_tail(
                         row.get("content"), str(tail))
+                    # The text type is a mark too, and the one that
+                    # survives a consumer copying the row into a plain
+                    # dict (the client's tool-loop request list does).
+                    if (isinstance(row, HarnessRow)
+                            and isinstance(row["content"], str)):
+                        row["content"] = HarnessText(row["content"])
                 out.append(row)
             else:
                 out.append(m)
@@ -7698,6 +7869,12 @@ class AgentEngine:
         # from outside afterwards; the headless path did not, so a headless
         # resume filtered tasks on a throwaway id and saw zero open tasks.
         self._sync_task_session()
+        # The compaction record the session was saved with. The save guard
+        # treats a record that differs from the stored one as the
+        # explanation for a shorter history, so a resumed engine holding
+        # None against a stored record would let any shorter save pass.
+        _lci = data.get("last_compaction_info")
+        self.last_compaction_info = dict(_lci) if isinstance(_lci, dict) else None
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")

@@ -371,7 +371,13 @@ def acquire_session_lock(session_id: str) -> Path:
     here = _this_host()
 
     def _payload() -> str:
-        return json.dumps({"pid": me, "ts": time.time(), "host": here})
+        return _lock_payload(me, here)
+
+    handed = _read_handover(session_id)
+    if handed and handed["from"] == me and _pid_alive(handed["to"]):
+        # This process handed the conversation to a reload's kernel. Its
+        # saves stop here, whatever the lock file says at this instant.
+        raise SessionLockedError(session_id, handed["to"])
 
     for _attempt in range(_LOCK_BREAK_ATTEMPTS):
         if _claim_lock_file(p, _payload()):
@@ -392,6 +398,12 @@ def acquire_session_lock(session_id: str) -> Path:
         if holder == me and not elsewhere:
             # Ours already: refreshing the timestamp is not a claim, and
             # rewriting it in place is safe because we are the holder.
+            _atomic_write_text(p, _payload())
+            return p
+        if (handed and handed["to"] == me and holder == handed["from"]
+                and not elsewhere):
+            # The previous holder refreshed its lock in the instant of the
+            # handover; the handover record decides between the two.
             _atomic_write_text(p, _payload())
             return p
         if holder:
@@ -446,6 +458,13 @@ def session_lock_holder(session_id: str) -> dict | None:
         return None
     here = _this_host()
     elsewhere = bool(holder_host) and holder_host != here
+    handed = _read_handover(session_id)
+    if handed and not elsewhere:
+        if handed["from"] == os.getpid() and _pid_alive(handed["to"]):
+            return {"pid": handed["to"], "host": here, "ts": ts,
+                    "elsewhere": False, "kernel": ""}
+        if handed["to"] == os.getpid() and holder == handed["from"]:
+            return None
     if holder == os.getpid() and not elsewhere:
         return None
     if (time.time() - ts) >= _LOCK_MAX_AGE_S:
@@ -455,7 +474,8 @@ def session_lock_holder(session_id: str) -> dict | None:
     if not elsewhere and not _pid_alive(holder):
         return None
     return {"pid": holder, "host": holder_host, "ts": ts,
-            "elsewhere": elsewhere}
+            "elsewhere": elsewhere,
+            "kernel": _lock_field(_lock_path(session_id), "kernel")}
 
 
 def release_session_lock(session_id: str) -> None:
@@ -469,6 +489,96 @@ def release_session_lock(session_id: str) -> None:
             p.unlink()
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         pass
+    handed = _read_handover(session_id)
+    if handed and handed["to"] == os.getpid():
+        try:
+            _handover_path(session_id).unlink()
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Handing the lock to a reload
+# ---------------------------------------------------------------------------
+#
+# A reload starts a new dashboard kernel while the server keeps the old one
+# for the grace. The old one holds the conversation's lock and nobody is
+# looking at it; the new one is where the person is. The lock carries the
+# holder's kernel id (set_lock_identity) so the new kernel can ask the
+# server's record whether that kernel still has a window
+# (dashboard.window_state.may_take_over), and a handover record next to the
+# lock names the two processes, so the old one stops saving even if it
+# refreshed its lock in the same instant.
+
+_LOCK_IDENTITY: dict[str, str] = {}
+
+
+def set_lock_identity(**fields: str) -> None:
+    """Fields every lock this process takes carries besides pid/ts/host.
+
+    A dashboard kernel sets ``kernel=<its kernel id>``. Input: string
+    fields; empty values are dropped. Output: none."""
+    _LOCK_IDENTITY.clear()
+    _LOCK_IDENTITY.update({k: str(v) for k, v in fields.items()
+                           if k not in ("pid", "ts", "host") and v})
+
+
+def _lock_payload(pid: int, host: str) -> str:
+    return json.dumps({**_LOCK_IDENTITY, "pid": pid, "ts": time.time(),
+                       "host": host})
+
+
+def _lock_field(path: Path, name: str) -> str:
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+        return str(info.get(name) or "") if isinstance(info, dict) else ""
+    except (OSError, ValueError):
+        return ""
+
+
+def _handover_path(session_id: str) -> Path:
+    return _SESSIONS_DIR / f"{session_id}.handover"
+
+
+def _read_handover(session_id: str) -> dict | None:
+    """``{"from": pid, "to": pid}`` of a handover on this host, or None."""
+    try:
+        info = json.loads(_handover_path(session_id).read_text(encoding="utf-8"))
+        if str(info.get("host") or "") != _this_host():
+            return None
+        return {"from": int(info.get("from") or 0),
+                "to": int(info.get("to") or 0)}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def take_over_session_lock(session_id: str, from_pid: int) -> bool:
+    """Take the lock from ``from_pid``, a live holder on this host.
+
+    Input: the session and the pid ``session_lock_holder`` reported. Output:
+    True when this process now holds the lock. The caller decides WHETHER
+    (dashboard.window_state.may_take_over); this only performs it. The
+    handover record is written before the lock, so from the moment the lock
+    names this process the old holder's ``acquire_session_lock`` refuses.
+    Refuses (False) when the lock no longer names ``from_pid``, or names a
+    holder on another host.
+    """
+    found = _read_lock(_lock_path(session_id))
+    if not found or found[0] != int(from_pid) or int(from_pid) == os.getpid():
+        return False
+    here = _this_host()
+    if found[2] and found[2] != here:
+        return False
+    try:
+        _ensure_dir()
+        _atomic_write_text(_handover_path(session_id), json.dumps({
+            "from": int(from_pid), "to": os.getpid(), "host": here,
+            "ts": time.time()}))
+        _atomic_write_text(_lock_path(session_id),
+                           _lock_payload(os.getpid(), here))
+    except OSError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +951,48 @@ def load_elided_record(session_id: str, ref: str) -> dict[str, Any] | None:
     return found
 
 
-_SUMMARY_PREFIX = "[Conversation summary"
+# The headers the compactions write, repeated here (engine and
+# in_turn_compaction import this module); a test pins each to its writer.
+_SUMMARY_MARKER = "[Conversation summary — older messages compacted]"
+_IN_TURN_SUMMARY_MARKER = (
+    "[Conversation summary — earlier rounds of this turn compacted]")
+_WORKING_STATE_HEADER = (
+    "[Working state — session recap, rebuilt at each compaction]")
+# working_state._MAX_BLOCK_CHARS plus its trim marker: the farthest the
+# summary marker can sit behind a block the compaction wrote.
+_WORKING_STATE_MAX_CHARS = 2200 + len("\n... [working state trimmed]\n") + 1
+
+
+def _begins_with_compaction_summary(first) -> bool:
+    """Whether a history's first message is a compaction's summary.
+
+    Input: the first message's content (a string, or a list of blocks whose
+    first text block is read). Output: True when it starts with the summary
+    marker ``AgentEngine._compact_history`` or the in-turn compaction
+    writes, or when it starts with the working-state header and the summary
+    marker opens a line within the block's size ceiling after it -- the
+    compaction composes the block AHEAD of the summary.
+
+    Semantics: exact markers, at the positions the writers use. The former
+    test, a ``"[Conversation summary"`` prefix, missed every compaction
+    that had a working-state block, so a save without the compaction record
+    kept the long history and appended the compacted one. A marker quoted
+    later in a message, or after more text than a block can hold, is not a
+    compaction. Cost: two prefix tests and one bounded find.
+    """
+    if isinstance(first, list):
+        first = next((b.get("text") for b in first
+                      if isinstance(b, dict) and isinstance(b.get("text"), str)),
+                     "")
+    if not isinstance(first, str):
+        return False
+    if first.startswith((_SUMMARY_MARKER, _IN_TURN_SUMMARY_MARKER)):
+        return True
+    if not first.startswith(_WORKING_STATE_HEADER):
+        return False
+    at = first.find("\n" + _SUMMARY_MARKER + "\n", len(_WORKING_STATE_HEADER),
+                    _WORKING_STATE_MAX_CHARS + len(_SUMMARY_MARKER) + 2)
+    return at >= 0
 
 
 def _user_turns(messages) -> int:
@@ -919,7 +1070,7 @@ def _keep_engine_history(session_id: str, engine_messages, chat_messages,
     if not isinstance(old, list) or len(new) >= len(old):
         return new, None
     first = new[0].get("content") if new and isinstance(new[0], dict) else ""
-    if isinstance(first, str) and first.startswith(_SUMMARY_PREFIX):
+    if _begins_with_compaction_summary(first):
         return new, None
     if _fresh_start_since(session_id, first, stored_file):
         return new, None
@@ -943,10 +1094,9 @@ def _keep_engine_history(session_id: str, engine_messages, chat_messages,
         _atomic_write_text(kept_aside, stored_file.read_text(encoding="utf-8"))
     except OSError:
         pass
-    note = (f"engine history kept: a save would have replaced "
-            f"{len(old)} messages by {len(new)} with no compaction and no "
-            f"new cycle; kept the stored history and appended {len(added)}")
-    return old + added, note
+    # Counts only: the caller logs them, and nothing of the messages'
+    # content may reach a log line (CodeQL alert 59).
+    return old + added, (len(old), len(new), len(added))
 
 
 def save_session(
@@ -1066,8 +1216,11 @@ def save_session(
         session_id, engine_messages, chat_messages, last_compaction_info)
     if _history_kept:
         import logging
+        _stored, _offered, _added = (int(n) for n in _history_kept)
         logging.getLogger(__name__).warning(
-            "session %s: %s", session_id, _history_kept)
+            "engine history kept: a save would have replaced %d messages "
+            "by %d with no compaction and no new cycle; kept the stored "
+            "history and appended %d", _stored, _offered, _added)
 
     data = {
         # Unrecognised exporter keys first, so a named parameter always
