@@ -315,6 +315,7 @@ def _secret_reason(src: Path, workspace: Path | None) -> str:
 def _bundle_files(
     referenced: list, report_dir: Path,
     *, workspace: str | Path | None = None,
+    failures: list | None = None,
 ) -> list[dict]:
     """Copy the files the agent touched into ``report_dir/workspace`` so a
     maintainer has the real inputs for replay, not just the path names.
@@ -388,7 +389,8 @@ def _bundle_files(
             # name gives away. Binary files are copied as they are.
             _data = src.read_bytes()
             if b"\0" not in _data[:8192]:
-                _guarded_write(ws / name, _data.decode("utf-8", errors="replace"))
+                _guarded_write(ws / name, _data.decode("utf-8", errors="replace"),
+                               failures)
             else:
                 shutil.copy2(src, ws / name)
             manifest.append(f"{name}\t{src}")
@@ -411,48 +413,94 @@ def _bundle_files(
     return records
 
 
-def _guarded_write(path: Path, text: str) -> int:
-    """Write a rendered report file with the secret redactor applied.
+class RedactionFailed(RuntimeError):
+    """The redactor could not check a text; the text must not be written."""
 
-    Everything that reaches this function is about to be chgrp'ed to the
-    archive's maintainer group, given group-read, and rsynced into a shared
-    archive: the system prompt, the raw traceback, every chat and engine
-    message, and the tool trace with its raw tool outputs.  The output
-    guard existed and ran on the final ANSWER only — nothing inspected any
-    of this.
 
-    Returns the number of redactions.  A failing guard must not cost the
-    report, so on any error the unguarded text is still written: losing the
-    bug report is the worse outcome, and the caller reports the count.
+def redact_for_report(text: str) -> tuple[str, int]:
+    """``text`` with every credential DELFIN holds and every credential
+    shape removed, and the number of removals. Raises on any failure.
+
+    Exact values first (file store, keyring, well-known env variables:
+    ``web_tools._known_secret_values``): a KIT key has no prefix, so the
+    shape checks alone pass it unchanged. Then every shape check of the
+    output guard (``output_guard._SECRET_CHECKS`` through
+    ``output_guard._redact``), each one required to run.
+
+    Rejected: ``run_output_guards`` (it honours ``agent.output_guard``,
+    a setting about the final answer on the person's own screen, and it
+    returns the input when redaction raises) and ``scrub_secrets`` (it
+    also returns the input on failure). Both are right for an answer the
+    person reads and wrong for a file that leaves the account.
     """
-    guarded = text
-    findings: list = []
-    exact = 0
-    # Exact values first: the credentials DELFIN holds (file store, keyring,
-    # well-known env variables). A KIT key has no prefix, so the shape
-    # checks below pass it unchanged; before this pass a key the user
-    # pasted, or one a tool printed, reached the shared archive verbatim.
-    # Same source as scrub_secrets and the web egress check.
     try:
+        from . import output_guard as og
         from .web_tools import _known_secret_values
+        guarded = str(text or "")
+        exact = 0
         for secret in sorted(set(_known_secret_values()), key=len,
                              reverse=True):
             n = guarded.count(secret)
             if n:
                 guarded = guarded.replace(secret, "[redacted:credential]")
                 exact += n
-    except Exception:
-        pass
+        findings: list = []
+        for pattern, kind, group, validate in og._SECRET_CHECKS:
+            guarded = og._redact(guarded, pattern, kind, findings,
+                                 group=group, validate=validate)
+    except Exception as exc:
+        raise RedactionFailed(f"{type(exc).__name__}: {exc}") from exc
+    return guarded, exact + len(findings)
+
+
+#: Name of the note a report carries when a file was replaced by a
+#: placeholder because its redaction failed.
+REDACTION_FAILED_NOTE = "REDACTION_FAILED.txt"
+
+
+def _placeholder(path: Path, reason: str) -> str:
+    """What is written instead of a text whose redaction failed: no part
+    of the text, only that it is missing and why; JSON for .json and
+    .jsonl so readers of the report keep working."""
+    if path.suffix in (".json", ".jsonl"):
+        body = json.dumps({"schema": "delfin-bug-report/1",
+                           "redaction_failed": True, "file": path.name,
+                           "reason": reason[:200]}, ensure_ascii=False)
+        return body + "\n"
+    return (f"[{path.name} was not written: its secret redaction failed "
+            f"({reason[:200]}). The original stays with the reporter.]\n")
+
+
+def _guarded_write(path: Path, text: str,
+                   failures: list | None = None) -> int:
+    """Write a rendered report file with the secret redactor applied.
+
+    Everything that reaches this function is about to be chgrp'ed to the
+    archive's maintainer group, given group-read, and rsynced into a shared
+    archive: the system prompt, the raw traceback, every chat and engine
+    message, and the tool trace with its raw tool outputs.
+
+    Returns the number of redactions. Fail-closed: when
+    :func:`redact_for_report` raises, a placeholder (:func:`_placeholder`)
+    is written instead of the text and ``"<file>: <reason>"`` is appended
+    to ``failures``; :func:`write_bug_report` turns that list into
+    ``REDACTION_FAILED.txt``. The report still exists and says what is
+    missing, and nothing unchecked reaches the archive.
+
+    Rejected: writing the unguarded text on a failure (the earlier
+    contract: a broken pattern or an import error then shipped the
+    credential it was meant to remove); failing the whole report (the
+    files that did redact are still worth having).
+    """
     try:
-        from .output_guard import run_output_guards
-        result = run_output_guards(guarded)
-        guarded = result.text
-        findings = [f for f in result.findings
-                    if f.get("check") == "secret_redaction"]
-    except Exception:
-        pass
+        guarded, count = redact_for_report(text)
+    except RedactionFailed as exc:
+        if failures is not None:
+            failures.append(f"{path.name}: {exc}")
+        path.write_text(_placeholder(path, str(exc)), encoding="utf-8")
+        return 0
     path.write_text(guarded, encoding="utf-8")
-    return exact + len(findings)
+    return count
 
 
 def _report_dirname(user: str, session_id: str) -> str:
@@ -677,8 +725,9 @@ def write_bug_report(
     # Bundle the actual files the agent touched (copied under workspace/).
     # Relative entries resolve against the SESSION workspace first — the
     # report-writer's CWD is not where the agent created them.
+    failures: list = []
     bundled_files = _bundle_files(referenced_files or [], report_dir,
-                                  workspace=workspace)
+                                  workspace=workspace, failures=failures)
 
     # Tool-call trace: the exact sequence of tools the agent ran this session
     # (name / input / output / duration / ok). Shipped so a failed session can
@@ -691,7 +740,7 @@ def write_bug_report(
             _guarded_write(
                 report_dir / "tool_trace.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False) for e in tool_trace)
-                + "\n")
+                + "\n", failures)
     except Exception:
         tool_trace = []
 
@@ -706,7 +755,7 @@ def write_bug_report(
             _guarded_write(
                 report_dir / "turn_metrics.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False)
-                          for e in turn_metrics) + "\n")
+                          for e in turn_metrics) + "\n", failures)
     except Exception:
         turn_metrics = []
 
@@ -721,7 +770,7 @@ def write_bug_report(
             _guarded_write(
                 report_dir / "request_metrics.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False)
-                          for e in request_metrics) + "\n")
+                          for e in request_metrics) + "\n", failures)
     except Exception:
         request_metrics = []
 
@@ -748,7 +797,7 @@ def write_bug_report(
     # report stops being private.
     n_redacted = _guarded_write(
         report_dir / "report.json",
-        json.dumps(payload, ensure_ascii=False, indent=2))
+        json.dumps(payload, ensure_ascii=False, indent=2), failures)
     n_redacted += _guarded_write(
         report_dir / "report.md",
         _render_markdown(
@@ -761,7 +810,18 @@ def write_bug_report(
             turn_metrics=turn_metrics,
             request_metrics=request_metrics,
         ),
+        failures,
     )
+    if failures:
+        try:
+            (report_dir / REDACTION_FAILED_NOTE).write_text(
+                "The secret redaction failed for the files below, so each "
+                "was replaced by a placeholder and its content was not "
+                "written:\n" + "".join(f"  {f}\n" for f in failures)
+                + "The reporter still has the session; ask them directly.\n",
+                encoding="utf-8")
+        except OSError:
+            pass
     if n_redacted:
         try:
             (report_dir / "REDACTIONS.txt").write_text(

@@ -226,17 +226,20 @@ def test_an_ordinary_report_is_not_littered_with_a_redaction_note(tmp_path):
 
 
 def test_the_report_survives_a_broken_guard(tmp_path, monkeypatch):
-    """Losing the bug report is worse than shipping it unguarded, so the
-    guard is best-effort. This pins that it stays best-effort."""
+    """A broken redactor does not cost the report: both files exist, as
+    placeholders that say the redaction failed (fail-closed; see
+    test_a_broken_redactor_writes_no_unredacted_text)."""
     import delfin.agent.output_guard as og
 
     def boom(*a, **kw):
         raise RuntimeError("guard exploded")
 
-    monkeypatch.setattr(og, "run_output_guards", boom)
+    monkeypatch.setattr(og, "_redact", boom)
     d = _write(tmp_path, error_text="something went wrong")
     assert (d / "report.json").is_file()
-    assert (d / "report.md").is_file()
+    md = (d / "report.md").read_text(encoding="utf-8")
+    assert "redaction failed" in md
+    assert "something went wrong" not in md
 
 
 # ---------------------------------------------------------------------------
