@@ -652,3 +652,40 @@ def test_a_label_on_typed_values_is_the_callers(tmp_path):
     res = plot({"kind": "energy_profile", "ylabel": "ΔH", "y": [0, -3.1],
                 "from_user": True}, out_dir=str(tmp_path))
     assert res.labels[1] == "ΔH"
+
+
+# --------------------------------------------------------------------------
+# outputs through the executor's read gate
+
+
+def _dispatch(spec, ws, **perms):
+    from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
+    return _DocToolExecutor()._dispatch(
+        "make_plot", {"spec": spec},
+        KitToolPermissions(workspace=str(ws), mode="default", **perms))
+
+
+def test_an_output_that_is_not_utf8_is_read_through_the_gate(tmp_path):
+    """ORCA echoes the input file, comments included; a Latin-1 umlaut in
+    one made the gated read fail with a codec error."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "hcn.out").write_bytes(
+        b"# Rechnung f\xfcr HCN\n" + _out("C N H", -92.25649008).encode())
+    (ws / "hnc.out").write_text(_out("C N H", -92.23316966), encoding="utf-8")
+    out = _dispatch({"kind": "energy_profile", "series": [
+        {"x": ["HCN", "HNC"], "files": ["hcn.out", "hnc.out"]}]}, ws)
+    assert out.startswith("DELFIN_CARD:"), out
+    assert "HNC: hnc.out (ORCA) -92.233170 Eh -> 14.63" in out
+
+
+def test_a_refused_output_is_not_called_a_data_file(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / ".ssh").mkdir(parents=True)
+    (ws / ".ssh" / "hcn.out").write_text(_out("C N H", -92.25),
+                                         encoding="utf-8")
+    (ws / "hnc.out").write_text(_out("C N H", -92.23), encoding="utf-8")
+    out = _dispatch({"kind": "energy_profile", "series": [
+        {"files": [".ssh/hcn.out", "hnc.out"]}]}, ws)
+    assert not out.startswith("DELFIN_CARD:")
+    assert "denied" in out and "data file" not in out

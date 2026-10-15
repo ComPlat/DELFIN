@@ -26129,10 +26129,12 @@ class _DocToolExecutor:
         Output: the ``DELFIN_CARD:`` plot result (``chat_plots.card_result``)
         or a JSON error. Refused before anything is written: no permissions
         or no workspace, plan mode, an output path the write gate
-        (``_gate_write_path``) refuses. A ``data: {file: ...}`` source is
-        read only after ``_check_read_access`` admits it (secret-deny list,
-        read roots). The model receives only the result's ``text``; the
-        loop splits it off by tool name.
+        (``_gate_write_path``) refuses. A ``data: {file: ...}`` source and
+        every energy_profile output (``files``, which may lie outside the
+        workspace) are read only after ``_check_read_access`` admits them
+        (secret-deny list, read roots), decoded as UTF-8 with replacement.
+        The model receives only the result's ``text``; the loop splits it
+        off by tool name.
         """
         spec = arguments.get("spec")
         if not isinstance(spec, dict):
@@ -26165,10 +26167,13 @@ class _DocToolExecutor:
             return json.dumps({"error": refuse})
 
         def _reader(p: Path) -> str:
+            # Outputs echo their input, comments included, in whatever
+            # encoding it was written: decoded with replacement like
+            # chat_plots' own reader and energies._read_text, not refused.
             err = self._check_read_access(permissions, p, "make_plot")
             if err is not None:
-                raise _cp.SpecError(f"data file {p} refused: {err}")
-            with p.open(encoding="utf-8") as fh:
+                raise _cp.SpecError(f"reading {p} refused: {err}")
+            with p.open(encoding="utf-8", errors="replace") as fh:
                 return fh.read()
 
         try:
