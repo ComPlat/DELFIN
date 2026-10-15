@@ -53,7 +53,8 @@ def main() -> int:
     sock = runtime / f"delfin-{os.getuid()}" / "agent.sock"
 
     def expect(pattern: str, what: str, timeout: float = 15, where: str = "history") -> bool:
-        found = tmux.wait_for(pattern, timeout) if where == "history" else _screen_wait(tmux, pattern, timeout)
+        found = (tmux.wait_for(pattern, timeout) if where == "history"
+                 else _screen_wait(tmux, pattern, timeout, tmux.history if where == "scrollback" else tmux.screen))
         if found:
             return True
         problems.append(f"{what}: no {pattern!r}\n{tmux.screen()}")
@@ -117,8 +118,11 @@ def main() -> int:
         tmux.key("Up")
         time.sleep(0.3)
         tmux.key("Enter")
-        expect(r"now: third-asks", "the divider", 15)
-        expect(r"please edit the parser", "C's replay", 15)
+        # Written into the scrollback, ahead of C's banner and replay: on a
+        # 40-row pane the colour logo's 13 rows and the open diff can
+        # push it above the visible screen.
+        expect(r"now: third-asks", "the divider", 15, where="scrollback")
+        expect(r"please edit the parser", "C's replay", 15, where="scrollback")
         expect(r"\byes\b", "C's question", 15, where="screen")
         time.sleep(0.6)                        # the pause before a key answers
         tmux.type("y")
@@ -171,10 +175,10 @@ def main() -> int:
     return 0
 
 
-def _screen_wait(tmux: Tmux, pattern: str, timeout: float):
+def _screen_wait(tmux: Tmux, pattern: str, timeout: float, read=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        m = re.search(pattern, tmux.screen())
+        m = re.search(pattern, (read or tmux.screen)())
         if m:
             return m
         time.sleep(0.1)
