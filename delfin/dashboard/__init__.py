@@ -726,8 +726,11 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     branch_panel = None
     rollback_delfin_btn = _hu.icon_button(
         '↶ Roll back 1 commit',
-        'Move the shared checkout back by one commit (git reset --hard HEAD~1); '
-        'refused when it has uncommitted changes', 'delfin-btn', 'is-danger')
+        'Move the shared checkout back by one commit (git reset --hard to the '
+        'first parent) after a confirmation that names both commits; refused '
+        'when it has uncommitted changes', 'delfin-btn', 'is-danger')
+    from delfin.dashboard import rollback as _rollback
+    rollback_confirm = _rollback.Confirm()
     if _in_preview:
         from delfin.dashboard.branch_panel import preview_bar as _preview_bar
         try:
@@ -744,6 +747,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         from delfin.dashboard.branch_panel import BranchPanel
         branch_panel = BranchPanel(
             ctx.repo_dir, pull=pull_delfin_btn, more_extra=[rollback_delfin_btn],
+            more_below=[rollback_confirm.box],
             hint=widgets.HBox([git_hint_btn, git_hint_fold],
                               layout=widgets.Layout(align_items='center')),
             toasts=header_toasts)
@@ -794,6 +798,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     refresh_git_status_label()
     if branch_panel is not None:
         branch_panel.on_change = refresh_git_status_label
+        branch_panel.on_more_closed(rollback_confirm.cancel)
         branch_panel.refresh()
         branch_panel.start_polling(10.0)
 
@@ -855,43 +860,39 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     git_hint_btn.on_click(handle_pull_delfin)
 
     def handle_rollback_delfin(button=None):
+        """Ask first (rollback.Confirm); the reset runs on the confirm."""
         rd = ctx.repo_dir
         if not rd or not Path(rd).exists():
             header_toasts.show('No DELFIN checkout found for this dashboard.',
                                level='error', details=f'path: {rd}')
             return
+        try:
+            plan, why = _rollback.plan(rd, run=_run_git_capture)
+        except Exception as e:
+            plan, why = None, f'Error: {e}'
+        if plan is None:
+            rollback_confirm.cancel()
+            header_toasts.show(why, level='error')
+            return
+        rollback_confirm.ask(_rollback.describe(plan),
+                             f'Roll back to {plan.target_short}',
+                             lambda: _do_rollback_delfin(plan))
+
+    def _do_rollback_delfin(plan):
+        rd = ctx.repo_dir
         ctx.set_busy(True)
         out = []
         level, text = 'error', "Couldn't roll back."
         try:
-            with _dashboard_git_write_lock(rd, 'git reset --hard HEAD~1'):
+            with _dashboard_git_write_lock(rd, f'git reset --hard {plan.target_short}'):
                 if _ensure_git_index_lock_clear(rd, 'Rollback'):
                     out.append('Removed stale Git index lock before rollback.')
-
-                status_result = _run_git_capture(rd, 'status', '--porcelain')
-                if status_result.returncode != 0:
-                    out.append(status_result.stdout.strip() or 'git status failed')
-                    return
-                if status_result.stdout.strip():
-                    text = 'Not rolled back: the shared checkout has uncommitted changes.'
-                    out.append('Please commit, stash, or discard local changes first.')
-                    return
-
-                old_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD')
-                target_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD~1')
-                if target_head.returncode != 0:
-                    text = 'Not rolled back: there is no earlier commit.'
-                    out.append(target_head.stdout.strip())
-                    return
-
-                out.append(
-                    'Rolling DELFIN back one commit: '
-                    f"{old_head.stdout.strip() or 'HEAD'} -> {target_head.stdout.strip()}"
-                )
-                result = _run_git_write(rd, 'reset', '--hard', 'HEAD~1')
-                out.append(result.stdout.strip() or '(no output)')
-                if result.returncode == 0:
-                    level, text = 'ok', 'Rolled back one commit.'
+                ok, text, details = _rollback.execute(
+                    rd, plan, read=_run_git_capture,
+                    write=_run_git_write)
+                out.extend(details)
+                if ok:
+                    level = 'ok'
                     _force_reload_delfin()
         except RuntimeError as e:
             out.append(str(e))

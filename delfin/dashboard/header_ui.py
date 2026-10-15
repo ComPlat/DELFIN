@@ -18,7 +18,8 @@ widgets. Output:
   (so the Voila dark theme applies) with light fallbacks. Visibility is
   never set here: widgets show and hide through ``layout.display``, which
   a rule with ``!important`` would override.
-* :func:`keys_js` -- Esc closes the open menu, ``/`` or Ctrl+K opens the
+* :func:`keys_js` -- Esc presses the Cancel of an open confirmation,
+  else closes the open menu, ``/`` or Ctrl+K opens the
   branch menu and focuses its search, a click outside closes it, opening
   it focuses the search.
 
@@ -316,6 +317,9 @@ HEADER_CSS = """
 .delfin-hdr .delfin-brow .delfin-brow-act:focus { visibility: visible; }
 .delfin-hdr .delfin-pop-note { color: var(--dh-muted); font-size: 11px; }
 .delfin-hdr .delfin-confirm { gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px; border-radius: var(--dh-r); background: var(--dh-bg2); }
+.delfin-hdr .delfin-confirm-wide { max-width: 900px; margin: 4px 0; border-left: 4px solid var(--dh-warn); }
+.delfin-hdr .delfin-confirm-wide .widget-html { flex: 1 1 100%; }
+.delfin-hdr .delfin-confirm-wide .widget-html-content { white-space: normal; line-height: 1.5; }
 /* chips: preview, status, home */
 .delfin-hdr .delfin-chip {
   align-items: center; gap: 2px; height: var(--dh-h); padding: 0 4px 0 10px;
@@ -426,6 +430,14 @@ def keys_js() -> str:
   document.addEventListener('keydown', function(ev) {
     var t = ev.target, tag = (t && t.tagName || '').toUpperCase();
     var typing = tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable);
+    // Esc presses the Cancel of an open confirmation first; no key
+    // presses its confirm button (rollback.Confirm).
+    if (ev.key === 'Escape') {
+      var c = Array.prototype.find.call(
+        document.querySelectorAll('.delfin-confirm .delfin-confirm-cancel'),
+        function(b) { return b.offsetParent !== null; });
+      if (c) { ev.preventDefault(); c.click(); return; }
+    }
     if (ev.key === 'Escape' && open()) { ev.preventDefault(); toggle(); return; }
     if ((ev.key === 'k' && (ev.ctrlKey || ev.metaKey)) || (ev.key === '/' && !typing)) {
       ev.preventDefault();

@@ -9,7 +9,8 @@ roll-back buttons and the status hint. Output: :class:`BranchPanel` with
   Remote, a reload, one row per branch with its actions, and "New branch
   from main" last), ``▶ Test``, the running previews as chips, Pull, the
   more toggle, the status hint;
-* ``box`` -- the more row (Clean up, roll back) and the Clean up panel,
+* ``box`` -- the more row (Clean up, roll back), what its buttons ask
+  (``more_below``: the roll-back confirmation) and the Clean up panel,
   under the bar;
 * ``toasts`` -- the message area (:class:`header_ui.Toasts`).
 
@@ -133,7 +134,8 @@ class BranchPanel:
                  finish_close: Callable = None, python: Optional[str] = None,
                  base_env: Optional[dict] = None, synchronous: bool = False,
                  on_change: Optional[Callable] = None, pull=None,
-                 more_extra=(), hint=None, toasts: Optional[HU.Toasts] = None):
+                 more_extra=(), more_below=(), hint=None,
+                 toasts: Optional[HU.Toasts] = None):
         import ipywidgets as W
         self.W = W
         self.repo = str(repo) if repo else ""
@@ -209,6 +211,11 @@ class BranchPanel:
         self.more_row.layout.display = "" if self.more_btn.value else "none"
         for b in more_extra:
             HU.classed(b, "delfin-btn")
+        # Under the more row and hidden with it: a question one of its
+        # buttons asks (the roll-back confirmation, rollback.Confirm).
+        self.more_below = W.VBox(list(more_below))
+        self.more_below.layout.display = self.more_row.layout.display
+        self._more_closed: list = []
         top = [self.branch_wrap, self.test_btn, self.chips]
         if pull is not None:
             HU.classed(pull, "delfin-btn")
@@ -219,7 +226,7 @@ class BranchPanel:
         self.row = HU.classed(W.HBox(top), "delfin-group")
 
         self._build_cleanup()
-        self.box = W.VBox([self.more_row, self.cleanup_box])
+        self.box = W.VBox([self.more_row, self.more_below, self.cleanup_box])
 
         self.branch_btn.on_click(lambda _b: self.toggle_menu())
         self.search.observe(lambda _c: self.render_rows(), names="value")
@@ -520,7 +527,7 @@ class BranchPanel:
     def ask_delete(self, ref: str) -> None:
         W = self.W
         yes = HU.icon_button("Delete", f"Delete {ref}", "delfin-btn", "is-danger", "is-filled")
-        no = HU.icon_button("Cancel", "", "delfin-btn")
+        no = HU.icon_button("Cancel", "Esc", "delfin-btn", "delfin-confirm-cancel")
 
         def _cancel(_b=None):
             self.confirm_box.children = ()
@@ -725,9 +732,18 @@ class BranchPanel:
     def _toggle_more(self, change) -> None:
         on = bool(change.get("new"))
         self.more_row.layout.display = "" if on else "none"
+        self.more_below.layout.display = self.more_row.layout.display
         if not on and self.cleanup_btn.value:
             self.cleanup_btn.value = False
+        if not on:
+            for fn in self._more_closed:
+                fn()
         HU.save_prefs(more_open=on)
+
+    def on_more_closed(self, fn: Callable) -> None:
+        """Run *fn* when More closes (a question under it is withdrawn,
+        not left to answer on the next open)."""
+        self._more_closed.append(fn)
 
     # -- clean up --------------------------------------------------------------
 
@@ -900,7 +916,7 @@ class BranchPanel:
         nw = len(sel) - nb
         risky = [c for c in sel if c.unmerged]
         yes = HU.icon_button("Delete", "", "delfin-btn", "is-danger", "is-filled")
-        no = HU.icon_button("Cancel", "", "delfin-btn")
+        no = HU.icon_button("Cancel", "Esc", "delfin-btn", "delfin-confirm-cancel")
 
         def _cancel(_b=None):
             self.cleanup_confirm.children = ()
