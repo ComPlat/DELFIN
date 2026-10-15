@@ -1769,10 +1769,15 @@ box ("Job 4711 failed with OUT_OF_MEMORY. What went wrong, and what should
 we change?"). Nothing is sent until you press enter. A prepared job fix is
 applied in the dashboard (`/fix`).
 
-From anywhere in the window, the hints line ends with a quiet count of
-what waits for you and what failed (`◉ 3 · ✗ 1`, notices not counted); a
-new one names itself there for a few seconds (`◉ relax Fe complex asks`),
-and the terminal's title carries the count: `(4) DELFIN · name`.
+From anywhere in the window, the hints line says how many other sessions
+the agent service runs and how many of them wait for you (`2 more sessions
+(1 waits for you) ← agents`; shorter on a narrow terminal, nothing when
+there are none; full screen, a click on it opens the agent view). It ends
+with a quiet count of what waits for you and what failed (`◉ 3 · ✗ 1`,
+notices not counted); a new item names itself there for a few seconds,
+another session that starts to wait says so once above the prompt
+(`◉ session 'relax Fe complex' waits for you — ← to open`), and the
+terminal's title carries the count: `(4) DELFIN · name`.
 
 Full screen, the view takes the window's screen and esc gives the
 conversation back. Inline, it uses the terminal's alternate screen, so esc
