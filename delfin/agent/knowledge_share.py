@@ -63,6 +63,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -623,8 +624,7 @@ def _offer_pr(target: Target, branch: str, sha: str, d: Dialog) -> str:
 
 def enqueue(d: Dialog) -> str:
     q = queue_dir()
-    shared = bool(os.environ.get("DELFIN_KNOWLEDGE_QUEUE")
-                  or _knowledge_settings().get("queue_dir"))
+    shared = _queue_is_shared()
     q.mkdir(parents=True, exist_ok=True)
     if not shared:
         os.chmod(q, 0o700)
@@ -637,12 +637,81 @@ def enqueue(d: Dialog) -> str:
         "released": list(d.released), "visibility": d.target.visibility,
         "status": "pending", "reason": "", "decided_by": "",
     }
-    path = q / f"{qid}.json"
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_NOFOLLOW", 0), 0o640 if shared else 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(record, fh, ensure_ascii=False, indent=1)
+    _write_record(q / f"{qid}.json", record, shared=shared)
     return qid
+
+
+def _queue_is_shared() -> bool:
+    return bool(os.environ.get("DELFIN_KNOWLEDGE_QUEUE")
+                or _knowledge_settings().get("queue_dir"))
+
+
+def _record_mode(shared: bool) -> int:
+    """The mode of a queue record: 0o600, plus group read in a shared
+    queue (the admin of the same host reads it through the group)."""
+    return 0o640 if shared else 0o600
+
+
+def _write_record(path: Path, data: dict, *, shared: bool,
+                  cap: Optional[int] = None) -> None:
+    """Write one queue record with an exact mode, atomically.
+
+    Input: the final path, the record, whether the queue is shared, and
+    ``cap``, the mode bits of the record being replaced (a rewrite never
+    grants a bit the old record did not have). Output: ``path`` holds the
+    record, mode ``_record_mode(shared) & cap``.
+
+    Semantics: the bytes go to a fresh temporary file in the same folder
+    (``O_CREAT | O_EXCL | O_NOFOLLOW``, so no existing file or planted
+    link is opened), whose mode is set with ``fchmod`` before the first
+    byte -- independent of the umask --, then fsync, then ``os.replace``
+    onto ``path``, then a best-effort fsync of the folder. A reader sees
+    the old record or the new one, never a partial one, and never a
+    moment with a wider mode. On any failure the temporary file is
+    removed and the old record is untouched.
+
+    Rejected: ``Path.write_text`` + ``os.replace`` (the mode was 0o666
+    minus the rewriter's umask: 0o644 under the common 022, so an admin
+    decision made a record world-readable); ``chmod`` after the write (a
+    window in which the wider mode exists); the umask-masked mode
+    argument of ``os.open`` alone (under umask 077 a shared record was
+    unreadable to the admin).
+    """
+    mode = _record_mode(shared)
+    if cap is not None:
+        mode &= (cap & 0o777) | 0o600
+    payload = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.partial")
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(str(tmp), flags, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        tmp.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    try:
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 def read_queue() -> list:
@@ -662,12 +731,18 @@ def read_queue() -> list:
 
 
 def write_queue_record(rec: dict) -> None:
+    """Rewrite one record (an admin decision) through
+    :func:`_write_record`, never wider than the record it replaces."""
     p = Path(rec["_path"])
     data = {k: v for k, v in rec.items() if not k.startswith("_")}
-    tmp = p.with_name(f".{p.name}.partial")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
-                   encoding="utf-8")
-    os.replace(tmp, p)
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        st = None
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        raise ShareRefused(f"{p.name} is not a regular file; not rewritten")
+    _write_record(p, data, shared=_queue_is_shared(),
+                  cap=None if st is None else stat.S_IMODE(st.st_mode))
 
 
 def sync_own_lessons() -> list:
