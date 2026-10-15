@@ -28,6 +28,7 @@ import { createStore } from "solid-js/store"
 import type { Asked } from "../store/state"
 import type { Theme } from "../theme/theme"
 import { fit, middle, width, wrap } from "../text"
+import { CLICK_PAUSE_MS, clickable, spanAt } from "../mouse"
 
 /** Lines of a preview shown at most (a diff, a command): the REPL's 24.
  *  ctrl+o writes the whole preview into the scrollback. */
@@ -44,6 +45,9 @@ export interface Span {
   text: string
   tone: Tone
   bold?: boolean
+  /** What a click on it does: the key it stands for ("y", "1"), or
+   *  "return"/"escape" (mouse.ts). */
+  act?: string
 }
 export type Line = Span[]
 
@@ -61,11 +65,14 @@ export interface ApprovalState {
   burst: boolean
   /** Answered from here; waiting for the session to settle it. */
   sent: boolean
+  /** When what the panel shows last changed (it opened, a second step,
+   *  help): a click sooner than CLICK_PAUSE_MS after it is not an answer. */
+  shownAt: number
 }
 
 function fresh(requestId: string, now: number, burst = false, lastKeyAt = 0): ApprovalState {
   return { requestId, mode: "options", choice: "", picked: [], reason: "", openedAt: now,
-           lastKeyAt, swallowed: false, sent: false, burst }
+           lastKeyAt, swallowed: false, sent: false, burst, shownAt: now }
 }
 
 /** Spans laid out in rows of `max` columns, broken between spans. */
@@ -140,15 +147,18 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
       const mark = asked.multiSelect ? (on ? "[x] " : "[ ] ") : ""
       const detail = asked.choiceDetails?.[i] ? `  ${asked.choiceDetails[i]}` : ""
       const head = `  ${n}. ${mark}`
-      lines.push([{ text: head, tone: "key", bold: true },
-                  { text: fit(choice + detail, Math.max(1, max - width(head))), tone: on ? "bright" : "text" }])
+      lines.push([{ text: head, tone: "key", bold: true, act: String(n) },
+                  { text: fit(choice + detail, Math.max(1, max - width(head))), tone: on ? "bright" : "text",
+                    act: String(n) }])
     })
     const keys: Span[] = asked.multiSelect
-      ? [{ text: "[1-9] pick  ", tone: "key", bold: true }, { text: "[enter] send  ", tone: "key", bold: true },
-         { text: "[esc] dismiss", tone: "key", bold: true }]
+      ? [{ text: "[1-9] pick  ", tone: "key", bold: true },
+         { text: "[enter] send  ", tone: "key", bold: true, act: "return" },
+         { text: "[esc] dismiss", tone: "key", bold: true, act: "escape" }]
       : choices.length
-        ? [{ text: "[1-9] answer  ", tone: "key", bold: true }, { text: "[esc] dismiss", tone: "key", bold: true }]
-        : [{ text: "[enter] or [esc] dismiss", tone: "key", bold: true }]
+        ? [{ text: "[1-9] answer  ", tone: "key", bold: true },
+           { text: "[esc] dismiss", tone: "key", bold: true, act: "escape" }]
+        : [{ text: "[enter] or [esc] dismiss", tone: "key", bold: true, act: "escape" }]
     lines.push(...flow(keys, max))
     return lines
   }
@@ -161,8 +171,8 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
                            + "every other, in this session and every future one.", max)) {
       lines.push([{ text: row, tone: "muted" }])
     }
-    lines.push(...flow([{ text: "[y] persist   ", tone: "key", bold: true },
-                        { text: "[n] just this once", tone: "key", bold: true }], max))
+    lines.push(...flow([{ text: "[y] persist   ", tone: "key", bold: true, act: "y" },
+                        { text: "[n] just this once", tone: "key", bold: true, act: "n" }], max))
     return lines
   }
   if (mode === "help") {
@@ -180,7 +190,7 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
         lines.push([{ text: row, tone: "muted" }])
       }
     }
-    lines.push([{ text: "any key: back", tone: "faint" }])
+    lines.push([{ text: "any key: back", tone: "faint", act: "back" }])
     return lines
   }
   lines.push(...previewLines(asked, max, previewRows))
@@ -198,9 +208,10 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
     lines.push([{ text: fit("enter refuses with this reason · esc back", max), tone: "faint" }])
     return lines
   }
-  const keys: Span[] = asked.options.map((o) => ({ text: `[${o.key}] ${o.label}   `, tone: "key" as Tone, bold: true }))
+  const keys: Span[] = asked.options.map((o) => ({ text: `[${o.key}] ${o.label}   `, tone: "key" as Tone, bold: true,
+                                                   act: o.key }))
   if (offers(asked, "n")) keys.splice(keys.findIndex((k) => k.text.startsWith("[n]")) + 1, 0,
-                                      { text: "[N] no + why   ", tone: "key", bold: true })
+                                      { text: "[N] no + why   ", tone: "key", bold: true, act: "N" })
   lines.push(...flow(keys, max))
   return lines
 }
@@ -231,12 +242,18 @@ export interface ApprovalDeps {
   lastKey?: () => number
   /** The opening reflex window; 0 turns the typeahead guard off (tests). */
   pauseMs?: number
+  /** The same for a click (mouse.ts CLICK_PAUSE_MS); 0 in tests. */
+  clickPauseMs?: number
 }
 
 export interface ApprovalUi {
   state: ApprovalState
   /** A key while `asked` is open; true when it was used (or swallowed). */
   handleKey(asked: Asked, key: KeyEvent): boolean
+  /** A click on a span of the panel (its `act`), as the key it stands
+   *  for; false when it was not taken (too soon after the panel changed,
+   *  answered already, nothing to do). */
+  click(asked: Asked, act: string): boolean
   /** Make sure the state is `asked`'s (the question changed). */
   sync(asked: Asked | undefined): void
 }
@@ -257,16 +274,21 @@ function modified(key: KeyEvent): boolean {
 export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
   const now = deps.now ?? (() => Date.now())
   const pause = deps.pauseMs ?? ANSWER_PAUSE_MS
-  const [state, setState] = createStore<ApprovalState>(fresh("", 0))
+  const clickPause = deps.clickPauseMs ?? CLICK_PAUSE_MS
+  const [state, setStore] = createStore<ApprovalState>(fresh("", 0))
+  // What the panel shows changes with its mode: a click must wait again.
+  const setState = (patch: Partial<ApprovalState>) => {
+    setStore(patch.mode !== undefined && patch.mode !== state.mode ? { ...patch, shownAt: now() } : patch)
+  }
 
   const sync = (asked: Asked | undefined) => {
     if (asked && state.requestId !== asked.requestId) {
       const t = now()
       const last = deps.lastKey?.() ?? 0
       // Typing when it opened: what follows is the rest of that typing.
-      setState(fresh(asked.requestId, t, pause > 0 && last > 0 && t - last < QUIET_MS, last))
+      setStore(fresh(asked.requestId, t, pause > 0 && last > 0 && t - last < QUIET_MS, last))
     }
-    if (!asked && state.requestId) setState(fresh("", 0))
+    if (!asked && state.requestId) setStore(fresh("", 0))
   }
 
   const answer = (asked: Asked, params: Record<string, unknown>) => {
@@ -303,26 +325,32 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       setState({ burst: true, swallowed: true })
       return true
     }
-    if (asked.kind === "ask") return askKey(asked, key, char)
+    return act(asked, char, key.name, key)
+  }
+
+  /** What a key (or a click, as its key) does once it is an answer. */
+  const act = (asked: Asked, char: string, name: string, key?: KeyEvent): boolean => {
+    if (asked.kind === "ask") return askKey(asked, name, char)
     switch (state.mode) {
       case "help":
         setState({ mode: "options" })
         return true
       case "persist":
         if (char === "y") answer(asked, { choice: state.choice, persist: true })
-        else if (char === "n" || key.name === "escape") answer(asked, { choice: state.choice, persist: false })
+        else if (char === "n" || name === "escape") answer(asked, { choice: state.choice, persist: false })
         return true
       case "reason":
-        if (key.name === "escape") setState({ mode: "options", reason: "" })
-        else if (key.name === "return") answer(asked, { choice: "n", reason: state.reason.trim() })
-        else if (key.name === "backspace") setState({ reason: state.reason.slice(0, -1) })
-        else if (key.name === "space") setState({ reason: state.reason + " " })
+        if (name === "escape") setState({ mode: "options", reason: "" })
+        else if (name === "return") answer(asked, { choice: "n", reason: state.reason.trim() })
+        else if (!key) return true
+        else if (name === "backspace") setState({ reason: state.reason.slice(0, -1) })
+        else if (name === "space") setState({ reason: state.reason + " " })
         else if (!key.ctrl && !key.meta && key.sequence && key.sequence.length >= 1 && !/[\x00-\x1f\x7f]/.test(key.sequence)) {
           setState({ reason: state.reason + key.sequence })
         }
         return true
     }
-    if (key.name === "escape") {
+    if (name === "escape") {
       // Esc refuses, as in the REPL.
       if (offers(asked, "n")) answer(asked, { choice: "n" })
       return true
@@ -337,6 +365,7 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
     }
     if (!offers(asked, char)) return true         // a key the question did not offer means nothing
     if ((char === "A" || char === "k") && asked.kind === "confirm") {
+      // Saving a rule takes a second step, for a click as for a key.
       setState({ mode: "persist", choice: char })
       return true
     }
@@ -344,9 +373,23 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
     return true
   }
 
-  const askKey = (asked: Asked, key: KeyEvent, char: string): boolean => {
+  const click = (asked: Asked, what: string): boolean => {
+    sync(asked)
+    if (state.sent || state.requestId !== asked.requestId) return false
+    // The hand was on its way before this appeared (or changed): not an answer.
+    if (clickPause > 0 && now() - state.shownAt < clickPause) return false
+    if (state.mode === "reason") return false        // its answer is typed
+    const name = what === "return" || what === "escape" ? what : what === "back" ? "back" : ""
+    const char = name ? "" : what
+    if (asked.kind === "ask" ? !(name || /^[1-9]$/.test(char))
+      : state.mode === "options" && !name && !offers(asked, char) && !(char === "N" && offers(asked, "n"))) return false
+    act(asked, char, name)
+    return true
+  }
+
+  const askKey = (asked: Asked, name: string, char: string): boolean => {
     const choices = (asked.choices ?? []).slice(0, 9)
-    if (key.name === "escape" || (key.name === "return" && choices.length === 0)) {
+    if (name === "escape" || (name === "return" && choices.length === 0)) {
       answer(asked, { answers: [] })
       return true
     }
@@ -360,14 +403,14 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       setState({ picked })
       return true
     }
-    if (asked.multiSelect && key.name === "return") {
+    if (asked.multiSelect && name === "return") {
       answer(asked, { answers: state.picked.map((i) => choices[i - 1]) })
       return true
     }
     return true
   }
 
-  return { state, handleKey, sync }
+  return { state, handleKey, click, sync }
 }
 
 // -- drawing -------------------------------------------------------------------------
@@ -388,13 +431,20 @@ export function ApprovalPanel(props: { asked: Asked; ui: ApprovalUi; theme: () =
          title={title()} titleAlignment="left" paddingLeft={1} paddingRight={1}>
       <For each={approvalLines(props.asked, props.ui.state, innerWidth(props.width()),
                                props.maxRows ? Math.max(1, props.maxRows() - 2) : undefined)}>
-        {(line) => (
-          <text wrapMode="none">
-            <For each={line}>
-              {(span) => <span style={{ fg: tone(span), bold: Boolean(span.bold) }}>{span.text}</span>}
-            </For>
-          </text>
-        )}
+        {(line) => {
+          // A row with something to click: the click is the key it shows.
+          const hit = line.some((s) => s.act)
+            ? clickable((col) => spanAt(line, col, width), (what) => void props.ui.click(props.asked, what))
+            : undefined
+          return (
+            <text wrapMode="none" ref={hit?.ref} onMouseDown={hit?.onMouseDown} onMouseUp={hit?.onMouseUp}
+                  onMouseDrag={hit?.onMouseDrag}>
+              <For each={line}>
+                {(span) => <span style={{ fg: tone(span), bold: Boolean(span.bold) }}>{span.text}</span>}
+              </For>
+            </text>
+          )
+        }}
       </For>
     </box>
   )

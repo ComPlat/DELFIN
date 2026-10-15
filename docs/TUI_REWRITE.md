@@ -7,7 +7,7 @@ branch `tui-rewrite` of `the16thpythonist/DELFIN`.
 
 A new terminal UI for the DELFIN agent that looks good and feels smooth.
 It combines OpenCode's way of building a TUI (TypeScript, OpenTUI, SolidJS)
-with Claude Code's way of working with sessions: one window, an agent view on
+with the common agent-CLI way of working with sessions: one window, an agent view on
 `←`, and sessions that keep running after the window closes.
 
 ## Decisions
@@ -19,7 +19,7 @@ with Claude Code's way of working with sessions: one window, an agent view on
 | Look and feel | Must look good and feel smooth: no flicker, no torn lines, responsive while the agent works. "DELFIN blue, restrained": neutral text, with the logo's steel blue (`#6290C0`) as the single accent; green, amber and red only for state; truecolor with a fallback; the light or dark variant follows the terminal. |
 | Resize | Full screen: the rows re-wrap in place; nothing is written again. Inline: re-wrap by replay, like `opencode mini` -- after a resize settles, the screen and the terminal's scrollback are cleared and the session is reprinted at the new width (capped at a configurable number of turns). |
 | Sessions | Every session is part of the agent view from the moment it starts; there is no "backgrounding" step. Sessions keep running when the window closes, and the next window re-attaches. A session left idle (waiting for your next message) and unattached sleeps after about an hour and wakes when you reply. |
-| Agent view | `←` on an empty prompt. A Claude Code-style list grouped into Needs input / Working / Done. It covers every session on this machine across projects, plus other open DELFIN sessions (dashboard, `delfin-agent chat`) as read-only rows. It is drawn on the terminal's alternate screen (decided in phase 5): closing it gives the screen back exactly as it was, where growing the footer pushed the session's rows into history. Under GNU screen, whose alternate screen is off by default, it grows the footer. |
+| Agent view | `←` on an empty prompt. A list grouped into Needs input / Working / Done. It covers every session on this machine across projects, plus other open DELFIN sessions (dashboard, `delfin-agent chat`) as read-only rows. It is drawn on the terminal's alternate screen (decided in phase 5): closing it gives the screen back exactly as it was, where growing the footer pushed the session's rows into history. Under GNU screen, whose alternate screen is off by default, it grows the footer. |
 | Switching | A labelled divider, then a replay of the selected session's last few turns into the scrollback. Nothing is erased. |
 | Keys | Today's keys (esc, shift+tab, ctrl+g, ctrl+o, ctrl+t) plus a ctrl+p command palette. Every binding lives in one configurable registry. |
 | Edits | Sessions edit in place (no git worktrees). |
@@ -54,7 +54,7 @@ with Claude Code's way of working with sessions: one window, an agent view on
   - writes `~/.delfin/run/<host>.json`, so a window on another login node can
     say where the sessions run.
 
-  This copies Claude Code's on-demand supervisor (`claude daemon`), which has
+  This follows the on-demand supervisor pattern of agent CLIs, which has
   a lock file, a control socket with an auth token, one process per session,
   and a roster file used to reconnect. Like it, we accept a client only
   through a socket in a 0700 directory, after checking the peer's UID and a
@@ -133,7 +133,7 @@ The phased implementation plan is in [TUI_PLAN.md](TUI_PLAN.md).
 
 - **Session rows** show a fixed summary (title or last prompt, plus current
   activity), not a model-written one, so they cost no tokens.
-- **Approvals** are answered inside the session (→), as in Claude Code, not
+- **Approvals** are answered inside the session (→), as in other agent CLIs, not
   from the agent view's peek panel.
 - **New sessions** started from the agent view use the window's folder and
   the default approval mode (plan) unless one is configured.

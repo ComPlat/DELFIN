@@ -31,6 +31,7 @@ export async function mountWindow(options: {
   sid?: string
   show?: boolean
   answerPauseMs?: number
+  clickPauseMs?: number
   onResume?: (id: string, workspace: string) => void
   onNewSession?: () => Promise<string | null>
   onOpenItem?: (item: AttentionItem) => Promise<string | null>
@@ -78,7 +79,7 @@ export async function mountWindow(options: {
          onLines={(title, lines) => view.lines(title, lines)}
          onResume={options.onResume} onNewSession={options.onNewSession} pins={options.pins}
          onOpenItem={options.onOpenItem} arrival={options.arrival ?? { shownMs: 5000, quietMs: 600_000 }}
-         answerPauseMs={options.answerPauseMs ?? 0} screen={screen} />
+         answerPauseMs={options.answerPauseMs ?? 0} clickPauseMs={options.clickPauseMs ?? 0} screen={screen} />
   ), t.renderer)
   const settle = async () => {
     store.flush()

@@ -6,10 +6,23 @@
  * terminal's scrollback are cleared and the transcript is written again at
  * the new width (the user's choice, docs/TUI_REWRITE.md).
  *
- * Only the width counts. In split-footer mode OpenTUI's ``resize`` event
- * also fires when the footer changes height, and a height change needs no
- * re-wrap; treating it as one wiped the scrollback on every footer change
- * (measured in phase 0).
+ * Only the terminal's size counts. In split-footer mode OpenTUI's
+ * ``resize`` event also fires when the footer changes height, and a footer
+ * change needs no re-wrap; treating it as one wiped the scrollback on every
+ * footer change (measured in phase 0).
+ *
+ * A size that comes back to the one the scrollback was written at is
+ * replayed too, once it settles. Between the two the window was drawn at
+ * another size: OpenTUI clears the rows above the footer when the width
+ * shrinks, a reflowing terminal (tmux, VTE, kitty) rewraps every row, and
+ * a replay still being written when the terminal changed width was written
+ * at a width the terminal no longer had -- OpenTUI holds a new size back
+ * until the queued rows are out. tmux passes a pane's new size on at most
+ * every 250 ms, so a resize storm there often settles once during the storm;
+ * one that ended at the width of such a replay kept that replay's misplaced
+ * footer rows in the scrollback (test/e2e/check_resize_tmux.py). The same
+ * holds for a size the terminal reported that OpenTUI never applied (see
+ * ``ReplayPolicy.reports``).
  */
 import type { Transcript } from "./transcript"
 
@@ -32,6 +45,12 @@ export interface ReplayPolicy {
    *  (the session view replays by turns, or prints a divider where the
    *  terminal cannot clear its scrollback). */
   onSettled?: (width: number, widthChanged: boolean) => void
+  /** The terminal's own size reports (SIGWINCH), as a subscription that
+   *  returns its unsubscribe. OpenTUI holds a size reported while queued
+   *  rows are being written and applies only the last one, with no
+   *  ``resize`` event when that is the size it already has: a pane that
+   *  went to another width and back during a replay is seen only here. */
+  reports?: (listener: (width: number, height: number) => void) => () => void
 }
 
 /** Watch ``source``; replay ``transcript`` after each settled width change. */
@@ -41,22 +60,31 @@ export function replayOnWidthChange(
   policy: ReplayPolicy = {},
 ): () => void {
   const settleMs = policy.settleMs ?? 250
+  // The size the scrollback was last written at, and the size of the last
+  // event: an event at the size of the one before is the footer's own.
   let width = source.terminalWidth
   let height = source.terminalHeight
+  let seenWidth = width
+  let seenHeight = height
+  let reportedWidth = width
+  let reportedHeight = height
   let timer: ReturnType<typeof setTimeout> | undefined
-  const same = () => source.terminalWidth === width && source.terminalHeight === height
   const onResize = () => {
-    if (same()) {
-      // Back to the size the scrollback was written at (or only the
-      // footer changed height): nothing to redo.
-      clearTimeout(timer)
-      timer = undefined
-      return
-    }
+    if (source.terminalWidth === seenWidth && source.terminalHeight === seenHeight) return
+    seenWidth = source.terminalWidth
+    seenHeight = source.terminalHeight
+    arm()
+  }
+  const onReport = (w: number, h: number) => {
+    if (w === reportedWidth && h === reportedHeight) return
+    reportedWidth = w
+    reportedHeight = h
+    arm()
+  }
+  const arm = () => {
     clearTimeout(timer)
     timer = setTimeout(() => {
       timer = undefined
-      if (same()) return
       const widthChanged = source.terminalWidth !== width
       width = source.terminalWidth
       height = source.terminalHeight
@@ -65,8 +93,10 @@ export function replayOnWidthChange(
     }, settleMs)
   }
   source.on("resize", onResize)
+  const stopReports = policy.reports?.(onReport)
   return () => {
     clearTimeout(timer)
     source.off("resize", onResize)
+    stopReports?.()
   }
 }

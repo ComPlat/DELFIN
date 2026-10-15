@@ -1,7 +1,7 @@
 /**
  * Tool calls in the window: each becomes its headline and result row in
- * the scrollback, ctrl+o writes the last result out in full, and ctrl+t
- * asks the session to show or hide its task list.
+ * the scrollback, and ctrl+o writes the last result out in full. (ctrl+t
+ * folds the task list in the window: render/tasks.test.tsx.)
  */
 import { afterEach, expect, test } from "bun:test"
 import { mountWindow } from "../harness"
@@ -62,7 +62,7 @@ test("with its details, a call shows what it printed and an edit its diff", asyn
                  "⏺ delfin-docs:search_docs  SMD", "⎿ 4+ lines, 23 B", "⏺ bash  refused"])
 })
 
-test("the palette writes the last result out in full; ctrl+t asks for the task list", async () => {
+test("the palette writes the last result out in full", async () => {
   const w = open = await mountWindow({ width: 100, height: 40 })
   const expandLast = async () => {
     w.t.mockInput.pressKey("p", { ctrl: true })
@@ -83,7 +83,4 @@ test("the palette writes the last result out in full; ctrl+t asks for the task l
   const expanded = w.t.externalOutput.takeText()
   expect(expanded).toContain("bash, in full")
   for (const i of [0, 5, 29]) expect(expanded).toContain(`result line ${i}`)
-  w.t.mockInput.pressKey("t", { ctrl: true })
-  await w.settle()
-  expect(w.calls.at(-1)).toEqual({ method: "session.toggleTasks", params: { sessionId: "s1" } })
 })

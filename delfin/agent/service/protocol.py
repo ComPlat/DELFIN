@@ -53,7 +53,7 @@ REQUESTS: dict[str, dict[str, str]] = {
     "session.prompt": {"text": "string", "how": "string?"},
     # Esc: end the running turn. A tool call already running finishes first.
     "session.cancel": {},
-    "session.setMode": {"mode": "string"},
+    "session.setMode": {"mode": "string", "confirmed": "boolean?"},
     "session.status": {},
     # The durable events of the last ``turns`` turns, for a window that
     # attaches to a session already in progress.
@@ -73,10 +73,11 @@ REQUESTS: dict[str, dict[str, str]] = {
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort
-    # | mode). A pick is applied by sending the command, as typed.
+    # | mode), or what may follow a /command (what: args, command: "/git").
+    # A pick is applied by sending the command, as typed.
     "session.commands": {},
     "session.completePath": {"fragment": "string"},
-    "session.choices": {"what": "string"},
+    "session.choices": {"what": "string", "command": "string?"},
     # ctrl+t: show or hide the open task list at the end of each turn, as
     # in the REPL (its notice says which).
     "session.toggleTasks": {},
@@ -107,8 +108,9 @@ RESULTS: dict[str, dict[str, str]] = {
     # subagent -- in the order a typed line tries them.
     "session.commands": {"commands": "[object]"},
     "session.completePath": {"paths": "[string]"},
-    # choices: value, detail? (where a model runs, what it costs)
-    "session.choices": {"current": "string", "choices": "[object]"},
+    # choices: value, detail? (where a model runs, what it costs); usage:
+    # what a /command takes when its values cannot all be listed (args)
+    "session.choices": {"current": "string", "choices": "[object]", "usage": "string?"},
     "session.toggleTasks": {"showTasks": "boolean"},
     "session.setTitle": {"title": "string"},
 }
@@ -125,9 +127,20 @@ EVENTS: dict[str, dict[str, str]] = {
                      "provider": "string", "model": "string",
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
-                     "notices": "[string]"},
+                     "notices": "[string]", "tasks": "[object]?",
+                     "bypassBlocked": "string?", "bypassConfirmed": "boolean?"},
+    # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
+    # may stop there: the managed policy allows it and isolation holds
+    # each command; posture_cycle.bypass_refusal); bypassConfirmed: its
+    # first step was confirmed in this session. A window that is told
+    # neither steps over it.
+    # tasks: the session's task list (task_ticker.rows) as it is now, in
+    # display order (in progress, blocked, pending, completed), each row
+    # num, status, label -- sent whole whenever any of it changed.
     "session.updated": {"approval": "string?", "model": "string?",
-                        "effort": "string?", "title": "string?"},
+                        "effort": "string?", "title": "string?",
+                        "tasks": "[object]?", "bypassBlocked": "string?",
+                        "bypassConfirmed": "boolean?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},
@@ -332,11 +345,21 @@ DURABLE_EVENTS = frozenset({
 #: The longest session title: what the session store keeps of one.
 TITLE_MAX = 80
 
+#: The longest task label a window is sent (a task row is one line).
+TASK_LABEL_MAX = 160
+
 
 def clean_title(text: Any) -> str:
     """A session title as it is kept: one line, control and invisible
     characters (escapes, zero-width marks) made spaces, single spaces, at
     most TITLE_MAX characters. "" when nothing printable is left."""
+    return clean_line(text, TITLE_MAX)
+
+
+def clean_line(text: Any, limit: int) -> str:
+    """``text`` as one plain line of at most ``limit`` characters: whole
+    escape sequences, then every control and invisible character, made
+    spaces; runs of spaces made one."""
     import re
     import unicodedata
 
@@ -344,7 +367,7 @@ def clean_title(text: Any) -> str:
     # any control character left.
     plain = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.?)", " ", str(text or ""))
     chars = [" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in plain]
-    return " ".join("".join(chars).split())[:TITLE_MAX].rstrip()
+    return " ".join("".join(chars).split())[:limit].rstrip()
 
 
 def request(msg_id: int | str, method: str, params: dict | None = None) -> dict:

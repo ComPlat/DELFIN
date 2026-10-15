@@ -839,6 +839,24 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     """
     import json
 
+    # The user's own settings file first (``agent.permission_mode``, what
+    # the dashboard's control and a hand edit write): a kit file's
+    # ``default_mode`` -- one a permissions tool call persisted, or a
+    # checked-out repository's -- does not override what the user set
+    # there. Read raw, like the kit files: load_settings() fills in a
+    # value nobody chose. A value that is no mode (an old profile name)
+    # is no setting.
+    try:
+        from delfin.user_settings import get_settings_path
+        from .launch_guard import _VALID_MODES
+        own = get_settings_path()
+        if own.exists():
+            agent_block = json.loads(own.read_text()).get("agent") or {}
+            declared = agent_block.get("permission_mode")
+            if isinstance(declared, str) and declared in _VALID_MODES:
+                return declared, _tilde(own)
+    except Exception:
+        pass
     try:
         from . import kit_settings
         candidates = [kit_settings.USER_SETTINGS_PATH,
@@ -5309,6 +5327,10 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")
+    tui.add_argument("--setup", action="store_true",
+                     help="Set the window up (a pinned Bun and its packages, checked) and "
+                          "exit; done by itself on the first start unless "
+                          "DELFIN_TUI_AUTO_INSTALL=0 or agent.tui_auto_install=false")
     # Scripted sessions, no model: for working on the window and its tests.
     tui.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
     tui.set_defaults(func=_cmd_tui)
