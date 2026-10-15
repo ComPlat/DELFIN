@@ -1064,10 +1064,12 @@ def _check_tui(ctx: dict) -> list[dict]:
         detail += "; the first `delfin-agent tui` sets it up (a pinned Bun and bun.lock's packages)"
     else:
         detail += "; automatic setup is off (DELFIN_TUI_AUTO_INSTALL=0 or agent.tui_auto_install=false)"
+    asset = tui_setup.bun_asset()
+    bun_mb = tui_setup.BUN_ASSETS[asset][0] / 1e6 if asset in tui_setup.BUN_ASSETS else 42
     return [_row("terminal window", WARN, detail,
-                 "delfin-agent tui --setup (about 42 MB Bun from github.com, SHA-256 pinned, "
-                 "and about 21 MB of npm packages checked against bun.lock), or set "
-                 "DELFIN_TUI_BINARY to a delfin-tui binary",
+                 f"delfin-agent tui --setup (about {bun_mb:.0f} MB Bun from github.com, SHA-256 "
+                 f"pinned, and about {tui_setup.PACKAGES_DOWNLOAD_MB} MB of npm packages checked "
+                 "against bun.lock), or set DELFIN_TUI_BINARY to a delfin-tui binary",
                  command="delfin-agent tui --setup")]
 
 

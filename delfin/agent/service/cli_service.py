@@ -109,7 +109,7 @@ def _setup_only() -> int:
         print(f"The terminal window is ready: {' '.join(command)}")
         return 0
     try:
-        tui_setup.set_up(out=sys.stderr)
+        tui_setup.set_up(out=sys.stderr, explicit=True)
     except tui_setup.SetupFailed as exc:
         print(f"The terminal window could not be set up: {exc}", file=sys.stderr)
         return 2
@@ -119,6 +119,9 @@ def _setup_only() -> int:
               file=sys.stderr)
         return 2
     print(f"The terminal window is ready: {' '.join(command)}")
+    note = tui_setup.native_note(launcher.tui_root())
+    if note:
+        print(note)
     return 0
 
 

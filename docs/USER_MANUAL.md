@@ -1660,7 +1660,7 @@ the window up by itself and says so in one line: Bun 1.4.3 from its GitHub
 release (about 42 MB; size and SHA-256 pinned in DELFIN, checked before the
 archive is opened) into `~/.delfin/tools/bun-1.4.3`, then the window's npm
 packages with `bun install --frozen-lockfile --ignore-scripts --production`
-(about 21 MB, exactly the versions of `bun.lock`, each checked against its
+(about 18 MB, exactly the versions of `bun.lock`, each checked against its
 integrity hash, no install scripts) -- into `tui/node_modules` of a
 checkout, or, for a wheel install or a checkout you cannot write, into a
 copy of the window's sources in `~/.delfin/tools/tui-<digest>`. Proxies

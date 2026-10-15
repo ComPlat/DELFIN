@@ -44,9 +44,12 @@ opentui#1630: rows can leave the scrollback of an xterm.js terminal when
 the footer grows) needs Zig and a build of minutes and stays a manual
 step.
 
-Measured on linux-x64 (2026-10-15): Bun 42.0 MB download, 89 MB on disk;
-the packages about 21 MB download, 89 MB on disk; ``bun install`` 0.5 s on
-a fast link.
+Measured on linux-x64 (2026-10-15, a fresh HOME, no Bun): Bun 42.0 MB
+download, 89 MB on disk; the packages 103 tarballs, 17.7 MB download,
+about 90 MB in node_modules; the whole setup 1.6 s wall on this host's
+link. Bun's package cache (``~/.delfin/tools/bun-cache``) is removed after
+a setup: node_modules holds hard links or copies of it, and on a home
+with a quota a second copy is what costs.
 
 Rejected alternatives: Bun's own installer (``curl | sh``: an unpinned
 script); node_modules or binaries in git or the wheel (89 MB per platform,
@@ -87,9 +90,10 @@ BUN_ASSETS: dict[str, tuple[int, str]] = {
 
 BUN_URL = "https://github.com/oven-sh/bun/releases/download/bun-v{version}/{asset}.zip"
 
-#: The packages' download, measured (the bun cache after a clean
-#: ``bun install --production`` of the current lockfile).
-PACKAGES_DOWNLOAD_MB = 21
+#: The packages' download, measured: the 103 tarballs a clean
+#: ``bun install --production`` of the current lockfile fetched on
+#: linux-x64, 17.7 MB.
+PACKAGES_DOWNLOAD_MB = 18
 
 #: What a run folder must hold for the window to start from source.
 REQUIRED_PACKAGES = ("@opentui/core", "@opentui/solid", "solid-js")
@@ -324,8 +328,9 @@ def _tilde(path) -> str:
     return "~" + text[len(home):] if text == home or text.startswith(home + os.sep) else text
 
 
-def announce(p: Plan) -> str:
-    """The one line said before anything is downloaded."""
+def announce(p: Plan, *, explicit: bool = False) -> str:
+    """The one line said before anything is downloaded; the opt-out is
+    named unless the setup was asked for (``--setup``)."""
     parts = []
     if p.bun is None and p.asset:
         size = BUN_ASSETS[p.asset][0] / 1e6
@@ -334,8 +339,8 @@ def announce(p: Plan) -> str:
     if p.packages:
         parts.append(f"its npm packages (about {PACKAGES_DOWNLOAD_MB} MB, each checked against "
                      f"bun.lock, no install scripts) into {_tilde(p.root / 'node_modules')}")
-    return ("Setting up the terminal window (once): " + "; then ".join(parts)
-            + f". Opt out: {ENV_OPT_OUT}=0.")
+    tail = "." if explicit else f". Opt out: {ENV_OPT_OUT}=0."
+    return "Setting up the terminal window (once): " + "; then ".join(parts) + tail
 
 
 def manual_commands(p: Plan | None = None) -> str:
@@ -516,6 +521,7 @@ def install_packages(p: Plan, bun: Path, *, run=None, root: Path | None = None) 
         raise SetupFailed(f"`{' '.join(argv)}` in {_tilde(where)} failed (exit {code}):\n{tail}\n"
                           "By hand:\n" + manual_commands(p))
     _write_marker(where, bun=bun)
+    shutil.rmtree(tools_dir() / "bun-cache", ignore_errors=True)
 
 
 @contextlib.contextmanager
@@ -535,7 +541,7 @@ def _setup_lock():
         fh.close()
 
 
-def set_up(*, out=None, opener=None, run=None) -> Plan:
+def set_up(*, out=None, opener=None, run=None, explicit: bool = False) -> Plan:
     """Set the window up (module docstring); says in one line what it
     does. Raises SetupFailed with what failed and the manual commands."""
     out = out if out is not None else sys.stderr
@@ -550,7 +556,7 @@ def set_up(*, out=None, opener=None, run=None) -> Plan:
             from . import launcher
             raise SetupFailed(f"there is no Bun release for this machine ({launcher.platform_name()}); "
                               "set DELFIN_TUI_BINARY to a binary built for it")
-        print(announce(p), file=out, flush=True)
+        print(announce(p, explicit=explicit), file=out, flush=True)
         started = time.monotonic()
         try:
             bun = p.bun or download_bun(p.asset, opener=opener, run=run)
@@ -586,6 +592,22 @@ def _install_copy(p: Plan, bun: Path, *, run=None) -> None:
         os.replace(work, p.root)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+def native_note(root: Path) -> str:
+    """On Linux, when the window's OpenTUI native library is the prebuilt
+    one: how to build the patched one; else ""."""
+    from . import launcher
+
+    plat = launcher.platform_name()
+    if not plat.startswith("linux-"):
+        return ""
+    if (root / "node_modules" / "@opentui" / f"core-{plat}" / ".delfin-patched").is_file():
+        return ""
+    return ("note: the window runs OpenTUI's prebuilt native library; in xterm.js terminals "
+            "(VS Code, JupyterLab) rows can leave the scrollback when the footer grows. "
+            f"`cd {_tilde(root)} && scripts/build-opentui-native.sh` builds the patched one "
+            "(Zig 0.16 and the OpenTUI source, SHA-256 pinned; minutes).")
 
 
 def describe() -> tuple[str, str]:
