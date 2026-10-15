@@ -627,7 +627,13 @@ class AutoController:
         if verdict is None:
             return None
         if verdict.queue:
-            what = str((args or {}).get("command") or name)
+            what = str((args or {}).get("command") or "")
+            if not what:
+                try:
+                    what = json.dumps(args or {}, ensure_ascii=False,
+                                      sort_keys=True, default=str)
+                except Exception:
+                    what = str(args or {})
             item = self._queue(verdict.kind, f"{name}: {what[:200]}",
                                verdict.reason)
             return (f"blocked: auto mode does not do this ({verdict.reason}); "
@@ -972,7 +978,8 @@ class AutoController:
         elif spec.check and code not in (None, 0) and metric is None:
             tail = [ln.strip() for ln in out.splitlines() if ln.strip()][-3:]
             fp = f"{code}:" + " | ".join(tail)[:300]
-        elif not run.is_loop and not changed and it.item and it.item == run.last_item:
+        elif not run.is_loop and not changed and it.item:
+            # Consecutive identical fingerprints are the same item again.
             fp = "item:" + it.item[:200]
         if fp and fp == run.fail_fp:
             run.fail_count += 1
@@ -1028,8 +1035,14 @@ class AutoController:
             self._queue("question", marker[1] or "the agent needs a decision")
             self.paused = "waiting for your answer"
         if run.fail_count >= spec.repeat_failures:
-            self.stop(f"the same failure {run.fail_count} times in a row: "
-                      f"{run.fail_fp[:160]}")
+            if run.fail_fp.startswith("item:"):
+                word = ("twice" if run.fail_count == 2
+                        else f"{run.fail_count} times")
+                self.stop(f"the same item came up {word} in a row without a "
+                          f"change: {run.fail_fp[5:165]}")
+            else:
+                self.stop(f"the same failure {run.fail_count} times in a row: "
+                          f"{run.fail_fp[:160]}")
             return digest
         if (spec.trigger in ("manual", "idle") and
                 run.no_progress >= spec.plateau):
