@@ -1430,6 +1430,7 @@ class TerminalAgent:
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
+        self._report_lessons()
         result = result_box[0] if result_box \
             else TurnResult(error="turn produced nothing")
         # A turn that ended on a question or a denial leaves its note for
@@ -2910,6 +2911,18 @@ class TerminalAgent:
                 self.transcript.theme.dim(f"  → {chosen[:100]}"))
             return chosen
         return text
+
+    def _report_lessons(self) -> None:
+        """One line per lesson the agent proposed in this turn, once each:
+        the person decides whether to share it (/share), the agent never
+        does. Never raises."""
+        try:
+            from .knowledge_commands import end_of_turn_hints
+            lines = end_of_turn_hints()
+        except Exception:
+            return
+        for line in lines:
+            self.transcript.chrome(self.transcript.theme.dim(line))
 
     def _report_tasks(self) -> None:
         """Open work, when the agent left some and the user wants to see it."""

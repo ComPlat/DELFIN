@@ -74,13 +74,14 @@ _ANSWER_COMMAND_RE = re.compile(
     r"(?<![\w.-])approvals\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
     r"(" + "|".join(_ANSWER_VERBS) + r")(?![\w-])", re.IGNORECASE)
 
-# ``service stop|restart`` under any program name, after the same
-# unquoting: it ends the agent service and every session in it, and when
-# the socket does not answer it does so by signal, past the service's
-# watch-only rule for an agent's processes. ``status`` and ``logs`` read.
+# ``service stop|restart|end`` under any program name, after the same
+# unquoting: stop and restart end the agent service and every session in
+# it, and when the socket does not answer they do so by signal, past the
+# service's watch-only rule for an agent's processes; end ends sessions
+# of the user's. ``status`` and ``logs`` read.
 _SERVICE_STOP_RE = re.compile(
     r"(?<![\w.-])service\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*"
-    r"(stop|restart)(?![\w-])", re.IGNORECASE)
+    r"(stop|restart|end)(?![\w-])", re.IGNORECASE)
 
 # The Python functions that write an answer. Names only these functions
 # carry match anywhere; the generic ``answer`` matches only together with
@@ -216,13 +217,17 @@ def answer_command(cmd: str) -> Optional[str]:
     Input: a shell command, commit-message prose already blanked by the
     caller. Output: a short description of the match. Four shapes:
     the ``approvals approve|deny|answer`` subcommand under any program
-    name, ``service stop|restart`` (the agent service holds the sessions
-    whose approvals a window answers), the Python functions that write
-    an answer, and any naming of an answer file or answer location.
+    name, ``service stop|restart|end`` (the agent service holds the
+    sessions whose approvals a window answers), the Python functions that
+    write an answer, and any naming of an answer file or answer location.
     """
     if _ANSWER_COMMAND_RE.search(_unquoted(cmd)):
         return "the command answers a pending approval"
-    if _SERVICE_STOP_RE.search(_unquoted(cmd)):
+    stop = _SERVICE_STOP_RE.search(_unquoted(cmd))
+    if stop and stop.group(1).lower() == "end":
+        return ("the command ends sessions of the agent service, which are "
+                "the user's, with the approvals they wait on")
+    if stop:
         return ("the command stops the agent service, which holds the "
                 "user's sessions and the approvals they wait on")
     text = _dequoted(cmd)

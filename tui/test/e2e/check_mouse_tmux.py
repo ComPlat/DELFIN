@@ -4,7 +4,9 @@ them (SGR, ESC [ < b ; x ; y M/m) into the pane.
 
 - a click on "[y] yes" of a shell approval answers it: the command runs;
 - a click on a question's choice answers it with that choice;
-- a click that arrives as the panel appears (within the pause) does not.
+- a click that arrives as the panel appears (within the pause) does not;
+- with another session running, a click on "1 more session ← agents" in
+  the hints line opens the agent view.
 
 Usage (from the repository root):
     DELFIN_PYTHON=<python with delfin> python3 tui/test/e2e/check_mouse_tmux.py
@@ -93,6 +95,18 @@ def main() -> int:
         click(at[0], at[1])
         if not find("Using SMD.", 15):
             problems.append(f"a click on a choice did not answer with it\n{tmux.screen()}")
+        with ServiceClient(sock) as other:
+            other.request("session.create", {"cwd": str(ws), "fake": True, "fakeDelay": 0.003,
+                                             "name": "another", "attach": False}, timeout=60)
+        at = find("1 more session ← agents")
+        if not at:
+            problems.append(f"the hints line does not count the other session\n{tmux.screen()}")
+        else:
+            click(at[0] + 2, at[1])
+            if not find("◆ AGENTS", 10):
+                problems.append(f"a click on the count did not open the agent view\n{tmux.screen()}")
+            tmux.key("Escape")
+            time.sleep(0.5)
         tmux.key("C-d")
         if not find("TUI_EXIT=0", 30):
             problems.append("the window did not leave cleanly")
@@ -112,7 +126,8 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: a click answers an approval and a question, and not as the panel appears")
+    print("PASS: a click answers an approval and a question, and not as the panel appears; "
+          "a click on the other sessions' count opens the agent view")
     return 0
 
 

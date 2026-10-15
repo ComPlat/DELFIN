@@ -503,6 +503,7 @@ export interface ServiceStatusResult {
   "host": string
   "startedAt": number
   "sessions": Record<string, unknown>[]
+  "dormant"?: Record<string, unknown>[] | null
   "windows": number
   "socket": string
 }

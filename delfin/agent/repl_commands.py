@@ -1847,6 +1847,22 @@ def _auto(ctx, args: str) -> CommandResult:
         args, getattr(ctx, "auto", None), ctx.engine))
 
 
+def _layered(name: str) -> Callable[[Any, str], CommandResult]:
+    """A knowledge command (``knowledge_commands.handle``): the layered
+    memory view, the share dialog, the person's lessons, the swarm
+    harvest and the curation tools. The dialog's code is read through
+    ``ctx.ask`` -- the person's next line -- and shown through ``ctx.say``;
+    nothing goes to the model."""
+    def handler(ctx, args: str) -> CommandResult:
+        from . import knowledge_commands
+        perms = getattr(getattr(ctx, "engine", None), "kit_permissions",
+                        None)
+        return CommandResult(output=knowledge_commands.handle(
+            name, args, workspace=ctx.workspace, ask=ctx.ask, say=ctx.say,
+            perms=perms))
+    return handler
+
+
 def _clear(ctx, _args: str) -> CommandResult:
     return CommandResult(output="starting a fresh conversation", clear=True)
 
@@ -1987,6 +2003,20 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/forget", "history", "Delete one memory by name",
                     _forget, True),
         ReplCommand("/plans", "history", "Saved plans", _plans, True),
+        ReplCommand("/memory", "history", "Every memory layer: private, "
+                    "swarm, project, global", _layered("memory"), True),
+        ReplCommand("/lessons", "history", "Your lessons: show, edit, delete",
+                    _layered("lessons"), True),
+        ReplCommand("/share", "history", "Share a lesson after a "
+                    "confirmation only you can answer", _layered("share"),
+                    True),
+        ReplCommand("/unshare", "history", "Withdraw your shared entry",
+                    _layered("unshare"), True),
+        ReplCommand("/swarm", "history", "Findings of a swarm run: harvest, "
+                    "propose", _layered("swarm"), True),
+        ReplCommand("/knowledge", "history", "Global knowledge: list, lint, "
+                    "stats; curation for the admin", _layered("knowledge"),
+                    True),
         ReplCommand("/undo-file", "changes", "Restore files from the undo "
                     "journal", _undo_file, True),
         ReplCommand("/pending", "changes", "Diffs waiting for approval",

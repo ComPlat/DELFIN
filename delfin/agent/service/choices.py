@@ -214,6 +214,11 @@ _WORDS: dict[str, list[tuple[str, str]]] = {
     "/undo-file": [("list", "what the journal can restore"), ("last", "the last change"),
                    ("turn", "the last turn's changes"), ("session", "every change of this session")],
     "/memories": [("global", "the memories of every project"), ("all", "this project's and the global ones")],
+    "/memory": [("private", "this machine only"), ("swarm", "this run's findings"),
+                ("project", "the repository's .delfin/knowledge"),
+                ("global", "every DELFIN user"), ("all", "every layer")],
+    "/swarm": [("runs", "the runs on this machine"), ("harvest", "a run's findings with evidence"),
+               ("propose", "keep one as your private lesson"), ("close", "end and archive a run")],
     "/jobs": [("ls", "the watched jobs"), ("watch on", "start the monitor"),
               ("watch off", "stop the monitor"), ("watch status", "is the monitor running")],
     "/trust": [("grant hooks", ""), ("grant mcp", ""), ("revoke hooks", ""), ("revoke mcp", "")],
@@ -237,6 +242,10 @@ _USAGE: dict[str, str] = {
     "/commands": "/commands [name]",
     "/plans": "/plans [name]",
     "/help": "/help [search words]",
+    "/share": "/share <lesson> [project|global] [scope=..] [topic=..] [as <handle>] | confirm <dialog> <code>",
+    "/unshare": "/unshare <entry> [as <handle>]",
+    "/lessons": "/lessons [show <id> | edit <id> field=text | delete <id>]",
+    "/knowledge": "/knowledge [list | search | lint | dupes | stats | queue | accept | reject | merge | move | retire | rename | index | topic add]",
 }
 
 

@@ -2359,6 +2359,10 @@ _USER_ONLY_SLASH_COMMANDS = frozenset({
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
     "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",
+    # Sharing and curating knowledge are the person's acts. An ACTION line
+    # that ran /share would return the dialog -- code included -- to the
+    # model as feedback, and the next ACTION line could answer it.
+    "/share", "/unshare", "/lessons", "/swarm", "/knowledge",
 })
 
 
@@ -2418,6 +2422,7 @@ _BUILTIN_SLASH_PREFIXES = frozenset({
     "/check", "/recalc", "/cancel", "/context", "/agents", "/skills",
     "/trace", "/loop", "/auto",
     "/undo-file", "/profile", "/skill", "/tools",
+    "/memory", "/share", "/unshare", "/lessons", "/swarm", "/knowledge",
 })
 
 
@@ -2750,6 +2755,12 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/tidy", "Propose merges and retirements in the memory store (no model call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
+    ("Memory", "/memory", "Every memory layer with its label: private, swarm, project, global (filter: /memory <layer> [words])", False),
+    ("Memory", "/lessons", "Your lessons (/lessons show|edit|delete <id>)", False),
+    ("Memory", "/share", "Share a lesson: the dialog shows the exact text and the check; /share confirm <dialog> <code>", True),
+    ("Memory", "/unshare", "Withdraw your shared entry as a removal branch", True),
+    ("Memory", "/swarm", "Findings of a swarm run (/swarm harvest|propose|close)", False),
+    ("Memory", "/knowledge", "Global knowledge by topic, search, lint, dupes, stats; queue and curation for the admin", False),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
     ("Plan", "/plan approve", "Approve a pending plan when model forgot exit_plan_mode", False),
     ("Plan", "/plan reject", "Reject a pending plan and exit plan mode", False),
@@ -15099,6 +15110,30 @@ def create_tab(ctx):
                     f"(valid range: 0..{len(engine.messages) - 1}).")
             return True
 
+        # Layered memory (knowledge_commands): one handler for every surface.
+        # The original text goes in (cmd is lower-cased: a lesson edit and
+        # a code must arrive as typed). No ask here: a dialog is answered by
+        # a second typed command, /share confirm <dialog> <code>.
+        _kn_head = cmd.split(" ", 1)[0]
+        if _kn_head in ("/memory", "/share", "/unshare", "/lessons",
+                        "/swarm", "/knowledge"):
+            try:
+                from delfin.agent import knowledge_commands as _kcmd
+                _kn_raw = text.strip()
+                _kn_args = _kn_raw.split(" ", 1)[1] if " " in _kn_raw else ""
+                _kn_eng = state.get("engine")
+                _kn_perms = getattr(_kn_eng, "kit_permissions", None)
+                _kn_ws = (getattr(_kn_perms, "workspace", None)
+                          or ctx.repo_dir or Path.cwd())
+                _kn_shown: list = []
+                _kn_out = _kcmd.handle(_kn_head, _kn_args, workspace=_kn_ws,
+                                       ask=None, say=_kn_shown.append,
+                                       perms=_kn_perms)
+                _append_system_message("\n".join(_kn_shown + [_kn_out]))
+            except Exception as exc:
+                _append_system_message(f"{_kn_head} failed: {exc}")
+            return True
+
         if cmd in ("/memories", "/memories global", "/memories all"):
             from delfin.agent.memory_store import list_typed_memories
             _scope = {"/memories": "project",
@@ -19727,6 +19762,16 @@ def create_tab(ctx):
                         try:
                             _refresh_task_ticker()
                             _refresh_next_steps()
+                        except Exception:
+                            pass
+                    # A lesson the agent proposed: one line, once per
+                    # lesson; sharing stays the person's /share.
+                    if tool_name == "remember":
+                        try:
+                            from delfin.agent.knowledge_commands import (
+                                end_of_turn_hints as _kn_hints)
+                            for _kn_line in _kn_hints():
+                                _append_system_message(_kn_line)
                         except Exception:
                             pass
                     # Live tool-trace panel: reflect every tool call as it lands.
