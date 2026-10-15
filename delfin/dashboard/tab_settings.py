@@ -406,6 +406,20 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         placeholder='local path (empty = ~/.delfin/agent_bugs)',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+    # Whether a written report is also copied to <Remote Path>/AGENT_BUGS
+    # (agent.bug_upload, delfin/agent/bug_report.py). A dropdown, not a
+    # text field: three answers, and a typed fourth would be read as ask.
+    bug_upload_input = widgets.Dropdown(
+        options=[
+            ('ask for each report (default)', 'ask'),
+            ('never upload', 'never'),
+            ('always upload, also unattended', 'always'),
+        ],
+        value='ask',
+        description='Bug upload',
+        layout=widgets.Layout(width='340px', height='28px'),
+        style={'description_width': '90px'},
+    )
     # Proactive job monitoring (headless daemon). OPT-IN: costs tokens when
     # auto-diagnosis is on, so it must be explicitly enabled here.
     jobmon_enabled_toggle = widgets.Checkbox(
@@ -1267,6 +1281,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         office_path_input.value = str(paths_payload.get('office_dir') or '')
         agent_payload = ((settings_payload or {}).get('agent') or {})
         bug_archive_input.value = str(agent_payload.get('bug_archive_dir') or '')
+        from delfin.agent.bug_report import upload_policy
+        bug_upload_input.value = upload_policy(settings_payload or {})
         jobmon_payload = agent_payload.get('job_monitor') or {}
         jobmon_enabled_toggle.value = bool(jobmon_payload.get('enabled', False))
         jobmon_diag_toggle.value = bool(jobmon_payload.get('auto_diagnose', True))
@@ -3571,6 +3587,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
             settings_payload.setdefault('agent', {})
             settings_payload['agent']['bug_archive_dir'] = _bug_archive or ''
+            settings_payload['agent']['bug_upload'] = (
+                bug_upload_input.value or 'ask')
             # Job monitoring (opt-in; costs tokens only when auto_diagnose).
             settings_payload['agent']['job_monitor'] = {
                 'enabled': bool(jobmon_enabled_toggle.value),
@@ -3707,7 +3725,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         viewer_ambient_occlusion_toggle,
         # Agent blocks — without these the GLOBAL Save Settings button
         # stays disabled when only these change ("settings disappeared").
-        bug_archive_input,
+        bug_archive_input, bug_upload_input,
         jobmon_enabled_toggle, jobmon_diag_toggle, jobmon_interval_input,
         jobmon_webhook_input, jobmon_provider_input, jobmon_model_input,
         automem_enabled_toggle, automem_model_input, automem_maxfacts_input,
@@ -3885,6 +3903,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 [widgets.HTML('<b>Bug-report archive</b>'), bug_archive_input],
                 layout=_row_layout,
             ),
+            bug_upload_input,
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 '<b>Local</b> staging dir for the 🐞 bug-report button '
@@ -3893,10 +3912,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 '<b>Remote Path</b> + host is configured above, the report is '
                 'also uploaded via SSH (rsync) to <code>&lt;Remote Path&gt;/AGENT_BUGS</code> '
                 'when you press Send under that host — the local copy is kept. '
-                '<code>agent.bug_upload</code> in the settings file decides the '
-                'rest: <code>ask</code> (default; the terminal and CLI ask '
-                'per report, <code>--yes</code> keeps it local), '
-                '<code>never</code>, <code>always</code> (also unattended).'
+                '<b>Bug upload</b> (<code>agent.bug_upload</code>) decides the '
+                'rest: <i>ask</i> (default; the terminal and CLI ask per '
+                'report, <code>--yes</code> keeps it local), <i>never</i>, '
+                '<i>always</i> (also unattended).'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'

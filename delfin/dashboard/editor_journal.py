@@ -238,6 +238,25 @@ def resolve_archive_dir(settings=None):
     return _FALLBACK_DIR
 
 
+def upload_off(settings=None):
+    """The sentence to show when ``agent.bug_upload`` is ``never`` and a
+    transfer host is configured, else ''. The host is not named: under
+    ``never`` it is not a destination."""
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings()
+        except Exception:
+            settings = {}
+    config = (settings or {}).get('transfer') or {}
+    if not str(config.get('host') or '').strip():
+        return ''
+    from delfin.agent.bug_report import upload_policy
+    if upload_policy(settings) != 'never':
+        return ''
+    return 'agent.bug_upload is never, so reports are not sent'
+
+
 def remote_target(settings=None):
     """The transfer this dashboard is configured for, or ``None``.
 
@@ -263,6 +282,10 @@ def remote_target(settings=None):
             settings = load_settings()
         except Exception:
             settings = {}
+    # agent.bug_upload 'never': nothing leaves the machine, so there is no
+    # destination to name -- the caller says why (upload_off).
+    if upload_off(settings):
+        return None
     config = (settings or {}).get('transfer') or {}
     host = str(config.get('host') or '').strip()
     user = str(config.get('user') or '').strip()
@@ -316,6 +339,9 @@ def send_report(report_dir, *, settings=None, timeout=120, target=None):
     if target is None:
         target = remote_target(settings)
     if target is None:
+        off = upload_off(settings)
+        if off:
+            return False, off
         return False, ('no transfer host is configured -- set one in the '
                        'dashboard settings and it will go there too')
     from delfin.agent.bug_report import push_report_to_remote

@@ -156,7 +156,6 @@ def test_the_preview_says_where_the_report_would_go(monkeypatch, tmp_path):
 
 def _settings_tab(tmp_path, monkeypatch):
     pytest.importorskip("ipywidgets")
-    monkeypatch.setenv("HOME", str(tmp_path))
     from delfin.dashboard import tab_settings
     from delfin.dashboard.context import DashboardContext
     for n in ("calc", "archive", "office"):
@@ -179,6 +178,7 @@ def test_the_settings_tab_sets_bug_upload(tmp_path, monkeypatch):
     chosen where the archive and the transfer host are set, from the
     three values, and is saved into agent.bug_upload."""
     from delfin import user_settings as us
+    monkeypatch.setenv("HOME", str(tmp_path))
     data = us.load_settings()
     data.setdefault("agent", {})["bug_upload"] = "never"
     us.save_settings(data)
