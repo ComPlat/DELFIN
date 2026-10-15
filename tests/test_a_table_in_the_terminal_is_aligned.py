@@ -134,3 +134,22 @@ def test_a_table_at_the_very_end_is_drawn_on_flush():
 def test_no_drawn_row_is_wider_than_the_terminal(width):
     for r in _table_lines(_whole(TABLE, width=width)):
         assert _cols(r) <= width
+
+
+def test_a_held_table_is_written_before_the_next_tool_line():
+    """The table ends the model's text; a tool line that follows it in the
+    same turn must not overtake it on the screen."""
+    import io
+
+    from delfin.agent import repl
+
+    screen = io.StringIO()                  # stdout and stderr: one terminal
+    t = repl.Transcript(screen, screen, theme=Theme(enabled=True),
+                        width=100, color="always")
+    t.render(repl.RenderItem("text", "Tabelle:\n| a | b |\n|---|---|\n"
+                                     "| 1 | 2 |\n"))
+    t.render(repl.RenderItem("tool_use", '{"command": "ls"}', name="bash"))
+    t.finish()
+    plain = _plain(screen.getvalue())
+    assert "│" in plain
+    assert plain.index("│") < plain.index("ls"), plain

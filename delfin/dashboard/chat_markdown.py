@@ -40,6 +40,10 @@ import html as _html
 import re
 from typing import Callable
 
+from delfin.agent.markdown_table import (
+    alignment, has_pipe, is_numeric, normalise, split_row,
+)
+
 CodeBlockFn = Callable[[str, str], str]
 
 # -- block patterns ----------------------------------------------------------
@@ -49,11 +53,7 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _HR = re.compile(r"^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
 _QUOTE = re.compile(r"^ {0,3}> ?(.*)$")
 _ITEM = re.compile(r"^( *)([-*+]|\d{1,9}[.)])(?:([ \t]+)(.*))?$")
-_DELIM_CELL = re.compile(r"^:?-+:?$")
 _LANG = re.compile(r"[\w+#.\-]{1,32}")
-_NUMERIC = re.compile(
-    r"^[~≈±+\-−]?\s?\d[\d.,'\u2009\u202f]*(?:[eE][+\-−]?\d+)?\s?%?$")
-
 # -- inline patterns ---------------------------------------------------------
 
 _CODE_SPAN = re.compile(r"(`+)(.+?)(?<!`)\1(?!`)")
@@ -129,106 +129,24 @@ def inline(text: str) -> str:
     return _SLOT.sub(lambda m: slots[int(m.group(1))], s)
 
 
-# -- tables ------------------------------------------------------------------
-
-def split_row(line: str) -> list[str]:
-    """The cells of a pipe-table row, unstripped of inline markup.
-
-    A pipe splits unless it is escaped (``\\|``) or inside a code span whose
-    closing backticks are on the same line. Inside a code span an escaped
-    pipe becomes a plain one, as GitHub renders it.
-    """
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|") and not s.endswith("\\|"):
-        s = s[:-1]
-    cells: list[str] = []
-    buf: list[str] = []
-    i, n, code_run = 0, len(s), 0
-    while i < n:
-        ch = s[i]
-        if ch == "\\" and i + 1 < n and s[i + 1] == "|":
-            buf.append("|" if code_run else "\\|")
-            i += 2
-            continue
-        if ch == "`":
-            j = i
-            while j < n and s[j] == "`":
-                j += 1
-            run = j - i
-            if code_run == 0:
-                if s.find("`" * run, j) >= 0:
-                    code_run = run
-            elif run == code_run:
-                code_run = 0
-            buf.append(s[i:j])
-            i = j
-            continue
-        if ch == "|" and code_run == 0:
-            cells.append("".join(buf))
-            buf = []
-            i += 1
-            continue
-        buf.append(ch)
-        i += 1
-    cells.append("".join(buf))
-    return [c.strip() for c in cells]
-
-
-def _has_pipe(line: str) -> bool:
-    return bool(re.search(r"(?<!\\)\|", line))
-
+# -- tables (recognition in delfin.agent.markdown_table) ---------------------
 
 def _table_at(lines: list[str], i: int) -> list[str] | None:
     """The alignment of the table starting at line *i*, or None."""
-    if i + 1 >= len(lines) or not _has_pipe(lines[i]):
+    if i + 1 >= len(lines):
         return None
-    delim = lines[i + 1]
-    if "-" not in delim or not re.fullmatch(r"[\s|:\-]+", delim):
-        return None
-    dcells = split_row(delim)
-    if not dcells or not all(_DELIM_CELL.match(c) for c in dcells):
-        return None
-    if len(dcells) != len(split_row(lines[i])):
-        return None
-    aligns = []
-    for c in dcells:
-        if c.startswith(":") and c.endswith(":"):
-            aligns.append("c")
-        elif c.endswith(":"):
-            aligns.append("r")
-        elif c.startswith(":"):
-            aligns.append("l")
-        else:
-            aligns.append("")
-    return aligns
+    return alignment(lines[i], lines[i + 1])
 
 
 def _table_html(header: list[str], rows: list[list[str]],
                 aligns: list[str]) -> str:
-    width = len(header)
-    rows = [(r + [""] * width)[:max(width, len(r))] for r in rows]
-    ncols = max([width] + [len(r) for r in rows])
-    header = header + [""] * (ncols - width)
-    aligns = aligns + [""] * (ncols - len(aligns))
-
-    def numeric(cell: str) -> bool:
-        return bool(_NUMERIC.match(cell.replace("`", "")))
-
-    # A column the model did not align but that holds only numbers reads
-    # right-aligned, so the decimal places line up under each other.
-    for c in range(ncols):
-        if not aligns[c]:
-            body = [r[c] for r in rows if c < len(r) and r[c]]
-            if body and all(numeric(v) for v in body):
-                aligns[c] = "r"
+    header, rows, aligns = normalise(header, rows, aligns)
 
     def cell(tag: str, text: str, col: int) -> str:
         classes = []
         if aligns[col] in ("c", "r"):
             classes.append("al-" + aligns[col])
-        if tag == "td" and text and numeric(text):
+        if tag == "td" and text and is_numeric(text):
             classes.append("num")
         attr = f' class="{" ".join(classes)}"' if classes else ""
         return f"<{tag}{attr}>{inline(text)}</{tag}>"
@@ -437,7 +355,7 @@ def _blocks(lines: list[str], cb: CodeBlockFn) -> str:
             header = split_row(lines[i])
             rows = []
             i += 2
-            while (i < n and lines[i].strip() and _has_pipe(lines[i])
+            while (i < n and lines[i].strip() and has_pipe(lines[i])
                    and not _FENCE_OPEN.match(lines[i])):
                 rows.append(split_row(lines[i]))
                 i += 1
