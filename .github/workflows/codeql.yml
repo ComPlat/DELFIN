@@ -16,6 +16,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # analyze (python) and analyze (actions) are required checks; a merge
+  # queue waits for them on its gh-readonly-queue/main/* ref, and the
+  # CodeQL action analyses and uploads for that ref like for a push.
+  merge_group:
   schedule:
     # Weekly, so a query added upstream reaches this code without waiting for
     # somebody to push.

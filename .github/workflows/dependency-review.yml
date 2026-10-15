@@ -11,8 +11,16 @@ name: Dependency review
 # It fails the pull request on a high-severity advisory. That is a narrower
 # gate than it sounds: a moderate finding is reported and merges anyway, so the
 # check only stands in the way of knowingly adding something seriously broken.
+#
+# `dependency review` is a required check, so it also runs for a merge-queue
+# group. There the action takes the group's base_sha and head_sha from the
+# merge_group event (src/git-refs.ts in actions/dependency-review-action):
+# it reviews what the group adds to main, this entry's change together with
+# the entries ahead of it. comment-summary-in-pr has no pull request to
+# comment on there and is skipped with a warning (src/comment-pr.ts).
 on:
   pull_request:
+  merge_group:
 
 permissions:
   contents: read

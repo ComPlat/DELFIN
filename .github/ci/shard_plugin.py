@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
-"""pytest for one shard of the fast suite: ``python .github/ci/run_shard.py
---shard K/N --shard-report DIR [pytest args]``.
+"""pytest plugin: run one shard of the fast suite and report what ran.
 
 Input
-    The usual pytest arguments, plus --shard K/N, --shard-report DIR and
-    optionally --shard-durations PATH (default: test-durations.json next to
-    this file).
+    Loaded with ``-p shard_plugin`` (this directory on PYTHONPATH) and the
+    options --shard K/N, --shard-report DIR and optionally
+    --shard-durations PATH (default: test-durations.json next to this
+    file). CI passes all of it through PYTEST_ADDOPTS, so the workflow's
+    command stays ``pytest -q -m "not slow" ...``.
 
 Output
     The pytest run over the files ci_shards.plan() assigns to shard K, and
@@ -19,18 +19,24 @@ Semantics
     The selection runs in a wrapper around pytest_collection_modifyitems,
     after every other implementation -- the conftest's slow marking and
     pytest's own ``-m`` deselection included -- so the universe is exactly
-    the set an unsharded ``pytest -m "not slow"`` would run. Files outside
-    the shard are reported through pytest_deselected, as ``-m`` does.
+    the set an unsharded ``pytest -m "not slow"`` runs. Files outside the
+    shard are reported through pytest_deselected, as ``-m`` does.
     universe.txt and selected.txt are written right after collection;
     ran.txt and meta.json only at session end, so a run that dies leaves
     no meta.json and the aggregator fails.
 
-    Without --shard the plugin does nothing.
+    At configure time, before the first test, the plugin removes
+    PYTEST_ADDOPTS and its own directory from PYTHONPATH in os.environ: a
+    test that starts pytest or python in a subprocess sees the environment
+    an unsharded run gives it. Without --shard the plugin does nothing.
 
-Rejected alternative
-    ``-p`` with PYTHONPATH pointing at this directory: every subprocess a
-    test starts would inherit the variable. Running pytest.main() from this
-    script puts the directory on this process's sys.path only.
+Rejected alternatives
+    A wrapper script (``python .github/ci/run_shard.py ...``) as the run
+    line: delfin.agent.verify_recipe reads the CI run lines as this
+    project's test command, and the first one would no longer be the
+    ``pytest -m "not slow"`` command an agent may run on changed files.
+    Shard options on the run line: the same command, copied for a local
+    run, would fail without the plugin on the path.
 """
 
 from __future__ import annotations
@@ -42,7 +48,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 import ci_shards  # noqa: E402
 
 
@@ -54,6 +62,16 @@ def pytest_addoption(parser):
                 help="where the shard writes its report")
     g.addoption("--shard-durations", default=str(ci_shards.DURATIONS),
                 metavar="PATH", help="seconds per test file")
+
+
+def _scrub_environment() -> None:
+    os.environ.pop("PYTEST_ADDOPTS", None)
+    parts = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+             if p and Path(p).resolve() != HERE]
+    if parts:
+        os.environ["PYTHONPATH"] = os.pathsep.join(parts)
+    else:
+        os.environ.pop("PYTHONPATH", None)
 
 
 class _Shard:
@@ -124,11 +142,8 @@ def pytest_configure(config):
     report = config.getoption("--shard-report")
     if not report:
         raise pytest.UsageError("--shard needs --shard-report DIR")
+    _scrub_environment()
     config.pluginmanager.register(
         _Shard(k, n, Path(report).resolve(),
                Path(config.getoption("--shard-durations"))),
         "ci-shard")
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main(sys.argv[1:], plugins=[sys.modules[__name__]]))
