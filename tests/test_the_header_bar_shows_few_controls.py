@@ -405,3 +405,19 @@ def test_a_preview_closed_elsewhere_leaves_the_bar_without_a_reload(repo):
     BP._record_path("feat").unlink()               # closed from its own tab
     assert panel.poll_previews() is True
     assert panel.chip_widgets("feat") is None
+
+
+def test_the_text_fields_send_every_keystroke_so_enter_sees_the_text(repo):
+    """Measured in the browser: with continuous_update=False, Enter arrived
+    before the typed text and picked the first row instead of the match."""
+    panel, *_ = _panel(repo)
+    for w in (panel.search, panel.new_text, panel.cleanup_search):
+        assert w.continuous_update is True
+
+
+def test_messages_sit_bottom_right_and_never_cover_the_bar():
+    import re
+    css = HU.HEADER_CSS
+    block = re.search(r"\.delfin-toasts \{([^}]*)\}", css).group(1)
+    assert "bottom:" in block and "top:" not in block
+    assert "pointer-events: none" in block

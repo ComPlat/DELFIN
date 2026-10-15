@@ -7,7 +7,7 @@ Output of :func:`branch_list.all_rows`: one row per branch that exists
 (local, and ``origin/<x>`` when no local ``x`` exists), with its last commit
 date, author, whether ``origin/main`` contains it, and whether it is pinned,
 hidden or in the default view. :func:`branch_list.view_rows` selects one
-view and narrows it by a case-insensitive substring of the name or author.
+view and narrows it by a case-insensitive substring of the name.
 :func:`branch_list.lookup_row` turns a typed tag, commit or unknown branch
 name into a candidate row. Nothing here changes git.
 """
@@ -99,10 +99,12 @@ def test_each_view_selects_its_rows(repo):
     assert _refs(BL.view_rows(rows, "remote")) == ["origin/remote/only"]
 
 
-def test_search_narrows_by_name_or_author_case_insensitive(repo):
+def test_search_narrows_by_name_case_insensitive_not_by_author(repo):
+    """Name only, as branch switchers do: in the walkthrough, typing "max"
+    listed every branch because every commit in main is by Max."""
     rows = BL.all_rows(repo, gh=None)
     assert _refs(BL.view_rows(rows, "all", "REMOTE")) == ["origin/remote/only"]
-    assert _refs(BL.view_rows(rows, "all", "lena")) == ["feat"]
+    assert _refs(BL.view_rows(rows, "all", "lena")) == []
     # main stays reachable in the default view whatever is typed
     assert _refs(BL.view_rows(rows, "mine", "zzz")) == ["main"]
     assert _refs(BL.view_rows(rows, "all", "zzz")) == []

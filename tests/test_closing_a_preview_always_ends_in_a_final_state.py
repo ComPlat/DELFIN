@@ -139,3 +139,33 @@ def test_stop_keeps_its_tuple_and_never_raises(rec, monkeypatch):
     ok, msg, ask = BP.stop(p.slug)
     assert isinstance(ok, bool) and isinstance(msg, str) and ask is False
     assert "git status timed out" in msg
+
+
+def test_a_worktree_still_in_use_right_after_the_stop_is_waited_for(rec, monkeypatch):
+    """The server's kernels end a moment after the server (field: a close
+    from the preview's own tab left the folder behind, and nobody was told)."""
+    co, p = rec
+    from delfin.dashboard import worktree_use
+    calls = []
+
+    def busy_twice(paths, **_k):
+        calls.append(1)
+        return {list(paths)[0]: "a kernel"} if len(calls) <= 2 else {}
+    monkeypatch.setattr(worktree_use, "in_use", busy_twice)
+    monkeypatch.setattr(BP, "_alive", lambda _p: True)
+    monkeypatch.setattr(BP, "_kill_group", lambda *_a, **_k: None)
+    monkeypatch.setattr(BP, "_group_alive", lambda _pid: False)
+    r = BP.close(p.slug, settle_s=5)
+    assert r.state == "closed", r
+    assert len(calls) == 3
+    assert not Path(p.worktree).exists()
+
+
+def test_a_worktree_that_stays_in_use_is_left_as_a_question(rec, monkeypatch):
+    co, p = rec
+    from delfin.dashboard import worktree_use
+    monkeypatch.setattr(worktree_use, "in_use",
+                        lambda paths, **_k: {list(paths)[0]: "a kernel"})
+    r = BP.close(p.slug, settle_s=1)
+    assert r.state == "kept" and Path(p.worktree).exists()
+    assert [x.slug for x in BP.pending_closes(co)] == [p.slug]
