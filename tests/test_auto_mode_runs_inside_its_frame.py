@@ -623,3 +623,17 @@ def test_the_harness_never_runs_a_publishing_check(repo):
     code, out = ctl._check(Engine(), "git push origin HEAD")
     assert code != 0 and "not run" in out
     assert checks.calls == []
+
+
+def test_a_claim_the_check_contradicts_is_queued_for_review(repo):
+    clock = Clock()
+    ctl = _ctl(repo, clock, Checks((1, "missing=3"), (1, "missing=2")))
+    eng = Engine()
+    ctl.start_loop(_loop(repo), eng)
+    # The metric improved (kept), but the answer claims more than the
+    # failing check shows.
+    _iterate(ctl, eng, clock, write={"results/table.csv": "a\n"},
+             answer="All tests pass now.\nLOOP: progress")
+    rows = [json.loads(l) for l in ctl.log_path.read_text().splitlines()]
+    assert rows[-1]["claims"] and rows[-1]["kept"] is True
+    assert any("claims" in n["text"] for n in ctl.needs_you)
