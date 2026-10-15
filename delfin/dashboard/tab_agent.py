@@ -8354,9 +8354,18 @@ def create_tab(ctx):
         return True
 
     # -- auto mode (delfin.agent.auto_mode) ------------------------------
+    # One controller per tab, made under this lock: the tick, the turn's
+    # worker and the UI thread may all ask first. The controller itself
+    # serialises its state (auto_mode.AutoController._lock).
+    _auto_make_lock = threading.Lock()
+
     def _auto_ctl(create: bool = True):
         """This tab's AutoController, made on first use for the engine's
         workspace; remade while off when the workspace changed."""
+        with _auto_make_lock:
+            return _auto_ctl_locked(create)
+
+    def _auto_ctl_locked(create: bool):
         eng = state.get("engine")
         ws = (getattr(getattr(eng, "kit_permissions", None), "workspace", None)
               or _agent_workspace_path())
@@ -22886,6 +22895,7 @@ def create_tab(ctx):
         "refresh_next_steps": _refresh_next_steps,
         "deliver_messages": _deliver_session_messages,
         "auto": lambda: state.get("_auto"),
+        "auto_ctl": _auto_ctl,
         "refresh_loop": _refresh_loop_panel,
         "auto_tick": _auto_tick,
         "auto_after_turn": _auto_after_turn,

@@ -67,6 +67,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -353,6 +354,16 @@ class AutoController:
         self._resume_after_user = False
         self._user_turn = False
         self.user_waiting: Callable[[], bool] = lambda: False
+        # One thread at a time changes the state (the dashboard runs a tick,
+        # the turn's worker and the UI); the needs-you list and the notices
+        # have their own small lock because the veto adds to them from the
+        # tool loop while nothing else is held. The loop's check runs with
+        # the state lock released (_check_unlocked), so a UI call never
+        # waits for it; _judging keeps the tick from starting another
+        # iteration meanwhile.
+        self._lock = threading.RLock()
+        self._qlock = threading.Lock()
+        self._judging = False
         self._defaults: list[str] = ["main", "master"]
         self._ssh_hosts: list[str] = []
         self.log_path = self._log_path("auto")
@@ -384,21 +395,25 @@ class AutoController:
             pass
 
     def _say(self, text: str) -> None:
-        self._notices.append(text)
+        with self._qlock:
+            self._notices.append(text)
 
     def pop_notices(self) -> list[str]:
-        out, self._notices = self._notices, []
+        with self._qlock:
+            out, self._notices = self._notices, []
         return out
 
     def _queue(self, kind: str, text: str, why: str = "") -> dict:
-        for item in self.needs_you:
-            if item["text"] == text and item["kind"] == kind:
-                return item
-        item = {"id": len(self.needs_you) + 1, "kind": kind, "text": text,
-                "why": why, "at": self.clock(),
-                "loop": self._run.spec.name if self._run else "",
-                "iteration": self.iteration.n if self.iteration else 0}
-        self.needs_you.append(item)
+        run, it = self._run, self.iteration
+        with self._qlock:
+            for item in self.needs_you:
+                if item["text"] == text and item["kind"] == kind:
+                    return item
+            item = {"id": max((n["id"] for n in self.needs_you), default=0) + 1,
+                    "kind": kind, "text": text, "why": why, "at": self.clock(),
+                    "loop": run.spec.name if run else "",
+                    "iteration": it.n if it else 0}
+            self.needs_you.append(item)
         self._tell(f"needs you (#{item['id']}): {text}"
                    + (f" — {why}" if why else ""))
         return item
@@ -472,6 +487,10 @@ class AutoController:
 
     def enable(self, engine) -> str:
         """``/auto on``. Returns the line to show."""
+        with self._lock:
+            return self._enable(engine)
+
+    def _enable(self, engine) -> str:
         if self.enabled and self.paused:
             return self.resume()
         if self.enabled:
@@ -499,6 +518,10 @@ class AutoController:
 
     def start_loop(self, spec: Optional[loops.LoopSpec], engine) -> str:
         """``/loop run <name>``. Returns the line to show."""
+        with self._lock:
+            return self._start_loop(spec, engine)
+
+    def _start_loop(self, spec: Optional[loops.LoopSpec], engine) -> str:
         if spec is None:
             return "no such loop."
         if spec.errors:
@@ -542,6 +565,10 @@ class AutoController:
         return self.stop(reason)
 
     def resume(self) -> str:
+        with self._lock:
+            return self._resume()
+
+    def _resume(self) -> str:
         if not self.enabled:
             return "auto mode is off; /auto on or /loop run <name> starts it."
         self.paused = ""
@@ -550,6 +577,10 @@ class AutoController:
         return "auto mode resumed. " + self.status_line()
 
     def stop(self, reason: str) -> str:
+        with self._lock:
+            return self._stop(reason)
+
+    def _stop(self, reason: str) -> str:
         run = self._run
         name = run.spec.name if run else "auto"
         lines = [f"auto stopped — {name}: {reason}."]
@@ -763,12 +794,28 @@ class AutoController:
                     work: Optional[list[WorkItem]] = None,
                     pause_key: str = "") -> str:
         """The prompt of the next iteration, or "" (see the module docstring).
-        Never raises."""
+        Never raises. Does not wait: while another thread holds the state
+        (an iteration being judged, a command) it returns "" and the next
+        poll asks again."""
+        if (work is None and self.enabled and self._run is not None
+                and not self._run.is_loop and not self.paused
+                and not self._judging and self.iteration is None):
+            # Outside the lock: a cold red-CI look can take seconds.
+            try:
+                work = self.find_work(engine)
+            except Exception:
+                work = []
+        if not self._lock.acquire(blocking=False):
+            return ""
         try:
+            if self._judging:
+                return ""
             return self._next(engine, typed, wake, work, pause_key)
         except Exception as exc:
             self._say(f"auto: the next iteration could not be prepared ({exc})")
             return ""
+        finally:
+            self._lock.release()
 
     def _next(self, engine, typed, wake, work, pause_key) -> str:
         if not self.enabled or self._run is None or self.iteration is not None:
@@ -919,6 +966,17 @@ class AutoController:
         except Exception as exc:
             return 125, f"the check could not run: {exc}"
 
+    def _stopped_while_judged(self, it, spec, sha: str, changed: list) -> str:
+        """Auto mode was stopped while this iteration's check ran: its
+        commit stays, it is logged, nothing more is decided."""
+        why = "stopped while the check ran; the iteration was not judged"
+        self._log({"at": round(self.clock(), 3), "loop": spec.name,
+                   "iteration": it.n, "item": it.item, "changed": changed,
+                   "commit": sha, "kept": True, "why": why,
+                   "preempted": it.preempted})
+        return (f"auto · {spec.name} · iteration {it.n}: {why}"
+                + (f" (commit {sha[:10]} kept)" if sha else ""))
+
     def _take_request_lines(self, answer: str) -> None:
         """'REQUEST <id> why-safe: ...' / 'worst-case: ...' lines of the
         answer, onto requests this session filed that are still open. Text,
@@ -944,6 +1002,10 @@ class AutoController:
     def cancel_iteration(self, why: str = "") -> None:
         """The surface could not start the turn the last prompt was for:
         take the iteration back (veto off, not counted). Never raises."""
+        with self._lock:
+            self._cancel_iteration(why)
+
+    def _cancel_iteration(self, why: str = "") -> None:
         if self.iteration is None:
             return
         try:
@@ -959,17 +1021,32 @@ class AutoController:
     def finish_iteration(self, engine, answer: str = "", error: str = "") -> str:
         """Judge, commit or revert, log; returns the digest ("" when no
         iteration was running). Never raises."""
-        it = self.iteration
-        if it is None:
-            self.note_turn_end()
-            return ""
+        with self._lock:
+            it = self.iteration
+            if it is None:
+                self.note_turn_end()
+                return ""
+            try:
+                return self._finish(engine, it, str(answer or ""),
+                                    str(error or ""))
+            except Exception as exc:
+                self._disarm()
+                self.iteration = None
+                self.note_turn_end(auto_turn=True)
+                return self._stop(f"the iteration could not be judged ({exc})")
+            finally:
+                self._judging = False
+
+    def _check_unlocked(self, engine, command: str) -> tuple[int, str]:
+        """The check with the state lock released (held once, by
+        finish_iteration): a UI call does not wait for a long check, and the
+        tick sees _judging and starts nothing."""
+        self._judging = True
+        self._lock.release()
         try:
-            return self._finish(engine, it, str(answer or ""), str(error or ""))
-        except Exception as exc:
-            self._disarm()
-            self.iteration = None
-            self.note_turn_end(auto_turn=True)
-            return self.stop(f"the iteration could not be judged ({exc})")
+            return self._check(engine, command)
+        finally:
+            self._lock.acquire()
 
     def _changes(self, it: _Iteration) -> dict[str, tuple[str, str]]:
         after = self.git.dirty()
@@ -1036,7 +1113,9 @@ class AutoController:
                 finally:
                     self.iteration = None
         elif spec.check:
-            code, out = self._check(engine, spec.check)
+            code, out = self._check_unlocked(engine, spec.check)
+            if self._run is not run:
+                return self._stopped_while_judged(it, spec, sha, changed)
             metric = spec.metric_value(out)
             prev_m, prev_c = run.last_metric, run.last_exit
             worse = False
@@ -1114,7 +1193,9 @@ class AutoController:
             st = spec.steps[min(run.step_index, len(spec.steps) - 1)]
             ok = True
             if st.check:
-                ok = self._check(engine, st.check)[0] == 0
+                ok = self._check_unlocked(engine, st.check)[0] == 0
+                if self._run is not run:
+                    return self._stopped_while_judged(it, spec, sha, changed)
             if ok:
                 run.step_index += 1
         result = ("kept" if kept else "reverted") + (
