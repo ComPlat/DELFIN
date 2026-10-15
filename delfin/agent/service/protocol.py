@@ -125,9 +125,13 @@ EVENTS: dict[str, dict[str, str]] = {
                      "provider": "string", "model": "string",
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
-                     "notices": "[string]"},
+                     "notices": "[string]", "tasks": "[object]?"},
+    # tasks: the session's task list (task_ticker.rows) as it is now, in
+    # display order (in progress, blocked, pending, completed), each row
+    # num, status, label -- sent whole whenever any of it changed.
     "session.updated": {"approval": "string?", "model": "string?",
-                        "effort": "string?", "title": "string?"},
+                        "effort": "string?", "title": "string?",
+                        "tasks": "[object]?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},
@@ -332,11 +336,21 @@ DURABLE_EVENTS = frozenset({
 #: The longest session title: what the session store keeps of one.
 TITLE_MAX = 80
 
+#: The longest task label a window is sent (a task row is one line).
+TASK_LABEL_MAX = 160
+
 
 def clean_title(text: Any) -> str:
     """A session title as it is kept: one line, control and invisible
     characters (escapes, zero-width marks) made spaces, single spaces, at
     most TITLE_MAX characters. "" when nothing printable is left."""
+    return clean_line(text, TITLE_MAX)
+
+
+def clean_line(text: Any, limit: int) -> str:
+    """``text`` as one plain line of at most ``limit`` characters: whole
+    escape sequences, then every control and invisible character, made
+    spaces; runs of spaces made one."""
     import re
     import unicodedata
 
@@ -344,7 +358,7 @@ def clean_title(text: Any) -> str:
     # any control character left.
     plain = re.sub(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.?)", " ", str(text or ""))
     chars = [" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in plain]
-    return " ".join("".join(chars).split())[:TITLE_MAX].rstrip()
+    return " ".join("".join(chars).split())[:limit].rstrip()
 
 
 def request(msg_id: int | str, method: str, params: dict | None = None) -> dict:

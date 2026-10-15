@@ -109,6 +109,8 @@ export function App(props: AppProps): JSX.Element {
     return id ? store.state.sessions[id] ?? null : null
   }
   const [message, setMessage] = createSignal("")
+  /** The task list folded to one line (ctrl+t), for every session in view. */
+  const [tasksFolded, setTasksFolded] = createSignal(false)
   let quitArmed = 0
 
   const say = (text: string) => {
@@ -570,7 +572,8 @@ export function App(props: AppProps): JSX.Element {
         detail: props.keymap.label("details"), value: "do:details" }]),
       { label: "expand the last result", detail: props.keymap.label("expand") || "the whole output, into the conversation",
         value: "do:expand" },
-      { label: "task list on/off", detail: props.keymap.label("tasks"), value: "do:tasks" },
+      { label: tasksFolded() ? "open the task list" : "fold the task list", detail: props.keymap.label("tasks"),
+        value: "do:tasks" },
       { label: "redraw", detail: props.keymap.label("redraw"), value: "do:redraw" },
       { label: "leave the window", detail: `${props.keymap.label("quit")} — the session keeps running`, value: "do:quit" },
     ]
@@ -591,7 +594,7 @@ export function App(props: AppProps): JSX.Element {
       else if (what === "thinking") props.onThinking?.(!props.thinking?.())
       else if (what === "expand") props.onExpand?.()
       else if (what === "details") props.onDetails?.()
-      else if (what === "tasks") void call("session.toggleTasks", { sessionId: sid() })
+      else if (what === "tasks") setTasksFolded(!tasksFolded())
       else if (what === "redraw") props.onRedraw()
       else if (what === "quit") props.onQuit()
     }, commands)
@@ -788,7 +791,7 @@ export function App(props: AppProps): JSX.Element {
     }
     if (km.matches("tasks", key)) {
       key.preventDefault()
-      if (s && s.state !== "ended") void call("session.toggleTasks", { sessionId: sid() })
+      setTasksFolded(!tasksFolded())
       return
     }
     if (km.matches("steer", key)) {
@@ -811,6 +814,7 @@ export function App(props: AppProps): JSX.Element {
       composer={composer}
       approval={approval}
       picker={picker}
+      tasksFolded={tasksFolded}
       agents={agents}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}

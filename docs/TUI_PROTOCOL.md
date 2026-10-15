@@ -171,8 +171,8 @@ carry their final values.
 | Event | Fields | Durable |
 |---|---|---|
 | `worker.ready` | `protocolVersion`, `pid` | |
-| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]` | ✓ |
-| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?` | ✓ |
+| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]`, `tasks[]?` | ✓ |
+| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?`, `tasks[]?` | ✓ |
 | `session.state` | `state`: `idle`, `running`, `needs_input` or `ended` | |
 | `session.ended` | `reason`, `exitCode` | ✓ |
 | `user.message` | `text`, `source`: `user`, `queued`, `steer` or `harness` | ✓ |
@@ -200,6 +200,16 @@ carry their final values.
 - `session.updated` follows every change of posture, model or effort,
   however it happened: a plan approval, "stop asking about writes",
   `/permissions` or `/model` sent as a prompt, `session.setMode`.
+- `tasks` is the session's task list as it is now, whole: the rows the
+  dashboard and the REPL draw (`task_ticker.rows`), in their order (in
+  progress, blocked, pending, completed), each `num` (the number the user
+  reads), `status` (`pending`, `in_progress`, `blocked`, `completed`) and
+  `label` (the active form while in progress, the reason appended while
+  blocked). A label is the model's text: it arrives as one plain line,
+  escapes and control characters made spaces, at most 160 characters. The
+  worker looks at the task store on every tick and sends a
+  `session.updated` with `tasks` when the rows changed; a replay's header
+  carries the current list.
 - `harness` marks something nobody typed: a finished background job, a
   message from another session, a continuation.
 - `turnId` is `t1`, `t2`, … per session; a resumed session numbers on.
