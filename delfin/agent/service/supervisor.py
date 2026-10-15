@@ -1126,12 +1126,20 @@ class Supervisor:
         return {"sent": True}
 
     async def _m_service_status(self, _client: Client, _params: dict) -> dict:
+        def windows(clients) -> int:
+            # TUI windows, not this request or other probes.
+            return sum(1 for c in clients if c.greeted and c.name == "delfin-tui")
+
         return {"pid": os.getpid(), "host": rundir.hostname(),
                 "startedAt": round(self.started_at, 3),
-                "sessions": [s.summary() for s in self.sessions.values()],
-                # TUI windows, not this request or other probes.
-                "windows": sum(1 for c in self.clients
-                               if c.greeted and c.name == "delfin-tui"),
+                # Each with the windows attached to it, and whether its
+                # worker saves it (`service status`, `service end`).
+                "sessions": [{**s.summary(), "windows": windows(s.subscribers),
+                              "saves": _saves(s.settings)}
+                             for s in self.sessions.values()],
+                "dormant": [{**r["summary"], "windows": 0, "saves": _saves(r.get("settings") or {})}
+                            for sid, r in self.dormant.items() if sid not in self.sessions],
+                "windows": windows(self.clients),
                 "socket": str(rundir.socket_path())}
 
     async def _m_service_shutdown(self, _client: Client, params: dict) -> dict:
@@ -1558,6 +1566,12 @@ class Supervisor:
         self.closing = True
         if self.stopping is not None:
             self.stopping.set()
+
+
+def _saves(settings: dict) -> bool:
+    """Whether a session's worker saves it when it ends: every one but a
+    scripted (fake) session started without fakeSave."""
+    return not (settings.get("fake") and not settings.get("fakeSave"))
 
 
 def _release() -> str:

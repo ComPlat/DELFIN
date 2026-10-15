@@ -1645,7 +1645,10 @@ delfin-agent tui                       # a new session in the current folder
 delfin-agent tui --resume <id>         # a saved session (or one that runs)
 delfin-agent tui --model kit.deepseek-v4-flash --permission-mode acceptEdits
 delfin-agent tui --inline              # in the terminal's own scrollback
-delfin-agent service status            # the service, its sessions, its windows
+delfin-agent service status            # the service, its sessions, its windows (--json)
+delfin-agent service end <id>          # end one session, as ctrl+x twice (a running turn is stopped; saved; a unique id prefix will do)
+delfin-agent service end --all-idle    # end every idle one
+delfin-agent service end <id> --after-turn  # let a running turn finish first
 delfin-agent service stop              # end it; sessions are saved
 delfin-agent service restart           # e.g. after an update
 delfin-agent service logs
@@ -1767,10 +1770,16 @@ box ("Job 4711 failed with OUT_OF_MEMORY. What went wrong, and what should
 we change?"). Nothing is sent until you press enter. A prepared job fix is
 applied in the dashboard (`/fix`).
 
-From anywhere in the window, the hints line ends with a quiet count of
-what waits for you and what failed (`◉ 3 · ✗ 1`, notices not counted); a
-new one names itself there for a few seconds (`◉ relax Fe complex asks`),
-and the terminal's title carries the count: `(4) DELFIN · name`.
+From anywhere in the window, the hints line says how many other sessions
+the agent service runs and how many of them wait for you (`2 more sessions
+(1 waits for you) ← agents`; shorter on a narrow terminal, nothing when
+there are none; full screen, a click on it opens the agent view). It ends
+with a quiet count of what waits for you and what failed (`◉ 3 · ✗ 1`,
+notices not counted); a new item names itself there for a few seconds,
+another session that starts to wait says so once above the prompt
+(`◉ session 'relax Fe complex' waits for you — ← to open`), and the
+terminal's title carries the count: `(4) DELFIN · name`. The agent view's
+head names its keys (`→/enter open · ctrl+x ×2 stop · esc back`).
 
 Full screen, the view takes the window's screen and esc gives the
 conversation back. Inline, it uses the terminal's alternate screen, so esc

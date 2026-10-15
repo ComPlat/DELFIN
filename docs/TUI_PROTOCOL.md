@@ -364,7 +364,7 @@ closes; the next window attaches to them again.
 | `session.detach` | `sessionId` | `detached` |
 | `session.message` | `key`, `text` | `sent`: the text goes into that session's inbox, as a message from another session (`session_messages`) |
 | `sessions.past` | `workspace?`, `query?`, `limit?` | `sessions[]`: saved sessions, newest first, with `sessionId`, `title`, `workspace`, `model`, `provider`, `updatedAt`, `messages`, `costUsd` and `running` (whether it runs in this service). `workspace` scopes the list, `query` searches titles and first messages (the session store's own listing and search). |
-| `service.status` | | `pid`, `host`, `startedAt`, `sessions[]`, `windows`, `socket` |
+| `service.status` | | `pid`, `host`, `startedAt`, `sessions[]` (each with the `windows` attached to it), `windows`, `socket` |
 | `service.shutdown` | | `stopping`, `sessions` |
 | `attention.list` | | `items[]`: what needs the user, from every DELFIN process (below); `version`: grows with every change, from the service's start on (seconds × 10⁶): a window keeps the newest list or event |
 | `attention.answer` | `id`, `text` | `ok`, `error?`: a parked question's answer, written into the attention inbox; the next session that starts a turn in its workspace gets it, once (`attention.drain_resolved`, scoped by the engine to its own workspace; an item with no workspace goes to the next session anywhere). Not for a watch-only connection |
