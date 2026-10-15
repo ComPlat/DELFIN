@@ -2258,6 +2258,31 @@ class AgentEngine:
         """This turn's pointer to the git-errors skill (may be empty)."""
         return str(getattr(self, "_repo_errors_hint", "") or "")
 
+    def _note_experiment_task(self, user_message: str) -> None:
+        """Set this turn's pointer to the experiment-discipline skill, or
+        clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_experiment_block`` returns for this turn. Empty unless the
+        message asks for, or acts on, a measured comparison
+        (``experiment_hints.user_hint``), and empty in a session that
+        reads no skills. Cost: 71 tokens in the turn's tail, only in a
+        turn that matched.
+        """
+        self._experiment_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .experiment_hints import user_hint
+            self._experiment_hint = user_hint(user_message or "")
+        except Exception:
+            self._experiment_hint = ""
+
+    def _build_experiment_block(self) -> str:
+        """This turn's pointer to the experiment-discipline skill."""
+        return str(getattr(self, "_experiment_hint", "") or "")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2414,6 +2439,7 @@ class AgentEngine:
         pairs.append(("skill_correction",
                       self._build_skill_correction_block()))
         pairs.append(("repo_errors", self._build_repo_errors_block()))
+        pairs.append(("experiment", self._build_experiment_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2999,6 +3025,9 @@ class AgentEngine:
             # Per turn: does the message name a repository error or ask
             # about DELFIN's checkouts? Then the turn points at git-errors.
             self._note_repo_errors(user_message or "")
+            # Per turn: does the message measure, compare or land a
+            # change? Then the turn points at experiment-discipline.
+            self._note_experiment_task(user_message or "")
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
