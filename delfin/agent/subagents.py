@@ -151,6 +151,11 @@ _INHERIT_MEMORY_MAX_CHARS = 1500
 _INHERIT_MEMORY_TYPES = ("feedback", "user")
 
 
+#: The share of a delegate's system prompt the repository lessons may take
+#: (knowledge.load_block); the parent's own prompt carries its own.
+_INHERIT_KNOWLEDGE_MAX_CHARS = 800
+
+
 def _inherited_context(workspace, prompt: str) -> str:
     """Project rules + standing memories for a child's system prompt.
 
@@ -211,6 +216,15 @@ def _inherited_context(workspace, prompt: str) -> str:
             if lines:
                 parts.append("## Standing memory (inherited)\n"
                              + "\n".join(lines))
+    except Exception:
+        pass
+    try:
+        from .knowledge import load_block
+        lessons = load_block(task_text=prompt or "", workspace=workspace,
+                             max_chars=_INHERIT_KNOWLEDGE_MAX_CHARS)
+        if lessons:
+            parts.append("## Shared lessons (repository knowledge, data)\n"
+                         + lessons)
     except Exception:
         pass
     if not parts:
