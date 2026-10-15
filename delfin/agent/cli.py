@@ -2675,6 +2675,14 @@ def _print_behavior_rates(_bm, records) -> None:
             print(f"  {flag:<9} {r['rate']:>4.0%}  (n={r['n']})")
 
 
+def cmd_knowledge(args: argparse.Namespace) -> int:
+    """``delfin-agent knowledge ...``: the /knowledge command. A write is
+    confirmed with a code shown and read on /dev/tty, never on stdout."""
+    from .knowledge_commands import run_cli
+    words = list(getattr(args, "words", None) or ["list"])
+    return run_cli(words)
+
+
 def _cmd_bug_report(args: argparse.Namespace) -> int:
     """``bug report``: file a report for a session that already ended.
 
@@ -4823,6 +4831,20 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Which project's store (default: this "
                                "directory)")
     mem.set_defaults(func=cmd_memory, memory_action="tidy")
+
+    # knowledge -- the global knowledge folder: views for everyone,
+    # curation for the knowledge admin (code dialog on /dev/tty only)
+    kno = sub.add_parser(
+        "knowledge",
+        help="Global knowledge: lint, index, dupes, stats; admin curation "
+             "(merge, move, retire, rename, accept, reject) as local branches")
+    kno.add_argument("words", nargs=argparse.REMAINDER,
+                     help="lint | index | dupes | stats | list | search <w> | "
+                          "queue | accept <q> | reject <q> <reason> | merge "
+                          "<keep> <drop> | move <entry> <topic> | retire "
+                          "<entry> <reason> | rename <entry> <new> | topic "
+                          "add <slug> <text>")
+    kno.set_defaults(func=cmd_knowledge)
 
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
