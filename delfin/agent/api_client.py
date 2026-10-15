@@ -7,6 +7,7 @@ import contextvars as _contextvars
 import difflib
 import fnmatch
 import importlib
+import itertools
 import json
 import os
 import re
@@ -5157,6 +5158,15 @@ def _reviewed_source_named_like_a_secret(perms: Any, resolved: Path, rel: str) -
     (not .env, *.key, .ssh, ...); the file is Python source; git tracks it
     and it is unmodified (``_is_reviewed_project_file``, fails closed). Its
     contents are then in the repository history anyway.
+
+    Or, instead of unmodified: every change since HEAD is this session's
+    own (``_session_owned_source``). The session then wrote what differs
+    from the history, so reading, diffing, staging or restoring it shows
+    the model nothing it did not already hold. The exception used to end
+    the moment the agent edited the module it was working on: `git diff`,
+    `git checkout` and `git reset` of delfin/agent/credentials.py were
+    refused mid-edit (bug archive, 3 calls, then 4 more reworking around
+    it).
     """
     try:
         import fnmatch as _fn
@@ -5167,7 +5177,220 @@ def _reviewed_source_named_like_a_secret(perms: Any, resolved: Path, rel: str) -
                 for sp in spellings if _fn.fnmatchcase(sp.lower(), g.lower())}
         if not hits or not hits <= _NAME_ONLY_SECRET_GLOBS:
             return False
-        return bool(_DocToolExecutor._is_reviewed_project_file(Path(resolved)))
+        return bool(_DocToolExecutor._is_reviewed_project_file(Path(resolved))
+                    or _session_owned_source(perms, Path(resolved)))
+    except Exception:
+        return False
+
+
+def _session_journal_by_path(perms: Any) -> dict:
+    """{realpath: [records, oldest first]} of this session's change
+    journal. {} without a session id or on any error."""
+    try:
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        if not sid:
+            return {}
+        from . import change_journal as _cj
+        out: dict = {}
+        for rec in _cj.list_changes(sid) or []:
+            p = rec.get("path")
+            if p:
+                out.setdefault(os.path.realpath(str(p)), []).append(rec)
+        for recs in out.values():
+            recs.sort(key=lambda r: int(r.get("seq", 0) or 0))
+        return out
+    except Exception:
+        return {}
+
+
+#: The deny patterns that refuse a recursive forced delete (the first two
+#: of _DEFAULT_BASH_DENY_PATTERNS, flags together and apart).
+_RM_RF_PATTERNS = frozenset(_DEFAULT_BASH_DENY_PATTERNS[:2])
+
+#: Entries a scratch-ownership walk may visit before it answers "not own".
+_OWN_SCRATCH_WALK_BUDGET = 5000
+
+
+def _rm_rf_flags(words: list) -> tuple:
+    """(recursive, force, targets) of an ``rm`` word list."""
+    rec = force = False
+    targets: list = []
+    opts = True
+    for w in words[1:]:
+        if opts and w == "--":
+            opts = False
+            continue
+        if opts and w.startswith("--"):
+            rec = rec or w == "--recursive"
+            force = force or w == "--force"
+            continue
+        if opts and w.startswith("-") and len(w) > 1:
+            rec = rec or "r" in w or "R" in w
+            force = force or "f" in w
+            continue
+        targets.append(w)
+    return rec, force, targets
+
+
+def _own_scratch_target(perms: Any, target: str, cwd: Path, journal: dict,
+                        made_here: set) -> bool:
+    """Whether ``rm -rf target`` deletes only what this session made.
+
+    True for a path strictly inside the workspace, named literally (no
+    glob, variable, ~ or substitution), not a symlink anywhere on its way,
+    not tracked by git, and either (a) absent now but created by a
+    ``mkdir`` earlier in the same command (``made_here``), or (b) a file,
+    or a directory with at least one file, all of whose files the oldest
+    journal record of this session says the session created. An empty
+    directory proves no ownership and stays refused
+    (tests/test_permission_rules_hold_in_the_real_gate.py pins `rm -rf
+    build` of one). Fails closed."""
+    try:
+        if not target or any(c in target for c in "*?[]{}$~`\\"):
+            return False
+        ws = Path(perms.workspace).resolve()
+        raw = Path(target)
+        lexical = Path(os.path.normpath(str(raw if raw.is_absolute() else cwd / raw)))
+        if os.path.islink(str(lexical)) or target.endswith("/") and os.path.islink(
+                str(lexical).rstrip("/")):
+            return False
+        parent = Path(os.path.realpath(str(lexical.parent)))
+        full = parent / lexical.name
+        if full == ws or not full.is_relative_to(ws) or os.path.islink(str(full)):
+            return False
+        if not os.path.lexists(str(full)):
+            return str(full) in made_here
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        tracked = subprocess.run(
+            ["git", "-C", str(ws), "ls-files", "--", str(full)],
+            capture_output=True, text=True, timeout=5, env=env)
+        if tracked.returncode == 0 and tracked.stdout.strip():
+            return False
+
+        def _created(path: str) -> bool:
+            recs = journal.get(os.path.realpath(path))
+            return bool(recs) and bool(recs[0].get("created"))
+
+        if full.is_file():
+            return _created(str(full))
+        seen = own = 0
+        for root, dirs, files in os.walk(str(full), followlinks=False):
+            seen += len(dirs) + len(files)
+            if seen > _OWN_SCRATCH_WALK_BUDGET:
+                return False
+            for name in files:
+                p = os.path.join(root, name)
+                if os.path.islink(p):
+                    continue        # rm removes the link, not its target
+                if not _created(p):
+                    return False
+                own += 1
+        # A directory with no file of the session's proves nothing about
+        # who made it (an empty `build/` stays refused; rmdir removes it).
+        return own > 0
+    except Exception:
+        return False
+
+
+def _own_scratch_rm_rest(cmd: str, perms: Any, cwd) -> Optional[str]:
+    """The command with its ``rm -rf`` of the session's own scratch taken
+    out, or None when any recursive forced delete in it is not that.
+
+    Input: a shell command the rm deny pattern matched. Output: the rest
+    of the command (operators kept, redirections dropped, words
+    re-quoted), which the caller runs through the deny list again, so a
+    second destructive pattern in the same line still refuses it. None
+    as well when a ``cd`` precedes the delete (the target's directory is
+    then not known from the text) or when another part of the command
+    names the target outside an assignment (``mv data d/ && rm -rf d``
+    moves foreign files into it first).
+
+    Bug archive 2026-09-16..10-14: 11 rm-deny refusals in 7 sessions,
+    mostly scratch the session had just made (`mkdir -p .tmpdir && ...;
+    rm -rf .tmpdir`, `bench_trial/`)."""
+    try:
+        from . import long_runs as _lr
+        segs = _lr._segments(cmd)
+        base = Path(cwd).resolve()
+        journal = _session_journal_by_path(perms)
+        made_here: set = set()
+        kept: list = []
+        removed_targets: list = []
+        seen_cd = False
+        for seg in segs:
+            if len(seg) == 1 and seg[0] in _lr._OPERATORS:
+                kept.append(seg[0])
+                continue
+            words = _lr._strip_words(seg)
+            head = words[0] if words else ""
+            if head in ("cd", "pushd", "popd"):
+                seen_cd = True
+            if head == "mkdir":
+                for w in words[1:]:
+                    if not w.startswith("-"):
+                        made_here.add(os.path.normpath(str(base / w))
+                                      if not os.path.isabs(w) else os.path.normpath(w))
+            if head == "rm":
+                rec, force, targets = _rm_rf_flags(words)
+                if rec and force:
+                    if seen_cd or not targets:
+                        return None
+                    if not all(_own_scratch_target(perms, t, base, journal,
+                                                   made_here)
+                               for t in targets):
+                        return None
+                    removed_targets.extend(targets)
+                    continue
+            kept.append(shlex.join(seg))
+        if not removed_targets:
+            return None
+        # Nothing else may name the target, except a mkdir of it and a
+        # NAME=value assignment (TMPDIR=$PWD/.tmpdir): a mv or cp into it
+        # would make foreign files the session's to delete.
+        names = {Path(t.rstrip("/")).name for t in removed_targets}
+        for part in kept:
+            if part in _lr._OPERATORS:
+                continue
+            words = _lr._strip_words(shlex.split(part))
+            if words and words[0] == "mkdir":
+                continue
+            for tok in words:
+                if any(re.search(r"(?:^|/)" + re.escape(n) + r"(?:/|$)", tok)
+                       for n in names):
+                    return None
+        return " ".join(kept)
+    except Exception:
+        return None
+
+
+def _session_owned_source(perms: Any, resolved: Path) -> bool:
+    """True when a git-tracked file differs from HEAD only by this
+    session's own journalled writes.
+
+    Input: the session's permissions and a resolved path. Holds when the
+    session's change journal has records for the path, the oldest one's
+    pre-image hashes to the HEAD blob (the session started from the
+    committed text, not from someone's uncommitted edit), and the file's
+    current bytes hash to the newest record's post-image (nothing wrote
+    it since). Fails closed: no session, no journal, no git, any error."""
+    try:
+        recs = _session_journal_by_path(perms).get(os.path.realpath(str(resolved)))
+        if not recs:
+            return False
+        first, last = recs[0], recs[-1]
+        if first.get("created") or first.get("truncated"):
+            return False
+        from . import change_journal as _cj
+        if _cj.sha256_file_bytes(Path(resolved)) != last.get("post_hash"):
+            return False
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        blob = subprocess.run(
+            ["git", "-C", str(Path(resolved).parent), "show",
+             f"HEAD:./{Path(resolved).name}"],
+            capture_output=True, timeout=5, env=env)
+        if blob.returncode != 0:
+            return False
+        return _cj.sha256_bytes(blob.stdout) == first.get("pre_hash")
     except Exception:
         return False
 
@@ -5451,7 +5674,26 @@ def _github_push_plan(cmd: str, run_cwd) -> Optional[dict]:
         else:
             return None
     url = _git_out(run_cwd, "remote", "get-url", "--push", remote) or ""
-    if not _GITHUB_SSH_URL_RE.match(url):
+    via = ""
+    if _GITHUB_SSH_URL_RE.match(url):
+        transport = ["-c", "protocol.ssh.allow=always",
+                     "-c", f"core.sshCommand={_GITHUB_PUSH_SSH}"]
+    elif _GITHUB_HTTPS_URL_RE.match(url):
+        # HTTPS with the user's gh login (`gh auth login`). Inside the
+        # cage ~/.config/gh is masked, so the push failed there with a
+        # login the user had just made (field report 2026-10-14). Here
+        # the token goes from gh to this one git process and nowhere else.
+        gh = shutil.which("gh")
+        if not gh or _checkout_configures_transport(run_cwd):
+            return None
+        scheme = url.split("://", 1)[0].lower()
+        transport = ["-c", f"protocol.{scheme}.allow=always",
+                     "-c", "core.askPass=",
+                     "-c", "credential.helper=",
+                     "-c", f"credential.helper=!{shlex.quote(gh)} auth "
+                           "git-credential"]
+        via = "gh"
+    else:
         return None
     if _git_out(run_cwd, "config", "--get", f"remote.{remote}.vcs"):
         return None
@@ -5460,13 +5702,44 @@ def _github_push_plan(cmd: str, run_cwd) -> Optional[dict]:
             "-c", "core.fsmonitor=false",
             "-c", "push.recurseSubmodules=no",
             "-c", "protocol.allow=never",
-            "-c", "protocol.ssh.allow=always",
-            "-c", f"core.sshCommand={_GITHUB_PUSH_SSH}",
+            *transport,
             "push", *tokens]
-    return {"argv": argv, "remote": remote, "url": url,
+    return {"argv": argv, "remote": remote, "url": url, "via": via,
             "merge_stderr": bool(match.group(2)),
             "filter": match.group(3) or "",
             "lines": int(match.group(4) or 0)}
+
+
+#: An HTTPS push URL on github.com; the gh route of _github_push_plan.
+_GITHUB_HTTPS_URL_RE = re.compile(
+    r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?(?:\.git)?/?$")
+
+#: Checkout-scope configuration that would steer an HTTPS push or its
+#: credential: a proxy, TLS settings, extra headers, another helper, a
+#: URL rewrite. .git/config is writable by an agent's commands.
+_TRANSPORT_CONFIG_RE = r"^(http|https|credential|url)\.|^core\.askpass$"
+
+
+def _checkout_configures_transport(run_cwd) -> bool:
+    """True when the checkout's own (local or worktree) configuration has
+    any key matching _TRANSPORT_CONFIG_RE; also True when that cannot be
+    read. The user's global and system configuration are theirs and are
+    not looked at."""
+    for scope in ("--local", "--worktree"):
+        try:
+            r = subprocess.run(
+                ["git", "config", scope, "--name-only", "--get-regexp",
+                 _TRANSPORT_CONFIG_RE], cwd=str(run_cwd),
+                capture_output=True, text=True, timeout=15,
+                env={k: v for k, v in os.environ.items()
+                     if not k.startswith("GIT_")})
+        except Exception:
+            return True
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+        if r.returncode not in (0, 1) and scope == "--local":
+            return True
+    return False
 
 
 def _run_github_push(plan: dict, run_cwd, env: dict,
@@ -5475,6 +5748,7 @@ def _run_github_push(plan: dict, run_cwd, env: dict,
     way the shell command it came from would have."""
     push_env = {k: v for k, v in env.items()
                 if not k.startswith("GIT_") and k not in ("SSH_ASKPASS",)}
+    push_env["GIT_TERMINAL_PROMPT"] = "0"
     proc = subprocess.run(plan["argv"], cwd=str(run_cwd), env=push_env,
                           capture_output=True, text=True, timeout=timeout,
                           stdin=subprocess.DEVNULL, start_new_session=True,
@@ -7842,6 +8116,162 @@ def repin_permission_mode(mode: str) -> None:
         pin[0] = str(mode or "")
 
 
+_TURN_TOKENS = itertools.count(1)
+
+
+def _next_turn_token() -> int:
+    """A process-unique id for the turn that starts now (KitToolPermissions.
+    turn_token). A counter rather than the engine's turn serial: a
+    sub-agent's turns are counted by another engine, and both write into
+    permissions that share their per-turn ledgers."""
+    return next(_TURN_TOKENS)
+
+
+#: Seconds a foreground command or test run has to have lasted before a
+#: waiting user message ends it. Below it the run finishes and the message
+#: is read at the next round anyway; above it the message waited longer
+#: than a reply takes. The 2026-09-30 case: three messages over 30 min.
+USER_INTERRUPT_AFTER_S = 30.0
+
+#: Seconds a git push may take in the foreground before it is ended as
+#: waiting for a credential. Field pushes that went through took 2-5 s
+#: (bug archive, 28 of 63); the 9 that hung ran to 120-600 s.
+PUSH_TIMEOUT_S = 60
+
+_USER_INTERRUPT_NOTE = (
+    "ended after {secs:.0f}s because the user sent a message while it ran; "
+    "the message follows this result. Read it before anything else. "
+    "Nothing about the run's outcome follows from this, and it is not run "
+    "again unless the message asks for it.")
+
+
+def _long_run_probe(perms):
+    """(should_stop, state) for a foreground command or test run.
+
+    Input: the session's permissions. Output: a probe for contained_run
+    that is True on Stop, or once the run has lasted
+    ``USER_INTERRUPT_AFTER_S`` while ``perms.user_message_waiting()`` is
+    True; ``state["by_user"]`` records that the second ended it. Without
+    a ``user_message_waiting`` probe the plain should_stop is returned
+    unchanged (and so is a should_stop that is not callable, which
+    contained_run reports itself)."""
+    stop = getattr(perms, "should_stop", None)
+    waiting = getattr(perms, "user_message_waiting", None)
+    state = {"by_user": False}
+    if not callable(waiting) or (stop is not None and not callable(stop)):
+        return stop, state
+    t0 = time.monotonic()
+
+    def _probe() -> bool:
+        if stop is not None and stop():
+            return True
+        if time.monotonic() - t0 < USER_INTERRUPT_AFTER_S:
+            return False
+        try:
+            hit = bool(waiting())
+        except Exception:
+            hit = False
+        if hit:
+            state["by_user"] = True
+        return hit
+
+    return _probe, state
+
+
+#: Set by _ask_confirm when it answered "not now" without a dialog; read
+#: by _confirm_timed_out on the same thread right after.
+_APPROVAL_LATCHED = threading.local()
+
+_READ_TOOL_KIND = frozenset({"read_file", "grep_file", "list_files",
+                             "glob_files", "notebook_read"})
+
+
+def _approval_kind(name: str) -> str:
+    """The kind an approval is latched under: "write", "bash", "read" or
+    the tool's own (bare) name."""
+    base = _bare_tool_name(name)
+    if base in _WRITE_TOOL_NAMES or base in ("multi_edit", "write_file"):
+        return "write"
+    if base in ("bash", "bash_background"):
+        return "bash"
+    if base in _READ_TOOL_KIND:
+        return "read"
+    return base
+
+
+def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
+    """Ask the user through ``perms.confirm_callback``, unless a dialog of
+    the same kind already expired unanswered in this turn.
+
+    Input: the call to approve. Output: the answer. Semantics: a latched
+    kind is answered False at once, and ``_confirm_timed_out`` then says
+    "absence", so the caller words it as the user being away and records
+    no denial. An expiry latches the kind for ``perms.turn_token``; the
+    next turn, or a message the user types into this one
+    (OpenAIClient.push_steer), opens it again. Without a turn token (no
+    client turn) nothing is latched.
+
+    Measured: 3 of 17 full 300 s waits in the bug archive followed an
+    expiry of the same kind in the same turn. Rejected: a time window
+    (KitConfirmBroker's own latch re-opens after 300 s mid-turn, and the
+    other brokers have none)."""
+    _APPROVAL_LATCHED.value = False
+    kind = _approval_kind(name)
+    away = getattr(perms, "approval_away", None)
+    token = getattr(perms, "turn_token", 0)
+    if isinstance(away, dict) and token and away.get(kind) == token:
+        _APPROVAL_LATCHED.value = True
+        try:
+            _record_security_event(
+                "approval_not_now", _bare_tool_name(name),
+                f"a {kind} approval already went unanswered this turn",
+                blocked=True)
+        except Exception:
+            pass
+        return False
+    ok = bool(perms.confirm_callback(name, args, preview))
+    if (not ok and isinstance(away, dict) and token
+            and _DocToolExecutor._confirm_timed_out(perms)):
+        away[kind] = token
+    return ok
+
+
+def _not_asked_again_note() -> str:
+    """The sentence a "not now" without a dialog adds, or ""."""
+    if getattr(_APPROVAL_LATCHED, "value", False):
+        return (" It was not asked again: an approval of this kind already "
+                "went unanswered this turn.")
+    return ""
+
+
+def _watch_started_job(perms, job_id: str, description: str) -> bool:
+    """Put a background job on the session's watch list (what watch_job
+    does), so it is named after a compaction and reported when it ends.
+    True when registered. Never raises."""
+    try:
+        ws = getattr(perms, "workspace", None)
+        if not ws or not job_id:
+            return False
+        from .job_monitor import register_agent_job
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        register_agent_job(ws, job_id, str(description or "")[:200],
+                           **({"extra": {"session_id": sid}} if sid else {}))
+        return True
+    except Exception:
+        return False
+
+
+def _suite_handover_note(n_files: int, job_id: str, watched: bool) -> str:
+    return (
+        f"This runs the whole test suite (at least {n_files} test files), "
+        "which is not waited out in the foreground: it was started as "
+        f"background job {job_id}" + (" and is watched" if watched else "")
+        + ". When it ends this session is told; bash_output("
+        f"'{job_id}') reads what it wrote. Do not start it again and do "
+        "not poll. For a check now, run the tests that cover your change "
+        "in the foreground: run_tests(target='tests/test_<module>.py').")
+
+
 @dataclass
 class KitToolPermissions:
     """Permission policy for KIT-Toolbox coding-agent tools.
@@ -8032,6 +8462,23 @@ class KitToolPermissions:
     #: work that is already running. Installed by the engine; None in a
     #: caller that has no session, which behaves exactly as before.
     should_stop: Optional[Callable[[], bool]] = None
+    #: True while a message the user typed waits to be read by the
+    #: running turn (``OpenAIClient._user_steer_waiting``). A foreground
+    #: command or test run that has lasted ``USER_INTERRUPT_AFTER_S`` is
+    #: ended when it turns True, so the message is read now and not after
+    #: a 30-minute run. Installed by the engine; None leaves runs as they
+    #: were.
+    user_message_waiting: Optional[Callable[[], bool]] = None
+    #: Identity of the turn this session is in (``_next_turn_token``),
+    #: set by the client at every turn start. Keys what holds "for the
+    #: rest of this turn": a command that timed out, an approval nobody
+    #: answered. Globally unique, so a sub-agent's turn (a copy of these
+    #: permissions) never shares its parent's token.
+    turn_token: int = 0
+    #: Approval kinds (_approval_kind) whose dialog expired unanswered,
+    #: mapped to the turn_token it expired in (_ask_confirm). Shared by
+    #: reference with sub-agents (dataclasses.replace) like denied_actions.
+    approval_away: dict = field(default_factory=dict)
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -15994,7 +16441,7 @@ class _DocToolExecutor:
                        f"before this call.\n\n{body}")
         self._clear_refusal_reason(perms)
         try:
-            ok = bool(perms.confirm_callback(name, args or {}, preview))
+            ok = bool(_ask_confirm(perms, name, args or {}, preview))
         except Exception as exc:
             return f"confirm_callback raised: {exc}"
         if ok:
@@ -17758,7 +18205,7 @@ class _DocToolExecutor:
                 "proceed."
             )})
         try:
-            ok = bool(perms.confirm_callback(name, arguments, preview))
+            ok = bool(_ask_confirm(perms, name, arguments, preview))
         except Exception as exc:
             return json.dumps({"error": f"confirm_callback raised: {exc}"})
         if ok:
@@ -18943,7 +19390,7 @@ class _DocToolExecutor:
                 "session."))
         )
         try:
-            ok = bool(perms.confirm_callback(
+            ok = bool(_ask_confirm(perms, 
                 "read_file", {"path": str(resolved)}, preview
             ))
         except Exception as exc:
@@ -18992,7 +19439,12 @@ class _DocToolExecutor:
         Absence is not a decision: an unattended window must not be
         recorded as a refusal, or every 300 s timeout would permanently
         close a path the user never looked at.
+
+        True as well when _ask_confirm answered "not now" without a
+        dialog because one of the same kind expired earlier this turn.
         """
+        if getattr(_APPROVAL_LATCHED, "value", False):
+            return True
         return bool(getattr(
             getattr(perms.confirm_callback, "__self__", None),
             "last_timed_out", False))
@@ -19308,7 +19760,7 @@ class _DocToolExecutor:
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
-                ok = bool(perms.confirm_callback(name, args, preview))
+                ok = bool(_ask_confirm(perms, name, args, preview))
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
             if ok:
@@ -19321,11 +19773,16 @@ class _DocToolExecutor:
                 # told the model the user had said no -- twice in one
                 # afternoon, five minutes each (2026-09-17).
                 _record_security_event("approval_timeout", name, rel_str)
+                _kept = self._keep_unapproved_change(
+                    name, args, resolved, perms,
+                    note=preview.split("\n", 1)[0])
                 return (
                     f"approval to change the {_w} '{rel_str}' TIMED OUT — "
-                    "the user is away, this is NOT a denial. Do not try it "
-                    "again now; carry on with work that needs no approval, "
-                    "or end your turn saying what is waiting for them.")
+                    "the user is away, this is NOT a denial."
+                    + _kept + _not_asked_again_note() +
+                    " Do not try it again this turn; carry on with work "
+                    "that needs no approval, or end your turn saying what "
+                    "is waiting for them.")
             self._refuse_write(perms, str(resolved), name, args)
             return (f"user denied '{name}' on {_w} '{rel_str}'"
                     + self._said_why(perms))
@@ -19353,17 +19810,21 @@ class _DocToolExecutor:
             preview = (self._build_change_preview(name, args, resolved)
                        or f"{name} -> {rel_str}")
             try:
-                ok = bool(perms.confirm_callback(name, args, preview))
+                ok = bool(_ask_confirm(perms, name, args, preview))
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
             if not ok:
                 if self._confirm_timed_out(perms):
                     _record_security_event("approval_timeout", name, rel_str)
+                    _kept = self._keep_unapproved_change(
+                        name, args, resolved, perms)
                     return (
                         f"approval to write '{rel_str}' TIMED OUT — the user "
-                        "is away, this is NOT a denial. Do not try it again "
-                        "now; carry on with work that needs no approval, or "
-                        "end your turn saying what is waiting for them.")
+                        "is away, this is NOT a denial."
+                        + _kept + _not_asked_again_note() +
+                        " Do not try it again this turn; carry on with work "
+                        "that needs no approval, or end your turn saying "
+                        "what is waiting for them.")
                 _record_security_event("denied_by_user", name, rel_str)
                 self._refuse_write(perms, str(resolved), name, args)
                 return (
@@ -19660,7 +20121,7 @@ class _DocToolExecutor:
                 "not sure your request covers it:\n"
                 f"  {reason}\n\n{body}")
         try:
-            ok = bool(perms.confirm_callback(base, args, preview))
+            ok = bool(_ask_confirm(perms, base, args, preview))
         except Exception as exc:
             return f"confirm_callback raised: {exc}"
         if ok:
@@ -19868,7 +20329,7 @@ class _DocToolExecutor:
                 )
             preview = f"{name} -> {target[:400]}"
             try:
-                ok = bool(perms.confirm_callback(name, args, preview))
+                ok = bool(_ask_confirm(perms, name, args, preview))
             except Exception as exc:
                 return f"confirm_callback raised: {exc}"
             _record_security_event("egress", name, target[:120], blocked=not ok)
@@ -19970,6 +20431,18 @@ class _DocToolExecutor:
             # matched the words of a commit message refused work that
             # never ran anything.
             denied = perms.matches_bash_deny(_prose_blanked(cmd))
+            if denied in _RM_RF_PATTERNS:
+                # A recursive delete of scratch this session made is its
+                # own cleanup; the rest of the line is judged as before.
+                _rm_cwd = Path(perms.workspace)
+                if args.get("cwd"):
+                    _rm_cwd = _rm_cwd / str(args.get("cwd"))
+                _rest = _own_scratch_rm_rest(cmd, perms, _rm_cwd)
+                if _rest is not None:
+                    _record_security_event(
+                        "own_scratch_delete", "bash", cmd[:80], blocked=False)
+                    denied = (perms.matches_bash_deny(_prose_blanked(_rest))
+                              if _rest.strip() else None)
             if denied:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
@@ -20160,7 +20633,7 @@ class _DocToolExecutor:
                         "nobody can be asked here. Tell the user the "
                         "command and why it is needed.")
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         "[GIT CONFIGURATION]\n"
                         f"`{_hook_key}` names a program that git runs, "
@@ -20200,7 +20673,7 @@ class _DocToolExecutor:
                         "nobody can be asked here. Use the directory's path "
                         "as written, or the script's absolute path.")
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         "[SCRIPT IN AN UNKNOWN DIRECTORY]\n"
                         f"{_names} runs from a directory that cannot be "
@@ -20249,7 +20722,7 @@ class _DocToolExecutor:
                 # Asked even after another dialog approved this command:
                 # that one did not name this consequence.
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         "[NO ISOLATION]\n"
                         f"{_unconfinable}. If approved, this one command "
@@ -20388,7 +20861,7 @@ class _DocToolExecutor:
                             "would contain and against which base, and ask."
                             + _handover_line(cmd, "pr_create_unrequested"))
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         f"$ {cmd}\n(opens a pull request; the user has not "
                         "asked for one since their last message)"))
@@ -20420,7 +20893,7 @@ class _DocToolExecutor:
                 preview = (f"$ {cmd}\n(the user has not asked for a push "
                            "since their last message)")
                 try:
-                    ok = bool(perms.confirm_callback(
+                    ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd}, preview))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
@@ -20555,7 +21028,7 @@ class _DocToolExecutor:
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
                 try:
-                    ok = bool(perms.confirm_callback("bash", {"command": cmd}, preview))
+                    ok = bool(_ask_confirm(perms, "bash", {"command": cmd}, preview))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if ok:
@@ -21042,7 +21515,7 @@ class _DocToolExecutor:
             )
         preview = f"{name}\n" + _preview_args(args)
         try:
-            ok = bool(perms.confirm_callback(name, args or {}, preview))
+            ok = bool(_ask_confirm(perms, name, args or {}, preview))
         except Exception as exc:
             return f"confirm_callback raised: {exc}"
         _record_security_event("mcp_side_effect", name, base, blocked=not ok)
@@ -21072,6 +21545,27 @@ class _DocToolExecutor:
                 old_text = resolved_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             old_text = ""
+        if name == "apply_patch":
+            # The patch itself IS the change preview — show it verbatim rather
+            # than a synthetic old→new content diff (the new content isn't in
+            # args; it's encoded in the unified diff).
+            _d = str(args.get("diff", "") or "").splitlines()
+            body = "\n".join(_d[:200])
+            if len(_d) > 200:
+                body += f"\n... ({len(_d) - 200} more diff lines truncated)"
+            return body or "(empty diff)"
+        new_text = self._proposed_new_text(name, args, old_text)
+        if new_text is None:
+            return ""
+        return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
+
+    @staticmethod
+    def _proposed_new_text(name: str, args: dict,
+                           old_text: str) -> Optional[str]:
+        """What write_file / edit_file / multi_edit would make of a file
+        whose text is ``old_text``; None for any other tool. The same
+        computation the approval preview shows, so a change kept for later
+        (_keep_unapproved_change) is the change that was asked about."""
         if name == "write_file":
             new_text = args.get("content", "") or ""
             if str(args.get("mode", "") or "").strip().lower() == "append":
@@ -21115,18 +21609,58 @@ class _DocToolExecutor:
                     new_text = new_text.replace(o, n)
                 else:
                     new_text = new_text.replace(o, n, 1)
-        elif name == "apply_patch":
-            # The patch itself IS the change preview — show it verbatim rather
-            # than a synthetic old→new content diff (the new content isn't in
-            # args; it's encoded in the unified diff).
-            _d = str(args.get("diff", "") or "").splitlines()
-            body = "\n".join(_d[:200])
-            if len(_d) > 200:
-                body += f"\n... ({len(_d) - 200} more diff lines truncated)"
-            return body or "(empty diff)"
         else:
+            return None
+        return new_text
+
+    def _keep_unapproved_change(
+        self, name: str, args: dict, resolved: Path,
+        perms: "KitToolPermissions", note: str = "",
+    ) -> str:
+        """Keep a write whose approval went unanswered as a pending change.
+
+        Input: a write_file / edit_file / multi_edit call on a file inside
+        the workspace. Output: a sentence naming the pending change and
+        how the user applies it, or "" when nothing was kept (another
+        tool, outside the workspace, undecodable text, no change, or the
+        pending store refused -- one pending change per file).
+
+        The store is pending_changes, which diff_approval mode and /approve
+        /reject already use: nothing is written now; an approval checks the
+        file still has the content it was staged against and journals the
+        write for undo. ``note`` (the guard's banner for a protected path)
+        is kept on the record so /pending shows it."""
+        try:
+            if _bare_tool_name(name) not in ("write_file", "edit_file",
+                                             "multi_edit"):
+                return ""
+            target = Path(resolved).resolve()
+            ws = Path(perms.workspace).resolve()
+            if not target.is_relative_to(ws):
+                return ""
+            old: Optional[str]
+            if target.exists():
+                old = target.read_bytes().decode("utf-8")
+            else:
+                old = None
+            new = self._proposed_new_text(_bare_tool_name(name), args,
+                                          old or "")
+            if new is None or new == old:
+                return ""
+            from . import pending_changes as _pc
+            rec = _pc.stage(
+                getattr(perms, "task_session_id", "") or "",
+                tool=_bare_tool_name(name), path=str(target),
+                old_text=old, new_text=new,
+                note=("approval went unanswered. " + str(note or "")).strip())
+            if "error" in rec:
+                return ""
+            cid = rec["id"]
+            return (f" The change is kept as pending change {cid}: nothing "
+                    f"was written; the user applies it with /approve {cid} "
+                    f"(or drops it with /reject {cid}) when they are back.")
+        except Exception:
             return ""
-        return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
 
     @staticmethod
     def _make_diff(old: str, new: str, label: str, max_lines: int = 200) -> str:
@@ -22335,6 +22869,98 @@ class _DocToolExecutor:
             return None
         return None
 
+    def _hand_suite_to_background(
+        self, cmd: str, run_cwd, arguments: dict,
+        perms: "KitToolPermissions", caged_unasked: bool,
+    ) -> Optional[str]:
+        """Start a whole-suite pytest run as a watched background job.
+
+        Input: a foreground bash call whose gates have all passed. Output:
+        the bash_background result with ``moved_to_background`` and a
+        note, or None when the command is not a run over at least
+        ``long_runs.LARGE_SUITE_MIN_FILES`` test files, when the caller is
+        a sub-agent (its result is awaited synchronously), or when
+        bash_background is not on this session's tool list.
+
+        The same command, cage and gates as bash_background; only the
+        caller's ``timeout_s`` is dropped, since it is the foreground
+        ceiling the move exists to avoid.
+
+        Rejected: refusing with advice (one more round per suite, and the
+        five-reruns case shows the advice is not followed); clamping
+        (spends the ceiling first, which is what cost 144 minutes)."""
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return None
+        if _tool_denied_for_session(perms, "bash_background") is not None:
+            return None
+        from . import long_runs as _lr
+        n_files = _lr.suite_files_in_command(cmd, run_cwd)
+        if not n_files:
+            return None
+        args = {k: v for k, v in (arguments or {}).items() if k != "timeout_s"}
+        raw = self._execute_bash_background(
+            args, perms, caged_unasked=caged_unasked)
+        try:
+            out = json.loads(raw)
+        except Exception:
+            return raw
+        if not isinstance(out, dict) or out.get("status") != "started":
+            return raw
+        job_id = str(out.get("job_id") or "")
+        watched = _watch_started_job(perms, job_id, f"test suite: {cmd[:80]}")
+        out["moved_to_background"] = True
+        out["watched"] = watched
+        out["note"] = _suite_handover_note(n_files, job_id, watched)
+        return json.dumps(out, ensure_ascii=False)
+
+    def _timed_out_again(self, cmd: str,
+                         perms: "KitToolPermissions") -> Optional[str]:
+        """Refuse a foreground re-run of a command that ran into the
+        ceiling earlier in this turn, compared without its waiting
+        prefixes and output filters (long_runs.strip_command_prefixes).
+        None when it did not. A new turn starts clean: the user may have
+        changed what made it hang."""
+        try:
+            from . import long_runs as _lr
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            rec = getattr(self, "_timed_out_by_session", {}).get(sid)
+            if not rec or rec[0] != getattr(perms, "turn_token", 0):
+                return None
+            secs = rec[1].get(_lr.strip_command_prefixes(cmd))
+        except Exception:
+            return None
+        if secs is None:
+            return None
+        return json.dumps({
+            "error": (
+                f"this command already ran into the {secs}s foreground "
+                "ceiling earlier in this turn and was ended; a different "
+                "timeout prefix or output filter does not change that. "
+                "Start it with bash_background and end your turn (a "
+                "finished job wakes this session), or run a narrower part "
+                "of it."),
+            "command": cmd[:200],
+            "earlier_timeout_s": secs,
+        })
+
+    def _note_timed_out(self, cmd: str, perms: "KitToolPermissions",
+                        secs: int) -> None:
+        """Remember, for this session's current turn only, that ``cmd``
+        ran into the ceiling. Bounded: one turn per session is kept."""
+        try:
+            from . import long_runs as _lr
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            table = getattr(self, "_timed_out_by_session", None)
+            if table is None:
+                table = self._timed_out_by_session = {}
+            token = getattr(perms, "turn_token", 0)
+            rec = table.get(sid)
+            if not rec or rec[0] != token:
+                rec = table[sid] = (token, {})
+            rec[1][_lr.strip_command_prefixes(cmd)] = int(secs)
+        except Exception:
+            pass
+
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions",
         caged_unasked: bool = False,
@@ -22375,6 +23001,11 @@ class _DocToolExecutor:
         # were cut at 600s, and lost ten minutes each following that advice
         # (2026-09-18).
         timeout_was_capped = requested_timeout > timeout
+        # A push that has not finished in PUSH_TIMEOUT_S is waiting for a
+        # credential nobody can give here; it is ended then and says so.
+        _is_push = _is_git_push(cmd)
+        if _is_push:
+            timeout = max(1, min(timeout, int(PUSH_TIMEOUT_S)))
         cwd_arg = arguments.get("cwd", "") or ""
 
         if cwd_arg:
@@ -22408,6 +23039,18 @@ class _DocToolExecutor:
             _obj = json.loads(_dry_run_stop("bash", cmd) or "{}")
             _obj["argv_head"] = [str(a) for a in _would[:5]]
             return json.dumps(_obj)
+
+        # A run over a whole large test suite is started, not waited out;
+        # a command that already ran into the ceiling this turn is not
+        # waited out again under another prefix (long_runs).
+        _handed = self._hand_suite_to_background(
+            cmd, run_cwd, arguments, perms, caged_unasked)
+        if _handed is not None:
+            return _handed
+        _again = self._timed_out_again(cmd, perms)
+        if _again is not None:
+            return _again
+        _probe, _probe_state = _long_run_probe(perms)
 
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
@@ -22456,7 +23099,9 @@ class _DocToolExecutor:
                 _record_security_event(
                     "isolation", "bash",
                     f"git push to {_push['url']} ran outside the process cage "
-                    "(hooks off, SSH hardened)", blocked=False)
+                    + ("(hooks off, HTTPS only, credential from gh auth)"
+                       if _push.get("via") == "gh" else
+                       "(hooks off, SSH hardened)"), blocked=False)
                 proc = _run_github_push(_push, run_cwd, env, timeout)
             else:
                 # Contained on every host: its own session and process
@@ -22472,12 +23117,31 @@ class _DocToolExecutor:
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
-                    should_stop=getattr(perms, "should_stop", None),
+                    should_stop=_probe,
                     budget=True,
                 )
         except subprocess.TimeoutExpired:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
+            self._note_timed_out(cmd, perms, timeout)
+            if _is_push:
+                return json.dumps({
+                    "error": (
+                        f"git push did not finish in {timeout}s and was "
+                        "ended. A push that waits this long is waiting for "
+                        "a credential that cannot be given here: commands "
+                        "run without a terminal, and an editor's credential "
+                        "helper is not reachable from them. Another TMPDIR, "
+                        "transport or proxy does not change that, and "
+                        "nothing was pushed. Tell the user what is ready to "
+                        "push and where: they push it themselves, or give "
+                        "this checkout a credential that needs no prompt "
+                        "(an SSH remote on github.com, or `gh auth login` "
+                        "then `gh auth setup-git`)."),
+                    "command": cmd[:200],
+                    "push_timeout_s": timeout,
+                    "description": description,
+                })
             # Say what to do instead. The default window is a minute or
             # two, and a run that needs longer has two sanctioned ways
             # to be run -- neither of which the refusal named, so a
@@ -22577,6 +23241,29 @@ class _DocToolExecutor:
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
+        elif _is_push:
+            # The one-line cause of a failed push (push_diagnosis), so the
+            # first refusal is read as final instead of re-spelled.
+            _ptext = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            if proc.returncode != 0 or "fatal:" in _ptext:
+                try:
+                    from .push_diagnosis import explain as _push_explain
+                    _pd = _push_explain(_ptext)
+                except Exception:
+                    _pd = ""
+                if _pd:
+                    payload["hint"] = _pd
+                if (_push is not None and _push.get("via") == "gh"
+                        and re.search(r"could not read Username|terminal "
+                                      r"prompts disabled|Authentication "
+                                      r"failed|Missing or invalid",
+                                      _ptext, re.I)):
+                    payload["hint"] = (
+                        "push failed: no credentials reachable — DELFIN's "
+                        "push path ran `gh auth git-credential` outside the "
+                        "sandbox and gh gave no login for github.com. The "
+                        "user runs `gh auth login` (then `gh auth status` "
+                        "says Logged in); varying the command does not help.")
         # A known repository error: its section of the git-errors skill
         # (cause, fix, what not to do), once per session. Scanned on the
         # raw streams, so truncation cannot cut the line git printed last.
@@ -22603,6 +23290,9 @@ class _DocToolExecutor:
                 "their completion reaches you at the start of a later turn, "
                 "without polling. Do not loop on squeue."
             )
+        if _probe_state.get("by_user"):
+            payload["interrupted_by_user_message"] = True
+            payload["note"] = _USER_INTERRUPT_NOTE.format(secs=elapsed)
         return json.dumps(payload, ensure_ascii=False)
 
     def _detach_at_held_branch(self, cmd, proc, payload, run_cwd, perms,
@@ -23204,19 +23894,50 @@ class _DocToolExecutor:
             return self._run_tests_in_background(
                 target, pytest_args, timeout, ceiling, env, perms)
 
+        # A run over the whole of a large suite is handed over too, at any
+        # timeout: inside the ceiling it still holds the turn for up to
+        # ten minutes (long_runs). Not for a sub-agent, whose result is
+        # awaited, nor where bash_background is off this session's list.
+        if (int(getattr(perms, "subagent_depth", 0) or 0) == 0
+                and _tool_denied_for_session(perms, "bash_background") is None):
+            from . import long_runs as _lr
+            _n_files = _lr.suite_files_in_run(target, pytest_args,
+                                              perms.workspace)
+            if _n_files:
+                raw = self._run_tests_in_background(
+                    target, pytest_args, timeout, ceiling, env, perms)
+                try:
+                    out = json.loads(raw)
+                except Exception:
+                    return raw
+                if out.get("status") != "started":
+                    return raw
+                _jid = str(out.get("job_id") or "")
+                _watched = _watch_started_job(
+                    perms, _jid, f"pytest {target or 'tests'} (whole suite)")
+                out["moved_to_background"] = True
+                out["watched"] = _watched
+                out["note"] = _suite_handover_note(_n_files, _jid, _watched)
+                return json.dumps(out, ensure_ascii=False)
+
+        # Stop has to reach a run that lasts half an hour: the worker is
+        # inside it, and nothing else looks at the flag until it returns.
+        # A message the user typed meanwhile ends it too (_long_run_probe).
+        _probe, _probe_state = _long_run_probe(perms)
         result = _tr.run_tests(
             workspace=perms.workspace,
             target=target,
             pytest_args=[str(a) for a in pytest_args],
             timeout_s=timeout,
             env=env,
-            # Stop has to reach a run that lasts half an hour: the worker
-            # is inside it, and nothing else looks at the flag until it
-            # returns.
-            should_stop=getattr(perms, "should_stop", None),
+            should_stop=_probe,
             wrap=lambda argv, report_dir: _test_run_argv(
                 argv, perms, report_dir),
         )
+        if _probe_state.get("by_user") and isinstance(result, dict):
+            result["interrupted_by_user_message"] = True
+            result["note"] = _USER_INTERRUPT_NOTE.format(
+                secs=float(result.get("elapsed_s") or 0))
         return json.dumps(result, ensure_ascii=False)
 
     def _execute_apply_patch(
@@ -25998,6 +26719,20 @@ def _scrubbed_bash_env() -> dict:
     # shell tool, background job, test run, external agent CLI.
     from .approval_guard import ENV_MARKER as _agent_marker
     env[_agent_marker] = str(os.getpid())
+    # Nobody answers a prompt here: no terminal, and the editor's askpass
+    # socket is refused inside the cage. git that asks anyway waits: the
+    # editor's askpass makes a temp file, fails on a read-only TMPDIR, and
+    # runs `cat` on the empty name -- reading the remote helper's open
+    # stdin forever (9 push timeouts, 37 min, bug archive 2026-09-16..
+    # 10-14). Fail instead; nothing here adds a credential.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "never"
+    _editor = any(k.startswith("VSCODE_GIT_") for k in env)
+    for k in [k for k in env if k.startswith("VSCODE_GIT_")]:
+        env.pop(k, None)
+    for k in ("GIT_ASKPASS", "SSH_ASKPASS"):
+        if k in env and (_editor or "vscode" in env[k].lower()):
+            env.pop(k, None)
     return env
 
 
@@ -26948,6 +27683,12 @@ def _bash_isolation_argv(
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
+        # The host's TMPDIR (a cluster scratch path) is read-only under the
+        # "/" bind; the cage's own /tmp is the writable one. Landlock and
+        # Seatbelt set their private directory the same way.
+        "--setenv", "TMPDIR", "/tmp",
+        "--setenv", "TMP", "/tmp",
+        "--setenv", "TEMP", "/tmp",
     ]
     for rel in _HOME_SECRET_DIRS:
         p = home / rel
@@ -27629,6 +28370,14 @@ class OpenAIClient(_BaseClient):
         t = (text or "").strip()
         if t and isinstance(text, _HarnessText):
             t = _HarnessText(t)
+        if (t and not isinstance(t, _HarnessText)
+                and not t.startswith(_MACHINE_MESSAGE_PREFIXES)):
+            # The user is here: approvals latched as unanswered this turn
+            # (_ask_confirm) are asked again.
+            try:
+                getattr(self, "_permissions", None).approval_away.clear()
+            except Exception:
+                pass
         if t:
             with self._steer_lock:
                 self._steer_msgs.append(t)
@@ -27637,6 +28386,23 @@ class OpenAIClient(_BaseClient):
                     if hooks is None:
                         hooks = self._steer_hooks = []
                     hooks.append(on_delivered)
+
+    def _user_steer_waiting(self) -> bool:
+        """True when a message the USER typed is queued for this turn.
+
+        Harness text (a finished job, a wake-up, another session's
+        message) does not count: it is not someone waiting for an answer.
+        Read by the executor's long-run probe (user_message_waiting).
+        Never raises."""
+        try:
+            with self._steer_lock:
+                msgs = list(getattr(self, "_steer_msgs", None) or ())
+        except Exception:
+            return False
+        return any(
+            not isinstance(m, _HarnessText)
+            and not str(m).lstrip().startswith(_MACHINE_MESSAGE_PREFIXES)
+            for m in msgs)
 
     def _turn_cost_cap(self) -> float:
         """This turn's spending ceiling in USD, or 0.0 for no ceiling.
@@ -28563,6 +29329,13 @@ class OpenAIClient(_BaseClient):
         # Undo journal: new turn — reset the turn-scope seq window so
         # undo_changes(scope="turn") only covers this turn's changes.
         _doc_executor._turn_change_seqs = []
+        # A new turn: what was latched "for this turn" (a timed-out
+        # command, an approval nobody answered) is open again.
+        if getattr(self, "_permissions", None) is not None:
+            try:
+                self._permissions.turn_token = _next_turn_token()
+            except Exception:
+                pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding

@@ -3262,6 +3262,13 @@ class AgentEngine:
             perms = getattr(self.client, "kit_permissions", None)
             if perms is not None:
                 perms.should_stop = lambda: bool(self._stop_requested)
+                # And whether the user has typed something the running
+                # turn has not read yet: a long foreground run is ended
+                # for it (USER_INTERRUPT_AFTER_S), so a message sent during
+                # a 30-minute suite is answered now, not after it.
+                if callable(getattr(self.client, "_user_steer_waiting", None)):
+                    perms.user_message_waiting = (
+                        lambda: bool(self.client._user_steer_waiting()))
         except Exception:
             pass
 
@@ -6731,6 +6738,13 @@ class AgentEngine:
                     self._summarize_output_for_handoff(content),
                 )
                 return
+
+    @property
+    def turn_in_flight(self) -> bool:
+        """True while a turn holds this engine's one-turn gate. Read by
+        the mode cycles (mode_cycle.next_in_cycle), which pass over plan
+        while a turn runs."""
+        return bool(getattr(self, "_turn_in_flight", False))
 
     def request_stop(self) -> None:
         """Request the current streaming response to stop.

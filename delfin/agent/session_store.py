@@ -1286,6 +1286,11 @@ def save_session(
         try:
             existing = json.loads(filepath.read_text())
             data["created_at"] = existing.get("created_at", data["updated_at"])
+            # The "already announced" mark of a pending plan survives a
+            # save of the same plan, and only that.
+            mark = existing.get("pending_plan_noticed")
+            if mark and mark == _plan_mark(data.get("pending_plan_body")):
+                data["pending_plan_noticed"] = mark
         except (json.JSONDecodeError, OSError):
             data["created_at"] = data["updated_at"]
     else:
@@ -1293,6 +1298,49 @@ def save_session(
 
     _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
     return filepath
+
+
+def _plan_mark(body: Any) -> str:
+    """A short digest naming one pending plan body; "" for none."""
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def pending_plan_needs_notice(data: dict[str, Any] | None) -> bool:
+    """Whether a restore of *data* should announce its pending plan.
+
+    Input: a loaded session record. Output: True when it holds a pending
+    plan that has not been announced yet (``pending_plan_noticed`` is
+    absent or names another plan). Every restore announced it before: 10
+    notices in 2 sessions (bug archive 2026-09-16..10-14), the same plan
+    each time."""
+    if not isinstance(data, dict):
+        return False
+    mark = _plan_mark(data.get("pending_plan_body"))
+    return bool(mark) and data.get("pending_plan_noticed") != mark
+
+
+def mark_pending_plan_noticed(session_id: str) -> bool:
+    """Record on the stored session that its pending plan was announced.
+    Touches nothing else. False when there is no such session, no plan,
+    or the file cannot be rewritten."""
+    filepath = _SESSIONS_DIR / f"{session_id}.json"
+    try:
+        data = json.loads(filepath.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    mark = _plan_mark(data.get("pending_plan_body"))
+    if not mark:
+        return False
+    data["pending_plan_noticed"] = mark
+    try:
+        _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
+    except OSError:
+        return False
+    return True
 
 
 def load_session(session_id: str) -> dict[str, Any] | None:

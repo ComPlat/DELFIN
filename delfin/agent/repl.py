@@ -1652,9 +1652,13 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 "this backend carries no permission gate"))
             return
-        try:
-            nxt = order[(order.index(current) + 1) % len(order)]
-        except ValueError:
+        # A step taken while a turn runs passes over plan: each step takes
+        # effect at once, so a tool call landing mid-cycle was refused.
+        from .mode_cycle import next_in_cycle
+        if current in order:
+            nxt = next_in_cycle(order, current, turn_running=bool(
+                getattr(self.engine, "turn_in_flight", False)))
+        else:
             nxt = "default"
         try:
             self.engine.set_kit_permission_mode(nxt)
