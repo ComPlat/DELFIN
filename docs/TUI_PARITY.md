@@ -42,7 +42,7 @@ for some, and runs three itself.
 | enter | queue during a turn | the same; at the prompt it sends |
 | ctrl+g | steer into the running turn | the same |
 | shift+tab | next approval posture | the same (from a posture outside the cycle: default) |
-| ctrl+o | the last tool result in full | **Changed on purpose** (the user's ask, 2026-10-14): a tool call is its headline and what came back; ctrl+o shows or hides what every call printed (Claude Code's key), a click one call's. The last result in full: the palette. With a question open: its whole preview, as before |
+| ctrl+o | the last tool result in full | **Changed on purpose** (the user's ask, 2026-10-14): a tool call is its headline and what came back; ctrl+o shows or hides what every call printed (the common agent-CLI key), a click one call's. The last result in full: the palette. With a question open: its whole preview, as before |
 | ctrl+t | the task list on/off | the task list stands above the prompt while a task is open (`tasks` on session.info/session.updated); ctrl+t folds it to one line |
 | ctrl+l | redraw | writes the session again at the terminal's width (the last `replayTurns` turns) |
 | backspace / ctrl+u | edit / clear the line | the same, plus ctrl+w, ctrl+k, ctrl+a/e, alt+b/f, undo ctrl+- |

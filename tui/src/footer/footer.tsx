@@ -191,7 +191,7 @@ export function Footer(props: FooterProps): JSX.Element {
   const liveText = (key: string) => live().find((b) => b.key === key)?.text ?? ""
   const liveHeight = () => liveRows(props.session(), cols())
   /** The prompt box's top border, with the session's name on it at the
-   *  right (/rename, -n), as Claude Code shows it; not in the agent view,
+   *  right (/rename, -n); not in the agent view,
    *  whose box is for another session. */
   const topRule = () => {
     const s = props.session()

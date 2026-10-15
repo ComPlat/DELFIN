@@ -1,7 +1,7 @@
 /**
  * Every key binding in one registry, like OpenCode's keymap.
  *
- * The defaults are today's keys (the REPL's, which follow Claude Code's);
+ * The defaults are today's keys (the REPL's, which follow the common agent-CLI keys);
  * `~/.delfin/tui.json` may rebind any action ("keys": {"steer": ["ctrl+g"]}).
  * A binding is a key name with modifiers: "ctrl+g", "shift+tab", "escape",
  * "left", "alt+return". The footer asks `matches("steer", key)`; nothing
@@ -25,7 +25,7 @@ export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   steer: ["ctrl+g"],
   cycleMode: ["shift+tab"],
   // A tool call is its headline and what came back; ctrl+o shows what it
-  // printed (Claude Code's key). The last result in full: the palette.
+  // printed (the common agent-CLI key). The last result in full: the palette.
   details: ["ctrl+o"],
   expand: [],
   tasks: ["ctrl+t"],

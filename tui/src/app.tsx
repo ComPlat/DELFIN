@@ -490,7 +490,7 @@ export function App(props: AppProps): JSX.Element {
     const waiting = Object.values(store.state.sessions).filter(needsInput).length
     const counts = attentionCounts(store.state, waiting)
     const n = counts.asks + counts.failed
-    // Named (/rename, -n): the tab says which session it is, as Claude Code's does.
+    // Named (/rename, -n): the tab says which session it is, as agent CLIs do.
     const name = session()?.title || session()?.summary?.title || ""
     const title = n ? `(${n}) DELFIN${name ? ` · ${name}` : ""}`
       : name ? `DELFIN · ${name}` : shownTitle ? "DELFIN" : ""
