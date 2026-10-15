@@ -1921,7 +1921,7 @@ The dialog shows a code; you confirm by typing it. For a **public** repository (
 
 **What the check refuses.** Credentials, keys and tokens; email addresses; your home path, account and machine names; machine references (absolute paths, `user@host`, job ids); licensed or internal markers (CSD refcodes and refcode-shaped tokens, "unpublished", "confidential", terms you list in `agent.knowledge.unpublished_terms`); text written about one person or session ("I", "yesterday"); text that reads like an approval; and any instruction about permissions, checks, the sandbox or DELFIN's protected files. For a public repository it also refuses host and node names, `@handles`, numbers and values with units, sample and project names, URLs other than doi.org and arxiv.org, and evidence pointers that only mean something on your machine. The check never rewrites your text: you reword and share again. A published value can be released for one share with `release=<value>`; personal data and instructions cannot.
 
-**Withdrawing.** `/unshare <entry>` prepares a branch that removes your own entry, or only your name from an entry several people wrote. A removal does not erase text from the git history.
+**Withdrawing.** `/unshare <entry>` prepares a branch that removes your own entry, or only your name from an entry several people wrote. A removal does not erase text from the git history. What a share stores about you (handle, date, evidence pointers, the git identity of the commit) and who can read it is in [PRIVACY.md](PRIVACY.md).
 
 **Where a share lands.** A project share becomes a local branch `delfin-knowledge/<entry>` in that repository; your working tree and index are not touched, nothing is pushed, and the push and pull-request commands are printed for you. A global share goes to the knowledge admin's review queue first: `$DELFIN_KNOWLEDGE_QUEUE`, else `agent.knowledge.queue_dir`, else `~/.delfin/knowledge/queue`. `/memory` shows the outcome, and the admin's reason when an entry is rejected.
 
@@ -1968,6 +1968,8 @@ delfin-agent bug report --session latest -m "the plot came back empty"
 All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many.
 
 Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report is also copied there over SSH; the local copy is always kept.
+
+A report also carries your account name, the host name, the workspace path and copies of up to 40 files the session touched, and it is made readable to the archive directory's group. What that means, and how long reports are kept, is in [PRIVACY.md](PRIVACY.md).
 
 ### MCP servers
 
