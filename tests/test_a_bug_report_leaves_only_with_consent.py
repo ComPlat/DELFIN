@@ -152,3 +152,44 @@ def test_the_preview_says_where_the_report_would_go(monkeypatch, tmp_path):
     assert TRANSFER["host"] in text and "ask" in text
     _load(monkeypatch, _settings("never"))
     assert "stays on this machine" in bug_filing.preview({}, tmp_path)
+
+
+def _settings_tab(tmp_path, monkeypatch):
+    pytest.importorskip("ipywidgets")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from delfin.dashboard import tab_settings
+    from delfin.dashboard.context import DashboardContext
+    for n in ("calc", "archive", "office"):
+        (tmp_path / n).mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "archive",
+                           office_dir=tmp_path / "office")
+    ctx.run_js = lambda _s: None
+    tab, _ = tab_settings.create_tab(ctx)
+
+    def walk(w):
+        yield w
+        for c in getattr(w, "children", ()) or ():
+            yield from walk(c)
+    return list(walk(tab))
+
+
+def test_the_settings_tab_sets_bug_upload(tmp_path, monkeypatch):
+    """The setting that decides whether a report leaves the machine is
+    chosen where the archive and the transfer host are set, from the
+    three values, and is saved into agent.bug_upload."""
+    from delfin import user_settings as us
+    data = us.load_settings()
+    data.setdefault("agent", {})["bug_upload"] = "never"
+    us.save_settings(data)
+    parts = _settings_tab(tmp_path, monkeypatch)
+    (dd,) = [w for w in parts if type(w).__name__ == "Dropdown"
+             and "upload" in str(getattr(w, "description", "")).lower()]
+    assert {v for _label, v in dd.options} == set(br.UPLOAD_POLICIES)
+    assert dd.value == "never"
+    dd.value = "always"
+    (save,) = [w for w in parts if type(w).__name__ == "Button"
+               and w.description == "Save Settings"]
+    assert not save.disabled
+    save.click()
+    assert us.load_settings()["agent"]["bug_upload"] == "always"
