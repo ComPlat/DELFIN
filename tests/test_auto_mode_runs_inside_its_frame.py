@@ -598,3 +598,18 @@ def test_status_line_and_state(repo):
     assert st["loop"] == "table" and st["iteration"] == 1
     assert st["max_iterations"] == 5 and st["last"].startswith("kept")
     assert "tokens_left" in st and "needs_you" in st
+
+
+def test_an_iteration_whose_turn_never_started_is_taken_back(repo):
+    clock = Clock()
+    ctl = _ctl(repo, clock, Checks((1, "missing=3")))
+    eng = Engine()
+    ctl.start_loop(_loop(repo), eng)
+    clock.advance(10)
+    assert isinstance(ctl.next_prompt(eng), HarnessText)
+    ctl.cancel_iteration("the surface held the turn")
+    assert ctl.iteration is None and eng.kit_permissions.auto_veto is None
+    assert ctl.state()["iteration"] == 0
+    clock.advance(10)
+    assert isinstance(ctl.next_prompt(eng), HarnessText)
+    assert ctl.state()["iteration"] == 1
