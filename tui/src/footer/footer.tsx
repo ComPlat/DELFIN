@@ -28,6 +28,7 @@ import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
 import { GUTTER, SPINNER, postureLook, type Theme } from "../theme/theme"
 import { fit, width } from "../text"
+import { clickable } from "../mouse"
 import { plainIfLate } from "../scrollback/highlighter"
 import { TranscriptView, themedStyle, type ScreenItems } from "../scrollback/screenview"
 import { fenceOf, liveBlocks, liveRows } from "./live"
@@ -49,6 +50,9 @@ export interface FooterProps {
   /** The first step onto bypass waiting for y: shown in the message's
    *  row (in red), in its place, so the footer's height is the same. */
   offer?: () => string
+  /** The offer's clickable part, and what a click on it does. */
+  offerYes?: string
+  onOfferClick?: () => void
   composer: Composer
   approval: ApprovalUi
   picker?: Picker
@@ -158,6 +162,13 @@ export function Footer(props: FooterProps): JSX.Element {
   const t = props.theme
   /** The message row: the bypass offer while it waits, else the note. */
   const note = () => props.offer?.() || props.message()
+  // Only the offer's "[y] switch" takes a click, never the rest of the row.
+  const offerHit = clickable((col) => {
+    if (!props.offer?.() || !props.offerYes) return null
+    const shown = fit(note(), cols() - 1)
+    const at = shown.indexOf(props.offerYes)
+    return at >= 0 && col >= at && col < at + props.offerYes.length ? "yes" : null
+  }, () => props.onOfferClick?.())
   const term = terminalSize(props.renderer)
   const [tick, setTick] = createSignal(0)
   const [now, setNow] = createSignal(Date.now())
@@ -282,7 +293,9 @@ export function Footer(props: FooterProps): JSX.Element {
       </Show>
       <Show when={note()}>
         <text flexShrink={0} fg={props.offer?.() ? t().err : t().warn} wrapMode="none"
-              attributes={props.offer?.() ? TextAttributes.BOLD : 0}>{fit(note(), cols() - 1)}</text>
+              attributes={props.offer?.() ? TextAttributes.BOLD : 0} ref={offerHit.ref}
+              onMouseDown={offerHit.onMouseDown} onMouseUp={offerHit.onMouseUp}
+              onMouseDrag={offerHit.onMouseDrag}>{fit(note(), cols() - 1)}</text>
       </Show>
       <Show when={!viewOpen()}>
       {/* The answer's unfinished block, under the rows in both screens: a

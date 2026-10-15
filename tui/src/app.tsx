@@ -15,6 +15,7 @@ import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-
 import { Pins } from "./agents/pins"
 import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf } from "./commands"
 import type { ArgumentChoices } from "./composer/complete"
+import { CLICK_PAUSE_MS } from "./mouse"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
 import type { AgentScreen } from "./agents/screen"
 import { createAgentView, needsInput, peekLines, sessionName, type AgentRow } from "./agents/view"
@@ -110,9 +111,11 @@ export function nextPosture(current: string, bypass = false): string {
   return at < 0 ? "default" : order[(at + 1) % order.length]!
 }
 
-/** What the confirm row says while the first step onto bypass waits. */
+/** What the confirm row says while the first step onto bypass waits;
+ *  BYPASS_YES is its clickable part (full screen). */
+export const BYPASS_YES = "[y] switch"
 export function bypassOffer(from: string): string {
-  return `⏵⏵ bypass permissions asks nothing from here on: y switches, any other key stays in ${from}`
+  return `⏵⏵ bypass permissions asks nothing from here on: ${BYPASS_YES} · any other key stays in ${from}`
 }
 
 export function App(props: AppProps): JSX.Element {
@@ -708,6 +711,17 @@ export function App(props: AppProps): JSX.Element {
     }
     void call("session.setMode", { sessionId: sid(), mode: next })
   }
+  /** A click on the offer's [y] switch: as y, after CLICK_PAUSE_MS from
+   *  the offer (a double shift+tab cannot be a click; a hand already on
+   *  its way to where the row appeared is not an answer). */
+  const clickOffer = (): boolean => {
+    const o = offer()
+    if (!o || o.id !== sid()) return false
+    if (Date.now() - o.at < (props.clickPauseMs ?? CLICK_PAUSE_MS)) return false
+    setOffer(null)
+    void call("session.setMode", { sessionId: sid(), mode: "bypassPermissions", confirmed: true })
+    return true
+  }
   /** y on the offer: the switch, marked as confirmed by a person. */
   const takeOffer = (key: KeyEvent): boolean => {
     const o = offer()
@@ -898,6 +912,8 @@ export function App(props: AppProps): JSX.Element {
       picker={picker}
       tasksFolded={tasksFolded}
       offer={() => offer()?.id === sid() ? bypassOffer(offer()!.from) : ""}
+      offerYes={BYPASS_YES}
+      onOfferClick={() => void clickOffer()}
       agents={agents}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}

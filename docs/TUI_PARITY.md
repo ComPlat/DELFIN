@@ -41,7 +41,7 @@ for some, and runs three itself.
 | esc | end the turn | the same; with a question open it refuses (as `n`, as in chat) |
 | enter | queue during a turn | the same; at the prompt it sends |
 | ctrl+g | steer into the running turn | the same |
-| shift+tab | next approval posture: default → acceptEdits → plan → bypassPermissions (bypass only where the policy allows it and isolation holds each command; its first time in a session asks for y and switches nothing until then) | the same (from a posture outside the cycle: default) |
+| shift+tab | next approval posture: default → acceptEdits → plan → bypassPermissions (bypass only where the policy allows it and isolation holds each command; its first time in a session asks for y, or a click on `[y] switch`, and switches nothing until then) | the same (from a posture outside the cycle: default) |
 | ctrl+o | the last tool result in full | **Changed on purpose** (the user's ask, 2026-10-14): a tool call is its headline and what came back; ctrl+o shows or hides what every call printed (the common agent-CLI key), a click one call's. The last result in full: the palette. With a question open: its whole preview, as before |
 | ctrl+t | the task list on/off | the task list stands above the prompt while a task is open (`tasks` on session.info/session.updated); ctrl+t folds it to one line |
 | ctrl+l | redraw | writes the session again at the terminal's width (the last `replayTurns` turns) |

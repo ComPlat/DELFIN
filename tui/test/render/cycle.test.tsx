@@ -17,8 +17,8 @@ afterEach(async () => {
 })
 
 async function at(approval: string, bypass: { blocked?: string | null; confirmed?: boolean } = {},
-                  answerPauseMs = 0) {
-  const w = open = await mountWindow({ height: 30, answerPauseMs })
+                  answerPauseMs = 0, mount: Parameters<typeof mountWindow>[0] = {}) {
+  const w = open = await mountWindow({ height: 30, answerPauseMs, ...mount })
   w.store.update((d) => {
     const s = d.sessions[w.sid]!
     s.approval = approval
@@ -58,11 +58,11 @@ describe("shift+tab in the window", () => {
     const { w, modes, tab } = await at("plan")
     await tab()
     expect(modes()).toEqual([])
-    expect(w.footer().join("\n")).toContain("y switches, any other key stays in plan")
+    expect(w.footer().join("\n")).toContain("[y] switch · any other key stays in plan")
     await w.keys.typeText("y")
     await w.settle()
     expect(modes()).toEqual([{ sessionId: "s1", mode: "bypassPermissions", confirmed: true }])
-    expect(w.footer().join("\n")).not.toContain("y switches")
+    expect(w.footer().join("\n")).not.toContain("[y] switch")
   })
 
   test("an unanswered offer stays on the previous posture; shift+tab again moves past bypass", async () => {
@@ -71,7 +71,7 @@ describe("shift+tab in the window", () => {
     await w.keys.typeText("x")
     await w.settle()
     expect(modes()).toEqual([])
-    expect(w.footer().join("\n")).not.toContain("y switches")
+    expect(w.footer().join("\n")).not.toContain("[y] switch")
     expect(w.footer().join("\n")).toContain("❯ x")         // the key did what it does
     await tab()
     expect(modes()).toEqual([])
@@ -101,6 +101,29 @@ describe("shift+tab in the window", () => {
     const { w, modes, tab } = await at("plan", { confirmed: true })
     await tab()
     expect(modes()).toEqual([{ sessionId: "s1", mode: "bypassPermissions" }])
-    expect(w.footer().join("\n")).not.toContain("y switches")
+    expect(w.footer().join("\n")).not.toContain("[y] switch")
+  })
+
+  test("a click on [y] switch confirms, after the click pause; the rest of the row does nothing", async () => {
+    const { w, modes, tab } = await at("plan", {}, 0, { full: true, clickPauseMs: 300 })
+    await tab()
+    const where = () => {
+      const rows = w.t.captureCharFrame().split("\n")
+      const y = rows.findIndex((r) => r.includes("[y] switch"))
+      return { x: rows[y]!.indexOf("[y] switch"), y }
+    }
+    const click = async (dx: number) => {
+      const p = where()
+      await w.t.mockMouse.click(p.x + dx, p.y)
+      await Bun.sleep(20)
+      await w.settle()
+    }
+    await click(1)                                        // as the row appears: not taken
+    expect(modes()).toEqual([])
+    await Bun.sleep(320)
+    await click(-8)                                       // the words before it
+    expect(modes()).toEqual([])
+    await click(1)
+    expect(modes()).toEqual([{ sessionId: "s1", mode: "bypassPermissions", confirmed: true }])
   })
 })
