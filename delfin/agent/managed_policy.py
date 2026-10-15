@@ -115,7 +115,7 @@ UNATTENDED_MODES = frozenset({"bypassPermissions", "acceptEdits"})
 CONTAINER_BACKENDS = ("", "bwrap")
 _KEYS = {"version", "permissions", "disallowed_modes", "require_isolation",
          "container_backend", "network", "disable_classifier_off",
-         "audit_log", "comment"}
+         "audit_log", "knowledge_admins", "comment"}
 
 #: Tests set these; production leaves them None.
 _PATHS_OVERRIDE: Optional[tuple] = None
@@ -149,6 +149,10 @@ class Policy:
     allowed_domains_max: tuple = ()
     disable_classifier_off: bool = False
     audit_log: tuple = ()
+    #: Who curates delfin/agent/pack/knowledge (knowledge_share.is_admin).
+    #: Read from trusted files only: an admin list is a grant, and a file
+    #: the user names through the environment grants nothing.
+    knowledge_admins: tuple = ()
     errors: list = field(default_factory=list)
 
     @property
@@ -323,6 +327,14 @@ def _merge(pol: Policy, data: dict, src: Source) -> None:
             errors.append(f"{where}: audit_log must be an absolute path")
         else:
             pol.audit_log += (audit,)
+    admins = [a.strip() for a in _strings(data.get("knowledge_admins"))]
+    if admins:
+        if not src.trusted:
+            errors.append(f"{where}: knowledge_admins is ignored: only a "
+                          "trusted file names the knowledge admins")
+        else:
+            pol.knowledge_admins += tuple(a for a in admins
+                                          if a not in pol.knowledge_admins)
 
 
 def load() -> Policy:
