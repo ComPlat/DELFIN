@@ -60,6 +60,7 @@ describe("replayOnWidthChange", () => {
     const listeners = new Set<() => void>()
     return {
       terminalWidth: width,
+      terminalHeight: 40,
       on: (_e: "resize", l: () => void) => listeners.add(l),
       off: (_e: "resize", l: () => void) => listeners.delete(l),
       resize(w: number) {
@@ -91,14 +92,75 @@ describe("replayOnWidthChange", () => {
     expect(transcript.replayCount).toBe(1)
   })
 
-  test("going back to the original width before it settles replays nothing", async () => {
+  test("going back to the written width before it settles replays once: the window was drawn at the other", async () => {
     const { transcript } = fakeTerminal()
     const source = fakeSource(100)
     replayOnWidthChange(source, transcript, { settleMs: 20 })
     source.resize(90)
     source.resize(100)
     await sleep(60)
+    expect(transcript.replayCount).toBe(1)
+  })
+
+  test("a storm that settles once at a width and ends at it writes the session again at the end", async () => {
+    // tmux's sequence: the storm settles at 100 (that replay is written while
+    // the pane already has another width), goes on, and ends at 100 again.
+    const { screen, transcript } = fakeTerminal()
+    await transcript.append(item("a"))
+    const widths: number[] = []
+    const source = fakeSource(110)
+    replayOnWidthChange(source, transcript, {
+      settleMs: 20,
+      onSettled: (w) => {
+        widths.push(w)
+        void transcript.replay()
+      },
+    })
+    source.resize(100)
+    await sleep(60)
+    for (const w of [120, 135, 100]) source.resize(w)
+    await sleep(60)
+    expect(widths).toEqual([100, 100])
+    expect(transcript.replayCount).toBe(2)
+    expect(screen).toEqual(["a"])
+  })
+
+  test("a size the terminal reported but the renderer never applied replays once", async () => {
+    // OpenTUI applies only the last size reported while rows are queued,
+    // and says nothing when that is the size it has: 100 -> 70 -> 100
+    // during a replay reaches only the reports.
+    const { transcript } = fakeTerminal()
+    const source = fakeSource(100)
+    let report: ((w: number, h: number) => void) | undefined
+    let stopped = false
+    const stop = replayOnWidthChange(source, transcript, {
+      settleMs: 20,
+      reports: (listener) => {
+        report = listener
+        return () => { stopped = true }
+      },
+    })
+    report!(100, 40)
+    await sleep(60)
     expect(transcript.replayCount).toBe(0)
+    report!(70, 40)
+    report!(100, 40)
+    await sleep(60)
+    expect(transcript.replayCount).toBe(1)
+    stop()
+    expect(stopped).toBe(true)
+  })
+
+  test("a footer that changes height while a width change settles neither cancels nor repeats it", async () => {
+    const { transcript } = fakeTerminal()
+    const source = fakeSource(100)
+    replayOnWidthChange(source, transcript, { settleMs: 20 })
+    source.resize(90)
+    source.resize(90)
+    await sleep(60)
+    source.resize(90)
+    await sleep(60)
+    expect(transcript.replayCount).toBe(1)
   })
 })
 

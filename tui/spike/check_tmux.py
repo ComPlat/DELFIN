@@ -44,6 +44,33 @@ from scrollback_check import check, summary  # noqa: E402
 TUI = Path(__file__).resolve().parents[1]
 BUN = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun")
 
+#: A variable whose name has one of these parts, or starts with one of the
+#: prefixes, is a credential: a model provider's key (KIT_TOOLBOX_API_KEY,
+#: OPENAI_API_KEY, ANTHROPIC_API_KEY), a forge token (GH_TOKEN), any other
+#: secret. DELFIN copies the provider keys it finds in its environment into
+#: $HOME/.delfin/credentials.json; under a check's temporary HOME that is a
+#: copy of the developer's real key left in /tmp after every run. The same
+#: rule is tests/conftest.py's (child_env); tests/test_the_tui_e2e_harness_
+#: passes_no_credentials.py holds the two to one answer.
+CREDENTIAL_PARTS = ("API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIALS",
+                    "_PRIVATE_KEY", "_ACCESS_KEY")
+CREDENTIAL_PREFIXES = ("KIT_", "OPENAI_", "ANTHROPIC_")
+CREDENTIAL_NAMES = frozenset({"TOKEN", "NETRC", "PGPASSWORD"})
+
+
+def is_credential(name: str) -> bool:
+    upper = name.upper()
+    return (upper in CREDENTIAL_NAMES or upper.startswith(CREDENTIAL_PREFIXES)
+            or any(part in upper for part in CREDENTIAL_PARTS))
+
+
+def scrubbed_env(base: dict[str, str] | None = None, **extra: str) -> dict[str, str]:
+    """`base` (default os.environ) without credentials, then `extra`: a
+    check that needs a key sets a fake one here, by name."""
+    env = {k: v for k, v in (os.environ if base is None else base).items() if not is_credential(k)}
+    env.update(extra)
+    return env
+
 
 class Tmux:
     """A private tmux server with one session in it."""
@@ -60,8 +87,11 @@ class Tmux:
                  "-y", str(rows), "bash --noprofile --norc")
 
     def run(self, *args: str) -> str:
+        # The server (started by the first call) and every session in it
+        # inherit this environment: without credentials (scrubbed_env), so
+        # a shell typed into the pane has none to hand on.
         return subprocess.run(["tmux", "-L", self.socket, *args], check=True,
-                              capture_output=True, text=True).stdout
+                              capture_output=True, text=True, env=scrubbed_env()).stdout
 
     def type(self, text: str) -> None:
         self.run("send-keys", "-t", self.name, "-l", text)
@@ -86,7 +116,7 @@ class Tmux:
 
     def close(self) -> None:
         subprocess.run(["tmux", "-L", self.socket, "kill-server"],
-                       capture_output=True)
+                       capture_output=True, env=scrubbed_env())
 
 
 def main() -> int:

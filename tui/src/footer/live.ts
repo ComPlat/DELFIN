@@ -11,6 +11,7 @@
  * short of the width (a count a row too high leaves a blank row above the
  * text; one too low would cut the top of a block being handed over).
  */
+import { drawTable, sourceRows, tableSegments, type Segment } from "../scrollback/table"
 import type { SessionState } from "../store/state"
 import { width } from "../text"
 
@@ -77,14 +78,27 @@ function fenceMark(line: string): string | null {
   return open[1]![0] === "`" && open[2]!.includes("`") ? null : open[1]!
 }
 
-/** Rows a block takes at `cols` columns. */
+/** Rows a block takes at `cols` columns. A table in it takes the rows
+ *  table.ts draws it in (or its source lines, when it cannot fit), a row
+ *  between it and what a blank line parts it from. */
 export function blockRows(text: string, cols: number): number {
+  const segments = tableSegments(text.replace(/\s+$/, ""))
+  if (!segments.some((s) => s.kind === "table")) return markdownRows(text, cols)
+  return segments.reduce((n, s, i) => n + (i > 0 && s.gapBefore ? 1 : 0)
+    + (s.kind === "table" ? tableRows(s, Math.max(2, cols - 1)) : markdownRows(s.text, cols)), 0)
+}
+
+/** A table's rows at `room` columns: as drawn, or its source lines
+ *  wrapped at spaces (it could not fit; tableview.ts). */
+function tableRows(segment: Segment, room: number): number {
+  const drawn = drawTable(segment.text.split("\n"), room - segment.indent)
+  return drawn ? drawn.length : sourceRows(segment.text, room).length
+}
+
+function markdownRows(text: string, cols: number): number {
   const room = Math.max(2, cols - 1)
   const lines = text.replace(/\s+$/, "").split("\n")
   while (lines.length > 0 && !lines[0]!.trim()) lines.shift()
-  // A table: a border above and below, and a rule between every two rows.
-  const table = lines.filter((l) => l.trim().startsWith("|")).length
-  if (table >= 2 && table === lines.filter((l) => l.trim()).length) return 2 * table - 1
   let rows = 0
   let fence: string | null = null
   for (const line of lines) {

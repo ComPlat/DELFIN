@@ -7,11 +7,12 @@
  * settle before the rows are committed (writers.ts); everything else is a
  * few styled lines.
  */
-import { TextAttributes, type CliRenderer, type MouseEvent, type Renderable } from "@opentui/core"
+import { RGBA, TextAttributes, type CliRenderer, type MouseEvent, type Renderable } from "@opentui/core"
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
+import { SHELL_PREFIX } from "../commands"
 import { fit, middle, width } from "../text"
-import { DOLPHIN, DOLPHIN_WIDTH } from "../theme/logo"
+import { DOLPHIN, LOGO_GAP, logoDepth, logoRuns, pickLogo, pickedWidth } from "../theme/logo"
 import { GUTTER, markdownStyles, type Theme } from "../theme/theme"
 import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
@@ -28,10 +29,14 @@ export function cappedLines(text: string, max: number): string {
   return [...lines.slice(0, max - 1), `… ${lines.length - max + 1} more lines`].join("\n")
 }
 
-/** The banner: the dolphin, this much space, then the words (which need
- *  about this many columns beside it, or the dolphin is left out). */
-const LOGO_GAP = 3
-const BANNER_TEXT_MIN = 32
+/** The command of a line the session ran as one ("!ls" -> "ls"; as
+ *  repl.py: "!" then anything but blanks), else null. */
+export function shellCommand(text: string): string | null {
+  const line = text.trim()
+  if (!line.startsWith(SHELL_PREFIX)) return null
+  const command = line.slice(SHELL_PREFIX.length).trim()
+  return command ? command : null
+}
 
 /** The marker in front of a message, by who sent it. */
 const SOURCE_MARK: Record<string, string> = {
@@ -42,6 +47,9 @@ export interface RowProps {
   item: Item
   theme: Theme
   width: number
+  /** The terminal's rows: the banner's picture is sized by them too
+   *  (pickLogo). */
+  height?: number
   /** A tool call's details: what it printed, an edit's diff (ctrl+o). */
   expanded?: boolean
   /** A click on a tool call (full screen): its details on or off; the
@@ -56,14 +64,30 @@ export function Row(props: RowProps): JSX.Element {
     case "banner": {
       // The dolphin beside what the session is, where both have room;
       // the words alone (under the mark ◆) where they do not.
-      // A function: a full-screen row follows the width (rows.tsx is drawn
-      // once into the scrollback, but lives on in the window).
-      const logo = () => props.width >= DOLPHIN_WIDTH + LOGO_GAP + BANNER_TEXT_MIN
+      // In colour the mark (the dolphin and its waves, in sextant, octant
+      // or half-block cells) in the largest size the terminal's width and
+      // rows allow (pickLogo); in mono braille.
+      // Functions: a full-screen row follows the window's size (rows.tsx
+      // is drawn once into the scrollback, but lives on in the window).
+      const depth = t.name === "mono" ? "mono" : logoDepth()
+      const picked = () => pickLogo(depth, props.width, props.height ?? 0)
+      const logo = () => picked() !== null
+      const paint = (c: string | number | null) => c === null ? undefined : typeof c === "number" ? RGBA.fromIndex(c) : c
       return (
         <box flexDirection="row" paddingTop={1} paddingBottom={1}>
           <Show when={logo()}>
-            <box flexDirection="column" flexShrink={0} width={DOLPHIN_WIDTH + LOGO_GAP}>
-              <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
+            <box flexDirection="column" flexShrink={0} width={pickedWidth(picked()) + LOGO_GAP}>
+              <Show when={picked() !== "braille"} fallback={
+                <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
+              }>
+                <For each={((p) => p && p !== "braille" ? logoRuns(depth, p) : [])(picked())}>
+                  {(runs) => (
+                    <text wrapMode="none">
+                      <For each={runs}>{(run) => <span style={{ fg: paint(run.fg), bg: paint(run.bg) }}>{run.text}</span>}</For>
+                    </text>
+                  )}
+                </For>
+              </Show>
             </box>
           </Show>
           {/* A basis of 0: the words wrap at what is left, and every wrapped
@@ -84,13 +108,19 @@ export function Row(props: RowProps): JSX.Element {
       const source = String(f.source ?? "user")
       const tint = source === "harness" ? t.muted : t.bright
       const note = source === "queued" ? "  (queued)" : source === "steer" ? "  (into the turn)" : ""
+      // A "!" line the user sent ran as a command (steered, it went to the
+      // model as text): "$ command" heads what it printed, the notice
+      // under it.
+      const command = source === "user" || source === "queued" ? shellCommand(String(f.text ?? "")) : null
       // The marker in a column of its own: every further line, and every
       // wrapped one, hangs under the first.
       return (
         <box paddingTop={1} flexDirection="row">
-          <text width={2} fg={t.accent} attributes={TextAttributes.BOLD}>{SOURCE_MARK[source] ?? "❯ "}</text>
+          <text width={2} fg={command !== null ? t.shell : t.accent} attributes={TextAttributes.BOLD}>
+            {command !== null ? "$ " : SOURCE_MARK[source] ?? "❯ "}
+          </text>
           <text flexGrow={1} wrapMode="word">
-            <span style={{ fg: tint }}>{cappedLines(String(f.text ?? ""), USER_MAX_LINES)}</span>
+            <span style={{ fg: tint }}>{cappedLines(command ?? String(f.text ?? ""), USER_MAX_LINES)}</span>
             <span style={{ fg: t.faint }}>{note}</span>
           </text>
         </box>
@@ -284,7 +314,7 @@ export function itemWriter(renderer: CliRenderer, theme: () => Theme,
     const expanded = Boolean(options.details?.())
     writeSolidToScrollback(renderer, (ctx) => (
       <box paddingLeft={GUTTER} flexDirection="column">
-        <Row item={item} theme={t} width={ctx.width - GUTTER} expanded={expanded} />
+        <Row item={item} theme={t} width={ctx.width - GUTTER} height={renderer.terminalHeight} expanded={expanded} />
       </box>
     ))
   }

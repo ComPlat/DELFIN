@@ -1413,7 +1413,7 @@ When a phase runs past what is usual — 60 s without a first token, two minutes
 
 A session starts in `default` unless `--permission-mode` or `default_mode` in your permission settings names another level; `plan` applies only when one of them asks for it. `bypassPermissions` needs `--unattended` beside it, in a terminal session, on a `-p` run and on `delfin-agent run` alike, and a `bypassPermissions` default in your settings is never inherited: a terminal session starts in `default` instead, and a `-p` or `run` invocation without `--unattended` is refused (exit 2). With nobody to ask — a `-p` or `run` invocation without `--supervised` — `default` refuses every shell command off the allow-list and allows writes inside the workspace.
 
-Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
+Cycle with `/permissions` or Shift+Tab: default → acceptEdits → plan → bypassPermissions → default. Shift+Tab stops on bypass only where the managed policy allows it and an isolation layer holds each command (elsewhere it steps over it), and the first time in a session it only asks: type `y` (Enter in the REPL) to switch -- in the full-screen window a click on `[y] switch` does the same, from 0.3 s after the offer appeared; any other key or line stays where it was. `/permissions bypassPermissions` stays refused. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
 Settings, hook commands, MCP servers and skills (`.delfin/skills/`) that come from a checked-out repository are ignored until you trust that directory (`/trust`, then `/trust grant hooks|mcp|skills`); trust covers exactly the content you saw, and a change asks again. A repository skill never replaces a built-in or your own skill of the same name.
 
@@ -1623,8 +1623,15 @@ If you ask for the pull-request route in a message ("über PR", "per Pull Reques
 takes the whole terminal: the conversation scrolls inside the window -- the
 mouse wheel, PgUp/PgDn, ctrl+home/end -- above the prompt, which stays at
 the bottom; a drag selects text and copies it (OSC 52, also over SSH;
-shift+drag gives the terminal's own selection). Closing it gives the shell
-its lines back as they were, with a line on how to come back.
+shift+drag gives the terminal's own selection). A click answers what a key
+answers: an approval's options (`[y] yes`, `[n] no`, ...), a question's
+choices, a row of a list (`/model`, the palette, `/resume`) -- the left
+button pressed and let go on the option itself; a click within 0.3 s of
+the panel appearing or changing is not taken, and an "always" rule still
+asks a second time before it is saved. The wheel and a drag never answer.
+Inline the window takes no mouse (the terminal's wheel and selection stay
+the terminal's). Closing it prints what became of the session and the
+command that opens it again (`resume with: delfin-agent tui --resume <id>`).
 `delfin-agent tui --inline` (or `"screen": "inline"` in `tui.json`) draws
 the way `delfin-agent chat` does instead: under the shell's last line,
 finished output in the terminal's own scrollback, only the bottom live --
@@ -1652,9 +1659,35 @@ delfin-agent service logs
 The window runs as one executable when there is one -- `DELFIN_TUI_BINARY`,
 one shipped with the package, or one built in a checkout with
 `cd tui && bun scripts/build-binary.ts` (used while it is newer than the
-sources) -- and otherwise from source with [Bun](https://bun.sh) (`tui/`,
-`bun install` once). The executable needs no Bun and opens in about a
-third of a second.
+sources) -- and otherwise from source with [Bun](https://bun.sh). The
+executable needs no Bun and opens in about a third of a second.
+
+**First start.** When there is neither, the first `delfin-agent tui` sets
+the window up by itself and says so in one line: Bun 1.4.3 from its GitHub
+release (about 42 MB; size and SHA-256 pinned in DELFIN, checked before the
+archive is opened) into `~/.delfin/tools/bun-1.4.3`, then the window's npm
+packages with `bun install --frozen-lockfile --ignore-scripts --production`
+(about 18 MB, exactly the versions of `bun.lock`, each checked against its
+integrity hash, no install scripts) -- into `tui/node_modules` of a
+checkout, or, for a wheel install or a checkout you cannot write, into a
+copy of the window's sources in `~/.delfin/tools/tui-<digest>`. Proxies
+come from `HTTPS_PROXY`/`NO_PROXY`. It is refused as root and inside an
+agent session: the window is set up by you, in your own shell.
+
+```bash
+delfin-agent tui --setup        # set it up now and exit (also when automatic setup is off)
+delfin-agent doctor             # the "terminal window" row says what is there
+DELFIN_TUI_AUTO_INSTALL=0 delfin-agent tui   # no automatic setup: prints the manual commands
+```
+
+`"agent": {"tui_auto_install": false}` in `~/.delfin_settings.json` switches
+the automatic setup off for good. On a host without network, build the
+binary elsewhere (`cd tui && bun install && bun scripts/build-binary.ts`)
+and point `DELFIN_TUI_BINARY` at it. The window set up this way uses
+OpenTUI's prebuilt native library; `scripts/build-opentui-native.sh` in the
+window's folder builds the patched one (needs Zig, minutes), which keeps
+every row in the scrollback of xterm.js terminals (VS Code, JupyterLab)
+when the footer grows.
 
 **In a session** the REPL's keys apply: enter sends (during a turn it is
 queued), ctrl+g sends into the running turn, esc ends the turn, shift+tab
@@ -1795,11 +1828,35 @@ scrollback, a divider says the width changed instead).
 | `replayTurns` | turns written again on opening a session or after a resize (0: all) |
 | `showThinking` | show the model's thinking (as `-v`) |
 | `screen` | `auto` (the whole terminal; inline under GNU screen), `full` or `inline`; `DELFIN_TUI_SCREEN` and `--inline` come first |
+| `mouse` | `true` (default): full screen takes the mouse -- wheel, drag to copy, clicks on options; `false` leaves the mouse to the terminal (also with `TERM=dumb`) |
 
 A setting that cannot be read is reported in the window and the default
 applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`
 (it also reads the REPL's history) and its pins in `~/.delfin/tui_state.json`.
 `DELFIN_RUNTIME_DIR` moves the service's socket (default `/tmp`).
+The banner's logo is the dolphin and its two waves in the logo's blue,
+where the terminal says it draws colours (`COLORTERM=truecolor` or
+`24bit`: 24-bit; a `TERM` with `256color`: the nearest of the 256
+colours), and a braille outline in the accent otherwise and under
+`NO_COLOR`. Its size follows the terminal when the banner is drawn: 30
+columns (13 rows) in a terminal of at least 40 rows and 66 columns, 20
+columns (9 rows) from 28 rows and 56 columns, 16 columns (7 rows) from
+20 rows and 52 columns, and the words alone below that; the braille
+outline (19 x 8) needs 24 rows and 55 columns. The logo stays at about
+a third of the terminal's height or less. `DELFIN_TUI_LOGO` chooses how
+it is drawn:
+
+| Value | Logo |
+|---|---|
+| (unset) | sextant cells (2 x 3 sub-pixels, Unicode 13), the terminal's colours |
+| `octant` | octant cells (2 x 4, Unicode 16): sharper, where the terminal's font has them |
+| `halfblock` | half blocks, in every font with block elements |
+| `rgb`, `256` | sextants in 24-bit or 256 colours, whatever the terminal says |
+| `mono` | the braille outline |
+
+A logo drawn as boxes or question marks means the terminal or its font
+lacks those characters: set `DELFIN_TUI_LOGO=halfblock` (with `octant`,
+unset it again).
 
 ### Subagents
 

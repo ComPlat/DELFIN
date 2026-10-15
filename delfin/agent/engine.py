@@ -2258,6 +2258,31 @@ class AgentEngine:
         """This turn's pointer to the git-errors skill (may be empty)."""
         return str(getattr(self, "_repo_errors_hint", "") or "")
 
+    def _note_experiment_task(self, user_message: str) -> None:
+        """Set this turn's pointer to the experiment-discipline skill, or
+        clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_experiment_block`` returns for this turn. Empty unless the
+        message asks for, or acts on, a measured comparison
+        (``experiment_hints.user_hint``), and empty in a session that
+        reads no skills. Cost: 71 tokens in the turn's tail, only in a
+        turn that matched.
+        """
+        self._experiment_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .experiment_hints import user_hint
+            self._experiment_hint = user_hint(user_message or "")
+        except Exception:
+            self._experiment_hint = ""
+
+    def _build_experiment_block(self) -> str:
+        """This turn's pointer to the experiment-discipline skill."""
+        return str(getattr(self, "_experiment_hint", "") or "")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2414,6 +2439,7 @@ class AgentEngine:
         pairs.append(("skill_correction",
                       self._build_skill_correction_block()))
         pairs.append(("repo_errors", self._build_repo_errors_block()))
+        pairs.append(("experiment", self._build_experiment_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2999,6 +3025,18 @@ class AgentEngine:
             # Per turn: does the message name a repository error or ask
             # about DELFIN's checkouts? Then the turn points at git-errors.
             self._note_repo_errors(user_message or "")
+            # Per turn: does the message measure, compare or land a
+            # change? Then the turn points at experiment-discipline.
+            self._note_experiment_task(user_message or "")
+            # Per turn: what this turn's changes do to the measure and to
+            # the object (edit_signals), judged against this message.
+            self._turn_request = str(user_message or "")
+            self._exists_first_turn = {"noted": False, "index": None}
+            try:
+                from . import edit_signals as _es
+                _es.reset_turn(self._edit_signal_key())
+            except Exception:
+                pass
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -3609,6 +3647,10 @@ class AgentEngine:
                     # Commit the held command only if it actually ran.
                     self._commit_exec_command(
                         event.tool_name, event.tool_output or "")
+                    # A function this write added that exists elsewhere.
+                    self._note_new_definitions()
+                    # A write into the checkout a running job uses.
+                    self._note_running_job_writes()
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -4587,6 +4629,160 @@ class AgentEngine:
     _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
                                re.IGNORECASE)
 
+    def _edit_signal_key(self) -> str:
+        """The key edit_signals files this session's changes under: the
+        permissions' task session id, which the write path also reads."""
+        perms = getattr(self, "kit_permissions", None)
+        return str(getattr(perms, "task_session_id", "") or "")
+
+    def _note_check_run(self, tool_name: str, tool_input: Any,
+                        tool_output: str) -> None:
+        """Hand a test run, red or green, to edit_signals. A run_tests
+        result is JSON; its summary is rendered as runner text. Never
+        raises."""
+        try:
+            from . import edit_signals as _es
+            from . import verify_guard as _vg
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            out = tool_output or ""
+            if isinstance(tool_input, str) and tool_input.lstrip().startswith("{"):
+                try:
+                    tool_input = json.loads(tool_input)
+                except ValueError:
+                    pass
+            if name == "run_tests":
+                data = json.loads(out) if out.lstrip().startswith("{") else {}
+                summary = (data or {}).get("summary") or {}
+                out = (f"{int(summary.get('passed', 0) or 0)} passed, "
+                       f"{int(summary.get('failed', 0) or 0)} failed")
+                cmd = "pytest " + str((tool_input or {}).get("target", "")
+                                      if isinstance(tool_input, dict) else "")
+            else:
+                cmd = _vg.extract_exec_command(tool_name, tool_input)
+                cmd = cmd.split(" ", 1)[1] if " " in cmd else ""
+            if cmd:
+                _es.note_command(self._edit_signal_key(), cmd, out)
+                # A CI run read through gh: a failing check is a red check
+                # the turn may set out to make pass.
+                if (self._GH_CHECKS_RE.search(cmd)
+                        and self._GH_FAILED_RE.search(out)):
+                    _es.note_red_check(self._edit_signal_key())
+        except Exception:
+            pass
+
+    _GH_CHECKS_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:view|watch|list))\b")
+    _GH_FAILED_RE = re.compile(r"\bfail(?:ure|ed|ing)?\b|\bX\s", re.IGNORECASE)
+
+    def _note_running_job_writes(self) -> None:
+        """Hand the write gate's running-job notes to the run-note rail
+        (bash_jobs.take_in_use_notes; one per job). Never raises."""
+        try:
+            from . import bash_jobs as _bj
+            for text in _bj.take_in_use_notes():
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _note_new_definitions(self) -> None:
+        """Say it mid-turn when a write defined a function whose name, or
+        nearly its name, is already defined in another file
+        (exists_first). Once per turn, at most five names judged, test
+        files skipped; the definition index is built once per turn.
+        Advises; a second definition can be deliberate. Never raises."""
+        try:
+            from . import edit_signals as _es
+            defs = _es.take_new_defs(self._edit_signal_key())
+            state = getattr(self, "_exists_first_turn", None)
+            if state is None:
+                state = self._exists_first_turn = {"noted": False,
+                                                   "index": None}
+            if not defs or state.get("noted"):
+                return
+            defs = [(p, n) for p, n in defs if _es.role(p) != "test"][:5]
+            if not defs:
+                return
+            from . import exists_first as _xf
+            if not _xf.enabled():
+                return
+            perms = getattr(self, "kit_permissions", None)
+            ws = str(getattr(perms, "workspace", "") or "")
+            if not ws:
+                return
+            if state.get("index") is None:
+                state["index"] = _xf.build_index(ws)
+            text = _xf.note(defs, state["index"], workspace=ws)
+            if text:
+                state["noted"] = True
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _append_comparison_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Mark a comparative figure ("12 % faster", "from 6/10 to 9/10")
+        that no paired comparison of this session backs
+        (comparison_claims). Caveat, not correction: a retry could only
+        restate the figure. Never raises."""
+        try:
+            from . import comparison_claims as _cc
+            claims = _cc.scan(source if source is not None else text,
+                              getattr(self, "_exec_commands_session", None))
+            caveat = _cc.caveat(claims)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
+    def _append_edit_signal_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Name, in the answer, a check changed to make it pass and a
+        failure silenced rather than removed (edit_signals.turn_caveat).
+
+        Caveat, not correction: the change may be right, and only the
+        model can say why the old check was wrong or why the workaround
+        is the right fix there; a retry would rewrite the sentence, not
+        the change. It enters the transcript, so the next turn sees it."""
+        try:
+            from . import edit_signals as _es
+            request = str(getattr(self, "_turn_request", "") or "")
+            caveat = _es.turn_caveat(
+                self._edit_signal_key(), request,
+                source if source is not None else text)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
         """Record a held command, but only if its result shows it ran.
 
@@ -4614,6 +4810,8 @@ class AgentEngine:
                     break
             else:
                 return
+            # Red runs too: what the turn set out to make pass.
+            self._note_check_run(name, tool_input, tool_output)
             out = (tool_output or "").strip()
             if out.lstrip().startswith('{"error"'):
                 return
@@ -4646,12 +4844,83 @@ class AgentEngine:
             cmd = _vg.extract_exec_command(tool_name, tool_input)
             if not cmd:
                 return
+            self._note_repeated_sequence(tool_name, tool_input)
             ledger = self._exec_commands_session
             if cmd in ledger:
                 return
             ledger.append(cmd)
             if len(ledger) > 200:
                 del ledger[:len(ledger) - 200]
+        except Exception:
+            pass
+
+    #: Segments that only look around; a sequence of them is no check.
+    _LOOK_SEGMENT_RE = re.compile(
+        r"^\s*(?:cd|ls|pwd|echo|cat|head|tail|wc|true|printf|clear|sleep|"
+        r"sed\s+-n|grep|rg|find|git\s+(?:status|log|diff|show|branch|"
+        r"rev-parse))\b")
+
+    @classmethod
+    def repeated_sequence_key(cls, command: str) -> str:
+        """The key a multi-step command is counted under, or "".
+
+        Its segments (split at ``&&``, ``||``, ``;``, ``|`` outside
+        quotes) without the ones that only look around; fewer than two
+        left is no sequence. Quoted strings, hex ids and numbers are
+        normalised away: the repetitions that matter are the same check
+        with another number, commit or inline script, not the same text."""
+        try:
+            from .api_client import _split_shell_segments
+            segs = [" ".join(x.split()) for x in _split_shell_segments(command)
+                    if not cls._LOOK_SEGMENT_RE.match(x)]
+        except Exception:
+            return ""
+        if len(segs) < 2:
+            return ""
+        key = " && ".join(segs)
+        key = re.sub(r"'[^']*'|\"[^\"]*\"", "Q", key)
+        key = re.sub(r"\b[0-9a-f]{7,40}\b", "H", key)
+        return re.sub(r"\d+", "N", key)
+
+    def _note_repeated_sequence(self, tool_name: str, tool_input: Any) -> None:
+        """The third run of one multi-step shell command in a session gets
+        one run note: a check repeated by hand belongs in a script or a
+        hook. Counted only for commands that ran; said once per sequence.
+
+        Measured on 94 archived sessions (read only): 5 notes in 3
+        sessions, each on a command a script would carry -- an environment
+        plus interpreter incantation run with three inline scripts, and two
+        hand-built push commands repeated. Rejected: counting identical
+        text only (the field repetitions were the same check with another
+        number or inline script); a hook written by the harness (hooks run commands,
+        and only the user installs one). Never raises."""
+        try:
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            if name not in ("bash", "bash_background"):
+                return
+            data = tool_input
+            if isinstance(data, str) and data.lstrip().startswith("{"):
+                data = json.loads(data)
+            cmd = (str(data.get("command") or "") if isinstance(data, dict)
+                   else str(data or ""))
+            key = self.repeated_sequence_key(cmd)
+            if not key:
+                return
+            counts = getattr(self, "_repeated_sequences", None)
+            if counts is None:
+                counts = self._repeated_sequences = {}
+            if key not in counts and len(counts) >= 300:
+                return
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] != 3:
+                return
+            shown = " ".join(cmd.split())[:100]
+            self.client.push_run_note(
+                "[repeat] This multi-step command has now run three times "
+                f"in this session: `{shown}`. A check repeated by hand "
+                "belongs in a script in the repository (or a hook the user "
+                "installs in .delfin/settings.json): write it once and call "
+                "it.")
         except Exception:
             pass
 
@@ -4892,6 +5161,8 @@ class AgentEngine:
         out = self._append_functional_caveat(text, functional, on_token)
         out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
         out = self._append_truncated_count_caveat(out, on_token, source=source)
+        out = self._append_edit_signal_caveat(out, on_token, source=source)
+        out = self._append_comparison_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
         out = self._append_test_claim_caveat(out, on_token, source=source)

@@ -87,11 +87,27 @@ def _agent(engine):
     return agent
 
 
-def test_the_terminal_cycle_skips_plan_while_a_turn_runs():
+def test_the_terminal_cycle_skips_plan_while_a_turn_runs(monkeypatch):
+    # Bypass ruled out on every host, so the step after acceptEdits is
+    # default (the ladder is default, acceptEdits, plan, bypass).
+    from delfin.agent import posture_cycle
+    monkeypatch.setattr(posture_cycle, "bypass_refusal", lambda engine: "no cage")
     engine = _Engine("acceptEdits", running=True)
     agent = _agent(engine)
     agent._cycle_mode()
     assert engine.kit_permissions.mode == "default"
+
+
+def test_the_terminal_cycle_offers_bypass_past_plan_while_a_turn_runs(monkeypatch):
+    # Bypass possible: the step passes over plan onto the bypass offer,
+    # which switches nothing until a person confirms it.
+    from delfin.agent import posture_cycle
+    monkeypatch.setattr(posture_cycle, "bypass_refusal", lambda engine: None)
+    engine = _Engine("acceptEdits", running=True)
+    agent = _agent(engine)
+    agent._cycle_mode()
+    assert engine.kit_permissions.mode == "acceptEdits"
+    assert getattr(agent, "_bypass_offer", None)
 
 
 def test_the_terminal_cycle_reaches_plan_when_idle():

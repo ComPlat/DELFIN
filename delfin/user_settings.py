@@ -280,6 +280,12 @@ DEFAULT_SETTINGS = {
         # Narrow by default: too wide puts one project's notes into
         # another's prompt.
         "memory_key": "path",
+        # `delfin-agent tui` on a host with neither the window's binary nor
+        # Bun installs a pinned Bun (SHA-256 checked) and the window's
+        # packages (bun.lock) into ~/.delfin/tools on its first start.
+        # false: it prints the manual commands instead
+        # (DELFIN_TUI_AUTO_INSTALL=0 does the same for one shell).
+        "tui_auto_install": True,
         "auto_memory": {
             "enabled": True,
             "model": "",

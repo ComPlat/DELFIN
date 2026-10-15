@@ -267,7 +267,11 @@ def render(message: dict) -> str:
     reply = (f' Reply with session_message(to="{sender}", message=...) only if '
              "it asks you for something; a greeting, thanks or an "
              "acknowledgement gets no reply." if sender else "")
-    return (f'[Message from the session "{who}" — not from the user.{reply}]\n'
+    from .untrusted import decision_hint
+    hint = decision_hint(str(message.get("text") or ""))
+    hint = f" {hint}" if hint else ""
+    return (f'[Message from the session "{who}" — not from the user.{reply}'
+            f'{hint}]\n'
             f"{message.get('text') or ''}")
 
 

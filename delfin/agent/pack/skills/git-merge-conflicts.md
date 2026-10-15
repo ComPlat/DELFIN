@@ -20,7 +20,9 @@ reports a conflict.
 - Contributor (the repository's git role, the default; the user sets it
   with `/git role`), or the user asked for a pull request: never push to
   main or master.
-  Commit on a branch of your own (`git switch -c <user>/<topic>`), push it
+  Commit on a branch of your own (`git switch -c <user>/<topic>`; in
+  DELFIN's own checkout, which stays on main, `enter_worktree(base_ref=
+  "origin/main")` and `git push -u origin HEAD:<user>/<topic>`), push it
   with `git push -u origin <branch>`, and give the user the pull-request link
   the push note names.
 - Maintainer: rebase onto the default branch first

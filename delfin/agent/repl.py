@@ -106,7 +106,9 @@ class Transcript:
         # stderr about stdout is how `delfin-agent -p "..." > answer.txt`
         # in a terminal would end up writing escape codes into the file.
         self._answer_theme = rr.theme_for(self.out, color)
-        self._markdown = rr.MarkdownStream(self._answer_theme)
+        # A table is laid out against the width at the moment it is drawn.
+        self._markdown = rr.MarkdownStream(
+            self._answer_theme, width=lambda: self.width)
         # stdout and stderr normally name the same terminal.  Remember
         # that fact explicitly: while an answer is streaming the turn UI
         # is painted on stderr, then the next answer delta continues on
@@ -169,6 +171,19 @@ class Transcript:
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
 
+    def _release_held_answer(self) -> None:
+        """Write a table the markdown stream is still holding.
+
+        Called before anything else reaches the screen: a held table ends
+        the model's text, and a tool line written first would stand above
+        the table it came after."""
+        held = self._markdown.release()
+        if held:
+            self._clear_transient()
+            self.out.write(held)
+            self._flush(self.out)
+            self._track_screen_answer(held)
+
     def _err_is_tty(self) -> bool:
         try:
             return bool(self.err.isatty())
@@ -203,6 +218,7 @@ class Transcript:
         """
         if not line:
             return
+        self._release_held_answer()
         if not self._err_is_tty():
             if not self._transient_said:
                 self._transient_said = True
@@ -235,6 +251,7 @@ class Transcript:
         if not line:
             return
         self._clear_transient()
+        self._release_held_answer()
         if self._break_pending:
             self.err.write("\n")
             self._break_pending = False
@@ -1555,6 +1572,16 @@ class TerminalAgent:
         if event.kind == rk.SUBMIT:
             text = event.text.strip()
             self._clear_input_line()
+            # A question open: its answer, never the bypass offer's.
+            if self.broker is not None and getattr(self, "_bypass_offer", None):
+                pending = getattr(self.broker, "pending", None)
+                try:
+                    if callable(pending) and pending():
+                        self._bypass_offer = None
+                except Exception:
+                    self._bypass_offer = None
+            if self._answer_bypass_offer(text):
+                return
             # A choice question that arrived while this line was being
             # typed takes the line as its answer; it is then not queued.
             if text and self.broker is not None:
@@ -1654,17 +1681,16 @@ class TerminalAgent:
             return ""
 
     def _cycle_mode(self) -> None:
-        """Shift+Tab, one step along the ladder — never onto bypass.
+        """Shift+Tab, one step along the ladder (posture_cycle): default,
+        acceptEdits, plan, bypassPermissions.
 
-        Reaching unattended execution must stay a thing someone types on
-        purpose, not a thing a key lands on while a turn is running.
+        Bypass is stepped over where the managed policy disallows it or no
+        filesystem layer holds each command. The first step onto it in a
+        session switches nothing: it is offered, and only a ``y`` line
+        (``_answer_bypass_offer``) switches. shift+tab with the offer open
+        moves on past bypass.
         """
-        order = ["plan", "default", "acceptEdits"]
-        try:
-            from . import managed_policy as _mp
-            order = [m for m in order if _mp.mode_refusal(m) is None] or order
-        except Exception:
-            pass
+        from . import posture_cycle as _pc
         try:
             current = str(getattr(self.engine.kit_permissions, "mode", "")
                           or "default")
@@ -1672,22 +1698,62 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 "this backend carries no permission gate"))
             return
-        # A step taken while a turn runs passes over plan: each step takes
-        # effect at once, so a tool call landing mid-cycle was refused.
-        from .mode_cycle import next_in_cycle
-        if current in order:
-            nxt = next_in_cycle(order, current, turn_running=bool(
-                getattr(self.engine, "turn_in_flight", False)))
-        else:
-            nxt = "default"
-        try:
-            self.engine.set_kit_permission_mode(nxt)
-        except Exception as exc:
+        offer = getattr(self, "_bypass_offer", None)
+        self._bypass_offer = None
+        nxt, ask = _pc.step(self.engine, _pc.BYPASS if offer else current,
+                            confirmed=bool(getattr(self, "_bypass_confirmed", False)))
+        if ask:
+            import time as _time
+            self._bypass_offer = (current, _time.monotonic())
             self.transcript.chrome(self.transcript.theme.red(
-                f"could not switch mode: {exc}"))
+                f"⏵⏵ {_pc.OFFER}: type y and enter to switch; any other "
+                f"line stays in {current}"))
             return
+        if nxt == _pc.BYPASS:
+            why = _pc.enter_bypass(self.engine, via="REPL shift+tab")
+            if why:
+                self.transcript.chrome(self.transcript.theme.red(
+                    f"not switched: {why}"))
+                return
+        else:
+            try:
+                self.engine.set_kit_permission_mode(nxt)
+            except Exception as exc:
+                self.transcript.chrome(self.transcript.theme.red(
+                    f"could not switch mode: {exc}"))
+                return
         self.transcript.chrome(self.transcript.theme.cyan(
             f"approval → {nxt}"))
+
+    def _answer_bypass_offer(self, text: str) -> bool:
+        """A line typed while bypass is offered. True when the line was
+        the answer (and is not to be sent): ``y`` after the pause
+        (posture_cycle._DELIBERATE_S), which switches; a ``y`` sooner is
+        taken and switches nothing. Any other line leaves the posture
+        where it was and goes on as typed (False)."""
+        from . import posture_cycle as _pc
+        offer = getattr(self, "_bypass_offer", None)
+        if not offer:
+            return False
+        self._bypass_offer = None
+        was, at = offer
+        if str(text or "").strip().lower() not in ("y", "yes"):
+            self.transcript.chrome(self.transcript.theme.dim(f"still {was}"))
+            return False
+        import time as _time
+        if _time.monotonic() - at < _pc._DELIBERATE_S:
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"too soon to be an answer: still {was} (shift+tab offers it again)"))
+            return True
+        why = _pc.enter_bypass(self.engine, via="REPL shift+tab, confirmed with y")
+        if why:
+            self.transcript.chrome(self.transcript.theme.red(
+                f"not switched: {why}"))
+            return True
+        self._bypass_confirmed = True
+        self.transcript.chrome(self.transcript.theme.red(
+            "approval → bypassPermissions"))
+        return True
 
     def _expand_last_result(self) -> None:
         if not self._last_result_text:
@@ -4259,6 +4325,8 @@ class TerminalAgent:
                         self.transcript.refresh_width()
                     continue
                 _clear_box(decoder)
+                if self._answer_bypass_offer(submit_text):
+                    continue
                 return submit_text
 
         with rk.RawMode(self._stdin) as raw:

@@ -11,13 +11,11 @@
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
-> 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256 · https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
-
 **DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
 **DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
-Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Their shell is sandboxed, their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents).
+Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Their shell is sandboxed, their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents). Every agent prompt opens with the same [operating principles](#operating-principles), which put the protection of people and the environment ahead of any single instruction.
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
@@ -1025,7 +1023,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 If you use DELFIN in a scientific publication, please cite:
 
 - Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.21508364
-- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv. https://doi.org/10.26434/chemrxiv-2025-4c256
+- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv (preprint). https://doi.org/10.26434/chemrxiv-2025-4c256 · [article page](https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a)
 
 ### BibTeX
 ```bibtex

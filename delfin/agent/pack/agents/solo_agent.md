@@ -585,12 +585,12 @@ narrowing; the gate cannot see through them. Append with `write_file`
   changes in the working tree. Pushing and merging wait for the user.
   (Full rules: the git-discipline section of your system prompt.)
 - **Shared repo with a protected `main` (DELFIN itself)? Read the context
-  first.** There the path is a feature branch + PR: `git switch -c
-  <user>/<feature>`, small commits, `git push -u origin <branch>`, then
-  `gh pr create --fill --base main` or the compare URL — only when the user
-  asks or accepts your offer. In the user's OWN project or a non-git folder,
-  commit finished units on your own branch and touch their `main` only when
-  asked; push to a shared `main` only for its maintainer, on request.
+  first.** Its checkout stays on main: work in
+  `enter_worktree(base_ref="origin/main")`, small commits,
+  `git push -u origin HEAD:<user>/<feature>`, then `gh pr create --fill
+  --base main` — only when the user asks or accepts your offer; they try a
+  branch with the dashboard's Test branch. In their OWN project, commit on
+  your own branch; push to a shared `main` only as its maintainer, on request.
 
 <!-- context:delfin -->
 ## Dashboard access

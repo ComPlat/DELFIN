@@ -17,6 +17,7 @@ import { createStore, produce } from "solid-js/store"
 import { markdownStyles, type Theme } from "../theme/theme"
 import { HIGHLIGHT_WAIT_MS, startNewestFirst, whenHighlighted } from "./highlighter"
 import { Row } from "./rows"
+import { SegmentedMarkdown, holdsTable } from "./segmented"
 import type { Item } from "./transcript"
 
 /** Rows kept in view: older ones leave, so a long session costs what a
@@ -128,6 +129,9 @@ export interface TranscriptViewProps {
   /** The width it draws in (the window's, less the gutter): a row is
    *  cut to it, less the scroll bar. */
   width: Accessor<number>
+  /** The terminal's rows (the banner's picture is sized by them; the
+   *  renderer's when not given). */
+  height?: Accessor<number>
   /** Shown (hidden while the agent view has the screen). */
   visible: Accessor<boolean>
   ref?: (box: ScrollBoxRenderable) => void
@@ -139,6 +143,7 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
   const t = props.theme
   const style = themedStyle(props.renderer, t)
   const inner = () => Math.max(10, props.width() - 1)
+  const rows = () => props.height?.() ?? props.renderer.terminalHeight
   // A quiet scroll bar: its thumb in the faint tone, no track (made once:
   // a prop object in the JSX would be made again on every read).
   const bar = createMemo(() => ({ trackOptions: { foregroundColor: t().faint, backgroundColor: "transparent" } }))
@@ -224,11 +229,11 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
       </Show>
       <For each={props.screen.items}>
         {(item) => item.kind === "markdown"
-          ? <Block item={item} screen={props.screen} syntax={style} />
+          ? <Block item={item} screen={props.screen} syntax={style} width={inner} />
           // A row takes its colours when it is made: made again when the
           // theme changes (the terminal said light after the first frame).
           : <Show when={t()} keyed>
-              {(theme: Theme) => <Row item={item} theme={theme} width={inner()} expanded={props.screen.expanded(item.id)}
+              {(theme: Theme) => <Row item={item} theme={theme} width={inner()} height={rows()} expanded={props.screen.expanded(item.id)}
                                       onToggle={item.kind === "tool" ? (row) => toggle(item.id, row) : undefined} />}
             </Show>}
       </For>
@@ -240,18 +245,24 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
  *  a box of no rows until it is highlighted, then shown -- the footer
  *  lets go of it in the same frame. Its highlighting is started at once
  *  in any case, so a block out of sight is ready when it comes into view. */
-function Block(props: { item: Item; screen: ScreenItems; syntax: Accessor<SyntaxStyle> }): JSX.Element {
+function Block(props: { item: Item; screen: ScreenItems; syntax: Accessor<SyntaxStyle>; width: Accessor<number> }): JSX.Element {
   const held = () => props.screen.held(props.item.id)
   let markdown: Renderable | undefined
   onMount(() => {
     startNewestFirst(() => void whenHighlighted(markdown!).then(() => props.screen.reveal(props.item.id)))
   })
+  const text = () => String(props.item.text ?? "")
   return (
     <box flexShrink={0} height={held() ? 0 : "auto"} overflow="hidden" marginTop={held() ? 0 : 1}>
       {/* Content last: the element builds its blocks when it is set, with
-          the style it has by then (props go in in order). */}
-      <markdown ref={(m: Renderable) => { markdown = m }} syntaxStyle={props.syntax()} conceal width="100%"
-                tableOptions={{ widthMode: "content" }} content={String(props.item.text ?? "")} />
+          the style it has by then (props go in in order). A block that
+          holds a table is drawn in segments (segmented.tsx). */}
+      <Show when={holdsTable(text())} fallback={
+        <markdown ref={(m: Renderable) => { markdown = m }} syntaxStyle={props.syntax()} conceal width="100%"
+                  tableOptions={{ widthMode: "content" }} content={text()} />
+      }>
+        <SegmentedMarkdown ref={(m: Renderable) => { markdown = m }} text={text} width={props.width} syntax={props.syntax} />
+      </Show>
     </box>
   )
 }
