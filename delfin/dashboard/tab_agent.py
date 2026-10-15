@@ -1153,6 +1153,9 @@ _AGENT_CSS = """\
     border-radius: 8px;
     max-width: 85%;
     word-wrap: break-word;
+    /* The widget label around the chat sets 28px, which put a blank
+       line's height between every line of an answer. */
+    line-height: 1.5;
 }
 /* Consecutive tool rows sit close but never overlap: a negative margin
    here pulled a multi-line command into the row above it. */
@@ -1161,12 +1164,16 @@ _AGENT_CSS = """\
 }
 .delfin-chat-user {
     background: #dbeafe;
+    /* The background is fixed, so the text colour is too: inherited, it
+       is the dark theme's white on a light bubble. */
+    color: #1f2937;
     margin-left: auto;
     text-align: left;
     border-bottom-right-radius: 2px;
 }
 .delfin-chat-agent {
     background: #f3f4f6;
+    color: #1f2937;
     margin-right: auto;
     border-bottom-left-radius: 2px;
 }
