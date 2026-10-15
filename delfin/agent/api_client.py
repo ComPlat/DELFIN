@@ -20996,14 +20996,25 @@ class _DocToolExecutor:
                            if caged_admission is not None else None)
             if _caged_rule is not None and _caged_rule[0] == "deny":
                 return _refuse_by_rule("bash", _caged_rule[1])
+            _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
-                    and _caged_command_may_run_unasked(cmd, perms, mode)):
+                    and _caged_command_may_run_unasked(cmd, perms, mode,
+                                                       cwd=_cage_cwd)):
                 verdict = self._classifier_second_opinion(
                     perms, name, args, mode)
                 if verdict is None:
                     _record_security_event(
                         "caged_unasked", "bash", cmd[:80], blocked=False)
                     caged_admission.append(True)
+                    try:
+                        from . import caged_test_runners as _ctr
+                        from . import channels as _channels
+                        _ws_c = str(getattr(perms, "workspace", "") or ".")
+                        if _ctr.admitted_runners(cmd, _cage_cwd or _ws_c,
+                                                 _ws_c):
+                            _channels.fire("caged_test_runner")
+                    except Exception:
+                        pass
                 return verdict
             # Not auto-allowed. Whenever a per-action approval dialog is
             # wired (the dashboard KitConfirmBroker), ask the user to
@@ -21236,6 +21247,25 @@ class _DocToolExecutor:
                 "not_allowlisted", "bash",
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode})")
+            try:
+                from . import verify_commands as _vc_r
+                _is_check = _vc_r.command_kind(cmd) is not None
+            except Exception:
+                _is_check = False
+            if _is_check:
+                # The verification step of an edit. "STOP and wait" ended
+                # 26 of 1,018 benchmark attempts on needs_approval with the
+                # change untested and other work undone (diagnosis
+                # 2026-10-15); the run is still refused, the turn is not.
+                return (
+                    f"bash: '{cmd[:120]}' is not on the auto-allow list "
+                    f"(mode={mode}). This is the verification step for your "
+                    "edit: ask the user once for exactly this command (or "
+                    "use run_tests), and go on with any other part of the "
+                    "task meanwhile. Until it has run, the change is "
+                    "UNTESTED: say so in your answer." + hint
+                    + _reading_alternative_hint(cmd)
+                )
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "
@@ -27341,7 +27371,8 @@ def _caged_command_names_excluded(cmd: str) -> bool:
     return False
 
 
-def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
+def _caged_command_may_run_unasked(cmd: str, perms, mode: str,
+                                   cwd: str = "") -> bool:
     """Whether a bash command that is NOT on the auto-allow list may run
     without a question because the filesystem cage holds it.
 
@@ -27357,7 +27388,11 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
         ``_bash_isolation_argv`` builds the argv from -- the process cage
         is active (``--unshare-pid``: no process outside the command is
         visible to signal) and the network mode is not "open";
-      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``;
+      - the text names nothing in ``_CAGED_UNASKED_EXCLUDED_WORDS`` / ``_RE``,
+        apart from segments that are exactly a test or check run of the
+        stack found in ``cwd`` (caged_test_runners: cargo test|check|
+        clippy, go test|vet, npm test, npx vitest / tsc --noEmit of a
+        local install; never an install, publish or network verb);
       - no wrap has failed at run time in this process
         (``_BWRAP_RUNTIME_FAILURE``, set by ``_note_wrap_failure``).
     The command then runs with ``caged_unasked=True``: protected files
@@ -27389,7 +27424,18 @@ def _caged_command_may_run_unasked(cmd: str, perms, mode: str) -> bool:
                 return False
         except Exception:
             pass
-        if _caged_command_names_excluded(cmd):
+        # A stack's test runner executes repository code exactly as pytest
+        # does; its program name is on the exclusion list for its install
+        # and network verbs, which the runner grammar never admits.
+        _judged = cmd
+        try:
+            from . import caged_test_runners as _ctr
+            _ws = str(getattr(perms, "workspace", "") or ".")
+            _judged = _ctr.without_admitted_runners(
+                cmd, str(cwd or _ws), _ws) or cmd
+        except Exception:
+            _judged = cmd
+        if _caged_command_names_excluded(_judged):
             return False
         _kind, _iso_mode = _bash_isolation_decision(perms)
         # A container session runs its commands in the container, whose
