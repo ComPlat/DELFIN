@@ -21,6 +21,8 @@ import {
 import { parsePatch } from "diff"
 import { drawPlain } from "./highlighter"
 import { bounded } from "./queue"
+import { tableSegments } from "./table"
+import { blockRenderable } from "./tableview"
 
 export interface SurfaceTarget {
   createScrollbackSurface(options?: { startOnNewLine?: boolean }): ScrollbackSurface
@@ -128,10 +130,19 @@ export interface MarkdownOptions {
   gutter?: number
 }
 
-/** One complete markdown block (see blocks.ts), as a committable surface. */
+/** One complete markdown block (see blocks.ts), as a committable surface.
+ *  A block that holds a table is drawn in segments: its tables by
+ *  table.ts, the rest by OpenTUI's markdown element (tableview.ts). */
 export function markdownBlock(raw: string, options: MarkdownOptions) {
   return (ctx: RenderContext): Built => {
     const style = SyntaxStyle.fromStyles(options.styles, ctx.nativeScene!)
+    const segments = tableSegments(raw)
+    if (segments.some((s) => s.kind === "table")) {
+      const gutter = options.gutter ?? 0
+      const root = blockRenderable(ctx, segments, { syntax: style, width: ctx.width - gutter,
+                                                    marginTop: options.marginTop ?? 0, paddingLeft: gutter })
+      return { root, dispose: () => style.destroy() }
+    }
     const markdown = new MarkdownRenderable(ctx, {
       content: raw,
       syntaxStyle: style,
