@@ -1,6 +1,7 @@
 /**
  * Completing what is being typed: a `/command` at the start of the prompt,
- * an `@path` anywhere in it.
+ * what follows it (`/model ` → the served models, `/git ` → status, diff,
+ * ...), an `@path` anywhere in it.
  *
  * The lists are the session's (session.commands, session.completePath):
  * the commands a typed line would run, the paths under its workspace.
@@ -17,7 +18,9 @@ export interface Command {
 }
 
 export interface Token {
-  kind: "command" | "path"
+  kind: "command" | "path" | "argument"
+  /** The command an argument is for (kind "argument"). */
+  command?: string
   /** The token as typed, with its `/` or `@`. */
   text: string
   /** Where it starts and ends in the prompt (offsets). */
@@ -35,6 +38,17 @@ export interface Candidate {
   runs: boolean
   /** A directory: the completion continues inside it. */
   descends: boolean
+  /** Not a value: what the command takes (its usage), shown in the list;
+   *  Enter and Tab leave the prompt as typed. */
+  hint?: boolean
+}
+
+/** What a command takes after it (the session's session.choices with
+ *  what "args", or the window's own for its commands). */
+export interface ArgumentChoices {
+  current: string
+  choices: { value: string; label?: string; detail?: string }[]
+  usage: string
 }
 
 /** The token the cursor is at the end of, if it is one to complete. */
@@ -51,6 +65,34 @@ export function tokenAt(text: string, cursor: number): Token | null {
     return { kind: "command", text: text.slice(0, end), start: 0, end }
   }
   return null
+}
+
+/** The argument the cursor is in: everything after `/command ` on a
+ *  one-line prompt (a value may have spaces: `watch on`). */
+export function argumentAt(text: string, cursor: number): Token | null {
+  const m = /^(\/[\w.-]+) +/.exec(text)
+  if (!m || text.includes("\n") || cursor < m[0].length) return null
+  if (m[1]!.slice(1).includes("/")) return null
+  return { kind: "argument", command: m[1]!, text: text.slice(m[0].length), start: m[0].length, end: text.length }
+}
+
+/** The values for what is typed after the command: every typed word in
+ *  the value, its label or its detail, in the given order; the current
+ *  one marked. None (or none matching): the usage line as a hint. */
+export function matchArguments(got: ArgumentChoices, typed: string, limit = 50): Candidate[] {
+  const words = typed.toLowerCase().split(/\s+/).filter(Boolean)
+  const shown = got.choices.filter((c) => {
+    const hay = `${c.value} ${c.label ?? ""} ${c.detail ?? ""}`.toLowerCase()
+    return words.every((w) => hay.includes(w))
+  }).slice(0, limit).map((c) => ({
+    insert: c.value,
+    label: c.label || c.value,
+    detail: c.value === got.current && got.current ? "(now)" + (c.detail ? ` ${c.detail}` : "") : c.detail ?? "",
+    runs: true,
+    descends: false,
+  }))
+  if (shown.length) return shown
+  return got.usage ? [{ insert: typed, label: got.usage, detail: "", runs: false, descends: false, hint: true }] : []
 }
 
 /** Commands for `typed` (with its slash): names that start with it first,

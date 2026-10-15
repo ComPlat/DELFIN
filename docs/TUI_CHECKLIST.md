@@ -32,7 +32,9 @@ why it could not be closed here.
 3. **xterm.js terminals**: VS Code Remote-SSH and JupyterLab's terminal.
    The scrollback was checked in xterm.js headless (phase 0); a look in the
    real ones is still due -- full screen too: the wheel, a drag that copies
-   (OSC 52; VS Code may ask to allow the clipboard), shift+drag.
+   (OSC 52; VS Code may ask to allow the clipboard), shift+drag, a click
+   on an approval's option and on a list row (tmux is checked:
+   tui/test/e2e/check_mouse_tmux.py).
 4. **A look at the design** in your usual terminal: colours ("DELFIN blue,
    restrained"), the agent view, approval panels, light and dark themes,
    `NO_COLOR=1`.

@@ -9,7 +9,8 @@
 - after a resize every row fits the new width and the composer is still
   at the bottom;
 - leaving gives the shell its lines back as they were, says the session
-  keeps running, and it does;
+  keeps running, and it does, and prints the command that comes back to it;
+- `--inline` prints that command too, and running it opens that session;
 - `--inline` draws under the shell's lines instead, as before.
 
 Usage (from the repository root):
@@ -19,6 +20,7 @@ Usage (from the repository root):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -148,6 +150,8 @@ def main() -> int:
                 problems.append("no line said the session keeps running")
             if "TUI_EXIT=0" not in after:
                 problems.append("the window did not leave cleanly")
+            if not re.search(r"resume with: delfin-agent tui --resume [0-9A-Za-z_.:-]+", after):
+                problems.append(f"no line said how to come back:\n{after}")
         with ServiceClient(sock) as c:
             if not any(s.get("title") == "scan of benzene" for s in c.request("sessions.list")["sessions"]):
                 problems.append("the session did not keep running")
@@ -158,10 +162,31 @@ def main() -> int:
         tmux.type(command("--inline"))
         tmux.key("Enter")
         if expect(r"ask DELFIN", "the inline window", 60):
-            if MARK not in tmux.screen():
-                problems.append("--inline: the shell's lines are gone (it took the screen)")
+            # Under the shell's lines: not the alternate screen, and the line
+            # printed before is still there (scrolled up by the long command
+            # line and the banner on a short pane, so in the history).
+            alternate = tmux.run("display-message", "-p", "-t", tmux.name, "#{alternate_on}").strip()
+            if alternate == "1" or MARK not in tmux.history():
+                problems.append(f"--inline: the shell's lines are gone (it took the screen):\n{tmux.screen()}")
             tmux.key("C-d")
-            expect(r"TUI_EXIT=0", "leaving the inline window", 30)
+            if expect(r"TUI_EXIT=0", "leaving the inline window", 30):
+                # The printed command, typed as printed, opens that session.
+                back = re.findall(r"resume with: (delfin-agent tui --resume (\S+))", tmux.history())
+                if not back:
+                    problems.append(f"--inline: no line said how to come back:\n{tmux.screen()}")
+                else:
+                    sid = back[-1][1]
+                    tmux.type("clear; " + command(f"--resume {sid}").replace(f"tui --fake --cwd {ws} -n 'scan of benzene'",
+                                                                   f"tui --fake --cwd {ws}"))
+                    tmux.key("Enter")
+                    until = time.time() + 60
+                    while time.time() < until and not ("ask DELFIN" in tmux.screen()
+                                                       and " scan of benzene " in tmux.screen()):
+                        time.sleep(0.3)
+                    if " scan of benzene " not in tmux.screen():
+                        problems.append(f"the printed command did not open that session:\n{tmux.screen()}")
+                    tmux.key("C-d")
+                    time.sleep(2)
         with ServiceClient(sock) as c:
             c.request("service.shutdown")
     except SystemExit:

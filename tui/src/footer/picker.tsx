@@ -4,6 +4,8 @@
  *
  *   type      narrows the list (every word must appear, in any order)
  *   ↑ ↓       select;  enter picks;  esc closes
+ *   click     on a row picks it, as enter does (full screen; mouse.ts) --
+ *             not within CLICK_PAUSE_MS of the list appearing or changing
  *
  * The list comes from the session (session.choices, session.commands,
  * sessions.past) and may take a moment: the picker opens at once and says
@@ -12,6 +14,7 @@
 import type { KeyEvent } from "@opentui/core"
 import { For, Show, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
+import { CLICK_PAUSE_MS, clickable } from "../mouse"
 import { fit, width } from "../text"
 import type { Theme } from "../theme/theme"
 
@@ -35,6 +38,9 @@ export interface PickerState {
   choices: Choice[]
   query: string
   selected: number
+  /** When the rows last changed (opened, loaded, filtered): the rows under
+   *  the pointer move then, and a click that soon is not taken. */
+  shownAt: number
 }
 
 export interface Picker {
@@ -47,6 +53,9 @@ export interface Picker {
   /** The choices that match what is typed, in their order. */
   shown(): Choice[]
   handleKey(key: KeyEvent): boolean
+  /** A click on the shown choice at `index` (in shown()): picks it, as
+   *  enter does; false when not taken (too soon, nothing there). */
+  click(index: number): boolean
   /** Rows it takes in the footer. */
   height(): number
 }
@@ -57,9 +66,15 @@ export function matches(text: string, query: string): boolean {
   return query.toLowerCase().split(/\s+/).filter(Boolean).every((word) => hay.includes(word))
 }
 
-export function createPicker(): Picker {
-  const [state, setState] = createStore<PickerState>({ open: false, title: "", loading: false, error: "",
-                                                       choices: [], query: "", selected: 0 })
+export function createPicker(options: { clickPauseMs?: number; now?: () => number } = {}): Picker {
+  const now = options.now ?? Date.now
+  const clickPause = options.clickPauseMs ?? CLICK_PAUSE_MS
+  const [state, setStore] = createStore<PickerState>({ open: false, title: "", loading: false, error: "",
+                                                       choices: [], query: "", selected: 0, shownAt: 0 })
+  // A change of the rows (not of the selection) starts the click pause again.
+  const setState = (patch: Partial<PickerState>) =>
+    setStore("choices" in patch || "query" in patch || "open" in patch || "loading" in patch
+      ? { ...patch, shownAt: now() } : patch)
   let pick: ((choice: Choice) => void) | null = null
   let generation = 0
 
@@ -69,9 +84,9 @@ export function createPicker(): Picker {
                 more?: Promise<Choice[]>) => {
     const mine = ++generation
     pick = onPick
-    const now = Array.isArray(choices) ? choices : []
-    setState({ open: true, title, loading: !Array.isArray(choices), error: "", choices: now, query: "",
-               selected: Math.max(0, now.findIndex((c) => c.current)) })
+    const first = Array.isArray(choices) ? choices : []
+    setState({ open: true, title, loading: !Array.isArray(choices), error: "", choices: first, query: "",
+               selected: Math.max(0, first.findIndex((c) => c.current)) })
     if (!Array.isArray(choices)) {
       void choices.then((list) => {
         if (mine !== generation) return
@@ -93,6 +108,21 @@ export function createPicker(): Picker {
     setState({ open: false, choices: [], query: "", selected: 0, error: "" })
   }
 
+  const choose = (chosen: Choice) => {
+    const then = pick
+    close()
+    then?.(chosen)
+  }
+
+  const click = (index: number): boolean => {
+    if (!state.open || state.loading) return false
+    if (clickPause > 0 && now() - state.shownAt < clickPause) return false
+    const chosen = shown()[index]
+    if (!chosen) return false
+    choose(chosen)
+    return true
+  }
+
   const handleKey = (key: KeyEvent): boolean => {
     if (!state.open) return false
     const list = shown()
@@ -109,10 +139,7 @@ export function createPicker(): Picker {
     }
     if (key.name === "return" || key.name === "tab") {
       const chosen = list[Math.min(state.selected, list.length - 1)]
-      if (!chosen) return true
-      const then = pick
-      close()
-      then?.(chosen)
+      if (chosen) choose(chosen)
       return true
     }
     let query = state.query
@@ -131,7 +158,7 @@ export function createPicker(): Picker {
     return n + 3                                     // the border, and the filter line
   }
 
-  return { state, open, close, shown, handleKey, height }
+  return { state, open, close, shown, handleKey, click, height }
 }
 
 export function PickerView(props: { picker: Picker; theme: () => Theme; width: () => number }): JSX.Element {
@@ -142,7 +169,7 @@ export function PickerView(props: { picker: Picker; theme: () => Theme; width: (
     const list = p.shown()
     const sel = Math.min(p.state.selected, Math.max(0, list.length - 1))
     const first = Math.max(0, Math.min(sel - PICKER_ROWS + 1, list.length - PICKER_ROWS))
-    return list.slice(first, first + PICKER_ROWS).map((c, i) => ({ c, on: first + i === sel }))
+    return list.slice(first, first + PICKER_ROWS).map((c, i) => ({ c, on: first + i === sel, index: first + i }))
   }
   const line = (c: Choice, on: boolean) => {
     const mark = on ? "› " : "  "
@@ -165,8 +192,11 @@ export function PickerView(props: { picker: Picker; theme: () => Theme; width: (
           <For each={rows()}>
             {(row) => {
               const l = line(row.c, row.on)
+              // The whole row is the choice: a click on it picks it.
+              const hit = clickable(() => "pick", () => void p.click(row.index))
               return (
-                <text wrapMode="none">
+                <text wrapMode="none" ref={hit.ref} onMouseDown={hit.onMouseDown} onMouseUp={hit.onMouseUp}
+                      onMouseDrag={hit.onMouseDrag}>
                   <span style={{ fg: row.on ? t().accent : t().faint }}>{l.mark}</span>
                   <span style={{ fg: row.on ? t().bright : t().text, bold: Boolean(row.on) }}>{l.label}</span>
                   <span style={{ fg: t().ok }}>{l.now}</span>

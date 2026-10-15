@@ -39,7 +39,7 @@ REPO = TUI.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(TUI / "spike"))
 
-from check_tmux import BUN, Tmux  # noqa: E402
+from check_tmux import BUN, Tmux, scrubbed_env  # noqa: E402
 
 from delfin.agent.service.client import ServiceClient  # noqa: E402
 
@@ -83,7 +83,8 @@ def launches(tmux: Tmux, env: dict, ws: Path) -> list[float]:
 
 def main() -> int:
     problems: list[str] = []
-    built = subprocess.run([BUN, "scripts/build-binary.ts"], cwd=str(TUI), capture_output=True, text=True)
+    built = subprocess.run([BUN, "scripts/build-binary.ts"], cwd=str(TUI), capture_output=True, text=True,
+                           env=scrubbed_env())
     if built.returncode != 0:
         print(f"FAIL: the binary did not build: {built.stdout} {built.stderr}")
         return 1
@@ -95,7 +96,7 @@ def main() -> int:
     # A user's environment: a home of its own, no scratch state.
     env = {"HOME": str(tmp / "home"), "DELFIN_RUNTIME_DIR": str(runtime), "PYTHONPATH": str(REPO),
            "PATH": f"{Path.home()}/.bun/bin:{os.environ.get('PATH', '')}"}
-    base = {k: v for k, v in os.environ.items() if k != "DELFIN_SCRATCH_STATE"}
+    base = {k: v for k, v in scrubbed_env().items() if k != "DELFIN_SCRATCH_STATE"}
     subprocess.run([PYTHON, "-m", "delfin.agent.service.launcher"], env={**base, **env},
                    check=True, capture_output=True, timeout=120)
     tmux = Tmux(100, 30)

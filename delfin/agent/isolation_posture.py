@@ -31,8 +31,9 @@ text; a command that assembles its words at run time is not read. So:
 Rejected: exiting with an error for an unattended bypass start without a
 layer -- long unattended runs on such hosts would stop working; running
 them in ``default`` keeps reads, workspace writes and the test runner.
-Rejected: one confirmation per mode switch -- shift+tab never reaches
-bypass and ``/mode`` refuses it, so start is the only way in.
+Rejected: one confirmation per mode switch -- shift+tab reaches bypass
+only where a layer holds each command (posture_cycle.bypass_refusal), so
+the unisolated case is decided here, at start, alone.
 
 Cost: the three probes are cached per process; one settings read.
 """

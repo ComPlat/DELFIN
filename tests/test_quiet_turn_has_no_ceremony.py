@@ -154,7 +154,8 @@ def test_a_reply_opening_with_a_newline_does_not_start_with_a_break():
 
     html = _md_to_html("\n\nIch lese alle Buchungsdaten aus.")
     assert not html.startswith("<br>"), html[:40]
-    assert html.startswith("Ich lese")
+    # A paragraph element, and nothing between it and the first word.
+    assert html.removeprefix("<p>").startswith("Ich lese"), html[:40]
 
 
 def test_a_trailing_newline_does_not_pad_the_bottom():

@@ -1109,6 +1109,9 @@ class Worker:
         self._seen_lock = threading.Lock()
         self._tasks: list[dict[str, Any]] = []
         self._tasks_key: Any = ()
+        #: bypassPermissions was confirmed once in this session (the
+        #: window's y): shift+tab passes through it from then on.
+        self._bypass_confirmed = False
         self._seen = self._session_facts()
         # Held while a request is being handled: the process does not end
         # under a request whose answer is still to be sent.
@@ -1152,7 +1155,18 @@ class Worker:
                 "model": str(getattr(client, "model", "") or ""),
                 "effort": str(getattr(client, "effort", "")
                               or getattr(self.engine, "effort", "") or ""),
-                "tasks": self._task_rows()}
+                "tasks": self._task_rows(),
+                # Whether shift+tab may stop on bypass ("" yes, else why
+                # not) and whether its first step was confirmed already.
+                "bypassBlocked": self._bypass_blocked(),
+                "bypassConfirmed": bool(getattr(self, "_bypass_confirmed", False))}
+
+    def _bypass_blocked(self) -> str:
+        try:
+            from .. import posture_cycle
+            return protocol.clean_line(posture_cycle.bypass_refusal(self.engine) or "", 200)
+        except Exception:
+            return "the posture ladder could not be read"
 
     def _task_rows(self) -> list[dict[str, Any]]:
         """The session's task list as the window draws it: task_ticker.rows
@@ -1220,7 +1234,9 @@ class Worker:
                 "title": self.title or None,
                 "banner": [l for l in self.banner if l is not None],
                 "notices": list(self.notices),
-                "tasks": facts["tasks"]}
+                "tasks": facts["tasks"],
+                "bypassBlocked": facts["bypassBlocked"],
+                "bypassConfirmed": facts["bypassConfirmed"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""
@@ -1415,13 +1431,31 @@ class Worker:
         return {"stopping": stopping, "refused": len(refused)}
 
     def _m_session_setMode(self, params: dict) -> dict:
+        from .. import posture_cycle
         mode = str(params.get("mode") or "")
-        if mode not in ("plan", "default", "acceptEdits"):
+        if mode == posture_cycle.BYPASS:
+            # Only from the window's keys (session.setMode is ACTING: a
+            # process an agent session started is refused it), only where
+            # the ladder may stop on it, and the first time in a session
+            # only with the person's confirmation.
+            why = posture_cycle.bypass_refusal(self.engine)
+            if why:
+                raise _Refusal(protocol.INVALID_PARAMS,
+                               f"bypassPermissions is not available here: {why}")
+            if params.get("confirmed") is not True and not self._bypass_confirmed:
+                raise _Refusal(protocol.INVALID_PARAMS,
+                               "bypassPermissions needs the person's confirmation "
+                               "first (confirmed: true)")
+            failed = posture_cycle.enter_bypass(self.engine, via="window shift+tab")
+            if failed:
+                raise _Refusal(protocol.INVALID_PARAMS, f"not switched: {failed}")
+            self._bypass_confirmed = True
+        elif mode not in ("plan", "default", "acceptEdits"):
             raise _Refusal(protocol.INVALID_PARAMS,
-                           "mode must be plan, default or acceptEdits "
-                           "(an unattended session is started as one, never "
-                           "switched into)")
-        self.engine.set_kit_permission_mode(mode)
+                           "mode must be default, acceptEdits, plan or "
+                           "bypassPermissions")
+        else:
+            self.engine.set_kit_permission_mode(mode)
         self.agent.post(self.check_session)
         return {"approval": self._session_facts()["approval"]}
 
@@ -1513,7 +1547,11 @@ class Worker:
 
     def _m_session_choices(self, params: dict) -> dict:
         try:
-            return choices.choices(self.engine, str(params.get("what") or ""))
+            what = str(params.get("what") or "")
+            if what == "args":
+                return choices.argument_choices(self.engine, self.workspace,
+                                                str(params.get("command") or ""))
+            return choices.choices(self.engine, what)
         except ValueError as exc:
             raise _Refusal(protocol.INVALID_PARAMS, str(exc)) from None
 

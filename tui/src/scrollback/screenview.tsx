@@ -128,6 +128,9 @@ export interface TranscriptViewProps {
   /** The width it draws in (the window's, less the gutter): a row is
    *  cut to it, less the scroll bar. */
   width: Accessor<number>
+  /** The terminal's rows (the banner's picture is sized by them; the
+   *  renderer's when not given). */
+  height?: Accessor<number>
   /** Shown (hidden while the agent view has the screen). */
   visible: Accessor<boolean>
   ref?: (box: ScrollBoxRenderable) => void
@@ -139,6 +142,7 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
   const t = props.theme
   const style = themedStyle(props.renderer, t)
   const inner = () => Math.max(10, props.width() - 1)
+  const rows = () => props.height?.() ?? props.renderer.terminalHeight
   // A quiet scroll bar: its thumb in the faint tone, no track (made once:
   // a prop object in the JSX would be made again on every read).
   const bar = createMemo(() => ({ trackOptions: { foregroundColor: t().faint, backgroundColor: "transparent" } }))
@@ -228,7 +232,7 @@ export function TranscriptView(props: TranscriptViewProps): JSX.Element {
           // A row takes its colours when it is made: made again when the
           // theme changes (the terminal said light after the first frame).
           : <Show when={t()} keyed>
-              {(theme: Theme) => <Row item={item} theme={theme} width={inner()} expanded={props.screen.expanded(item.id)}
+              {(theme: Theme) => <Row item={item} theme={theme} width={inner()} height={rows()} expanded={props.screen.expanded(item.id)}
                                       onToggle={item.kind === "tool" ? (row) => toggle(item.id, row) : undefined} />}
             </Show>}
       </For>

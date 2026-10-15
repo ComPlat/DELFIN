@@ -20,6 +20,7 @@ from delfin.agent import pricing as _pricing
 # The turn composition shared with the terminal paths; stdlib-only at import.
 from delfin.agent import turn_context
 from delfin.agent.harness_rows import HarnessText
+from delfin.dashboard.chat_markdown import render as _render_markdown
 
 
 _PLAN_HINT_VERBS = re.compile(
@@ -1152,6 +1153,9 @@ _AGENT_CSS = """\
     border-radius: 8px;
     max-width: 85%;
     word-wrap: break-word;
+    /* The widget label around the chat sets 28px, which put a blank
+       line's height between every line of an answer. */
+    line-height: 1.5;
 }
 /* Consecutive tool rows sit close but never overlap: a negative margin
    here pulled a multi-line command into the row above it. */
@@ -1160,12 +1164,16 @@ _AGENT_CSS = """\
 }
 .delfin-chat-user {
     background: #dbeafe;
+    /* The background is fixed, so the text colour is too: inherited, it
+       is the dark theme's white on a light bubble. */
+    color: #1f2937;
     margin-left: auto;
     text-align: left;
     border-bottom-right-radius: 2px;
 }
 .delfin-chat-agent {
     background: #f3f4f6;
+    color: #1f2937;
     margin-right: auto;
     border-bottom-left-radius: 2px;
 }
@@ -1328,6 +1336,66 @@ _AGENT_CSS = """\
     background: none;
     padding: 0;
     color: inherit;
+}
+/* Markdown blocks inside a message (chat_markdown.py). Scoped to the
+   bubble so nothing else on the page changes. */
+.delfin-chat-msg p { margin: 0 0 6px 0; }
+.delfin-chat-msg > :last-child,
+.delfin-chat-msg li > :last-child { margin-bottom: 0; }
+.delfin-chat-msg h1, .delfin-chat-msg h2, .delfin-chat-msg h3,
+.delfin-chat-msg h4, .delfin-chat-msg h5, .delfin-chat-msg h6 {
+    margin: 8px 0 4px 0;
+    line-height: 1.3;
+    font-weight: 600;
+}
+.delfin-chat-msg h1 { font-size: 16px; }
+.delfin-chat-msg h2 { font-size: 15px; }
+.delfin-chat-msg h3 { font-size: 14px; }
+.delfin-chat-msg h4, .delfin-chat-msg h5, .delfin-chat-msg h6 { font-size: 13px; }
+.delfin-chat-msg ul, .delfin-chat-msg ol { margin: 2px 0 6px 0; padding-left: 22px; }
+.delfin-chat-msg li { margin: 1px 0; }
+.delfin-chat-msg li > ul, .delfin-chat-msg li > ol { margin: 1px 0; }
+.delfin-chat-msg blockquote {
+    margin: 4px 0;
+    padding: 2px 10px;
+    border-left: 3px solid #cbd5e1;
+    color: #475569;
+}
+.delfin-chat-msg hr { border: none; border-top: 1px solid #d1d5db; margin: 8px 0; }
+.delfin-chat-msg a { color: #1d4ed8; text-decoration: underline; }
+/* A table scrolls inside its own box: the bubble keeps its width and a
+   ten-column table is still readable column by column. */
+.delfin-md-table-wrap { overflow-x: auto; max-width: 100%; margin: 6px 0; }
+.delfin-md-table {
+    border-collapse: collapse;
+    font-size: 12px;
+    line-height: 1.4;
+    background: #ffffff;
+    color: #1f2937;
+}
+.delfin-md-table th, .delfin-md-table td {
+    border: 1px solid #d1d5db;
+    padding: 3px 8px;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: break-word;
+}
+.delfin-md-table th { background: #e5e7eb; font-weight: 600; white-space: nowrap; }
+.delfin-md-table tbody tr:nth-child(even) td { background: #f8fafc; }
+.delfin-md-table .al-r { text-align: right; }
+.delfin-md-table .al-c { text-align: center; }
+/* Figures in a column line up digit under digit. */
+.delfin-md-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.delfin-md-table code { font-size: 11px; }
+/* $$ blocks: no math renderer is loaded, so the source is shown as such. */
+.delfin-md-math {
+    margin: 4px 0;
+    padding: 4px 8px;
+    background: #e5e7eb;
+    border-radius: 4px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
 }
 /* Syntax highlighting (dark theme) */
 .delfin-chat-agent pre .kw { color: #cba6f7; }
@@ -2419,82 +2487,45 @@ def _mermaid_block_html(source: str) -> str:
     )
 
 
+def _code_block_html(lang: str, code: str, idx: int = 0) -> str:
+    """A fenced block as the chat shows it: highlighted, with a copy button.
+
+    ``mermaid`` becomes the diagram container. ``code`` is the raw block
+    text; everything that reaches the page from it is escaped here or in
+    ``_syntax_highlight``.
+    """
+    if lang == "mermaid":
+        return _mermaid_block_html(code)
+    highlighted = _syntax_highlight(code, lang)
+    lang_label = (f'<span class="code-lang">{_html.escape(lang)}</span>'
+                  if lang else "")
+    return (
+        f'<div class="delfin-code-wrap">'
+        f'<button class="delfin-copy-btn" data-codeidx="{int(idx)}" '
+        f'onclick="(function(b){{var p=b.closest(&quot;.delfin-code-wrap&quot;);'
+        f"var c=p.querySelector('code').textContent;"
+        f"navigator.clipboard.writeText(c).then(function(){{"
+        f"b.textContent='Copied!';b.classList.add('copied');"
+        f"setTimeout(function(){{b.textContent='Copy';b.classList.remove('copied');}},1500);"
+        f'}})}})(this)">Copy</button>'
+        f"<pre>{lang_label}<code>{highlighted}</code></pre></div>"
+    )
+
+
 def _md_to_html(text: str) -> str:
-    """Convert markdown subset to HTML for chat display."""
-    # Every newline becomes a <br> further down, so leading ones survive as
-    # blank lines directly under the role label -- models frequently open a
-    # reply with one, which then reads as a gap between the name and the
-    # sentence. Trailing ones do the same to the bottom of the bubble.
-    text = str(text or "").strip("\r\n \t")
-    # Protect code blocks first (extract, replace later)
-    code_blocks: list[str] = []
+    """A chat message's markdown as HTML (see ``chat_markdown``).
 
-    def _stash_code_block(m):
-        lang = m.group(1).strip().lower()
-        code = m.group(2).strip()
-        if lang == "mermaid":
-            idx = len(code_blocks)
-            code_blocks.append(_mermaid_block_html(code))
-            return f"\x00CB{idx}\x00"
-        highlighted = _syntax_highlight(code, lang)
-        lang_label = f'<span class="code-lang">{_html.escape(lang)}</span>' if lang else ""
-        # data-code stores raw text for copy button
-        raw_escaped = _html.escape(code).replace('"', "&quot;")
-        idx = len(code_blocks)
-        code_blocks.append(
-            f'<div class="delfin-code-wrap">'
-            f'<button class="delfin-copy-btn" data-codeidx="{idx}" '
-            f'onclick="(function(b){{var p=b.closest(&quot;.delfin-code-wrap&quot;);'
-            f"var c=p.querySelector('code').textContent;"
-            f"navigator.clipboard.writeText(c).then(function(){{"
-            f"b.textContent='Copied!';b.classList.add('copied');"
-            f"setTimeout(function(){{b.textContent='Copy';b.classList.remove('copied');}},1500);"
-            f'}})}})(this)">Copy</button>'
-            f"<pre>{lang_label}<code>{highlighted}</code></pre></div>"
-        )
-        return f"\x00CB{len(code_blocks) - 1}\x00"
+    Blocks -- tables, lists, fences, quotes -- are parsed as blocks; fenced
+    code goes through ``_code_block_html``. Leading and trailing blank lines
+    are dropped: under the role label they read as a gap.
+    """
+    counter = [0]
 
-    text = re.sub(r"```(\w*)\n?(.*?)```", _stash_code_block, text, flags=re.DOTALL)
+    def code_block(lang: str, code: str) -> str:
+        counter[0] += 1
+        return _code_block_html(lang, code, counter[0] - 1)
 
-    escaped = _html.escape(text)
-
-    # Inline code
-    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
-    # Bold
-    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
-    # Italic
-    escaped = re.sub(r"\*(.+?)\*", r"<i>\1</i>", escaped)
-    # Headers (## and ###)
-    escaped = re.sub(
-        r"^(#{1,3})\s+(.+)$",
-        lambda m: f"<b style='font-size:{15 - len(m.group(1))}px'>{m.group(2)}</b>",
-        escaped,
-        flags=re.MULTILINE,
-    )
-    # Horizontal rules
-    escaped = re.sub(r"^-{3,}$", "<hr style='margin:6px 0;border:none;border-top:1px solid #d1d5db'>", escaped, flags=re.MULTILINE)
-    # List items (- or *)
-    escaped = re.sub(r"^[\-\*]\s+(.+)$", r"&bull; \1", escaped, flags=re.MULTILINE)
-    # Numbered list items
-    escaped = re.sub(r"^(\d+)\.\s+(.+)$", r"\1. \2", escaped, flags=re.MULTILINE)
-    # Table rows: | a | b | → simple rendering
-    escaped = re.sub(
-        r"^\|[\s\-:|]+\|$", "", escaped, flags=re.MULTILINE,
-    )  # remove separator rows
-    escaped = re.sub(
-        r"^\|(.+)\|$",
-        lambda m: "<code>" + " | ".join(
-            c.strip() for c in m.group(1).split("|")
-        ) + "</code>",
-        escaped,
-        flags=re.MULTILINE,
-    )
-    # Newlines to <br>
-    escaped = escaped.replace("\n", "<br>")
-    # Restore code blocks
-    for i, block in enumerate(code_blocks):
-        escaped = escaped.replace(f"\x00CB{i}\x00", block)
-    return escaped
+    return _render_markdown(text, code_block)
 
 
 # ---------------------------------------------------------------------------

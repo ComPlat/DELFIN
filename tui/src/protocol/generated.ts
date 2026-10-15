@@ -31,6 +31,7 @@ export interface SessionPromptParams {
 export interface SessionCancelParams {}
 export interface SessionSetModeParams {
   "mode": string
+  "confirmed"?: boolean | null
 }
 export interface SessionStatusParams {}
 export interface SessionReplayParams {
@@ -53,6 +54,7 @@ export interface SessionCompletePathParams {
 }
 export interface SessionChoicesParams {
   "what": string
+  "command"?: string | null
 }
 export interface SessionToggleTasksParams {}
 export interface SessionSetTitleParams {
@@ -117,6 +119,7 @@ export interface SessionCompletePathResult {
 export interface SessionChoicesResult {
   "current": string
   "choices": Record<string, unknown>[]
+  "usage"?: string | null
 }
 export interface SessionToggleTasksResult {
   "showTasks": boolean
@@ -157,6 +160,8 @@ export interface SessionInfoEvent {
   "banner": string[]
   "notices": string[]
   "tasks"?: Record<string, unknown>[] | null
+  "bypassBlocked"?: string | null
+  "bypassConfirmed"?: boolean | null
   "type": "session.info"
   "session": string
   "ts": number
@@ -168,6 +173,8 @@ export interface SessionUpdatedEvent {
   "effort"?: string | null
   "title"?: string | null
   "tasks"?: Record<string, unknown>[] | null
+  "bypassBlocked"?: string | null
+  "bypassConfirmed"?: boolean | null
   "type": "session.updated"
   "session": string
   "ts": number

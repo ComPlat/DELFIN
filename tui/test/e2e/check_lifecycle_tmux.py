@@ -35,7 +35,7 @@ REPO = TUI.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(TUI / "spike"))
 
-from check_tmux import Tmux  # noqa: E402
+from check_tmux import Tmux, scrubbed_env  # noqa: E402
 
 from delfin.agent.service.client import ServiceClient  # noqa: E402
 
@@ -51,7 +51,7 @@ def main() -> int:
     env = {"HOME": str(tmp / "home"), "DELFIN_SCRATCH_STATE": str(tmp / "scratch"),
            "DELFIN_RUNTIME_DIR": str(runtime), "PYTHONPATH": str(REPO), "DELFIN_TUI_SCREEN": "inline",
            "PATH": f"{Path.home()}/.bun/bin:{os.environ.get('PATH', '')}"}
-    full_env = {**os.environ, **env}
+    full_env = scrubbed_env(**env)
     run_dir = tmp / "scratch" / ".delfin" / "agent_service" / "run"
     command = (f"cd {REPO} && env {' '.join(f'{k}={v}' for k, v in env.items())} "
                f"{PYTHON} -m delfin.agent.cli tui --fake --cwd {ws}; echo TUI_EXIT=$?")
