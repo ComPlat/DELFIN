@@ -223,3 +223,8 @@ def test_a_red_session_is_not_called_a_failure_of_the_skill(ledger,
     html = P.format_panel_html()
     assert "fail" not in html.lower()
     assert "red test run" in html
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

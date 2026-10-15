@@ -216,7 +216,10 @@ def test_the_request_carries_no_extra_key(agent_tree, monkeypatch):
 
 
 def _unmarked(rows):
-    return [{k: v for k, v in dict(r).items() if not str(k).startswith("_")}
+    # ``_steer`` is not a mark: it is the turn tail, part of the bytes the
+    # wire view sends (and the carrier of system-prompt updates).
+    return [{k: v for k, v in dict(r).items()
+             if not str(k).startswith("_") or k == "_steer"}
             for r in copy.deepcopy(rows)]
 
 

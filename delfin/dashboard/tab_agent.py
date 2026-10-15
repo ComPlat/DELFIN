@@ -17,6 +17,8 @@ import ipywidgets as widgets
 # rather than lazily like the rest of delfin.agent because it is a pure
 # data module with no imports of its own beyond the stdlib.
 from delfin.agent import pricing as _pricing
+# The turn composition shared with the terminal paths; stdlib-only at import.
+from delfin.agent import turn_context
 from delfin.agent.harness_rows import HarnessText
 
 
@@ -534,40 +536,9 @@ def _build_plan_hint(user_text: str) -> str:
     return ""
 
 
-# Fact-question shapes: the user is asking for exact ORCA / chemistry
-# keyword names, which is exactly where confident hallucination happens.
-_VERIFY_HINT_PATTERNS = re.compile(
-    r"(?i)("
-    r"welche[s]?\s+(?:exakten?\s+)?keyword|"        # "welche keyword(s)"
-    r"keyword[- ]?name|"                              # "keyword-name"
-    r"\bexakt(?:e|en)?\b.*\b(?:keyword|name|block)|"  # "exakte ... keyword"
-    r"nutzt\s+orca|"                                  # "nutzt ORCA"
-    r"in\s+orca|"                                     # "in ORCA"
-    r"gibt\s+es\s+(?:ein|den|das)?\s*\b\w*\s*(?:keyword|block|flag|option)|"
-    r"wie\s+hei[ßs]t\b|"                              # "wie heißt"
-    r"%\w+\s*[- ]?block"                              # "%casscf-block"
-    r")"
-)
-
-
-def _build_verify_hint(user_text: str, mode: str = "") -> str:
-    """Return a one-line ground-yourself reminder when the user asks a
-    factual ORCA/keyword question, else empty string.
-
-    Mirrors :func:`_build_plan_hint`: cheap, non-blocking, just nudges
-    the model to look the answer up instead of reciting from memory.
-    The runtime verify-guard (delfin.agent.verify_guard) still checks
-    the answer afterwards — this hint just front-loads the grounding.
-    """
-    if not user_text or len(user_text) > 4000:
-        return ""
-    if _VERIFY_HINT_PATTERNS.search(user_text):
-        return (
-            "(Factual question detected — look it up via search_docs/Read in "
-            "the manual/code BEFORE answering; only mention keywords that "
-            "are actually documented, none from memory.)"
-        )
-    return ""
+# The verify hint is shared with the terminal paths (one matcher, not one
+# per surface); the name stays for the dashboard's call sites and tests.
+_build_verify_hint = turn_context.verify_hint
 
 
 def _self_verification_note(verified: bool) -> str:
@@ -959,6 +930,12 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame .delfin-agent-working--stale { background: #fdecec; }
 .delfin-agent-chat-frame .delfin-agent-working .delfin-activity-label { color: #64748b; }
 .delfin-agent-chat-frame .delfin-agent-working .delfin-activity-text { color: #1f2937; }
+/* The slow-phase sentence under the working line: what is slow, and Stop. */
+.delfin-activity-hint {
+    padding: 2px 10px 3px 10px; font-size: 12px; color: #92400e;
+    background: #fffbeb; border-top: 1px solid #fde68a;
+    white-space: normal;
+}
 /* The task line: a fold whose header is the one line, compact. */
 .delfin-agent-task-strip { padding: 0 !important; }
 .delfin-agent-task-strip .jupyter-widget-Collapse-header {
@@ -6709,7 +6686,11 @@ def create_tab(ctx):
         if perms is None:
             return
         cur = perms.mode if perms.mode in _KIT_MODE_ORDER else "default"
-        nxt = _KIT_MODE_ORDER[(_KIT_MODE_ORDER.index(cur) + 1) % len(_KIT_MODE_ORDER)]
+        # Passes over plan while a turn runs (mode_cycle): every step
+        # takes effect at once, and a call landing mid-cycle was refused.
+        from delfin.agent.mode_cycle import next_in_cycle
+        nxt = next_in_cycle(_KIT_MODE_ORDER, cur, turn_running=bool(
+            getattr(eng, "turn_in_flight", False)))
         ok = bool(eng.set_kit_permission_mode(nxt))
         if ok:
             _append_system_message(
@@ -6825,6 +6806,9 @@ def create_tab(ctx):
                 broker.follow_session(
                     lambda: getattr(state.get("engine"), "session_id", "")
                     or "")
+                # And marks each wait on that engine's activity state, so
+                # the working line says the turn waits for the user.
+                broker.follow_activity(lambda: state.get("engine"))
                 # Wire the "Allow + Permanent" button to the engine's
                 # persist hooks. Bound lazily so it always picks up the
                 # currently-active engine (provider may switch at runtime).
@@ -8545,8 +8529,12 @@ def create_tab(ctx):
             ask_user_buttons.layout.gap = "6px"
             ask_user_buttons.children = tuple(button_widgets)
         ask_user_box.layout.display = ""
-        # Block up to 5 minutes
-        ev.wait(timeout=300)
+        # Block up to 5 minutes, marked on the engine's activity state so
+        # the working line reads "waiting for your answer".
+        from delfin.agent.activity import ANSWER, awaiting_person
+        with awaiting_person(lambda: state.get("engine"), ANSWER):
+            _paint_activity()
+            ev.wait(timeout=300)
         _close_ask_user_modal(ev)
         if not result["answers"]:
             return {"answers": [], "timed_out": True}
@@ -8633,7 +8621,10 @@ def create_tab(ctx):
         # timeout we flag it so exit_plan_mode reports "awaiting approval" (not
         # "rejected") and the agent stops. The user can still approve later —
         # the accept button resumes execution on a fresh turn regardless.
-        got = ev.wait(timeout=180)   # 3 min
+        from delfin.agent.activity import APPROVAL, awaiting_person
+        with awaiting_person(lambda: state.get("engine"), APPROVAL):
+            _paint_activity()
+            got = ev.wait(timeout=180)   # 3 min
         if not got:
             result["timed_out"] = True
         return result
@@ -9591,10 +9582,20 @@ def create_tab(ctx):
                     f"anything — /changes lists what was written."
                 )
             else:
-                _append_system_message(
-                    "📋 A pending plan was restored from the saved session. "
-                    "Switch to /mode plan to review + approve it."
-                )
+                # Once per plan: every restore announced it again, ten
+                # times in two sessions (session_store keeps the mark).
+                from delfin.agent.session_store import (
+                    mark_pending_plan_noticed, pending_plan_needs_notice)
+                if pending_plan_needs_notice(data):
+                    _append_system_message(
+                        "📋 A pending plan was restored from the saved session. "
+                        "Switch to /mode plan to review + approve it."
+                    )
+                    try:
+                        mark_pending_plan_noticed(
+                            str(data.get("session_id") or session_id))
+                    except Exception:
+                        pass
         # Active gate — restoring lets a paused approval keep its banner.
         saved_gate = data.get("active_gate")
         if isinstance(saved_gate, dict) and saved_gate.get("type"):
@@ -11320,7 +11321,13 @@ def create_tab(ctx):
         _update_inspector_actions()
         _update_inspector_detail()
 
-    def _set_working(active, label="", mode="streaming"):
+    import threading as _threading_w
+    # Serialises the working line's writes against the activity ticker's
+    # check-then-paint (see _set_working's ``gen``).
+    _working_lock = _threading_w.RLock()
+
+    def _set_working(active, label="", mode="streaming", *, hint="",
+                     phase="", gen=None):
         """Show or hide the CLI-like activity spinner.
 
         ``mode`` selects the visual variant:
@@ -11328,7 +11335,25 @@ def create_tab(ctx):
         - ``gated`` (orange) \u2014 paused on user approval / question
         - ``queued`` (grey)  \u2014 idle but messages queued behind a Stop
         - ``stale`` (red)    \u2014 stream silent past the heartbeat threshold
+
+        ``phase`` (an activity.py phase) picks the icon instead of the
+        label's wording; ``hint`` is the slow-phase sentence, drawn as a
+        second row. ``gen`` is the activity ticker's generation: a paint
+        from a ticker whose turn has been cleared since is dropped, under
+        the same lock the clear takes, so a late tick cannot put the line
+        back after the turn ended.
         """
+        with _working_lock:
+            if gen is not None and (gen != state.get("_activity_gen")
+                                    or not state.get("streaming")):
+                return
+            if not active or mode == "queued":
+                state["_activity_gen"] = int(
+                    state.get("_activity_gen") or 0) + 1
+            _set_working_now(active, label, mode, hint=hint, phase=phase)
+
+    def _set_working_now(active, label="", mode="streaming", *, hint="",
+                         phase=""):
         if active:
             text = label or "Working..."
             _esc = _html.escape
@@ -11338,8 +11363,20 @@ def create_tab(ctx):
                 "queued": ("\u23f3",       "queued", "delfin-agent-working--queued"),
                 "stale":  ("\u26a0\ufe0f", "stale",  "delfin-agent-working--stale"),
             }
+            _phase_icons = {
+                "model_wait": ("⏳", "wait"),
+                "streaming": ("\U0001f4ad", "model"),
+                "tool": ("▸", "tool"),
+                "person": ("⏸️", "you"),
+                "done": ("✓", "done"),
+            }
             if mode in mode_overrides:
                 icon, cat, mode_cls = mode_overrides[mode]
+                if phase in _phase_icons:
+                    icon, cat = _phase_icons[phase]
+            elif phase in _phase_icons:
+                mode_cls = ""
+                icon, cat = _phase_icons[phase]
             else:
                 mode_cls = ""
                 # Classify streaming activity for icon + label
@@ -11377,6 +11414,8 @@ def create_tab(ctx):
                 f'<span class="delfin-activity-label">{_esc(cat)}</span>'
                 f'<span class="delfin-activity-text">{_esc(text)}</span>'
                 f'</div>'
+                + (f'<div class="delfin-activity-hint">{_esc(hint)}</div>'
+                   if hint else "")
             )
             # Header colour adapts to mode so the global status chip mirrors
             # the activity-tab spinner exactly.
@@ -11403,6 +11442,116 @@ def create_tab(ctx):
             # Keep an active "agent waits on the user" chip visible after
             # the stream ends — only clear when nothing is awaited.
             ctx.agent_status_html.value = state.get("_agent_wait_chip") or ""
+
+    def _paint_activity(gen=None) -> bool:
+        """Draw the working line from the engine's activity state.
+
+        Input: ``state["engine"].activity`` (delfin.agent.activity) and
+        ``state["_activity_extra"]`` (a reasoning snippet, the call
+        number). Output: True when a line was drawn; False when the
+        engine has no active turn, in which case nothing is touched.
+        The same ``line``/``slow_hint`` the terminal status row uses, so
+        both surfaces say the same thing about the same turn.
+        """
+        from delfin.agent import activity as _act
+        target = _act.resolve_attr(state.get("engine"))
+        if target is None:
+            return False
+        snap = target.snapshot()
+        if not snap.active:
+            return False
+        text = _act.line(snap)
+        extra = str(state.get("_activity_extra") or "")
+        if extra and snap.phase in (_act.STREAMING, _act.TOOL):
+            text = f"{text} · {extra}"
+        hint = _act.slow_hint(snap, "dashboard")
+        mode = ("gated" if snap.phase == _act.PERSON
+                else "stale" if (hint or state.get("_stale_seen"))
+                else "streaming")
+        _set_working(True, text, mode=mode, hint=hint, phase=snap.phase,
+                     gen=gen)
+        return True
+
+    def _start_activity_ticker():
+        """Repaint the working line once a second for the running turn.
+
+        Independent of model output: the clock advances while a request
+        has no token, while a tool runs, while a dialog waits. The thread
+        ends when the turn's generation changes (the line was cleared or
+        the turn ended) or ``streaming`` drops; it owns no other state.
+
+        Rejected: the existing 10 s ``_tick_wait`` timer -- it paints only
+        after 20 s of silence and only when no tool is in flight, so the
+        first 20 s, every tool run and the request after a tool showed a
+        frozen label. Cost: one snapshot and one widget write per second
+        per open turn.
+        """
+        with _working_lock:
+            # A new generation: a ticker still running from an earlier
+            # turn sees it and ends.
+            gen = int(state.get("_activity_gen") or 0) + 1
+            state["_activity_gen"] = gen
+            state["_activity_ticker_gen"] = gen
+        state["_activity_ticker_live"] = True
+
+        sent_at = time.monotonic()
+        from delfin.agent.activity import fmt_s, resolve_attr
+
+        def _mark():
+            """(state object, seq, idle): which turn the engine shows."""
+            target = resolve_attr(state.get("engine"))
+            if target is None:
+                return (None, None, True)
+            snap = target.snapshot()
+            return (id(target), snap.seq, snap.phase == "idle")
+
+        at_send = _mark()
+
+        def _not_begun() -> bool:
+            # Still the state the send found, or one that never ran a
+            # turn (an engine built for this send): this turn has not
+            # reached the engine. A finished state that changed since
+            # the send is this turn's own end, and is not repainted.
+            now_mark = _mark()
+            return now_mark[2] or now_mark[:2] == at_send[:2]
+
+        def _run():
+            try:
+                while (state.get("streaming")
+                       and gen == state.get("_activity_gen")):
+                    try:
+                        if _paint_activity(gen=gen):
+                            pass
+                        elif not _not_begun():
+                            # The engine's turn is over and the tab is
+                            # still closing it (guards, the save): say so
+                            # until the line is cleared.
+                            from delfin.agent import activity as _act
+                            _t = resolve_attr(state.get("engine"))
+                            if _t is not None:
+                                _set_working(True, _act.line(_t.snapshot()),
+                                             phase="done", gen=gen)
+                        else:
+                            # The worker has not begun the engine's turn
+                            # yet (an engine being built, a probe): the
+                            # wait is counted from the send all the same.
+                            _model = _engine_model_name(
+                                state.get("engine"),
+                                model_dropdown.value or "") or "the model"
+                            _set_working(
+                                True, f"waiting for {_model} … "
+                                f"{fmt_s(time.monotonic() - sent_at)}",
+                                phase="model_wait", gen=gen)
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
+            finally:
+                # Unless a newer ticker has taken over in the meantime.
+                if state.get("_activity_ticker_gen") == gen:
+                    state["_activity_ticker_live"] = False
+
+        _threading_w.Thread(target=_run, name="delfin-activity-ticker",
+                            daemon=True).start()
 
     def _arm_stale_watcher():
         """Schedule a two-stage watcher that (1) flips the spinner to
@@ -11671,8 +11820,12 @@ def create_tab(ctx):
                 waited = now - last if last > 0 else 0.0
                 pending = _longest_pending_tool(
                     state.get("_tool_inflight"), now)
+                # Only without the activity ticker (an engine with no
+                # activity state): with it, the line already counts this
+                # wait every second, and a second label would contradict it.
                 if (waited >= 20.0 and not pending
-                        and not state.get("_stale_seen")):
+                        and not state.get("_stale_seen")
+                        and not state.get("_activity_ticker_live")):
                     _set_working(True, _waiting_label(
                         _wait_model, waited,
                         first=not state.get("_stream_saw_output"),
@@ -14427,11 +14580,15 @@ def create_tab(ctx):
             # case that would need a new engine.
             perm_values = [v for _, v in perm_dropdown.options]
             perm_labels = {v: label for label, v in perm_dropdown.options}
-            idx = perm_values.index(perm_dropdown.value) if perm_dropdown.value in perm_values else 0
-            next_idx = (idx + 1) % len(perm_values)
-            perm_dropdown.value = perm_values[next_idx]
+            # A step taken while a turn runs passes over plan (mode_cycle).
+            from delfin.agent.mode_cycle import next_in_cycle
+            _cur = (perm_dropdown.value if perm_dropdown.value in perm_values
+                    else perm_values[0])
+            _nxt = next_in_cycle(perm_values, _cur, turn_running=bool(
+                getattr(state.get("engine"), "turn_in_flight", False)))
+            perm_dropdown.value = _nxt
             _append_system_message(
-                f"Permission: {perm_labels[perm_values[next_idx]]} (Shift+Tab to cycle)"
+                f"Permission: {perm_labels[_nxt]} (Shift+Tab to cycle)"
             )
             return True
 
@@ -18532,7 +18689,14 @@ def create_tab(ctx):
             state["_turn_pre_in"] = 0
             state["_turn_pre_out"] = 0
             state["_turn_started_monotonic"] = time.monotonic()
-        _set_working(True, "Thinking...")
+        # Until the worker's turn has begun the engine's state is the last
+        # turn's; the ticker paints from it once it is this one's.
+        state["_activity_extra"] = ""
+        _set_working(True, "waiting for "
+                     + (_engine_model_name(engine, model_dropdown.value or "")
+                        or "the model") + " … 0 s",
+                     phase="model_wait")
+        _start_activity_ticker()
 
         def _mark_output():
             """The provider produced something: note the time, and the
@@ -18598,7 +18762,9 @@ def create_tab(ctx):
                         snippet = full[-80:].replace("\n", " ").strip()
                         if len(full) > 80:
                             snippet = "..." + snippet
-                        _set_working(True, f"Thinking: {snippet}")
+                        state["_activity_extra"] = f"thinking: {snippet}"
+                        if not _paint_activity():
+                            _set_working(True, f"Thinking: {snippet}")
                         last_update = now
 
                 def _on_notice(text):
@@ -18669,7 +18835,11 @@ def create_tab(ctx):
                         # is where the eye is while nothing streams --
                         # the same text, not a second message.
                         _live_system_message(text.strip(), "model_wait")
-                        _set_working(True, text.strip(), mode="stale")
+                        # The working line counts this wait itself, every
+                        # second, from the engine's state; the tick only
+                        # repaints it now.
+                        if not _paint_activity():
+                            _set_working(True, text.strip(), mode="stale")
 
                 def _on_token(text):
                     nonlocal last_update
@@ -18700,7 +18870,9 @@ def create_tab(ctx):
                         _refresh_chat_html()
                         state["_last_html_refresh"] = now
                     if now - last_update > 0.25:
-                        _set_working(True, "Writing...")
+                        state["_activity_extra"] = ""
+                        if not _paint_activity():
+                            _set_working(True, "Writing...")
                         _update_last_assistant("".join(chunks), role_label)
                         _update_status()
                         last_update = now
@@ -18780,7 +18952,9 @@ def create_tab(ctx):
                     if _fname:
                         _fname = _fname.rsplit("/", 1)[-1]
                     _detail = _tool_activity_label(tool_name, parsed)
-                    _set_working(True, f"[{_tc}] {_detail}")
+                    state["_activity_extra"] = f"call {_tc}"
+                    if not _paint_activity():
+                        _set_working(True, f"[{_tc}] {_detail}")
 
                     # (pending text was flushed above, before the thinking)
 
@@ -19397,15 +19571,9 @@ def create_tab(ctx):
                 # nothing but a greeting, and the glued hint made every
                 # first hallo pay the whole surface (37,193 tokens against
                 # 11,101, measured 2026-09-11).
-                try:
-                    from delfin.agent.engine import AgentEngine as _AE
-                    if _AE.is_bare_greeting(user_text):
-                        state["_pending_turn_hint"] = (
-                            "The user's message is a greeting and nothing "
-                            "else: reply with ONE short sentence; do NOT "
-                            "call any tools.")
-                except Exception:
-                    pass
+                _greeting = turn_context.greeting_hint(user_text)
+                if _greeting:
+                    state["_pending_turn_hint"] = _greeting
 
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.
@@ -19509,21 +19677,9 @@ def create_tab(ctx):
                     # of truth: ~/.delfin/projects/<slug>/memory/MEMORY.md +
                     # files, the "External Memory" block). Here we only load
                     # the project instruction files (DELFIN.MD / AGENTS.md)
-                    # from cwd up.
-                    from delfin.agent.project_memory import load_project_memory
-                    _memory = ""
-                    try:
-                        _kperms = engine.kit_permissions
-                        _extra = list(_kperms.extra_workspace_dirs) if _kperms else []
-                        _ws = _kperms.workspace if _kperms else None
-                    except Exception:
-                        _extra = []
-                        _ws = None
-                    _proj_mem = load_project_memory(
-                        cwd=_ws, extra_roots=_extra,
-                    )
-                    if _proj_mem:
-                        _memory = (_memory + "\n\n" + _proj_mem).strip() if _memory else _proj_mem
+                    # from the workspace up -- the loader the terminal paths
+                    # use too (turn_context).
+                    _memory = turn_context.project_instructions(engine)
                     _boot_brief = str(state.pop("_pending_boot_brief", "") or "")
                     if _boot_brief:
                         _memory = (_boot_brief + "\n\n" + _memory).strip() if _memory else _boot_brief

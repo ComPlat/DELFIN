@@ -1326,6 +1326,7 @@ and permissions — so a session is usually several agents, not one.
 
 ```bash
 delfin-agent                     # chat in the current directory
+delfin-agent tui                 # the terminal window over all sessions (below)
 delfin-agent run "<task>"        # one turn, headless
 delfin-agent init                # scaffold AGENTS.md + .delfin/ in a project
 delfin-agent doctor              # models, keys, sandbox, MCP servers
@@ -1384,6 +1385,22 @@ Nothing moves on its own. Keys already in the file keep working after the settin
 
 The agent's own tools read neither store: the credentials file is on the deny list, commands that print a keyring entry (`secret-tool lookup`, `security find-generic-password`, `keyring get`, `python -m keyring`, `keyring.get_password`) are refused, sandboxed commands get no session bus, and every tool result is scrubbed of the exact value of every stored key before the model sees it.
 
+### What the agent is doing right now
+
+While a turn runs, one line says what it waits on, with a clock for that phase. The terminal shows it at the head of the status row above the input box; the dashboard shows it under the chat, and the header chip mirrors it. Both read the same state from the engine and say the same thing:
+
+| Line | Meaning |
+|---|---|
+| `waiting for <model> … 45 s` | A request is out and no token of it has arrived yet — the endpoint is queueing or prefilling. Counted from the request, so the request after a tool result starts again at 0 s. |
+| `<model> is answering … 12 s` | The model is producing text or reasoning. |
+| `running bash: pytest -q … 12 s` | A tool call is executing; its name and the argument you would recognise it by. |
+| `waiting for your approval … 8 s` / `waiting for your answer` | The turn is paused on a dialog. In the terminal the dialog itself starts with this line. |
+| `done in 31 s` | The turn is over (dashboard, while the tab finishes saving); the line then disappears. A stopped or failed turn shows `stopped after` / `failed after`, and the line goes away all the same. |
+
+The line is redrawn from a timer, not from the model's output, so the clock keeps moving through a silent endpoint or a long test run.
+
+When a phase runs past what is usual — 60 s without a first token, two minutes for a shell command or test run, ten for a sub-agent, 30 s for other tools — one more line says what is slow and how to stop it: Esc in the terminal, Stop in the dashboard. A running tool call is not cut by either; the turn ends when the call returns, and the line says so. `DELFIN_SLOW_FIRST_TOKEN_S` and `DELFIN_SLOW_TOOL_S` change the thresholds.
+
 ### Permissions
 
 | Level | Writes | Shell |
@@ -1398,7 +1415,7 @@ A session starts in `default` unless `--permission-mode` or `default_mode` in yo
 
 Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
-Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
+Settings, hook commands, MCP servers and skills (`.delfin/skills/`) that come from a checked-out repository are ignored until you trust that directory (`/trust`, then `/trust grant hooks|mcp|skills`); trust covers exactly the content you saw, and a change asks again. A repository skill never replaces a built-in or your own skill of the same name.
 
 #### Answering a choice question in your own words
 
@@ -1446,6 +1463,20 @@ Rules in `~/.delfin_settings.json` decide single actions in advance, in every le
 - **allow** only answers a question DELFIN would otherwise ask you about that exact call: the command dialog, a read outside the workspace (that one read; no directory is opened for the session), the write dialog in `default`, an MCP tool with side effects. It never lifts a refusal: secrets, outside-workspace writes, a locked folder, the agent's own configuration and safety files, git settings that name a program, a push or pull request you did not ask for, an upload, a command you refused earlier, the deny patterns, all stay as they are.
 - An allow covers one plain command: a command with `;`, `&`, `|`, `<`, `>`, `` ` ``, `$`, brackets, braces, a backslash or a newline is never covered, nor one that runs another program from its words (`env …`, `xargs …`, `timeout …`, `sudo …`, `python -c …`, `sh -c …`, `perl -e …`). `bash(make)` covers exactly `make`; `bash(make:*)` covers `make test`.
 - A repository can only add friction: `deny` and `ask` in its `.delfin/settings.json` apply, its `allow` is ignored.
+- **Scope allow rules to a repository** (recommended). Under `"repos"` in the same `permissions` block, each entry's rules apply only in the repository it names:
+
+  <!-- recipe: not-runnable — a settings file excerpt; tests/test_allow_rules_apply_per_repository.py pins what it means -->
+  ```json
+  "permissions": {
+    "deny": ["bash(git push)"],
+    "repos": {
+      "github.com/me/analysis": {"allow": ["bash(pytest:*)"]},
+      "~/scratch/*":            {"allow": ["bash(make:*)"], "ask": ["write(data/**)"]}
+    }
+  }
+  ```
+
+  A key is written like an `agent.git_roles` key: `github.com/owner/repo` or any remote URL, compared with the workspace's origin push URL (else its only remote, else the checkout's top-level path); or an absolute or `~` path, with `*`/`?` a glob over the checkout's top-level directory, without them that directory and everything below it. The top-level `deny` and `ask` apply in every repository. The top-level `allow` also still applies in every repository, and each start names those rules with a one-line notice: set `"global_allow": true` to keep them without the notice, or `"global_allow": false` to turn them off and rely on `repos` alone. `/permissions` names the repository of the workspace and, for every allow, the repository it applies in (`every repository` for the top-level list), and lists the entries for other repositories; `delfin-agent capabilities` shows the same.
 - A rule that cannot be read grants nothing. Broken rules, and rules naming a tool that does not exist, are listed when the terminal starts; a broken deny or ask is marked `ERROR`.
 - `/permissions` in the terminal shows the level, every rule in force with its file, and what is not in force; `/permissions rules` shows the rules alone. You edit the file yourself: the agent cannot write it from any tool or command.
 - On the CLI backend, deny and ask apply to its tools through the same hook that keeps its file boundary; allow is not used there.
@@ -1586,6 +1617,190 @@ The role is set per repository, in the terminal, inside the repository: `/git ro
 
 If you ask for the pull-request route in a message ("über PR", "per Pull Request", "nicht direkt auf main", "via a PR", "don't push to main"), the agent keeps to it in that repository for the rest of the session, even as maintainer: branch, push the branch, pull-request link. A later message asking for the direct push ("push directly to main", "direkt auf main pushen") lifts it.
 
+### The terminal window: `delfin-agent tui`
+
+`delfin-agent tui` is a terminal window over all your agent sessions. It
+takes the whole terminal: the conversation scrolls inside the window -- the
+mouse wheel, PgUp/PgDn, ctrl+home/end -- above the prompt, which stays at
+the bottom; a drag selects text and copies it (OSC 52, also over SSH;
+shift+drag gives the terminal's own selection). Closing it gives the shell
+its lines back as they were, with a line on how to come back.
+`delfin-agent tui --inline` (or `"screen": "inline"` in `tui.json`) draws
+the way `delfin-agent chat` does instead: under the shell's last line,
+finished output in the terminal's own scrollback, only the bottom live --
+the default under GNU screen. Unlike `chat`, the sessions do not live in
+the window: they run in the **agent service**, one background process per
+user and host, so closing the window (ctrl+d, or ctrl+c twice) leaves them
+running, and the next window finds them again.
+
+```bash
+delfin-agent tui                       # a new session in the current folder
+delfin-agent tui --resume <id>         # a saved session (or one that runs)
+delfin-agent tui --model kit.deepseek-v4-flash --permission-mode acceptEdits
+delfin-agent tui --inline              # in the terminal's own scrollback
+delfin-agent service status            # the service, its sessions, its windows
+delfin-agent service stop              # end it; sessions are saved
+delfin-agent service restart           # e.g. after an update
+delfin-agent service logs
+```
+
+`delfin-agent tui` takes `chat`'s session flags (`--cwd`, `-n`, `--model`,
+`--provider`, `--effort`, `--permission-mode`, `--continue`, `--add-dir`,
+`--read-dir`, `--isolate`, `-v`). The terminal REPL is unchanged: `chat`,
+`-p` and pipes work as before.
+
+The window runs as one executable when there is one -- `DELFIN_TUI_BINARY`,
+one shipped with the package, or one built in a checkout with
+`cd tui && bun scripts/build-binary.ts` (used while it is newer than the
+sources) -- and otherwise from source with [Bun](https://bun.sh) (`tui/`,
+`bun install` once). The executable needs no Bun and opens in about a
+third of a second.
+
+**In a session** the REPL's keys apply: enter sends (during a turn it is
+queued), ctrl+g sends into the running turn, esc ends the turn, shift+tab
+cycles the approval posture, ctrl+t toggles the task list, ↑/↓ and ctrl+r search the history, tab
+completes `/commands` and `@paths`, ctrl+l writes the session again. ctrl+p
+opens the command palette, with pickers for the model, the posture, the
+effort, the mode and a session to resume. `/keys` lists every key; `/editor`
+edits the prompt in `$EDITOR`. `/rename <name>` names the session (without
+a name: after the opening words of its first prompt) -- the name stands on
+the prompt box's border, in the agent view and in the terminal's title,
+and the session is saved under it; the address other sessions and
+`delfin-agent message` reach it by stays the one it started with (`-n`,
+or its id). The approval posture shows at the bottom in a colour of its
+own: ⏸ plan, ⏵⏵ accept edits. A question (an approval, a plan, a choice)
+takes the keys the REPL offers for it (`y n A k R e a`, `?` explains them,
+`N` refuses with a reason).
+
+**Tool calls** show their headline and one line on what came back (`⎿ 1
+line, 11 B`, `⎿ Edited parser.py (+4 -1)`, `⎿ exit 1 · 3 lines`). ctrl+o
+shows what each one printed, and an edit's diff, and hides it again: full
+screen in place, where a click on one call shows just its own. Inline,
+ctrl+o writes the session again, as a resize does: the terminal's
+scrollback is cleared -- the shell's lines above the window too -- and the
+last turns (`replayTurns`, 20) are written with or without the details;
+under GNU screen, which cannot clear it, ctrl+o shows the last result in
+full instead. The whole of the last result: "expand the last result" in
+the palette. With a question open, ctrl+o writes out its whole preview.
+
+**The agent view.** ← on an empty prompt opens the oversight of every
+session, grouped as NEEDS YOU, WORKING and DONE (pinned ones on top),
+plus the other open DELFIN sessions (the dashboard, other terminals,
+other login nodes) under ELSEWHERE, to watch and message. Each row says
+what the session needs or does in a few words.
+
+NEEDS YOU also lists what needs you from every other DELFIN process -- the
+attention inbox (`/attention` in the dashboard) and the job monitor's
+findings: a question a dashboard or REPL session parked when nobody
+answered, a confirmation or a plan waiting, a failed job (with the
+monitor's diagnosis and a prepared fix, if any), a security alert. Under
+NOTICES, quietly, what happened and needs nothing: finished jobs and
+runs, budget warnings. A row says what it is about, what it needs, where
+(its folder, `open on <node>` when another process has its session open,
+the machine when it is not this one) and how old it is.
+
+| Key | In the agent view |
+|-----|-------------------|
+| ↑ ↓ | select |
+| → or enter | open it in this window (a divider, then its last turns) |
+| space | peek at its last turn; type and enter to reply to it without opening it |
+| typing + enter | start a new session in this window's folder |
+| ctrl+x twice | stop it (it ends and is saved); once more on an ended row removes the row |
+| ctrl+r | rename it |
+| ctrl+t | pin it to the top (kept across windows) |
+| alt+1 … alt+9 | open the n-th session |
+| esc or ← | back |
+
+On a row of what needs you:
+
+| Key | |
+|-----|-|
+| space | everything it says: the whole question and its choices, the job's errors, diagnosis and prepared fix, the alert |
+| → or enter | open it here, wherever it came from (below) |
+| typing + enter, with its peek open | the answer to a question, confirmation or plan: it goes to the next session started in its folder (as `/attention` answers do) |
+| ctrl+x | dismiss it: a notice at once, what waits or failed only when pressed twice (nobody waiting on it gets an answer) |
+
+→ opens every item in this window. A session the store keeps is resumed,
+with its conversation; while another process (the dashboard, a terminal)
+still has it open, a copy is opened instead -- "(fork)" in its name, and a
+line saying that what is done there does not reach the original. A parked
+question's session opens with the question under its last turn, and the
+question leaves the list: you answer it there. A failed job the monitor
+diagnosed opens its diagnosis session. Anything else -- a failed or
+finished job, an alert, a notice whose session is gone -- starts a new
+session in its folder, named after it, with the item as its opening
+context (one row; ctrl+o shows all of it) and a suggested prompt in the
+box ("Job 4711 failed with OUT_OF_MEMORY. What went wrong, and what should
+we change?"). Nothing is sent until you press enter. A prepared job fix is
+applied in the dashboard (`/fix`).
+
+From anywhere in the window, the hints line ends with a quiet count of
+what waits for you and what failed (`◉ 3 · ✗ 1`, notices not counted); a
+new one names itself there for a few seconds (`◉ relax Fe complex asks`),
+and the terminal's title carries the count: `(4) DELFIN · name`.
+
+Full screen, the view takes the window's screen and esc gives the
+conversation back. Inline, it uses the terminal's alternate screen, so esc
+gives the screen back exactly as it was; under GNU screen, whose alternate
+screen is off unless `altscreen on` is in your `.screenrc`, it grows the
+footer instead (set `DELFIN_TUI_AGENTS_SCREEN=alternate` if yours is on). When a session other
+than the one in view waits for you, the count at the right of the hints
+line says so (◉) and so does the terminal's title.
+
+**Sleeping sessions.** A session that no window shows, with nothing to do
+and nothing to ask, sleeps after an hour: its process ends, it is saved,
+and its row says "asleep". It wakes when you open it, send it a message or
+resume it; a peek does not wake it. A session never sleeps while a turn
+runs, a question is open or a background shell of it runs.
+`DELFIN_AGENT_SLEEP_AFTER_S` sets the time (0: never).
+
+**When the service stops or dies.** `delfin-agent service stop` (or an
+emergency stop) tells the windows first: they leave, saying that the
+sessions are saved. The next service offers those sessions again, asleep.
+If the service dies without a word, an open window starts a new one by
+itself and goes on with its session. After an update, a window of the new
+release moves an idle service over to it; a busy one is left running, and
+`delfin-agent service restart` moves it once its sessions are done.
+
+**On a cluster.** Each login node runs its own service; the window tells
+you when sessions of yours are on another login node. Logging out leaves
+the service and its sessions running for as long as the node allows;
+`delfin-agent service stop` before you log out ends them cleanly. A
+window whose SSH connection drops ends; its sessions run on.
+
+**Resizing.** Full screen, the conversation re-wraps at the new width by
+itself (ctrl+l draws every cell again). Inline, after the terminal's width
+changes the window erases the scrollback and writes the last `replayTurns`
+turns again at the new width (under GNU screen, which cannot erase its
+scrollback, a divider says the width changed instead).
+
+**Settings: `~/.delfin/tui.json`** (`DELFIN_TUI_CONFIG` moves it):
+
+<!-- recipe: not-runnable — an excerpt of the window's settings file, not a command; tui/src/config/config.ts reads it -->
+```json
+{
+  "theme": "auto",
+  "colors": { "accent": "#6290C0" },
+  "keys": { "steer": ["ctrl+g"], "agentsPeek": ["space"] },
+  "replayTurns": 20,
+  "showThinking": false
+}
+```
+
+| Setting | Meaning |
+|---------|---------|
+| `theme` | `auto` (from the terminal's background), `dark`, `light`, or `mono` (the terminal's own colours; also chosen when `NO_COLOR` is set and the theme is `auto`) |
+| `colors` | overrides for theme tokens: `accent`, `accentSoft`, `text`, `bright`, `muted`, `faint`, `ok`, `warn`, `err`, `code`, `string`, `added`, `removed` (`#rrggbb`) |
+| `keys` | rebinds actions: `submit`, `newline`, `interrupt`, `steer`, `cycleMode`, `details`, `expand`, `tasks`, `redraw`, `agents`, `palette`, `quit`, `historyPrev`, `historyNext`, `historySearch`, `agentsUp`, `agentsDown`, `agentsOpen`, `agentsPeek`, `agentsBack`, `agentsStop`, `agentsRename`, `agentsPin`, `scrollUp`, `scrollDown`, `scrollTop`, `scrollBottom`; a key is `ctrl+g`, `shift+tab`, `escape`, `left`, `alt+return`, …; a key bound here is that action's alone (another action that has it by default lets it go) |
+| `replayTurns` | turns written again on opening a session or after a resize (0: all) |
+| `showThinking` | show the model's thinking (as `-v`) |
+| `screen` | `auto` (the whole terminal; inline under GNU screen), `full` or `inline`; `DELFIN_TUI_SCREEN` and `--inline` come first |
+
+A setting that cannot be read is reported in the window and the default
+applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`
+(it also reads the REPL's history) and its pins in `~/.delfin/tui_state.json`.
+`DELFIN_RUNTIME_DIR` moves the service's socket (default `/tmp`).
+
 ### Subagents
 
 Self-contained work is delegated to an isolated agent with its own tool loop and usually tighter permissions. The parent sees only the final answer.
@@ -1650,6 +1865,19 @@ External Model Context Protocol servers are configured in `~/.delfin/mcp_servers
 A tool reached through MCP runs in a process DELFIN did not start a command line for, so the shell sandbox is not around it. Give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it is started inside a namespace holding only those paths. A server that declares neither runs uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all name it as such.
 
 DELFIN ships three servers of its own: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions). They can take their roots from your settings with `agent.mcp_isolation: "builtin"`.
+
+### Tool groups per workspace
+
+Two groups of tools are offered only where they apply, because every tool's description is sent with every request:
+
+| Group | Tools | Offered when |
+|-------|-------|--------------|
+| `chemistry` | the `delfin-ops` and `delfin-tools` server tools, `show_molecule` | the workspace is a DELFIN checkout, the session has a calculation folder (dashboard), or the workspace holds chemistry files within three folder levels (`.xyz`, `.gbw`, `.hess`, `CONTROL.txt`, ORCA/xTB/Gaussian output) |
+| `office` | `read_document`, `edit_sheet`, `create_docx`, `fill_pdf_form`, `merge_pdfs` and the other document tools | a DELFIN checkout, Office mode, or documents in the workspace (`.xlsx`, `.docx`, `.pdf`, `.ods` …) |
+
+The prompt text that describes a group follows it: the ORCA routing table and DELFIN's own conventions appear only with the chemistry group, and the verification advice matches the project's language (Python, JavaScript/TypeScript, Rust, Go). On a code repository outside DELFIN this makes each request about 10,600 tokens smaller.
+
+The decision is taken once, at the first message of a session, so the prompt stays identical from turn to turn. `/tools groups` shows it, with the reason. `/tools enable chemistry` (or `office`) adds a group from the next message on; a group is never taken away during a session, and a resumed conversation that already used one of its tools keeps it. To decide for every session, set `agent.toolsets` in your settings, for example `{"chemistry": "on", "office": "auto"}`; `"off"` hides a group even in a DELFIN checkout.
 
 ### Seeing what runs, and stopping it
 

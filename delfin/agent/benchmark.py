@@ -347,6 +347,67 @@ class Task:
     # suite could not express one, so nothing measured whether a model
     # respects it.
     permission_mode: str = ""
+    # The same request in English. ``prompt`` stays the German one the
+    # user writes; ``english_variant`` turns this into a task of its own
+    # (id ``<id>.en``) so the two languages never share a history row or
+    # a baseline. Empty: the task has no English form.
+    prompt_en: str = ""
+
+
+def english_variant(task: Task) -> Optional[Task]:
+    """``task`` with its English prompt and the id ``<id>.en``, or None
+    when the task declares no ``prompt_en``.
+
+    A separate id rather than a flag on the result: every consumer of a
+    run file (baseline, history, compare) keys on ``task_id``, and a
+    German and an English attempt are two measurements, not one.
+    """
+    if not task.prompt_en:
+        return None
+    from dataclasses import replace as _replace
+    return _replace(task, id=f"{task.id}.en", prompt=task.prompt_en)
+
+
+def select_tasks(tasks: list[Task],
+                 patterns: Iterable[str]) -> tuple[list[Task], list[str]]:
+    """The tasks whose id matches any of ``patterns``, in suite order,
+    plus the patterns that matched nothing.
+
+    A pattern is an exact id or a shell glob (``generalist_*``, matched
+    case-sensitively with ``fnmatchcase``); comma-separated entries are
+    split. No pattern at all selects every task. The unmatched list is
+    returned rather than dropped: a typo that silently ran the rest
+    reports a number for a question nobody asked.
+    """
+    import fnmatch as _fn
+    wanted = [p.strip() for chunk in patterns
+              for p in str(chunk).split(",") if p.strip()]
+    if not wanted:
+        return list(tasks), []
+    hit: set[str] = set()
+    selected: list[Task] = []
+    for t in tasks:
+        matched = [p for p in wanted if _fn.fnmatchcase(t.id, p)]
+        if matched:
+            selected.append(t)
+            hit.update(matched)
+    return selected, [p for p in wanted if p not in hit]
+
+
+# ``QUALITY: <0-100>`` on a line of its own in an acceptance script's
+# output: the graded part of a mechanical verdict (how many of the
+# checks held), next to the exit status that is the pass/fail.
+_QUALITY_LINE = re.compile(r"^QUALITY:\s*(\d{1,3})\s*$", re.M)
+
+
+def acceptance_quality(output: str) -> Optional[int]:
+    """The last well-formed ``QUALITY: n`` (0..100) in ``output``, else
+    None. Out-of-range or non-numeric lines are ignored, not clamped: a
+    script that printed 101 has a defect, and a clamped 100 would hide
+    it."""
+    found = [int(m) for m in _QUALITY_LINE.findall(str(output or ""))]
+    found = [q for q in found if 0 <= q <= 100]
+    return found[-1] if found else None
 
 
 @dataclass
@@ -477,6 +538,11 @@ class BenchmarkResult:
     # The acceptance run: True, False, or None for "no script / not run".
     verify_ok: Optional[bool] = None
     verify_output: str = ""
+    # ``QUALITY: n`` from the acceptance script (see acceptance_quality);
+    # None when the script printed none. Aggregated: the median over the
+    # replicates that reported one, with the samples kept beside it.
+    verify_quality: Optional[int] = None
+    per_run_verify_quality: list[Optional[int]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
     # ``name: subject`` per call, in order. What the names alone could not
     # say: which file, which command, which query. See tool_subject.
@@ -487,6 +553,9 @@ class BenchmarkResult:
     # Kept OUT of ``components`` on purpose — ``quality = sum(components)``,
     # so mixing behaviour flags in would corrupt the quality score.
     behavior: dict[str, float] = field(default_factory=dict)
+    # Trace-derived process signals (see process_signals); generalist
+    # tasks only. Aggregated: the mean per key over the replicates.
+    process: dict[str, float] = field(default_factory=dict)
     # --- cost side: what the guards charge for what they catch ---
     # See caveat_count. Aggregated across replicates these are medians,
     # like duration and quality.
@@ -564,6 +633,7 @@ def _coerce_task(raw: dict) -> Task:
         max_cost_usd=float(raw.get("max_cost_usd", 0.10)),
         max_tool_calls=int(raw.get("max_tool_calls", 5)),
         behavior=str(raw.get("behavior", "") or "").strip().lower(),
+        prompt_en=str(raw.get("prompt_en", "") or ""),
     )
 
 
@@ -1363,6 +1433,75 @@ def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
     return {}
 
 
+# A command that runs a test suite, in any of the generalist toolchains.
+_TEST_CMD_RE = re.compile(
+    r"(\bpytest\b|-m\s+pytest|\bunittest\b|\bnpm\s+(run\s+)?test\b|"
+    r"\bnode\s+(--[\w-]+\s+)*--test\b|\bcargo\s+test\b|\bgo\s+test\b|"
+    r"\bmake\s+(check|test)\b)")
+_EXIT_CODE_RE = re.compile(r'"exit_code"\s*:\s*(-?\d+)')
+
+
+def _is_test_run(call: dict) -> bool:
+    if call["name"] == "run_tests":
+        return True
+    return (call["name"] in ("bash", "bash_background")
+            and bool(_TEST_CMD_RE.search(call["input"])))
+
+
+def process_signals(task: Task, traj: Trajectory) -> dict[str, float]:
+    """Where in the process a run went wrong, from the trace alone.
+
+    Computed for ``generalist`` tasks, whose verdict is the artifact; the
+    signals say how the run got there, so a failure can be placed (no
+    plan, never ran the tests, many failed calls) rather than only
+    counted. Keys, each a number so replicates aggregate as a mean:
+
+    * ``planned``: a plan tool call before the first edit or acting
+      command (as the ``plan`` behaviour);
+    * ``scouted``: a read before the first edit;
+    * ``tested``: any test-suite command at all (pytest, npm test,
+      node --test, cargo test, go test, run_tests);
+    * ``tested_after_last_edit``: a test-suite command after the last
+      edit -- the run checked its final state before answering;
+    * ``test_runs`` / ``edits`` / ``tool_calls``: counts;
+    * ``tool_errors``: results that are an ``{"error": ...}`` payload
+      (refused, malformed, failed tool);
+    * ``nonzero_exits``: shell results with a non-zero exit_code (a red
+      test run counts; it is a cost signal, not a fault);
+    * ``tool_budget_used``: tool_calls / max_tool_calls.
+
+    ``{}`` for other classes. Pure: reads ``traj.tool_calls`` and
+    ``traj.tool_results`` only.
+    """
+    if (task.task_class or "") != "generalist":
+        return {}
+    calls = _classify_calls(traj.tool_calls)
+    results = list(traj.tool_results or [])
+    last_edit = _last_idx(calls, "mutate")
+    tests = [c["idx"] for c in calls if _is_test_run(c)]
+    errors = sum(1 for r in results if str(r).lstrip().startswith('{"error"'))
+    nonzero = 0
+    for r in results:
+        m = _EXIT_CODE_RE.search(str(r)[:4000])
+        if m and int(m.group(1)) != 0:
+            nonzero += 1
+    n = len(calls)
+    return {
+        "planned": float(_behavior_planned(calls)),
+        "scouted": float(_behavior_scouted(calls)),
+        "tested": float(bool(tests)),
+        "tested_after_last_edit": float(bool(
+            tests and (last_edit is None or tests[-1] > last_edit))),
+        "test_runs": float(len(tests)),
+        "edits": float(sum(1 for c in calls if "mutate" in c["kinds"])),
+        "tool_calls": float(n),
+        "tool_errors": float(errors),
+        "nonzero_exits": float(nonzero),
+        "tool_budget_used": (round(n / task.max_tool_calls, 3)
+                             if task.max_tool_calls > 0 else 0.0),
+    }
+
+
 def behavior_rates(
     records: list[dict] | list[BenchmarkResult],
 ) -> dict[str, dict[str, float]]:
@@ -1632,6 +1771,14 @@ def score_outcome(
         else 0
     )
     routing_pts = routing_base + routing_bonus
+    # A task graded on its artifact and on nothing it says: the share
+    # the signals would carry is carried by how many of the acceptance
+    # checks held. Without this every such task collected the flat 15
+    # whether the artifact was nearly right or untouched.
+    verify_quality = (acceptance_quality(traj.verify_output)
+                      if task.verify else None)
+    if verify_quality is not None and not task.expected_signals:
+        routing_pts = int(round(20 * verify_quality / 100))
 
     if task.max_duration_s > 0 and traj.duration_s >= 0:
         speed_ratio = min(1.0, traj.duration_s / task.max_duration_s)
@@ -1711,10 +1858,13 @@ def score_outcome(
         value_report=value_report,
         verify_ok=traj.verify_ok,
         verify_output=str(traj.verify_output or "")[:2000],
+        verify_quality=verify_quality,
+        per_run_verify_quality=[verify_quality],
         tool_names=tool_names,
         tool_subjects=[tool_subject(c) for c in traj.tool_calls
                        if isinstance(c, dict)][:60],
         behavior=behavior_flags(task, traj),
+        process=process_signals(task, traj),
         caveats=caveat_count(traj.text),
         answer_chars=len(str(traj.text or "")),
         denials=traj.denials,
@@ -2050,6 +2200,10 @@ def aggregate_replicates(
     behavior_agg = {
         k: beh_sums[k] / beh_counts[k] for k in beh_sums if beh_counts[k]
     }
+    # Acceptance quality per replicate; a sample that reported none
+    # stays None in the list and out of the median.
+    _vq_runs = [r.verify_quality for r in results]
+    _vq_seen = [q for q in _vq_runs if q is not None]
 
     return BenchmarkResult(
         task_id=first.task_id,
@@ -2087,7 +2241,14 @@ def aggregate_replicates(
         tool_names=tool_names_union,
         tool_subjects=subjects,
         behavior=behavior_agg,
+        process={k: round(sum(float((r.process or {}).get(k, 0.0))
+                              for r in results) / n, 3)
+                 for k in sorted({k for r in results
+                                  for k in (r.process or {})})},
         unmeasured=all_unmeasured,
+        verify_quality=(None if not _vq_seen
+                        else int(round(_median([float(q) for q in _vq_seen])))),
+        per_run_verify_quality=_vq_runs,
         caveats=int(_median([float(r.caveats) for r in results])),
         answer_chars=int(_median([float(r.answer_chars) for r in results])),
         user_interventions=int(_median(

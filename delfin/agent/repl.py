@@ -603,6 +603,53 @@ def _resolve_fresh_budget(context_budget, engine) -> int:
     return int(context_budget or 0)
 
 
+#: The compaction kinds that leave a summary of the compacted messages in
+#: the history. ``summary_unavailable`` (nothing could be summarised) and the
+#: trim-only kinds do not, and count as a compaction that did not happen.
+_SUMMARY_KINDS = ("summary", "deterministic_digest")
+
+
+def _compact_to_fit(engine, budget: int) -> bool:
+    """Try a forced compaction before a fresh start; True when it fits.
+
+    Input: an engine whose current context is over ``budget``. Output: True
+    when ``engine._compact_history(force=True)`` produced a summary and the
+    context is then at or under ``budget``; False when the engine has no
+    compaction, it raised, it summarised nothing, or the result is still
+    over (the kept recent messages alone can exceed a small window).
+
+    Semantics: a switch to a model with a smaller window put the history
+    over the budget, and the fresh start archived it wholesale -- the next
+    turn knew only the working-state block and the open tasks. A
+    compaction keeps a summary of the task in context and archives the
+    compacted messages the same way, so it is tried first; the fresh start
+    stays the fallback. A compaction that ran and does not fit is kept: the
+    fresh start then cuts the compacted history, whose older part is
+    already in the archive.
+
+    Cost: one summariser call (max_tokens 1500, input capped at 60k chars by
+    ``_llm_summarize_old_messages``), only on a turn whose context is over
+    the fresh-start budget; extractive and free on the CLI backend. Rejected:
+    compacting at the model switch itself -- the switch has no worker
+    thread of its own, and the first turn after it is where the window is
+    checked on both surfaces anyway.
+    """
+    compact = getattr(engine, "_compact_history", None)
+    if not callable(compact):
+        return False
+    before = getattr(engine, "last_compaction_info", None)
+    try:
+        compact(force=True)
+    except Exception:
+        return False
+    info = getattr(engine, "last_compaction_info", None)
+    if info is before or not isinstance(info, dict):
+        return False
+    if info.get("kind") not in _SUMMARY_KINDS:
+        return False
+    return _context_tokens(engine) <= budget
+
+
 def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
                        task_state=None, context_budget=None) -> str:
     """The message to send for this turn, starting fresh when over budget.
@@ -615,6 +662,9 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     try:
         budget = _resolve_fresh_budget(context_budget, engine)
         if budget <= 0:
+            return prompt
+        if (_context_tokens(engine) > budget
+                and _compact_to_fit(engine, budget)):
             return prompt
         block = ""
         try:
@@ -639,7 +689,7 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
 
 
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
-             max_tokens: int = 0, memory_context: str = "",
+             max_tokens: int = 0, memory_context: str | None = None,
              context_budget=None, task_state=None,
              working_state_block: str = "") -> TurnResult:
     """One turn, with every callback turned into a RenderItem.
@@ -657,6 +707,11 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     message, and fuses the block with the prompt this turn must answer, so
     the current user message is never lost. Under the budget (or with a 0
     budget) it arms nothing and the caller keeps the full history.
+
+    ``memory_context`` None (the default) takes what every surface sends
+    with a turn: the project instruction files and the per-turn hints of
+    ``turn_context``, the same call ``cli.cmd_run`` and the dashboard
+    make. A string is sent as given.
 
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
@@ -752,9 +807,14 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
+    from . import turn_context
+    if memory_context is None:
+        memory_context = turn_context.memory_context(engine, prompt)
+    prompt = turn_context.user_message(prompt)
     user_message = prompt
     budget = _resolve_fresh_budget(context_budget, engine)
-    if budget > 0:
+    if budget > 0 and (_context_tokens(engine) <= budget
+                       or not _compact_to_fit(engine, budget)):
         try:
             fresh = fresh_context_for_turn(
                 engine, task_state, token_budget=budget,
@@ -923,8 +983,12 @@ class ReplOptions:
     #: Above this CURRENT-context token budget (per ``_estimate_context_tokens``)
     #: the terminal starts the next turn from a small fresh context (engine
     #: ``start_fresh`` one-shot) instead of re-sending the whole history.
-    #: 0 disables the restart hook (default).
-    context_budget: int = 0
+    #: None (default) resolves it as the dashboard and ``cmd_run`` do:
+    #: the engine's ``context_budget``, else min(900k, the model's window)
+    #: (``_resolve_fresh_budget``). 0 disables the restart hook. The
+    #: default was 0, so the terminal was the one surface that never
+    #: started fresh.
+    context_budget: int | None = None
 
 
 def _is_a_note(text: str) -> bool:
@@ -1089,6 +1153,16 @@ class TerminalAgent:
                  broker=None):
         self.engine = engine
         self.broker = broker
+        # The broker marks its waits on the CURRENT engine's activity
+        # state; read per request, since /model rebuilds the engine.
+        if broker is not None and getattr(broker, "activity", 0) is None:
+            try:
+                broker.activity = lambda: getattr(self.engine, "activity",
+                                                  None)
+            except Exception:
+                pass
+        # The phase whose slow line was already said (activity seq).
+        self._slow_said_seq = -1
         self.opts = opts or ReplOptions()
         try:
             # The name `delfin-agent pause <session>` reaches this engine by.
@@ -1149,6 +1223,10 @@ class TerminalAgent:
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
+        # The first prompt the user gave this process (not a wake, not a
+        # continuation): the task the session end records an outcome and
+        # an episode for (cli._end_session). "" until one is sent.
+        self.first_task = ""
         self._quit = False
 
     # -- input -----------------------------------------------------------
@@ -1261,6 +1339,8 @@ class TerminalAgent:
             return ""
 
     def turn(self, prompt: str) -> TurnResult:
+        if not self.first_task and not isinstance(prompt, HarnessText):
+            self.first_task = str(prompt)
         # The fresh-start decision lives in run_turn (the public turn path),
         # which both the interactive and the headless route share: it judges
         # the CURRENT context, ARCHIVES the history it drops, arms the
@@ -1414,6 +1494,10 @@ class TerminalAgent:
                     except Exception:
                         pass
                 try:
+                    self._say_slow_phase()
+                except Exception:
+                    pass
+                try:
                     item = self._q.get(
                         timeout=0.0 if raw.active else _PUMP_TICK_S)
                 except queue.Empty:
@@ -1430,6 +1514,12 @@ class TerminalAgent:
                     # this flag, so the next prompt says what the turn
                     # stopped on even when its own words do not.
                     self._denied_in_turn = True
+                if (item.kind == "wait" and raw.active and self._can_redraw()
+                        and self._activity_snapshot() is not None):
+                    # The status row already says it, with a clock that
+                    # ticks every repaint; the first-byte tick's own row
+                    # above it counted in tenths of the deadline.
+                    continue
                 self._count_streamed(item)
                 self._render_around_bottom(item)
 
@@ -1582,9 +1672,13 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 "this backend carries no permission gate"))
             return
-        try:
-            nxt = order[(order.index(current) + 1) % len(order)]
-        except ValueError:
+        # A step taken while a turn runs passes over plan: each step takes
+        # effect at once, so a tool call landing mid-cycle was refused.
+        from .mode_cycle import next_in_cycle
+        if current in order:
+            nxt = next_in_cycle(order, current, turn_running=bool(
+                getattr(self.engine, "turn_in_flight", False)))
+        else:
             nxt = "default"
         try:
             self.engine.set_kit_permission_mode(nxt)
@@ -1824,6 +1918,12 @@ class TerminalAgent:
         from . import terminal_confirm as tc
 
         self._clear_bottom()
+        # The status row is down while a dialog waits, so the dialog says
+        # what the turn is doing: nothing, until this is answered.
+        self.transcript.chrome(self.transcript.theme.dim(
+            "⏸ waiting for your "
+            + ("answer" if req.kind == tc.ASK else "approval")
+            + " — the turn is paused until you answer"))
         if req.kind == tc.ASK:
             self._answer_question(req, raw)
             return
@@ -2334,6 +2434,32 @@ class TerminalAgent:
         self._input_cursor = 0
         self._clear_bottom()
 
+    def _activity_snapshot(self):
+        """The engine's activity snapshot, or None without one."""
+        from . import activity as _act
+        target = _act.resolve_attr(getattr(self, "engine", None))
+        if target is None:
+            return None
+        try:
+            return target.snapshot()
+        except Exception:
+            return None
+
+    def _say_slow_phase(self) -> None:
+        """One transcript line when the current phase is past its
+        threshold: what is slow, and how to stop it here. Once per phase
+        (keyed on the activity's seq), never once per repaint."""
+        snap = self._activity_snapshot()
+        if snap is None or not snap.active \
+                or snap.seq == self.__dict__.get("_slow_said_seq", -1):
+            return
+        from . import activity as _act
+        hint = _act.slow_hint(snap, "terminal")
+        if not hint:
+            return
+        self._slow_said_seq = snap.seq
+        self._render_around_bottom(RenderItem("notice", text=hint))
+
     def _status_line(self) -> str:
         """Elapsed, model, posture, what this turn has cost so far.
 
@@ -2372,7 +2498,19 @@ class TerminalAgent:
                     or "?")
         mode = permission_mode(self.engine) or str(status.get("mode", "") or "")
 
-        bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
+        # The phase first, from the engine's own state (activity.py): what
+        # the turn waits on, with that phase's clock, then the turn's.
+        # Without an activity state (a double, a foreign engine) the row
+        # keeps its old head: the turn's seconds and the model.
+        snap = self._activity_snapshot()
+        if snap is not None and snap.active:
+            from . import activity as _act
+            bits = [f"{_SPINNER[self._spin]} {_act.line(snap)}",
+                    f"turn {elapsed:.0f}s"]
+            if snap.phase not in (_act.MODEL_WAIT, _act.STREAMING):
+                bits.append(model)
+        else:
+            bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
             # Said only when a command is not held by a layer; an

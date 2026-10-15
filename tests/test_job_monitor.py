@@ -235,6 +235,14 @@ def test_diagnosis_uses_engine_and_records_summary(monkeypatch):
     assert f.diagnosis_session.startswith("monitor-4976064-")
     assert saved["sid"] == f.diagnosis_session
     assert "🚨" in saved.get("title", "")
+    # Resumable with its context: the engine's history holds the diagnosis
+    # (the prompt marked as the monitor's own), in the job's folder.
+    from delfin.agent.harness_rows import is_harness_row
+    rows = saved["engine_messages"]
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+    assert is_harness_row(rows[0]) and "READ-ONLY" in rows[0]["content"]
+    assert "venv-Tarball" in rows[1]["content"]
+    assert saved["workspace"] == "/calc/test"
 
 
 def test_diagnosis_attaches_fix_assessment_zero_tokens(monkeypatch, tmp_path):
