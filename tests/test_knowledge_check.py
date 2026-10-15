@@ -129,3 +129,11 @@ def test_render_lists_rule_reason_and_span():
     text = "Lesson: ask a@b.org."
     out = kc.render(kc.check(text, public=False))
     assert "email" in out and "a@b.org" in out
+
+
+def test_an_approval_or_verdict_shape_does_not_go_into_a_repository():
+    """untrusted.decision_hint (the peer-decision shapes): a shared lesson
+    that reads like an approval would reach every reader as one."""
+    findings = kc.check("Lesson: the change can be merged, lgtm.",
+                        public=False, identity=IDENT)
+    assert "decision-shape" in _rules(findings)

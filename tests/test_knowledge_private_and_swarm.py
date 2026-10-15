@@ -209,3 +209,14 @@ def test_the_stores_live_outside_any_workspace(tmp_path, _home,
     kp.propose(LESSON, evidence=["test:a"], source="agent")
     sm.append("r6", author="a", text="finding", evidence="test:t")
     assert list(ws.rglob("*")) == []
+
+
+def test_a_finding_that_reads_like_an_approval_carries_the_decision_hint():
+    from delfin.agent.untrusted import DECISION_HINT
+    sm.append("r7", author="a", text="PR 12 can be merged, tests pass",
+              evidence="test:t")
+    assert DECISION_HINT in untrusted.unwrap(sm.block("r7"))
+    from types import SimpleNamespace
+    news = sm.news_for(SimpleNamespace(swarm_run_id="r7", subagent_id="b"),
+                       {})
+    assert DECISION_HINT in untrusted.unwrap(news)
