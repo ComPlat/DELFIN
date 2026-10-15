@@ -33,12 +33,18 @@ aspect on a cell twice as tall as wide, rounded up to whole cells; a
 sub-pixel is set where at least 0.5 of its area is white (0.55 for
 sextants: compared with 0.5, the strokes are thinner and the gaps
 between the body, the fin and the tail stay open).
---cols 40 gives 40 x 18 cells (octant, sextant), 40 x 17 (halfblock).
-Compared at 40 columns with the disc in half blocks (30 x 15, averaged
-colours) and the disc in two-colour sextants: without the disc the
-strokes are the foreground on the terminal's background, and the fin,
-the tail and both waves stay apart. Octants are Unicode 16, sextants 13:
-the window draws octants unless DELFIN_TUI_LOGO asks for an older kind.
+The window holds three sizes, each in every kind of cell: --cols 30
+gives 30 x 13 cells, --cols 20 gives 20 x 9, --cols 16 gives 16 x 7
+(octant, sextant and halfblock alike: the rounding up to whole cells
+lands on the same row count). Compared at 40 columns with the disc in
+half blocks (30 x 15, averaged colours) and the disc in two-colour
+sextants: without the disc the strokes are the foreground on the
+terminal's background, and the fin, the tail and both waves stay apart.
+At 12 columns (12 x 6) the fin and the flukes are one or two sub-pixels
+and the waves merge; 16 is the smallest size kept. Octants are Unicode
+16, sextants 13, half blocks Unicode 1: the window draws sextants
+unless DELFIN_TUI_LOGO asks for octants (sharper, fewer fonts) or half
+blocks (every font with block elements).
 
 Glyphs: an octant pattern (bit n-1 for octant n, octants 1-2 the top row
 and 7-8 the bottom) is BLOCK OCTANT-<digits> (U+1CD00-1CDE5, 230 patterns
@@ -60,10 +66,10 @@ then the sub-pixel rows ('#' set, '.' clear).
 Usage (from the repository root):
     python tui/scripts/logo_pixels.py                 # the braille rows in logo.ts
     python tui/scripts/logo_pixels.py --preview
-    python tui/scripts/logo_pixels.py --cell octant     # OCTANT_PIXELS and the colour in logo.ts
-    python tui/scripts/logo_pixels.py --cell octant --preview  # also the cells
-    python tui/scripts/logo_pixels.py --cell sextant    # SEXTANT_PIXELS
-    python tui/scripts/logo_pixels.py --cell halfblock  # HALF_PIXELS
+    python tui/scripts/logo_pixels.py --cell octant --cols 30     # OCTANT_PIXELS_30 and the colour in logo.ts
+    python tui/scripts/logo_pixels.py --cell octant --cols 30 --preview  # also the cells
+    python tui/scripts/logo_pixels.py --cell sextant --cols 20    # SEXTANT_PIXELS_20
+    python tui/scripts/logo_pixels.py --cell halfblock --cols 16  # HALF_PIXELS_16
     python tui/scripts/logo_pixels.py --cell quadrant --cols 40 --rows 16
 """
 
@@ -352,14 +358,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--cell", choices=("braille", "quadrant", "octant", "sextant", "halfblock"), default="braille")
     ap.add_argument("--cols", type=int, default=None,
-                    help="braille, quadrant: pixel columns (default 40); octant, sextant, halfblock: cells (default 40)")
+                    help="braille, quadrant: pixel columns (default 40); octant, sextant, halfblock: cells "
+                         "(default 30; the window holds 30, 20 and 16)")
     ap.add_argument("--rows", type=int, default=32, help="braille, quadrant: pixel rows")
     ap.add_argument("--cover", type=float, default=0.45, help="braille, quadrant: white fraction of a pixel's area that sets it")
     ap.add_argument("--white", type=int, default=200, help="braille, quadrant: level all three channels exceed in a white pixel")
     ap.add_argument("--preview", action="store_true", help="also print the cells the window draws")
     ap.add_argument("--logo", type=Path, default=LOGO)
     a = ap.parse_args()
-    cols = a.cols if a.cols is not None else 40
+    cols = a.cols if a.cols is not None else (30 if a.cell in MARK_CELLS else 40)
     if a.cell in MARK_CELLS:
         px = mark_rows(mark_mask(a.logo), cols, a.cell)
         blue = logo_blue(a.logo)

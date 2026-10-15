@@ -1793,23 +1793,28 @@ applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`
 (it also reads the REPL's history) and its pins in `~/.delfin/tui_state.json`.
 `DELFIN_RUNTIME_DIR` moves the service's socket (default `/tmp`).
 The banner's logo is the dolphin and its two waves in the logo's blue,
-40 columns wide (beside the session's words in a window of 76 columns or
-more), where the terminal says it draws colours (`COLORTERM=truecolor` or
+where the terminal says it draws colours (`COLORTERM=truecolor` or
 `24bit`: 24-bit; a `TERM` with `256color`: the nearest of the 256
 colours), and a braille outline in the accent otherwise and under
-`NO_COLOR`. `DELFIN_TUI_LOGO` chooses:
+`NO_COLOR`. Its size follows the terminal when the banner is drawn: 30
+columns (13 rows) in a terminal of at least 40 rows and 66 columns, 20
+columns (9 rows) from 28 rows and 56 columns, 16 columns (7 rows) from
+20 rows and 52 columns, and the words alone below that; the braille
+outline (19 x 8) needs 24 rows and 55 columns. The logo stays at about
+a third of the terminal's height or less. `DELFIN_TUI_LOGO` chooses how
+it is drawn:
 
 | Value | Logo |
 |---|---|
-| (unset) | octant cells (2 x 4 sub-pixels, Unicode 16), the terminal's colours |
-| `sextant` | sextant cells (2 x 3, Unicode 13) |
+| (unset) | sextant cells (2 x 3 sub-pixels, Unicode 13), the terminal's colours |
+| `octant` | octant cells (2 x 4, Unicode 16): sharper, where the terminal's font has them |
 | `halfblock` | half blocks, in every font with block elements |
-| `rgb`, `256` | octants in 24-bit or 256 colours, whatever the terminal says |
+| `rgb`, `256` | sextants in 24-bit or 256 colours, whatever the terminal says |
 | `mono` | the braille outline |
 
 A logo drawn as boxes or question marks means the terminal or its font
-has no octant glyphs: set `DELFIN_TUI_LOGO=sextant`, or `halfblock` if
-that shows boxes too.
+lacks those characters: set `DELFIN_TUI_LOGO=halfblock` (with `octant`,
+unset it again).
 
 ### Subagents
 

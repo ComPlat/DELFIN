@@ -11,7 +11,7 @@ import { RGBA, TextAttributes, type CliRenderer, type MouseEvent, type Renderabl
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
 import { fit, middle, width } from "../text"
-import { DOLPHIN, DOLPHIN_WIDTH, LOGO_WIDTH, logoDepth, logoRuns } from "../theme/logo"
+import { DOLPHIN, LOGO_GAP, logoDepth, logoRuns, pickLogo, pickedWidth } from "../theme/logo"
 import { GUTTER, markdownStyles, type Theme } from "../theme/theme"
 import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
@@ -28,11 +28,6 @@ export function cappedLines(text: string, max: number): string {
   return [...lines.slice(0, max - 1), `… ${lines.length - max + 1} more lines`].join("\n")
 }
 
-/** The banner: the dolphin, this much space, then the words (which need
- *  about this many columns beside it, or the dolphin is left out). */
-const LOGO_GAP = 3
-const BANNER_TEXT_MIN = 32
-
 /** The marker in front of a message, by who sent it. */
 const SOURCE_MARK: Record<string, string> = {
   user: "❯ ", queued: "❯ ", steer: "↳ ", harness: "◇ ",
@@ -42,6 +37,9 @@ export interface RowProps {
   item: Item
   theme: Theme
   width: number
+  /** The terminal's rows: the banner's picture is sized by them too
+   *  (pickLogo). */
+  height?: number
   /** A tool call's details: what it printed, an edit's diff (ctrl+o). */
   expanded?: boolean
   /** A click on a tool call (full screen): its details on or off; the
@@ -56,22 +54,23 @@ export function Row(props: RowProps): JSX.Element {
     case "banner": {
       // The dolphin beside what the session is, where both have room;
       // the words alone (under the mark ◆) where they do not.
-      // A function: a full-screen row follows the width (rows.tsx is drawn
-      // once into the scrollback, but lives on in the window).
-      // In colour the mark (the dolphin and its waves, in octant, sextant or
-      // half-block cells); in mono braille.
+      // In colour the mark (the dolphin and its waves, in sextant, octant
+      // or half-block cells) in the largest size the terminal's width and
+      // rows allow (pickLogo); in mono braille.
+      // Functions: a full-screen row follows the window's size (rows.tsx
+      // is drawn once into the scrollback, but lives on in the window).
       const depth = t.name === "mono" ? "mono" : logoDepth()
-      const logoWidth = depth === "mono" ? DOLPHIN_WIDTH : LOGO_WIDTH
-      const logo = () => props.width >= logoWidth + LOGO_GAP + BANNER_TEXT_MIN
+      const picked = () => pickLogo(depth, props.width, props.height ?? 0)
+      const logo = () => picked() !== null
       const paint = (c: string | number | null) => c === null ? undefined : typeof c === "number" ? RGBA.fromIndex(c) : c
       return (
         <box flexDirection="row" paddingTop={1} paddingBottom={1}>
           <Show when={logo()}>
-            <box flexDirection="column" flexShrink={0} width={logoWidth + LOGO_GAP}>
-              <Show when={depth !== "mono"} fallback={
+            <box flexDirection="column" flexShrink={0} width={pickedWidth(picked()) + LOGO_GAP}>
+              <Show when={picked() !== "braille"} fallback={
                 <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
               }>
-                <For each={logoRuns(depth)}>
+                <For each={((p) => p && p !== "braille" ? logoRuns(depth, p) : [])(picked())}>
                   {(runs) => (
                     <text wrapMode="none">
                       <For each={runs}>{(run) => <span style={{ fg: paint(run.fg), bg: paint(run.bg) }}>{run.text}</span>}</For>
@@ -299,7 +298,7 @@ export function itemWriter(renderer: CliRenderer, theme: () => Theme,
     const expanded = Boolean(options.details?.())
     writeSolidToScrollback(renderer, (ctx) => (
       <box paddingLeft={GUTTER} flexDirection="column">
-        <Row item={item} theme={t} width={ctx.width - GUTTER} expanded={expanded} />
+        <Row item={item} theme={t} width={ctx.width - GUTTER} height={renderer.terminalHeight} expanded={expanded} />
       </box>
     ))
   }

@@ -288,7 +288,7 @@ export function Footer(props: FooterProps): JSX.Element {
           the agent view has the screen, so closing the view keeps its
           scroll position and does not lay out every row again. */}
       <Show when={full()}>
-        <TranscriptView renderer={props.renderer} screen={props.screen!} theme={t} width={cols}
+        <TranscriptView renderer={props.renderer} screen={props.screen!} theme={t} width={cols} height={() => term().height}
                         visible={() => !viewOpen()} ref={props.scrollRef} onUserScroll={props.onUserScroll} />
       </Show>
       <Show when={note()}>

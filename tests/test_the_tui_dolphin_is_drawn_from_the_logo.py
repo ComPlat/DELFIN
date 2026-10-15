@@ -1,10 +1,12 @@
 """The window's dolphin (tui/src/theme/logo.ts) is the logo's, reduced.
 
-The PIXELS, OCTANT_PIXELS, SEXTANT_PIXELS and HALF_PIXELS rows and the
-colour in logo.ts are pasted output of tui/scripts/logo_pixels.py run on
-delfin/logo/DELFIN_logo.png (defaults; --cell octant, sextant, halfblock). These tests run the
-script and compare, so a changed logo or a hand edit of the rows shows as
-a difference rather than as a drawing nobody can reproduce.
+The PIXELS rows, the OCTANT_PIXELS_<cols>, SEXTANT_PIXELS_<cols> and
+HALF_PIXELS_<cols> rows (30, 20 and 16 columns) and the colour in logo.ts
+are pasted output of tui/scripts/logo_pixels.py run on
+delfin/logo/DELFIN_logo.png (defaults; --cell octant|sextant|halfblock
+--cols 30|20|16). These tests run the script and compare, so a changed
+logo or a hand edit of the rows shows as a difference rather than as a
+drawing nobody can reproduce.
 """
 
 from __future__ import annotations
@@ -48,16 +50,21 @@ def test_logo_ts_names_the_script_that_made_it():
 
 
 MARK = {"octant": ("OCTANT_PIXELS", 2, 4), "sextant": ("SEXTANT_PIXELS", 2, 3), "halfblock": ("HALF_PIXELS", 1, 2)}
+# The sizes the window holds: columns, and the rows of cells every kind
+# comes to (rounded up to whole cells).
+SIZES = {30: 13, 20: 9, 16: 7}
 
 
-def _pasted_mark(cell: str) -> list[str]:
-    block = re.search(rf"const {MARK[cell][0]} = \[(.*?)\]", LOGO_TS.read_text(encoding="utf-8"), re.S)
-    assert block, f"logo.ts has no {MARK[cell][0]}"
+def _pasted_mark(cell: str, cols: int) -> list[str]:
+    name = f"{MARK[cell][0]}_{cols}"
+    block = re.search(rf"const {name} = \[(.*?)\]", LOGO_TS.read_text(encoding="utf-8"), re.S)
+    assert block, f"logo.ts has no {name}"
     return re.findall(r'"([#.]+)"', block.group(1))
 
 
-def _script_mark(cell: str) -> tuple[str, list[str]]:
-    out = subprocess.run([sys.executable, str(SCRIPT), "--cell", cell], capture_output=True, text=True, check=True).stdout
+def _script_mark(cell: str, cols: int) -> tuple[str, list[str]]:
+    out = subprocess.run([sys.executable, "-W", "ignore", str(SCRIPT), "--cell", cell, "--cols", str(cols)],
+                         capture_output=True, text=True, check=True).stdout
     return out.split("\n", 1)[0], re.findall(r'"([#.]+)"', out)
 
 
@@ -70,9 +77,15 @@ def _script_module():
     return logo_pixels
 
 
-def test_the_pasted_mark_rows_are_the_scripts_output_for_every_kind_of_cell():
+def test_the_pasted_mark_rows_are_the_scripts_output_for_every_size_and_kind_of_cell():
     for cell in MARK:
-        assert _pasted_mark(cell) == _script_mark(cell)[1], cell
+        for cols in SIZES:
+            assert _pasted_mark(cell, cols) == _script_mark(cell, cols)[1], (cell, cols)
+
+
+def test_logo_ts_holds_no_other_mark_data():
+    names = re.findall(r"const ((?:OCTANT|SEXTANT|HALF)_PIXELS\w*) = \[", LOGO_TS.read_text(encoding="utf-8"))
+    assert sorted(names) == sorted(f"{MARK[c][0]}_{n}" for c in MARK for n in SIZES)
 
 
 def test_the_pasted_colour_is_the_scripts():
@@ -80,25 +93,30 @@ def test_the_pasted_colour_is_the_scripts():
     rgb = re.search(r'export const LOGO_RGB = "#([0-9a-f]{6})"', text)
     x256 = re.search(r"export const LOGO_256 = (\d+)", text)
     assert rgb and x256
-    assert _script_mark("octant")[0] == f"COLOUR {rgb.group(1)} {x256.group(1)}"
+    for cols in SIZES:
+        assert _script_mark("octant", cols)[0] == f"COLOUR {rgb.group(1)} {x256.group(1)}"
     r, g, b = (int(rgb.group(1)[i:i + 2], 16) for i in (0, 2, 4))
     assert b > r + 40 and b > g        # a blue
     assert 16 <= int(x256.group(1)) <= 231
 
 
-def test_the_mark_is_forty_cells_wide_and_keeps_its_aspect():
-    rows = {}
-    for cell, (_, sx, sy) in MARK.items():
-        px = _pasted_mark(cell)
-        assert len({len(r) for r in px}) == 1 and len(px[0]) == 40 * sx, cell
-        assert len(px) % sy == 0, cell
-        rows[cell] = len(px) // sy
-        # Something in the first two and the last two columns of cells and
-        # in the first row: cropped to the mark.
-        assert "#" in "".join(px[:sy]), cell
-        assert any("#" in r[:2 * sx] for r in px) and any("#" in r[-2 * sx:] for r in px), cell
-    assert rows["octant"] == rows["sextant"] == 18
-    assert rows["halfblock"] in (17, 18)
+def test_every_size_is_its_columns_wide_and_keeps_its_aspect():
+    for cols, rows in SIZES.items():
+        for cell, (_, sx, sy) in MARK.items():
+            px = _pasted_mark(cell, cols)
+            assert len({len(r) for r in px}) == 1 and len(px[0]) == cols * sx, (cell, cols)
+            assert len(px) == rows * sy, (cell, cols, len(px))
+            # Something in the first two and the last two columns of cells and
+            # in the first row: cropped to the mark.
+            assert "#" in "".join(px[:sy]), (cell, cols)
+            assert any("#" in r[:2 * sx] for r in px) and any("#" in r[-2 * sx:] for r in px), (cell, cols)
+
+
+def test_the_script_draws_the_largest_size_by_default():
+    for cell in MARK:
+        out = subprocess.run([sys.executable, "-W", "ignore", str(SCRIPT), "--cell", cell],
+                             capture_output=True, text=True, check=True).stdout
+        assert re.findall(r'"([#.]+)"', out) == _pasted_mark(cell, 30), cell
 
 
 def test_every_octant_pattern_is_one_glyph_that_decodes_back():

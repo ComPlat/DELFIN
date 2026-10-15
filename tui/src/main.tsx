@@ -146,7 +146,8 @@ let mode: "dark" | "light" | "mono" = loaded.config.theme !== "auto" ? loaded.co
 const [theme, setTheme] = createSignal(themeFor(mode, loaded.config.colors))
 // The logo as a picture where the terminal says it draws colours
 // (COLORTERM, TERM); braille in the accent otherwise and under NO_COLOR.
-// Octant cells; sextants or half blocks under DELFIN_TUI_LOGO.
+// Sextant cells; octants or half blocks under DELFIN_TUI_LOGO. Its size
+// follows the terminal's rows and columns (pickLogo).
 setLogoDepth(logoDepthFor(process.env, mode))
 setLogoCells(logoCellsFor(process.env))
 if (auto) {
