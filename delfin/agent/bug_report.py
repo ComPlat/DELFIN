@@ -44,6 +44,7 @@ The path is **never hard-coded** — it always comes from env / settings.
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -343,10 +344,9 @@ def _bundle_files(
     Size-capped (per-file, count, total) and never raises.  Returns one
     record per referenced path with its bundling ``status``.  A unique
     flattened name avoids basename collisions; ``workspace/MANIFEST.txt``
-    maps bundled name → original absolute path.
+    maps bundled name → original absolute path. A binary file is not
+    copied (status ``excluded-binary``, with ``sha256``).
     """
-    import shutil
-
     ws_base = Path(workspace).expanduser() if workspace else None
 
     records: list[dict] = []
@@ -399,16 +399,25 @@ def _bundle_files(
                 name = f"{base}__{n}"
                 n += 1
             used_names.add(name)
-            ws.mkdir(parents=True, exist_ok=True)
             # Text goes through the same redactor as the report itself: a
             # config or log the agent read can hold a token that no file
-            # name gives away. Binary files are copied as they are.
+            # name gives away. A binary file cannot be redacted, so it is
+            # not copied: the record names it with its size and sha256,
+            # enough to ask the reporter for it and to check that a copy
+            # received later is the same file. Rejected: copying it
+            # unredacted (a keyring blob, an sqlite store, a pickle or a
+            # core file can hold a credential the redactor never reads);
+            # a per-report consent to include binaries (nobody can judge
+            # an unreadable blob, so the yes would not be informed).
             _data = src.read_bytes()
-            if b"\0" not in _data[:8192]:
-                _guarded_write(ws / name, _data.decode("utf-8", errors="replace"),
-                               failures)
-            else:
-                shutil.copy2(src, ws / name)
+            if b"\0" in _data[:8192]:
+                rec["status"] = "excluded-binary"
+                rec["sha256"] = hashlib.sha256(_data).hexdigest()
+                records.append(rec)
+                continue
+            ws.mkdir(parents=True, exist_ok=True)
+            _guarded_write(ws / name, _data.decode("utf-8", errors="replace"),
+                           failures)
             manifest.append(f"{name}\t{src}")
             rec["status"] = "bundled"
             rec["bundled"] = f"workspace/{name}"
@@ -565,10 +574,13 @@ def _render_markdown(
                    "| File | Status | Via | Size | bundled |",
                    "|---|---|---|---|---|"]
         for r in referenced_files:
+            where = r.get('bundled', '') or (
+                f"not copied, sha256 {r['sha256']}" if r.get('sha256')
+                else '—')
             lines.append(
                 f"| `{r.get('original','')}` | {r.get('status','')} | "
                 f"{r.get('resolved_via','') or '—'} | "
-                f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
+                f"{r.get('bytes',0)} | {where} |"
             )
     if tool_trace:
         lines += ["", "## Tool trace", "",
