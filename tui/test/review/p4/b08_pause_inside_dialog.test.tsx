@@ -32,7 +32,7 @@ test("1 and 3, 200 ms apart, two seconds after the question opened", async () =>
   expect(w.replies()).toEqual([{ sessionId: "s1", requestId: "q1", answers: ["IR", "UV-Vis"] }])
 })
 
-test("A then y, 250 ms apart", async () => {
+test("A then y, 250 ms apart: typing (\"Ay\"), not a saved rule -- y after the hold saves it", async () => {
   w = await mount({ answerPauseMs: 350 })
   w.store.push({ type: "permission.asked", session: "s1", ts: 0, seq: 100, requestId: "c1", kind: "confirm", tool: "bash",
                  preview: "$ pytest -q", flags: { shell: true }, options: [{ key: "y", label: "yes" }, { key: "n", label: "no" },
@@ -43,7 +43,24 @@ test("A then y, 250 ms apart", async () => {
   await Bun.sleep(250)
   w.keys.pressKey("y")
   await w.settle()
+  await Bun.sleep(650)
+  await w.settle()
+  // A key with another after it within HOLD_MS is the start of a message
+  // ("An..." would be A, then n "just this once"): both go into the prompt.
+  expect(w.replies()).toEqual([])
+  expect(w.footer().join("\n")).toContain("❯ Ay")
+  w.keys.pressBackspace()
+  w.keys.pressBackspace()
+  await w.settle()
+  await Bun.sleep(1100)
+  w.keys.pressKey("A", { shift: true })
+  await Bun.sleep(650)                          // alone: the second step shows
+  await w.settle()
+  expect(w.footer().join("\n")).toContain("persist")
+  w.keys.pressKey("y")
+  await Bun.sleep(650)
+  await w.settle()
   console.log("replies:", JSON.stringify(w.replies()))
   console.log(w.footer().filter((l) => l.trim()).slice(0, 3).join("\n"))
   expect(w.replies()).toEqual([{ sessionId: "s1", requestId: "c1", choice: "A", persist: true }])
-})
+}, 10000)

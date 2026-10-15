@@ -2,7 +2,8 @@
  * B04: when the footer needs more rows than the terminal has, footerRows
  * caps it at height-1 and Yoga squeezes the children: rows are drawn over
  * each other. The approval's diff then reads as lines that do not exist.
- * Here at the classic 80x24 with a 3-line draft and the typeahead note.
+ * Here at the classic 80x24 with a 3-line draft, and a fourth line typed
+ * on after the question opened (the prompt keeps the keys).
  */
 import { afterEach, expect, test } from "bun:test"
 import { FIXTURE, mount } from "./h"
@@ -24,7 +25,8 @@ test("80x24: a draft of three lines, then the question", async () => {
   await w.keys.typeText("third")
   w.store.push(edit)
   await w.settle()
-  w.keys.pressKey("x")                         // typeahead: the note line appears
+  w.keys.pressEnter({ meta: true })            // typed on: the draft grows under the panel
+  await w.keys.typeText("fourth")
   await w.settle()
   const frame = w.frame()
   console.log(`--- footerHeight=${w.t.renderer.footerHeight}\n${frame}`)

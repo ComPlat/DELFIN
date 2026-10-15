@@ -65,11 +65,14 @@ REQUESTS: dict[str, dict[str, str]] = {
     "session.shutdown": {"ifIdle": "boolean?", "dryRun": "boolean?"},
     # The answer to a permission.asked event: ``choice`` is one of the
     # option keys it offered (confirm, plan); ``answers`` the chosen labels
-    # of a question (ask). ``persist`` is the second "yes" the keys that
-    # save a permanent rule (A, k) need; without it they approve once.
+    # of a question (ask). ``text`` is a line typed for a question (ask
+    # only): an option when it names one, else the answer as typed
+    # (approval_answers.typed_answer); refused for a confirm or a plan.
+    # ``persist`` is the second "yes" the keys that save a permanent rule
+    # (A, k) need; without it they approve once.
     "permission.reply": {"requestId": "string", "choice": "string?",
                          "answers": "[string]?", "reason": "string?",
-                         "persist": "boolean?"},
+                         "persist": "boolean?", "text": "string?"},
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort
