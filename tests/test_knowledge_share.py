@@ -532,3 +532,14 @@ def test_the_queue_record_names_no_admin_account(env, monkeypatch):
     text = (env["queue"] / f"{qid}.json").read_text()
     assert "boss-login" not in text and "decided_by" not in text
     assert json.loads(text)["reason"] == "already in the docs"
+
+
+def test_an_agent_session_cannot_withdraw_a_queued_share(env, monkeypatch):
+    """The owner check authenticates the account, and the agent runs as
+    that account; the withdrawal stays the person's act."""
+    les, qid = _queued_share(env)
+    monkeypatch.setenv("DELFIN_AGENT_SESSION", "123")
+    with pytest.raises(ks.ShareRefused, match="agent session"):
+        ks.start_unshare(qid, workspace=env["project"])
+    with pytest.raises(ks.ShareRefused, match="agent session"):
+        ks.start_withdraw(qid)

@@ -266,7 +266,7 @@ def is_admin() -> bool:
 @dataclass
 class Dialog:
     id: str
-    kind: str                        # share | unshare | admin
+    kind: str                        # share | unshare | withdraw | admin
     title: str
     target: Optional[Target]
     entry: Optional[kn.Entry] = None
@@ -332,6 +332,8 @@ class Dialog:
                 f"reword the lesson (/lessons edit {self.lesson_id} ...) "
                 "and share again:"))
             lines += [f"  - {f}" for f in self.findings]
+        elif self.kind == "withdraw":
+            pass
         elif self.kind == "admin":
             lines.append("check: passed (" + ("public" if self.public
                                               else "base") + " rules) for "
@@ -637,7 +639,7 @@ def enqueue(d: Dialog) -> str:
         "topic": d.entry.topic, "scope": d.entry.scope, "mode": d.mode,
         "entry": d.text, "contradicts": list(d.contradicts),
         "released": list(d.released), "visibility": d.target.visibility,
-        "status": "pending", "reason": "", "decided_by": "",
+        "status": "pending", "reason": "",
     }
     _write_record(q / f"{qid}.json", record, shared=shared)
     return qid
@@ -825,10 +827,139 @@ def _find_entry(slug: str, workspace) -> tuple:
     raise ShareRefused(f"no shared entry named {slug!r}")
 
 
+_QUEUE_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
+
+
+def _current_uid() -> Optional[int]:
+    """This process's real user id; None where the OS has none."""
+    return os.getuid() if hasattr(os, "getuid") else None
+
+
+def _queued_ref(ref: str) -> str:
+    """The queue id ``ref`` names, or "": a queue id itself, or the id of
+    one's own lesson whose status is QUEUED (its ``shared_ref``)."""
+    ref = (ref or "").strip()
+    if _QUEUE_ID_RE.match(ref):
+        return ref
+    if ref.isdigit():
+        les = kp.get(ref)
+        if les is not None and les.status == kp.QUEUED and les.shared_ref:
+            return les.shared_ref
+    return ""
+
+
+def _own_pending_record(qid: str) -> dict:
+    """The pending queue record ``qid`` if this account wrote it, else
+    ShareRefused with the reason.
+
+    Ownership is the record file's owner as the kernel recorded it: the
+    author's process created the file with ``O_EXCL`` (:func:`enqueue`),
+    so its ``st_uid`` is the author's account, and no other account can
+    create a file owned by this one. The author handle on the record is a
+    name the person chose and proves nothing; it is not consulted.
+
+    Trust model, stated plainly: this authenticates the OS account, so
+    every process of that account (the agent included) is the author --
+    hence the refusal inside an agent session and the typed code;
+    root can do anything; a shared queue folder that is group-writable
+    without the sticky bit lets a group member replace a record with
+    one of their own (the owner check then refuses the real author
+    rather than letting the replacer withdraw it) -- a shared queue
+    folder should be ``chmod 3770`` (setgid + sticky). Where the OS has
+    no user ids, only the per-account queue (which no other account can
+    write) allows withdrawal."""
+    rec = next((r for r in read_queue() if r.get("id") == qid), None)
+    if rec is None:
+        raise ShareRefused(f"no queued submission {qid}")
+    status = str(rec.get("status") or "")
+    if status != "pending":
+        hint = {"withdrawn": "nothing is left to withdraw",
+                "rejected": "the record keeps its text and the reason "
+                            "until the knowledge admin removes it",
+                }.get(status, "the admin prepared a branch from it; once "
+                      "merged, /unshare <entry> withdraws it, until then "
+                      "ask the knowledge admin")
+        raise ShareRefused(f"{qid} is {status} already; {hint}")
+    path = Path(rec["_path"])
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        raise ShareRefused(f"{qid}: {exc}") from None
+    if not stat.S_ISREG(st.st_mode):
+        raise ShareRefused(f"{qid} is not a regular file")
+    uid = _current_uid()
+    if uid is None:
+        if _queue_is_shared():
+            raise ShareRefused(f"{qid}: this system has no account ids to "
+                               "tell who wrote a record in a shared queue; "
+                               "ask the knowledge admin to withdraw it")
+        return rec
+    if st.st_uid != uid:
+        raise ShareRefused(f"{qid} was queued by another account; only the "
+                           "account that queued it can withdraw it (the "
+                           "author handle is not proof), otherwise the "
+                           "knowledge admin")
+    return rec
+
+
+def _withdraw_queued(qid: str) -> tuple:
+    """Reduce a pending record to a tombstone and mark the lesson."""
+    rec = _own_pending_record(qid)
+    tomb = {"id": rec["id"], "created": rec.get("created"),
+            "status": "withdrawn", "withdrawn": time.time(),
+            "_path": rec["_path"]}
+    write_queue_record(tomb)
+    les_id = rec.get("lesson_id")
+    les = kp.get(les_id) if les_id is not None else None
+    if les is not None and les.shared_ref == qid:
+        kp.set_status(les.id, kp.WITHDRAWN, note="withdrawn from the queue")
+    return (f"withdrew {qid} from the knowledge admin's review queue; the "
+            "record keeps only its id, its dates and the status "
+            "'withdrawn'. Your private lesson stays; edit it to share "
+            "again", qid)
+
+
+def start_withdraw(qid: str, *,
+                   clock: Callable[[], float] = time.monotonic) -> Dialog:
+    """Withdraw one's own submission while it waits in the review queue.
+
+    Input: a queue id. Output: a one-code :class:`Dialog` (a withdrawal
+    narrows who can read the text) whose ``perform`` checks ownership
+    again (:func:`_own_pending_record`), rewrites the record as a
+    tombstone -- ``id``, ``created``, ``status: withdrawn``,
+    ``withdrawn`` -- without the entry text, the author handle, the slug,
+    topic, evidence and reason, and sets the lesson to WITHDRAWN. An
+    admin decision on a withdrawn record is refused
+    (``knowledge_curation``)."""
+    _refuse_in_agent_session()
+    rec = _own_pending_record(qid)
+    d = Dialog(id=uuid.uuid4().hex[:12], kind="withdraw",
+               title=f"Withdraw {qid} from the knowledge admin's review "
+               "queue", target=None, text=str(rec.get("entry") or ""),
+               mode="remove", lesson_id=int(rec.get("lesson_id") or 0),
+               public=False,
+               extra=["the record keeps only its id, its dates and the "
+                      "status 'withdrawn'; the text and your handle are "
+                      "removed from it"])
+    d.perform = lambda: _withdraw_queued(qid)
+    return _register(d, clock)
+
+
 def start_unshare(slug: str, *, workspace, handle: str = "",
                   clock: Callable[[], float] = time.monotonic) -> Dialog:
-    """Withdraw one's own entry as a branch that removes it."""
+    """Withdraw one's own share.
+
+    A queue id, or the id of a lesson still QUEUED, withdraws the
+    submission from the review queue (:func:`start_withdraw`; ownership
+    is the account, ``handle`` plays no part). Anything else names an
+    entry already in git, withdrawn as a branch that removes it; there
+    ownership is checked against the provenance handle, which only keeps
+    a person from preparing someone else's removal by mistake -- the
+    authority is the review of the pull request the person opens."""
     _refuse_in_agent_session()
+    qid = _queued_ref(slug)
+    if qid:
+        return start_withdraw(qid, clock=clock)
     handle = (handle or default_handle()).strip()
     layer, root, folder, entry = _find_entry(slug, workspace)
     authors = {p.author for p in entry.provenance}
