@@ -63,6 +63,7 @@ import json
 import math
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -191,14 +192,45 @@ def _categories(xs, what: str = "x") -> list:
     return xs
 
 
+def read_text(path: Path, max_bytes: int) -> str:
+    """The text of the regular file ``path``, of at most ``max_bytes``.
+
+    Decoded as UTF-8 with undecodable bytes replaced (outputs echo their
+    input in whatever encoding it was written). Existence and size are
+    looked at here and nowhere before: a caller with a read gate calls
+    this only once the gate admitted ``path``, so a refused path is
+    neither found, missed nor measured. A file larger than ``max_bytes``
+    is refused before it is opened.
+    """
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        raise SpecError(f"not found: {path}") from None
+    except OSError as exc:
+        raise SpecError(f"cannot read {path}: {exc.strerror}") from None
+    if not stat.S_ISREG(st.st_mode):
+        raise SpecError(f"not a regular file: {path}")
+    if st.st_size > max_bytes:
+        raise SpecError(f"{path} is {st.st_size} bytes; at most {max_bytes}")
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(max_bytes + 1)
+    except OSError as exc:
+        raise SpecError(f"cannot read {path}: {exc.strerror}") from None
+    if len(data) > max_bytes:               # grew since the stat
+        raise SpecError(f"{path} is over {max_bytes} bytes")
+    return data.decode("utf-8", errors="replace")
+
+
 def _read_data_file(path, root: Path, reader=None) -> tuple[str, str]:
     """``(text, suffix)`` of a CSV or JSON file inside ``root``.
 
     A path that resolves outside ``root`` (absolute, ``..``, symlink) is
     refused, as is a file over ``MAX_DATA_FILE_BYTES``. ``reader`` -- the
     dispatch layer's read gate (secret-deny list, read roots) -- is called
-    with the resolved path and returns the text; without it the file is
-    read directly.
+    as ``reader(path, max_bytes)`` with the resolved path before the file
+    is looked at, and returns the text (:func:`read_text` once admitted);
+    without it :func:`read_text` reads the file directly.
     """
     if not isinstance(path, str) or not path:
         raise SpecError("data.file must be a path string")
@@ -207,20 +239,10 @@ def _read_data_file(path, root: Path, reader=None) -> tuple[str, str]:
     if not _is_within(p, root_res):
         raise SpecError(f"data file {path!r} resolves outside the workspace "
                         f"{root}")
-    if not p.is_file():
-        raise SpecError(f"data file not found: {path}")
-    size = p.stat().st_size
-    if size > MAX_DATA_FILE_BYTES:
-        raise SpecError(f"data file {path} is {size} bytes; at most "
-                        f"{MAX_DATA_FILE_BYTES}")
     suffix = p.suffix.lower()
     if suffix not in (".csv", ".json"):
         raise SpecError(f"unsupported data file type: {suffix or path}")
-    if reader is None:
-        def reader(q):
-            with q.open(encoding="utf-8") as fh:
-                return fh.read()
-    return reader(p), suffix
+    return (reader or read_text)(p, MAX_DATA_FILE_BYTES), suffix
 
 
 def _resolve_values_from_file(path, root: Path, reader=None):
@@ -426,27 +448,21 @@ def _refuse_hartree_as_given(parsed, spec: dict) -> None:
 
 
 def _read_output(path, root: Path, reader=None) -> tuple[str, Path]:
-    """``(text, resolved path)`` of an ORCA output for ``energy_profile``.
+    """``(text, resolved path)`` of an output for ``energy_profile``.
 
     Unlike a data file it may lie outside the workspace -- outputs live in
     the calculation folders -- so the dispatch layer's read gate
     (``reader``: secret-deny list, read roots) decides, exactly as it does
-    for ``read_file``. Bounded by ``MAX_OUTPUT_BYTES``.
+    for ``read_file``. The gate runs first: ``reader(path, max_bytes)``
+    looks at the file (:func:`read_text`) only once it admitted the path,
+    so a refusal is the same whether the path exists or not. Bounded by
+    ``MAX_OUTPUT_BYTES``.
     """
     if not isinstance(path, str) or not path.strip():
         raise SpecError("each files entry must be a path string or null")
     p = Path(path).expanduser()
     p = (p if p.is_absolute() else root / p).resolve()
-    if not p.is_file():
-        raise SpecError(f"output not found: {path}")
-    size = p.stat().st_size
-    if size > MAX_OUTPUT_BYTES:
-        raise SpecError(f"output {path} is {size} bytes; at most "
-                        f"{MAX_OUTPUT_BYTES}")
-    if reader is None:
-        with p.open(encoding="utf-8", errors="replace") as fh:
-            return fh.read(), p
-    return reader(p), p
+    return (reader or read_text)(p, MAX_OUTPUT_BYTES), p
 
 
 def _resolve_pathways(spec: dict, root: Path, reader=None):
@@ -815,7 +831,9 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
 
     Raises :class:`SpecError` for a malformed, unsupported or over-bound
     spec; nothing is written in that case. The only write is the figure
-    at :func:`resolve_out_path`.
+    at :func:`resolve_out_path`. ``reader(path, max_bytes) -> str`` is the
+    caller's read gate for data files and outputs: it refuses with a
+    :class:`SpecError` or returns :func:`read_text`.
     """
     from matplotlib.figure import Figure
 

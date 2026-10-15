@@ -26166,15 +26166,15 @@ class _DocToolExecutor:
         if refuse is not None:
             return json.dumps({"error": refuse})
 
-        def _reader(p: Path) -> str:
-            # Outputs echo their input, comments included, in whatever
-            # encoding it was written: decoded with replacement like
-            # chat_plots' own reader and energies._read_text, not refused.
+        def _reader(p: Path, max_bytes: int) -> str:
+            # The gate before anything looks at the file: a refused path
+            # is neither found, missed nor measured. read_text decodes
+            # with replacement (outputs echo their input, comments
+            # included, in whatever encoding it was written).
             err = self._check_read_access(permissions, p, "make_plot")
             if err is not None:
                 raise _cp.SpecError(f"reading {p} refused: {err}")
-            with p.open(encoding="utf-8", errors="replace") as fh:
-                return fh.read()
+            return _cp.read_text(p, max_bytes)
 
         try:
             return _cp.make_plot(spec, out_dir=str(ws), reader=_reader)

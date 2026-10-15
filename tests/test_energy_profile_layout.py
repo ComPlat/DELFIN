@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from delfin.agent import energy_profile as ep
-from delfin.agent.chat_plots import SpecError, plot
+from delfin.agent.chat_plots import SpecError, plot, read_text
 
 
 # The three shapes of the group's Index;deltaG files.
@@ -384,9 +384,9 @@ def test_the_last_frequency_block_is_the_one_counted():
 def test_an_output_read_goes_through_the_callers_gate(outputs):
     seen = []
 
-    def gate(p):
+    def gate(p, max_bytes):
         seen.append(p.name)
-        return p.read_text(encoding="utf-8")
+        return read_text(p, max_bytes)
 
     plot({"kind": "energy_profile", "series": [
         {"files": ["hcn.out", "ts.out", "hnc.out"]}]},
@@ -689,3 +689,54 @@ def test_a_refused_output_is_not_called_a_data_file(tmp_path):
         {"files": [".ssh/hcn.out", "hnc.out"]}]}, ws)
     assert not out.startswith("DELFIN_CARD:")
     assert "denied" in out and "data file" not in out
+
+
+def _refusal_with_and_without(target, spec, ws):
+    """The result for ``spec`` while ``target`` exists, then once it is
+    gone; each call with fresh permissions (no refusal ledger)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_out("C N H", -92.25), encoding="utf-8")
+    present = _dispatch(spec, ws)
+    target.unlink()
+    absent = _dispatch(spec, ws)
+    return present, absent
+
+
+@pytest.mark.parametrize("where", ["outside", "secret"])
+def test_a_refused_output_does_not_say_whether_it_exists(tmp_path, where):
+    """The gate runs before the file is looked at: "output not found"
+    against a refusal told the model which paths exist (~/.ssh/...), and
+    the size of a refused file."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "hnc.out").write_text(_out("C N H", -92.23), encoding="utf-8")
+    target = (tmp_path / "elsewhere" / "a.out" if where == "outside"
+              else ws / ".ssh" / "a.out")
+    spec = {"kind": "energy_profile", "series": [
+        {"files": [str(target), "hnc.out"]}]}
+    present, absent = _refusal_with_and_without(target, spec, ws)
+    assert "denied" in present, present
+    assert present == absent
+
+
+def test_a_refused_output_is_not_measured(tmp_path, monkeypatch):
+    from delfin.agent import chat_plots
+    monkeypatch.setattr(chat_plots, "MAX_OUTPUT_BYTES", 10)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / ".ssh" / "big.out"
+    spec = {"kind": "energy_profile", "series": [{"files": [str(target)]}]}
+    present, absent = _refusal_with_and_without(target, spec, ws)
+    assert "bytes" not in present and present == absent
+
+
+def test_an_admitted_output_that_is_missing_or_no_file_is_named(outputs):
+    import os
+    cases = [("gone.out", "not found")]
+    if hasattr(os, "mkfifo"):           # a FIFO would block an open()
+        os.mkfifo(outputs / "pipe.out")
+        cases.append(("pipe.out", "not a regular file"))
+    for name, match in cases:
+        with pytest.raises(SpecError, match=match):
+            plot({"kind": "energy_profile", "series": [
+                {"files": ["hcn.out", name]}]}, out_dir=str(outputs))
