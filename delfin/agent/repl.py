@@ -106,7 +106,9 @@ class Transcript:
         # stderr about stdout is how `delfin-agent -p "..." > answer.txt`
         # in a terminal would end up writing escape codes into the file.
         self._answer_theme = rr.theme_for(self.out, color)
-        self._markdown = rr.MarkdownStream(self._answer_theme)
+        # A table is laid out against the width at the moment it is drawn.
+        self._markdown = rr.MarkdownStream(
+            self._answer_theme, width=lambda: self.width)
         # stdout and stderr normally name the same terminal.  Remember
         # that fact explicitly: while an answer is streaming the turn UI
         # is painted on stderr, then the next answer delta continues on
@@ -169,6 +171,19 @@ class Transcript:
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
 
+    def _release_held_answer(self) -> None:
+        """Write a table the markdown stream is still holding.
+
+        Called before anything else reaches the screen: a held table ends
+        the model's text, and a tool line written first would stand above
+        the table it came after."""
+        held = self._markdown.release()
+        if held:
+            self._clear_transient()
+            self.out.write(held)
+            self._flush(self.out)
+            self._track_screen_answer(held)
+
     def _err_is_tty(self) -> bool:
         try:
             return bool(self.err.isatty())
@@ -203,6 +218,7 @@ class Transcript:
         """
         if not line:
             return
+        self._release_held_answer()
         if not self._err_is_tty():
             if not self._transient_said:
                 self._transient_said = True
@@ -235,6 +251,7 @@ class Transcript:
         if not line:
             return
         self._clear_transient()
+        self._release_held_answer()
         if self._break_pending:
             self.err.write("\n")
             self._break_pending = False
