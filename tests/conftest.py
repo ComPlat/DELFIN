@@ -10,6 +10,7 @@ into a real session's next turn.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -444,6 +445,75 @@ def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
         yield
     finally:
         tempfile.tempdir = previous
+
+
+try:  # pytest >= 7.3: the per-phase pass/fail record the retention policy reads
+    from _pytest.tmpdir import tmppath_result_key as _TMPPATH_RESULT_KEY
+except ImportError:  # pragma: no cover - older pytest has no retention policy
+    _TMPPATH_RESULT_KEY = None
+from _pytest.pathlib import make_numbered_dir as _make_numbered_dir  # noqa: E402
+
+_TMP_SHARDS = pytest.StashKey[dict]()
+
+
+@pytest.fixture
+def tmp_path(request, tmp_path_factory):
+    """pytest's ``tmp_path``, created in one numbered directory per test module.
+
+    Input: the requesting test. Output: a new, empty directory
+    ``<basetemp>/t<k>/<test name as pytest truncates it><n>``. ``t<k>`` is
+    made once per module and session; the inner name and numbering are
+    pytest's own (``_pytest.tmpdir._mk_tmp``). The retention policy is
+    applied as pytest applies it: under ``tmp_path_retention_policy =
+    "failed"`` the directory of a passing test is removed at teardown,
+    ``"all"`` (the default) and ``"none"`` keep it, and the per-run cleanup
+    of whole ``pytest-<N>`` base directories is untouched.
+    ``tmp_path_factory`` and ``getbasetemp()`` are unchanged, and every
+    ``tmp_path`` stays under ``gettempdir()``
+    (``test_the_suite_leaves_no_scratch_behind``).
+
+    Why: ``make_numbered_dir`` lists its parent to find the next free
+    number. In pytest's flat layout the parent is the base directory, which
+    holds one entry per test run so far, plus the ``-settings`` and
+    ``-approval-codes`` siblings of each and every bare ``mkdtemp``. Test
+    *k* scans ~1.3*k entries, so the run is O(N^2): ~420 s of a 36 min CI
+    run at 29 300 tests, the per-test p10 rising linearly from 3 ms to
+    28 ms over a local run (2026-10-15). Here the base holds one entry per
+    module (~1800) and a shard at most its own module's tests (largest
+    ~970). Measured on two paired local full runs: -405 s and -447 s, the
+    per-test p10 flat at 1 ms, the identical pass set.
+
+    Rejected: a ``mkdtemp`` shard named after the module -- paths grew by
+    the module name and two tests that measure path-length budgets went
+    red (5018 > 5000 characters). An unnumbered ``mkdtemp`` per test loses
+    pytest's ``<name><n>`` naming that failure output shows. The shard
+    here costs 4-6 characters of path.
+    """
+    store = request.config.stash.setdefault(_TMP_SHARDS, {})
+    base = tmp_path_factory.getbasetemp()
+    key = (str(base), request.node.nodeid.split("::", 1)[0])
+    shard = store.get(key)
+    if shard is None or not shard.is_dir():
+        shard = store[key] = _make_numbered_dir(root=base, prefix="t")
+    name = re.sub(r"[\W]", "_", request.node.name)[:30]
+    path = _make_numbered_dir(root=shard, prefix=name, mode=0o700)
+    yield path
+
+    if _TMPPATH_RESULT_KEY is None:
+        return
+    result = request.node.stash.get(_TMPPATH_RESULT_KEY, {})
+    policy = getattr(tmp_path_factory, "_retention_policy", "all")
+    if policy == "failed" and result.get("call", True):
+        import shutil
+        shutil.rmtree(path, ignore_errors=True)
+        # pytest removes dead ``<name>current`` links in the base only.
+        link = shard / f"{name}current"
+        if link.is_symlink() and not link.exists():
+            link.unlink(missing_ok=True)
+    try:
+        del request.node.stash[_TMPPATH_RESULT_KEY]
+    except KeyError:
+        pass
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -1345,6 +1415,31 @@ def pytest_collection_modifyitems(config, items):
         fname = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if fname in _SLOW_TEST_FILES:
             item.add_marker(pytest.mark.slow)
+
+
+_PACKAGE_AST_LAST: list = []
+
+
+def pytest_collection_finish(session):
+    """Name the last test of the run whose module uses ``_package_ast``.
+
+    After the final deselection (``-m``, ``-k``), so the name is one that
+    runs. ``pytest_runtest_logfinish`` drops the shared trees (~740 MB)
+    once that test is through; without a consumer nothing is held.
+    """
+    import _package_ast
+    _PACKAGE_AST_LAST.clear()
+    for item in session.items:
+        module = getattr(item, "module", None)
+        if module is not None and any(
+                value is _package_ast for value in vars(module).values()):
+            _PACKAGE_AST_LAST[:] = [item.nodeid]
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    if _PACKAGE_AST_LAST and nodeid == _PACKAGE_AST_LAST[0]:
+        import _package_ast
+        _package_ast.release()
 
 
 @pytest.fixture(autouse=True)

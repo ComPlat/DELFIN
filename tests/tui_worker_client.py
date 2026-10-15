@@ -32,7 +32,8 @@ class WorkerClient:
 
     def __init__(self, tmp_path: Path, *args: str, fake: bool = True,
                  delay: float = 0.003, initialize: bool = True,
-                 env: dict[str, str] | None = None):
+                 env: dict[str, str] | None = None,
+                 steer_window: float | None = None):
         from conftest import child_env
 
         extra_env = dict(env or {})
@@ -49,6 +50,8 @@ class WorkerClient:
                "--cwd", str(self.workspace), *args]
         if fake:
             cmd += ["--fake", "--fake-delay", str(delay)]
+            if steer_window is not None:
+                cmd += ["--fake-steer-window", str(steer_window)]
         self.stderr_path = tmp_path / "worker.stderr"
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE,

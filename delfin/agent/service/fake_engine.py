@@ -74,13 +74,18 @@ class FakeEngine:
     provider = "fake"
 
     def __init__(self, workspace: str = "", *, mode: str = "solo",
-                 delay: float = 0.02):
+                 delay: float = 0.02, steer_window: float = 5.0):
         self.repo_dir = workspace
         self.mode = mode
         self.session_id = uuid.uuid4().hex
         self.messages: list[dict[str, Any]] = []
         self.effort = ""
         self.delay = float(delay)
+        # How long a "steer" turn waits for a message before it says none
+        # arrived. 5 s leaves room for a person or a slow test to steer into
+        # the running turn; a test that only needs the window to elapse
+        # passes less (worker --fake-steer-window).
+        self.steer_window = float(steer_window)
         self.kit_permissions = FakePermissions()
         self.client = SimpleNamespace(model="fake-model", effort="",
                                       signal_stop=self._signal_stop)
@@ -330,7 +335,7 @@ class FakeEngine:
             say("Done.")
         elif "steer" in words:
             say("Starting on the task. ")
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + self.steer_window
             steered = ""
             while time.monotonic() < deadline and not self._stop.is_set():
                 try:
