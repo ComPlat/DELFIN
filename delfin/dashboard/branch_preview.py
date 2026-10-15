@@ -70,6 +70,10 @@ PREVIEW_ENV_BRANCH = "DELFIN_PREVIEW_BRANCH"
 PREVIEW_ENV_SHA = "DELFIN_PREVIEW_SHA"
 PREVIEW_ENV_WORKTREE = "DELFIN_PREVIEW_WORKTREE"
 SHARED_CHECKOUT_ENV = "DELFIN_SHARED_CHECKOUT"
+#: Set by ``preview_proxy`` in the main dashboard server (its base URL);
+#: kernels inherit it, so the dashboard knows previews are served through
+#: its own port. Starts with DELFIN_PREVIEW_, so a preview does not inherit it.
+PROXY_ENV = "DELFIN_PREVIEW_PROXY"
 PREVIEW_DIR_NAME = "delfin-preview"
 RUNTIME_DIR = "delfin_voila_runtime"
 NOTEBOOK = "delfin_dashboard.ipynb"
@@ -115,6 +119,7 @@ class Preview:
     delfin_file: str
     log: str
     attached: bool = False
+    base_url: str = ""      # "<base>/delfin-preview/<slug>/" when proxied
 
     def url(self, host: str = "localhost", scheme: str = "http") -> str:
         return f"{scheme}://{host}:{self.port}{self.url_path}?token={self.token}"
@@ -279,6 +284,35 @@ def preview_env(base_env: dict, worktree, target: Target,
     if shared_checkout:
         env[SHARED_CHECKOUT_ENV] = str(shared_checkout)
     return env
+
+
+def proxy_env(env: dict, s: str) -> dict:
+    """*env* plus a ``JUPYTER_CONFIG_PATH`` entry whose
+    ``jupyter_server_config.json`` sets ``ServerApp.base_url`` to the proxy
+    prefix, when the running dashboard proxies previews (``PROXY_ENV``).
+    A config file rather than a launcher flag, so a branch whose launcher
+    predates the proxy is served under the prefix too. Unchanged otherwise."""
+    base = os.environ.get(PROXY_ENV)
+    if not base:
+        return dict(env)
+    from delfin.dashboard.preview_proxy import base_prefix
+    from delfin.agent.state_paths import ensure_dir, write_text_atomic
+    cfg = _registry_dir() / f"{s}.jupyter"
+    ensure_dir(cfg)
+    write_text_atomic(cfg / "jupyter_server_config.json", json.dumps(
+        {"ServerApp": {"base_url": base_prefix(base, s)}}, indent=1))
+    out = dict(env)
+    rest = out.get("JUPYTER_CONFIG_PATH", "")
+    out["JUPYTER_CONFIG_PATH"] = str(cfg) + (os.pathsep + rest if rest else "")
+    return out
+
+
+def proxy_href(p: "Preview") -> str:
+    """The preview's address as a path on the dashboard's own origin, or ""
+    when it is not served through this dashboard's proxy."""
+    if p.base_url and os.environ.get(PROXY_ENV) and p.url_path.startswith(p.base_url):
+        return p.url_path
+    return ""
 
 
 def verify_import(python: str, env: dict, worktree) -> tuple[bool, str, str]:
@@ -453,8 +487,8 @@ def _url_path(worktree: Path) -> str:
         return f"/voila/render/{RUNTIME_DIR}/{NOTEBOOK}"
 
 
-def _served_url_path(port: int, token: str) -> str:
-    """The address ``/`` redirects to (the server's default_url), or "".
+def _served_url_path(port: int, token: str, base: str = "/") -> str:
+    """The address *base* redirects to (the server's default_url), or "".
 
     Asked rather than computed: where the launcher puts the notebook
     depends on what it finds (a notebook on the search path is staged
@@ -464,7 +498,7 @@ def _served_url_path(port: int, token: str) -> str:
     from urllib.parse import quote, urlsplit
     try:
         conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
-        conn.request("GET", "/?token=" + quote(token, safe=""))
+        conn.request("GET", (base or "/") + "?token=" + quote(token, safe=""))
         resp = conn.getresponse()
         location = resp.getheader("Location") or ""
         conn.close()
@@ -500,6 +534,11 @@ def start(repo, ref: str, *, python: Optional[str] = None,
     head = BL._out(path, "rev-parse", "HEAD") or target.sha
     target = Target(ref=target.ref, sha=head, branch=target.branch, kind=target.kind)
     env = preview_env(base_env, path, target, shared_checkout or str(main_worktree(repo)))
+    env = proxy_env(env, s)
+    base_url = ""
+    if os.environ.get(PROXY_ENV):
+        from delfin.dashboard.preview_proxy import base_prefix
+        base_url = base_prefix(os.environ[PROXY_ENV], s)
     ok, delfin_file, msg = verify_import(python, env, path)
     if not ok:
         return False, msg, None
@@ -558,12 +597,13 @@ def start(repo, ref: str, *, python: Optional[str] = None,
         slug=s, ref=target.ref, sha=target.sha, branch=target.branch,
         repo=str(main_worktree(repo)), worktree=str(path), port=port,
         token=token,
-        url_path=_served_url_path(port, token) or _url_path(Path(path)),
+        url_path=(_served_url_path(port, token, base_url or "/")
+                  or (base_url.rstrip("/") if base_url else "") + _url_path(Path(path))),
         pid=proc.pid,
         proc_start=proc_identity.process_start(proc.pid),
         ticks=proc_identity.start_ticks(proc.pid),
         host=socket.gethostname(), started_at=time.time(),
-        delfin_file=delfin_file, log=str(log), attached=attached)
+        delfin_file=delfin_file, log=str(log), attached=attached, base_url=base_url)
     _save(preview)
     return True, (f"Preview of {target.ref} @ {target.sha[:8]} on port {port}; "
                   f"{msg}"), preview

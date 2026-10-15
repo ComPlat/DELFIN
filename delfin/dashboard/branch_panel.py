@@ -61,7 +61,7 @@ def _esc(text) -> str:
 def preview_href(p) -> str:
     """Where the chip's Open link points: through the dashboard's own server
     when it proxies previews, else the preview's port on the page's host."""
-    rel = BP.proxy_href(p) if hasattr(BP, "proxy_href") else ""
+    rel = BP.proxy_href(p)
     if rel:
         return rel
     return f"http://localhost:{int(p.port)}{p.url_path}?token={p.token}"
@@ -72,12 +72,15 @@ def preview_link_html(p, label: str = "Open ↗") -> str:
     rewritten on click to the host the page was loaded from."""
     href = preview_href(p)
     js = ""
+    title = "Open the preview in a new tab"
     if href.startswith("http://localhost:"):
         path = href.split(f":{int(p.port)}", 1)[1]
         js = (f' onclick="this.href=location.protocol+\'//\'+location.hostname+'
               f'\':{int(p.port)}\'+{_esc(repr(path))};"')
+        # Only without the proxy: then the preview has a port of its own.
+        title += f" (through an SSH tunnel, forward port {int(p.port)} too)"
     return (f'<a class="delfin-preview-link" href="{_esc(href)}" target="_blank" '
-            f'rel="noopener noreferrer"{js} title="Open the preview in a new tab">'
+            f'rel="noopener noreferrer"{js} title="{_esc(title)}">'
             f'{_esc(label)}</a>')
 
 
