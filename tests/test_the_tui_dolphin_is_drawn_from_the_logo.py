@@ -1,7 +1,8 @@
 """The window's dolphin (tui/src/theme/logo.ts) is the logo's, reduced.
 
-The PIXELS rows in logo.ts are pasted output of tui/scripts/logo_pixels.py
-run on delfin/logo/DELFIN_logo.png with its defaults. These tests run the
+The PIXELS, OCTANT_PIXELS, SEXTANT_PIXELS and HALF_PIXELS rows and the
+colour in logo.ts are pasted output of tui/scripts/logo_pixels.py run on
+delfin/logo/DELFIN_logo.png (defaults; --cell octant, sextant, halfblock). These tests run the
 script and compare, so a changed logo or a hand edit of the rows shows as
 a difference rather than as a drawing nobody can reproduce.
 """
@@ -46,47 +47,92 @@ def test_logo_ts_names_the_script_that_made_it():
     assert "tui/scripts/logo_pixels.py" in LOGO_TS.read_text(encoding="utf-8")
 
 
-def _array(text: str, name: str) -> list[str]:
-    block = re.search(rf"const {name} = \[(.*?)\]", text, re.S)
-    assert block, f"logo.ts has no {name}"
-    return re.findall(r'"([.0-9a-f]+)"', block.group(1))
+MARK = {"octant": ("OCTANT_PIXELS", 2, 4), "sextant": ("SEXTANT_PIXELS", 2, 3), "halfblock": ("HALF_PIXELS", 1, 2)}
 
 
-def _pasted_color() -> tuple[list[str], list[str]]:
+def _pasted_mark(cell: str) -> list[str]:
+    block = re.search(rf"const {MARK[cell][0]} = \[(.*?)\]", LOGO_TS.read_text(encoding="utf-8"), re.S)
+    assert block, f"logo.ts has no {MARK[cell][0]}"
+    return re.findall(r'"([#.]+)"', block.group(1))
+
+
+def _script_mark(cell: str) -> tuple[str, list[str]]:
+    out = subprocess.run([sys.executable, str(SCRIPT), "--cell", cell], capture_output=True, text=True, check=True).stdout
+    return out.split("\n", 1)[0], re.findall(r'"([#.]+)"', out)
+
+
+def _script_module():
+    sys.path.insert(0, str(SCRIPT.parent))
+    try:
+        import logo_pixels
+    finally:
+        sys.path.remove(str(SCRIPT.parent))
+    return logo_pixels
+
+
+def test_the_pasted_mark_rows_are_the_scripts_output_for_every_kind_of_cell():
+    for cell in MARK:
+        assert _pasted_mark(cell) == _script_mark(cell)[1], cell
+
+
+def test_the_pasted_colour_is_the_scripts():
     text = LOGO_TS.read_text(encoding="utf-8")
-    return _array(text, "COLOR_PIXELS"), _array(text, "COLOR_256")
+    rgb = re.search(r'export const LOGO_RGB = "#([0-9a-f]{6})"', text)
+    x256 = re.search(r"export const LOGO_256 = (\d+)", text)
+    assert rgb and x256
+    assert _script_mark("octant")[0] == f"COLOUR {rgb.group(1)} {x256.group(1)}"
+    r, g, b = (int(rgb.group(1)[i:i + 2], 16) for i in (0, 2, 4))
+    assert b > r + 40 and b > g        # a blue
+    assert 16 <= int(x256.group(1)) <= 231
 
 
-def _script_color() -> tuple[list[str], list[str]]:
-    out = subprocess.run([sys.executable, str(SCRIPT), "--cell", "halfblock"],
-                         capture_output=True, text=True, check=True).stdout
-    rgb, idx = out.split("COLOR_PIXELS\n", 1)[1].split("COLOR_256\n", 1)
-    return re.findall(r'"([.0-9a-f]+)"', rgb), re.findall(r'"([.0-9]+)"', idx)
+def test_the_mark_is_forty_cells_wide_and_keeps_its_aspect():
+    rows = {}
+    for cell, (_, sx, sy) in MARK.items():
+        px = _pasted_mark(cell)
+        assert len({len(r) for r in px}) == 1 and len(px[0]) == 40 * sx, cell
+        assert len(px) % sy == 0, cell
+        rows[cell] = len(px) // sy
+        # Something in the first two and the last two columns of cells and
+        # in the first row: cropped to the mark.
+        assert "#" in "".join(px[:sy]), cell
+        assert any("#" in r[:2 * sx] for r in px) and any("#" in r[-2 * sx:] for r in px), cell
+    assert rows["octant"] == rows["sextant"] == 18
+    assert rows["halfblock"] in (17, 18)
 
 
-def test_the_pasted_colour_rows_are_the_scripts_output():
-    assert _pasted_color() == _script_color()
+def test_every_octant_pattern_is_one_glyph_that_decodes_back():
+    lp = _script_module()
+    glyphs = [lp.octant_glyph(b) for b in range(256)]
+    assert len(set(glyphs)) == 256
+    # The 230 in U+1CD00-1CDE5 are named BLOCK OCTANT-<digits> by Unicode
+    # 16; the rank rule reproduces these entries of UnicodeData.txt.
+    named = {0x1CD00: "3", 0x1CD01: "23", 0x1CD02: "123", 0x1CD03: "4", 0x1CDE4: "1345678", 0x1CDE5: "2345678"}
+    for cp, digits in named.items():
+        assert glyphs[sum(1 << (int(d) - 1) for d in digits)] == chr(cp)
+    in_block = sorted(ord(g) for g in glyphs if 0x1CD00 <= ord(g) <= 0x1CDE5)
+    assert in_block == list(range(0x1CD00, 0x1CDE6))
+    # The other 26, decoded from their names' geometry: (columns, rows of
+    # four) each covers.
+    elsewhere = {
+        " ": "", "\u2588": "12345678", "\u2580": "1234", "\u2584": "5678", "\u258c": "1357", "\u2590": "2468",
+        "\u2598": "13", "\u259d": "24", "\u2596": "57", "\u2597": "68", "\u259a": "1368", "\u259e": "2457",
+        "\u259b": "123457", "\u259c": "123468", "\u2599": "135678", "\u259f": "245678",
+        "\U0001cea8": "1", "\U0001ceab": "2", "\U0001cea3": "7", "\U0001cea0": "8",
+        "\U0001fb82": "12", "\U0001fb85": "123456", "\u2582": "78", "\u2586": "345678",
+        "\U0001fbe6": "35", "\U0001fbe7": "46",
+    }
+    decode = {g: b for b, g in enumerate(glyphs)}
+    for g, digits in elsewhere.items():
+        assert decode[g] == sum(1 << (int(d) - 1) for d in digits), hex(ord(g[0])) if g else "space"
+    rest = [g for g in glyphs if g not in elsewhere]
+    assert len(rest) == 230 and all(0x1CD00 <= ord(g) <= 0x1CDE5 for g in rest)
 
 
-def _cells(row: str, width: int) -> list[str | None]:
-    return [None if set(row[i:i + width]) == {"."} else row[i:i + width] for i in range(0, len(row), width)]
-
-
-def test_the_colour_logo_is_thirty_cells_by_fifteen_of_averaged_pixels():
-    rgb, idx = _pasted_color()
-    assert len(rgb) == len(idx) == 30
-    px = [_cells(r, 6) for r in rgb]
-    ix = [_cells(r, 3) for r in idx]
-    assert {len(r) for r in px} == {len(r) for r in ix} == {30}
-    # The same pixels are outside the disc in both, and the corners are.
-    assert [[c is None for c in r] for r in px] == [[c is None for c in r] for r in ix]
-    for y, x in ((0, 0), (0, 29), (29, 0), (29, 29)):
-        assert px[y][x] is None
-    assert px[15][15] is not None
-    colours = {c for r in px for c in r if c is not None}
-    # Averaged, not thresholded: many tones between the disc's blue and white.
-    assert len(colours) > 100
-    rgbs = [tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) for c in colours]
-    assert any(min(v) > 235 for v in rgbs)           # the dolphin's white
-    assert sum(1 for r, _, b in rgbs if b > r + 40) > len(rgbs) // 2   # the disc's blue
-    assert all(16 <= int(c) <= 255 for r in ix for c in r if c is not None)
+def test_every_sextant_pattern_is_one_glyph():
+    lp = _script_module()
+    glyphs = [lp.sextant_glyph(b) for b in range(64)]
+    assert len(set(glyphs)) == 64
+    assert [glyphs[0], glyphs[21], glyphs[42], glyphs[63]] == [" ", "\u258c", "\u2590", "\u2588"]
+    others = [g for b, g in enumerate(glyphs) if b not in (0, 21, 42, 63)]
+    assert [ord(g) for g in others] == list(range(0x1FB00, 0x1FB3C))

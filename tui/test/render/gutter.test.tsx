@@ -77,46 +77,94 @@ describe("the banner", () => {
     }
   })
 
-  test("is the logo's disc in half blocks where the terminal draws colours", async () => {
+  const MARK_GLYPHS: Record<string, RegExp> = {
+    octant: /^[ \u{1cd00}-\u{1cde5}\u2580-\u2590\u2596-\u259f\u{1cea0}\u{1cea3}\u{1cea8}\u{1ceab}\u{1fb82}\u{1fb85}\u{1fbe6}\u{1fbe7}]+$/u,
+    sextant: /^[ \u{1fb00}-\u{1fb3b}\u258c\u2590\u2588]+$/u,
+    halfblock: /^[ \u2580\u2584\u2588]+$/u,
+  }
+  const cols = (text: string) => [...text].length
+
+  for (const cells of ["octant", "sextant", "halfblock"] as const) {
+    test(`is the dolphin and its waves in ${cells} cells where the terminal draws colours`, async () => {
+      const logo = await import("../../src/theme/logo")
+      logo.setLogoDepth("rgb")
+      logo.setLogoCells(cells)
+      try {
+        const mark = logo.MARK[cells]
+        expect(logo.LOGO_WIDTH).toBe(40)
+        expect(mark.length).toBe(cells === "halfblock" ? 17 : 18)
+        for (const line of mark) {
+          expect(cols(line)).toBe(logo.LOGO_WIDTH)
+          // One column a glyph, as the window and the terminal count them.
+          expect(Bun.stringWidth(line)).toBe(logo.LOGO_WIDTH)
+          expect(line).toMatch(MARK_GLYPHS[cells]!)
+        }
+        const { scrollback } = await conversation(100)
+        const first = mark.findIndex((l) => l.trim())
+        const at = scrollback.findIndex((l) => l.startsWith(PAD + mark[first]!.trimEnd()))
+        expect(at).toBeGreaterThanOrEqual(0)
+        for (let i = first; i < mark.length; i++) expect(scrollback[at + i - first]!.startsWith(PAD + mark[i]!.trimEnd())).toBe(true)
+        // The session's words beside it, where one column a glyph puts them.
+        const words = scrollback.find((l) => l.includes("DELFIN  fake/fake-model"))!
+        expect(cols(words.slice(0, words.indexOf("DELFIN  fake")))).toBe(PAD.length + logo.LOGO_WIDTH + 3)
+        expect(scrollback.some((l) => /[\u2801-\u28ff]/.test(l))).toBe(false)
+        // One run a line, in the logo's blue on the terminal's background.
+        for (const d of ["rgb", "256"] as const) {
+          const runs = logo.logoRuns(d)
+          expect(runs.map((r) => r.map((x) => x.text).join(""))).toEqual([...mark])
+          for (const r of runs.flat()) expect([r.fg, r.bg]).toEqual([d === "rgb" ? logo.LOGO_RGB : logo.LOGO_256, null])
+        }
+      } finally {
+        logo.setLogoCells("octant")
+        logo.setLogoDepth("mono")
+      }
+    })
+  }
+
+  test("maps the 256 octant patterns to 256 glyphs, the 230 of the block in order", async () => {
+    const { octant, sextant, halfBlock } = await import("../../src/theme/logo")
+    const all = Array.from({ length: 256 }, (_, i) => octant(i))
+    expect(new Set(all).size).toBe(256)
+    const block = all.filter((g) => g.codePointAt(0)! >= 0x1cd00 && g.codePointAt(0)! <= 0x1cde5)
+    expect(block.map((g) => g.codePointAt(0))).toEqual(Array.from({ length: 230 }, (_, i) => 0x1cd00 + i))
+    expect(octant(0b100)).toBe("\u{1cd00}")       // BLOCK OCTANT-3
+    expect(octant(0b11111101)).toBe("\u{1cde4}")  // BLOCK OCTANT-1345678
+    for (const g of all) expect(Bun.stringWidth(g)).toBe(1)
+    const six = Array.from({ length: 64 }, (_, i) => sextant(i))
+    expect(new Set(six).size).toBe(64)
+    for (const g of six) expect(Bun.stringWidth(g)).toBe(1)
+    expect([0, 1, 2, 3].map(halfBlock)).toEqual([" ", "\u2580", "\u2584", "\u2588"])
+  })
+
+  test("is beside the words in a window of 76 columns or more, the words alone in 75", async () => {
+    // The row is the window less the gutter: 40 for the mark, 3 between,
+    // 32 for the words (the 30-column disc needed 66).
     const logo = await import("../../src/theme/logo")
     logo.setLogoDepth("rgb")
     try {
-      const { scrollback } = await conversation(100)
-      const rows = scrollback.filter((l) => /[\u2580\u2584]/.test(l))
-      expect(rows.length).toBe(logo.LOGO_ROWS)
-      expect(logo.LOGO_ROWS).toBe(15)
-      expect(logo.LOGO_WIDTH).toBe(30)
-      for (const row of rows) expect(row.startsWith(PAD)).toBe(true)
-      // The session's words beside it; no braille.
-      expect(rows.some((l) => l.includes("DELFIN  fake/fake-model"))).toBe(true)
-      expect(scrollback.some((l) => /[\u2801-\u28ff]/.test(l))).toBe(false)
-      // Every run is one glyph, its width the logo's; 24-bit and 256
-      // colours cover the same cells.
-      for (const d of ["rgb", "256"] as const) {
-        const all = logo.logoRuns(d)
-        expect(all.length).toBe(logo.LOGO_ROWS)
-        all.forEach((runs, y) => {
-          expect(runs.reduce((n, r) => n + r.text.length, 0)).toBe(logo.LOGO_WIDTH)
-          for (const r of runs) expect(new Set(r.text).size).toBe(1)
-          const shape = (rs: readonly { text: string }[]) => rs.map((r) => r.text).join("")
-          expect(shape(runs)).toBe(shape(logo.LOGO_RUNS_RGB[y]!))
-        })
+      for (const [width, beside] of [[75, false], [76, true]] as const) {
+        const { scrollback } = await conversation(width)
+        expect(scrollback.some((l) => /[\u{1cd00}-\u{1cde5}]/u.test(l))).toBe(beside)
+        expect(scrollback.some((l) => l.startsWith(PAD + "\u25c6 DELFIN"))).toBe(!beside)
+        await w?.close()
+        w = null
       }
-      // Outside the disc the terminal's own background: no run paints a
-      // background behind a half block that has a transparent half.
-      for (const runs of logo.LOGO_RUNS_RGB) {
-        for (const r of runs) {
-          if (r.text[0] === " ") expect([r.fg, r.bg]).toEqual([null, null])
-          if (r.text[0] === "\u2584") expect(r.bg).toBeNull()
-          if (r.text[0] === "\u2580" && r.bg === null) expect(r.fg).not.toBeNull()
-        }
-      }
-      // The corners are outside the disc.
-      expect(logo.LOGO_RUNS_RGB[0]![0]!.text[0]).toBe(" ")
-      expect(logo.LOGO_RUNS_RGB[logo.LOGO_ROWS - 1]![0]!.text[0]).toBe(" ")
     } finally {
       logo.setLogoDepth("mono")
     }
+  })
+
+  test("picks the cells by DELFIN_TUI_LOGO: octants, sextants or half blocks", async () => {
+    const { logoCellsFor, logoDepthFor } = await import("../../src/theme/logo")
+    expect(logoCellsFor({})).toBe("octant")
+    expect(logoCellsFor({ TMUX: "/tmp/tmux-1/default,1,0" })).toBe("octant")
+    expect(logoCellsFor({ DELFIN_TUI_LOGO: "sextant" })).toBe("sextant")
+    expect(logoCellsFor({ DELFIN_TUI_LOGO: "halfblock" })).toBe("halfblock")
+    expect(logoCellsFor({ DELFIN_TUI_LOGO: "rgb" })).toBe("octant")
+    // A kind of cell leaves the depth to the terminal.
+    expect(logoDepthFor({ COLORTERM: "truecolor", DELFIN_TUI_LOGO: "sextant" }, "dark")).toBe("rgb")
+    expect(logoDepthFor({ TERM: "xterm-256color", DELFIN_TUI_LOGO: "halfblock" }, "dark")).toBe("256")
+    expect(logoDepthFor({ TERM: "xterm", DELFIN_TUI_LOGO: "sextant" }, "dark")).toBe("mono")
   })
 
   test("picks the picture by COLORTERM and TERM, braille under NO_COLOR and the mono theme", async () => {
@@ -134,35 +182,10 @@ describe("the banner", () => {
     expect(logoDepthFor({ TERM: "xterm", DELFIN_TUI_LOGO: "rgb", NO_COLOR: "1" }, "dark")).toBe("mono")
   })
 
-  test("in 256 colours is the disc's blue, blues of its hue and greys, never lavender", async () => {
-    const { LOGO_RUNS_256, LOGO_RUNS_RGB } = await import("../../src/theme/logo")
-    const L = [0, 95, 135, 175, 215, 255]
-    const count = new Map<number, number>()
-    for (const runs of LOGO_RUNS_256) {
-      for (const r of runs) {
-        for (const c of [r.fg, r.bg]) {
-          if (c === null) continue
-          expect(typeof c).toBe("number")
-          const i = c as number
-          expect(i).toBeGreaterThanOrEqual(16)
-          expect(i).toBeLessThanOrEqual(255)
-          count.set(i, (count.get(i) ?? 0) + r.text.length)
-          if (i >= 232 || i === 231 || i === 16) continue
-          const [red, green, blue] = [L[Math.floor((i - 16) / 36)]!, L[Math.floor((i - 16) / 6) % 6]!, L[(i - 16) % 6]!]
-          // A cube colour is a blue: red below green below blue (lavender
-          // has red = green, a green-grey green = blue).
-          if (!(red === green && green === blue)) expect(red < green && green < blue).toBe(true)
-        }
-      }
-    }
-    // The disc is mostly its blue, 67 (#5f87af); the dolphin white, 231.
-    const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0]![0]
-    expect(top).toBe(67)
-    expect(count.has(231)).toBe(true)
-    // In 24-bit the pixels are hex colours.
-    for (const runs of LOGO_RUNS_RGB) for (const r of runs) for (const c of [r.fg, r.bg]) {
-      if (c !== null) expect(c).toMatch(/^#[0-9a-f]{6}$/)
-    }
+  test("is the logo's blue: 67 (#5f87af) in 256 colours", async () => {
+    const { LOGO_RGB, LOGO_256 } = await import("../../src/theme/logo")
+    expect(LOGO_RGB).toMatch(/^#[0-9a-f]{6}$/)
+    expect(LOGO_256).toBe(67)
   })
 
   test("is the words alone, under the mark, where there is not", async () => {

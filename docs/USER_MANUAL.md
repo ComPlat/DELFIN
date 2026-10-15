@@ -1792,11 +1792,24 @@ A setting that cannot be read is reported in the window and the default
 applies. The window keeps its prompt history in `~/.delfin/tui_history.jsonl`
 (it also reads the REPL's history) and its pins in `~/.delfin/tui_state.json`.
 `DELFIN_RUNTIME_DIR` moves the service's socket (default `/tmp`).
-The banner's logo is drawn as a picture, the disc in colour, where the
-terminal says it draws colours (`COLORTERM=truecolor` or `24bit`: 24-bit;
-a `TERM` with `256color`: the nearest of the 256 colours), and as a braille
-outline in the accent otherwise and under `NO_COLOR`; `DELFIN_TUI_LOGO`
-(`rgb`, `256` or `mono`) overrides what the terminal says.
+The banner's logo is the dolphin and its two waves in the logo's blue,
+40 columns wide (beside the session's words in a window of 76 columns or
+more), where the terminal says it draws colours (`COLORTERM=truecolor` or
+`24bit`: 24-bit; a `TERM` with `256color`: the nearest of the 256
+colours), and a braille outline in the accent otherwise and under
+`NO_COLOR`. `DELFIN_TUI_LOGO` chooses:
+
+| Value | Logo |
+|---|---|
+| (unset) | octant cells (2 x 4 sub-pixels, Unicode 16), the terminal's colours |
+| `sextant` | sextant cells (2 x 3, Unicode 13) |
+| `halfblock` | half blocks, in every font with block elements |
+| `rgb`, `256` | octants in 24-bit or 256 colours, whatever the terminal says |
+| `mono` | the braille outline |
+
+A logo drawn as boxes or question marks means the terminal or its font
+has no octant glyphs: set `DELFIN_TUI_LOGO=sextant`, or `halfblock` if
+that shows boxes too.
 
 ### Subagents
 

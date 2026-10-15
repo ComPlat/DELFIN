@@ -22,40 +22,48 @@ pixels) merges the body's upper and lower halves and the fin into one
 blob; the braille grid (40x32) keeps the fin, the beak, the flukes and
 both waves apart.
 
-Colour (--cell halfblock): the logo itself, for a terminal that draws
-colours. The PNG's alpha channel is the disc (opaque inside, transparent
-outside); its bounding box is cropped, padded to a square and reduced to
---size x --size pixels by Lanczos resampling of the premultiplied RGBA
-(RGBa), so every pixel is the area average of the source under it and a
-rim pixel's colour is not darkened by the transparent black beyond it.
-No threshold: the dolphin's strokes, a pixel or less wide here, keep their
-mixed blue-white tone, and that tone is what draws the fin, the beak and
-the waves. A pixel with alpha under 50% after the reduction is outside the
-disc and drawn as the terminal's own background. Each cell is an
-upper-half block U+2580 with the upper pixel as its foreground and the
-lower one as its background, so pixels are square on screen: --size 30 is
-30 x 15 cells. Compared at 24, 30 and 36 pixels: 30 is the smallest at
-which the dolphin reads as one; the earlier thresholded white/blue figure
-(26 x 13 cells, five tone steps) did not read as a dolphin at all.
+The mark (--cell octant, sextant, halfblock): the dolphin and its two
+waves without the disc, for a terminal that draws colours. White is a
+pixel with alpha over 128 and all three channels over 170; of its
+8-connected parts the four largest (body, dorsal fin, the two waves) are
+kept and cropped to their bounding box. That 0/255 mask is reduced by box
+averaging to cols*sx x sh sub-pixels, sx x sy per cell (octant 2 x 4,
+sextant 2 x 3, halfblock 1 x 2), with sh the height that keeps the
+aspect on a cell twice as tall as wide, rounded up to whole cells; a
+sub-pixel is set where at least 0.5 of its area is white (0.55 for
+sextants: compared with 0.5, the strokes are thinner and the gaps
+between the body, the fin and the tail stay open).
+--cols 40 gives 40 x 18 cells (octant, sextant), 40 x 17 (halfblock).
+Compared at 40 columns with the disc in half blocks (30 x 15, averaged
+colours) and the disc in two-colour sextants: without the disc the
+strokes are the foreground on the terminal's background, and the fin,
+the tail and both waves stay apart. Octants are Unicode 16, sextants 13:
+the window draws octants unless DELFIN_TUI_LOGO asks for an older kind.
 
-256 colours: each pixel's nearest xterm colour by OKLab distance, among
-a ramp: the colours (cube 16-231 or grey 232-255) nearest to 33 blends
-from the disc's median blue to white, where only greys and cube colours
-within 8 degrees of OKLab hue of the disc's blue are candidates. Rejected:
-RGB distance over the whole cube and grey ramp (pale blues become 146,
-189, lavender, or 152, a green-grey); OKLab distance over the whole set
-(lavender 103 and 146 remain, and the disc's blue, between two cube
-levels, flips between 67, 68 and 74 from pixel to pixel, a speckled rim).
+Glyphs: an octant pattern (bit n-1 for octant n, octants 1-2 the top row
+and 7-8 the bottom) is BLOCK OCTANT-<digits> (U+1CD00-1CDE5, 230 patterns
+in ascending order) or, for the other 26, the space, the full, half and
+quadrant blocks, U+2582, U+2586, U+1FB82, U+1FB85, U+1FBE6, U+1FBE7 and
+U+1CEA0/1CEA3/1CEA8/1CEAB (the Unicode names of each are beside
+OCTANT_ELSEWHERE). Sextants likewise (U+1FB00-1FB3B, 60 in order; the
+halves and the full block not).
 
-Output (halfblock): COLOR_PIXELS, one string per pixel row, six hex
-digits per pixel ('......' outside the disc); COLOR_256, the same pixels
-as three-digit xterm indices ('...' outside).
+Colour: the per-channel median of the disc's blue pixels (opaque, not
+white, blue 40 above red), and for 256 colours its nearest xterm colour
+by OKLab distance among the greys and the cube colours within 8 degrees
+of its OKLab hue (RGB distance over the whole cube gives lavender for
+pale blues).
+
+Output (octant, sextant, halfblock): a line 'COLOUR <hex> <xterm index>',
+then the sub-pixel rows ('#' set, '.' clear).
 
 Usage (from the repository root):
     python tui/scripts/logo_pixels.py                 # the braille rows in logo.ts
     python tui/scripts/logo_pixels.py --preview
-    python tui/scripts/logo_pixels.py --cell halfblock  # the colour rows in logo.ts
-    python tui/scripts/logo_pixels.py --cell halfblock --preview  # also as ANSI colour cells
+    python tui/scripts/logo_pixels.py --cell octant     # OCTANT_PIXELS and the colour in logo.ts
+    python tui/scripts/logo_pixels.py --cell octant --preview  # also the cells
+    python tui/scripts/logo_pixels.py --cell sextant    # SEXTANT_PIXELS
+    python tui/scripts/logo_pixels.py --cell halfblock  # HALF_PIXELS
     python tui/scripts/logo_pixels.py --cell quadrant --cols 40 --rows 16
 """
 
@@ -169,22 +177,6 @@ def as_braille(px: list[str]) -> list[str]:
     return out
 
 
-def color_pixels(path: Path, size: int) -> list[list[tuple[int, int, int] | None]]:
-    """The disc as `size` x `size` area-averaged pixels; None outside it."""
-    img = Image.open(path).convert("RGBA")
-    box = img.getchannel("A").point(lambda v: 255 if v >= 128 else 0).getbbox()
-    if box is None:
-        raise SystemExit(f"{path}: no opaque pixel")
-    disc = img.crop(box)
-    w, h = disc.size
-    side = max(w, h)
-    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    square.paste(disc, ((side - w) // 2, (side - h) // 2))
-    small = square.convert("RGBa").resize((size, size), Image.Resampling.LANCZOS).convert("RGBA")
-    px = small.load()
-    return [[px[x, y][:3] if px[x, y][3] >= 128 else None for x in range(size)] for y in range(size)]
-
-
 XTERM_LEVELS = (0, 95, 135, 175, 215, 255)
 
 
@@ -219,88 +211,167 @@ def _nearest(c: tuple[float, float, float], among: list[int]) -> int:
     return min(among, key=lambda i: sum((p - q) ** 2 for p, q in zip(o, oklab(xterm_rgb(i)))))
 
 
-def ramp256(pixels: list[list[tuple[int, int, int] | None]]) -> list[int]:
-    """The xterm indices from the disc's median blue to white (see the
-    module's docstring): greys and cube colours of the blue's hue."""
-    disc = [p for row in pixels for p in row if p is not None]
-    blue = tuple(statistics.median(p[i] for p in disc) for i in range(3))
+def logo_blue(path: Path) -> tuple[int, int, int]:
+    """The disc's blue: the per-channel median of its opaque pixels that are
+    not white and are blue (blue channel 40 above red)."""
+    img = Image.open(path).convert("RGBA")
+    blue = [p[:3] for p in img.getdata() if p[3] > 128 and min(p[:3]) <= MARK_WHITE and p[2] > p[0] + 40]
+    return tuple(int(statistics.median(p[i] for p in blue)) for i in range(3))  # type: ignore[return-value]
+
+
+def blue256(blue: tuple[int, int, int]) -> int:
+    """The nearest xterm colour (OKLab) among the greys and the cube colours
+    within 8 degrees of OKLab hue of `blue` (no lavender, no green-grey)."""
     hue = _hue(oklab(blue))
     allowed = [i for i in range(16, 256)
                if len(set(xterm_rgb(i))) == 1 or abs(_hue(oklab(xterm_rgb(i))) - hue) < 8]
-    ramp: list[int] = []
-    for k in range(33):
-        t = k / 32
-        i = _nearest(tuple(v + (255 - v) * t for v in blue), allowed)
-        if i not in ramp:
-            ramp.append(i)
-    return ramp
+    return _nearest(blue, allowed)
 
 
-def color_rows(path: Path, size: int) -> tuple[list[str], list[str]]:
-    """COLOR_PIXELS and COLOR_256 rows (see the module's docstring)."""
-    pixels = color_pixels(path, size)
-    ramp = ramp256(pixels)
-    rgb = ["".join("......" if p is None else "%02x%02x%02x" % p for p in row) for row in pixels]
-    idx = ["".join("..." if p is None else f"{_nearest(p, ramp):03d}" for p in row) for row in pixels]
-    return rgb, idx
+# The mark: the dolphin and its two waves, without the disc.
+MARK_WHITE = 170
+MARK_PARTS = 4
+# Sub-pixels per cell (columns, rows) and the share of a sub-pixel's area
+# that sets it, per kind of cell.
+MARK_CELLS = {"octant": (2, 4, 0.5), "sextant": (2, 3, 0.55), "halfblock": (1, 2, 0.5)}
 
 
-def as_halfblocks(rows: list[str], width: int) -> list[str]:
-    """ANSI colour lines of COLOR_PIXELS (width 6) or COLOR_256 (width 3)
-    rows: the preview."""
-    def cells(row: str) -> list[str | None]:
-        return [None if set(row[i:i + width]) == {"."} else row[i:i + width] for i in range(0, len(row), width)]
+def mark_mask(path: Path) -> Image.Image:
+    """An 'L' image of the four largest white connected parts (8-connected)
+    of the logo, cropped to their bounding box: 255 set, 0 clear."""
+    img = Image.open(path).convert("RGBA")
+    w, h = img.size
+    px = img.load()
+    white = bytearray(w * h)
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a > 128 and min(r, g, b) > MARK_WHITE:
+                white[y * w + x] = 1
+    label = [0] * (w * h)
+    sizes: dict[int, int] = {}
+    n = 0
+    for start in range(w * h):
+        if not white[start] or label[start]:
+            continue
+        n += 1
+        label[start] = n
+        stack = [start]
+        size = 0
+        while stack:
+            i = stack.pop()
+            size += 1
+            y, x = divmod(i, w)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    yy, xx = y + dy, x + dx
+                    if 0 <= yy < h and 0 <= xx < w:
+                        j = yy * w + xx
+                        if white[j] and not label[j]:
+                            label[j] = n
+                            stack.append(j)
+        sizes[n] = size
+    keep = set(sorted(sizes, key=sizes.get, reverse=True)[:MARK_PARTS])
+    out = Image.new("L", (w, h), 0)
+    out.putdata([255 if label[i] in keep else 0 for i in range(w * h)])
+    box = out.getbbox()
+    if box is None:
+        raise SystemExit(f"{path}: no white part")
+    return out.crop(box)
 
-    def sgr(c: str, bg: bool) -> str:
-        base = 48 if bg else 38
-        if width == 3:
-            return f"{base};5;{int(c)}"
-        return f"{base};2;{int(c[0:2], 16)};{int(c[2:4], 16)};{int(c[4:6], 16)}"
+
+def mark_rows(mask: Image.Image, cols: int, cell: str) -> list[str]:
+    """The mark as sub-pixel rows ('#' set, '.' clear): cols cells wide,
+    as many rows as keep its aspect on a cell twice as tall as wide,
+    rounded up to whole cells."""
+    sx, sy, cover = MARK_CELLS[cell]
+    mw, mh = mask.size
+    sw = cols * sx
+    # A sub-pixel is (1/sx) cell wide and (2/sy) cell widths tall.
+    sh = round(mh / mw * sw * (1 / sx) / (2 / sy))
+    sh += -sh % sy
+    small = mask.resize((sw, sh), Image.Resampling.BOX)
+    level = round(255 * cover)
+    return ["".join("#" if small.getpixel((x, y)) >= level else "." for x in range(sw)) for y in range(sh)]
+
+
+# The octant patterns not in U+1CD00-1CDE5, by their set octants (bit n-1
+# for octant n; octants numbered 1-2 in the top row, 7-8 in the bottom):
+# the space, the full, half and quadrant blocks, and the eighth-row
+# blocks the Unicode octant proposal names for them.
+OCTANT_ELSEWHERE = {
+    0x00: " ", 0xFF: "\u2588", 0x0F: "\u2580", 0xF0: "\u2584", 0x55: "\u258c", 0xAA: "\u2590",
+    0x05: "\u2598", 0x0A: "\u259d", 0x50: "\u2596", 0xA0: "\u2597", 0xA5: "\u259a", 0x5A: "\u259e",
+    0x5F: "\u259b", 0xAF: "\u259c", 0xF5: "\u2599", 0xFA: "\u259f",
+    0x01: "\U0001cea8",  # LEFT HALF UPPER ONE QUARTER BLOCK
+    0x02: "\U0001ceab",  # RIGHT HALF UPPER ONE QUARTER BLOCK
+    0x40: "\U0001cea3",  # LEFT HALF LOWER ONE QUARTER BLOCK
+    0x80: "\U0001cea0",  # RIGHT HALF LOWER ONE QUARTER BLOCK
+    0x03: "\U0001fb82",  # UPPER ONE QUARTER BLOCK
+    0x3F: "\U0001fb85",  # UPPER THREE QUARTERS BLOCK
+    0xC0: "\u2582",      # LOWER ONE QUARTER BLOCK
+    0xFC: "\u2586",      # LOWER THREE QUARTERS BLOCK
+    0x14: "\U0001fbe6",  # MIDDLE LEFT ONE QUARTER BLOCK
+    0x28: "\U0001fbe7",  # MIDDLE RIGHT ONE QUARTER BLOCK
+}
+SEXTANT_ELSEWHERE = {0: " ", 21: "\u258c", 42: "\u2590", 63: "\u2588"}
+HALF_BLOCKS = (" ", "\u2580", "\u2584", "\u2588")
+
+
+def octant_glyph(bits: int) -> str:
+    """BLOCK OCTANT-<digits> (U+1CD00-1CDE5) lists the 230 others in
+    ascending order of `bits`."""
+    if bits in OCTANT_ELSEWHERE:
+        return OCTANT_ELSEWHERE[bits]
+    return chr(0x1CD00 + sum(1 for b in range(bits) if b not in OCTANT_ELSEWHERE))
+
+
+def sextant_glyph(bits: int) -> str:
+    """BLOCK SEXTANT-<digits> (U+1FB00-1FB3B), the same scheme with three
+    rows: 60 in order, the left and right halves and the full block not."""
+    if bits in SEXTANT_ELSEWHERE:
+        return SEXTANT_ELSEWHERE[bits]
+    return chr(0x1FB00 + bits - 1 - (bits > 21) - (bits > 42))
+
+
+def as_cells(px: list[str], cell: str) -> list[str]:
+    """Sub-pixel rows as lines of glyphs."""
+    sx, sy, _ = MARK_CELLS[cell]
+    glyph = {"octant": octant_glyph, "sextant": sextant_glyph, "halfblock": HALF_BLOCKS.__getitem__}[cell]
     out = []
-    for y in range(0, len(rows), 2):
-        top = cells(rows[y])
-        low = cells(rows[y + 1]) if y + 1 < len(rows) else [None] * len(top)
+    for y in range(0, len(px), sy):
         line = ""
-        for a, b in zip(top, low):
-            if a is None and b is None:
-                line += "\x1b[0m "
-            elif a is None:
-                line += f"\x1b[0m\x1b[{sgr(b, False)}m▄"
-            elif b is None:
-                line += f"\x1b[0m\x1b[{sgr(a, False)}m▀"
-            else:
-                line += f"\x1b[{sgr(a, False)};{sgr(b, True)}m▀"
-        out.append(line + "\x1b[0m")
+        for x in range(0, len(px[0]), sx):
+            bits = sum(1 << (dy * sx + dx) for dy in range(sy) for dx in range(sx) if px[y + dy][x + dx] == "#")
+            line += glyph(bits)
+        out.append(line)
     return out
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--cell", choices=("braille", "quadrant", "halfblock"), default="braille")
-    ap.add_argument("--cols", type=int, default=40, help="pixel columns (two per braille or quadrant cell)")
-    ap.add_argument("--rows", type=int, default=32, help="pixel rows (four per braille cell, two per quadrant cell)")
-    ap.add_argument("--size", type=int, default=30,
-                    help="halfblock: pixels per side of the disc (one column, half a row each)")
-    ap.add_argument("--cover", type=float, default=0.45, help="white fraction of a pixel's area that sets it")
-    ap.add_argument("--white", type=int, default=200, help="level all three channels exceed in a white pixel")
+    ap.add_argument("--cell", choices=("braille", "quadrant", "octant", "sextant", "halfblock"), default="braille")
+    ap.add_argument("--cols", type=int, default=None,
+                    help="braille, quadrant: pixel columns (default 40); octant, sextant, halfblock: cells (default 40)")
+    ap.add_argument("--rows", type=int, default=32, help="braille, quadrant: pixel rows")
+    ap.add_argument("--cover", type=float, default=0.45, help="braille, quadrant: white fraction of a pixel's area that sets it")
+    ap.add_argument("--white", type=int, default=200, help="braille, quadrant: level all three channels exceed in a white pixel")
     ap.add_argument("--preview", action="store_true", help="also print the cells the window draws")
     ap.add_argument("--logo", type=Path, default=LOGO)
     a = ap.parse_args()
-    if a.cell == "halfblock":
-        rgb, idx = color_rows(a.logo, a.size)
-        print("COLOR_PIXELS")
-        for row in rgb:
-            print(f'  "{row}",')
-        print("COLOR_256")
-        for row in idx:
+    cols = a.cols if a.cols is not None else 40
+    if a.cell in MARK_CELLS:
+        px = mark_rows(mark_mask(a.logo), cols, a.cell)
+        blue = logo_blue(a.logo)
+        print("COLOUR %02x%02x%02x %d" % (*blue, blue256(blue)))
+        for row in px:
             print(f'  "{row}",')
         if a.preview:
             print()
-            print("\n".join(as_halfblocks(rgb, 6)))
-            print()
-            print("\n".join(as_halfblocks(idx, 3)))
+            for line in as_cells(px, a.cell):
+                print(line.rstrip() + "|")
         return
-    px = pixel_rows(a.logo, a.cols, a.rows, a.cover, a.white, a.cell)
+    px = pixel_rows(a.logo, cols, a.rows, a.cover, a.white, a.cell)
     for row in px:
         print(f'  "{row}",')
     if a.preview:

@@ -27,7 +27,7 @@ import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
 import { readState, updateState } from "./config/state"
-import { logoDepthFor, setLogoDepth } from "./theme/logo"
+import { logoCellsFor, logoDepthFor, setLogoCells, setLogoDepth } from "./theme/logo"
 import { noColor, themeFor } from "./theme/theme"
 import { bounded } from "./scrollback/queue"
 import { createScreenItems } from "./scrollback/screenview"
@@ -146,7 +146,9 @@ let mode: "dark" | "light" | "mono" = loaded.config.theme !== "auto" ? loaded.co
 const [theme, setTheme] = createSignal(themeFor(mode, loaded.config.colors))
 // The logo as a picture where the terminal says it draws colours
 // (COLORTERM, TERM); braille in the accent otherwise and under NO_COLOR.
+// Octant cells; sextants or half blocks under DELFIN_TUI_LOGO.
 setLogoDepth(logoDepthFor(process.env, mode))
+setLogoCells(logoCellsFor(process.env))
 if (auto) {
   void renderer.waitForThemeMode(1500).then((said) => {
     if (said !== "dark" && said !== "light") return

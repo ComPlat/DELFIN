@@ -58,7 +58,8 @@ export function Row(props: RowProps): JSX.Element {
       // the words alone (under the mark ◆) where they do not.
       // A function: a full-screen row follows the width (rows.tsx is drawn
       // once into the scrollback, but lives on in the window).
-      // In colour the logo itself (the disc, half blocks); in mono braille.
+      // In colour the mark (the dolphin and its waves, in octant, sextant or
+      // half-block cells); in mono braille.
       const depth = t.name === "mono" ? "mono" : logoDepth()
       const logoWidth = depth === "mono" ? DOLPHIN_WIDTH : LOGO_WIDTH
       const logo = () => props.width >= logoWidth + LOGO_GAP + BANNER_TEXT_MIN
