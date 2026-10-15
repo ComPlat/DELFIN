@@ -16,14 +16,20 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 
 from delfin.agent.service import subreaper
 
 REPO = Path(__file__).resolve().parents[1]
 
-linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"),
-                                reason="PR_SET_CHILD_SUBREAPER is Linux's")
+def _linux() -> bool:
+    """PR_SET_CHILD_SUBREAPER is Linux's. Elsewhere each probe test asserts
+    the other half of the contract instead of skipping: nothing is
+    claimed and no reaper runs."""
+    if sys.platform.startswith("linux"):
+        return True
+    assert subreaper.become_subreaper() is False
+    assert subreaper.keep_descendants() is False
+    return False
 
 PROBE = textwrap.dedent("""
     import os, subprocess, sys, time
@@ -64,16 +70,18 @@ def _probe(tmp_path, flag: str) -> dict:
     return dict(line.split(" ", 1) for line in out.stdout.split("\n") if line)
 
 
-@linux_only
 def test_a_detached_process_stays_below_the_worker_and_is_reaped(tmp_path):
+    if not _linux():
+        return
     seen = _probe(tmp_path, "on")
     assert seen["PARENT"] == "me"
     assert seen["ORPHAN"] == "gone"
     assert seen["OWN"] == "3"
 
 
-@linux_only
 def test_control_without_the_flag_the_orphan_leaves_the_tree(tmp_path):
+    if not _linux():
+        return
     seen = _probe(tmp_path, "off")
     assert seen["PARENT"] == "other"
     assert seen["OWN"] == "3"

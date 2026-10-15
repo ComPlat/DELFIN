@@ -69,14 +69,19 @@ def _children(pid: int) -> list[int]:
 
 
 def _stat(pid: int) -> tuple[str, str] | None:
-    """(state, start time) from /proc/<pid>/stat, or None."""
+    """(state, start time) of *pid*, or None. The start time comes from
+    proc_identity.start_ticks, the one reader of that field."""
+    from delfin.agent.proc_identity import start_ticks
     try:
         with open(f"/proc/{pid}/stat") as fh:
             text = fh.read()
-        rest = text[text.rindex(")") + 2:].split()
-        return rest[0], rest[19]
+        state = text[text.rindex(")") + 2:].split()[0]
     except (OSError, ValueError, IndexError):
         return None
+    ticks = start_ticks(pid)
+    if ticks is None:
+        return None
+    return state, str(ticks)
 
 
 class Reaper:
