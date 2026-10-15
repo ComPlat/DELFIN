@@ -1756,6 +1756,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--fake", action="store_true",
                    help="scripted turns, no model (tests and UI work)")
     p.add_argument("--fake-delay", type=float, default=0.02)
+    p.add_argument("--fake-steer-window", type=float, default=5.0,
+                   help="how long a fake 'steer' turn waits for a message "
+                        "(tests whose steer window only has to elapse)")
     p.add_argument("--fake-save", action="store_true",
                    help="save a fake session to the session store at the end "
                         "(tests of the save path)")
@@ -1863,7 +1866,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.fake:
             from .fake_engine import FakeEngine
-            engine = FakeEngine(str(workspace), delay=args.fake_delay)
+            engine = FakeEngine(str(workspace), delay=args.fake_delay,
+                                steer_window=args.fake_steer_window)
             if args.resume:
                 # As a real resume (cli._open_session restores the id): the
                 # session goes on under its id, in the same log -- with what
