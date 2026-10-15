@@ -2,7 +2,8 @@
 
 How a version gets from a tag to PyPI and a GitHub release, what is
 verifiable about the result, and the repository and PyPI settings the
-release workflow depends on. Branch protection and tag signing are in
+release workflow depends on. Branch protection and the `v*` tag ruleset
+(a pushed release tag cannot be moved or deleted) are in
 `docs/MAIN_PROTECTION.md`.
 
 ## What happens on a tag
@@ -13,7 +14,7 @@ own:
 
 | job | permissions | does |
 |---|---|---|
-| `build (sdist, wheel)` | `contents: read` | checks the tag equals `v` + `project.version` in `pyproject.toml`; `python -m build` (build 1.6.1 from `.github/ci/constraints-ci.txt`, no pip cache); `.github/ci/check_dists.py`: one wheel and one sdist, no file under `qm_tools/bin/` or `qm_tools/share/xtb4stda/`, no ELF, Mach-O or PE image under any name |
+| `build (sdist, wheel)` | `contents: read` | checks the tag equals `v` + `project.version` in `pyproject.toml`; `python -m build` (build 1.6.1 from `.github/ci/constraints-ci.txt`, no pip cache); `scripts/check_distribution.py --release dist/*`, the checker packaging.yml runs on every pull request: exactly one wheel and one sdist; no file in an installer's output directory (`qm_tools/bin/`, `qm_tools/share/`, …) and no file named like a program the installers download; no ELF, Mach-O or PE image under any name and no native-library suffix; `LICENSE`, `COPYING`, `COPYING.LESSER` and `THIRD_PARTY_NOTICES.md` in the wheel's `dist-info/licenses/` and the sdist's root, with `License-Expression: LGPL-3.0-or-later` and their `License-File` lines in the metadata |
 | `provenance` | `contents: read`, `id-token: write`, `attestations: write` | `actions/attest-build-provenance`: a SLSA provenance attestation for each file, signed through Sigstore with the workflow's OIDC identity, stored in the repository. Runs no project code |
 | `publish to PyPI` | `id-token: write` | in the `pypi` environment; `pypa/gh-action-pypi-publish` exchanges the OIDC token for a short-lived PyPI token (Trusted Publishing: no stored secret), runs `twine check`, uploads, and uploads PEP 740 attestations |
 | `GitHub release` | `contents: write` | the same files and `SHA256SUMS.txt` on the tag's release; creates the release from the annotated tag's message if there is none. Never replaces an existing asset |
@@ -30,8 +31,9 @@ the ref; on a branch it is a dry run.
 
 1. Set `version` in `pyproject.toml` (and the citation metadata) and merge.
 2. Tag the merge commit with an annotated tag; its message becomes the
-   release notes: `git tag -a v1.3.4 -m "..."` (signing: see
-   `docs/MAIN_PROTECTION.md`), then `git push origin v1.3.4`.
+   release notes: `git tag -a v1.3.4 -m "..."`, then
+   `git push origin v1.3.4`. Once pushed, the tag cannot be moved or
+   deleted (`protect-release-tags`, `docs/MAIN_PROTECTION.md`).
 3. Approve the `pypi` deployment when the run asks for it.
 
 ## Verifying a release
@@ -107,4 +109,6 @@ checks each package's digest against the channel's repodata).
 `delfin_complat` 1.1.12 and earlier wheels contain the xtb4stda and stda
 binaries without their LGPL-3.0 notice (compliance audit item B2). Yanking
 them, or publishing a corrected release with a notice, is a maintainer
-decision; `check_dists.py` keeps it from happening again.
+decision; `scripts/check_distribution.py`, run by packaging.yml on every
+pull request and by release.yml before anything is published, keeps it
+from happening again.
