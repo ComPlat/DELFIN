@@ -204,7 +204,7 @@ def test_cost_soft_limit_default_present():
 
 # ---------------------------------------------------------------------------
 # Out-of-workspace access is refused with an actionable message
-# (the Jerome case: project in another user's home, outside the sandbox)
+# (the field-report case: project in another user's home, outside the sandbox)
 # ---------------------------------------------------------------------------
 
 def test_outside_workspace_path_rejected_with_grant_hint(tmp_path):

@@ -168,12 +168,12 @@ _RESUME_PATH = "/voila/render/delfin_voila_runtime/delfin_resume.ipynb"
 
 def test_the_resume_url_keeps_host_port_and_token():
     url = S.resume_url(
-        "uc3n990-ab12",
-        request_url=("http://uc3n990:8866/voila/render/"
+        "login01-ab12",
+        request_url=("http://login01:8866/voila/render/"
                      "delfin_voila_runtime/delfin_dashboard.ipynb?token=abc"),
         resume_path=_RESUME_PATH)
-    assert url == ("http://uc3n990:8866" + _RESUME_PATH
-                   + "?token=abc&session=uc3n990-ab12")
+    assert url == ("http://login01:8866" + _RESUME_PATH
+                   + "?token=abc&session=login01-ab12")
 
 
 def test_the_resume_url_is_not_the_dashboard_url():
@@ -230,10 +230,10 @@ def test_an_unarmed_strip_is_a_dot_that_says_the_session_ends():
 
 
 def test_an_armed_strip_is_a_dot_that_links_to_the_return_address():
-    html = S._strip_html(True, "uc3n990-ab12", "http://h:8866/delfin/resume/x")
+    html = S._strip_html(True, "login01-ab12", "http://h:8866/delfin/resume/x")
     assert "dot on" in html
     assert 'href="http://h:8866/delfin/resume/x"' in html
-    assert "Kept as uc3n990-ab12" in html
+    assert "Kept as login01-ab12" in html
     assert re.sub(r"<[^>]+>", "", html).strip() == "", "the strip shows text beside the dot"
     assert not re.search(r"[äöüÄÖÜß]", html)
 
@@ -300,15 +300,15 @@ def _resume_path(monkeypatch):
 
 
 def test_a_new_window_is_told_about_a_running_session():
-    _kept("uc3n990-ab12", "kernel-aaa")
+    _kept("login01-ab12", "kernel-aaa")
     others = S.other_sessions(exclude_kernel="kernel-bbb")
-    assert [r["session_name"] for r in others] == ["uc3n990-ab12"]
+    assert [r["session_name"] for r in others] == ["login01-ab12"]
 
 
 def test_the_session_you_are_looking_at_is_not_offered_back():
     """A resume renders INTO the kept kernel, so the page you are on IS
     that session — offering to go back to it would be a loop."""
-    _kept("uc3n990-ab12", "kernel-aaa")
+    _kept("login01-ab12", "kernel-aaa")
     assert S.other_sessions(exclude_kernel="kernel-aaa") == []
 
 
@@ -318,9 +318,9 @@ def test_nothing_is_shown_when_nothing_is_running():
 
 
 def test_the_banner_carries_a_link_and_an_age():
-    _kept("uc3n990-ab12", "kernel-aaa", hours_ago=5)
+    _kept("login01-ab12", "kernel-aaa", hours_ago=5)
     html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
-    assert "uc3n990-ab12" in html
+    assert "login01-ab12" in html
     assert "delfin_resume.ipynb" in html
     assert "for 5" in html
 
@@ -564,15 +564,15 @@ def test_a_return_without_an_address_names_voila(monkeypatch):
 
 def test_a_return_without_a_record_names_the_record_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
-    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
-    assert "No record" in why and "uc3n990-ab12" in why and str(tmp_path) in why
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=login01-ab12")
+    assert "No record" in why and "login01-ab12" in why and str(tmp_path) in why
 
 
 def test_a_return_whose_kernel_is_gone_says_so(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
-    S.write_record("uc3n990-ab12", kid="aaaa1111-0000-4000-8000-000000000001")
+    S.write_record("login01-ab12", kid="aaaa1111-0000-4000-8000-000000000001")
     monkeypatch.setattr(S, "kernel_id", lambda: "bbbb2222-0000-4000-8000-000000000002")
-    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=login01-ab12")
     assert "exists" in why and "fresh kernel" in why
     assert "aaaa1111" in why and "bbbb2222" in why
 
@@ -599,7 +599,7 @@ def test_a_record_that_cannot_be_written_names_the_reason(monkeypatch, tmp_path)
     blocker.write_text("x")                      # a file where the directory should be
     monkeypatch.setattr(S, "RECORD_DIR", str(blocker / "kept_sessions"))
     monkeypatch.setattr(S, "kernel_id", lambda: "aaaa1111-0000-4000-8000-000000000001")
-    assert S.write_record("uc3n990-ab12") == ""
+    assert S.write_record("login01-ab12") == ""
     why = S.last_write_error()
     assert "Error" in why and str(blocker) in why
 
@@ -608,9 +608,9 @@ def test_a_failed_chmod_does_not_lose_the_record(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
     monkeypatch.setattr(S, "kernel_id", lambda: "aaaa1111-0000-4000-8000-000000000001")
     monkeypatch.setattr(S.os, "chmod", lambda *a, **k: (_ for _ in ()).throw(OSError("no chmod here")))
-    path = S.write_record("uc3n990-ab12")
+    path = S.write_record("login01-ab12")
     assert path and S.last_write_error() == ""
-    assert any(r["session_name"] == "uc3n990-ab12" for r in S.list_records(root=str(tmp_path)))
+    assert any(r["session_name"] == "login01-ab12" for r in S.list_records(root=str(tmp_path)))
 
 
 def test_the_toggle_reports_a_failed_write_and_does_not_stay_armed(monkeypatch, tmp_path, capsys):
@@ -636,20 +636,20 @@ def test_a_missing_record_report_lists_what_is_on_disk(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
     monkeypatch.setattr(S, "kernel_id", lambda: "bbbb2222-0000-4000-8000-000000000002")
     (tmp_path / "other-1.json").write_text('{"session_name": "other-1", "kernel_id": "x"}')
-    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=login01-ab12")
     assert "No record" in why and "holds 1 record" in why and "other-1.json" in why
     assert "HOME=" in why and "bbbb2222" in why
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path / "nowhere"))
-    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=login01-ab12")
     assert "does not exist" in why
 
 
 def test_removing_a_record_says_who_asked(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
     monkeypatch.setattr(S, "kernel_id", lambda: "")
-    S.write_record("uc3n990-ab12", kid="aaaa1111-0000-4000-8000-000000000001")
-    assert S.drop_record("uc3n990-ab12")
+    S.write_record("login01-ab12", kid="aaaa1111-0000-4000-8000-000000000001")
+    assert S.drop_record("login01-ab12")
     out = capsys.readouterr().out
-    assert 'record of session "uc3n990-ab12" removed' in out
+    assert 'record of session "login01-ab12" removed' in out
     assert "test_removing_a_record_says_who_asked" in out
-    assert not S.drop_record("uc3n990-ab12")            # gone already: nothing said twice
+    assert not S.drop_record("login01-ab12")            # gone already: nothing said twice

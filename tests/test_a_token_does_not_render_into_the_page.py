@@ -6,7 +6,7 @@ be reached, the code fell back to ``print`` — and in a kernel a print is
 not a terminal: ipykernel forwards it to the frontend, so the block
 rendered IN THE DASHBOARD. Reported from a live session on a cluster:
 
-    [delfin] Session "uc3n991-f3c3" is kept.
+    [delfin] Session "login02-f3c3" is kept.
              Return:  http://localhost:8866/voila/render/...?token=ZK2d...
              End:     in the dashboard, or Ctrl+C here
 
@@ -32,11 +32,11 @@ def no_server_terminal(monkeypatch):
     """The condition that produced the report: a kernel whose parent's
     stdout cannot be opened."""
     monkeypatch.setattr(S, "_server_stdout", lambda: None)
-    monkeypatch.setattr(S, "session_name", lambda: "uc3n991-f3c3")
+    monkeypatch.setattr(S, "session_name", lambda: "login02-f3c3")
     monkeypatch.setattr(
         S, "resume_url",
         lambda *a, **k: "http://localhost:8866/voila/render/x.ipynb"
-                        "?token=SECRET-TOKEN-VALUE&session=uc3n991-f3c3")
+                        "?token=SECRET-TOKEN-VALUE&session=login02-f3c3")
 
 
 def test_a_kernel_says_nothing_it_cannot_say_on_the_terminal(
@@ -88,7 +88,7 @@ def test_a_kernel_with_a_terminal_writes_there(monkeypatch):
 
     monkeypatch.setattr(S, "kernel_id", lambda: "8e7532e0")
     monkeypatch.setattr(S, "_server_stdout", lambda: _Sink())
-    monkeypatch.setattr(S, "session_name", lambda: "uc3n991-f3c3")
+    monkeypatch.setattr(S, "session_name", lambda: "login02-f3c3")
     monkeypatch.setattr(S, "resume_url", lambda *a, **k: "http://x/?token=T")
 
     S.announce()

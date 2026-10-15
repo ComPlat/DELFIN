@@ -571,7 +571,7 @@ def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
       per-atom SARC basis to light atoms (C, N, O, H, etc.) in the first
       coordination sphere crashes ORCA with
           "There are no main basis functions on atom number N (C)"
-      which is exactly what Jan's Ru-complex jobs hit. For relativistic
+      which is exactly what a user's Ru-complex jobs hit. For relativistic
       runs we therefore only attach the per-atom basis to the metal
       atoms themselves and let light coordination-sphere atoms fall back
       to the main (e.g. ZORA-def2-SVP) basis, which IS defined for

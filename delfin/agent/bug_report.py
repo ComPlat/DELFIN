@@ -730,8 +730,8 @@ def write_bug_report(
     # from the setgid archive dir). This makes a report readable by the
     # maintainer group WITHOUT the writer needing membership in it — the
     # explicit chgrp in _make_group_readable only succeeds when the writer is a
-    # member, which it may not be (observed 2026-06-25: writer 'qmchem_all' was
-    # not in 'qmchem_shared', so its chgrp failed and the report stayed
+    # member, which it may not be (observed 2026-06-25: the writer was not
+    # in the maintainer group, so its chgrp failed and the report stayed
     # unreadable to the maintainer). chmod on an owned dir always works; ZFS
     # honours setgid for new-file group inheritance. Best-effort.
     try:
@@ -885,7 +885,7 @@ def _make_group_readable(report_dir: Path) -> None:
        lost ``g+s``) leaves files in the writer's PRIMARY group, which the
        maintainer is not in — so ``chmod g+r`` then grants read to the wrong
        group and the report is silently unreadable (observed 2026-06-25:
-       files came out ``qmchem_all`` instead of ``qmchem_shared``). Setting
+       files came out in the writer's group, not the maintainer's). Setting
        the group explicitly makes readability deterministic.
     2. MODE — add group read (+ traverse on dirs). The "others" bits are left
        untouched, so the report stays as private as the archive home already
