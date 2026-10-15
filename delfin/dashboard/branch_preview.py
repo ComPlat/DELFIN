@@ -656,6 +656,11 @@ def _release_worktree(p: Preview, msg: str, mode: str) -> tuple[bool, str, bool]
         return True, msg + (f" The worktree stays at {path}." if path.exists() else ""), False
     if not is_preview_worktree(repo, path):
         return True, msg + f" {path} is not a preview worktree; left as it is.", False
+    from delfin.dashboard.worktree_use import in_use
+    busy = in_use([str(path)]).get(str(path))
+    if busy:
+        return True, (msg + f" The worktree {path} is kept: {busy}. Close "
+                      "preview again once that has ended."), False
     dirty = changes(path)
     if dirty and mode != "discard":
         # the record is gone; keep enough to finish the question later

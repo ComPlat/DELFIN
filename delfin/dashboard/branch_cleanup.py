@@ -19,7 +19,9 @@ lost its upstream, or it is detached at a commit ``origin/main`` contains,
 or nothing changed in it for ``stale_days``. Kept, with the reason:
 uncommitted or untracked changes, commits on no branch, a lock, a live
 agent session (its sidecar, asked through
-``agent_sessions._worktree_is_orphaned``), running background jobs.
+``agent_sessions._worktree_is_orphaned``), running background jobs, and
+any process of this user using it (``worktree_use.in_use``: working
+directory, open or mapped file, executable; asked again at deletion).
 
 :func:`delete` re-checks every rule at the moment of deletion -- the sha
 must be the one listed, the branch must not be ``main``, current or
@@ -214,6 +216,10 @@ def candidates(repo, *, gh: Optional[str] = "auto",
     wt_cands: dict[str, Candidate] = {}
 
     rows = worktrees(repo)
+    from delfin.dashboard.worktree_use import in_use
+    used = in_use([r["worktree"] for i, r in enumerate(rows)
+                   if i and not _same(r["worktree"], top)
+                   and os.path.isdir(r["worktree"])])
     for i, row in enumerate(rows):
         path = row["worktree"]
         if i == 0 or _same(path, top):
@@ -232,7 +238,7 @@ def candidates(repo, *, gh: Optional[str] = "auto",
             cands.append(c)
             wt_cands[path] = c
             continue
-        hold = (_session_hold(path) or _jobs_hold(path))
+        hold = (used.get(path) or _session_hold(path) or _jobs_hold(path))
         if hold:
             kept.append(Kept("worktree", path, hold))
             continue
@@ -261,7 +267,7 @@ def candidates(repo, *, gh: Optional[str] = "auto",
             if idle > float(stale_days) * 86400:
                 reason = f"no change for {int(idle // 86400)} days"
         if not reason:
-            kept.append(Kept("worktree", path, "in use (recent, not merged)"))
+            kept.append(Kept("worktree", path, "recent and not merged"))
             continue
         c = Candidate("worktree", path, sha, reason, path=path, branch=branch)
         cands.append(c)
@@ -384,6 +390,11 @@ def delete(repo, selected: Iterable[Candidate], *,
                     continue
                 if _changes(c.path):
                     report.skipped.append((c.name, "it has uncommitted changes now"))
+                    continue
+                from delfin.dashboard.worktree_use import in_use
+                busy = in_use([c.path]).get(c.path)
+                if busy:
+                    report.skipped.append((c.name, busy))
                     continue
                 r = BL._git(repo, "worktree", "remove", c.path)
             if r.returncode != 0:
