@@ -20,6 +20,10 @@ default branch.
    the `from` branch (its `origin/` version when it exists there), else the
    default branch from `git symbolic-ref --short refs/remotes/origin/HEAD`.
    If the name exists already, say so and ask whether to switch to it.
+   Refused as the shared checkout (it stays on main)? Then
+   `git branch <name> <start>` and work in
+   `enter_worktree(base_ref="<name>")`; the user tries a branch with the
+   dashboard header's Test branch.
 4. Nothing is sent to the remote by this step. The branch stays local
    until the user asks for it to be published.
 

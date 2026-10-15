@@ -119,3 +119,12 @@ def test_the_permission_gate_refuses_it_in_every_mode(shared, monkeypatch, mode)
     out = _doc_executor._run_permission_gate(
         "bash", {"command": "git status"}, perms)
     assert not out or "shared checkout" not in out
+
+
+def test_the_cli_backend_runner_refuses_it_too(shared, monkeypatch):
+    from delfin.agent import sandbox
+    monkeypatch.setenv(SC.ENV, str(shared))
+    cfg = sandbox.SandboxConfig(mode="off", allow_network=False, timeout_s=10)
+    res = sandbox.run_agent_command("git switch feat", shared, config=cfg)
+    assert res.blocked and "shared checkout" in res.block_reason
+    assert _git(shared, "branch", "--show-current") == "main"

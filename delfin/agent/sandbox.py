@@ -863,6 +863,22 @@ def run_agent_command(
     cfg = config or detect_config()
     t0 = time.monotonic()
 
+    # The shared checkout stays on main, in every mode ('off' included):
+    # the same rule the permission gate of the API and terminal sessions
+    # applies (shared_checkout.refusal).
+    try:
+        from .shared_checkout import refusal as _shared_refusal
+        _shared = _shared_refusal(cmd, repo_dir)
+    except Exception:
+        _shared = ""
+    if _shared:
+        _audit({"ts": time.time(), "cwd": str(repo_dir), "mode": cfg.mode,
+                "cmd": cmd, "blocked": True, "block_reason": _shared,
+                "elapsed_s": round(time.monotonic() - t0, 4)})
+        return RunResult(blocked=True, block_reason=_shared, returncode=-1,
+                         stdout="", stderr="", mode=cfg.mode,
+                         elapsed_s=time.monotonic() - t0)
+
     # Layer 1 — allow-list (skipped only in 'off' mode)
     if cfg.mode != "off":
         decision = is_allowed(cmd)

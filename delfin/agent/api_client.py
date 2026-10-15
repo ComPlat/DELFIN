@@ -20485,6 +20485,19 @@ class _DocToolExecutor:
             if walk:
                 _record_security_event("tree_walk", "bash", cmd[:80])
                 return f"command rejected: {walk}"
+            # The shared checkout stays on main: a branch move there moves
+            # every session and the dashboard on it. In the deny tier, so
+            # it holds in every mode and before the auto-allow list (which
+            # allows a plain git switch). See shared_checkout.py.
+            try:
+                from .shared_checkout import refusal as _shared_refusal
+                _shared = _shared_refusal(_prose_blanked(cmd), _wd)
+            except Exception:
+                _shared = ""
+            if _shared:
+                _record_security_event("shared_checkout_switch", "bash",
+                                       cmd[:80])
+                return _shared
             identity = _commit_text_identity_hit(cmd)
             if identity is not None:
                 _record_security_event("identity_in_commit", "bash", cmd[:80])
