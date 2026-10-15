@@ -127,3 +127,46 @@ def test_a_supplied_test_does_not_assert_how_fast_the_machine_is():
     assert "_READ_INTERVAL_S" in text, (
         "the interval must be named, not written as a bare 0.2 in an "
         "assertion")
+
+
+def test_the_suite_never_installs_a_tool_for_a_later_test(monkeypatch):
+    """No test fetches xtb; a test that needs a real one gets it from the
+    machine or skips (conftest.real_xtb).
+
+    Input: the suite's environment as conftest leaves it, no xtb anywhere
+    the resolver looks, and a structure optimize_with_gfn accepts.
+    Output: a refusal that names the switch; the installer is never started.
+
+    Measured 2026-10-15 on PR #278 (the fast suite split into four shards):
+    ensure_binary installs a missing xtb by default, so the first test that
+    reached optimize_with_gfn without one --
+    test_what_is_wrong_with_the_structure_is_said_without_xtb patches
+    find_xtb to None -- ran install_qm_tools.sh and put a real xtb 6.7.1
+    into delfin/qm_tools/.mamba_env (the checkout; ~/.delfin/qm_tools on a
+    machine that has one). Every later test found it before the stand-in.
+    Unsharded, 17 tests in test_gfn_methods_in_the_viewer.py and
+    test_the_budget_prices_a_relaxed_path.py passed only because of that
+    download; split into shards, they ran on the stand-in and failed, three
+    of them by a 300 s timeout.
+    """
+    import subprocess as _subprocess
+
+    from delfin.dashboard import gfn_optimize as gfn
+
+    assert not gfn.auto_install_allowed(), (
+        "the suite may install tools: conftest must set "
+        "DELFIN_AUTO_INSTALL_QM_TOOLS=0 for every test")
+
+    gfn._AUTO_TRIED.discard("xtb")
+    gfn._XTB_JUDGED.clear()
+    monkeypatch.setattr(gfn, "find_xtb", lambda: None)
+
+    def no_installer(*args, **kwargs):
+        pytest.fail(f"a test started a process during ensure_binary: {args!r}")
+
+    monkeypatch.setattr(_subprocess, "Popen", no_installer)
+    water = "3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n"
+    outcome = gfn.optimize_with_gfn(water, "gfn2")
+    assert outcome["ok"] is False
+    assert "xtb" in outcome["status"]
+    assert "xtb" not in gfn._AUTO_TRIED, "an install was attempted"
