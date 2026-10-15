@@ -85,3 +85,70 @@ def test_the_real_opi_reads_what_it_promises():
     """Runs only where the [orca] extra is installed."""
     pytest.importorskip("opi")
     assert W.available() is True
+
+
+# --------------------------------------------------------------------------
+# used automatically by the energy profile
+
+
+def _orca_out(gibbs: float) -> str:
+    return ("                                 * O   R   C   A *\n"
+            " Total Charge           Charge          ....    0\n"
+            "CARTESIAN COORDINATES (ANGSTROEM)\n"
+            "---------------------------------\n"
+            "  C     0.000000    0.000000    0.000000\n"
+            "  N     0.000000    0.000000    1.160000\n"
+            "  H     0.000000    0.000000   -1.070000\n\n"
+            "VIBRATIONAL FREQUENCIES\n\n     6:    1989.03 cm**-1\n\nNORMAL MODES\n"
+            f"Final Gibbs free energy         ...    {gibbs:.8f} Eh\n")
+
+
+def test_a_profile_says_what_opi_says(tmp_path, monkeypatch):
+    from delfin.agent.chat_plots import plot
+    (tmp_path / "A.out").write_text(_orca_out(-92.25649008))
+    (tmp_path / "B.out").write_text(_orca_out(-92.23316966))
+    (tmp_path / "A.property.json").write_text("{}")
+    (tmp_path / "B.property.json").write_text("{}")
+    values = {"A": -92.2564900838, "B": -92.2000000000}
+
+    class Output:
+        def __init__(self, basename, *, working_dir=None, version_check=True):
+            self.v = values[basename]
+
+        def parse(self):
+            pass
+
+        def get_free_energy(self):
+            return self.v
+
+        def get_final_energy(self):
+            return None
+
+        def get_charge(self):
+            return 0
+
+    core = types.ModuleType("opi.output.core")
+    core.Output = Output
+    monkeypatch.setitem(sys.modules, "opi", types.ModuleType("opi"))
+    monkeypatch.setitem(sys.modules, "opi.output", types.ModuleType("opi.output"))
+    monkeypatch.setitem(sys.modules, "opi.output.core", core)
+    res = plot({"kind": "energy_profile", "states": [
+        {"name": "A", "files": "A.out"}, {"name": "B", "files": "B.out"}]},
+        out_dir=str(tmp_path))
+    lines = res.caption.splitlines()
+    assert "B:" in lines[1] and "WARNING: ORCA's property.json" in lines[1]
+    assert any(ln.startswith("A:") and "[confirmed by OPI]" in ln
+               for ln in lines)
+
+
+def test_without_opi_a_profile_is_unchanged(tmp_path, monkeypatch):
+    from delfin.agent.chat_plots import plot
+    monkeypatch.setitem(sys.modules, "opi", None)
+    monkeypatch.setitem(sys.modules, "opi.output.core", None)
+    (tmp_path / "A.out").write_text(_orca_out(-92.25649008))
+    (tmp_path / "B.out").write_text(_orca_out(-92.23316966))
+    (tmp_path / "A.property.json").write_text("{}")
+    res = plot({"kind": "energy_profile", "states": [
+        {"name": "A", "files": "A.out"}, {"name": "B", "files": "B.out"}]},
+        out_dir=str(tmp_path))
+    assert "OPI" not in res.caption
