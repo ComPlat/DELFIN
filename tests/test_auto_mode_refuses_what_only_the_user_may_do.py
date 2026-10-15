@@ -194,3 +194,19 @@ def test_measure_findings_uses_edit_signals_when_present(monkeypatch):
     assert calls == ["conf/limits.yaml"]
     assert found and found[0].detail == "tolerance loosened"
     assert ag.measure_source() == "edit_signals"
+
+
+@pytest.mark.parametrize("cmd", [
+    "pytest -q tests/test_table.py 2>&1 | tail -5",
+    "python scripts/check_table.py > /tmp/out.txt",
+    "python scripts/check_table.py 2>/dev/null",
+    "grep -n assert tests/test_table.py > notes.txt",
+])
+def test_a_redirect_elsewhere_is_no_measure_write(cmd):
+    assert _c("bash", {"command": cmd}, measure=MEASURE) is None, cmd
+
+
+def test_a_redirect_into_the_measure_is():
+    v = _c("bash", {"command": "printf 'ok' >> tests/test_table.py"},
+           measure=MEASURE)
+    assert v is not None and v.kind == "measure"

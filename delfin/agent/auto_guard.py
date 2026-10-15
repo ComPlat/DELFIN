@@ -1,0 +1,350 @@
+"""What an auto iteration may not do, decided per tool call.
+
+Input: one tool call (bare or ``mcp__server__`` name and its arguments)
+made while an auto iteration runs, the workspace, the loop's ``measure``
+and ``touch`` lists. Output of :func:`classify_call`: ``None`` -- the call
+goes on to the ordinary gate, which decides as it always does -- or a
+:class:`Verdict`:
+
+* ``outward``: the call would publish or send something: ``git push``,
+  ``gh pr create|merge|comment|...``, issue or release creation, a
+  mutating ``gh api``, branch deletion, ``git merge``, leaving the loop's
+  branch for the default branch, an upload (curl/wget with a body, scp or
+  rsync to a host, ssh), mail, session messages, notifications, webhooks,
+  ``worktree_merge``, a future turn outside the loop's budget
+  (``cron_create``, ``schedule_wakeup``), an MCP tool whose name sends,
+  creates, merges or deletes. Queued for the user (``queue=True``).
+* ``widen``: a permission, a writable root or a mode change the user did
+  not make (``remember_permission*``, ``exit_plan_mode``,
+  ``enter_worktree``). Queued.
+* ``measure``: a write to a file the iteration is judged by. Refused.
+* ``scope``: a write outside ``touch`` (when given) or into ``.git``.
+  Refused.
+
+Semantics. This runs IN ADDITION to the gate, never instead of it: a
+``None`` here is not an approval. It over-refuses on purpose -- ``echo
+"git push"`` is refused too -- because the cost of a false refusal in an
+unattended iteration is one queued item the user reads, and the cost of a
+missed one is a publication nobody approved. Shell bodies (``bash -c
+'...'``) are unwrapped with the gate's own ``_with_shell_bodies`` when
+api_client is importable.
+
+:func:`measure_findings` judges the iteration's file changes at its end:
+``hard`` for a declared measure file (the harness reverts the iteration),
+soft for what ``edit_signals.classify`` (the experiment-discipline bundle,
+when importable) or the built-in rules find in test and grader files (the
+iteration is kept and flagged for the user). :func:`mode_rank` orders the
+permission postures, which nothing else in the package did.
+
+Never raises: an exception in a classifier reads as "refuse".
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable, Optional
+
+__all__ = ["Verdict", "Finding", "classify_call", "measure_findings",
+           "mode_rank", "widened", "measure_source"]
+
+
+@dataclass(frozen=True)
+class Verdict:
+    kind: str           # outward | widen | measure | scope
+    reason: str
+    queue: bool
+
+
+@dataclass(frozen=True)
+class Finding:
+    path: str
+    kind: str
+    detail: str
+    hard: bool
+
+
+_SHELL_TOOLS = frozenset({"bash", "bash_background"})
+_CMD_KEYS = ("command", "cmd", "script", "code")
+_OUTWARD_TOOLS = {
+    "session_message": "sends a message to another session",
+    "push_notification": "sends a notification",
+    "remote_trigger": "calls a webhook",
+    "cron_create": "schedules a turn outside this loop's budget",
+    "schedule_wakeup": "schedules a turn outside this loop's budget",
+    "worktree_merge": "merges a worktree and deletes its branch",
+}
+_WIDEN_TOOLS = {
+    "remember_permission": "adds a permanent permission",
+    "remember_permission_bundle": "adds permanent permissions",
+    "exit_plan_mode": "changes the permission mode",
+    "enter_worktree": "adds a writable root",
+}
+_WRITE_TOOLS = frozenset({"write_file", "edit_file", "multi_edit",
+                          "notebook_edit", "apply_patch", "edit_sheet",
+                          "fill_docx_template", "fill_pdf_form",
+                          "create_docx", "create_pdf", "make_plot",
+                          "undo_changes"})
+_PATH_KEYS = ("path", "file_path", "notebook_path", "output_path", "target")
+_MCP_SENDING = re.compile(
+    r"(send|post|create|merge|delete|remove|publish|comment|reply|push|"
+    r"upload|invite|share|close|reopen|approve|update|write|edit|set)",
+    re.IGNORECASE)
+
+_G = r"(?:^|[\s;&|(`'\"])(?:\S*/)?"
+_GIT = _G + r"git(?:\s+-[Cc]\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+"
+_RULES: tuple[tuple[re.Pattern, str], ...] = tuple(
+    (re.compile(p, re.IGNORECASE if i else 0), why) for i, (p, why) in
+    enumerate([
+        (_GIT + r"push\b", "pushes to a remote"),
+        (_G + r"gh\s+pr\s+(create|merge|comment|review|edit|close|reopen|ready)\b",
+         "acts on a pull request"),
+        (_G + r"gh\s+(issue|release|gist|repo|secret|variable|label)\s+"
+              r"(create|edit|close|delete|comment|upload|fork|rename|set|"
+              r"archive|transfer)\b", "creates or changes something on the forge"),
+        (_G + r"gh\s+api\b[^;&|\n]*(?:-X\s*(?:POST|PUT|PATCH|DELETE)|"
+              r"--method\s+(?:POST|PUT|PATCH|DELETE)|\s-[fF]\s|--field|"
+              r"--raw-field|--input)", "sends a forge API request"),
+        (_GIT + r"branch\b[^;&|\n]*\s(?:-d|-D|--delete)\b", "deletes a branch"),
+        (_GIT + r"merge\b", "merges"),
+        (_G + r"curl\b[^;&|\n]*\s(?:-d|--data[\w-]*|-F|--form|-T|"
+              r"--upload-file|-X\s*(?:POST|PUT|PATCH|DELETE)|"
+              r"--request\s+(?:POST|PUT|PATCH|DELETE))", "uploads data"),
+        (_G + r"wget\b[^;&|\n]*--(?:post|body)-(?:data|file)", "uploads data"),
+        (_G + r"(?:mail|mailx|sendmail|mutt|ssmtp|msmtp)\b", "sends mail"),
+        (_G + r"(?:scp|sftp)\b[^;&|\n]*\S+:\S*", "copies to another host"),
+        (_G + r"rsync\b[^;&|\n]*\s\S*[\w.-]+:\S*", "copies to another host"),
+        (_G + r"ssh\s", "runs a command on another host"),
+    ]))
+_LEAVE_BRANCH = re.compile(
+    _GIT + r"(?:switch|checkout)\s+(?!-[bBc]\b)(?:--\S+\s+)*(\S+)")
+_DEFAULT_NAMES = frozenset({"main", "master", "trunk"})
+_SHELL_WRITE = re.compile(
+    r"(\btee\b|\bsed\s+(?:-\S*\s+)*-i|\bperl\s+-\S*i|\brm\b|\bmv\b|"
+    r"\bcp\b|\btruncate\b|\bchmod\b|\bln\b|\bdd\b|\bpatch\b|\bgit\s+"
+    r"(?:checkout|restore|rm|mv)\b|\bpython\S*\s+-c\b|\bawk\b[^|]*-i\b)")
+
+_REDIRECT = re.compile(r"(?<![0-9&<])>>?\|?\s*([^\s;&|<>]+)|[0-9]>>?\s*([^\s&;|<>]+)")
+
+_last_source = "builtin"
+
+
+def _bare(name: str) -> str:
+    name = str(name or "")
+    return name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+
+
+def _unwrapped(cmd: str) -> str:
+    try:
+        from .api_client import _with_shell_bodies
+        return _with_shell_bodies(cmd)
+    except Exception:
+        return cmd
+
+
+def _norm(path: Any, workspace: str) -> str:
+    """*path* relative to the workspace, posix, without ./; '' if outside."""
+    s = str(path or "").strip()
+    if not s:
+        return ""
+    p = PurePosixPath(s.replace("\\", "/"))
+    if p.is_absolute():
+        try:
+            p = p.relative_to(PurePosixPath(str(workspace).rstrip("/") or "/"))
+        except ValueError:
+            return s           # outside: compare as given
+    parts = [x for x in p.parts if x not in (".", "")]
+    return "/".join(parts)
+
+
+def _covers(prefix: str, rel: str) -> bool:
+    prefix = prefix.rstrip("/")
+    return rel == prefix or rel.startswith(prefix + "/")
+
+
+def _write_paths(name: str, args: dict, workspace: str) -> list[str]:
+    out = []
+    for k in _PATH_KEYS:
+        if isinstance(args.get(k), str):
+            out.append(_norm(args[k], workspace))
+    if name == "apply_patch":
+        text = str(args.get("patch") or args.get("diff") or "")
+        for m in re.finditer(r"^(?:\+\+\+|---)\s+(?:[ab]/)?(\S+)", text,
+                             re.MULTILINE):
+            if m.group(1) != "/dev/null":
+                out.append(_norm(m.group(1), workspace))
+    return [p for p in dict.fromkeys(out) if p]
+
+
+def _command(args: dict) -> str:
+    for k in _CMD_KEYS:
+        if isinstance(args.get(k), str):
+            return args[k]
+    return ""
+
+
+def _shell_verdict(cmd: str, workspace: str, measure: Iterable[str],
+                   default_branches: Iterable[str]) -> Optional[Verdict]:
+    text = _unwrapped(cmd)
+    for rx, why in _RULES:
+        if rx.search(text):
+            return Verdict("outward", f"the command {why}", True)
+    defaults = set(default_branches) | _DEFAULT_NAMES
+    for m in _LEAVE_BRANCH.finditer(text):
+        target = m.group(1).strip("'\"")
+        if target in defaults:
+            return Verdict("outward", f"the command switches to {target}, "
+                           "away from the loop's branch", True)
+    named: set[str] = set()
+    for m in _REDIRECT.finditer(text):
+        target = (m.group(1) or m.group(2) or "").strip("'\"")
+        if target and not target.startswith("&") and target != "/dev/null":
+            named.add(_norm(target, workspace))
+    if _SHELL_WRITE.search(text):
+        try:
+            words = shlex.split(text, posix=True)
+        except ValueError:
+            words = text.split()
+        named |= {_norm(w.strip("'\"<>|;&"), workspace) for w in words}
+    if named:
+        for m in measure:
+            mm = _norm(m, workspace)
+            if mm and any(n == mm or _covers(mm, n) for n in named if n):
+                return Verdict("measure", f"the command may change {mm}, "
+                               "which this loop is judged by", False)
+    return None
+
+
+def classify_call(name: str, args: Optional[dict], *, workspace: str = "",
+                  measure: Iterable[str] = (), touch: Iterable[str] = (),
+                  default_branches: Iterable[str] = ()) -> Optional[Verdict]:
+    """See the module docstring. Never raises (an error refuses)."""
+    try:
+        return _classify(name, dict(args or {}), str(workspace or ""),
+                         list(measure or ()), list(touch or ()),
+                         list(default_branches or ()))
+    except Exception as exc:
+        return Verdict("outward", f"the call could not be classified ({exc})",
+                       True)
+
+
+def _classify(name, args, workspace, measure, touch, defaults):
+    full = str(name or "")
+    bare = _bare(full)
+    if bare in _SHELL_TOOLS or (full.startswith("mcp__") and _command(args)):
+        return _shell_verdict(_command(args), workspace, measure, defaults)
+    if bare in _OUTWARD_TOOLS:
+        return Verdict("outward", _OUTWARD_TOOLS[bare], True)
+    if bare in _WIDEN_TOOLS:
+        return Verdict("widen", _WIDEN_TOOLS[bare], True)
+    if full.startswith("mcp__") and _MCP_SENDING.search(bare):
+        return Verdict("outward", f"the MCP tool {bare} may send or change "
+                       "something outside this machine", True)
+    if bare in _WRITE_TOOLS:
+        for rel in _write_paths(bare, args, workspace):
+            for m in measure:
+                if _covers(_norm(m, workspace), rel):
+                    return Verdict("measure", f"{rel} is part of the measure "
+                                   "this loop is judged by", False)
+            if rel == ".git" or rel.startswith(".git/"):
+                return Verdict("scope", f"{rel} is git's own state", False)
+            if touch and not any(_covers(_norm(t, workspace), rel)
+                                 for t in touch):
+                return Verdict("scope", f"{rel} is outside what this loop may "
+                               "change (touch: " + ", ".join(touch) + ")",
+                               False)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Postures
+# ---------------------------------------------------------------------------
+
+_RANK = {"plan": 0, "default": 1, "diff_approval": 1, "acceptEdits": 2,
+         "bypassPermissions": 3}
+
+
+def mode_rank(mode: str) -> int:
+    """plan < default = diff_approval < acceptEdits < bypassPermissions; an
+    unknown mode ranks as the widest, so it can never pass for narrower."""
+    return _RANK.get(str(mode or ""), 3)
+
+
+def widened(before: str, after: str) -> bool:
+    return mode_rank(after) > mode_rank(before)
+
+
+# ---------------------------------------------------------------------------
+# The iteration's changes, judged at its end
+# ---------------------------------------------------------------------------
+
+_TEST_PATH = re.compile(r"(^|/)(tests?/|test_[^/]*$|[^/]*_test\.[a-z]+$|"
+                        r"conftest\.py$|[^/]*\.(spec|test)\.[jt]sx?$)")
+_GRADER_PATH = re.compile(r"(^|/)(\.github/workflows/|pytest\.ini$|tox\.ini$|"
+                          r"setup\.cfg$|\.coveragerc$|[^/]*thresholds?[^/]*$|"
+                          r"[^/]*acceptance[^/]*$|__snapshots__/)")
+_ASSERT = re.compile(r"^\s*(assert\b|self\.assert|expect\(|assert_)", re.M)
+_SKIP = re.compile(r"(pytest\.mark\.(skip|xfail)|@unittest\.skip|\.skip\(|"
+                   r"xit\(|it\.skip|# *noqa|pytest\.skip\()")
+
+
+def measure_source() -> str:
+    """Which detector the last :func:`measure_findings` call used:
+    ``edit_signals`` or ``builtin``."""
+    return _last_source
+
+
+def _builtin(path: str, old: str, new: str) -> list[tuple[str, str]]:
+    out = []
+    if _TEST_PATH.search(path):
+        if new == "" and old:
+            out.append(("test_deleted", "the test file was emptied or deleted"))
+        if len(_ASSERT.findall(new)) < len(_ASSERT.findall(old)):
+            out.append(("assertion_removed", "an assertion was removed"))
+        if len(_SKIP.findall(new)) > len(_SKIP.findall(old)):
+            out.append(("skip_added", "a skip or xfail was added"))
+    elif _GRADER_PATH.search(path) and old != new:
+        out.append(("grader_changed", "a grader or threshold file changed"))
+    return out
+
+
+def measure_findings(changes: dict[str, tuple[str, str]], *,
+                     measure: Iterable[str] = ()) -> list[Finding]:
+    """Findings over ``{relpath: (old_text, new_text)}`` (see the module
+    docstring). A declared measure file is a hard finding whatever changed
+    in it."""
+    global _last_source
+    declared = [str(m).rstrip("/") for m in measure or ()]
+    try:
+        from . import edit_signals as _es
+        classify = getattr(_es, "classify", None)
+    except Exception:
+        classify = None
+    _last_source = "edit_signals" if callable(classify) else "builtin"
+    out: list[Finding] = []
+    for path, (old, new) in sorted((changes or {}).items()):
+        if old == new:
+            continue
+        if any(_covers(m, path) for m in declared):
+            out.append(Finding(path, "measure_file",
+                               "a file this loop is judged by changed", True))
+            continue
+        pairs: list[tuple[str, str]] = []
+        if callable(classify):
+            try:
+                res = classify(path, old, new) or {}
+                pairs = [(str(k), str(d)) for k, d in res.get("measure", [])]
+            except Exception:
+                pairs = _builtin(path, old, new)
+        else:
+            pairs = _builtin(path, old, new)
+        for kind, detail in pairs:
+            out.append(Finding(path, kind, detail, False))
+    return out
+
+
+def relative(path: str, workspace: str) -> str:
+    """Public alias of the normaliser, for the controller."""
+    return _norm(path, workspace) or str(Path(path))
