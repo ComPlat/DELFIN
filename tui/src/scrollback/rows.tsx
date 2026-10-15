@@ -11,7 +11,7 @@ import { RGBA, TextAttributes, type CliRenderer, type MouseEvent, type Renderabl
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
 import { fit, middle, width } from "../text"
-import { DOLPHIN, DOLPHIN_WIDTH, LOGO_RUNS, LOGO_WIDTH, logoDepth, logoPalette } from "../theme/logo"
+import { DOLPHIN, DOLPHIN_WIDTH, LOGO_WIDTH, logoDepth, logoRuns } from "../theme/logo"
 import { GUTTER, markdownStyles, type Theme } from "../theme/theme"
 import type { DiffRow, ToolResult } from "./tools"
 import type { Item } from "./transcript"
@@ -62,8 +62,7 @@ export function Row(props: RowProps): JSX.Element {
       const depth = t.name === "mono" ? "mono" : logoDepth()
       const logoWidth = depth === "mono" ? DOLPHIN_WIDTH : LOGO_WIDTH
       const logo = () => props.width >= logoWidth + LOGO_GAP + BANNER_TEXT_MIN
-      const palette = logoPalette(depth).map((c) => typeof c === "number" ? RGBA.fromIndex(c) : c)
-      const paint = (step: number | null) => step === null ? undefined : palette[step]
+      const paint = (c: string | number | null) => c === null ? undefined : typeof c === "number" ? RGBA.fromIndex(c) : c
       return (
         <box flexDirection="row" paddingTop={1} paddingBottom={1}>
           <Show when={logo()}>
@@ -71,7 +70,7 @@ export function Row(props: RowProps): JSX.Element {
               <Show when={depth !== "mono"} fallback={
                 <For each={DOLPHIN}>{(row) => <text fg={t.accent} wrapMode="none">{row}</text>}</For>
               }>
-                <For each={LOGO_RUNS}>
+                <For each={logoRuns(depth)}>
                   {(runs) => (
                     <text wrapMode="none">
                       <For each={runs}>{(run) => <span style={{ fg: paint(run.fg), bg: paint(run.bg) }}>{run.text}</span>}</For>

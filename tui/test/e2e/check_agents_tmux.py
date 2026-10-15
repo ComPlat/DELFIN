@@ -119,7 +119,7 @@ def main() -> int:
         time.sleep(0.3)
         tmux.key("Enter")
         # Written into the scrollback, ahead of C's banner and replay: on a
-        # 40-row pane the colour logo's 13 rows and the open diff can
+        # 40-row pane the colour logo's 15 rows and the open diff can
         # push it above the visible screen.
         expect(r"now: third-asks", "the divider", 15, where="scrollback")
         expect(r"please edit the parser", "C's replay", 15, where="scrollback")

@@ -83,20 +83,37 @@ describe("the banner", () => {
     try {
       const { scrollback } = await conversation(100)
       const rows = scrollback.filter((l) => /[\u2580\u2584]/.test(l))
-      expect(rows.length).toBe(logo.LOGO_RUNS.length)
-      expect(rows.length).toBeGreaterThanOrEqual(11)
-      expect(rows.length).toBeLessThanOrEqual(13)
-      expect(logo.LOGO_WIDTH).toBeGreaterThanOrEqual(22)
-      expect(logo.LOGO_WIDTH).toBeLessThanOrEqual(26)
+      expect(rows.length).toBe(logo.LOGO_ROWS)
+      expect(logo.LOGO_ROWS).toBe(15)
+      expect(logo.LOGO_WIDTH).toBe(30)
       for (const row of rows) expect(row.startsWith(PAD)).toBe(true)
       // The session's words beside it; no braille.
       expect(rows.some((l) => l.includes("DELFIN  fake/fake-model"))).toBe(true)
       expect(scrollback.some((l) => /[\u2801-\u28ff]/.test(l))).toBe(false)
-      // Every run is one glyph, its width the logo's.
-      for (const runs of logo.LOGO_RUNS) {
-        expect(runs.reduce((n, r) => n + r.text.length, 0)).toBe(logo.LOGO_WIDTH)
-        for (const r of runs) expect(new Set(r.text).size).toBe(1)
+      // Every run is one glyph, its width the logo's; 24-bit and 256
+      // colours cover the same cells.
+      for (const d of ["rgb", "256"] as const) {
+        const all = logo.logoRuns(d)
+        expect(all.length).toBe(logo.LOGO_ROWS)
+        all.forEach((runs, y) => {
+          expect(runs.reduce((n, r) => n + r.text.length, 0)).toBe(logo.LOGO_WIDTH)
+          for (const r of runs) expect(new Set(r.text).size).toBe(1)
+          const shape = (rs: readonly { text: string }[]) => rs.map((r) => r.text).join("")
+          expect(shape(runs)).toBe(shape(logo.LOGO_RUNS_RGB[y]!))
+        })
       }
+      // Outside the disc the terminal's own background: no run paints a
+      // background behind a half block that has a transparent half.
+      for (const runs of logo.LOGO_RUNS_RGB) {
+        for (const r of runs) {
+          if (r.text[0] === " ") expect([r.fg, r.bg]).toEqual([null, null])
+          if (r.text[0] === "\u2584") expect(r.bg).toBeNull()
+          if (r.text[0] === "\u2580" && r.bg === null) expect(r.fg).not.toBeNull()
+        }
+      }
+      // The corners are outside the disc.
+      expect(logo.LOGO_RUNS_RGB[0]![0]!.text[0]).toBe(" ")
+      expect(logo.LOGO_RUNS_RGB[logo.LOGO_ROWS - 1]![0]!.text[0]).toBe(" ")
     } finally {
       logo.setLogoDepth("mono")
     }
@@ -117,22 +134,35 @@ describe("the banner", () => {
     expect(logoDepthFor({ TERM: "xterm", DELFIN_TUI_LOGO: "rgb", NO_COLOR: "1" }, "dark")).toBe("mono")
   })
 
-  test("in 256 colours takes the nearest of the cube and the grey ramp that keeps the hue", async () => {
-    const { logoPalette, nearest256 } = await import("../../src/theme/logo")
-    expect(nearest256("#ffffff")).toBe(231)
-    expect(nearest256("#000000")).toBe(16)
-    expect(nearest256("#5f87af")).toBe(67)
-    expect(nearest256("#808080")).toBe(244)
-    // A pale blue stays blue (by distance alone 152, a green-grey).
-    expect(nearest256("#b0c6de")).toBe(153)
-    const indexed = logoPalette("256")
-    expect(indexed.length).toBe(logoPalette("rgb").length)
-    for (const i of indexed) {
-      expect(typeof i).toBe("number")
-      expect(i as number).toBeGreaterThanOrEqual(16)
+  test("in 256 colours is the disc's blue, blues of its hue and greys, never lavender", async () => {
+    const { LOGO_RUNS_256, LOGO_RUNS_RGB } = await import("../../src/theme/logo")
+    const L = [0, 95, 135, 175, 215, 255]
+    const count = new Map<number, number>()
+    for (const runs of LOGO_RUNS_256) {
+      for (const r of runs) {
+        for (const c of [r.fg, r.bg]) {
+          if (c === null) continue
+          expect(typeof c).toBe("number")
+          const i = c as number
+          expect(i).toBeGreaterThanOrEqual(16)
+          expect(i).toBeLessThanOrEqual(255)
+          count.set(i, (count.get(i) ?? 0) + r.text.length)
+          if (i >= 232 || i === 231 || i === 16) continue
+          const [red, green, blue] = [L[Math.floor((i - 16) / 36)]!, L[Math.floor((i - 16) / 6) % 6]!, L[(i - 16) % 6]!]
+          // A cube colour is a blue: red below green below blue (lavender
+          // has red = green, a green-grey green = blue).
+          if (!(red === green && green === blue)) expect(red < green && green < blue).toBe(true)
+        }
+      }
     }
-    expect(indexed[0]).toBe(67)                       // the disc's blue
-    expect(indexed[indexed.length - 1]).toBe(231)     // white
+    // The disc is mostly its blue, 67 (#5f87af); the dolphin white, 231.
+    const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0]![0]
+    expect(top).toBe(67)
+    expect(count.has(231)).toBe(true)
+    // In 24-bit the pixels are hex colours.
+    for (const runs of LOGO_RUNS_RGB) for (const r of runs) for (const c of [r.fg, r.bg]) {
+      if (c !== null) expect(c).toMatch(/^#[0-9a-f]{6}$/)
+    }
   })
 
   test("is the words alone, under the mark, where there is not", async () => {

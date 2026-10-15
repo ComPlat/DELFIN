@@ -46,33 +46,47 @@ def test_logo_ts_names_the_script_that_made_it():
     assert "tui/scripts/logo_pixels.py" in LOGO_TS.read_text(encoding="utf-8")
 
 
+def _array(text: str, name: str) -> list[str]:
+    block = re.search(rf"const {name} = \[(.*?)\]", text, re.S)
+    assert block, f"logo.ts has no {name}"
+    return re.findall(r'"([.0-9a-f]+)"', block.group(1))
+
+
 def _pasted_color() -> tuple[list[str], list[str]]:
     text = LOGO_TS.read_text(encoding="utf-8")
-    block = re.search(r"const COLOR_PIXELS = \[(.*?)\]", text, re.S)
-    palette = re.search(r"const COLOR_PALETTE = \[(.*?)\]", text, re.S)
-    assert block and palette, "logo.ts has no COLOR_PIXELS or COLOR_PALETTE"
-    return re.findall(r'"([.0-9]+)"', block.group(1)), re.findall(r'"(#[0-9a-f]{6})"', palette.group(1))
+    return _array(text, "COLOR_PIXELS"), _array(text, "COLOR_256")
 
 
 def _script_color() -> tuple[list[str], list[str]]:
     out = subprocess.run([sys.executable, str(SCRIPT), "--cell", "halfblock"],
                          capture_output=True, text=True, check=True).stdout
-    palette = re.search(r"palette: (.*)", out)
-    assert palette
-    return re.findall(r'"([.0-9]+)"', out.split("\n", 1)[1]), re.findall(r'"(#[0-9a-f]{6})"', palette.group(1))
+    rgb, idx = out.split("COLOR_PIXELS\n", 1)[1].split("COLOR_256\n", 1)
+    return re.findall(r'"([.0-9a-f]+)"', rgb), re.findall(r'"([.0-9]+)"', idx)
 
 
-def test_the_pasted_colour_rows_and_palette_are_the_scripts_output():
+def test_the_pasted_colour_rows_are_the_scripts_output():
     assert _pasted_color() == _script_color()
 
 
-def test_the_colour_logo_is_twenty_two_to_twenty_six_cells_by_eleven_to_thirteen():
-    rows, palette = _pasted_color()
-    assert len({len(r) for r in rows}) == 1 and len(rows) % 2 == 0
-    cols, lines = len(rows[0]), len(rows) // 2
-    assert 22 <= cols <= 26 and 11 <= lines <= 13, (cols, lines)
-    # The disc's blue first, white last; every step in a row is in the palette.
-    assert palette[-1] == "#ffffff"
-    r, g, b = (int(palette[0][i:i + 2], 16) for i in (1, 3, 5))
-    assert b > r + 40
-    assert {int(c) for r_ in rows for c in r_ if c != "."} <= set(range(len(palette)))
+def _cells(row: str, width: int) -> list[str | None]:
+    return [None if set(row[i:i + width]) == {"."} else row[i:i + width] for i in range(0, len(row), width)]
+
+
+def test_the_colour_logo_is_thirty_cells_by_fifteen_of_averaged_pixels():
+    rgb, idx = _pasted_color()
+    assert len(rgb) == len(idx) == 30
+    px = [_cells(r, 6) for r in rgb]
+    ix = [_cells(r, 3) for r in idx]
+    assert {len(r) for r in px} == {len(r) for r in ix} == {30}
+    # The same pixels are outside the disc in both, and the corners are.
+    assert [[c is None for c in r] for r in px] == [[c is None for c in r] for r in ix]
+    for y, x in ((0, 0), (0, 29), (29, 0), (29, 29)):
+        assert px[y][x] is None
+    assert px[15][15] is not None
+    colours = {c for r in px for c in r if c is not None}
+    # Averaged, not thresholded: many tones between the disc's blue and white.
+    assert len(colours) > 100
+    rgbs = [tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) for c in colours]
+    assert any(min(v) > 235 for v in rgbs)           # the dolphin's white
+    assert sum(1 for r, _, b in rgbs if b > r + 40) > len(rgbs) // 2   # the disc's blue
+    assert all(16 <= int(c) <= 255 for r in ix for c in r if c is not None)
