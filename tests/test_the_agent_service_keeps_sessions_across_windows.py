@@ -407,8 +407,9 @@ print(json.dumps({"first": first["pid"], "second": second["pid"]}))
 
 
 def test_tui_starts_the_service_and_says_when_the_window_is_not_built(tmp_path, monkeypatch):
-    # Until the TypeScript window exists in a checkout, `delfin-agent tui`
-    # still brings the service up, and says what is missing.
+    # A window that is not set up, with the automatic setup off (no
+    # download in a test): `delfin-agent tui` still brings the service
+    # up, and prints the manual commands.
     from delfin.agent.service import launcher
 
     svc = ServiceProcess(tmp_path, start=False)
@@ -416,10 +417,11 @@ def test_tui_starts_the_service_and_says_when_the_window_is_not_built(tmp_path, 
         if launcher.tui_command() is not None:
             pytest.skip("the TUI is built in this checkout; covered by its own tests")
         run = subprocess.run([sys.executable, "-m", "delfin.agent.cli", "tui"],
-                             env=_env(svc), capture_output=True, text=True,
-                             timeout=120, stdin=subprocess.DEVNULL)
+                             env=_env(svc, DELFIN_TUI_AUTO_INSTALL="0"), capture_output=True,
+                             text=True, timeout=120, stdin=subprocess.DEVNULL)
         assert run.returncode == 2, run.stderr[-2000:]
-        assert "not built" in run.stderr
+        assert "not set up here, and automatic setup is off" in run.stderr
+        assert "delfin-agent tui --setup" in run.stderr
         with ServiceClient(svc.socket) as c:
             c.request("service.shutdown")
     finally:
