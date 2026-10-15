@@ -193,6 +193,9 @@ _NOT_CARRIED = {
     # The git-errors steering block of the current turn: rebuilt from each
     # user message, nothing a resumed session needs.
     "_repo_errors_hint",
+    # Per turn: what the turn verified (turn_verification), read by the
+    # test-claim caveat of the same turn; the next turn starts its own.
+    "_last_turn_verification",
     # The experiment-discipline steering block of the current turn, the
     # same kind of per-message pointer.
     "_experiment_hint",

@@ -4058,6 +4058,20 @@ class AgentEngine:
                 self.client, "_last_structured_verdict", None)
             self._last_test_evidence = list(
                 getattr(self.client, "_test_evidence", None) or [])
+            # What the turn verified (turn_verification): the account the
+            # test-claim caveat judges the answer against.
+            # A claim-correction turn runs nested inside the turn it
+            # corrects; its account continues that turn's instead of
+            # replacing it, or the edits being judged would vanish.
+            _tv_new = getattr(self.client, "_turn_verification", None)
+            _tv_old = getattr(self, "_last_turn_verification", None)
+            if (getattr(self, "_claim_guard_active", False)
+                    and hasattr(_tv_old, "extend")
+                    and hasattr(_tv_new, "events")
+                    and _tv_new is not _tv_old):
+                _tv_old.extend(_tv_new)
+            else:
+                self._last_turn_verification = _tv_new
             # Observed-files ledger (session-cumulative) for the code-claim
             # citation check — files the model actually read/grepped. The
             # availability flag distinguishes "backend keeps no ledger"
@@ -5151,7 +5165,77 @@ class AgentEngine:
         out = self._append_comparison_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
+        out = self._append_test_claim_caveat(out, on_token, source=source)
+        if out != text:
+            try:
+                from . import channels as _channels
+                _channels.fire("answer_caveat")
+            except Exception:
+                pass
         return out
+
+    def _append_test_claim_caveat(
+        self, text: str, on_token: Callable[[str], None] | None,
+        *, source: str,
+    ) -> str:
+        """Name a verification claim no run of this turn backs.
+
+        Input: the model's own text (``source``) and the turn's account
+        (``_last_turn_verification``, from the client). A claim ("tests
+        pass", "5 passed", "alle Tests grün"; "verified", "funktioniert
+        jetzt" in a turn that edited code) is unbacked when no executed,
+        fresh, relevant, non-gamed run backs it
+        (verification_claims.judge); a pass after an edit to the failing
+        test backs nothing. A caveat, not a correction turn: a retry
+        cannot run what the gate refused, and the caveat costs no round.
+        Behaviour claims stand down where the functional-claim caveat
+        already spoke. Plan turns propose and are not judged.
+
+        Measured before wiring (benchmark corpus 1,063 answers: 3 flagged,
+        3 true; field reports, 249 aligned turns: 5 flagged, 2 true)."""
+        tv_acc = getattr(self, "_last_turn_verification", None)
+        try:
+            from . import turn_verification as _tvm
+        except Exception:
+            return text
+        # Only a real account: a client without one (the CLI backend, a
+        # test double) has nothing to judge against.
+        if not isinstance(tv_acc, _tvm.TurnVerification) \
+                or self._turn_describes_intent():
+            return text
+        try:
+            from . import verification_claims as _vcl
+            verdicts = tv_acc.unbacked_claims(source)
+            if "the following was NOT checked in this session" in text:
+                verdicts = [v for v in verdicts if v.claim.kind == "test"]
+            # The measure-edit caveat (edit_signals.turn_caveat) already
+            # names a check changed to pass: the same fact is not said twice.
+            if ("the check was changed in a turn that set out to make it"
+                    in text.lower()):
+                verdicts = [v for v in verdicts if v.reason != "gamed"]
+            caveat = _vcl.caveat(verdicts)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        try:
+            from . import channels as _channels
+            _channels.fire("test_claim_flagged", len(verdicts))
+        except Exception:
+            pass
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
 
     def _append_figure_coverage_caveat(
         self, text: str, on_token: Callable[[str], None] | None,
@@ -5334,6 +5418,11 @@ class AgentEngine:
             parts.append(_vg.language_mismatch_feedback(wrong_language)
                          .replace("[Verify] ", "", 1))
         feedback = "[Verify] " + " ".join(parts)
+        try:
+            from . import channels as _channels
+            _channels.fire("claim_correction_turn")
+        except Exception:
+            pass
         # What the session had observed BEFORE the retry. The retry either
         # reads something new or it does not, and that is the only thing
         # that can turn an unverified claim into a verified one.
