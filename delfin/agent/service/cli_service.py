@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 from . import client, launcher, rundir
 
@@ -73,18 +74,72 @@ def _security_preamble() -> None:
         pass
 
 
+def _set_up_window() -> tuple[list[str] | None, str]:
+    """The window's command after a first-use setup (tui_setup), or None
+    and why not: refused here (an agent session, root), switched off
+    (DELFIN_TUI_AUTO_INSTALL=0, agent.tui_auto_install=false), or failed.
+    Runs in this process -- the person's own -- before the window starts."""
+    from . import tui_setup
+
+    why = tui_setup.refusal()
+    if why:
+        return None, tui_setup.not_set_up(why)
+    if not tui_setup.auto_install_enabled():
+        return None, tui_setup.not_set_up(
+            f"automatic setup is off ({tui_setup.ENV_OPT_OUT}=0 or agent.tui_auto_install=false)")
+    try:
+        tui_setup.set_up(out=sys.stderr)
+    except tui_setup.SetupFailed as exc:
+        return None, f"The terminal window could not be set up: {exc}"
+    command = launcher.tui_command()
+    if command is None:
+        return None, ("The terminal window was set up but is not found where it was put "
+                      f"({launcher.tui_root()}); `delfin-agent doctor` reports what is there.")
+    return command, ""
+
+
+def _setup_only() -> int:
+    """`delfin-agent tui --setup`: set the window up and exit. Asked for
+    explicitly, so the opt-out of the automatic setup does not apply;
+    the refusals do."""
+    from . import tui_setup
+
+    command = launcher.tui_command()
+    if command is not None:
+        print(f"The terminal window is ready: {' '.join(command)}")
+        return 0
+    try:
+        tui_setup.set_up(out=sys.stderr)
+    except tui_setup.SetupFailed as exc:
+        print(f"The terminal window could not be set up: {exc}", file=sys.stderr)
+        return 2
+    command = launcher.tui_command()
+    if command is None:
+        print(f"The terminal window was set up but is not found in {launcher.tui_root()}.",
+              file=sys.stderr)
+        return 2
+    print(f"The terminal window is ready: {' '.join(command)}")
+    return 0
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
+    if getattr(args, "setup", False):
+        return _setup_only()
     _security_preamble()
+    command = launcher.tui_command()
+    missing = ""
+    if command is None:
+        # The setup first, in this process; the service is started
+        # either way, as before, and named when there is no window.
+        command, missing = _set_up_window()
     try:
         hello = launcher.ensure_service()
     except (launcher.ServiceDidNotStart, rundir.UnsafeRuntimeDir) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 3
-    command = launcher.tui_command()
     if command is None:
-        print("The terminal UI is not built in this checkout (tui/src/main.tsx "
-              "with Bun). The agent service runs: `delfin-agent service "
-              f"status` (pid {hello.get('pid')}).", file=sys.stderr)
+        print(f"{missing}\nThe agent service runs: `delfin-agent service status` "
+              f"(pid {hello.get('pid')}).", file=sys.stderr)
         return 2
     env = dict(os.environ)
     env["DELFIN_TUI_SOCKET"] = str(rundir.socket_path())
@@ -98,8 +153,8 @@ def cmd_tui(args: argparse.Namespace) -> int:
     if getattr(args, "inline", False):
         env["DELFIN_TUI_SCREEN"] = "inline"
     if command[-1].endswith("main.tsx"):
-        # From source: Bun reads its configuration in tui/.
-        os.chdir(launcher.tui_root())
+        # From source: Bun reads its configuration in the window's folder.
+        os.chdir(str(Path(command[-1]).parent.parent))
     sys.stdout.flush()
     sys.stderr.flush()
     # The TUI takes this process (and its terminal) over: no Python stays

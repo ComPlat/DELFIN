@@ -5172,6 +5172,10 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")
+    tui.add_argument("--setup", action="store_true",
+                     help="Set the window up (a pinned Bun and its packages, checked) and "
+                          "exit; done by itself on the first start unless "
+                          "DELFIN_TUI_AUTO_INSTALL=0 or agent.tui_auto_install=false")
     # Scripted sessions, no model: for working on the window and its tests.
     tui.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
     tui.set_defaults(func=_cmd_tui)
