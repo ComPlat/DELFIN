@@ -3,8 +3,11 @@ name: Release
 # From a version tag to PyPI and a GitHub release, with build provenance.
 #
 #   build         sdist + wheel from the tag, the tag checked against the
-#                 version in pyproject.toml, no program binaries inside
-#                 (.github/ci/check_dists.py). No token beyond contents: read.
+#                 version in pyproject.toml, exactly one of each, no
+#                 third-party program or native code inside and the licence
+#                 files and metadata present (scripts/check_distribution.py
+#                 --release, the checker packaging.yml runs on every pull
+#                 request). No token beyond contents: read.
 #   provenance    a SLSA build-provenance attestation per file
 #                 (actions/attest-build-provenance), signed through Sigstore
 #                 with this workflow's OIDC identity and stored in the
@@ -80,8 +83,8 @@ jobs:
           python -m build --sdist --wheel --outdir dist/
           ls -l dist/
 
-      - name: No program binaries in the distributions
-        run: python .github/ci/check_dists.py dist/*
+      - name: The distributions are the ones a release may publish
+        run: python scripts/check_distribution.py --release dist/*
 
       - name: Keep the distributions
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

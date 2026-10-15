@@ -143,6 +143,54 @@ def test_the_metadata_must_state_the_spdx_expression(tmp_path):
     assert any("no License-File entry for COPYING" in f for f in findings)
 
 
+def _pe() -> bytes:
+    head = bytearray(b"MZ" + b"\x00" * 0x7E)
+    head[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    return bytes(head) + b"PE\x00\x00" + b"\x00" * 32
+
+
+@pytest.mark.parametrize("member, data, kind", [
+    ("delfin/renamed.dat", ELF, "ELF"),
+    ("delfin/helper.py", bytes.fromhex("cffaedfe") + b"\x00" * 28, "Mach-O"),
+    ("delfin/Starter.txt", _pe(), "PE"),
+])
+def test_an_executable_image_is_refused_under_any_name_in_both_formats(
+        tmp_path, member, data, kind):
+    """The header is read, not the name: a renamed program is still one."""
+    for build in (_wheel, _sdist):
+        findings = CD.check(build(tmp_path, {member: data}))
+        assert any(f"native executable code ({kind})" in f for f in findings), (
+            build.__name__, findings)
+
+
+def test_installer_output_outside_the_package_is_refused(tmp_path):
+    findings = CD.check(_sdist(tmp_path, {"qm_tools/bin/xtb4stda": b"#!/bin/sh\n"}))
+    assert any("installer's output directory" in f for f in findings), findings
+
+
+def test_the_release_set_is_one_wheel_and_one_sdist(tmp_path, capsys):
+    wheel, sdist = _wheel(tmp_path), _sdist(tmp_path)
+    assert CD.release_set_findings([wheel, sdist]) == []
+    assert CD.main(["--release", str(wheel), str(sdist)]) == 0
+    capsys.readouterr()
+
+    missing = CD.release_set_findings([wheel])
+    assert missing and "one wheel and one sdist" in missing[0]
+    assert CD.main(["--release", str(wheel)]) == 1
+    assert "one wheel and one sdist" in capsys.readouterr().out
+
+    second = tmp_path / "other"
+    second.mkdir()
+    assert CD.release_set_findings([wheel, _wheel(second), sdist])
+    stray = tmp_path / "notes.txt"
+    stray.write_text("x")
+    assert any("not a wheel or an sdist" in f
+               for f in CD.release_set_findings([wheel, sdist, stray]))
+    # Without --release any number of archives is checked one by one, as
+    # packaging.yml does with its two wheels.
+    assert CD.main([str(wheel), str(_wheel(second)), str(sdist)]) == 0
+
+
 def test_the_command_line_exits_one_on_a_finding(tmp_path, capsys):
     clean = _wheel(tmp_path)
     assert CD.main([str(clean)]) == 0
