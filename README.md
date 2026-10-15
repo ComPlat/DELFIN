@@ -15,14 +15,14 @@
 
 **DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
-Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Their shell is sandboxed, their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents). Every agent prompt opens with the same [operating principles](#operating-principles), which put the protection of people and the environment ahead of any single instruction.
+Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike. With a local model server the model calls stay on your own hardware; what else reaches the network, and how to run without outside access, is listed under [Network access and offline use](#network-access-and-offline-use). The agents' shell commands run under bubblewrap or Landlock on Linux, or Seatbelt on macOS, where the host supports one of them; on a host where none works they are not confined, and DELFIN says so at start ([Tools, MCP and safety](#tools-mcp-and-safety)). Their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents). Every agent prompt opens with the same [operating principles](#operating-principles), which put the protection of people and the environment ahead of any single instruction.
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
 Three ways to use it:
 - **CLI** — `delfin` runs workflows from a `CONTROL.txt` configuration file
 - **Dashboard** — browser UI for job setup, result analysis, and configuration
-- **Agent** — an autonomous AI coding agent (model-agnostic: Claude, OpenAI, or local via Ollama) that operates the dashboard, runs and interprets workflows, and implements code itself — extending DELFIN and carrying multi-step projects through to completion (sandboxed bash, subagents, persistent memory)
+- **Agent** — an autonomous AI coding agent (model-agnostic: Claude, OpenAI, or local via Ollama) that operates the dashboard, runs and interprets workflows, and implements code itself — extending DELFIN and carrying multi-step projects through to completion (shell commands isolated where the host supports it, subagents, persistent memory)
 
 ### Design principles
 
@@ -54,7 +54,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 | **Imaginary-Mode Elimination** | 🔬 both | Iterative saddle escape: displaced single points on both sides of the imaginary mode, re-optimisation and frequency per round. ESD rates are refused on a structure still at a saddle |
 | **CO₂ Coordination** | 🧲 metal | Automated CO₂ placement around metal centers, distance/rotation scans |
 | **Reporting** | 🔬 both | Auto-generated DOCX combining all visualized output — spectra plots (UV-Vis, IR, AFP), ESD rate tables (ISC / RISC / IC, ΔE(S-T), E₀₀), redox-potential summaries, free energies, and full method provenance; JSON export and text summaries also available |
-| **AI Agent** | 🔬 both | Conversational coding agent on any tool-capable model (Claude / OpenAI / KIT / local Ollama) — sandboxed bash, subagents, MCP, persistent memory, dashboard control, literature research, result analysis |
+| **AI Agent** | 🔬 both | Conversational coding agent on any tool-capable model (Claude / OpenAI / KIT / local Ollama) — bash isolated where the host supports it, subagents, MCP, persistent memory, dashboard control, literature research, result analysis |
 | **Structure Enumeration** | 🔬 both | ChemDarwin morphs a seed molecule with user-supplied reaction SMARTS over N iterations — forbidden/protected substructure filters, ligand-wise mutation for metal complexes, results drawn and mapped in chemical space. Candidates are submitted to a DELFIN workflow by hand; there is no automated fitness loop |
 
 ### Use cases
@@ -100,7 +100,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 12. [Cluster and HPC](#-cluster-and-hpc)
 13. [Troubleshooting](#-troubleshooting)
 14. [Development](#-development)
-15. [References](#references) · [Dependencies and legal notice](#dependencies-and-legal-notice) · [Please cite](#please-cite) · [License](#license)
+15. [References](#references) · [Dependencies and legal notice](#dependencies-and-legal-notice) · [Please cite](#please-cite) · [License](#license) · [Privacy](docs/PRIVACY.md)
 
 ---
 
@@ -243,7 +243,7 @@ ctx = create_dashboard(backend="auto")   # SLURM when available, else local
 | **ORCA Builder** | Interactive ORCA input generation with geometry preview |
 | **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
 | **ChemDarwin** | Reaction-SMARTS structure enumeration and chemical-space map (off by default) |
-| **DELFIN Agent** | The AI agent: subagents, MCP, sandboxed bash, dashboard control, result analysis, persistent memory |
+| **DELFIN Agent** | The AI agent: subagents, MCP, bash isolated where the host supports it, dashboard control, result analysis, persistent memory |
 | **Agent Activity** | Running and recent agent and subagent work |
 | **Job Status** | Queue monitoring (local/SLURM), resource usage, fairshare and limits, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc CENSO/ANMR` |
@@ -489,7 +489,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 
 ## 🤖 AI agents
 
-DELFIN ships a conversational AI agent: it reads and edits code, runs sandboxed shell commands, drives the dashboard, researches methods, analyses results and delegates self-contained work to subagents. It runs in the **DELFIN Agent** dashboard tab and as the standalone terminal program `delfin-agent`. It is a single, direct agent — there is no fixed review pipeline; when work benefits from extra hands it spins up subagents on demand.
+DELFIN ships a conversational AI agent: it reads and edits code, runs shell commands (isolated where the host supports it; see [Tools, MCP and safety](#tools-mcp-and-safety)), drives the dashboard, researches methods, analyses results and delegates self-contained work to subagents. It runs in the **DELFIN Agent** dashboard tab and as the standalone terminal program `delfin-agent`. It is a single, direct agent — there is no fixed review pipeline; when work benefits from extra hands it spins up subagents on demand.
 
 ### Operating principles
 
@@ -539,6 +539,19 @@ A model-capability layer detects each model's real context window and its tool, 
 
 Available providers are auto-detected from environment variables and PATH. DELFIN treats each LLM the way it treats ORCA, xTB or CREST: a dependency that you install and authenticate yourself. DELFIN bundles no LLM and redistributes none; it calls each provider's official API, OpenAI-compatible endpoint or CLI binary. Hosted usage runs under your own account and billing; local models run on your own hardware at no per-token cost.
 
+### Network access and offline use
+
+DELFIN's workflows (ORCA, xTB, CREST and the other engines) run on your machines and need no network. With a local model server (Ollama, vLLM, LM Studio via `OLLAMA_HOST`) the agent's model calls stay on your network as well. The following parts connect to outside hosts:
+
+| Part | Connects to | Without outside network |
+|------|-------------|-------------------------|
+| Hosted model providers | the provider's API; the KIT Toolbox provider uses the fixed endpoint `https://ki-toolbox.scc.kit.edu/api/v1` | choose a local model server |
+| Agent tools `web_search` and `web_fetch` | a fixed set of public search services (`delfin/agent/web_tools.py`) and the URL fetched | not available; the other tools are unaffected |
+| CLI terminal tab (`delfin-voila --claude-terminal`) | the browser loads xterm.js from `cdn.jsdelivr.net` (pinned version, SRI hash); the CLI it runs talks to its own provider | not available; no local copy of xterm.js is supported yet |
+| Diagrams in the agent chat | mermaid from `cdn.jsdelivr.net` (pinned version, SRI hash), fetched only when a diagram appears | place `mermaid.min.js` in `delfin/dashboard/static/`; without it the diagram is shown as source text |
+| 3D structure viewers | none while the bundled `delfin/dashboard/static/3Dmol-min.js` is loaded, which the dashboard does at start; several viewers fall back to `https://3Dmol.org` only if the library is not defined | works with the bundled copy |
+| Ketcher editor, xtb and g-xTB installers | GitHub, once, on first use and after confirmation | install on a machine with network access and copy the files |
+
 ### Subagents
 
 For parallel research, read-only audits or planning that must not edit, the agent delegates to isolated subagents — each with its own tool loop and usually tighter permissions:
@@ -552,11 +565,13 @@ Your own presets can be added as markdown files in `~/.delfin/subagents/`. Subag
 
 ### Tools, MCP and safety
 
-- **Built-in tools**: read/edit/write files, grep, sandboxed bash with long-running background jobs, code navigation, test runner, notebooks, documents and spreadsheets, web search and fetch, task tracking, scheduling, git worktrees, delegation, plus DELFIN-specific calculation and manual search.
+- **Built-in tools**: read/edit/write files, grep, bash with long-running background jobs (isolation as below), code navigation, test runner, notebooks, documents and spreadsheets, web search and fetch, task tracking, scheduling, git worktrees, delegation, plus DELFIN-specific calculation and manual search.
 - **MCP (Model Context Protocol)**: connect external MCP servers over stdio or Streamable HTTP — their tools, resources and prompts join the agent's surface (configured in `~/.delfin/mcp_servers.json`). A tool reached through MCP runs in a process DELFIN did not launch a command line for, so the shell sandbox is not around it: give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it starts inside a namespace holding only those paths. Servers that declare neither run uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all say so. DELFIN's own servers can take their roots from your settings instead — `agent.mcp_isolation: "builtin"` binds the calculations, office, workspace and state folders read-write and the archive and runtime trees read-only; it is off by default because the roots are inferred.
-- **Sandboxed execution**: every shell command passes the permission gate and then runs isolated wherever the host can hold it — bubblewrap, else Landlock, else Seatbelt on macOS: writes only in the workspace roots, credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) unreadable, no access to your terminal or SSH agent, and network only through an egress proxy with a domain allow-list. `--isolate` refuses commands where no isolation is available; `--no-isolate` turns it off. The dashboard's approval of a CLI-backend `Bash` call uses its own allow-list sandbox (`DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`).
+- **Shell isolation**: every shell command passes the permission gate first, then runs under the first layer that works on the host — bubblewrap, else Landlock (both Linux), else Seatbelt (macOS). Under these layers writes are confined to the workspace roots, credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are unreadable, and terminal and SSH-agent sockets are not reachable. The network goes only through an egress proxy with a domain allow-list under bubblewrap, Seatbelt, and Landlock with seccomp user notification; Landlock without seccomp user notification restricts TCP by port only (ABI 4) or not at all (older ABI). Where no layer works (for example on Windows, or on Linux with neither bubblewrap nor Landlock) a command is **not confined**: the gate's reading of its text is the only check, and the start banner and `/status` say `NOT isolated`. An attended session then still runs commands (those off the auto-allow list are asked), `bypassPermissions` asks once at start or, unattended, starts in `default`, and a locked session or `--isolate` refuses each command unless you approve that one command unconfined. `delfin-agent capabilities` prints which layer holds on the current host; the guarantees per host are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#what-each-layer-guarantees-on-which-host). `--no-isolate` turns isolation off.
+- **Dashboard CLI-backend runner**: the dashboard's approval of a CLI-backend `Bash` call goes through a separate runner (`delfin/agent/sandbox.py`, `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`). `auto` uses bubblewrap or firejail where available, else `allowlist`. `allowlist` is a command allow-list, not a sandbox: it admits `python`, `pip`, `awk`, `sed`, `env`, `xargs` and `tee`, which can run any program. In that mode the command runs under Landlock (writes only in the repository) where the kernel has it, without a network restriction, and unconfined where it does not.
 - **Security model**: what the containment protects, against whom, what each layer guarantees on which host and the residual risks are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md); vulnerabilities are reported privately as described in [SECURITY.md](SECURITY.md).
-- **Permission modes**: `plan` (read-only) · `default` (destructive actions ask) · `diff_approval` (writes stage a diff for `/approve`) · `acceptEdits` (writes allowed, bash still asks) · `bypassPermissions` (no prompts; the sandbox and the deny lists still apply). Per-pattern allow-list rules can be remembered across sessions. Files that define the agent's own permissions always require confirmation, in every mode.
+- **Privacy**: what DELFIN stores about you, what it sends to the model provider, and what bug reports and shared knowledge carry, with retention and withdrawal: [docs/PRIVACY.md](docs/PRIVACY.md).
+- **Permission modes**: `plan` (read-only) · `default` (destructive actions ask) · `diff_approval` (writes stage a diff for `/approve`) · `acceptEdits` (writes allowed, bash still asks) · `bypassPermissions` (no prompts; the deny lists and, where the host has one, the isolation layer still apply). Per-pattern allow-list rules can be remembered across sessions. Files that define the agent's own permissions always require confirmation, in every mode.
 - **Workspace trust**: settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
 
 ### Slash commands
