@@ -1,6 +1,7 @@
 ---
 name: loops
 description: Write a loop definition, or work one auto-mode iteration inside its frame
+domains: code
 ---
 # Loops and auto mode
 
