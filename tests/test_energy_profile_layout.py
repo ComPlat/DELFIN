@@ -123,7 +123,8 @@ def test_make_plot_draws_the_groups_csv(tmp_path):
 
 
 def test_make_plot_takes_named_pathways(tmp_path):
-    res = plot({"kind": "energy_profile", "series": [
+    res = plot({"kind": "energy_profile", "ylabel": "ΔG", "from_user": True,
+                "series": [
         {"label": "S", "x": ["R", "TS", "P"], "y": [0, 18.2, -15]},
         {"label": "via TS3", "x": ["TS", "TS3"], "y": [18.2, 25], "start": 2},
     ]}, out_dir=str(tmp_path))
@@ -134,12 +135,13 @@ def test_make_plot_takes_named_pathways(tmp_path):
 def test_the_rc_of_the_layout_does_not_leak(tmp_path):
     import matplotlib
     before = list(matplotlib.rcParams["font.family"])
-    plot({"kind": "energy_profile", "y": [0, 1, 0]}, out_dir=str(tmp_path))
+    plot({"kind": "energy_profile", "ylabel": "ΔG", "y": [0, 1, 0],
+          "from_user": True}, out_dir=str(tmp_path))
     assert list(matplotlib.rcParams["font.family"]) == before
 
 
 @pytest.mark.parametrize("spec, match", [
-    ({"kind": "energy_profile"}, "needs 'series'"),
+    ({"kind": "energy_profile"}, "needs 'states'"),
     ({"kind": "energy_profile", "series": [{"x": ["a"], "y": [1, 2]}]},
      "x has 1 states"),
     ({"kind": "energy_profile", "series": [{"y": [1], "start": -1}]},
@@ -207,8 +209,8 @@ def test_a_shorter_route_ends_under_the_shared_product():
 
 
 def test_x_may_leave_out_the_uncomputed_ts(tmp_path):
-    res = plot({"kind": "energy_profile", "series": [
-        {"x": ["A", "B"], "y": [0, None, -3]}]}, out_dir=str(tmp_path))
+    res = plot({"kind": "energy_profile", "ylabel": "ΔG", "from_user": True,
+                "series": [{"x": ["A", "B"], "y": [0, None, -3]}]}, out_dir=str(tmp_path))
     assert res.n_points == 3
 
 
@@ -292,11 +294,13 @@ def _out(atoms: str, gibbs: float, imag=(0,), charge: int = 0) -> str:
         lines.append(f"     {6 + n}:    1989.03 cm**-1")
         blocks.append("VIBRATIONAL FREQUENCIES\n-----------------------\n\n"
                       + "\n".join(lines) + "\n\n------------\nNORMAL MODES\n")
-    return (f" Total Charge           Charge          ....    {charge}\n"
+    return ("                                 * O   R   C   A *\n"
+            f" Total Charge           Charge          ....    {charge}\n"
             "CARTESIAN COORDINATES (ANGSTROEM)\n"
             "---------------------------------\n"
             f"{coords}\n\n----------------------------\n"
             + "".join(blocks)
+            + f"FINAL SINGLE POINT ENERGY      {gibbs - 0.01:.12f}\n"
             + f"Final Gibbs free energy         ...    {gibbs:.8f} Eh\n")
 
 
@@ -319,8 +323,8 @@ def test_energies_from_outputs_are_converted_by_the_tool(outputs):
     res = plot({"kind": "energy_profile", "series": [
         {"x": ["HCN", "TS", "HNC"],
          "files": ["hcn.out", "ts.out", "hnc.out"]}]}, out_dir=str(outputs))
-    assert "TS: ts.out -92.132004 Eh -> 78.12" in res.caption
-    assert "HNC: hnc.out -92.233170 Eh -> 14.63" in res.caption
+    assert "TS: ts.out (ORCA) -92.132004 Eh -> 78.12" in res.caption
+    assert "HNC: hnc.out (ORCA) -92.233170 Eh -> 14.63" in res.caption
     assert "mass balance checked: every state C1 H1 N1" in res.caption
     assert "WARNING" not in res.caption      # one mode in the LAST block
 
@@ -364,8 +368,9 @@ def test_frequencies_that_contradict_the_name_are_reported_first(outputs):
 
 
 def test_an_output_without_its_energy_draws_nothing(outputs):
-    (outputs / "sp.out").write_text("FINAL SINGLE POINT ENERGY  -1.0\n",
-                                    encoding="utf-8")
+    (outputs / "sp.out").write_text(
+        "* O   R   C   A *\nFINAL SINGLE POINT ENERGY  -1.0\n",
+        encoding="utf-8")
     with pytest.raises(SpecError, match="Freq"):
         plot({"kind": "energy_profile", "series": [
             {"files": ["hcn.out", "sp.out"]}]}, out_dir=str(outputs))
@@ -390,16 +395,20 @@ def test_an_output_read_goes_through_the_callers_gate(outputs):
 
 
 def test_a_profile_is_a_png_unless_asked_otherwise(tmp_path):
-    res = plot({"kind": "energy_profile", "y": [0, 1]}, out_dir=str(tmp_path))
+    res = plot({"kind": "energy_profile", "ylabel": "ΔG", "y": [0, 1],
+                "from_user": True},
+               out_dir=str(tmp_path))
     assert res.path.suffix == ".png"
-    res = plot({"kind": "energy_profile", "y": [0, 1], "format": "svg"},
+    res = plot({"kind": "energy_profile", "ylabel": "ΔG", "y": [0, 1],
+                "format": "svg", "from_user": True},
                out_dir=str(tmp_path))
     assert res.path.suffix == ".svg"
 
 
 def test_typed_values_are_said_to_be_unchecked(tmp_path):
     """A live run did the arithmetic itself and called a saddle a minimum."""
-    res = plot({"kind": "energy_profile", "y": [0, -40.9]},
+    res = plot({"kind": "energy_profile", "ylabel": "ΔE", "y": [0, -40.9],
+                "from_user": True},
                out_dir=str(tmp_path))
     assert "NOT checked" in res.caption and "files" in res.caption
 
@@ -412,6 +421,159 @@ def test_side_by_side_fragments_are_explained(outputs):
 
 
 def test_the_name_of_a_lone_pathway_becomes_the_heading(tmp_path):
-    res = plot({"kind": "energy_profile", "series": [
-        {"label": "Lewis-Addukt", "y": [0, -24.3]}]}, out_dir=str(tmp_path))
+    res = plot({"kind": "energy_profile", "ylabel": "ΔG", "from_user": True,
+                "series": [{"label": "Lewis-Addukt", "y": [0, -24.3]}]}, out_dir=str(tmp_path))
     assert res.caption.startswith("Lewis-Addukt")
+
+
+# --------------------------------------------------------------------------
+# outputs of other programs, through cclib. The fixtures are real xtb 6.7.1
+# --ohess runs (gzipped, the program path cut); cclib 1.8.1 hands their free
+# energy over in eV, which is what the unit guard is for.
+
+_FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures" / "energy_profile"
+
+
+@pytest.fixture
+def xtb_outputs(tmp_path):
+    import gzip
+    pytest.importorskip("cclib")
+    for name in ("BH3", "NH3", "H3NBH3"):
+        (tmp_path / f"{name}.out").write_bytes(
+            gzip.decompress((_FIXTURES / f"xtb_{name}.out.gz").read_bytes()))
+    return tmp_path
+
+
+def test_an_xtb_free_energy_is_read_in_hartree(xtb_outputs):
+    text = (xtb_outputs / "BH3.out").read_text()
+    rec = ep.read_output(text, "BH3.out", "gibbs")
+    assert rec["program"] == "xTB"
+    assert rec["eh"] == pytest.approx(-2.731781942554)   # as xtb prints it
+    assert ep.formula(rec["atoms"], rec["charge"]) == "B1 H3"
+
+
+def test_an_xtb_profile_is_drawn_with_its_checks(xtb_outputs):
+    res = plot({"kind": "energy_profile", "series": [
+        {"x": ["BH3 + NH3", "H3N-BH3"],
+         "files": [["BH3.out", "NH3.out"], "H3NBH3.out"]}]},
+        out_dir=str(xtb_outputs))
+    assert "(xTB)" in res.caption
+    assert "mass balance checked: every state B1 H6 N1" in res.caption
+    assert "not a minimum" in res.caption        # the adduct's real mode
+    # (-7.154918378670 - (-2.731781942554 - 4.410717961645)) * 627.509...
+    assert "-> -7.79" in res.caption
+
+
+def test_two_programs_in_one_profile_are_refused(xtb_outputs, outputs):
+    import shutil
+    shutil.copy(xtb_outputs / "BH3.out", outputs / "xtb_bh3.out")
+    (outputs / "orca_bh3.out").write_text(_out("B H H H", -26.20433807),
+                                          encoding="utf-8")
+    with pytest.raises(SpecError, match="different programs"):
+        plot({"kind": "energy_profile", "series": [
+            {"files": ["xtb_bh3.out", "orca_bh3.out"]}]}, out_dir=str(outputs))
+
+
+def test_a_free_energy_in_the_wrong_unit_is_refused(xtb_outputs, monkeypatch):
+    """The guard behind the xtb correction: G and E of one output an
+    electron-volt factor apart is a unit mix-up, whatever program it is."""
+    text = (xtb_outputs / "BH3.out").read_text()
+    monkeypatch.setattr(ep, "_FREE_LINES", ())       # trust cclib's number
+    with pytest.raises(ValueError, match="unit mix-up"):
+        ep.read_output(text, "BH3.out", "gibbs")
+
+
+def test_an_unknown_file_is_named_not_guessed():
+    pytest.importorskip("cclib")
+    with pytest.raises(ValueError, match="not an output of ORCA"):
+        ep.read_output("hello\nnothing here\n", "notes.txt", "gibbs")
+
+
+def test_without_cclib_only_orca_is_read(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "cclib", None)
+    with pytest.raises(ValueError, match="needs cclib"):
+        ep.read_output("Gaussian output\n", "g.log", "gibbs")
+    rec = ep.read_output(_out("C N H", -92.25), "hcn.out", "gibbs")
+    assert rec["program"] == "ORCA"
+
+
+
+@pytest.mark.parametrize("ys", [
+    [0.0, -0.0334],                          # a difference in Eh
+    [-82.0167, -82.0819, -82.0500],          # absolute energies in Eh
+])
+def test_hartree_typed_in_as_kcal_is_refused(tmp_path, ys):
+    """A live run drew an adduct bound by 20.95 kcal/mol at -0.03."""
+    with pytest.raises(SpecError, match="look like Hartree"):
+        plot({"kind": "energy_profile", "ylabel": "ΔE", "y": ys, "from_user": True},
+             out_dir=str(tmp_path))
+    res = plot({"kind": "energy_profile", "ylabel": "ΔE", "y": ys,
+                "units": "kcal/mol", "from_user": True},
+               out_dir=str(tmp_path))
+    assert res.n_points == len(ys)
+
+
+
+def test_typed_values_must_say_which_energy_they_are(tmp_path):
+    """A live run drew electronic energies under a ΔG axis by default."""
+    with pytest.raises(SpecError, match="which energy"):
+        plot({"kind": "energy_profile", "y": [0, -20.95], "from_user": True},
+             out_dir=str(tmp_path))
+
+
+def test_the_source_names_its_own_quantity(tmp_path, outputs):
+    (tmp_path / "p.csv").write_text(_CYCLE, encoding="utf-8")
+    assert ep.csv_quantity(_CYCLE) == "ΔG"
+    plot({"kind": "energy_profile", "data": {"file": "p.csv"}},
+         out_dir=str(tmp_path))                      # header says deltaG
+    from matplotlib.figure import Figure  # noqa: F401  (drawn above)
+    res = plot({"kind": "energy_profile", "energy": "electronic", "series": [
+        {"files": ["hcn.out", "ts.out", "hnc.out"]}]}, out_dir=str(outputs))
+    assert res.labels[1] == "ΔE"
+
+
+def test_a_pathway_of_one_state_is_refused(tmp_path):
+    """Beside a real pathway, a one-state series joins nothing."""
+    with pytest.raises(SpecError, match="ONE series"):
+        plot({"kind": "energy_profile", "ylabel": "ΔE", "from_user": True,
+              "series": [
+            {"label": "route", "x": ["A", "B"], "y": [0.0, -3.0]},
+            {"label": "lone", "y": [-20.95]}]}, out_dir=str(tmp_path))
+
+
+
+def test_numbers_read_from_outputs_go_through_files(tmp_path):
+    """Typed-in values are the user's; a model that read them itself is
+    sent to files, where they are converted and checked."""
+    with pytest.raises(SpecError, match="files") as exc:
+        plot({"kind": "energy_profile", "ylabel": "ΔE",
+              "series": [{"x": ["A", "B"], "y": [0, -20.95]}]},
+             out_dir=str(tmp_path))
+    assert "from_user" in str(exc.value)
+
+
+
+def test_a_state_per_object_with_fragments(outputs):
+    """The shape models write unprompted: one object per state."""
+    res = plot({"kind": "energy_profile", "states": [
+        {"name": "BH3 + NH3", "files": ["bh3.out", "nh3.out"]},
+        {"name": "H3N-BH3", "files": "adduct.out"}]}, out_dir=str(outputs))
+    assert "B1 H6 N1" in res.caption
+    assert "-> -24.32" in res.caption
+
+
+def test_one_state_series_are_read_as_one_pathway(tmp_path):
+    """Live runs gave each state its own series; that is one route."""
+    res = plot({"kind": "energy_profile", "ylabel": "ΔE", "series": [
+        {"label": "NH3 + BH3", "y": 0.0, "from_user": True},
+        {"label": "H3N-BH3", "y": -20.95, "from_user": True}]},
+        out_dir=str(tmp_path))
+    assert res.series == 1 and res.n_points == 2
+
+
+def test_values_and_files_are_not_mixed_in_one_pathway(tmp_path):
+    with pytest.raises(SpecError, match="not a mix"):
+        plot({"kind": "energy_profile", "states": [
+            {"name": "A", "value": 0}, {"name": "B", "files": "b.out"}]},
+            out_dir=str(tmp_path))

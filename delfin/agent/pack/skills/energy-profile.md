@@ -2,7 +2,7 @@
 domains: code
 ---
 # Energy profile (PES / HPES)
-> Build a reaction energy diagram (PES, HPES, free-energy profile) in the group's fixed layout with make_plot kind energy_profile -- from given values or from ORCA outputs it finds itself.
+> Build a reaction energy diagram (PES, HPES, free-energy profile) in the group's fixed layout with make_plot kind energy_profile -- from given values or from outputs of any program it finds itself.
 
 The user wants a reaction energy diagram: states as flat bars, dashed
 connectors, one colour per pathway. The layout is fixed and drawn by the
@@ -11,15 +11,27 @@ restyle it. Your job is the chemistry and the numbers.
 
 ## 1. Where the energies come from
 - **The user gives them** (in the chat, or their `Index;deltaG` CSV):
-  draw them as given -- `y` values, or `"data": {"file": "<name>.csv"}`.
-- **You collect them from calculations**: find the ORCA outputs
-  (`search_calcs`, `list_files`, `read_file`) and pass the PATHS as `files` -- the
-  tool reads the energies with DELFIN's parser and converts them itself. Do
-  not read the numbers out and do the Hartree arithmetic yourself; one
-  wrong digit gives a plausible wrong profile.
-- Same level of theory, solvent and temperature for every state. If the
-  outputs differ (functional, basis, solvent model), say so before drawing.
-- `"energy": "gibbs"` (default, needs Freq) or `"electronic"` (ΔE).
+  draw them as given -- `y` values in kcal/mol relative to the first state
+  plus `ylabel` (`ΔG`, `ΔE`, `ΔH` -- what they ARE) and `"from_user": true`,
+  or `"data": {"file": "<name>.csv"}`. Values in Hartree are refused, and so
+  are typed-in values without `from_user` -- numbers YOU read from outputs
+  always go through `files`.
+- **You collect them from calculations**: find the outputs (`search_calcs`,
+  `list_files`, `read_file`) and pass the PATHS as `files` -- the tool reads
+  the energies and converts them itself. Do not read the numbers out and do
+  the Hartree arithmetic yourself; one wrong digit gives a plausible wrong
+  profile.
+- Any program: ORCA through DELFIN's own parser, Gaussian, xtb, Psi4,
+  GAMESS, Molpro, TURBOMOLE, Q-Chem, NWChem ... through cclib. The caption
+  names the program per state. An output the tool cannot read is refused
+  by name -- then ask the user for the values, do not guess them.
+- Every state from the SAME program and method, same solvent and
+  temperature. Outputs of two programs in one profile are refused; if the
+  functional, basis or solvent model differ within one program, say so
+  before drawing.
+- `"energy": "gibbs"` (default, needs a frequency run) or `"electronic"`
+  (ΔE). Some outputs carry no free energy (Molpro, NWChem): then ΔE, and
+  say so.
 
 ## 2. Mass balance
 A profile follows ONE system through the reaction: every state holds the
@@ -55,18 +67,23 @@ same atoms and the same total charge.
   its neighbours, without a value. Never make up a number for it.
 
 ## 4. Call make_plot
-One series per pathway; `x` names every state:
+One object per state, in order. A state of several molecules lists all
+their outputs in its `files` -- that is ONE state, the energies add up:
 
 ```json
-{"kind": "energy_profile", "format": "png", "filename": "HPES",
- "title": "CO2 binding at Co-salen",
- "series": [
-   {"label": "S=0", "x": ["cat + CO2", "TS1", "cat-CO2", "TS?", "P + CO"],
-    "files": [["cat/cat.out", "co2/co2.out"], "ts1/ts1.out",
-              "catco2/catco2.out", null, ["p/p.out", "co/co.out"]]},
-   {"label": "S=1", "x": ["cat + CO2", "cat-CO2"],
-    "y": [0.0, -4.2]}]}
+{"kind": "energy_profile", "title": "CO2 binding at Co-salen",
+ "states": [
+   {"name": "cat + CO2", "files": ["cat/cat.out", "co2/co2.out"]},
+   {"name": "TS1",       "files": "ts1/ts1.out"},
+   {"name": "cat-CO2",   "files": "catco2/catco2.out"},
+   {"name": "TS?",       "files": null},
+   {"name": "P + CO",    "files": ["p/p.out", "co/co.out"]}]}
 ```
+
+Values the user gave: `{"name": "TS1", "value": 18.2}` per state, plus
+`"ylabel": "ΔG"` and `"from_user": true`. Several pathways in one figure:
+`"series": [{"label": "S=0", "states": [...]}, {"label": "S=1", "states":
+[...]}]` -- never one series per state.
 
 - Energies from `files` are relative to the first output of the first
   pathway (or `"reference": ...`), so branches share one zero.

@@ -98,11 +98,16 @@ class Pathway:
 def check(pw: Pathway, where: str) -> None:
     """Raise ``ValueError`` for a pathway that cannot be drawn."""
     vals = pw.values
-    if not any(v is not None for v in vals):
-        raise ValueError(f"{where} has no computed state")
     if vals[0] is None or vals[-1] is None:
         raise ValueError(f"{where}: an uncomputed transition state needs a "
                          f"computed state on both sides")
+    if sum(v is not None for v in vals) < 2:
+        # A live run gave every state its own one-point series: two bars in
+        # one column, nothing joined. States go in x of ONE series.
+        raise ValueError(f"{where} has {sum(v is not None for v in vals)} "
+                         f"computed state(s); a pathway joins at least two "
+                         f"-- the states of one route go in x/y of ONE "
+                         f"series")
     for a, b in zip(vals, vals[1:]):
         if a is None and b is None:
             raise ValueError(f"{where}: two uncomputed transition states in "
@@ -195,6 +200,133 @@ def balance_difference(state: tuple[Counter, int], ref: tuple[Counter, int]) -> 
     return ", ".join(diff)
 
 
+#: G and E of one output differ by the thermal correction -- under an Eh
+#: even for a few hundred atoms. More than this is a unit mix-up: cclib
+#: 1.8.1 hands xtb's free energy over in eV, 27 times the number in Eh.
+_G_MINUS_E_MAX = 2.0
+
+#: Lines a program prints that cclib does not hand over, read in Eh as the
+#: program prints them. Measured against cclib 1.8.1 on real outputs: xtb
+#: 6.7's free energy comes back in eV, Psi4 1.7's energies not at all. The
+#: NWChem line is its standard SCF/DFT summary; cclib's NWChem 7 reference
+#: output (a frequency restart) prints no energy, so it is unverified.
+_FREE_LINES = (
+    re.compile(r"TOTAL FREE ENERGY\s+(-?\d+\.\d+)\s+Eh"),               # xtb
+    re.compile(r"Total G, Free enthalpy at\s+[\d.]+\s+\[K\]\s+"
+               r"(-?\d+\.\d+)\s+\[Eh\]"),                               # Psi4
+)
+_ELECTRONIC_LINES = (
+    re.compile(r"TOTAL ENERGY\s+(-?\d+\.\d+)\s+Eh"),                    # xtb
+    re.compile(r"Total Energy =\s+(-?\d+\.\d+)"),                        # Psi4
+    re.compile(r"Total (?:DFT|SCF) energy =\s+(-?\d+\.\d+)"),            # NWChem
+)
+
+
+def _last(patterns, text: str) -> float | None:
+    for pat in patterns:
+        found = pat.findall(text)
+        if found:
+            return float(found[-1])
+    return None
+
+
+def is_orca(text: str) -> bool:
+    return "O   R   C   A" in text[:20000]
+
+
+def read_output(text: str, path: str, energy: str) -> dict:
+    """``{"eh", "imag", "atoms", "charge", "program"}`` of one output.
+
+    ORCA through DELFIN's own parser (cclib 1.8.1 stops with an IndexError
+    on ORCA 6 outputs); every other program through cclib, with the lines
+    cclib misses or mis-scales read as the program prints them. ``eh`` is in
+    Hartree; ``atoms``/``charge``/``imag`` are ``None`` where the output
+    does not say. Raises ``ValueError`` naming the file when there is no
+    energy to draw -- a state without its energy is never guessed.
+    """
+    if is_orca(text):
+        eh = output_energy(text, path, energy)
+        if eh is None:
+            raise ValueError(
+                f"{path}: no "
+                + ("'Final Gibbs free energy' (was it run with Freq?)"
+                   if energy == "gibbs" else "'FINAL SINGLE POINT ENERGY'"))
+        return {"eh": eh, "imag": imaginary_modes(text),
+                "atoms": composition(text), "charge": total_charge(text),
+                "program": "ORCA"}
+    return _read_with_cclib(text, path, energy)
+
+
+def _read_with_cclib(text: str, path: str, energy: str) -> dict:
+    try:
+        import cclib
+    except ImportError:
+        raise ValueError(
+            f"{path} is not an ORCA output; reading other programs needs "
+            f"cclib (pip install 'delfin[analysis]')") from None
+    import io
+    import logging
+    try:
+        data = cclib.io.ccread(io.StringIO(text), quiet=True,
+                               loglevel=logging.CRITICAL)
+    except Exception as exc:
+        raise ValueError(f"{path}: cclib could not read it "
+                         f"({type(exc).__name__}: {exc})") from None
+    if data is None:
+        raise ValueError(f"{path}: not an output of ORCA or of a program "
+                         f"cclib reads (Gaussian, xtb, TURBOMOLE, Q-Chem, "
+                         f"Psi4, GAMESS, NWChem, Molpro, ...)")
+    program = (getattr(data, "metadata", {}) or {}).get("package") or "?"
+
+    electronic = None
+    for attr in ("ccenergies", "mpenergies", "scfenergies"):
+        values = getattr(data, attr, None)
+        if values is not None and len(values):
+            last = values[-1]
+            if hasattr(last, "__len__"):        # mpenergies: one row per order
+                last = last[-1]
+            # cclib's own constant: the line in the output, to the digit.
+            from cclib.parser.utils import convertor
+            electronic = float(convertor(float(last), "eV", "hartree"))
+            break
+    if electronic is None:
+        electronic = _last(_ELECTRONIC_LINES, text)
+
+    if energy == "gibbs":
+        free = _last(_FREE_LINES, text)
+        if free is None and getattr(data, "freeenergy", None) is not None:
+            free = float(data.freeenergy)
+        if free is None:
+            raise ValueError(f"{path} ({program}): no free energy in this "
+                             f"output (was it run with frequencies?) -- or "
+                             f"draw energy: electronic")
+        if electronic is not None and abs(free - electronic) > _G_MINUS_E_MAX:
+            raise ValueError(
+                f"{path} ({program}): free energy {free:.6f} and electronic "
+                f"energy {electronic:.6f} Eh are {abs(free - electronic):.1f} "
+                f"Eh apart -- a unit mix-up, not a thermal correction; "
+                f"nothing is drawn from it")
+        eh = free
+    else:
+        if electronic is None:
+            raise ValueError(f"{path} ({program}): no electronic energy found")
+        eh = electronic
+
+    atoms = None
+    nos = getattr(data, "atomnos", None)
+    if nos is not None and len(nos):
+        from cclib.parser.utils import PeriodicTable
+        table = PeriodicTable()
+        atoms = Counter(table.element[int(n)] for n in nos)
+    charge = getattr(data, "charge", None)
+    freqs = getattr(data, "vibfreqs", None)
+    imag = (sum(1 for v in freqs if float(v) < -1.0)
+            if freqs is not None else None)
+    return {"eh": eh, "imag": imag, "atoms": atoms,
+            "charge": None if charge is None else int(charge),
+            "program": program}
+
+
 def is_ts_name(state: str) -> bool:
     """Whether the user named this state a transition state (``TS1``, ``ts``)."""
     return state.strip().upper().startswith("TS")
@@ -285,6 +417,24 @@ def read_csv(text: str) -> list[Pathway]:
     if not pathways:
         raise ValueError("no state;value rows found")
     return pathways
+
+
+def csv_quantity(text: str) -> str | None:
+    """The quantity the CSV's header names (``Index;deltaG`` -> ``ΔG``)."""
+    for line in text.splitlines():
+        line = line.lstrip("\ufeff").strip()
+        if not line:
+            continue
+        cells = re.split(r"[;\t,]", line)
+        if len(cells) < 2:
+            return None
+        head = cells[1].strip().lower().replace("δ", "delta")
+        for prefix in ("delta", "d"):
+            if head.startswith(prefix) and len(head) > len(prefix):
+                head = head[len(prefix):]
+                break
+        return {"g": "ΔG", "e": "ΔE", "h": "ΔH"}.get(head.strip(" _"))
+    return None
 
 
 def _trimmed(rows):

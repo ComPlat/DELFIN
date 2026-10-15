@@ -11211,10 +11211,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "description": (
                 "Plot into the workspace and show it in the chat. spec: "
                 "{kind: line|scatter|bar|histogram|box|energy_profile, x, y, "
-                "title, ...}. energy_profile: the reaction energy diagram, "
-                "never script one; series [{label, x: states, y, or files: "
-                "ORCA outputs, [a.out, b.out] = one state}], null = "
-                "uncomputed TS."
+                "title, ...}. energy_profile: reaction energy diagram, "
+                "never script one: states [{name, value|files}] (files list "
+                "= fragments; null = uncomputed TS); series [{label, "
+                "states}]."
             ),
             "parameters": {
                 "type": "object",

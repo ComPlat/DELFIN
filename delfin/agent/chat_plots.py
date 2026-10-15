@@ -325,6 +325,103 @@ def _resolve_series(spec: dict, kind: str, root: Path, reader=None):
     return [(_require_str(spec, "label", ""), xs, ys)], len(ys)
 
 
+def _as_columns(raw: list) -> list:
+    """Series in the column form (``x`` + ``y`` or ``files``) the profile
+    is built from.
+
+    Two other shapes come in. ``states: [{name, value | files}]`` is the
+    one models write when left to themselves -- an object per state -- and
+    a list of files inside a state is then plainly its fragments. And a run
+    of one-state series (each state given as its own series, as live runs
+    did twice) is one pathway: a pathway of one state joins nothing, so the
+    reading is unambiguous. A scalar ``x``/``y`` is a one-element list.
+    """
+    out = []
+    for idx, s in enumerate(raw):
+        if not isinstance(s, dict):
+            raise SpecError(f"series[{idx}] must be an object")
+        s = dict(s)
+        for k in ("x", "y"):
+            if k in s and not isinstance(s[k], list) and s[k] is not None:
+                s[k] = [s[k]]
+        if isinstance(s.get("files"), str):
+            s["files"] = [s["files"]]
+        states = s.pop("states", None)
+        if states is not None:
+            s.update(_states_to_columns(states, idx))
+        out.append(s)
+
+    def one(s):
+        n = len(s.get("files") or s.get("y") or [])
+        return n == 1 and "states" not in s
+    if len(out) > 1 and all(one(s) for s in out):
+        names = [str((s.get("x") or [s.get("label") or f"{i + 1}"])[0])
+                 for i, s in enumerate(out)]
+        merged = {"x": names}
+        if all(s.get("files") for s in out):
+            merged["files"] = [s["files"][0] for s in out]
+        elif not any(s.get("files") for s in out):
+            merged["y"] = [s["y"][0] for s in out]
+        else:
+            raise SpecError("give every state either a value or files, not "
+                            "a mix")
+        merged["from_user"] = any(s.get("from_user") is True for s in out)
+        out = [merged]
+    return out
+
+
+def _states_to_columns(states, idx) -> dict:
+    """``[{name, value | files}]`` -> ``{x, y}`` or ``{x, files}``."""
+    if not isinstance(states, list) or not states:
+        raise SpecError(f"series[{idx}].states must be a non-empty list of "
+                        f"{{name, value or files}}")
+    names, values, files = [], [], []
+    for k, st in enumerate(states):
+        if not isinstance(st, dict):
+            raise SpecError(f"series[{idx}].states[{k}] must be an object "
+                            f"{{name, value or files}}")
+        names.append(str(st.get("name", st.get("label", f"{k + 1}"))))
+        f = st.get("files", st.get("file"))
+        values.append(st.get("value", st.get("y")))
+        files.append(f)
+    if any(f is not None for f in files):
+        if any(v is not None for v, f in zip(values, files) if f is None):
+            raise SpecError(f"series[{idx}]: give every state either a value "
+                            f"or files, not a mix")
+        return {"x": names, "files": files}
+    return {"x": names, "y": values}
+
+
+def _refuse_hartree_as_given(parsed, spec: dict) -> None:
+    """Typed-in values that are Hartree, not kcal/mol, are refused.
+
+    A live run read xtb energies, passed their difference in Eh as ``y``
+    -- -0.0334 for an adduct bound by 20.95 kcal/mol -- and ignored the
+    note that typed-in values are unchecked; the figure was 627 times too
+    flat. Two shapes give it away: every value under 1 (a reaction profile
+    in kcal/mol that flat is not one), or every value large and within a
+    few units of the others (absolute energies). A user whose numbers
+    really are that small says so with ``units``.
+    """
+    if spec.get("units") is not None:
+        return
+    given = [v for *_, ys, _, files in parsed if not files
+             for v in ys if v is not None]
+    if len(given) < 2:
+        return
+    small = max(abs(v) for v in given) < 1.0 and any(given)
+    absolute = (min(abs(v) for v in given) > 20.0
+                and max(given) - min(given) < 2.0)
+    if small or absolute:
+        what = ("all under 1" if small else
+                "all large and within 2 of each other -- absolute energies")
+        raise SpecError(
+            f"the values are {what}: they look like Hartree, not kcal/mol. "
+            f"Pass the outputs as files: [...] (the tool converts them), or "
+            f"convert relative to the first state x 627.509; if they really "
+            f"are kcal/mol, set units: \"kcal/mol\"")
+
+
 def _read_output(path, root: Path, reader=None) -> tuple[str, Path]:
     """``(text, resolved path)`` of an ORCA output for ``energy_profile``.
 
@@ -350,7 +447,9 @@ def _read_output(path, root: Path, reader=None) -> tuple[str, Path]:
 
 
 def _resolve_pathways(spec: dict, root: Path, reader=None):
-    """``([Pathway, ...], n_points, notes)`` for an ``energy_profile`` spec.
+    """``([Pathway, ...], n_points, notes, quantity)`` for an
+    ``energy_profile`` spec; ``quantity`` is what the source says it holds
+    (``ΔG`` from free energies or a ``deltaG`` CSV header), else None.
 
     ``notes`` are lines for the caption: where each energy read from an
     output came from, and every state whose frequencies contradict its name.
@@ -371,7 +470,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
             if len(pathways) > MAX_SERIES:
                 raise SpecError(f"{len(pathways)} pathways; at most "
                                 f"{MAX_SERIES}")
-            return pathways, sum(len(p.values) for p in pathways), []
+            return (pathways, sum(len(p.values) for p in pathways), [],
+                    ep.csv_quantity(text))
         try:
             raw = json.loads(text)
         except Exception as exc:
@@ -379,18 +479,21 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         spec = dict(spec, series=(raw.get("series")
                                   if isinstance(raw, dict) else raw))
     raw = spec.get("series")
+    if not raw and spec.get("states") is not None:
+        raw = [{"states": spec["states"], "label": spec.get("label", "")}]
     if not raw:
         if "y" not in spec and "files" not in spec:
             raise SpecError(
-                "kind 'energy_profile' needs 'series' (one per pathway: "
-                "label, x = state names, y = energies or files = ORCA "
-                "outputs), 'x'/'y', or data: {file: <csv>}")
+                "kind 'energy_profile' needs 'states' (one pathway: "
+                "[{name, value or files}]), 'series' (several: [{label, "
+                "states}]), or data: {file: <csv>}")
         raw = [{k: spec[k] for k in ("x", "y", "files", "start")
                 if k in spec}]
     if not isinstance(raw, list):
         raise SpecError("series must be a list of objects")
     if len(raw) > MAX_SERIES:
         raise SpecError(f"{len(raw)} pathways; at most {MAX_SERIES}")
+    raw = _as_columns(raw)
 
     energy = _require_str(spec, "energy", "gibbs").strip().lower()
     if energy not in ("gibbs", "electronic"):
@@ -476,9 +579,34 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
             outputs[ref_file] = _state_record(ref_file, root, reader, energy)
         ref = outputs[ref_file]
         ref_eh = ref["eh"]
+        programs = sorted({part for rec in outputs.values()
+                           for part in rec["program"].split("/")})
+        if len(programs) > 1:
+            # Energies of two methods are not on one surface; drawn side by
+            # side the gap between them would read as a reaction step.
+            raise SpecError(
+                f"the outputs come from different programs "
+                f"({', '.join(programs)}): their energies are not on one "
+                f"surface -- every state must be computed the same way")
         notes.append(f"{energy} energies relative to {' + '.join(ref_file)} "
                      f"({ref_eh:.6f} Eh), x {factor:g} {units}/Eh")
         _check_balance(parsed, outputs, ref_file, notes)
+
+    typed = any(not files for *_, files in parsed)
+    from_user = spec.get("from_user") is True or any(
+        isinstance(r, dict) and r.get("from_user") is True for r in raw)
+    if typed and not from_user:
+        # Live runs read the outputs, typed the numbers in themselves and
+        # then reported "no imaginary mode" for an adduct that had one -- a
+        # note in the result was ignored three times. Typed-in values are
+        # the user's numbers; anything read from a calculation goes through
+        # files, where the tool converts and checks it.
+        raise SpecError(
+            "y is for numbers the USER gave you. If you read them from "
+            "calculation outputs, pass the paths as files: [...] instead -- "
+            "the tool converts them and checks mass balance and imaginary "
+            "modes. If the user gave them, add \"from_user\": true.")
+    _refuse_hartree_as_given(parsed, spec)
 
     pathways = []
     for idx, s, xs, ys, start, files in parsed:
@@ -488,8 +616,9 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
                 if f is None:
                     continue
                 rec = outputs[f]
-                notes.append(f"{state}: {' + '.join(f)} {rec['eh']:.6f} Eh "
-                             f"-> {v:.2f}" + _frequency_note(state, rec["imag"]))
+                notes.append(f"{state}: {' + '.join(f)} ({rec['program']}) "
+                             f"{rec['eh']:.6f} Eh -> {v:.2f}"
+                             + _frequency_note(state, rec["imag"]))
         pw = ep.Pathway(label=_require_str(s, "label", ""),
                         states=tuple(xs), values=tuple(ys), start=start)
         try:
@@ -497,7 +626,9 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         except ValueError as exc:
             raise SpecError(str(exc)) from None
         pathways.append(pw)
-    return pathways, n, notes
+    quantity = ({"gibbs": "ΔG", "electronic": "ΔE"}[energy] if outputs
+                else None)
+    return pathways, n, notes, quantity
 
 
 def _state_key(entry, where) -> tuple[str, ...]:
@@ -519,25 +650,26 @@ def _state_record(key: tuple[str, ...], root: Path, reader,
     from collections import Counter
     from delfin.agent import energy_profile as ep
 
-    eh, imag, atoms, charge = 0.0, 0, Counter(), 0
+    eh, imag, atoms, charge, programs = 0.0, 0, Counter(), 0, []
     for path in key:
         text, resolved = _read_output(path, root, reader)
-        e = ep.output_energy(text, str(resolved), energy)
-        if e is None:
-            what = ("'Final Gibbs free energy' (was it run with Freq?)"
-                    if energy == "gibbs" else "'FINAL SINGLE POINT ENERGY'")
-            raise SpecError(f"{path}: no {what}; nothing is drawn for a "
-                            f"state without its energy")
-        eh += e
-        n = ep.imaginary_modes(text)
+        try:
+            rec = ep.read_output(text, str(resolved), energy)
+        except ValueError as exc:
+            raise SpecError(f"{exc}; nothing is drawn for a state without "
+                            f"its energy") from None
+        eh += rec["eh"]
+        programs.append(rec["program"])
+        n = rec["imag"]
         imag = None if imag is None or n is None else imag + n
-        comp, q = ep.composition(text), ep.total_charge(text)
+        comp, q = rec["atoms"], rec["charge"]
         if atoms is None or comp is None or q is None or charge is None:
             atoms = charge = None
         else:
             atoms += comp
             charge += q
-    return {"eh": eh, "imag": imag, "atoms": atoms, "charge": charge}
+    return {"eh": eh, "imag": imag, "atoms": atoms, "charge": charge,
+            "program": "/".join(dict.fromkeys(programs))}
 
 
 def _check_balance(parsed, outputs, ref_key, notes) -> None:
@@ -707,11 +839,18 @@ def _plot_energy_profile(spec, out_path, out_dir_path, reader, *,
     from delfin.agent import energy_profile as ep
 
     fmt = out_path.suffix[1:].lower()
-    ylabel = _require_str(spec, "ylabel", "ΔG").strip() or "ΔG"
     units = (_require_str(spec, "units", "kcal/mol").strip()
              if spec.get("units") is not None else "kcal/mol")
-    pathways, n_points, notes = _resolve_pathways(spec, out_dir_path,
-                                                  reader)
+    pathways, n_points, notes, quantity = _resolve_pathways(
+        spec, out_dir_path, reader)
+    ylabel = _require_str(spec, "ylabel", "").strip() or quantity
+    if not ylabel:
+        # A live run drew electronic energies under the default ΔG axis.
+        # Typed-in numbers do not say what they are; the caller must.
+        raise SpecError(
+            "say which energy the values are: ylabel \"ΔG\", \"ΔE\" or "
+            "\"ΔH\" (from files the tool knows it; typed-in values do not "
+            "say)")
     if not notes:
         # Said in the result, where the model reads it at once: a live run
         # grepped the outputs, did the Hartree arithmetic itself and then
