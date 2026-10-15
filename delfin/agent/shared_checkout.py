@@ -167,10 +167,12 @@ def refusal(command: str, cwd, *, shared: Optional[Iterable] = None) -> str:
             f"blocked: `git {text}` would move the branch of the shared "
             f"checkout {top}, which everyone works from and which stays on "
             "main (other sessions and the dashboard run its code). "
-            "HINT: to work on or test a branch yourself, use "
-            "enter_worktree(base_ref=\"<branch>\") and run there; to start "
-            "a new branch, `git branch <name> origin/main` (no switch), then "
-            "enter_worktree(base_ref=\"<name>\"). For the user to try a "
-            "branch in the dashboard: the header's Test branch button opens "
-            "it in its own worktree and server.")
+            "HINT: for a change and its pull request, "
+            "enter_worktree(base_ref=\"origin/main\"), commit there, "
+            "`git push -u origin HEAD:<user>/<topic>`, then "
+            "`gh pr create --head <user>/<topic>`; to run or test an existing "
+            "branch, enter_worktree(base_ref=\"<branch>\"); to only create "
+            "one, `git branch <name> origin/main` (no switch). For the user "
+            "to try a branch in the dashboard: the header's Test branch "
+            "button opens it in its own worktree and server.")
     return ""
