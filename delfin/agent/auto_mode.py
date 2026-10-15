@@ -887,8 +887,10 @@ class AutoController:
                 continue                  # dirty before: not this iteration's
             if path.startswith(".delfin/") and not path.startswith(".delfin/loops/"):
                 continue                  # the agent's own state files
-            old = self.git.show(it.head, path) if it.head else ""
-            new = _read(self.workspace / path) if digest else ""
+            known = it.head and self.git.run(
+                "cat-file", "-e", f"{it.head}:{path}")[0] == 0
+            old = self.git.show(it.head, path) if known else None
+            new = _read(self.workspace / path) if digest else None
             out[path] = (old, new)
         return out
 
@@ -904,7 +906,10 @@ class AutoController:
         repo = bool(it.head)
         changes = self._changes(it) if repo else {}
         changed = sorted(changes)
-        findings = auto_guard.measure_findings(changes, measure=spec.measure)
+        perms = self._perms(engine)
+        findings = auto_guard.measure_findings(
+            changes, measure=spec.measure, workspace=str(self.workspace),
+            session_key=str(getattr(perms, "task_session_id", "") or ""))
         hard = [f for f in findings if f.hard]
         soft = [f for f in findings if not f.hard]
         sha = ""

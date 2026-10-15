@@ -310,38 +310,65 @@ def _builtin(path: str, old: str, new: str) -> list[tuple[str, str]]:
     return out
 
 
-def measure_findings(changes: dict[str, tuple[str, str]], *,
-                     measure: Iterable[str] = ()) -> list[Finding]:
+def measure_findings(changes: dict, *, measure: Iterable[str] = (),
+                     session_key: str = "",
+                     workspace: str = "") -> list[Finding]:
     """Findings over ``{relpath: (old_text, new_text)}`` (see the module
-    docstring). A declared measure file is a hard finding whatever changed
-    in it."""
+    docstring); ``old`` None means the iteration created the file, ``new``
+    None that it deleted it. A declared measure file is a hard finding
+    whatever changed in it.
+
+    With edit_signals importable (#269): ``classify`` per change, with its
+    created/deleted flags, and ``measure_edits(session_key)`` -- the
+    measure edits the write path journalled this turn, which a diff taken
+    at the end cannot attribute (a grader changed and changed back, a write
+    outside the diff's view) -- made workspace-relative and de-duplicated
+    by (path, kind). Without it, the built-in rules."""
     global _last_source
     declared = [str(m).rstrip("/") for m in measure or ()]
     try:
         from . import edit_signals as _es
         classify = getattr(_es, "classify", None)
     except Exception:
-        classify = None
+        _es, classify = None, None
     _last_source = "edit_signals" if callable(classify) else "builtin"
     out: list[Finding] = []
+    seen: set = set()
+
+    def _add(f: Finding) -> None:
+        if (f.path, f.kind) not in seen:
+            seen.add((f.path, f.kind))
+            out.append(f)
+
     for path, (old, new) in sorted((changes or {}).items()):
         if old == new:
             continue
         if any(_covers(m, path) for m in declared):
-            out.append(Finding(path, "measure_file",
-                               "a file this loop is judged by changed", True))
+            _add(Finding(path, "measure_file",
+                         "a file this loop is judged by changed", True))
             continue
         pairs: list[tuple[str, str]] = []
         if callable(classify):
             try:
-                res = classify(path, old, new) or {}
+                res = classify(path, old, new, created=old is None,
+                               deleted=new is None) or {}
                 pairs = [(str(k), str(d)) for k, d in res.get("measure", [])]
             except Exception:
-                pairs = _builtin(path, old, new)
-        else:
-            pairs = _builtin(path, old, new)
+                pairs = _builtin(path, old or "", new or "")
+        elif old is not None:
+            pairs = _builtin(path, old, new or "")
         for kind, detail in pairs:
-            out.append(Finding(path, kind, detail, False))
+            _add(Finding(path, kind, detail, False))
+    if _es is not None and session_key:
+        try:
+            for sig in _es.measure_edits(session_key) or []:
+                rel = _norm(getattr(sig, "path", ""), workspace)
+                hard = any(_covers(m, rel) for m in declared)
+                _add(Finding(rel, "measure_file" if hard else
+                             str(getattr(sig, "kind", "")),
+                             str(getattr(sig, "detail", "") or ""), hard))
+        except Exception:
+            pass
     return out
 
 
