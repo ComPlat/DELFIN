@@ -563,3 +563,36 @@ def test_the_doctor_reports_the_window(checkout, monkeypatch):
     rows = doctor._check_tui({})
     assert rows[0]["status"] == "PASS" and "from source" in rows[0]["detail"]
     assert any(attr == "_check_tui" for _n, attr in doctor._CHECK_ATTRS)
+
+
+# --- after the end-to-end run ------------------------------------------------
+
+def test_bun_s_package_cache_is_removed_after_a_setup(checkout, home):
+    cache = tui_setup.tools_dir() / "bun-cache"
+    (cache / "pkg").mkdir(parents=True)
+    tui_setup.install_packages(tui_setup.plan(), home / "bun", run=_Runner())
+    assert tui_setup.window_ready(checkout)
+    assert not cache.exists()
+
+
+def test_an_asked_for_setup_does_not_name_the_opt_out(checkout, home):
+    bun = home / ".bun" / "bin" / "bun"
+    bun.parent.mkdir(parents=True)
+    bun.write_text("#!/bin/sh\n")
+    bun.chmod(0o755)
+    p = tui_setup.plan()
+    assert "Opt out" in tui_setup.announce(p)
+    assert "Opt out" not in tui_setup.announce(p, explicit=True)
+
+
+def test_the_prebuilt_native_library_is_named_with_how_to_patch_it(checkout, monkeypatch):
+    monkeypatch.setattr(launcher, "platform_name", lambda: "linux-x64")
+    _modules(checkout)
+    note = tui_setup.native_note(checkout)
+    assert "scripts/build-opentui-native.sh" in note and "xterm.js" in note
+    patched = checkout / "node_modules" / "@opentui" / "core-linux-x64"
+    patched.mkdir(parents=True)
+    (patched / ".delfin-patched").write_text("abc def\n")
+    assert tui_setup.native_note(checkout) == ""
+    monkeypatch.setattr(launcher, "platform_name", lambda: "darwin-arm64")
+    assert tui_setup.native_note(checkout) == ""
