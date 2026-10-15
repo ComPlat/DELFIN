@@ -3892,7 +3892,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 '<code>DELFIN_BUG_ARCHIVE</code> takes precedence). When a '
                 '<b>Remote Path</b> + host is configured above, the report is '
                 'also uploaded via SSH (rsync) to <code>&lt;Remote Path&gt;/AGENT_BUGS</code> '
-                '— the local copy is kept.'
+                'when you press Send under that host — the local copy is kept. '
+                '<code>agent.bug_upload</code> in the settings file decides the '
+                'rest: <code>ask</code> (default; the terminal and CLI ask '
+                'per report, <code>--yes</code> keeps it local), '
+                '<code>never</code>, <code>always</code> (also unattended).'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
