@@ -298,6 +298,184 @@ def input_placeholder(steps, default: str, proposed=None) -> str:
         return default
 
 
+#: One numbered list item: "1. x", "1) x", "(1) x", "**1.** x",
+#: "**Option 1:** x", "- **Option 1**: x". Groups: indent, number (n1
+#: or n2), label.
+_OFFER_ITEM = re.compile(
+    r"^(?P<ind>[ \t]*)(?:[-*+][ \t]+)?(?:\*\*|__)?(?:Option[ \t]+)?"
+    r"(?:\((?P<n1>\d{1,2})\)|(?P<n2>\d{1,2})(?:\*\*|__)?[.):])"
+    r"(?:\*\*|__)?[ \t]+(?P<label>\S.*)$",
+    re.IGNORECASE,
+)
+
+#: A line opening with a list marker of any kind: bullet, number, letter.
+_ANY_LIST_MARKER = re.compile(
+    r"^[ \t]*(?:[-*+•][ \t]|\(?\d{1,2}[.)][ \t]|\(?[a-zA-Z][.)][ \t]"
+    r"|\*\*\(?[a-zA-Z0-9][.)]\*\*)")
+
+#: A question with one of these words asks to choose BETWEEN things
+#: ("Welche Variante soll ich umsetzen?", "Which one?"). German is listed
+#: because it is what users of this dashboard write and what the models
+#: answer them in.
+_CHOICE_SELECTOR = re.compile(
+    r"(?i)\b(?:welche[rsnm]?|which|w[äa]hl\w*|choose|pick|prefer\w*|"
+    r"bevorzug\w*|lieber|option(?:en|s)?|variante(?:n)?|alternative(?:n|s)?|"
+    r"m[öo]glichkeit(?:en)?|entscheid\w*|decide|one\s+of|eine[nr]?\s+der)\b")
+
+#: A line ending in ":" with one of these asks the user to pick from what
+#: follows ("Möchtest du:", "Options -- tell me which to use:"). A line
+#: ending in ":" without one only introduces the list ("Mögliche
+#: Varianten:", "Der Parser akzeptiert diese Varianten:").
+_CHOICE_REQUEST = re.compile(
+    r"(?i)\b(?:m[öo]chtest\s+du|willst\s+du|h[äa]ttest\s+du|"
+    r"would\s+you\s+like|do\s+you\s+want|"
+    r"was\s+(?:genau\s+)?(?:meinst|willst|m[öo]chtest|brauchst)\s+du|"
+    r"what\s+(?:would|do|should|shall)\s+you|"
+    r"tell\s+me\s+which|let\s+me\s+know\s+which|sag\s+mir|"
+    r"w[äa]hle|choose|pick|entscheide|decide)\b")
+
+#: The one short paragraph that may follow the list and still belong to it.
+_OFFER_TRAILER_CHARS = 300
+
+
+def _strip_emphasis(line: str) -> str:
+    return line.strip().strip("*_ \t").strip()
+
+
+def _asks_before_list(lead: str) -> bool:
+    """Whether *lead*, the line directly above a list, asks to choose."""
+    if lead.endswith("?"):
+        asked = _last_question(lead)
+        return bool(_CHOICE_SELECTOR.search(asked)
+                    or _CHOICE_REQUEST.search(asked))
+    if lead.endswith(":"):
+        last_sentence = re.split(r"(?<=[.!?])\s+", lead)[-1]
+        if _CHOICE_REQUEST.search(last_sentence):
+            return True
+        return bool(_CHOICE_SELECTOR.search(_last_question(lead)))
+    return False
+
+
+def _choice_offer(tail: str) -> list[tuple[str, str]] | None:
+    """The options of a numbered choice that closes *tail*, or None.
+
+    Input: the end of an answer. Output: ``[(number, label), ...]`` when
+    the answer closes on a numbered choice, else None.
+
+    A choice offer is the LAST list of the answer, numbered 1..n with
+    2 <= n <= 8, average label at most 120 characters, flat (no
+    indented, bulleted or lettered child under an item outside a code
+    fence), followed by nothing or by one paragraph of at most
+    ``_OFFER_TRAILER_CHARS`` that ends in "?", and asked for: the line
+    directly above it is a choice question or a request to pick
+    (``_asks_before_list``), or that closing paragraph is a question
+    naming a choice (``_CHOICE_SELECTOR``). Any other text after the
+    list means the list is not where the answer ends.
+
+    Rejected: counting numbered lines anywhere in the tail and accepting
+    one "?" anywhere. It offered plan steps, report findings, rankings,
+    questionnaires and a nested plan's sub-items as buttons: 46 of the 56
+    numbered offers it made on the benchmark corpus were wrong (see
+    tests/test_a_choice_offer_is_a_question_with_a_flat_list.py).
+    """
+    lines = tail.split("\n")
+    in_fence = []
+    open_fence = False
+    for ln in lines:
+        is_marker = ln.lstrip().startswith("```")
+        in_fence.append(open_fence or is_marker)
+        if is_marker:
+            open_fence = not open_fence
+    if open_fence:
+        return None  # an unclosed fence: everything after it is code
+
+    def _top(i: int) -> bool:
+        if in_fence[i]:
+            return False
+        m = _OFFER_ITEM.match(lines[i])
+        return bool(m) and not m.group("ind")
+
+    def _indented(ln: str) -> bool:
+        return ln[:1] in (" ", "\t")
+
+    last = None
+    for i in range(len(lines) - 1, -1, -1):
+        if in_fence[i] and not _indented(lines[i]):
+            return None  # code after the last list: the answer ends in code
+        if _top(i):
+            last = i
+            break
+    if last is None:
+        return None
+
+    # Forward: the last item's own lines (lazy or indented continuation),
+    # then anything indented after a blank line.
+    end = last + 1
+    while end < len(lines) and lines[end].strip():
+        end += 1
+    while end < len(lines):
+        nxt = end
+        while nxt < len(lines) and not lines[nxt].strip():
+            nxt += 1
+        if nxt < len(lines) and _indented(lines[nxt]):
+            end = nxt + 1
+            while end < len(lines) and lines[end].strip():
+                end += 1
+            continue
+        break
+
+    # Backward: items, blank lines, indented lines, and unindented lines
+    # that continue an item without a blank line between (lazy, or a
+    # fence directly under its item).
+    start = last
+    i = last - 1
+    while i >= 0:
+        if _top(i):
+            start = i
+        elif lines[i].strip() and not _indented(lines[i]):
+            j = i
+            while j >= 0 and lines[j].strip() and not _top(j):
+                j -= 1
+            if not (j >= 0 and lines[j].strip()):
+                break  # a paragraph of its own: the lead-in
+        i -= 1
+    lead = ""
+    for ln in reversed(lines[:start]):
+        if ln.strip():
+            lead = _strip_emphasis(ln)
+            break
+
+    options = []
+    for k in range(start, end):
+        if _top(k):
+            m = _OFFER_ITEM.match(lines[k])
+            label = m.group("label").replace("**", "").replace("__", "").strip()
+            options.append((m.group("n1") or m.group("n2"), label))
+        elif not in_fence[k] and _ANY_LIST_MARKER.match(lines[k]):
+            return None  # a child under an item: the list is nested
+    if not 2 <= len(options) <= 8:
+        return None
+    if [n for n, _ in options] != [str(k) for k in range(1, len(options) + 1)]:
+        return None
+    if sum(len(lbl) for _, lbl in options) / len(options) > 120:
+        return None
+
+    trailer = "\n".join(lines[end:]).strip()
+    if trailer and ("\n\n" in trailer
+                    or len(trailer) > _OFFER_TRAILER_CHARS
+                    or any(_ANY_LIST_MARKER.match(t)
+                           for t in trailer.split("\n"))
+                    or not _strip_emphasis(trailer).rstrip("\"'»«“”)")
+                    .endswith("?")):
+        return None
+    if _asks_before_list(lead):
+        return options
+    if trailer and _CHOICE_SELECTOR.search(
+            _last_question(_strip_emphasis(trailer))):
+        return options
+    return None
+
+
 def detect_question(text: str) -> dict | None:
     """Detect if the agent's response ends with a question requiring user input.
 
@@ -317,32 +495,10 @@ def detect_question(text: str) -> dict | None:
     if tail.rstrip().endswith("```"):
         return None
 
-    # --- Numbered options: 1) / 1. / (1) patterns ---
-    # Look for 2+ numbered items in the tail
-    # Patterns: "1) text", "1. text", "(1) text", "**1.** text"
-    option_patterns = [
-        # "1) description" or "1. description" at line start
-        re.compile(r'^\s*\*?\*?(\d+)[).]\*?\*?\s+(.+)', re.MULTILINE),
-        # "(1) description" at line start
-        re.compile(r'^\s*\((\d+)\)\s+(.+)', re.MULTILINE),
-        # "- **Option 1**: description"
-        re.compile(r'^\s*[-*]\s+\*?\*?(?:Option\s+)?(\d+)\*?\*?[.:]\s*(.+)', re.MULTILINE),
-    ]
-    for pat in option_patterns:
-        matches = pat.findall(tail)
-        if len(matches) >= 2:
-            # Distinguish choosable options from numbered explanation steps.
-            # Heuristic: real options are short (< 50 chars avg) and appear
-            # near a question mark. Long numbered items are instructions.
-            avg_len = sum(len(d.strip()) for _, d in matches) / len(matches)
-            has_question = "?" in tail
-            if avg_len > 120 or not has_question:
-                continue  # very long steps or no question context — skip
-            options = []
-            for num, desc in matches:
-                label = desc.strip().rstrip("*").strip()
-                options.append((num, label))
-            return {"type": "numbered", "options": options}
+    # --- Numbered options: a choice question over a flat, final list ---
+    options = _choice_offer(tail)
+    if options:
+        return {"type": "numbered", "options": options}
 
     # --- QUESTION: tag (from solo_agent.md) ---
     if "QUESTION:" in tail:
@@ -6129,17 +6285,18 @@ def create_tab(ctx):
     # Which branch Merge brings in, Branch starts from and PR goes into.
     # Not always main (user, 2026-10-09): offered from the remote branches
     # this checkout already knows, typeable for any other.
-    # Labelled: unlabelled, the field read as a second branch switch next
-    # to the one at the top of the page, which picks the branch DELFIN
-    # itself runs on. This one only names the target of the git buttons.
+    # Labelled: unlabelled, the field read as a branch switch. The shared
+    # checkout stays on main; a branch is tried with Test branch at the
+    # top of the page (a preview). This one only names the target of the
+    # git buttons.
     git_base = widgets.Combobox(
         value="origin/main", options=["origin/main"],
         description="Base:",
         placeholder="base branch", ensure_option=False,
         tooltip=("Base branch for the buttons beside it: Merge brings it "
                  "in, Branch starts from it, PR goes into it. Not the "
-                 "branch DELFIN runs on (that is the Branch switch at the "
-                 "top)."),
+                 "branch DELFIN runs on: that stays main, and Test branch "
+                 "at the top opens another branch in a preview."),
         style={"description_width": "36px"},
         layout=widgets.Layout(width="190px"))
     _git_base_cache = {"at": 0.0, "where": ""}
@@ -17788,12 +17945,12 @@ def create_tab(ctx):
 
             if res.blocked:
                 _append_system_message(
-                    f"\u26d4 BLOCKED by allow-list: {res.block_reason}\n"
+                    f"\u26d4 BLOCKED by the sandbox: {res.block_reason}\n"
                     f"  $ {cmd}\n"
                     f"Run it manually in a terminal if you really need it."
                 )
                 input_textarea.value = (
-                    f"That command was blocked by the allow-list "
+                    f"That command was blocked by the sandbox "
                     f"({res.block_reason}). Please suggest a safer alternative."
                 )
                 _on_send(None)

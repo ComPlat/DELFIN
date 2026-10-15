@@ -381,8 +381,8 @@ def _run_command(
     t0 = time.monotonic()
     try:
         from . import contained_run as _contained
-        proc = _contained.run(
-            expanded, shell=True, env=env,
+        proc = _contained.run_shell(
+            expanded, env=env,
             cwd=str(cwd) if cwd else None,
             timeout=max(0.1, cmd.timeout_s),
             # Hooks fire on EVERY tool call: their budget is the tight

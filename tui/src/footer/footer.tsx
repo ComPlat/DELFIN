@@ -32,6 +32,7 @@ import { GUTTER, SPINNER, postureLook, type Theme } from "../theme/theme"
 import { fit, width } from "../text"
 import { clickable } from "../mouse"
 import { plainIfLate } from "../scrollback/highlighter"
+import { SegmentedMarkdown, holdsTable } from "../scrollback/segmented"
 import { TranscriptView, themedStyle, type ScreenItems } from "../scrollback/screenview"
 import { fenceOf, liveBlocks, liveRows } from "./live"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
@@ -341,7 +342,7 @@ export function Footer(props: FooterProps): JSX.Element {
         {/* Its last rows, at the bottom: what does not fit is cut at the top. */}
         <box flexShrink={0} height={liveHeight()} flexDirection="column" justifyContent="flex-end" overflow="hidden">
           <For each={liveKeys()}>
-            {(key, i) => <LiveBlockView text={() => liveText(key)} first={() => i() === 0} syntax={style} />}
+            {(key, i) => <LiveBlockView text={() => liveText(key)} first={() => i() === 0} syntax={style} width={cols} />}
           </For>
         </box>
       </Show>
@@ -399,7 +400,8 @@ export function Footer(props: FooterProps): JSX.Element {
  * fenced code block is drawn as code that streams: as part of markdown it
  * would lose its colours for a frame on every delta.
  */
-function LiveBlockView(props: { text: () => string; first: () => boolean; syntax: () => SyntaxStyle }): JSX.Element {
+function LiveBlockView(props: { text: () => string; first: () => boolean; syntax: () => SyntaxStyle;
+                         width: () => number }): JSX.Element {
   const fence = () => fenceOf(props.text())
   // Drawn without a preview, a block shows nothing until its colours come:
   // if they are late (a busy highlighter), plain text meanwhile.
@@ -412,8 +414,14 @@ function LiveBlockView(props: { text: () => string; first: () => boolean; syntax
     // Content last: an element builds its blocks when it is set, with the
     // style it has by then (props go in in order).
     <Show when={fence()} fallback={
-      <markdown ref={take} syntaxStyle={props.syntax()} conceal width="100%" flexShrink={0}
-                marginTop={props.first() ? 0 : 1} tableOptions={{ widthMode: "content" }} content={props.text()} />
+      // A block that holds a table: in segments, as the rows draw it.
+      <Show when={holdsTable(props.text())} fallback={
+        <markdown ref={take} syntaxStyle={props.syntax()} conceal width="100%" flexShrink={0}
+                  marginTop={props.first() ? 0 : 1} tableOptions={{ widthMode: "content" }} content={props.text()} />
+      }>
+        <SegmentedMarkdown ref={take} text={props.text} width={props.width} syntax={props.syntax}
+                           marginTop={() => props.first() ? 0 : 1} />
+      </Show>
     }>
       <code ref={take} syntaxStyle={props.syntax()} streaming drawUnstyledText={false} conceal={false} width="100%"
             flexShrink={0} marginTop={props.first() ? 0 : 1} filetype={infoStringToFiletype(fence()?.lang ?? "")}
