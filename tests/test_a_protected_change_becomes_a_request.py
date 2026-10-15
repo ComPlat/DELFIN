@@ -31,7 +31,7 @@ import pytest
 from delfin.agent import auto_guard as ag
 from delfin.agent import auto_mode as am
 from delfin.agent import change_requests as cr
-from delfin.agent import loop_commands, loops
+from delfin.agent import loop_commands
 from delfin.agent.harness_rows import HarnessText
 
 
