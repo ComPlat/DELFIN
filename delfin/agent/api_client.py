@@ -20485,6 +20485,19 @@ class _DocToolExecutor:
             if walk:
                 _record_security_event("tree_walk", "bash", cmd[:80])
                 return f"command rejected: {walk}"
+            # The shared checkout stays on main: a branch move there moves
+            # every session and the dashboard on it. In the deny tier, so
+            # it holds in every mode and before the auto-allow list (which
+            # allows a plain git switch). See shared_checkout.py.
+            try:
+                from .shared_checkout import refusal as _shared_refusal
+                _shared = _shared_refusal(_prose_blanked(cmd), _wd)
+            except Exception:
+                _shared = ""
+            if _shared:
+                _record_security_event("shared_checkout_switch", "bash",
+                                       cmd[:80])
+                return _shared
             identity = _commit_text_identity_hit(cmd)
             if identity is not None:
                 _record_security_event("identity_in_commit", "bash", cmd[:80])
@@ -20783,7 +20796,10 @@ class _DocToolExecutor:
                 "The user asked for the pull-request route in this "
                 "repository, and that holds for the rest of the session "
                 "whatever the git role allows: commit on a branch of your "
-                "own (`git switch -c <user>/<topic>`), push that branch "
+                "own (`git switch -c <user>/<topic>`; in DELFIN's own "
+                "checkout, which stays on main: "
+                "enter_worktree(base_ref=\"origin/main\") and "
+                "`git push -u origin HEAD:<user>/<topic>`), push that branch "
                 "(`git push -u origin <branch>`), open the pull request "
                 "and give the user its link. Only a later message of "
                 "theirs asking for the direct push lifts this.")
@@ -20842,7 +20858,9 @@ class _DocToolExecutor:
                         f"blocked: {_repo} is contributor, and `{_onto[0]}` "
                         "is the default branch. Changes reach it through a "
                         "pull request, not a push: commit on a branch of "
-                        "your own (`git switch -c <user>/<topic>`), push "
+                        "your own (`git switch -c <user>/<topic>`; in "
+                        "DELFIN's own checkout, which stays on main: "
+                        "enter_worktree(base_ref=\"origin/main\")), push "
                         "that branch (`git push -u origin <branch>`), and "
                         "give the user the link to open the pull request. "
                         "Only the user changes the role (`/git role "

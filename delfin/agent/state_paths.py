@@ -781,6 +781,14 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # and the launcher's atexit hook then deleted it on the way out --
     # leaving a dashboard that was still serving with no way back to it.
     ("delfin.agent.where", "record_path", "dashboard_here.json"),
+    # The header's branch list (pins and hidden entries), the log of
+    # deleted branches and worktrees with their undo commands, and the
+    # records of running branch previews. A run that pinned a fixture
+    # branch or logged a fixture deletion must not leave it in the
+    # user's list or undo log.
+    ("delfin.dashboard.branch_list", "_prefs_path", "branch_list.json"),
+    ("delfin.dashboard.branch_cleanup", "_log_path", "branch_cleanup.jsonl"),
+    ("delfin.dashboard.branch_preview", "_registry_dir", "branch_previews"),
     # Questions a headless session asks, and the answers a supervisor
     # writes beside them. A run that approved something must not leave
     # the answer in the real directory, where the next session polling

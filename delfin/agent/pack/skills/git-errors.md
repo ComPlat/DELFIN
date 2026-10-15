@@ -84,7 +84,7 @@ Never: kill a server, kernel or process you did not start, or any other user's; 
 
 ## Contributing a change
 The git role is set per repository by the user (`/git role`; `delfin-agent ops status` shows it). A contributor, or anyone after the user asked for a pull request, never pushes the default branch.
-1. `git switch -c <user>/<topic>`.
+1. `git switch -c <user>/<topic>`. In DELFIN's own checkout (it stays on main): `enter_worktree(base_ref="origin/main")`, work there, push with `git push -u origin HEAD:<user>/<topic>`, then `gh pr create --head <user>/<topic>`.
 2. Commit each step: `git add <paths>`, `git commit -m "<what and why>"`.
 3. Push the branch, when asked: `git push -u origin <branch>`.
 4. `gh pr create --base main --fill`, and give the user the link.

@@ -843,6 +843,14 @@ def _no_host_managed_policy(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _the_branch_list_does_not_ask_gh(monkeypatch):
+    """The dashboard's branch list asks an installed ``gh`` for pull
+    requests, which is a network call. A test that builds the dashboard
+    must not make it; the tests of that path hand in a stand-in gh."""
+    monkeypatch.setenv("DELFIN_BRANCH_LIST_GH", "off")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_subagent_state(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
     monkeypatch.setattr(sa, "_RUNNING_DIR",

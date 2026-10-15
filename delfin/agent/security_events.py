@@ -70,6 +70,8 @@ _KINDS = {
     # The posture switched to bypass by a person (shift+tab and its
     # confirmation, in the terminal or the window).
     "permission_mode": ("⏵", "Bypass entered by the user"),
+    # An agent's branch move in the checkout DELFIN runs from, refused.
+    "shared_checkout_switch": ("⛔", "Branch switch in the shared checkout refused"),
     # A second approval of the same kind in a turn whose first one went
     # unanswered: not asked again, refused, and the panel says so.
     "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
