@@ -252,6 +252,20 @@ def _teardown_new_paths(before: frozenset,
 _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
 _LIFELINE_SAVED: dict = {}
 
+#: Credential variables (a provider's key, a forge token, any secret): the
+#: rule of tui/spike/check_tmux.py's is_credential, held to the same
+#: answer by tests/test_the_tui_e2e_harness_passes_no_credentials.py.
+CREDENTIAL_PARTS = ("API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIALS",
+                    "_PRIVATE_KEY", "_ACCESS_KEY")
+CREDENTIAL_PREFIXES = ("KIT_", "OPENAI_", "ANTHROPIC_")
+CREDENTIAL_NAMES = frozenset({"TOKEN", "NETRC", "PGPASSWORD"})
+
+
+def is_credential(name: str) -> bool:
+    upper = name.upper()
+    return (upper in CREDENTIAL_NAMES or upper.startswith(CREDENTIAL_PREFIXES)
+            or any(part in upper for part in CREDENTIAL_PARTS))
+
 
 def child_env(tmp_path) -> dict:
     """An environment for a child process a test starts, so that the
@@ -276,13 +290,18 @@ def child_env(tmp_path) -> dict:
     (delfin.agent.cli applies it before any sink import); for the rest
     it is inert. The directories exist before the child starts, so a
     first write does not have to race a ``mkdir``.
+
+    No credentials (is_credential): DELFIN copies a provider key it finds
+    in its environment into ``$HOME/.delfin/credentials.json`` -- under
+    this HOME a copy of the developer's real key in the test's tmp_path.
+    A child that needs a key is given a fake one after this.
     """
     import os
     home = tmp_path / "child_home"
     scratch = tmp_path / "child_scratch"
     home.mkdir(exist_ok=True)
     (scratch / ".delfin").mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if not is_credential(k)}
     env["HOME"] = str(home)
     env["DELFIN_SCRATCH_STATE"] = str(scratch)
     # The OS keyring does not follow HOME (it is a D-Bus service or the

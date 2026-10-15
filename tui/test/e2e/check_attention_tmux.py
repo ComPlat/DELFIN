@@ -35,7 +35,7 @@ REPO = TUI.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(TUI / "spike"))
 
-from check_tmux import Tmux  # noqa: E402
+from check_tmux import Tmux, scrubbed_env  # noqa: E402
 
 from delfin.agent.service.client import ServiceClient  # noqa: E402
 
@@ -81,7 +81,7 @@ def main() -> int:
     env = {"HOME": str(tmp / "home"), "DELFIN_SCRATCH_STATE": str(tmp / "scratch"),
            "DELFIN_RUNTIME_DIR": str(runtime), "PYTHONPATH": str(REPO),
            "PATH": f"{Path.home()}/.bun/bin:{os.environ.get('PATH', '')}"}
-    child_env = {**os.environ, **env}
+    child_env = scrubbed_env(**env)
     command = (f"cd {REPO} && env {' '.join(f'{k}={v}' for k, v in env.items())} "
                f"{PYTHON} -m delfin.agent.cli tui --fake --cwd {ws}; echo TUI_EXIT=$?")
     problems: list[str] = []
