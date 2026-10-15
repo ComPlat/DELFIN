@@ -186,6 +186,12 @@ def test_a_nested_list_is_nested():
     assert re.search(r"<li>zwei\s*<ul>", out), out
 
 
+def test_a_blank_line_keeps_a_list_and_a_new_bullet_starts_one():
+    out = _html("- a\n\n- b\n* c")
+    assert out.count("<ul>") == 2
+    assert _cells(out, "li") == ["a", "b", "c"]
+
+
 def test_an_ordered_list_keeps_its_start_number():
     out = _html("3. drei\n4. vier")
     assert '<ol start="3">' in out
