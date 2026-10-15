@@ -19,7 +19,7 @@
  * how many rows it takes (`footerRows`), at any width: a footer taller
  * than its content wastes rows, a shorter one draws over itself.
  */
-import { infoStringToFiletype, type CliRenderer, type Renderable, type ScrollBoxRenderable,
+import { TextAttributes, infoStringToFiletype, type CliRenderer, type Renderable, type ScrollBoxRenderable,
          type SyntaxStyle } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
@@ -46,6 +46,9 @@ export interface FooterProps {
   /** Starting the first session: said in the hints line. */
   starting?: () => boolean
   message: () => string
+  /** The first step onto bypass waiting for y: shown in the message's
+   *  row (in red), in its place, so the footer's height is the same. */
+  offer?: () => string
   composer: Composer
   approval: ApprovalUi
   picker?: Picker
@@ -153,6 +156,8 @@ export function terminalSize(renderer: CliRenderer): Accessor<{ width: number; h
 
 export function Footer(props: FooterProps): JSX.Element {
   const t = props.theme
+  /** The message row: the bypass offer while it waits, else the note. */
+  const note = () => props.offer?.() || props.message()
   const term = terminalSize(props.renderer)
   const [tick, setTick] = createSignal(0)
   const [now, setNow] = createSignal(Date.now())
@@ -213,13 +218,13 @@ export function Footer(props: FooterProps): JSX.Element {
     if (full()) return
     props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
       ? agentFooterRows(term())
-      : footerRows(props.session(), term(), props.message(), props.composer.height(),
+      : footerRows(props.session(), term(), note(), props.composer.height(),
                    props.approval, props.picker?.height() ?? 0, tasks().length)
   })
   /** The agent view's list: its rows less the message, the composer and
    *  its rules, and the hints. */
   const panelRows = () => Math.max(2, (props.agentsOnOwnScreen || full() ? term().height : agentFooterRows(term()))
-    - (props.message() ? 1 : 0) - 3 - props.composer.height())
+    - (note() ? 1 : 0) - 3 - props.composer.height())
 
   const status = (turn: TurnLive) => {
     const s = props.session()
@@ -239,7 +244,7 @@ export function Footer(props: FooterProps): JSX.Element {
     for (const ms of [40, 150]) (setTimeout(() => props.composer.remeasure(), ms) as { unref?: () => void }).unref?.()
   })
 
-  const budget = () => approvalBudget(props.session(), term(), props.message(), props.composer.height(),
+  const budget = () => approvalBudget(props.session(), term(), note(), props.composer.height(),
                                       props.picker?.height() ?? 0, tasks().length)
 
   // Nothing in the footer shrinks: what does not fit is cut at the top
@@ -275,8 +280,9 @@ export function Footer(props: FooterProps): JSX.Element {
         <TranscriptView renderer={props.renderer} screen={props.screen!} theme={t} width={cols}
                         visible={() => !viewOpen()} ref={props.scrollRef} onUserScroll={props.onUserScroll} />
       </Show>
-      <Show when={props.message()}>
-        <text flexShrink={0} fg={t().warn} wrapMode="none">{fit(props.message(), cols() - 1)}</text>
+      <Show when={note()}>
+        <text flexShrink={0} fg={props.offer?.() ? t().err : t().warn} wrapMode="none"
+              attributes={props.offer?.() ? TextAttributes.BOLD : 0}>{fit(note(), cols() - 1)}</text>
       </Show>
       <Show when={!viewOpen()}>
       {/* The answer's unfinished block, under the rows in both screens: a

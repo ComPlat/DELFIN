@@ -31,6 +31,7 @@ export interface SessionPromptParams {
 export interface SessionCancelParams {}
 export interface SessionSetModeParams {
   "mode": string
+  "confirmed"?: boolean | null
 }
 export interface SessionStatusParams {}
 export interface SessionReplayParams {
@@ -159,6 +160,8 @@ export interface SessionInfoEvent {
   "banner": string[]
   "notices": string[]
   "tasks"?: Record<string, unknown>[] | null
+  "bypassBlocked"?: string | null
+  "bypassConfirmed"?: boolean | null
   "type": "session.info"
   "session": string
   "ts": number
@@ -170,6 +173,8 @@ export interface SessionUpdatedEvent {
   "effort"?: string | null
   "title"?: string | null
   "tasks"?: Record<string, unknown>[] | null
+  "bypassBlocked"?: string | null
+  "bypassConfirmed"?: boolean | null
   "type": "session.updated"
   "session": string
   "ts": number

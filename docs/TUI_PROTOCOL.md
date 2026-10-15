@@ -71,7 +71,7 @@ types are generated from that. This page explains what the messages mean.
 | `initialize` | `protocolVersion`, `client?` | `protocolVersion`, `pid`, `session`, `state`, `pending[]` | Handshake. Repeatable: a window attaching later gets the state and the open approvals. |
 | `session.prompt` | `text`, `how?` | `accepted`, `queued?`, `steered?` | A line exactly as the user typed it. See "Prompts". |
 | `session.cancel` | | `stopping`, `refused` | Esc. See "Cancelling". |
-| `session.setMode` | `mode` | `approval` | Approval posture: `plan`, `default` or `acceptEdits`. Never `bypassPermissions`; that needs a new session started with `--unattended`. |
+| `session.setMode` | `mode`, `confirmed?` | `approval` | Approval posture: `default`, `acceptEdits`, `plan` or `bypassPermissions` (shift+tab's ladder, delfin/agent/posture_cycle.py). `bypassPermissions` is refused where the session's `bypassBlocked` is not empty (the managed policy disallows it, no layer holds each command, the unisolated fallback), and the first time in a session unless `confirmed: true` -- the window sends that only for a y typed on its confirm row, after the answer pause. Like every ACTING method, refused to a process an agent session started. |
 | `session.status` | | engine counters, `state`, `approval`, `queued` | The engine's token and cost counters, plus the session's state. |
 | `session.replay` | `turns?` | `events[]` | The durable events from the start of the `turns`-th last turn (0 means all). See "Replay". |
 | `session.shutdown` | `ifIdle?`, `dryRun?` | `closing`, `busy?` | End the session as described in Lifecycle. `ifIdle`: only when nothing runs (a turn, a question, a background shell, a subagent); otherwise `closing: false` and `busy` says what runs. `dryRun`: only say so, never close (an update deciding whether a restart would cut anything). |
@@ -195,8 +195,8 @@ carry their final values.
 | Event | Fields | Durable |
 |---|---|---|
 | `worker.ready` | `protocolVersion`, `pid` | |
-| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]`, `tasks[]?` | ✓ |
-| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?`, `tasks[]?` | ✓ |
+| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]`, `tasks[]?`, `bypassBlocked?`, `bypassConfirmed?` | ✓ |
+| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?`, `tasks[]?`, `bypassBlocked?`, `bypassConfirmed?` | ✓ |
 | `session.state` | `state`: `idle`, `running`, `needs_input` or `ended` | |
 | `session.ended` | `reason`, `exitCode` | ✓ |
 | `user.message` | `text`, `source`: `user`, `queued`, `steer` or `harness` | ✓ |
@@ -224,6 +224,9 @@ carry their final values.
 - `session.updated` follows every change of posture, model or effort,
   however it happened: a plan approval, "stop asking about writes",
   `/permissions` or `/model` sent as a prompt, `session.setMode`.
+- `bypassBlocked` says why shift+tab steps over `bypassPermissions` ("" when it may
+  stop there); `bypassConfirmed` that its first step was confirmed in this session (the
+  ladder passes through it without asking again). A window told neither steps over it.
 - `tasks` is the session's task list as it is now, whole: the rows the
   dashboard and the REPL draw (`task_ticker.rows`), in their order (in
   progress, blocked, pending, completed), each `num` (the number the user

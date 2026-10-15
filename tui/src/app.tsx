@@ -20,7 +20,7 @@ import type { AgentScreen } from "./agents/screen"
 import { createAgentView, needsInput, peekLines, sessionName, type AgentRow } from "./agents/view"
 import { createComposer } from "./composer/composer"
 import { History } from "./composer/history"
-import { createApprovalUi, setFullPreviewKey } from "./footer/approval"
+import { ANSWER_PAUSE_MS, createApprovalUi, setFullPreviewKey } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
 import { editPrompt } from "./composer/editor"
@@ -97,13 +97,22 @@ const ARRIVAL_WINDOW_S = 180
 /** What the window finds when it opens is no news. */
 const ARRIVAL_QUIET_MS = 2500
 
-/** shift+tab's order, as in the REPL (never onto bypass). */
-export const POSTURES = ["plan", "default", "acceptEdits"] as const
+/** shift+tab's order, as in the REPL (delfin/agent/posture_cycle.py):
+ *  bypassPermissions only where the session says the ladder may stop
+ *  there (the managed policy allows it, isolation holds each command). */
+export const POSTURES = ["default", "acceptEdits", "plan", "bypassPermissions"] as const
 
-/** The posture after `current`; from one outside the cycle, default. */
-export function nextPosture(current: string): string {
-  const at = POSTURES.indexOf(current as typeof POSTURES[number])
-  return at < 0 ? "default" : POSTURES[(at + 1) % POSTURES.length]!
+/** The posture after `current`; from one outside the cycle, default.
+ *  `bypass` false steps over bypassPermissions. */
+export function nextPosture(current: string, bypass = false): string {
+  const order = POSTURES.filter((m) => bypass || m !== "bypassPermissions")
+  const at = order.indexOf(current as typeof POSTURES[number])
+  return at < 0 ? "default" : order[(at + 1) % order.length]!
+}
+
+/** What the confirm row says while the first step onto bypass waits. */
+export function bypassOffer(from: string): string {
+  return `⏵⏵ bypass permissions asks nothing from here on: y switches, any other key stays in ${from}`
 }
 
 export function App(props: AppProps): JSX.Element {
@@ -678,10 +687,43 @@ export function App(props: AppProps): JSX.Element {
     exitedBefore = exited
   })
 
+  /** The first step onto bypass in a session waits for y (or a click on
+   *  its row): the posture it was on, and when it was offered -- a key
+   *  sooner than the answer pause is typing, not an answer. */
+  const [offer, setOffer] = createSignal<{ id: string; from: string; at: number } | null>(null)
+  // A question takes the footer: the offer is not left behind it.
+  createEffect(() => {
+    if (session()?.pending[0] || session()?.state === "ended") setOffer(null)
+  })
   const cycleMode = () => {
     const s = session()
     if (!s || s.state === "ended") return
-    void call("session.setMode", { sessionId: sid(), mode: nextPosture(s.approval) })
+    // An offer left open: the key moves on past bypass, from it.
+    const from = offer()?.id === s.id ? "bypassPermissions" : s.approval
+    setOffer(null)
+    const next = nextPosture(from, s.bypassBlocked === "")
+    if (next === "bypassPermissions" && !s.bypassConfirmed) {
+      setOffer({ id: s.id, from: s.approval, at: Date.now() })
+      return
+    }
+    void call("session.setMode", { sessionId: sid(), mode: next })
+  }
+  /** y on the offer: the switch, marked as confirmed by a person. */
+  const takeOffer = (key: KeyEvent): boolean => {
+    const o = offer()
+    if (!o) return false
+    // shift+tab again: cycleMode moves on past bypass from the offer.
+    if (o.id === sid() && props.keymap.matches("cycleMode", key)) return false
+    setOffer(null)
+    if (o.id !== sid()) return false
+    const deliberate = Date.now() - o.at >= (props.answerPauseMs ?? ANSWER_PAUSE_MS)
+    if (deliberate && !key.ctrl && !key.meta && (key.name === "y" || key.sequence === "y")) {
+      void call("session.setMode", { sessionId: sid(), mode: "bypassPermissions", confirmed: true })
+      return true
+    }
+    // Any other key: the posture stays, and the key does what it does.
+    say(`still ${o.from}`)
+    return false
   }
 
   const draft = () => composer.value()
@@ -742,6 +784,10 @@ export function App(props: AppProps): JSX.Element {
         return
       }
       if (agents.handleKey(key) || composer.handleKey(key)) key.preventDefault()
+      return
+    }
+    if (offer() && !asked && takeOffer(key)) {
+      key.preventDefault()
       return
     }
     if (km.matches("agents", key) && !composer.value() && !composer.search() && !picker.state.open
@@ -851,6 +897,7 @@ export function App(props: AppProps): JSX.Element {
       approval={approval}
       picker={picker}
       tasksFolded={tasksFolded}
+      offer={() => offer()?.id === sid() ? bypassOffer(offer()!.from) : ""}
       agents={agents}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}

@@ -53,7 +53,7 @@ REQUESTS: dict[str, dict[str, str]] = {
     "session.prompt": {"text": "string", "how": "string?"},
     # Esc: end the running turn. A tool call already running finishes first.
     "session.cancel": {},
-    "session.setMode": {"mode": "string"},
+    "session.setMode": {"mode": "string", "confirmed": "boolean?"},
     "session.status": {},
     # The durable events of the last ``turns`` turns, for a window that
     # attaches to a session already in progress.
@@ -127,13 +127,20 @@ EVENTS: dict[str, dict[str, str]] = {
                      "provider": "string", "model": "string",
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
-                     "notices": "[string]", "tasks": "[object]?"},
+                     "notices": "[string]", "tasks": "[object]?",
+                     "bypassBlocked": "string?", "bypassConfirmed": "boolean?"},
+    # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
+    # may stop there: the managed policy allows it and isolation holds
+    # each command; posture_cycle.bypass_refusal); bypassConfirmed: its
+    # first step was confirmed in this session. A window that is told
+    # neither steps over it.
     # tasks: the session's task list (task_ticker.rows) as it is now, in
     # display order (in progress, blocked, pending, completed), each row
     # num, status, label -- sent whole whenever any of it changed.
     "session.updated": {"approval": "string?", "model": "string?",
                         "effort": "string?", "title": "string?",
-                        "tasks": "[object]?"},
+                        "tasks": "[object]?", "bypassBlocked": "string?",
+                        "bypassConfirmed": "boolean?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},

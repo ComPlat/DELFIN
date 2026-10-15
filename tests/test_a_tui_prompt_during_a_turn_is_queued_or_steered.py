@@ -107,7 +107,7 @@ def test_cancel_ends_the_turn_early(tmp_path):
         assert turn_end["turnId"]
 
 
-def test_the_posture_moves_along_the_ladder_but_never_onto_bypass(tmp_path):
+def test_the_posture_moves_along_the_ladder_and_bypass_needs_a_confirmation(tmp_path):
     with WorkerClient(tmp_path) as w:
         assert w.init_result["session"]["approval"] == "default"
         start = len(w.events)
