@@ -104,11 +104,19 @@ const ARRIVAL_QUIET_MS = 2500
 export const POSTURES = ["default", "acceptEdits", "plan", "bypassPermissions"] as const
 
 /** The posture after `current`; from one outside the cycle, default.
- *  `bypass` false steps over bypassPermissions. */
-export function nextPosture(current: string, bypass = false): string {
-  const order = POSTURES.filter((m) => bypass || m !== "bypassPermissions")
+ *  `bypass` false steps over bypassPermissions; `turnRunning` steps over
+ *  plan, as the REPL does (delfin/agent/mode_cycle.py): every step takes
+ *  effect at once, and a tool call landing while the cycle stood on plan
+ *  was refused. */
+export function nextPosture(current: string, bypass = false, turnRunning = false): string {
+  const order = POSTURES.filter((m) => (bypass || m !== "bypassPermissions")
+    && !(turnRunning && m === "plan"))
   const at = order.indexOf(current as typeof POSTURES[number])
-  return at < 0 ? "default" : order[(at + 1) % order.length]!
+  if (at >= 0) return order[(at + 1) % order.length]!
+  // From plan itself while a turn runs: the step after plan on the full ladder.
+  const full = POSTURES.filter((m) => bypass || m !== "bypassPermissions")
+  const i = full.indexOf(current as typeof POSTURES[number])
+  return i < 0 ? "default" : full[(i + 1) % full.length]!
 }
 
 /** What the confirm row says while the first step onto bypass waits;
@@ -709,7 +717,7 @@ export function App(props: AppProps): JSX.Element {
     // An offer left open: the key moves on past bypass, from it.
     const from = offer()?.id === s.id ? "bypassPermissions" : s.approval
     setOffer(null)
-    const next = nextPosture(from, s.bypassBlocked === "")
+    const next = nextPosture(from, s.bypassBlocked === "", !!s.turn && s.state !== "ended")
     if (next === "bypassPermissions" && !s.bypassConfirmed) {
       setOffer({ id: s.id, from: s.approval, at: Date.now() })
       return

@@ -73,6 +73,17 @@ def test_the_order_with_the_cage(caged):
     assert PC.ladder(_Engine()) == ["default", "acceptEdits", "plan", "bypassPermissions"]
 
 
+def test_a_running_turn_steps_over_plan(caged):
+    # main's rule (mode_cycle): while a turn runs the ladder passes over
+    # plan, so a tool call landing mid-cycle is not refused.
+    eng = _Engine()
+    eng.turn_in_flight = True
+    assert PC.step(eng, "acceptEdits", confirmed=True) == ("bypassPermissions", False)
+    assert PC.step(eng, "plan", confirmed=True)[0] == "bypassPermissions"
+    eng.turn_in_flight = False
+    assert PC.step(eng, "acceptEdits", confirmed=True) == ("plan", False)
+
+
 def test_bypass_is_stepped_over_without_isolation(caged):
     caged["isolated"] = False
     engine = _Engine()

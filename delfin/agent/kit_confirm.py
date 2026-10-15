@@ -259,8 +259,31 @@ class KitConfirmBroker:
         except Exception:
             return None
 
+    def follow_activity(self, source: Optional[Any]) -> None:
+        """Mark each wait for a decision on *source*'s activity state.
+
+        Input: a zero-argument callable returning the current engine's
+        ``activity.Activity`` (or the engine), or None. Read per request
+        for the reason ``follow_session`` is: the tab keeps one broker
+        across engine rebuilds. Output: while ``callback`` blocks, the
+        activity reads "waiting for your approval".
+        """
+        self._activity_source = source
+
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Called from the agent worker thread. Blocks until decided.
+
+        The method the gate holds (it reads ``last_timed_out`` off its
+        ``__self__``); the wait itself is ``_ask``, marked on the
+        followed activity for its whole length.
+        """
+        from .activity import APPROVAL, awaiting_person
+        with awaiting_person(getattr(self, "_activity_source", None),
+                             APPROVAL):
+            return self._ask(tool_name, args, preview)
+
+    def _ask(self, tool_name: str, args: dict, preview: str) -> bool:
+        """Queue one request and block until decided or expired.
 
         With the per-action confirm dialog retired, this is now invoked
         only by the Self-Modification Guard (and ``remember_permission``,

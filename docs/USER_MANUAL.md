@@ -1385,6 +1385,22 @@ Nothing moves on its own. Keys already in the file keep working after the settin
 
 The agent's own tools read neither store: the credentials file is on the deny list, commands that print a keyring entry (`secret-tool lookup`, `security find-generic-password`, `keyring get`, `python -m keyring`, `keyring.get_password`) are refused, sandboxed commands get no session bus, and every tool result is scrubbed of the exact value of every stored key before the model sees it.
 
+### What the agent is doing right now
+
+While a turn runs, one line says what it waits on, with a clock for that phase. The terminal shows it at the head of the status row above the input box; the dashboard shows it under the chat, and the header chip mirrors it. Both read the same state from the engine and say the same thing:
+
+| Line | Meaning |
+|---|---|
+| `waiting for <model> … 45 s` | A request is out and no token of it has arrived yet — the endpoint is queueing or prefilling. Counted from the request, so the request after a tool result starts again at 0 s. |
+| `<model> is answering … 12 s` | The model is producing text or reasoning. |
+| `running bash: pytest -q … 12 s` | A tool call is executing; its name and the argument you would recognise it by. |
+| `waiting for your approval … 8 s` / `waiting for your answer` | The turn is paused on a dialog. In the terminal the dialog itself starts with this line. |
+| `done in 31 s` | The turn is over (dashboard, while the tab finishes saving); the line then disappears. A stopped or failed turn shows `stopped after` / `failed after`, and the line goes away all the same. |
+
+The line is redrawn from a timer, not from the model's output, so the clock keeps moving through a silent endpoint or a long test run.
+
+When a phase runs past what is usual — 60 s without a first token, two minutes for a shell command or test run, ten for a sub-agent, 30 s for other tools — one more line says what is slow and how to stop it: Esc in the terminal, Stop in the dashboard. A running tool call is not cut by either; the turn ends when the call returns, and the line says so. `DELFIN_SLOW_FIRST_TOKEN_S` and `DELFIN_SLOW_TOOL_S` change the thresholds.
+
 ### Permissions
 
 | Level | Writes | Shell |
@@ -1399,7 +1415,7 @@ A session starts in `default` unless `--permission-mode` or `default_mode` in yo
 
 Cycle with `/permissions` or Shift+Tab: default → acceptEdits → plan → bypassPermissions → default. Shift+Tab stops on bypass only where the managed policy allows it and an isolation layer holds each command (elsewhere it steps over it), and the first time in a session it only asks: type `y` (Enter in the REPL) to switch -- in the full-screen window a click on `[y] switch` does the same, from 0.3 s after the offer appeared; any other key or line stays where it was. `/permissions bypassPermissions` stays refused. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
-Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
+Settings, hook commands, MCP servers and skills (`.delfin/skills/`) that come from a checked-out repository are ignored until you trust that directory (`/trust`, then `/trust grant hooks|mcp|skills`); trust covers exactly the content you saw, and a change asks again. A repository skill never replaces a built-in or your own skill of the same name.
 
 #### Answering a choice question in your own words
 

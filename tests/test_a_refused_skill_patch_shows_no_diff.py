@@ -173,3 +173,8 @@ def test_the_terminal_shows_a_refusal_without_a_diff(perms):
     line = tool_result_line("skill_propose_patch", out, tool_input=args)
     assert "- Raise" not in line and "+ Raise" not in line
     assert "evidence" in line
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

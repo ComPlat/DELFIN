@@ -267,6 +267,28 @@ def is_credential(name: str) -> bool:
             or any(part in upper for part in CREDENTIAL_PARTS))
 
 
+@pytest.fixture()
+def workspace_skills_trusted(monkeypatch):
+    """Read ``<ws>/.delfin/skills`` as if the user had trusted its content.
+
+    For tests about what a skill DOES once it loads -- parsing, patching,
+    proposals, the skill tool -- which build their skills in a fixture
+    workspace and edit them in place. The trust gate itself (untrusted by
+    default, digest-bound, no override of a built-in) is pinned in
+    tests/test_a_repository_skill_needs_trust.py, which does not use this.
+    The no-override rule and the link-out-of-workspace refusal still
+    apply under this fixture; only the trust lookup is answered "yes".
+    """
+    from delfin.agent import skills as _skills
+
+    def _trusted(workspace):
+        d = Path(workspace) / ".delfin" / "skills"
+        return d if d.is_dir() else None
+
+    monkeypatch.setattr(_skills, "_project_skill_dir", _trusted)
+    yield
+
+
 def child_env(tmp_path) -> dict:
     """An environment for a child process a test starts, so that the
     child -- which inherits none of the suite's in-memory redirects --

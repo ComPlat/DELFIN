@@ -88,18 +88,24 @@ def ladder(engine) -> list[str]:
     return order or ["default"]
 
 
-def next_mode(current: str, order: list[str]) -> str:
-    """The mode after ``current``; from one off the ladder, default."""
+def next_mode(current: str, order: list[str], *,
+              turn_running: bool = False) -> str:
+    """The mode after ``current``; from one off the ladder, default.
+    While a turn runs the step passes over plan (mode_cycle.next_in_cycle:
+    every step takes effect at once, and a tool call landing while the
+    ladder stood on plan was refused)."""
     if current not in order:
         return "default" if "default" in order else order[0]
-    return order[(order.index(current) + 1) % len(order)]
+    from .mode_cycle import next_in_cycle
+    return next_in_cycle(order, current, turn_running=turn_running)
 
 
 def step(engine, current: str, *, confirmed: bool) -> tuple[str, bool]:
     """``(mode, ask)``: the mode the key moves to, and whether that move
     is bypass and must be confirmed first (``ask`` True: nothing has been
     switched)."""
-    nxt = next_mode(current, ladder(engine))
+    nxt = next_mode(current, ladder(engine), turn_running=bool(
+        getattr(engine, "turn_in_flight", False)))
     return nxt, (nxt == BYPASS and not confirmed)
 
 

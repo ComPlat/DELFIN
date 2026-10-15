@@ -263,6 +263,7 @@ def test_only_the_slash_commands_grant_trust():
         "delfin/agent/workspace_trust.py",     # the definition
         "delfin/agent/hooks_editor.py",        # /hooks trust
         "delfin/agent/mcp_editor.py",          # /mcp trust
+        "delfin/agent/skills.py",              # /trust grant skills
     }
     callers = set()
     for path in sorted(root.joinpath("delfin").rglob("*.py")):

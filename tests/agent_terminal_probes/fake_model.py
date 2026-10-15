@@ -11,6 +11,10 @@ in the prompt it types:
     do-write <path> <text> one ``write_file`` tool call, then a text answer
     do-md                  a markdown answer (heading, list, code block)
     do-slow                ~30 s of streamed text, for interrupt tests
+    do-delay <s>           headers at once, then <s> seconds before the
+                           first token (a connected endpoint prefilling)
+    do-hold <s>            <s> seconds before the response headers (a
+                           queued endpoint), then a short answer
     do-fail500 / do-fail401   the endpoint answers with that HTTP status
     anything else          "received L lines, C chars; last line: ..."
 
@@ -87,6 +91,14 @@ def plan(messages: list[dict]) -> dict:
                             "```python\nprint('hi')\n```\n"}
         if s == "do-slow":
             return {"slow": True}
+        if s.startswith(("do-delay ", "do-hold ")):
+            word, _, secs = s.partition(" ")
+            try:
+                wait = max(0.0, min(120.0, float(secs)))
+            except ValueError:
+                wait = 0.0
+            key = "delay" if word == "do-delay" else "hold"
+            return {"text": f"answered after {secs.strip()} s", key: wait}
         if s in ("do-fail500", "do-fail401"):
             return {"status": int(s[7:])}
     typed = typed_part(user)
@@ -161,6 +173,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "message": f"scripted HTTP {step['status']}",
                 "type": "scripted"}})
             return
+        if step.get("hold"):
+            time.sleep(step["hold"])
         if body.get("stream"):
             self._stream(step)
         else:
@@ -206,6 +220,8 @@ class _Handler(BaseHTTPRequestHandler):
                  "total_tokens": 110}
         try:
             self._chunk({"role": "assistant"})
+            if step.get("delay"):
+                time.sleep(step["delay"])
             if "tool" in step:
                 self._chunk({"tool_calls": [{
                     "index": 0, "id": "call_1", "type": "function",

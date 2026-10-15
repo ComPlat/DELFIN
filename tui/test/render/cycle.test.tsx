@@ -45,6 +45,12 @@ describe("the ladder", () => {
     expect(nextPosture("bypassPermissions", true)).toBe("default")
     expect(nextPosture("diff_approval", true)).toBe("default")
   })
+  test("a running turn steps over plan, as the REPL does", () => {
+    expect(nextPosture("acceptEdits", true, true)).toBe("bypassPermissions")
+    expect(nextPosture("acceptEdits", false, true)).toBe("default")
+    expect(nextPosture("plan", true, true)).toBe("bypassPermissions")
+    expect(nextPosture("acceptEdits", true, false)).toBe("plan")
+  })
 })
 
 describe("shift+tab in the window", () => {
