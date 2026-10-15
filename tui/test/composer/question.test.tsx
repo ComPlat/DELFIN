@@ -35,6 +35,13 @@ const bash = (id: string, seq: number) => ({
             { key: "k", label: "always commands like this" }, { key: "a", label: "abort" }, { key: "?", label: "explain" }],
 })
 
+const edit = (id: string, seq: number) => ({
+  type: "permission.asked", session: "s1", ts: 0, seq, requestId: id, kind: "confirm", tool: "edit_file",
+  preview: "--- a/x.py\n+++ b/x.py\n-a\n+b", flags: { shell: false, write: true, protected: false, outsideRead: false },
+  options: [{ key: "y", label: "yes" }, { key: "n", label: "no" }, { key: "e", label: "stop asking about writes this session" },
+            { key: "a", label: "abort" }, { key: "?", label: "explain" }],
+})
+
 async function mount(options: Parameters<typeof mountWindow>[0] = {}) {
   w = await mountWindow(options)
   ;(w.t.renderer as unknown as { copyToClipboardOSC52(text: string): boolean }).copyToClipboardOSC52 = () => true
@@ -134,6 +141,17 @@ describe("a question keeps the prompt", () => {
     expect(w!.replies()).toEqual([])
     await press("return")
     expect(w!.replies()).toEqual([{ sessionId: "s1", requestId: "q1", answers: ["CPCM"] }])
+  })
+
+  test("an answer typed into an empty prompt that begins with a digit is the line's", async () => {
+    await mount({ answerPauseMs: 350 })
+    await asked(ask("q1", 2))
+    await Bun.sleep(1200)
+    await typeAt("2 of them", 70)
+    await Bun.sleep(500)
+    expect(w!.replies()).toEqual([])
+    await press("return")
+    expect(w!.replies()).toEqual([{ sessionId: "s1", requestId: "q1", text: "2 of them" }])
   })
 
   test("esc on an empty prompt dismisses it", async () => {
@@ -296,6 +314,56 @@ describe("an approval keeps the prompt, and typing never answers it", () => {
     expect(w!.replies()).toEqual([])
     for (let i = 0; i < 2; i++) await press("backspace")
     await press("y")
+    expect(w!.replies()).toEqual([{ sessionId: "s1", requestId: "c1", choice: "A", persist: true }])
+  })
+
+  // A message typed into an empty prompt may begin with an option key
+  // ("yes, but", "every", "Run"): the key answers only alone -- another
+  // key soon after it makes both typing.
+  for (const [words, question] of [["yes please", bash], ["every file is fine", edit], ["keep going", bash],
+                                    ["abort? no", bash]] as const) {
+    test(`a message typed into an empty prompt ("${words}") is typing, not an answer`, async () => {
+      await mount({ answerPauseMs: 350 })
+      await asked(question("c1", 2))
+      await Bun.sleep(1200)                               // open a while: a deliberate first key
+      await typeAt(words, 70)
+      await Bun.sleep(500)
+      expect(w!.replies()).toEqual([])
+      expect(promptLine()).toContain(`❯ ${words}`)
+    })
+  }
+
+  test("a lone key answers once nothing follows it; with enter at once, at once", async () => {
+    await mount({ answerPauseMs: 350 })
+    await asked(bash("c1", 2))
+    await Bun.sleep(1200)
+    await press("y")
+    expect(w!.replies()).toEqual([])                      // held: a word may follow
+    await Bun.sleep(450)
+    await w!.settle()
+    expect(w!.replies()).toEqual([{ sessionId: "s1", requestId: "c1", choice: "y" }])
+    expect(promptLine()).not.toContain("y")
+    await asked(bash("c2", 3))
+    await Bun.sleep(1200)
+    await press("n")
+    await press("return")
+    expect(w!.replies().at(-1)).toEqual({ sessionId: "s1", requestId: "c2", choice: "n" })
+  })
+
+  test("the second step of A: 'yes' typed is typing, a lone y saves", async () => {
+    await mount({ answerPauseMs: 350 })
+    await asked(bash("c1", 2))
+    await Bun.sleep(1200)
+    await press("A", { shift: true })
+    await Bun.sleep(1200)
+    await typeAt("yes", 70)
+    await Bun.sleep(500)
+    expect(w!.replies()).toEqual([])
+    for (let i = 0; i < 3; i++) await press("backspace")
+    await Bun.sleep(1200)
+    await press("y")
+    await Bun.sleep(450)
+    await w!.settle()
     expect(w!.replies()).toEqual([{ sessionId: "s1", requestId: "c1", choice: "A", persist: true }])
   })
 
