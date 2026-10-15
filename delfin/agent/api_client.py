@@ -18396,7 +18396,8 @@ class _DocToolExecutor:
         root = perms.workspace if perms is not None else self._repo_root()
         if memory_type in ("lesson", "finding"):
             return self._execute_remember_layered(
-                memory_type, text, arguments, perms, root)
+                memory_type, text, arguments, perms, root,
+                evidence=str(arguments.get("evidence") or "").strip())
         try:
             from .memory_store import save_typed_memory
             path, slug, mtype = save_typed_memory(
@@ -18426,7 +18427,8 @@ class _DocToolExecutor:
         })
 
     def _execute_remember_layered(self, memory_type: str, text: str,
-                                  arguments: dict, perms, root) -> str:
+                                  arguments: dict, perms, root, *,
+                                  evidence: str = "") -> str:
         """``remember`` for the two layered kinds.
 
         lesson: a PRIVATE lesson (knowledge_private.propose). The agent
@@ -18437,7 +18439,6 @@ class _DocToolExecutor:
         instruction-shaped. Neither path opens a dialog, writes a queue
         entry or touches a repository.
         """
-        evidence = str(arguments.get("evidence") or "").strip()
         if memory_type == "lesson":
             from . import knowledge_private as _kp
             share = str(arguments.get("share") or "").strip().lower()
