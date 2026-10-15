@@ -547,7 +547,7 @@ def set_up(*, out=None, opener=None, run=None, explicit: bool = False) -> Plan:
     out = out if out is not None else sys.stderr
     why = refusal()
     if why:
-        raise SetupFailed(f"not set up: {why}.\nBy hand, in your own shell:\n" + manual_commands())
+        raise SetupFailed(f"refused here: {why}.\nBy hand, in your own shell:\n" + manual_commands())
     with _setup_lock():
         p = plan()
         if not p.packages and p.bun is not None:
