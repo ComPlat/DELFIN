@@ -22,6 +22,7 @@ import { History } from "./composer/history"
 import { loadConfig, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
+import { leavingNote } from "./leaving"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
@@ -557,39 +558,37 @@ function quit(): void {
     // OpenTUI flushes queued scrollback after destroy; the process ends on
     // its own once that is written (never exit from onDestroy).
     renderer.destroy()
-    // Full screen gives the shell its lines back as they were: one line
-    // says what became of the session -- written as the process ends, when
-    // the terminal is surely the shell's again (OpenTUI restores it after
-    // destroy() returns).
-    if (full) {
-      const note = leavingNote()
-      process.once("exit", () => {
-        try {
-          process.stdout.write(note)
-        } catch {
-          // a terminal already gone
-        }
-      })
-    }
+    printWhenGone()
   })()
 }
 
-/** What leaving a full-screen window says: why it closed when the service
- *  went (said in the window too, but that screen is gone), else whether
- *  the session runs on -- and how to come back to it. */
-function leavingNote(): string {
-  const plain = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-  if (connection.problem) return `DELFIN: ${plain(connection.problem)}\n`
+/** Once: what became of the session and the command that opens it again,
+ *  written as the process ends -- when the terminal is surely the shell's
+ *  again (OpenTUI restores it after destroy() returns), in both screens:
+ *  full screen gives the shell its lines back, inline leaves the
+ *  conversation above, and the line lands under either. */
+let printed = false
+function printWhenGone(): void {
+  if (printed) return
+  printed = true
   const s = current ? store.state.sessions[current] : undefined
-  if (!s) return ""
-  const name = s.title || s.summary?.title || `session ${s.id.slice(0, 8)}`
-  if (s.state === "ended") return `DELFIN: ${plain(name)} has ended${s.ended?.reason ? ` (${plain(s.ended.reason)})` : ""}.\n`
-  return `DELFIN: ${plain(name)} keeps running in the agent service -- `
-    + `delfin-agent tui --resume ${s.id} opens it again (or ← in any window).\n`
+  const note = leavingNote({
+    problem: connection.problem || undefined,
+    session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended } : undefined,
+  })
+  if (!note) return
+  process.once("exit", () => {
+    try {
+      process.stdout.write(note)
+    } catch {
+      // a terminal already gone
+    }
+  })
 }
 
 function leaveNow(): void {
   connection.close()
+  printWhenGone()
   try {
     renderer.destroy()
   } catch {
@@ -612,6 +611,8 @@ renderer.on("destroy", () => {
   quitting = true
   // The shell's way: a window ended by a signal exits with 128 + its number.
   if (signalled) process.exitCode = 128 + signalled
+  // A hangup has no terminal left to print to; any other end says the way back.
+  if (signalled !== 1) printWhenGone()
   connection.close()
   view.stop()
   ;(setTimeout(() => process.exit(signalled ? 128 + signalled : 0), 1500) as { unref?: () => void }).unref?.()
