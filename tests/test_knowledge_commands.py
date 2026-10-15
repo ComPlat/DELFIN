@@ -53,7 +53,8 @@ def env(tmp_path, monkeypatch):
     kn.write_entry(gdir, kn.Entry(
         slug="scratch-purge", title="Scratch is purged after two weeks",
         topic="cluster-hpc", scope="always",
-        provenance=[kn.Provenance("anna", "2026-09-01", "job:1")],
+        provenance=[kn.Provenance("anna", "2026-09-01",
+                                  "doc:docs/cluster.md")],
         review_by="2027-06-01", situation="Results on scratch.",
         lesson="Copy them home within two weeks.", why="Site purge."))
     kn.write_index(gdir)

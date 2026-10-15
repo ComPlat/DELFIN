@@ -56,7 +56,6 @@ __all__ = ["lint", "dupes", "stats", "Plan", "start", "plan_merge",
 # ---------------------------------------------------------------------------
 
 def lint(folder: Optional[Path] = None) -> list[str]:
-    from . import knowledge_check as kc
     folder = Path(folder or kn.global_dir())
     topics = kn.read_topics(folder)
     entries = kn.read_entries(folder)
@@ -66,8 +65,8 @@ def lint(folder: Optional[Path] = None) -> list[str]:
     for e in entries:
         out += [f"{e.slug}: {f}" for f in kn.template_findings(
             e, topics=topics, layer=kn.GLOBAL)]
-        out += [f"{e.slug}: {f.line()}" for f in kc.check(
-            e.text, public=True, identity={}, unpublished_terms=())]
+        out += [f"{e.slug}: {f}" for f in ks.content_findings(
+            e, public=True, identity={}, unpublished_terms=())]
     seen: dict = {}
     for e in entries:
         keys = {("text", kn._norm(f"{e.situation} {e.lesson}")),
@@ -197,7 +196,7 @@ class Plan:
     notes: list = field(default_factory=list)
 
     def preview(self) -> str:
-        lines = [self.title] + self.notes
+        lines = list(self.notes)
         lines.append("--- the change, as a diff against the base branch ---")
         lines.append(self.diff.strip() or "(no file change)")
         return "\n".join(lines)
@@ -424,4 +423,23 @@ def start(plan: Plan, *, clock=None) -> "ks.Dialog":
             f"create --head {branch} --fill"]), branch)
     kwargs = {"clock": clock} if clock is not None else {}
     return ks.start_admin(plan.title, preview_text=plan.preview(),
-                          perform=perform, public=plan.public, **kwargs)
+                          perform=perform, public=plan.public,
+                          findings=plan_findings(plan), **kwargs)
+
+
+def plan_findings(plan: Plan) -> list[str]:
+    """The content and template check over every entry the plan writes;
+    a change that would publish a finding is blocked like a share."""
+    topics = kn.read_topics(kn.global_dir())
+    out = []
+    for rel, text in plan.changes.items():
+        name = rel.rsplit("/", 1)[-1]
+        if text is None or not name.endswith(".md") or name in (
+                kn.INDEX_FILE, kn.TOPICS_FILE, "README.md"):
+            continue
+        e = kn.parse_entry(text, slug=name[:-3])
+        out += [f"{e.slug}: {f}" for f in ks.content_findings(
+            e, public=True, identity={}, unpublished_terms=())]
+        out += [f"{e.slug}: {f}" for f in kn.template_findings(
+            e, topics=topics, layer=kn.GLOBAL)]
+    return out

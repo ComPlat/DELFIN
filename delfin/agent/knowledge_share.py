@@ -61,6 +61,7 @@ import datetime as dt
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -325,9 +326,15 @@ class Dialog:
             lines.append("released by you: " + ", ".join(
                 repr(r) for r in self.released))
         if self.findings:
-            lines.append("check: BLOCKED -- reword the lesson (/lessons edit "
-                         f"{self.lesson_id} ...) and share again:")
+            lines.append("check: BLOCKED -- " + (
+                "change the plan's wording:" if self.kind == "admin" else
+                f"reword the lesson (/lessons edit {self.lesson_id} ...) "
+                "and share again:"))
             lines += [f"  - {f}" for f in self.findings]
+        elif self.kind == "admin":
+            lines.append("check: passed (" + ("public" if self.public
+                                              else "base") + " rules) for "
+                         "every entry this change writes")
         else:
             lines.append("check: passed (" + ("public" if self.public
                                               else "base") + " rules)")
@@ -476,17 +483,32 @@ def build_entry(les: kp.Lesson, target: Target, handle: str,
         layer=target.layer)
 
 
-def entry_findings(entry: kn.Entry, target: Target, *, handle: str,
-                   names: Iterable[str] = (), releasable=(),
-                   topics: Optional[dict] = None) -> list[str]:
+_OPAQUE_POINTER_RE = re.compile(r"^(?:commit:[0-9a-f]{7,40}|pr:\d{1,7}"
+                                r"|issue:\d{1,7})$")
+
+
+def content_findings(entry: kn.Entry, *, public: bool, handle: str = "",
+                     names: Iterable[str] = (), releasable=(),
+                     identity: Optional[dict] = None,
+                     unpublished_terms=None) -> list[str]:
+    """What the content rules find in an entry: its text, its authors and
+    evidence pointers, and -- for a public target -- every pointer that is
+    not one a reader elsewhere can follow. The lint calls this with no
+    machine identity and no personal terms, so it answers the same on
+    every machine."""
     from . import knowledge_check as kc
-    out = [f.line() for f in kc.check(entry.text, public=target.public,
-                                      names=names, releasable=releasable)]
-    meta = " ".join([handle] + [p.evidence for p in entry.provenance])
-    out += [f"provenance: {f.line()}" for f in kc.check(
-        meta, public=target.public, names=names, releasable=releasable)
-        if f.rule != "user-specific"]
-    if target.public:
+    kw = dict(public=public, names=names, releasable=releasable,
+              identity=identity, unpublished_terms=unpublished_terms)
+    out = [f.line() for f in kc.check(entry.text, **kw)]
+    authors = [handle] if handle else [p.author for p in entry.provenance]
+    # A commit hash or a PR/issue number is a public identifier and its
+    # digits are not a value or a node name; every other pointer is read.
+    meta = " ".join(authors + [
+        p.evidence for p in entry.provenance
+        if not _OPAQUE_POINTER_RE.match(p.evidence)])
+    out += [f"provenance: {f.line()}" for f in kc.check(meta, **kw)
+            if f.rule != "user-specific"]
+    if public:
         for p in entry.provenance:
             kind = p.evidence.split(":", 1)[0]
             if kind not in kn.PUBLIC_EVIDENCE_KINDS:
@@ -495,6 +517,14 @@ def entry_findings(entry: kn.Entry, target: Target, *, handle: str,
                     "machine; a public entry needs a public pointer ("
                     + ", ".join(f"{k}:" for k in kn.PUBLIC_EVIDENCE_KINDS)
                     + "): /lessons edit <id> evidence=<pointer>")
+    return out
+
+
+def entry_findings(entry: kn.Entry, target: Target, *, handle: str,
+                   names: Iterable[str] = (), releasable=(),
+                   topics: Optional[dict] = None) -> list[str]:
+    out = content_findings(entry, public=target.public, handle=handle,
+                           names=names, releasable=releasable)
     if topics is None and target.layer == kn.GLOBAL:
         topics = kn.read_topics(target.folder)
     out += kn.template_findings(entry, topics=topics, layer=target.layer)
@@ -727,7 +757,7 @@ def start_unshare(slug: str, *, workspace, handle: str = "",
 
 def start_admin(title: str, *, preview_text: str,
                 perform: Callable[[], tuple], public: bool = True,
-                target: Optional[Target] = None,
+                target: Optional[Target] = None, findings=(),
                 clock: Callable[[], float] = time.monotonic) -> Dialog:
     """The dialog behind every curation action. Refused for a non-admin,
     and inside an agent session."""
@@ -739,7 +769,7 @@ def start_admin(title: str, *, preview_text: str,
                            "and withdraw your own entries")
     d = Dialog(id=uuid.uuid4().hex[:12], kind="admin", title=title,
                target=target, text=preview_text, mode="admin",
-               public=public, perform=perform)
+               public=public, perform=perform, findings=list(findings))
     return _register(d, clock)
 
 

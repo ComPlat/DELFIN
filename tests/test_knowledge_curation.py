@@ -32,7 +32,7 @@ def _git(repo, *args):
 def _e(slug, **kw):
     base = dict(slug=slug, title=f"Title of {slug}", topic="workflows",
                 scope="always",
-                provenance=[kn.Provenance("anna", "2026-09-01", "job:1")],
+                provenance=[kn.Provenance("anna", "2026-09-01", "test:tests/test_x.py::t")],
                 review_by="2027-06-01", situation=f"Situation for {slug}.",
                 lesson=f"Lesson for {slug}.", why="Because.")
     base.update(kw)
@@ -68,7 +68,7 @@ def env(tmp_path, monkeypatch):
            lesson="Re-run the failing tests serially before believing them "
                   "as real.",
            why="Workers share state between tests.",
-           provenance=[kn.Provenance("bert", "2026-09-05", "job:2")])
+           provenance=[kn.Provenance("bert", "2026-09-05", "commit:abc1234")])
     stale = _e("old-cluster-note", topic="cluster-hpc",
                review_by="2026-01-01",
                lesson="Use `delfin/agent/gone.py` and `vanished_helper()`.")
