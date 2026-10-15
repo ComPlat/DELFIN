@@ -315,9 +315,10 @@ def _permissions(ctx, args: str) -> CommandResult:
         return CommandResult(output=f"not switched: {refusal}")
     if name == "bypassPermissions":
         return CommandResult(output=(
-            "not from here. Unattended execution is reachable only by "
-            "starting with --permission-mode bypassPermissions --unattended, "
-            "so it stays something typed on purpose."))
+            "not from here. bypassPermissions is reached with Shift+Tab "
+            "(where the policy allows it and isolation holds each command; "
+            "the first time it asks for y), or by starting with "
+            "--permission-mode bypassPermissions --unattended."))
     try:
         ctx.engine.set_kit_permission_mode(name)
     except Exception as exc:

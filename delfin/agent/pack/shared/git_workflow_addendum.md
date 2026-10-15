@@ -12,15 +12,16 @@ Check once per session whether the workspace is a git repo (`git rev-parse
    and history are theirs. Small, reviewable commits, never one giant
    dump at the end.
 2. **Branch before you build.** On the default branch, create a feature
-   branch first (`git checkout -b <topic>`). Never commit directly to
-   main unless the user explicitly says so.
+   branch first (`git checkout -b <topic>`; in DELFIN's own checkout,
+   which stays on main: `enter_worktree`). Never commit to main unless
+   the user says so.
 3. **Push the branch before any merge.** The development history must
    exist on the remote before it is merged anywhere. Merge to main only
    when the user asks, after the branch is pushed and tests pass.
 4. **Worktrees for parallel or risky work.** Use the enter_worktree /
    exit_worktree tools (or a subagent with worktree isolation) for
    experiments and for anything running alongside other changes — never
-   destabilise the user's checkout with half-done parallel edits.
+   destabilise the user's checkout.
 5. **Look before destructive git.** No `reset --hard`, `checkout --`,
    `clean`, force-push or history rewrite on anything you did not
    create this session without asking first.

@@ -8,7 +8,8 @@
  *   status    spinner · what it does · elapsed · tokens · cost · esc
  *   tasks     the session's task list while a task is open (tasks.tsx)
  *   approval  the open question, with exactly the keys the session offers
- *   composer  ❯ the prompt (grows to 8 rows; completion and search above)
+ *   composer  ❯ the prompt (grows to 8 rows; completion and search above);
+ *             "!" in front: a shell line, said on the box's top border
  *   hints     posture · model · keys; at its right, quietly, what needs
  *             the user (◉ 3 · ✗ 1), or for a moment what just arrived
  *
@@ -19,7 +20,7 @@
  * how many rows it takes (`footerRows`), at any width: a footer taller
  * than its content wastes rows, a shorter one draws over itself.
  */
-import { infoStringToFiletype, type CliRenderer, type Renderable, type ScrollBoxRenderable,
+import { TextAttributes, infoStringToFiletype, type CliRenderer, type Renderable, type ScrollBoxRenderable,
          type SyntaxStyle } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
@@ -28,7 +29,9 @@ import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
 import { GUTTER, SPINNER, postureLook, type Theme } from "../theme/theme"
 import { fit, width } from "../text"
+import { clickable } from "../mouse"
 import { plainIfLate } from "../scrollback/highlighter"
+import { SegmentedMarkdown, holdsTable } from "../scrollback/segmented"
 import { TranscriptView, themedStyle, type ScreenItems } from "../scrollback/screenview"
 import { fenceOf, liveBlocks, liveRows } from "./live"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
@@ -46,6 +49,12 @@ export interface FooterProps {
   /** Starting the first session: said in the hints line. */
   starting?: () => boolean
   message: () => string
+  /** The first step onto bypass waiting for y: shown in the message's
+   *  row (in red), in its place, so the footer's height is the same. */
+  offer?: () => string
+  /** The offer's clickable part, and what a click on it does. */
+  offerYes?: string
+  onOfferClick?: () => void
   composer: Composer
   approval: ApprovalUi
   picker?: Picker
@@ -69,6 +78,19 @@ export interface FooterProps {
   scrollRef?: (box: ScrollBoxRenderable) => void
   /** The wheel turned over the rows. */
   onUserScroll?: () => void
+}
+
+/** What the prompt box's top border says in shell mode, the longest that
+ *  fits `room` columns (the words; the border adds a blank each side). */
+export const SHELL_HINTS = [
+  "shell · runs through the agent's checks · esc or backspace on an empty line to leave",
+  "shell · runs through the agent's checks · esc to leave",
+  "shell · esc to leave",
+  "shell",
+]
+
+export function shellHint(room: number): string {
+  return SHELL_HINTS.find((h) => width(h) <= room) ?? ""
 }
 
 /** Rows the footer takes with the agent view open: all but one. */
@@ -153,6 +175,15 @@ export function terminalSize(renderer: CliRenderer): Accessor<{ width: number; h
 
 export function Footer(props: FooterProps): JSX.Element {
   const t = props.theme
+  /** The message row: the bypass offer while it waits, else the note. */
+  const note = () => props.offer?.() || props.message()
+  // Only the offer's "[y] switch" takes a click, never the rest of the row.
+  const offerHit = clickable((col) => {
+    if (!props.offer?.() || !props.offerYes) return null
+    const shown = fit(note(), cols() - 1)
+    const at = shown.indexOf(props.offerYes)
+    return at >= 0 && col >= at && col < at + props.offerYes.length ? "yes" : null
+  }, () => props.onOfferClick?.())
   const term = terminalSize(props.renderer)
   const [tick, setTick] = createSignal(0)
   const [now, setNow] = createSignal(Date.now())
@@ -197,10 +228,18 @@ export function Footer(props: FooterProps): JSX.Element {
     const s = props.session()
     const name = viewOpen() ? "" : (s?.title || s?.summary?.title || "")
     const total = Math.max(1, cols() - 1)
-    if (!name || total < 12) return { left: rule(), chip: "", right: "" }
-    const chip = ` ${fit(name, Math.max(4, Math.floor(total / 2)))} `
-    return { left: "─".repeat(Math.max(1, total - width(chip) - 1)), chip, right: "─" }
+    const chip = name && total >= 12 ? ` ${fit(name, Math.max(4, Math.floor(total / 2)))} ` : ""
+    // Shell mode: at the left, what the line is and how to leave it -- as
+    // much as fits beside the name ("──" before it, one "─" after).
+    const said = props.composer.shell() ? shellHint(total - width(chip) - (chip ? 1 : 0) - 5) : ""
+    const head = said ? "── " : ""
+    const words = said ? `${said} ` : ""
+    const used = width(head) + width(words) + width(chip) + (chip ? 1 : 0)
+    return { head, mode: said ? "shell" : "", words: words.slice(said ? 5 : 0),
+             left: "─".repeat(Math.max(said ? 0 : 1, total - used)), chip, right: chip ? "─" : "" }
   }
+  /** The box's rules: in the shell's colour while the line is a command. */
+  const ruleTone = () => props.composer.shell() ? t().shell : t().faint
 
   /** The task list's lines: none in the agent view, which is another
    *  session's place. */
@@ -213,13 +252,13 @@ export function Footer(props: FooterProps): JSX.Element {
     if (full()) return
     props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
       ? agentFooterRows(term())
-      : footerRows(props.session(), term(), props.message(), props.composer.height(),
+      : footerRows(props.session(), term(), note(), props.composer.height(),
                    props.approval, props.picker?.height() ?? 0, tasks().length)
   })
   /** The agent view's list: its rows less the message, the composer and
    *  its rules, and the hints. */
   const panelRows = () => Math.max(2, (props.agentsOnOwnScreen || full() ? term().height : agentFooterRows(term()))
-    - (props.message() ? 1 : 0) - 3 - props.composer.height())
+    - (note() ? 1 : 0) - 3 - props.composer.height())
 
   const status = (turn: TurnLive) => {
     const s = props.session()
@@ -239,7 +278,7 @@ export function Footer(props: FooterProps): JSX.Element {
     for (const ms of [40, 150]) (setTimeout(() => props.composer.remeasure(), ms) as { unref?: () => void }).unref?.()
   })
 
-  const budget = () => approvalBudget(props.session(), term(), props.message(), props.composer.height(),
+  const budget = () => approvalBudget(props.session(), term(), note(), props.composer.height(),
                                       props.picker?.height() ?? 0, tasks().length)
 
   // Nothing in the footer shrinks: what does not fit is cut at the top
@@ -255,6 +294,9 @@ export function Footer(props: FooterProps): JSX.Element {
       }
       if (peeked) return peeked.kind === "elsewhere" ? `a message for ${peeked.name}…` : `reply to ${peeked.name}…`
       return "a new session: what should it do?"
+    }
+    if (props.composer.shell()) {
+      return props.session()?.turn ? "a shell command… (runs when the turn ends)" : "a shell command…"
     }
     return props.starting?.() ? "starting the session…"
       : props.session()?.turn
@@ -272,11 +314,14 @@ export function Footer(props: FooterProps): JSX.Element {
           the agent view has the screen, so closing the view keeps its
           scroll position and does not lay out every row again. */}
       <Show when={full()}>
-        <TranscriptView renderer={props.renderer} screen={props.screen!} theme={t} width={cols}
+        <TranscriptView renderer={props.renderer} screen={props.screen!} theme={t} width={cols} height={() => term().height}
                         visible={() => !viewOpen()} ref={props.scrollRef} onUserScroll={props.onUserScroll} />
       </Show>
-      <Show when={props.message()}>
-        <text flexShrink={0} fg={t().warn} wrapMode="none">{fit(props.message(), cols() - 1)}</text>
+      <Show when={note()}>
+        <text flexShrink={0} fg={props.offer?.() ? t().err : t().warn} wrapMode="none"
+              attributes={props.offer?.() ? TextAttributes.BOLD : 0} ref={offerHit.ref}
+              onMouseDown={offerHit.onMouseDown} onMouseUp={offerHit.onMouseUp}
+              onMouseDrag={offerHit.onMouseDrag}>{fit(note(), cols() - 1)}</text>
       </Show>
       <Show when={!viewOpen()}>
       {/* The answer's unfinished block, under the rows in both screens: a
@@ -288,7 +333,7 @@ export function Footer(props: FooterProps): JSX.Element {
         {/* Its last rows, at the bottom: what does not fit is cut at the top. */}
         <box flexShrink={0} height={liveHeight()} flexDirection="column" justifyContent="flex-end" overflow="hidden">
           <For each={liveKeys()}>
-            {(key, i) => <LiveBlockView text={() => liveText(key)} first={() => i() === 0} syntax={style} />}
+            {(key, i) => <LiveBlockView text={() => liveText(key)} first={() => i() === 0} syntax={style} width={cols} />}
           </For>
         </box>
       </Show>
@@ -313,9 +358,12 @@ export function Footer(props: FooterProps): JSX.Element {
       </Show>
       </Show>
       <text flexShrink={0} wrapMode="none">
-        <span style={{ fg: t().faint }}>{topRule().left}</span>
+        <span style={{ fg: ruleTone() }}>{topRule().head}</span>
+        <span style={{ fg: t().shell, bold: true }}>{topRule().mode}</span>
+        <span style={{ fg: t().muted }}>{topRule().words}</span>
+        <span style={{ fg: ruleTone() }}>{topRule().left}</span>
         <span style={{ fg: t().accentSoft }}>{topRule().chip}</span>
-        <span style={{ fg: t().faint }}>{topRule().right}</span>
+        <span style={{ fg: ruleTone() }}>{topRule().right}</span>
       </text>
       <ComposerView
         composer={props.composer}
@@ -330,7 +378,7 @@ export function Footer(props: FooterProps): JSX.Element {
         pasteActive={() => props.focused() && (viewOpen() || !asked())}
         placeholder={placeholder}
       />
-      <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
+      <text flexShrink={0} fg={ruleTone()} wrapMode="none">{rule()}</text>
       <Hints {...props} cols={cols} />
     </box>
   )
@@ -343,7 +391,8 @@ export function Footer(props: FooterProps): JSX.Element {
  * fenced code block is drawn as code that streams: as part of markdown it
  * would lose its colours for a frame on every delta.
  */
-function LiveBlockView(props: { text: () => string; first: () => boolean; syntax: () => SyntaxStyle }): JSX.Element {
+function LiveBlockView(props: { text: () => string; first: () => boolean; syntax: () => SyntaxStyle;
+                         width: () => number }): JSX.Element {
   const fence = () => fenceOf(props.text())
   // Drawn without a preview, a block shows nothing until its colours come:
   // if they are late (a busy highlighter), plain text meanwhile.
@@ -356,8 +405,14 @@ function LiveBlockView(props: { text: () => string; first: () => boolean; syntax
     // Content last: an element builds its blocks when it is set, with the
     // style it has by then (props go in in order).
     <Show when={fence()} fallback={
-      <markdown ref={take} syntaxStyle={props.syntax()} conceal width="100%" flexShrink={0}
-                marginTop={props.first() ? 0 : 1} tableOptions={{ widthMode: "content" }} content={props.text()} />
+      // A block that holds a table: in segments, as the rows draw it.
+      <Show when={holdsTable(props.text())} fallback={
+        <markdown ref={take} syntaxStyle={props.syntax()} conceal width="100%" flexShrink={0}
+                  marginTop={props.first() ? 0 : 1} tableOptions={{ widthMode: "content" }} content={props.text()} />
+      }>
+        <SegmentedMarkdown ref={take} text={props.text} width={props.width} syntax={props.syntax}
+                           marginTop={() => props.first() ? 0 : 1} />
+      </Show>
     }>
       <code ref={take} syntaxStyle={props.syntax()} streaming drawUnstyledText={false} conceal={false} width="100%"
             flexShrink={0} marginTop={props.first() ? 0 : 1} filetype={infoStringToFiletype(fence()?.lang ?? "")}

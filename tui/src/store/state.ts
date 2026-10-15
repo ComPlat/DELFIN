@@ -98,6 +98,13 @@ export interface SessionState {
   wait: string
   /** The session's task list, as it sent it last. */
   tasks: TaskRow[]
+  /** Why shift+tab steps over bypassPermissions ("" when it may stop
+   *  there); null until the session has said it -- a service that never
+   *  says is treated as stepping over it. */
+  bypassBlocked: string | null
+  /** Bypass was confirmed once in this session: the cycle passes through
+   *  it without asking again. */
+  bypassConfirmed: boolean
   /** Auto mode's one-line state ("" while off), as the session sent it. */
   auto: string
 }
@@ -160,7 +167,7 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
     id, title: "", workspace: "", provider: "", model: "", mode: "", approval: "",
     effort: "", state: "starting", pending: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     turn: null, tail: "", tailKey: "", held: [], thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
-    tasks: [], auto: "",
+    tasks: [], bypassBlocked: null, bypassConfirmed: false, auto: "",
   }
   applyInfo(s, info)
   return s
@@ -179,6 +186,8 @@ export function applyInfo(s: SessionState, info: Record<string, unknown>): void 
   if ("approval" in info) s.approval = str(info.approval)
   if ("effort" in info) s.effort = str(info.effort)
   if ("tasks" in info && info.tasks != null) s.tasks = taskRows(info.tasks)
+  if ("bypassBlocked" in info && info.bypassBlocked != null) s.bypassBlocked = str(info.bypassBlocked)
+  if ("bypassConfirmed" in info && info.bypassConfirmed != null) s.bypassConfirmed = Boolean(info.bypassConfirmed)
   if ("auto" in info) s.auto = oneLine(str(info.auto))
 }
 

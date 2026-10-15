@@ -13,13 +13,15 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, renameOf } from "./commands"
+import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf } from "./commands"
+import type { ArgumentChoices } from "./composer/complete"
+import { CLICK_PAUSE_MS } from "./mouse"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
 import type { AgentScreen } from "./agents/screen"
 import { createAgentView, needsInput, peekLines, sessionName, type AgentRow } from "./agents/view"
 import { createComposer } from "./composer/composer"
 import { History } from "./composer/history"
-import { createApprovalUi, setFullPreviewKey } from "./footer/approval"
+import { ANSWER_PAUSE_MS, createApprovalUi, setFullPreviewKey } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
 import { editPrompt } from "./composer/editor"
@@ -77,6 +79,9 @@ export interface AppProps {
   onLines?: (title: string, lines: string[]) => void
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
+  /** The pause before a click answers a question or picks from a list
+   *  (mouse.ts CLICK_PAUSE_MS); tests set 0. */
+  clickPauseMs?: number
   /** How long a new item names itself at the bottom right, and for how
    *  long after the window opens nothing is news (tests shorten them). */
   arrival?: { shownMs: number; quietMs: number }
@@ -93,13 +98,32 @@ const ARRIVAL_WINDOW_S = 180
 /** What the window finds when it opens is no news. */
 const ARRIVAL_QUIET_MS = 2500
 
-/** shift+tab's order, as in the REPL (never onto bypass). */
-export const POSTURES = ["plan", "default", "acceptEdits"] as const
+/** shift+tab's order, as in the REPL (delfin/agent/posture_cycle.py):
+ *  bypassPermissions only where the session says the ladder may stop
+ *  there (the managed policy allows it, isolation holds each command). */
+export const POSTURES = ["default", "acceptEdits", "plan", "bypassPermissions"] as const
 
-/** The posture after `current`; from one outside the cycle, default. */
-export function nextPosture(current: string): string {
-  const at = POSTURES.indexOf(current as typeof POSTURES[number])
-  return at < 0 ? "default" : POSTURES[(at + 1) % POSTURES.length]!
+/** The posture after `current`; from one outside the cycle, default.
+ *  `bypass` false steps over bypassPermissions; `turnRunning` steps over
+ *  plan, as the REPL does (delfin/agent/mode_cycle.py): every step takes
+ *  effect at once, and a tool call landing while the cycle stood on plan
+ *  was refused. */
+export function nextPosture(current: string, bypass = false, turnRunning = false): string {
+  const order = POSTURES.filter((m) => (bypass || m !== "bypassPermissions")
+    && !(turnRunning && m === "plan"))
+  const at = order.indexOf(current as typeof POSTURES[number])
+  if (at >= 0) return order[(at + 1) % order.length]!
+  // From plan itself while a turn runs: the step after plan on the full ladder.
+  const full = POSTURES.filter((m) => bypass || m !== "bypassPermissions")
+  const i = full.indexOf(current as typeof POSTURES[number])
+  return i < 0 ? "default" : full[(i + 1) % full.length]!
+}
+
+/** What the confirm row says while the first step onto bypass waits;
+ *  BYPASS_YES is its clickable part (full screen). */
+export const BYPASS_YES = "[y] switch"
+export function bypassOffer(from: string): string {
+  return `⏵⏵ bypass permissions asks nothing from here on: ${BYPASS_YES} · any other key stays in ${from}`
 }
 
 export function App(props: AppProps): JSX.Element {
@@ -213,7 +237,7 @@ export function App(props: AppProps): JSX.Element {
     return true
   }
 
-  const picker = createPicker()
+  const picker = createPicker({ clickPauseMs: props.clickPauseMs })
 
   // Prompts sent while a session starts (the first one, or a new one from
   // the agent view): they go out to it once it is up.
@@ -280,6 +304,12 @@ export function App(props: AppProps): JSX.Element {
       say(outcome.note)
       return outcome.text ? deliver(outcome.text) : true
     }
+    const resumed = resumeOf(text)
+    if (resumed !== null && !how) {
+      if (resumed === sid()) say("that session is the one in view")
+      else props.onResume?.(resumed, workspaces.get(resumed) ?? "")
+      return true
+    }
     if (/^\/keys$/.test(text.trim()) && !how) {
       props.onLines?.("keys in this window", keyTable(props.keymap))
       return true
@@ -293,13 +323,19 @@ export function App(props: AppProps): JSX.Element {
     return result !== undefined
   }
 
+  // The agent view is made after the composer: read through this, set
+  // once it exists (a "!" in its prompt is a name, an answer or a message).
+  let viewOpen = () => false
   const composer = createComposer({
+    shellAllowed: () => !viewOpen(),
     request: (method, params) => props.client.request(method, params),
     sessionId: sid,
     history: props.history ?? new History(),
     keymap: props.keymap,
     say,
     send,
+    argumentChoices: (command) => argumentChoices(command),
+    clickPauseMs: props.clickPauseMs,
   })
 
   // -- the agent view ----------------------------------------------------------
@@ -388,6 +424,7 @@ export function App(props: AppProps): JSX.Element {
     setDraft: (text) => (text ? composer.setText(text) : composer.clear()),
     say,
   })
+  viewOpen = () => agents.state.open
   // The alternate screen, while the view is open.
   createEffect(() => {
     if (!props.agentScreen) return
@@ -514,6 +551,47 @@ export function App(props: AppProps): JSX.Element {
     const d = Math.max(0, Date.now() / 1000 - secs)
     return d < 3600 ? `${Math.round(d / 60)}m ago` : d < 86400 ? `${Math.round(d / 3600)}h ago` : `${Math.round(d / 86400)}d ago`
   }
+  /** Where each listed session works (a saved one is started there). */
+  const workspaces = new Map<string, string>()
+  /** The sessions running in the service first, then the saved ones of
+   *  this workspace (the resume picker, `/resume `'s menu). */
+  const resumeRows = (s: SessionState) => Promise.all([
+    props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
+    props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
+  ]).then(([listed, past]) => {
+    const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
+      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
+      detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
+      current: r.sessionId === s.id,
+    }))
+    const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
+      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
+      detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
+        .filter(Boolean).join(" · "),
+      current: false,
+    }))
+    for (const r of [...running, ...saved]) workspaces.set(r.id, r.workspace)
+    return [...running, ...saved]
+  })
+  /** What may follow a command on the prompt: the window's own commands
+   *  here, the session's from session.choices ("args"). */
+  const argumentChoices = async (command: string): Promise<ArgumentChoices> => {
+    const s = session()
+    if (command === "/rename") return { current: "", choices: [], usage: "/rename [name]  (no name: after its first prompt)" }
+    if (command === "/resume") {
+      if (!s) return { current: "", choices: [], usage: "" }
+      const rows = await resumeRows(s)
+      return { current: s.id, usage: "/resume <session id>",
+               choices: rows.map((r) => ({ value: r.id, label: r.title, detail: r.detail })) }
+    }
+    const got = await props.client.request("session.choices", { sessionId: sid(), what: "args", command })
+    return {
+      current: String(got?.current ?? ""),
+      usage: String(got?.usage ?? ""),
+      choices: ((got?.choices ?? []) as any[]).filter((c) => c?.value)
+        .map((c) => ({ value: String(c.value), detail: c.detail ? String(c.detail) : "" })),
+    }
+  }
   const openPicker = (what: string) => {
     const s = session()
     if (!s) return
@@ -533,26 +611,9 @@ export function App(props: AppProps): JSX.Element {
         })
         return
       case "resume":
-        // The sessions running in the service first, then the saved ones of
-        // this workspace (the agent view will show the running ones too).
-        picker.open("resume a session", Promise.all([
-          props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
-          props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
-        ]).then(([listed, past]) => {
-          const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
-            label: r.title || "(untitled)",
-            detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
-            value: `${r.sessionId}\t${r.workspace}`,
-            current: r.sessionId === s.id,
-          }))
-          const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
-            label: r.title || "(untitled)",
-            detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
-              .filter(Boolean).join(" · "),
-            value: `${r.sessionId}\t${r.workspace}`,
-          }))
-          return [...running, ...saved]
-        }), (c) => {
+        picker.open("resume a session", resumeRows(s).then((rows) => rows.map((r) => ({
+          label: r.title, detail: r.detail, value: `${r.id}\t${r.workspace}`, current: r.current,
+        }))), (c) => {
           const [id, workspace] = c.value.split("\t")
           if (id && id !== sid()) props.onResume?.(id, workspace ?? "")
         })
@@ -613,7 +674,7 @@ export function App(props: AppProps): JSX.Element {
   let typingAt = 0
   setFullPreviewKey(props.keymap.label("details") || props.keymap.label("expand"))
   const approval = createApprovalUi({ reply, say, lastKey: () => typingAt,
-                                      pauseMs: props.answerPauseMs })
+                                      pauseMs: props.answerPauseMs, clickPauseMs: props.clickPauseMs })
   // The question's own state starts when it appears (its typeahead pause
   // counts from then), and ends with it.
   createEffect(() => {
@@ -642,10 +703,54 @@ export function App(props: AppProps): JSX.Element {
     exitedBefore = exited
   })
 
+  /** The first step onto bypass in a session waits for y (or a click on
+   *  its row): the posture it was on, and when it was offered -- a key
+   *  sooner than the answer pause is typing, not an answer. */
+  const [offer, setOffer] = createSignal<{ id: string; from: string; at: number } | null>(null)
+  // A question takes the footer: the offer is not left behind it.
+  createEffect(() => {
+    if (session()?.pending[0] || session()?.state === "ended") setOffer(null)
+  })
   const cycleMode = () => {
     const s = session()
     if (!s || s.state === "ended") return
-    void call("session.setMode", { sessionId: sid(), mode: nextPosture(s.approval) })
+    // An offer left open: the key moves on past bypass, from it.
+    const from = offer()?.id === s.id ? "bypassPermissions" : s.approval
+    setOffer(null)
+    const next = nextPosture(from, s.bypassBlocked === "", !!s.turn && s.state !== "ended")
+    if (next === "bypassPermissions" && !s.bypassConfirmed) {
+      setOffer({ id: s.id, from: s.approval, at: Date.now() })
+      return
+    }
+    void call("session.setMode", { sessionId: sid(), mode: next })
+  }
+  /** A click on the offer's [y] switch: as y, after CLICK_PAUSE_MS from
+   *  the offer (a double shift+tab cannot be a click; a hand already on
+   *  its way to where the row appeared is not an answer). */
+  const clickOffer = (): boolean => {
+    const o = offer()
+    if (!o || o.id !== sid()) return false
+    if (Date.now() - o.at < (props.clickPauseMs ?? CLICK_PAUSE_MS)) return false
+    setOffer(null)
+    void call("session.setMode", { sessionId: sid(), mode: "bypassPermissions", confirmed: true })
+    return true
+  }
+  /** y on the offer: the switch, marked as confirmed by a person. */
+  const takeOffer = (key: KeyEvent): boolean => {
+    const o = offer()
+    if (!o) return false
+    // shift+tab again: cycleMode moves on past bypass from the offer.
+    if (o.id === sid() && props.keymap.matches("cycleMode", key)) return false
+    setOffer(null)
+    if (o.id !== sid()) return false
+    const deliberate = Date.now() - o.at >= (props.answerPauseMs ?? ANSWER_PAUSE_MS)
+    if (deliberate && !key.ctrl && !key.meta && (key.name === "y" || key.sequence === "y")) {
+      void call("session.setMode", { sessionId: sid(), mode: "bypassPermissions", confirmed: true })
+      return true
+    }
+    // Any other key: the posture stays, and the key does what it does.
+    say(`still ${o.from}`)
+    return false
   }
 
   const draft = () => composer.value()
@@ -706,6 +811,10 @@ export function App(props: AppProps): JSX.Element {
         return
       }
       if (agents.handleKey(key) || composer.handleKey(key)) key.preventDefault()
+      return
+    }
+    if (offer() && !asked && takeOffer(key)) {
+      key.preventDefault()
       return
     }
     if (km.matches("agents", key) && !composer.value() && !composer.search() && !picker.state.open
@@ -815,6 +924,9 @@ export function App(props: AppProps): JSX.Element {
       approval={approval}
       picker={picker}
       tasksFolded={tasksFolded}
+      offer={() => offer()?.id === sid() ? bypassOffer(offer()!.from) : ""}
+      offerYes={BYPASS_YES}
+      onOfferClick={() => void clickOffer()}
       agents={agents}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}

@@ -64,8 +64,8 @@ def test_the_command_has_no_terminal_and_a_session_of_its_own():
 
 
 def test_output_exit_code_and_input_come_through():
-    out = C.run("read x; echo got:$x; echo err >&2; exit 3", shell=True,
-                input="hello\n", timeout=30)
+    out = C.run_shell("read x; echo got:$x; echo err >&2; exit 3",
+                      input="hello\n", timeout=30)
     assert (out.returncode, out.stdout.strip(), out.stderr.strip()) == (3, "got:hello", "err")
 
 

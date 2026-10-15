@@ -160,7 +160,7 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "interrupt", does: "End this turn. A running tool call finishes first. With a question open: refuse it, as n does." },
   { action: "submit", does: "Send what you typed; during a turn it is queued and goes out when the turn ends." },
   { action: "steer", does: "Send what you typed INTO the running turn; the model reads it on its next round." },
-  { action: "cycleMode", does: "Next approval posture (never onto bypass)." },
+  { action: "cycleMode", does: "Next approval posture: default, accept edits, plan, bypass (bypass only where policy and isolation allow it; its first time asks for y)." },
   { action: "details", does: "Show or hide the tool calls' details: what each printed, an edit's diff. Full screen: a click on one shows just its own. Under GNU screen, inline: the last result in full." },
   { action: "expand", does: "The last tool result in full, written into the conversation." },
   { action: "tasks", does: "Fold the task list above the prompt to one line, or open it again." },

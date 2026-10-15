@@ -197,4 +197,137 @@ def choices(engine: Any, what: str) -> dict[str, Any]:
         if current and current not in modes:
             modes.insert(0, current)
         return {"current": current, "choices": [{"value": m} for m in modes]}
-    raise ValueError("what must be model, effort or mode")
+    raise ValueError("what must be model, effort, mode or args")
+
+
+# -- what goes after a /command ------------------------------------------------
+
+#: The fixed words a builtin takes (its handler's own grammar in
+#: repl_commands), each with what it does.
+_WORDS: dict[str, list[tuple[str, str]]] = {
+    "/permissions": [("plan", "read and plan; every write and command asked"),
+                     ("default", "ask before each write and each command"),
+                     ("acceptEdits", "writes go through; commands still asked"),
+                     ("rules", "the permission rules in force")],
+    "/git": [("status", ""), ("diff", ""), ("log", ""), ("branch", ""),
+             ("role", "maintainer or contributor here")],
+    "/undo-file": [("list", "what the journal can restore"), ("last", "the last change"),
+                   ("turn", "the last turn's changes"), ("session", "every change of this session")],
+    "/memories": [("global", "the memories of every project"), ("all", "this project's and the global ones")],
+    "/jobs": [("ls", "the watched jobs"), ("watch on", "start the monitor"),
+              ("watch off", "stop the monitor"), ("watch status", "is the monitor running")],
+    "/trust": [("grant hooks", ""), ("grant mcp", ""), ("revoke hooks", ""), ("revoke mcp", "")],
+    "/session": [("ls", "this folder's sessions")],
+}
+
+#: What a builtin takes when its values cannot be listed.
+_USAGE: dict[str, str] = {
+    "/editor": "/editor [text to start from]",
+    "/compact": "/compact [what the summary must keep]",
+    "/trace": "/trace [how many calls, default 30]",
+    "/bug": "/bug <what went wrong>",
+    "/session": "/session ls | /session search <words>",
+    "/forget": "/forget <memory name>",
+    "/approve": "/approve <id> | all  (/pending lists them)",
+    "/reject": "/reject <id> | all  (/pending lists them)",
+    "/bash": "/bash [ls] | <job id> | kill <job id>",
+    "/attention": "/attention [clear [kind]]",
+    "/tools": "/tools [search words] | groups | enable <group>",
+    "/skills": "/skills [name] | proposals",
+    "/commands": "/commands [name]",
+    "/plans": "/plans [name]",
+    "/help": "/help [search words]",
+}
+
+
+def _listed(engine: Any, workspace: Path, command: str) -> list[dict[str, str]]:
+    """Values that depend on the session or its workspace."""
+    if command == "/help":
+        from .. import repl_commands as rc
+        return [{"value": name.lstrip("/"), "detail": summary}
+                for _cat, name, summary, _args in rc.palette_rows()]
+    if command == "/skills":
+        from .. import skills
+        return [{"value": k.name, "detail": " ".join(str(k.description or "").split())[:80]}
+                for k in skills.discover_skills(workspace)] + [{"value": "proposals", "detail": "skills proposed to you"}]
+    if command == "/commands":
+        from .. import slash_commands
+        return [{"value": t.slash.lstrip("/"), "detail": str(t.description or "")[:80]}
+                for t in slash_commands.discover_commands(workspace)]
+    if command in ("/forget",):
+        from ..memory_store import list_typed_memories
+        return [{"value": str(m["name"]), "detail": str(m.get("description") or "")[:80]}
+                for m in list_typed_memories(workspace, scope="all")]
+    if command == "/plans":
+        from .. import memory_store
+        return [{"value": str(p["name"]), "detail": str(p.get("description") or "")[:80]}
+                for p in memory_store.list_plans(workspace)[:25]]
+    if command in ("/approve", "/reject"):
+        from .. import pending_changes
+        sid = str(getattr(engine, "session_id", "") or "")
+        rows = [{"value": str(r.get("seq") or r.get("id")),
+                 "detail": str(r.get("path") or r.get("file") or "")[:80]}
+                for r in pending_changes.list_pending(sid)]
+        return rows + ([{"value": "all", "detail": "every staged diff"}] if rows else [])
+    if command == "/bash":
+        from .. import bash_jobs
+        jobs = bash_jobs.get_registry().list_jobs(include_finished=False)
+        return [{"value": "ls", "detail": "the background jobs"}] + [
+            {"value": f"kill {j.job_id}", "detail": " ".join(str(j.command).split())[:60]} for j in jobs]
+    if command == "/attention":
+        from .. import attention
+        return [{"value": "clear", "detail": "empty the inbox"}] + [
+            {"value": f"clear {k}", "detail": ""} for k in attention.ATTENTION_KINDS]
+    if command == "/tools":
+        from ..toolsets import GROUPS
+        return [{"value": "groups", "detail": "the optional tool groups"}] + [
+            {"value": f"enable {g}", "detail": f"offer the {g} tools from the next turn"} for g in GROUPS]
+    return []
+
+
+def argument_choices(engine: Any, workspace: Path, command: str) -> dict[str, Any]:
+    """What may follow ``command`` (``/model``) on a typed line:
+    ``{current, choices: [{value, detail?}], usage}``. A value is the text
+    after the command and a space, as the user would type it; ``usage`` a
+    line saying what the command takes when its values cannot all be
+    listed (or "" when they can). A command the session does not run
+    gets nothing. Values are read when asked: memories, plans, staged
+    diffs and jobs change while the session runs."""
+    command = str(command or "").strip().split(" ")[0].lower()
+    if command in ("/model", "/effort", "/mode"):
+        got = choices(engine, command[1:])
+        listed = [c for c in got["choices"] if c.get("value")]
+        return {"current": got["current"], "choices": listed, "usage": ""}
+    known = {c["name"].lower(): c for c in command_list(workspace)}
+    entry = known.get(command)
+    if entry is None or not entry.get("takesArgs"):
+        return {"current": "", "choices": [], "usage": ""}
+    current = ""
+    if command == "/permissions":
+        try:
+            current = str(getattr(engine.kit_permissions, "mode", "") or "")
+        except Exception:
+            current = ""
+    values = [{"value": v, "detail": d} for v, d in _WORDS.get(command, [])]
+    try:
+        values += _listed(engine, workspace, command)
+    except Exception:
+        pass                                     # a list that cannot be read: the usage says it
+    usage = _USAGE.get(command, "")
+    if entry.get("source") == "user":
+        from .. import slash_commands
+        try:
+            tpl = slash_commands.get_command(command.lstrip("/"), workspace)
+            hint = str(getattr(tpl, "argument_hint", "") or "").strip()
+        except Exception:
+            hint = ""
+        usage = f"{entry['name']} {hint or '[arguments]'}"
+    elif entry.get("source") == "skill":
+        usage = f"{entry['name']} [what to do with it]"
+    elif entry.get("source") == "subagent":
+        usage = f"{entry['name']} <the task>"
+    elif not values and not usage:
+        usage = f"{entry['name']} [arguments]"
+    clean = [{"value": " ".join(str(c["value"]).split()), "detail": " ".join(str(c.get("detail") or "").split())}
+             for c in values if str(c.get("value") or "").strip()]
+    return {"current": current, "choices": clean, "usage": usage}

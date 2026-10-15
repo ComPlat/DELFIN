@@ -190,7 +190,13 @@ def test_a_line_typed_during_a_turn_is_queued_not_injected():
     assert "queued" in err.getvalue()
 
 
-def test_shift_tab_walks_the_ladder_and_never_reaches_bypass():
+def test_shift_tab_walks_the_ladder_and_steps_over_bypass_without_a_cage(monkeypatch):
+    """Without a layer that holds each command, bypass is not on the
+    ladder (tests/test_shift_tab_reaches_bypass_only_where_it_is_safe.py
+    has the rest)."""
+    from delfin.agent import isolation_posture as IP
+    monkeypatch.setattr(IP, "isolation_status", lambda perms=None: IP.IsolationStatus(
+        False, reason="no layer works on this host"))
     engine = _Engine("plan")
     agent, _out, _err = _agent(engine)
     seen = []
@@ -199,8 +205,7 @@ def test_shift_tab_walks_the_ladder_and_never_reaches_bypass():
         seen.append(engine.kit_permissions.mode)
     assert seen == ["default", "acceptEdits", "plan",
                     "default", "acceptEdits", "plan"]
-    assert "bypassPermissions" not in seen, (
-        "unattended execution must stay something typed on purpose")
+    assert "bypassPermissions" not in seen
 
 
 def test_a_backend_without_a_gate_says_so_instead_of_crashing():

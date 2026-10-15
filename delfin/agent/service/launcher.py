@@ -348,8 +348,50 @@ def _log_tail(lines: int = 12) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+#: The window's sources inside an installed package (a wheel): copied
+#: there from tui/ by setup.py's build_py, as package data.
+PACKAGED_TUI = "tui_sources"
+
+
+def _is_window_tree(path: Path) -> bool:
+    """The window's sources: its entry point, and a package.json that
+    names it (a folder called tui of another project is not it)."""
+    try:
+        name = json.loads((path / "package.json").read_text()).get("name")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return name == "@delfin/tui" and (path / "src" / "main.tsx").is_file()
+
+
+def tui_source_root() -> Path | None:
+    """The window's sources: ``tui/`` beside the ``delfin`` package (a
+    checkout, also installed editable), else the copy a wheel carries
+    (``service/tui_sources``), else None."""
+    here = Path(__file__).resolve()
+    for candidate in (here.parents[3] / "tui", here.parent / PACKAGED_TUI):
+        if _is_window_tree(candidate):
+            return candidate
+    return None
+
+
+def _writable(path: Path) -> bool:
+    return os.access(path, os.W_OK | os.X_OK)
+
+
 def tui_root() -> Path:
-    return Path(__file__).resolve().parents[3] / "tui"
+    """The folder the window runs in from source, where its node_modules
+    are: a checkout's own ``tui/`` while it has them or can take them;
+    otherwise (a wheel's sources, a checkout of someone else) a copy in
+    ``~/.delfin/tools/tui-<content digest>`` (tui_setup.cache_root)."""
+    from . import tui_setup
+
+    checkout = Path(__file__).resolve().parents[3] / "tui"
+    source = tui_source_root()
+    if source is None:
+        return checkout
+    if source == checkout and (tui_setup.window_ready(source) or _writable(source)):
+        return source
+    return tui_setup.cache_root(source)
 
 
 def platform_name() -> str:
@@ -391,18 +433,20 @@ def tui_binary() -> Path | None:
 
 def tui_command() -> list[str] | None:
     """How to run the terminal UI, or None: its binary when there is one
-    (tui_binary), else from source with Bun -- ``tui/src/main.tsx`` next
-    to the ``delfin`` package, started in ``tui/``, where Bun reads its
-    configuration (the Solid JSX preload) and tsconfig."""
-    import shutil
+    (tui_binary), else from source with Bun -- ``src/main.tsx`` of
+    tui_root(), started there, where Bun reads its configuration (the
+    Solid JSX preload) and tsconfig -- when a Bun is found
+    (tui_setup.find_bun) and the window's packages are installed. None
+    is what ``delfin-agent tui`` sets up (tui_setup.set_up)."""
+    from . import tui_setup
 
     binary = tui_binary()
     if binary is not None:
         return [str(binary)]
-    main = tui_root() / "src" / "main.tsx"
-    bun = shutil.which("bun") or str(Path.home() / ".bun" / "bin" / "bun")
-    if main.is_file() and Path(bun).is_file():
-        return [bun, str(main)]
+    root = tui_root()
+    bun = tui_setup.find_bun()
+    if bun is not None and tui_setup.window_ready(root):
+        return [str(bun), str(root / "src" / "main.tsx")]
     return None
 
 

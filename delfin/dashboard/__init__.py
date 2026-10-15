@@ -705,18 +705,28 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         description='PULL DELFIN', button_style='info',
         layout=widgets.Layout(width='150px'),
     )
-    branch_options = _compute_branch_options(ctx.repo_dir)
-    branch_switch_dropdown = widgets.Dropdown(
-        options=branch_options,
-        value='main',
-        description='Branch:',
-        layout=widgets.Layout(width='320px'),
-        style={'description_width': 'initial'},
-    )
-    switch_branch_btn = widgets.Button(
-        description='SWITCH', button_style='',
-        layout=widgets.Layout(width='110px'),
-    )
+    # Branches. Everyone works from main: the shared checkout stays on it,
+    # and a branch is tried in a preview -- its own worktree and server --
+    # instead of switching this checkout under every person and agent on
+    # it (branch_panel / branch_preview). Inside a preview the header shows
+    # which code runs instead of the branch tools.
+    from delfin.dashboard import branch_preview as _branch_preview
+    _in_preview = _branch_preview.in_preview()
+    _preview_banner = None
+    branch_panel = None
+    if _in_preview:
+        try:
+            _preview_banner = widgets.HTML(_branch_preview.banner_html())
+        except Exception as _banner_err:
+            _preview_banner = widgets.HTML(
+                '<div style="background:#b71c1c;color:#fff;padding:6px;">'
+                f'PREVIEW (banner failed: {html.escape(str(_banner_err))})</div>')
+    else:
+        if ctx.repo_dir:
+            os.environ.setdefault(_branch_preview.SHARED_CHECKOUT_ENV,
+                                  str(ctx.repo_dir))
+        from delfin.dashboard.branch_panel import BranchPanel
+        branch_panel = BranchPanel(ctx.repo_dir)
     rollback_delfin_btn = widgets.Button(
         description='HEAD -1', button_style='warning',
         layout=widgets.Layout(width='110px'),
@@ -731,32 +741,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         if not rd or not Path(rd).exists():
             git_status_label.value = '<span style="color:#666;">git: repo n/a</span>'
             pull_delfin_btn.disabled = True
-            branch_switch_dropdown.disabled = True
-            switch_branch_btn.disabled = True
             rollback_delfin_btn.disabled = True
+            if branch_panel is not None:
+                branch_panel.row.layout.display = 'none'
             return
         git_status_label.value = _format_git_status_html(rd)
         lock_present = bool(_git_index_lock_message(rd))
         pull_delfin_btn.disabled = lock_present
-        branch_switch_dropdown.disabled = lock_present
-        switch_branch_btn.disabled = lock_present
         rollback_delfin_btn.disabled = lock_present
-        # Refresh the dropdown to the LIVE set — main + this checkout's local
-        # branches (the ones you/Jerome build with DELFIN) — so a branch created
-        # this session shows up without restarting the dashboard.
-        current_branch = _get_current_git_branch(rd)
-        opts = _compute_branch_options(rd)
-        if current_branch and current_branch not in [v for _l, v in opts]:
-            opts.append((current_branch, current_branch))
-        new_vals = [v for _l, v in opts]
-        if [v for _l, v in branch_switch_dropdown.options] != new_vals:
-            branch_switch_dropdown.options = opts
-        target = current_branch if current_branch in new_vals else (
-            'main' if 'main' in new_vals else None)
-        if target is not None and branch_switch_dropdown.value != target:
-            branch_switch_dropdown.value = target
 
     refresh_git_status_label()
+    if branch_panel is not None:
+        branch_panel.on_change = refresh_git_status_label
+        branch_panel.refresh()
 
     def handle_pull_delfin(button):
         with pull_delfin_output:
@@ -778,8 +775,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     if moved is not None:
                         print(moved.message)
                         return
-                    print(f'Running git pull in {rd} ...')
-                    result = _run_git_write(rd, 'pull')
+                    # Fast-forward main only: the shared checkout is the
+                    # main checkout, and a merge commit made here would be
+                    # a commit nobody wrote on a branch everybody runs.
+                    current = _get_current_git_branch(rd)
+                    if current != 'main':
+                        print(
+                            f'PULL only fast-forwards main; the shared checkout '
+                            f'is on {current or "a detached HEAD"}. Commit or '
+                            'move its changes, then run "git switch main" in '
+                            'a terminal. To try a branch, use Test branch.')
+                        return
+                    print(f'Fast-forwarding main in {rd} ...')
+                    result = _run_git_write(rd, 'pull', '--ff-only', 'origin', 'main')
                     print(result.stdout.strip() or '(no output)')
             except RuntimeError as e:
                 print(str(e))
@@ -791,126 +799,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     pull_delfin_btn.on_click(handle_pull_delfin)
 
-    def handle_switch_branch(button):
-        with pull_delfin_output:
-            clear_output()
-            rd = ctx.repo_dir
-            if not rd or not Path(rd).exists():
-                print(f'Repo path not found: {rd}')
-                return
-
-            target_branch = str(branch_switch_dropdown.value or '').strip()
-            current_branch = _get_current_git_branch(rd)
-            if not target_branch:
-                print('No target branch selected.')
-                return
-            if target_branch == current_branch:
-                print(f'Already on {target_branch}.')
-                refresh_git_status_label()
-                return
-
-            ctx.set_busy(True)
-            try:
-                with _dashboard_git_write_lock(rd, f'branch-switch:{current_branch or "detached"}->{target_branch}'):
-                    if _ensure_git_index_lock_clear(rd, 'Branch switch'):
-                        print('Removed stale Git index lock before branch switch.')
-
-                    # Held by another worktree: git refuses the name, so run
-                    # its commit detached. Tracked changes refuse; nothing is
-                    # stashed on this path.
-                    from delfin.agent import held_branch as _hb
-                    if _hb.held_elsewhere(rd, target_branch):
-                        moved = _hb.detach_at_branch(rd, target_branch)
-                        print(moved.message)
-                        if moved.ok:
-                            refresh_git_status_label()
-                            print('Reloading dashboard to pick up code from the selected branch...')
-                            ctx.run_js('window.location.reload();')
-                        return
-
-                    stash_name = ''
-                    status_result = _run_git_capture(rd, 'status', '--porcelain')
-                    if status_result.returncode != 0:
-                        print(status_result.stdout.strip() or 'git status failed')
-                        return
-                    if status_result.stdout.strip():
-                        stash_name = (
-                            'dashboard-switch-'
-                            f'{datetime.utcnow().strftime("%Y%m%d-%H%M%S")}-'
-                            f'{current_branch or "detached"}-to-{target_branch}'
-                        )
-                        print('Working tree is not clean.')
-
-                        backup_dir = Path(rd).parent / 'delfin_branch_switch_backups' / stash_name
-                        try:
-                            copied = _backup_status_entries(rd, status_result.stdout, backup_dir)
-                            if copied:
-                                print(f'File backup: {copied} file(s) saved to {backup_dir}')
-                            else:
-                                print(f'Warning: no files could be backed up (directory created: {backup_dir})')
-                        except Exception as backup_err:
-                            print(f'Warning: file backup failed ({backup_err}), continuing with git stash only.')
-
-                        print(f'Creating local safety stash: {stash_name}')
-                        stash_result = _run_git_write(
-                            rd, 'stash', 'push',
-                            '--include-untracked',
-                            '--message', stash_name,
-                        )
-                        print(stash_result.stdout.strip() or '(no output)')
-                        if stash_result.returncode != 0:
-                            print('Branch switch aborted: could not create safety stash.')
-                            lock_message = _git_index_lock_message(rd)
-                            if lock_message:
-                                print(lock_message)
-                            return
-
-                    available_branches = _list_local_git_branches(rd)
-                    if target_branch not in available_branches:
-                        print(f'Branch not available locally: {target_branch}')
-                        if stash_name:
-                            print(f'Your changes are preserved locally in stash "{stash_name}".')
-                        return
-
-                    print(f'Switching DELFIN branch: {current_branch or "?"} -> {target_branch}')
-                    result = _run_git_write(rd, 'switch', target_branch)
-                    print(result.stdout.strip() or '(no output)')
-                    if result.returncode == 0:
-                        if stash_name:
-                            print(
-                                'Local changes were preserved in git stash AND as file backup. '
-                                f'Backup: {backup_dir}'
-                            )
-                        try:
-                            stash_list = _run_git_capture(rd, 'stash', 'list')
-                            for sline in (stash_list.stdout or '').strip().splitlines():
-                                if f'-{target_branch}-to-' in sline:
-                                    stash_ref = sline.split(':')[0]
-                                    print(f'Found stash from {target_branch}: {stash_ref} – restoring...')
-                                    pop_result = _run_git_write(rd, 'stash', 'pop', stash_ref)
-                                    print(pop_result.stdout.strip() or '(no output)')
-                                    if pop_result.returncode != 0:
-                                        print('Auto-restore had conflicts. Check your files.')
-                                    break
-                        except Exception:
-                            pass
-                        refresh_git_status_label()
-                        print('Reloading dashboard to pick up code from the selected branch...')
-                        ctx.run_js('window.location.reload();')
-                    elif stash_name:
-                        print(
-                            f'Branch switch failed, but your changes are preserved in stash "{stash_name}" '
-                            f'and as file backup in {backup_dir}.'
-                        )
-            except RuntimeError as e:
-                print(str(e))
-            except Exception as e:
-                print(f'Error: {e}')
-            finally:
-                refresh_git_status_label()
-                ctx.set_busy(False)
-
-    switch_branch_btn.on_click(handle_switch_branch)
 
     def handle_rollback_delfin(button):
         with pull_delfin_output:
@@ -994,7 +882,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         _closing_beacon = None
 
-    _header_root = widgets.VBox(([_returning] if _returning else [])
+    _header_root = widgets.VBox(([_preview_banner] if _preview_banner else [])
+                                + ([_returning] if _returning else [])
                                 + ([_closing_beacon] if _closing_beacon else [])
                                 + [
         busy_css,
@@ -1007,12 +896,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     ctx.agent_status_html,
                     home_usage_label,
                     git_status_label,
-                    branch_switch_dropdown,
-                    switch_branch_btn,
-                    pull_delfin_btn,
-                    rollback_delfin_btn,
-                    _session_strip,
-                ],
+                ]
+                + ([branch_panel.row] if branch_panel is not None else [])
+                + ([] if _in_preview else [pull_delfin_btn, rollback_delfin_btn])
+                + [_session_strip],
                 # Wrap rather than shrink: the session strip carries an
                 # address, and a row that squeezes its items renders it
                 # unreadable before it overflows.
@@ -1024,8 +911,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         ], layout=widgets.Layout(
             align_items='center', justify_content='space-between', width='100%',
         )),
-        pull_delfin_output,
-    ], layout=widgets.Layout(width='100%'))
+    ]
+        + ([branch_panel.box] if branch_panel is not None else [])
+        + [pull_delfin_output],
+        layout=widgets.Layout(width='100%'))
     _body_root = widgets.VBox([js_output, tabs])
 
     # The two roots are kept before they are shown, not after.
@@ -1304,35 +1193,6 @@ def _run_git_write(repo_dir, *args, retry_on_index_lock=True):
     return _run_git_write(repo_dir, *args, retry_on_index_lock=False)
 
 
-def _backup_status_entries(repo_dir, status_output, backup_dir):
-    """Copy dirty files and directories from git status output into a backup directory."""
-    backup_dir = Path(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    copied = 0
-
-    for line in (status_output or '').strip().splitlines():
-        raw_entry = line.lstrip(' MADRCU?!').lstrip().strip()
-        entries = []
-        for candidate in raw_entry.split(' -> '):
-            candidate = candidate.strip().strip('"')
-            if candidate and candidate not in entries:
-                entries.append(candidate)
-        for entry in entries:
-            src = Path(repo_dir) / entry
-            if not src.exists():
-                continue
-            dst = backup_dir / entry
-            if src.is_dir():
-                shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
-                copied += 1
-            elif src.is_file():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(src), str(dst))
-                copied += 1
-
-    return copied
-
-
 def _format_git_status_html(repo_dir):
     """Build a compact HTML summary of the current repo position."""
     result = _run_git_capture(repo_dir, 'status', '--porcelain=2', '--branch')
@@ -1412,23 +1272,15 @@ def _list_local_git_branches(repo_dir):
 
 
 def _compute_branch_options(repo_dir):
-    """Branch-switch dropdown contents: ``main`` first (so you can always jump
-    back to it), then the LOCAL branches in this checkout — i.e. the ones you,
-    or a contributor like Jerome, actually create/build with DELFIN.
-
-    We deliberately do NOT list every remote branch: each person's checkout
-    naturally holds only their own working branches, so the menu stays scoped to
-    "main + mine" instead of the dozens of shared feature branches on origin.
-    """
-    local = set()
+    """Branch dropdown contents as ``[(label, ref)]``: ``main`` first, then
+    the user's pinned entries and local branches with commits not in
+    ``origin/main`` (branch_list.branch_entries, git only; the panel adds
+    the pull-request state in the background)."""
+    from delfin.dashboard import branch_list as _bl
     try:
-        if repo_dir:
-            local = _list_local_git_branches(repo_dir)
+        return [(e.label, e.ref) for e in _bl.branch_entries(repo_dir, gh=None)]
     except Exception:
-        local = set()
-    rest = sorted(n for n in local if n != 'main')
-    names = ['main'] + rest
-    return [(n, n) for n in names]
+        return [('main', 'main')]
 
 
 def _find_orca_candidates(notebook_dir):
