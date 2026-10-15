@@ -358,6 +358,7 @@ export function App(props: AppProps): JSX.Element {
     send: sendTyped,
     argumentChoices: (command) => argumentChoices(command),
     clickPauseMs: props.clickPauseMs,
+    beforePaste: () => approval.releaseHeld(),
   })
 
   // -- the agent view ----------------------------------------------------------
@@ -702,7 +703,8 @@ export function App(props: AppProps): JSX.Element {
   let typingAt = 0
   setFullPreviewKey(props.keymap.label("details") || props.keymap.label("expand"))
   const approval = createApprovalUi({ reply, say, lastKey: () => typingAt,
-                                      pauseMs: props.answerPauseMs, clickPauseMs: props.clickPauseMs })
+                                      pauseMs: props.answerPauseMs, clickPauseMs: props.clickPauseMs,
+                                      release: (text) => composer.insert(text) })
   // The question's own state starts when it appears (its typeahead pause
   // counts from then), and ends with it.
   createEffect(() => {
@@ -802,7 +804,18 @@ export function App(props: AppProps): JSX.Element {
     say("ctrl+c again to leave — the sessions keep running in the agent service")
   }
 
+  /** Whether this key reached the open question (approval.handleKey). */
+  let reachedQuestion = false
   const onKey = (key: KeyEvent): void => {
+    reachedQuestion = false
+    try {
+      route(key)
+    } finally {
+      // ctrl+c, the agent view, ctrl+d: a key the question held answers nothing.
+      if (!reachedQuestion) approval.dropHeld()
+    }
+  }
+  const route = (key: KeyEvent): void => {
     const s = session()
     const km = props.keymap
     const asked = s?.pending[0]
@@ -884,6 +897,7 @@ export function App(props: AppProps): JSX.Element {
       }
       // The prompt keeps the keys: the question's own from an empty prompt
       // are its answer; the rest is typing (approval.tsx).
+      reachedQuestion = true
       if (approval.handleKey(asked, key, !draft() && !composer.search())) {
         key.preventDefault()
         return

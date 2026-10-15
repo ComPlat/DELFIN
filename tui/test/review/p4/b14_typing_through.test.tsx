@@ -56,5 +56,7 @@ test("typing a message into a question that has been open a while answers nothin
   await Bun.sleep(1100)
   w.keys.pressKey("y")                                   // an empty prompt, after a pause: a deliberate answer
   await w.settle()
+  await Bun.sleep(650)                                   // alone: no key followed it (HOLD_MS)
+  await w.settle()
   expect(w.replies()).toEqual([{ sessionId: "s1", requestId: "c1", choice: "y" }])
 })

@@ -29,7 +29,9 @@
  * highlight and the second step never carry over to the next question.
  * Keys typed in a burst when a question opens (the end of a message being
  * typed) are not taken as answers: an answer is a key after a pause, on
- * an empty prompt. A letter typed that soon goes on into the prompt.
+ * an empty prompt. A letter typed that soon goes on into the prompt. And
+ * an answer is a key alone: a letter or digit is held for HOLD_MS, and a
+ * key that follows within it makes both typing.
  *
  * The panel is built as a list of lines that each fit the width, so the
  * footer knows exactly how many rows it takes (`approvalLines`).
@@ -50,6 +52,12 @@ export const PREVIEW_MAX = 24
 export const ANSWER_PAUSE_MS = 350
 /** Typeahead ends with this much quiet: then a key is an answer. */
 export const QUIET_MS = 1000
+/** A letter or digit of the panel's, from an empty prompt, answers only
+ *  alone: held this long, it is the first letter of a message when another
+ *  key follows ("yes please", "every file"), and goes into the prompt with
+ *  it. Enter right after it answers at once. The cost: a key answers this
+ *  much later, and the second step of A or k comes this long after it. */
+export const HOLD_MS = 500
 
 type Tone = "text" | "bright" | "muted" | "faint" | "ok" | "err" | "warn" | "key"
 
@@ -259,6 +267,9 @@ export interface ApprovalDeps {
   pauseMs?: number
   /** The same for a click (mouse.ts CLICK_PAUSE_MS); 0 in tests. */
   clickPauseMs?: number
+  /** A held key that turned out to be the first letter of typing: into
+   *  the prompt, where the cursor is. */
+  release?(text: string): void
 }
 
 export interface ApprovalUi {
@@ -280,6 +291,12 @@ export interface ApprovalUi {
   click(asked: Asked, act: string): boolean
   /** Make sure the state is `asked`'s (the question changed). */
   sync(asked: Asked | undefined): void
+  /** A key that did not reach the panel (ctrl+c, the agent view): a held
+   *  key answers nothing. */
+  dropHeld(): void
+  /** What comes next is typing (a paste): a held key goes into the prompt
+   *  first, as typed. */
+  releaseHeld(): void
 }
 
 function keyChar(key: KeyEvent): string {
@@ -320,13 +337,31 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
   const now = deps.now ?? (() => Date.now())
   const pause = deps.pauseMs ?? ANSWER_PAUSE_MS
   const clickPause = deps.clickPauseMs ?? CLICK_PAUSE_MS
+  // With the typeahead guard off (tests: pauseMs 0) a key answers at once.
+  const holdMs = pause > 0 ? HOLD_MS : 0
   const [state, setStore] = createStore<ApprovalState>(fresh("", 0))
+  /** The panel's key waiting to see whether typing follows it. */
+  let held: { requestId: string; char: string; name: string; timer: ReturnType<typeof setTimeout> } | null = null
+  const dropHeld = () => {
+    if (held) clearTimeout(held.timer)
+    held = null
+  }
+  /** The held key, as typing: into the prompt. */
+  const releaseHeld = (): boolean => {
+    const h = held
+    dropHeld()
+    if (!h || h.requestId !== state.requestId || state.sent) return false
+    deps.release?.(h.char)
+    setState({ lastKeyAt: now(), ...(pause > 0 ? { burst: true } : {}) })
+    return true
+  }
   // What the panel shows changes with its mode: a click must wait again.
   const setState = (patch: Partial<ApprovalState>) => {
     setStore(patch.mode !== undefined && patch.mode !== state.mode ? { ...patch, shownAt: now() } : patch)
   }
 
   const sync = (asked: Asked | undefined) => {
+    if (held && held.requestId !== asked?.requestId) dropHeld()
     if (asked && state.requestId !== asked.requestId) {
       const t = now()
       const last = deps.lastKey?.() ?? 0
@@ -346,6 +381,17 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
 
   const handleKey = (asked: Asked, key: KeyEvent, empty = true): boolean => {
     sync(asked)
+    if (held) {
+      const h = held
+      // The held key and enter: that key, now.
+      if (h.requestId === state.requestId && !state.sent && key.name === "return" && !modified(key)) {
+        dropHeld()
+        act(asked, h.char, h.name)
+        return true
+      }
+      // Any other key: it was the first letter of typing, and this the next.
+      if (releaseHeld()) empty = false
+    }
     if (modified(key)) return false               // the prompt's editing keys; never typing either
     const t = now()
     const char = keyChar(key)
@@ -370,6 +416,22 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
         return !printable
       }
       if (state.burst) setState({ burst: false })
+    }
+    const printable = Boolean(key.sequence) && key.sequence!.length === 1 && key.sequence! > " "
+    // Held: every key of an approval (a step as well -- "An..." would be
+    // A, then n "just this once") and a question's pick. Not the toggles of
+    // a question of several answers: they send nothing, enter does.
+    if (holdMs > 0 && printable && !(asked.kind === "ask" && asked.multiSelect)) {
+      // Alone, it is an answer; with a key after it, the start of a message.
+      const id = state.requestId
+      const name = key.name
+      held = { requestId: id, char, name, timer: setTimeout(() => {
+        if (!held || held.requestId !== id) return
+        held = null
+        if (state.requestId === id && !state.sent) act(asked, char, name)
+      }, holdMs) }
+      ;(held.timer as { unref?: () => void }).unref?.()
+      return true
     }
     return act(asked, char, key.name)
   }
@@ -430,6 +492,7 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
 
   const click = (asked: Asked, what: string): boolean => {
     sync(asked)
+    dropHeld()                                     // a click answers; a held key does not as well
     if (state.sent || state.requestId !== asked.requestId) return false
     // The hand was on its way before this appeared (or changed): not an answer.
     if (clickPause > 0 && now() - state.shownAt < clickPause) return false
@@ -476,7 +539,7 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
     return true
   }
 
-  return { state, handleKey, submitText, click, sync }
+  return { state, handleKey, submitText, click, sync, dropHeld, releaseHeld: () => void releaseHeld() }
 }
 
 // -- drawing -------------------------------------------------------------------------

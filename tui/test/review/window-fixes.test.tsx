@@ -231,6 +231,8 @@ describe("the approval panel", () => {
     await Bun.sleep(1100)                                 // an empty prompt, a second of quiet, then a deliberate key
     w.t.mockInput.pressKey("y")
     await w.settle()
+    await Bun.sleep(650)                                  // alone: no key followed it (HOLD_MS)
+    await w.settle()
     expect(w.replies()).toEqual([{ sessionId: "s1", requestId: edit.requestId, choice: "y" }])
   })
 })
