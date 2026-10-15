@@ -581,8 +581,10 @@ def start_share(lesson_id, layer: str, *, workspace, scope: str = "",
         if target.layer == kn.GLOBAL:
             qid = enqueue(d)
             kp.set_status(les.id, kp.QUEUED, shared_ref=qid)
+            note = group_note(queue_dir() / f"{qid}.json")
             return (f"queued for the knowledge admin's review as {qid}; "
-                    "/memory shows the outcome", qid)
+                    "/memory shows the outcome"
+                    + (f"\n{note}" if note else ""), qid)
         branch, sha, _diff = prepare_branch(
             target.repo_root, f"delfin-knowledge/{written.slug}",
             {f"{target.folder_rel}/{written.slug}.md": d.text},
@@ -646,20 +648,60 @@ def _queue_is_shared() -> bool:
                 or _knowledge_settings().get("queue_dir"))
 
 
-def _record_mode(shared: bool) -> int:
-    """The mode of a queue record: 0o600, plus group read in a shared
-    queue (the admin of the same host reads it through the group)."""
-    return 0o640 if shared else 0o600
+def _queue_gid(folder: Path) -> int:
+    return os.stat(folder).st_gid
+
+
+def _record_mode(shared: bool, fd: int, folder: Path) -> int:
+    """The mode of the queue record open on ``fd``: owner read/write,
+    plus group read only in a shared queue AND only when the record's
+    group is the queue folder's group.
+
+    The admin of a shared queue reads the records through the folder's
+    group, the one the deployment chose for it. A new file takes the
+    folder's group only on a setgid folder (or on BSD and macOS);
+    elsewhere it takes the writer's primary group, whose members are not
+    the admin's audience. Group read for that group would hand the
+    record to them, so it is withheld and the record stays 0o600 --
+    the admin then cannot read it, and :func:`group_note` says so.
+
+    Rejected: an unconditional 0o640 (the group is whatever the file
+    happens to get); chgrp to the folder's group (it succeeds only for
+    a member of that group and would hide the misconfiguration)."""
+    if not shared:
+        return 0o600
+    try:
+        same = os.fstat(fd).st_gid == _queue_gid(folder)
+    except OSError:
+        same = False
+    return 0o600 | (stat.S_IRGRP if same else 0)
+
+
+def group_note(path: Path) -> str:
+    """One line when a record in a shared queue is not group-readable
+    (see :func:`_record_mode`), else ""."""
+    if not _queue_is_shared() or not hasattr(os, "fchmod"):
+        return ""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return ""
+    if mode & stat.S_IRGRP:
+        return ""
+    return (f"note: the record is readable only by you -- the queue folder "
+            f"{path.parent} does not pass its group on to new files; the "
+            "queue's owner fixes that by setting the setgid bit (chmod "
+            "g+s), and until then the admin cannot read this submission")
 
 
 def _write_record(path: Path, data: dict, *, shared: bool,
-                  cap: Optional[int] = None) -> None:
+                  cap: int | None = None) -> None:
     """Write one queue record with an exact mode, atomically.
 
     Input: the final path, the record, whether the queue is shared, and
     ``cap``, the mode bits of the record being replaced (a rewrite never
     grants a bit the old record did not have). Output: ``path`` holds the
-    record, mode ``_record_mode(shared) & cap``.
+    record, mode :func:`_record_mode` limited by ``cap``.
 
     Semantics: the bytes go to a fresh temporary file in the same folder
     (``O_CREAT | O_EXCL | O_NOFOLLOW``, so no existing file or planted
@@ -677,15 +719,15 @@ def _write_record(path: Path, data: dict, *, shared: bool,
     argument of ``os.open`` alone (under umask 077 a shared record was
     unreadable to the admin).
     """
-    mode = _record_mode(shared)
-    if cap is not None:
-        mode &= (cap & 0o777) | 0o600
     payload = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.partial")
     flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
              | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
     fd = os.open(str(tmp), flags, 0o600)
     try:
+        mode = _record_mode(shared, fd, path.parent)
+        if cap is not None:
+            mode &= (cap & 0o777) | 0o600
         if hasattr(os, "fchmod"):
             os.fchmod(fd, mode)
         view = memoryview(payload)
