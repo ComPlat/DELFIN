@@ -3627,6 +3627,27 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # about the installation, not the project.
     r"^\s*delfin-agent\s+ops\s+status(?:\s+(?:--json|-h|--help|"
     r"--repo(?:=|\s+)[A-Za-z0-9_./~@:+=-]+))*\s*$",
+    # The paired comparison (paired_compare.py): `provenance` prints a
+    # stamp (code hash, git, platform, behaviour environment, a runner's
+    # start time) and `compare-arms` reads two result files and their
+    # stamps. The one write is `provenance --save NAME`: a new file
+    # ~/.delfin/provenance/NAME.json, NAME one plain word, created with
+    # O_EXCL so no stamp is ever replaced -- the program's own record,
+    # not a path the caller chooses. Rejected: a shell redirect of the
+    # printed stamp (refused as a write without pre-image, and a stamp
+    # the session writes itself is a stamp it can edit). In every
+    # workspace: an experiment is run in any project, and the comparison
+    # is what keeps it honest there.
+    *(_cli_read_only("delfin-agent", w, flags=f, valued=v, positional=p)
+      for w, f, v, p in (
+          ("provenance", (),
+           ("--code", "--command", "--pid", "--prefix", "--cwd", "--save"),
+           False),
+          ("compare-arms", ("--json", "--lower-is-better",
+                            "--allow-shared-switches"),
+           ("--stamp-a", "--stamp-b", "--axis", "--default", "--key",
+            "--ok", "--defect", "--quality", "--min-n", "--probe",
+            "--sample", "--rerun-a", "--prereg"), True))),
 )
 
 # DELFIN-specific bash auto-allow patterns — merged into the auto-allow
