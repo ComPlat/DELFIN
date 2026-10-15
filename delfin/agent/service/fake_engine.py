@@ -24,6 +24,8 @@ scripts, chosen by words in the prompt:
     secret  a tool call whose input and output carry a credential
     latin   a tool result with a file name that is not UTF-8
     long    a long answer (hundreds of lines)
+    tasks   a task list made and worked through over a few seconds, in the
+            workspace task store the task tools write (agent_tasks)
     (anything else: a short answer after one read-only tool call)
 
 It honours the same callbacks, stop and steer paths and status counters the
@@ -238,7 +240,34 @@ class FakeEngine:
         if "fail" in words:
             raise RuntimeError("scripted failure from the fake engine "
                                "(not an endpoint problem)")
-        if "edit" in words:
+        if "tasks" in words:
+            # Before "ask", which the word contains. As the task tools do
+            # it: the workspace store, scoped to this session; one step at
+            # a time, each visible for a moment.
+            from pathlib import Path
+
+            from .. import agent_tasks
+            store = agent_tasks.get_store(Path(self.repo_dir).resolve())
+            pause = max(self.delay * 40, 0.8)
+            made = []
+            for subject, active in (("read the input files", "reading the input files"),
+                                    ("fix the energy parser", "fixing the energy parser"),
+                                    ("run the tests", "running the tests")):
+                task = store.create(subject, active_form=active, session_id=self.session_id)
+                made.append(task["id"])
+                tool("task_create", {"subject": subject}, json.dumps({"status": "created", "task": task}))
+            for tid in made:
+                if self._stop.is_set():
+                    break
+                store.update(tid, status="in_progress")
+                tool("task_update", {"id": tid, "status": "in_progress"}, "ok")
+                until = time.monotonic() + pause
+                while time.monotonic() < until and not self._stop.is_set():
+                    time.sleep(0.05)
+                store.update(tid, status="completed")
+                tool("task_update", {"id": tid, "status": "completed"}, "ok")
+            say("All three tasks are done.")
+        elif "edit" in words:
             tool("read_file", {"path": "delfin/xtb.py"}, "212 lines")
             if confirm("edit_file", {"path": "delfin/xtb.py"}, _EDIT_DIFF):
                 tool("edit_file", {"path": "delfin/xtb.py"}, _EDIT_DIFF)
