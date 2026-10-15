@@ -6572,6 +6572,21 @@ def _hook_workspace(perms) -> "Path | None":
         return None
 
 
+def _auto_veto_refusal(permissions, name: str, arguments: Any) -> str:
+    """The armed auto veto's refusal for this call, or "" (no veto, or it
+    lets the call through). A veto that raises refuses: an unattended
+    iteration whose frame cannot be checked does not run the call."""
+    veto = getattr(permissions, "auto_veto", None) if permissions else None
+    text = ""
+    if callable(veto):
+        try:
+            text = str(veto(name, dict(arguments or {})) or "")
+        except Exception as exc:
+            text = (f"blocked: the auto-mode frame could not be checked "
+                    f"({type(exc).__name__}); the call was not run.")
+    return text
+
+
 def _mcp_call_refusal(fn_name: str, fn_args: dict,
                       permissions) -> Optional[str]:
     """The refusal for an MCP tool call as a JSON result, or None to run it.
@@ -6601,6 +6616,11 @@ def _mcp_call_refusal(fn_name: str, fn_args: dict,
     if rule_hit is not None and rule_hit[1].managed:
         if rule_hit[0] == "deny":
             return json.dumps({"error": _refuse_by_rule(fn_name, rule_hit[1])})
+    _auto = _auto_veto_refusal(permissions, fn_name, fn_args)
+    if _auto:
+        _record_gate_refusal("auto_mode", fn_name, _auto[:300])
+        return json.dumps({"error": _auto})
+    if rule_hit is not None and rule_hit[1].managed:
         refusal = _doc_executor._ask_by_rule(permissions, fn_name,
                                              fn_args, rule_hit[1])
         if refusal is not None:
@@ -8462,6 +8482,13 @@ class KitToolPermissions:
     #: work that is already running. Installed by the engine; None in a
     #: caller that has no session, which behaves exactly as before.
     should_stop: Optional[Callable[[], bool]] = None
+    #: Set by auto mode (auto_mode.AutoController.veto) for the length of
+    #: one iteration nobody typed, None otherwise: ``(name, args) ->
+    #: refusal text | None``. Asked at the native and the MCP entry right
+    #: after the administrator's managed deny, before hooks, the mode and
+    #: dispatch. Copied into sub-agents by ``dataclasses.replace``, so a
+    #: delegate is no way around it.
+    auto_veto: Optional[Callable[[str, dict], Optional[str]]] = None
     #: True while a message the user typed waits to be read by the
     #: running turn (``OpenAIClient._user_steer_waiting``). A foreground
     #: command or test run that has lasted ``USER_INTERRUPT_AFTER_S`` is
@@ -16002,6 +16029,9 @@ class _DocToolExecutor:
         elif (rule_hit is not None and rule_hit[0] == "deny"
                 and rule_hit[1].managed):
             result = json.dumps({"error": _refuse_by_rule(name, rule_hit[1])})
+        elif _auto_refusal := _auto_veto_refusal(permissions, name, arguments):
+            _record_gate_refusal("auto_mode", name, _auto_refusal[:300])
+            result = json.dumps({"error": _auto_refusal})
         elif session_refusal:
             # After the role check and before the mode check, by the same
             # rule the mode check states: report the more permanent reason
