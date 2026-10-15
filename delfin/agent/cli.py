@@ -2832,10 +2832,14 @@ def cmd_bug(args: argparse.Namespace) -> int:
         if not targets:
             print(f"No reports to triage in {archive}")
             return 0
+        print(_bw.send_line())
+        consent = _bw.ask_consent(len(targets))
         for d in targets:
             print(f"→ analysing {d.name} …", flush=True)
-            t = _bw.triage_report(d)
-            if t.error:
+            t = _bw.triage_report(d, consent=consent)
+            if t.withheld:
+                print(f"  [WITHHELD] {t.summary}")
+            elif t.error:
                 print(f"  [ERROR] {t.error}")
             else:
                 print(f"  [OK] {t.summary[:200].strip()}")
@@ -2876,9 +2880,14 @@ def cmd_bug(args: argparse.Namespace) -> int:
 
         if getattr(args, "once", False):
             print(f"Triaging {archive} once …", flush=True)
-            results = _bw.run_once(archive=archive, settings=settings)
+            print(_bw.send_line(settings))
+            consent = _bw.ask_consent(
+                len(_bw.find_unsolved(archive, settings=settings)), settings)
+            results = _bw.run_once(archive=archive, settings=settings,
+                                   consent=consent)
             for t in results:
-                tag = "ERROR" if t.error else "OK"
+                tag = ("WITHHELD" if t.withheld else
+                       "ERROR" if t.error else "OK")
                 print(f"  [{tag}] {t.report_name}: "
                       f"{(t.error or t.summary)[:150].strip()}")
             print(f"Done — {len(results)} report(s) triaged.")
@@ -2898,6 +2907,7 @@ def cmd_bug(args: argparse.Namespace) -> int:
         try:
             print(f"bug_watcher started (interval {cfg['interval_s']}s, "
                   f"archive={archive}).")
+            print(_bw.send_line(settings))
             return _bw.run_loop(settings=settings)
         finally:
             _bw.release_pid_lock()
