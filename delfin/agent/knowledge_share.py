@@ -242,10 +242,12 @@ def _gh_login() -> str:
 
 
 def _identities() -> set:
-    import getpass
+    """The OS account (the real uid's name, ``os_account.name``; never
+    $USER, which the process sets itself) and the gh-authenticated login."""
+    from .os_account import name as _account
     ids = set()
     try:
-        ids.add(getpass.getuser())
+        ids.add(_account())
     except Exception:
         pass
     login = _gh_login()

@@ -3070,7 +3070,9 @@ def cmd_skills(args: argparse.Namespace) -> int:
             print("safety findings: none")
         return 0
 
-    who = os.environ.get("USER", "")
+    # Recorded as who accepted: the account, not $USER (os_account).
+    from .os_account import name as _account
+    who = _account()
 
     if action == "accept":
         try:
@@ -3217,7 +3219,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         # resolves against the question's own options; anything that is
         # not a choice question is refused here, not guessed at.
         from . import approval_answers as _ans
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         try:
             picks = _ans.answer(args.request_id, args.choice, by=who,
                                 code=code)
@@ -3229,7 +3232,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     if action in ("approve", "deny"):
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         # A refusal may say what to do instead, and the model reads it in
         # the same turn -- instead of guessing the same thing spelled
         # differently, which is one more dialog for the person here.
