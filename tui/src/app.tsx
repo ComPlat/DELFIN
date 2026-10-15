@@ -498,6 +498,14 @@ export function App(props: AppProps): JSX.Element {
   /** Sessions other than the one in view that wait for the user. */
   const othersWaiting = () => Object.values(store.state.sessions)
     .filter((s) => s.id !== store.state.current && needsInput(s)).length
+  /** The other sessions the service runs (a worker each: none asleep or
+   *  ended), and how many of them wait -- for the hints line. Live: every
+   *  window hears every session's summary as it changes. */
+  const others = () => {
+    const running = Object.values(store.state.sessions)
+      .filter((s) => s.id !== store.state.current && s.state && s.state !== "ended" && s.state !== "sleeping")
+    return { running: running.length, waiting: running.filter(needsInput).length }
+  }
   // -- what needs the user, seen from anywhere in the window ----------------------
   // Quiet, at the bottom right of the hints line: what waits for an answer
   // (other sessions here, questions parked anywhere) and what failed. A new
@@ -530,7 +538,15 @@ export function App(props: AppProps): JSX.Element {
     // waits first), and how many more.
     if (fresh.length) arrive(arrivalNote(fresh[0]!) + (fresh.length > 1 ? ` (+${fresh.length - 1} more)` : ""))
   })
+  // Another session that starts to wait (a question, an approval) says so
+  // once, in the message row, for as long as an arrival is shown: which
+  // one, and the key that opens the agent view (in the view: where it is).
   const waitingBefore = new Set<string>()
+  const announce = (text: string) => {
+    setMessage(text)
+    const off = setTimeout(() => message() === text && setMessage(""), props.arrival?.shownMs ?? ARRIVAL_SHOWN_MS)
+    ;(off as { unref?: () => void }).unref?.()
+  }
   createEffect(() => {
     for (const s of Object.values(store.state.sessions)) {
       if (!needsInput(s)) {
@@ -539,7 +555,10 @@ export function App(props: AppProps): JSX.Element {
       }
       if (waitingBefore.has(s.id)) continue
       waitingBefore.add(s.id)
-      if (s.id !== store.state.current && news()) arrive(`◉ ${sessionName(s)} asks`)
+      if (s.id === store.state.current || !news()) continue
+      const where = untrack(() => agents.state.open) ? "it is under NEEDS YOU"
+        : `${props.keymap.label("agents")} to open`
+      announce(`◉ session '${sessionName(s)}' waits for you — ${where}`)
     }
   })
   const attention = () => ({ ...attentionCounts(store.state, othersWaiting()), note: arrival() })
@@ -990,6 +1009,10 @@ export function App(props: AppProps): JSX.Element {
       agents={agents}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}
+      others={others}
+      onOthersClick={() => {
+        if (!agents.state.open) agents.open()
+      }}
       focused={() => !picker.state.open}
       screen={props.screen}
       scrollRef={(box) => { scrollBox = box }}
