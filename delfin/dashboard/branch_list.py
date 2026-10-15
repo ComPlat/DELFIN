@@ -334,7 +334,8 @@ def hide(repo, ref: str) -> tuple[bool, str]:
     if ref == "main":
         return False, "main is always listed."
     _update(repo, add=(("hidden", ref),), remove=(("pinned", ref),))
-    return True, f"{ref} is hidden from your list (still in git; 'Show again' brings it back)."
+    return True, (f"{ref} is hidden from your list (still in git; ↺ in the Hidden "
+                  "view brings it back).")
 
 
 def unhide(repo, ref: str) -> None:

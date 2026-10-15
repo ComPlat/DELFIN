@@ -588,8 +588,8 @@ narrowing; the gate cannot see through them. Append with `write_file`
   first.** Its checkout stays on main: work in
   `enter_worktree(base_ref="origin/main")`, small commits,
   `git push -u origin HEAD:<user>/<feature>`, then `gh pr create --fill
-  --base main` — only when the user asks or accepts your offer; they try a
-  branch with the dashboard's Test branch. In their OWN project, commit on
+  --base main` — only when the user asks or accepts your offer; they try it
+  with the dashboard's ⎇ menu and ▶ Test. In their OWN project, commit on
   your own branch; push to a shared `main` only as its maintainer, on request.
 
 <!-- context:delfin -->
