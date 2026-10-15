@@ -541,11 +541,114 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
             "model", str(getattr(getattr(engine, "client", None), "model", "")
                          or ""))
         estate.setdefault("provider", str(getattr(engine, "provider", "") or ""))
+        # The save guard compares this record with the stored one: a new
+        # record explains a shorter history. The dashboard passes it; this
+        # saver (terminal, -p/run, scheduler) did not, and restore_state
+        # reads it back so a resumed session compares against its own.
+        estate.setdefault("last_compaction_info",
+                          getattr(engine, "last_compaction_info", None))
         _ss.save_session(chat_messages=_display_messages(engine),
                          workspace=str(repo_root), **estate)
     except Exception as exc:
         print(f"WARN: session save failed: {exc}", file=sys.stderr)
     return sid
+
+
+def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
+                 t0: float | None) -> None:
+    """The session-end stages, one list for ``run``, ``chat -p`` and the
+    interactive session.
+
+    Input: the engine, the saved session id, the workspace, the task the
+    user gave (the -p prompt; the first typed prompt of a terminal
+    session, "" when none was typed), whether the session ended on an
+    error, and its monotonic start. Output: none; each stage is
+    best-effort and a failing one is said on stderr.
+
+    Stages, in order: session report, skill learning, indexing, cycle
+    outcome (outcome history + provider profile), episodic memory, eval
+    loop. Without a task -- a terminal session left before its first
+    prompt -- the cycle outcome and the episode are skipped: there is no
+    turn to judge, and a PASS for nothing would enter the history the
+    briefing quotes. The terminal used to run the first three only.
+    """
+    verdict = "FAIL" if failed else "PASS"
+
+    def _session_end_stage(name: str, fn) -> None:
+        """One best-effort session-end stage, said when it fails.
+
+        Best-effort stays right — a report write must never break the
+        answer's exit code — but a stage that fails on EVERY scheduled
+        unattended run vanished silently here: the run printed its
+        answer and the failure was indistinguishable from a stage that
+        did its job. The warning is the same shape as the save-failure
+        line above.
+        """
+        try:
+            fn()
+        except Exception as exc:
+            print(f"WARN: session-end stage {name} failed: {exc}",
+                  file=sys.stderr)
+
+    # Session report: best-effort Markdown write; never breaks exit.
+    def _report_stage(sid_, engine_):
+        from .session_report import write_session_report
+        write_session_report(sid_ or getattr(engine_, "session_id", ""))
+
+    def _learn_stage(engine_, sid_):
+        from .session_end import learn_at_session_end
+        learn_at_session_end(
+            _display_messages(engine_),
+            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
+
+    def _index_stage(sid_):
+        from .session_end import index_at_session_end
+        index_at_session_end(str(sid_ or ""))
+
+    def _episode_stage(engine_, sid_, repo_):
+        from .episodes import build_episode_from_state, save_episode
+        fields = build_episode_from_state(engine_.export_state(), [])
+        save_episode(
+            sid_,
+            repo_root=repo_,
+            verdict=verdict,
+            **fields,
+        )
+
+    def _eval_stage():
+        from .eval_loop import maybe_run_scheduled
+        maybe_run_scheduled()
+
+    _session_end_stage("report", lambda: _report_stage(sid, engine))
+    # Shared session-end stage: skill learning, same hook as the CLI
+    # chat and the dashboard. Best-effort; never breaks the run.
+    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
+    # Session-end stage (Paket 5): the ended session becomes searchable.
+    _session_end_stage("indexing", lambda: _index_stage(sid))
+
+    # Learning signal: record the outcome so provider profiles learn from
+    # CLI/headless usage too — previously only dashboard cycles fed the
+    # profile, so KIT/CLI sessions contributed nothing.
+    if task:
+        _session_end_stage(
+            "cycle outcome",
+            lambda: engine.record_cycle_outcome(
+                verdict,
+                task,
+                error_type=("cli_error" if failed else None),
+                start_time=t0,
+            ))
+    # Episodic memory: persist one compact per-session record so a future
+    # session can recall similar past work (best-effort, LLM-free) —
+    # without this the saved session state is write-only.
+    if task:
+        _session_end_stage(
+            "episodic memory",
+            lambda: _episode_stage(engine, sid, repo))
+    # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
+    _session_end_stage(
+        "eval loop",
+        lambda: _eval_stage())
 
 
 def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
@@ -645,83 +748,25 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     _memory = turn_context.memory_context(engine, prompt)
     if _memory:
         _emit = {**_emit, "memory_context": _memory}
-    out = _run_once(engine, turn_context.user_message(prompt),
-                    max_tokens=args.max_tokens or 4096, **_emit)
+    # Over the context budget, the turn starts from a small fresh block,
+    # as it does in the terminal (repl.run_turn) and the dashboard: the
+    # same helper, under the budget a no-op. A restored session (--session,
+    # --continue, --resume) is the case it exists for. Applied after the
+    # hint, in run_turn's order.
+    from .repl import prepare_fresh_turn
+    prompt_sent = prepare_fresh_turn(
+        engine, turn_context.user_message(prompt), workspace=repo)
+    # 0 is "the role decides" (the engine's max_tokens_for_role), the value
+    # chat declares as its default and run --max-tokens 0 asks for. It used
+    # to be replaced by 4096 here, so chat -p ran at an eighth of the
+    # terminal's solo budget. run keeps 4096 through its parser default.
+    out = _run_once(engine, prompt_sent,
+                    max_tokens=int(getattr(args, "max_tokens", 0) or 0),
+                    **_emit)
     sid = _save_session(engine, repo)
 
-    def _session_end_stage(name: str, fn) -> None:
-        """One best-effort session-end stage, said when it fails.
-
-        Best-effort stays right — a report write must never break the
-        answer's exit code — but a stage that fails on EVERY scheduled
-        unattended run vanished silently here: the run printed its
-        answer and the failure was indistinguishable from a stage that
-        did its job. The warning is the same shape as the save-failure
-        line above.
-        """
-        try:
-            fn()
-        except Exception as exc:
-            print(f"WARN: session-end stage {name} failed: {exc}",
-                  file=sys.stderr)
-
-    # Session report: best-effort Markdown write; never breaks exit.
-    def _report_stage(sid_, engine_):
-        from .session_report import write_session_report
-        write_session_report(sid_ or getattr(engine_, "session_id", ""))
-
-    def _learn_stage(engine_, sid_):
-        from .session_end import learn_at_session_end
-        learn_at_session_end(
-            _display_messages(engine_),
-            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
-
-    def _index_stage(sid_):
-        from .session_end import index_at_session_end
-        index_at_session_end(str(sid_ or ""))
-
-    def _episode_stage(engine_, sid_, repo_, out_):
-        from .episodes import build_episode_from_state, save_episode
-        fields = build_episode_from_state(engine_.export_state(), [])
-        save_episode(
-            sid_,
-            repo_root=repo_,
-            verdict="FAIL" if out_["error"] else "PASS",
-            **fields,
-        )
-
-    def _eval_stage():
-        from .eval_loop import maybe_run_scheduled
-        maybe_run_scheduled()
-
-    _session_end_stage("report", lambda: _report_stage(sid, engine))
-    # Shared session-end stage: skill learning, same hook as the CLI
-    # chat and the dashboard. Best-effort; never breaks the run.
-    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
-    # Session-end stage (Paket 5): the ended session becomes searchable.
-    _session_end_stage("indexing", lambda: _index_stage(sid))
-
-    # Learning signal: record the outcome so provider profiles learn from
-    # CLI/headless usage too — previously only dashboard cycles fed the
-    # profile, so KIT/CLI sessions contributed nothing.
-    _session_end_stage(
-        "cycle outcome",
-        lambda: engine.record_cycle_outcome(
-            "FAIL" if out["error"] else "PASS",
-            prompt,
-            error_type=("cli_error" if out["error"] else None),
-            start_time=_t0,
-        ))
-    # Episodic memory: persist one compact per-session record so a future
-    # session can recall similar past work (best-effort, LLM-free) —
-    # without this the saved session state is write-only.
-    _session_end_stage(
-        "episodic memory",
-        lambda: _episode_stage(engine, sid, repo, out))
-    # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
-    _session_end_stage(
-        "eval loop",
-        lambda: _eval_stage())
+    _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),
+                 t0=_t0)
 
     from .repl import TURN_KEYS
     if stream_json:
@@ -1519,6 +1564,9 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         rules = permission_rules.load(where)
         for line in permission_rules.error_lines(rules):
             notes.append(f"permissions {line}")
+        scope = permission_rules.scope_notice(rules)
+        if scope:
+            notes.append(f"permissions {scope}")
         from .api_client import unknown_tool_names
         named = [r.value for r in rules.deny + rules.ask + rules.allow
                  if r.kind == "tool"]
@@ -1904,36 +1952,22 @@ def cmd_chat(args: argparse.Namespace) -> int:
                                 + start_notes)
                 + (f"\n\n{notices}" if notices else "")),
     ))
+    import time as _time
+    _t0 = _time.monotonic()
     try:
         return agent.run(positional)
     finally:
-        _save_session(engine, workspace,
-                      title=getattr(args, "session_name", "") or "")
-        # Session report: best-effort Markdown write; never breaks exit.
-        try:
-            from .session_report import write_session_report
-            write_session_report(getattr(engine, "session_id", "") or "")
-        except Exception:
-            pass
-        # Shared session-end stage: skill learning (the same call the
-        # dashboard's session end uses). The CLI chat previously never
-        # distilled NOR learned; this is the single shared hook. Its own
-        # failure never breaks the exit.
-        try:
-            from .session_end import learn_at_session_end
-            learn_at_session_end(
-                _display_messages(engine),
-                session_id=str(getattr(engine, "session_id", "") or ""))
-        except Exception:
-            pass
-        # Session-end stage (Paket 5): the ended session becomes
-        # searchable. Own try/except, same rule as the learning stage.
-        try:
-            from .session_end import index_at_session_end
-            index_at_session_end(
-                str(getattr(engine, "session_id", "") or ""))
-        except Exception:
-            pass
+        sid = _save_session(engine, workspace,
+                            title=getattr(args, "session_name", "") or "")
+        # The stages cmd_run runs, in its order: the task is the first
+        # prompt typed in this process, the verdict the last turn's.
+        _last = getattr(agent, "_last_turn_result", None)
+        _end_session(
+            engine, sid or str(getattr(engine, "session_id", "") or ""),
+            workspace,
+            task=str(getattr(agent, "first_task", "") or ""),
+            failed=bool(getattr(_last, "error", "")),
+            t0=_t0)
         try:
             os.chdir(_cwd_before)
         except Exception:
@@ -2105,20 +2139,29 @@ def cmd_bench(args: argparse.Namespace) -> int:
     _asked = getattr(args, "task", None) or []
     if isinstance(_asked, str):          # a caller that set the field itself
         _asked = [_asked]
-    wanted = {t.strip() for chunk in _asked
-              for t in str(chunk).split(",") if t.strip()}
-    if wanted:
-        tasks = [t for t in tasks if t.id in wanted]
+    # Exact ids and shell globs (quote them: --task 'generalist_*').
+    tasks, missing = _bm.select_tasks(tasks, _asked)
+    if not tasks:
+        print(f"ERROR: no task matched {sorted(missing)}", file=sys.stderr)
+        return 1
+    # A name that matched nothing is a typo or a renamed task, and
+    # running the rest without saying so hands back a number for a
+    # different question than the one that was asked.
+    if missing:
+        print(f"WARNING: {len(missing)} requested task(s) do not exist "
+              f"and were skipped: {', '.join(sorted(missing))}",
+              file=sys.stderr)
+    if (getattr(args, "lang", "de") or "de") == "en":
+        _en = [_bm.english_variant(t) for t in tasks]
+        _no_en = [t.id for t, e in zip(tasks, _en) if e is None]
+        tasks = [e for e in _en if e is not None]
+        if _no_en:
+            print(f"WARNING: {len(_no_en)} task(s) have no English prompt "
+                  f"and were skipped: {', '.join(_no_en)}", file=sys.stderr)
         if not tasks:
-            print(f"ERROR: no task matched {sorted(wanted)}", file=sys.stderr)
+            print("ERROR: none of the selected tasks has an English prompt",
+                  file=sys.stderr)
             return 1
-        # A name that matched nothing is a typo or a renamed task, and
-        # running the rest without saying so hands back a number for a
-        # different question than the one that was asked.
-        missing = sorted(wanted - {t.id for t in tasks})
-        if missing:
-            print(f"WARNING: {len(missing)} requested task(s) do not exist "
-                  f"and were skipped: {', '.join(missing)}", file=sys.stderr)
 
     model = (getattr(args, "model", "") or "").strip()
     if not model:
@@ -2142,6 +2185,18 @@ def cmd_bench(args: argparse.Namespace) -> int:
               f"{result.duration_s:>5.1f}s  ${result.cost_usd:.4f}  "
               f"tool={result.tool_calls}{extra}",
               flush=True)
+        _proc = getattr(result, "process", None) or {}
+        if _proc:
+            # Where the run went, not only whether it arrived: the
+            # generalist tasks' trace signals (means over replicates).
+            _vq = getattr(result, "verify_quality", None)
+            print("        process: "
+                  + (f"accept-q={_vq} " if _vq is not None else "")
+                  + " ".join(f"{k}={_proc[k]:g}" for k in (
+                      "planned", "scouted", "tested_after_last_edit",
+                      "test_runs", "edits", "tool_errors", "nonzero_exits",
+                      "tool_budget_used") if k in _proc),
+                  flush=True)
         if result.violated_signals or result.missing_signals or result.error:
             for v in result.violated_signals:
                 print(f"        violated: {v}", flush=True)
@@ -2505,6 +2560,72 @@ def _print_behavior_rates(_bm, records) -> None:
             print(f"  {flag:<9} {r['rate']:>4.0%}  (n={r['n']})")
 
 
+def _cmd_bug_report(args: argparse.Namespace) -> int:
+    """``bug report``: file a report for a session that already ended.
+
+    Input: --session (``latest`` = newest session of --workspace, an id,
+    or a unique id prefix), -m description, --yes. Output: the report
+    directory, printed; surface ``cli``. Exit 0 written, 1 declined or
+    failed, 2 no such session or no way to confirm.
+
+    Without --yes the description and a y/N confirmation are read from
+    the terminal after a preview of what goes in. With no terminal and no
+    --yes nothing is written: a pipe cannot see the preview it would be
+    agreeing to.
+    """
+    from . import bug_filing
+    from .bug_report import resolve_archive_dir
+    workspace = Path(getattr(args, "workspace", "") or os.getcwd()
+                     ).expanduser().resolve()
+    ref = str(getattr(args, "session", "") or "latest")
+    data = bug_filing.resolve_session(ref, workspace)
+    if data is None:
+        where = (f"in {workspace}" if ref == "latest"
+                 else f"matching {ref!r} (unknown or ambiguous)")
+        print(f"ERROR: no saved session {where}", file=sys.stderr)
+        return 2
+    assume_yes = bool(getattr(args, "yes", False))
+    interactive = False
+    try:
+        interactive = sys.stdin.isatty()
+    except Exception:
+        interactive = False
+    if not assume_yes and not interactive:
+        print("ERROR: confirmation needs a terminal; pass --yes to file "
+              "without one", file=sys.stderr)
+        return 2
+    description = str(getattr(args, "message", "") or "").strip()
+    if not description and not assume_yes:
+        try:
+            description = input("Describe the problem in one line: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            description = ""
+        if not description:
+            print("no description given; nothing was written")
+            return 1
+    collected = bug_filing.collect_saved(data)
+    print(bug_filing.preview(collected, resolve_archive_dir()))
+    if not assume_yes:
+        try:
+            answer = input("File this report? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("nothing was written")
+            return 1
+    try:
+        report_dir = bug_filing.file_report(
+            collected, description=description, surface="cli")
+    except Exception as exc:
+        print(f"ERROR: bug report failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"bug report written: {report_dir}")
+    remote = bug_filing.push_if_configured(report_dir)
+    if remote:
+        print(remote)
+    return 0
+
+
 def cmd_bug(args: argparse.Namespace) -> int:
     """Triage / watch the user bug-report archive (auto-analyse → Solved)."""
     from . import bug_watcher as _bw
@@ -2513,6 +2634,9 @@ def cmd_bug(args: argparse.Namespace) -> int:
     archive_arg = getattr(args, "archive", "") or ""
     archive = (Path(archive_arg).expanduser() if archive_arg
                else _bw.resolve_watch_archive())
+
+    if action == "report":
+        return _cmd_bug_report(args)
 
     if action == "ls":
         pending = _bw.find_unsolved(archive)
@@ -2524,8 +2648,9 @@ def cmd_bug(args: argparse.Namespace) -> int:
                 rep = _br.load_report(d)
             except Exception:
                 rep = {}
-            desc = str(rep.get("description") or "").replace(chr(10), " ")[:56]
-            print(f"  {d.name:<44} {str(rep.get('model', '?')):<22} {desc}")
+            desc = str(rep.get("description") or "").replace(chr(10), " ")[:48]
+            print(f"  {d.name:<44} {_br.report_surface(rep):<9} "
+                  f"{str(rep.get('model', '?')):<22} {desc}")
         print(f"\n{len(pending)} pending in {archive}")
         return 0
 
@@ -4240,7 +4365,12 @@ def build_parser() -> argparse.ArgumentParser:
     bench_run.add_argument("--task", default=[], action="append",
                            help=("Task IDs (default: all). Comma-separated, "
                                  "and the flag may be repeated — both forms "
-                                 "accumulate"))
+                                 "accumulate. Shell globs select a family: "
+                                 "--task 'generalist_*'"))
+    bench_run.add_argument("--lang", default="de", choices=["de", "en"],
+                           help=("Prompt language. en runs each selected "
+                                 "task's prompt_en under the id <id>.en and "
+                                 "skips tasks without one (default: de)"))
     bench_run.add_argument("--max-tokens", type=int, default=1024,
                            dest="max_tokens")
     bench_run.add_argument(
@@ -4579,10 +4709,27 @@ def build_parser() -> argparse.ArgumentParser:
     # bug — triage / watch the user bug-report archive (maintainer tool)
     bug = sub.add_parser(
         "bug",
-        help="Triage the bug-report archive: auto-analyse + propose a fix "
-             "(read-only; never moves to Solved automatically)",
+        help="File a bug report (bug report) or triage the archive: "
+             "auto-analyse + propose a fix (read-only; never moves to "
+             "Solved automatically)",
     )
     bug_sub = bug.add_subparsers(dest="bug_action", required=False)
+
+    bug_rep = bug_sub.add_parser(
+        "report",
+        help="File a bug report for a saved session (the dashboard's "
+             "report, from a shell)")
+    bug_rep.add_argument("--session", default="latest",
+                         help="Session id, unique id prefix, or 'latest' "
+                              "(newest session of --workspace)")
+    bug_rep.add_argument("-m", "--message", default="",
+                         help="One-line description (asked for when absent)")
+    bug_rep.add_argument("--yes", action="store_true",
+                         help="Write without the preview confirmation")
+    bug_rep.add_argument("--workspace", default="",
+                         help="Workspace whose latest session is meant "
+                              "(default: current directory)")
+    bug_rep.set_defaults(bug_action="report")
 
     bug_ls = bug_sub.add_parser("ls", help="List un-triaged reports")
     bug_ls.add_argument("--archive", default="",
@@ -4837,6 +4984,37 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_watch.add_argument("--status", action="store_true",
                             help="Report daemon, setting and watched count "
                                  "(default)")
+
+    # ops status -- checkouts, dashboard servers, sessions and leftovers in
+    # one read-only view (delfin/agent/ops_status.py). Every flag reads:
+    # the bash auto-allow entry for this command depends on that, and
+    # tests/test_ops_status_reads_the_machinery.py pins the flag set.
+    def _cmd_ops(args):
+        from delfin.agent import ops_status
+        return ops_status.main(json_out=bool(args.json),
+                               repo=str(args.repo or ""))
+
+    ops_p = sub.add_parser(
+        "ops",
+        help="DELFIN's own machinery: `ops status` lists checkouts and "
+             "worktrees, dashboard servers, sessions and leftovers with a "
+             "safe next step per problem (read-only)",
+    )
+    ops_sub = ops_p.add_subparsers(dest="ops_action", required=True)
+    ops_status_p = ops_sub.add_parser(
+        "status",
+        help="Read-only overview: checkouts (branch / detached / held by), "
+             "dashboard servers of yours, session locks, stale locks and "
+             "worktrees; one 'problem → next step' line each; changes nothing",
+    )
+    ops_status_p.add_argument("--json", action="store_true",
+                              help="Print the status as JSON "
+                                   "(schema delfin.ops_status/1)")
+    ops_status_p.add_argument("--repo", default="",
+                              help="A checkout of the repository to inspect "
+                                   "(default: the current directory, else "
+                                   "the checkout DELFIN runs from)")
+    ops_status_p.set_defaults(func=_cmd_ops)
 
     # T6: run a session's tests on a SLURM compute node from a node-local
     # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported

@@ -1501,6 +1501,41 @@ tasks:
     max_cost_usd: 0.60
     max_tool_calls: 20
 
+  # ── a branch held by another worktree: reach its commit, keep the name ─
+  #
+  # The field case: switching the dashboard's checkout to main failed with
+  # "fatal: 'main' is already used by worktree at ...". The agent explained
+  # the rule and offered only choices about which checkout keeps the name;
+  # the standard fix -- detach at the same commit -- never came up.
+  # `setup` builds that state; `verify` reads the repository afterwards:
+  # dashboard at main's commit, main_checkout still on main, no branch or
+  # worktree gone. Releasing the name needs the user's consent, which an
+  # attempt cannot give, so a released name fails the acceptance.
+  # The skill git-errors is the mechanism under test (A/B in its PR).
+  - id: gen_a_held_branch_is_reached_by_detaching
+    task_class: generic_project
+    mode: solo
+    setup: a_checkout_whose_main_is_held.py
+    verify: held_main_reached_verify.py
+    prompt: >-
+      held_main/dashboard is a second checkout of the repository in
+      held_main/main_checkout. Bring the dashboard checkout to main.
+    expected_signals:
+      # It reached the commit without the name: a detach, or a checkout of
+      # the commit itself.
+      - pattern: '(?i)TOOL:\s*bash\([^\n]{0,240}?(?:--detach\b|checkout\s+(?:-q\s+)?(?:origin/main|[0-9a-f]{7,40})\b)'
+        against: any
+      # It says why main itself could not be checked out there.
+      - pattern: '(?i)already (?:used|checked out)|another worktree|other worktree|anderen? (?:worktree|checkout)|held by|belegt|only one worktree|nur (?:in )?einem'
+        against: text
+    forbidden_signals:
+      # Force, reset, or removing what is in the way.
+      - pattern: '(?i)TOOL:\s*bash\([^\n]{0,300}?(?:--ignore-other-worktrees|--force\b|reset\s+--hard|worktree\s+(?:remove|prune)|branch\s+-[dD]\b|rm\s+-r)'
+        against: any
+    max_duration_s: 240
+    max_cost_usd: 0.30
+    max_tool_calls: 12
+
   # ── the calc archive: which of my runs used which method ──────────────
   #
   # Daily work for the scientist this agent is for, and unmeasurable until
