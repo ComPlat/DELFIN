@@ -1646,8 +1646,9 @@ delfin-agent tui --resume <id>         # a saved session (or one that runs)
 delfin-agent tui --model kit.deepseek-v4-flash --permission-mode acceptEdits
 delfin-agent tui --inline              # in the terminal's own scrollback
 delfin-agent service status            # the service, its sessions, its windows (--json)
-delfin-agent service end <id>          # end one session (saved; a unique id prefix will do)
+delfin-agent service end <id>          # end one session, as ctrl+x twice (a running turn is stopped; saved; a unique id prefix will do)
 delfin-agent service end --all-idle    # end every idle one
+delfin-agent service end <id> --after-turn  # let a running turn finish first
 delfin-agent service stop              # end it; sessions are saved
 delfin-agent service restart           # e.g. after an update
 delfin-agent service logs

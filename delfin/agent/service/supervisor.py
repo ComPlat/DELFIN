@@ -1132,9 +1132,13 @@ class Supervisor:
 
         return {"pid": os.getpid(), "host": rundir.hostname(),
                 "startedAt": round(self.started_at, 3),
-                # Each with the windows attached to it (`service status`).
-                "sessions": [{**s.summary(), "windows": windows(s.subscribers)}
+                # Each with the windows attached to it, and whether its
+                # worker saves it (`service status`, `service end`).
+                "sessions": [{**s.summary(), "windows": windows(s.subscribers),
+                              "saves": _saves(s.settings)}
                              for s in self.sessions.values()],
+                "dormant": [{**r["summary"], "windows": 0, "saves": _saves(r.get("settings") or {})}
+                            for sid, r in self.dormant.items() if sid not in self.sessions],
                 "windows": windows(self.clients),
                 "socket": str(rundir.socket_path())}
 
@@ -1562,6 +1566,12 @@ class Supervisor:
         self.closing = True
         if self.stopping is not None:
             self.stopping.set()
+
+
+def _saves(settings: dict) -> bool:
+    """Whether a session's worker saves it when it ends: every one but a
+    scripted (fake) session started without fakeSave."""
+    return not (settings.get("fake") and not settings.get("fakeSave"))
 
 
 def _release() -> str:

@@ -11,7 +11,8 @@ head; space peeks at a session and a reply goes to it without opening it;
 enter opens the waiting one (divider, its question) and y answers it; ←
 again, typing and enter start a new session in this window's folder, which
 takes the prompt. `delfin-agent service end <prefix> --yes` ends one of the
-others and the count in the hints line follows. Leaving the window leaves
+others and the count in the hints line follows; `--after-turn` on a session
+in a turn of some seconds waits for that turn, which finishes (not stopped). Leaving the window leaves
 the other three running, and no row of the scrollback is lost or written
 twice by the view opening and closing over it.
 
@@ -190,10 +191,29 @@ def main() -> int:
             problems.append(f"B got: {said}")
         ended = service("end", b[:6], "--yes")
         capture("4-service-end", ended.stdout + ended.stderr)
-        if ended.returncode != 0 or "second-session" not in ended.stdout or "saved" not in ended.stdout:
+        # A scripted session started without fakeSave is not saved, and is not said to be.
+        if ended.returncode != 0 or "second-session" not in ended.stdout or "not saved" not in ended.stdout:
             problems.append(f"service end: {ended.returncode}\n{ended.stdout}{ended.stderr}")
         if expect(r"· 2 more sessions ← agents", "the count after an end", 15, where="screen"):
             capture("5-count-after-end", tmux.screen())
+        # --after-turn: a session in a turn of some seconds ends after it, not in it.
+        with ServiceClient(sock) as other:
+            d = other.request("session.create", {"cwd": str(ws), "fake": True, "fakeDelay": 0.12,
+                                                 "name": "fourth-slow"}, timeout=60)["sessionId"]
+            mark = len(other.events)
+            other.request("session.prompt", {"sessionId": d, "text": "a slow one"})
+            other.wait_for(lambda e: e.get("type") == "turn.started" and e.get("session") == d,
+                           after=mark, timeout=30)
+            expect(r"· 3 more sessions ← agents", "the count with the slow one", 15, where="screen")
+            after = service("end", d[:8], "--after-turn", "--yes")
+            capture("6-service-end-after-turn", after.stdout + after.stderr)
+            if after.returncode != 0 or "waiting for" not in after.stdout or "after its turn" not in after.stdout:
+                problems.append(f"service end --after-turn: {after.returncode}\n{after.stdout}{after.stderr}")
+            turn_end = next((e for e in other.events[mark:] if e.get("type") == "turn.ended"
+                             and e.get("session") == d), None)
+            if not turn_end or turn_end.get("stopped"):
+                problems.append(f"--after-turn should let the turn finish: {turn_end}")
+        expect(r"· 2 more sessions ← agents", "the count after --after-turn", 15, where="screen")
         time.sleep(0.5)
         tmux.key("C-d")
         exited = tmux.wait_for(r"TUI_EXIT=(\d+)", 30)

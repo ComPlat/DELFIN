@@ -224,7 +224,10 @@ def _session_rows(svc: "client.ServiceClient") -> tuple[list[dict], dict]:
     now = time.time()
     live = list(status.get("sessions") or [])
     ids = {s.get("sessionId") for s in live}
-    asleep = [s for s in listing.get("sessions") or []
+    # A service of this release says which sleeping sessions it keeps (and
+    # whether they save); an older one only lists them.
+    dormant = status.get("dormant")
+    asleep = [s for s in (dormant if isinstance(dormant, list) else listing.get("sessions") or [])
               if s.get("state") == "sleeping" and s.get("sessionId") not in ids]
     rows = []
     for s in [*live, *asleep]:
@@ -238,6 +241,8 @@ def _session_rows(svc: "client.ServiceClient") -> tuple[list[dict], dict]:
             "rawState": _plain(s.get("state")),
             "pending": int(s.get("pending") or 0),
             "windows": int(s.get("windows") or 0),
+            # False: a scripted (fake) session started without saving.
+            "saves": bool(s.get("saves", True)),
             "model": _plain(s.get("model")),
             "createdAt": created,
             "lastActivity": active,
@@ -255,7 +260,8 @@ def cmd_service(args: argparse.Namespace) -> int:
         if action == "end":
             return _end(str(getattr(args, "target", "") or "").strip(),
                         all_idle=bool(getattr(args, "all_idle", False)),
-                        yes=bool(getattr(args, "yes", False)))
+                        yes=bool(getattr(args, "yes", False)),
+                        after_turn=bool(getattr(args, "after_turn", False)))
         return _service(action, as_json=bool(getattr(args, "json", False)))
     except client.ServiceError as exc:
         # Refused (this shell is an agent session's own: watch only), or
@@ -355,12 +361,20 @@ def _service(action: str, *, as_json: bool = False) -> int:
 END_WAIT_S = 60.0
 
 
-def _end(target: str, *, all_idle: bool, yes: bool) -> int:
+#: What a dry-run shutdown answers while a turn runs or is about to:
+#: what `service end --after-turn` waits out (worker.busy_reason).
+TURN_BUSY = ("a turn runs", "messages are queued")
+
+
+def _end(target: str, *, all_idle: bool, yes: bool, after_turn: bool = False) -> int:
     """`delfin-agent service end <id>|--all-idle`: each session ends as the
     agent view's ctrl+x twice ends it (``session.shutdown``): a running
-    turn is stopped, open questions are refused, the session is saved and
-    can be resumed. The service and the other sessions go on. Never a
-    signal: a service that does not answer ends nothing here."""
+    turn is stopped at its next safe point, open questions are refused,
+    the session is saved (unless it is a scripted session started without
+    saving) and can be resumed. ``after_turn``: a running turn (and what is
+    queued behind it) ends first, then the session ends the same way. The
+    service and the other sessions go on. Never a signal: a service that
+    does not answer ends nothing here."""
     if _refused_inside_an_agent("end"):
         return 1
     if all_idle == bool(target):
@@ -397,7 +411,7 @@ def _end(target: str, *, all_idle: bool, yes: bool) -> int:
                 print("ERROR: not asked: this is no terminal; `--yes` ends without asking",
                       file=sys.stderr)
                 return 2
-            if not _confirm(chosen):
+            if not _confirm(chosen, after_turn=after_turn):
                 return 1
         mark = len(svc.events)
         ended: list[dict] = []
@@ -408,6 +422,10 @@ def _end(target: str, *, all_idle: bool, yes: bool) -> int:
                 # Idle when listed; one that started to work since is left.
                 params["ifIdle"] = True
             try:
+                if after_turn and not _after_its_turn(svc, r):
+                    print(f"stopped waiting: {r['id'][:8]}  {r['title'][:40]} was not ended",
+                          file=sys.stderr)
+                    return 130
                 reply = svc.request("session.shutdown", params, timeout=END_WAIT_S)
             except client.ServiceError as exc:
                 kept.append((r, exc.message))
@@ -418,30 +436,74 @@ def _end(target: str, *, all_idle: bool, yes: bool) -> int:
             ended.append(r)
         saving = _wait_removed(svc, {r["id"] for r in ended}, mark, END_WAIT_S)
     for r in ended:
+        when = " after its turn" if after_turn else ""
+        if not r["saves"]:
+            print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: not saved "
+                  "(a scripted session started without saving)")
+            continue
         still = " (still saving)" if r["id"] in saving else ""
-        print(f"ended {r['id'][:8]}  {r['title'][:40]}: saved{still}; "
+        print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: saved{still}; "
               f"`delfin-agent tui --resume {r['id']}` resumes it")
     for r, why in kept:
         print(f"not ended {r['id'][:8]}  {r['title'][:40]}: {_plain(why, 200)}", file=sys.stderr)
     return 0 if ended or not kept else 1
 
 
-def _confirm(chosen: list[dict]) -> bool:
-    """y/N on the terminal: what is ended, and what that stops."""
+def _confirm(chosen: list[dict], *, after_turn: bool = False) -> bool:
+    """y/N on the terminal: what is ended, what that stops -- or what it
+    waits for (``after_turn``) -- and whether it is saved."""
+    notes = ({"working": " -- it works now: it ends once its turn has ended",
+              "waiting for you": " -- it waits for you: it ends once you have answered "
+                                 "and its turn has ended"} if after_turn else
+             {"working": " -- it works now: its turn is stopped at its next safe point",
+              "waiting for you": " -- it waits for you: its open question is refused "
+                                 "and its turn is stopped"})
     for r in chosen:
-        note = {"working": " -- it works now: its turn is stopped",
-                "waiting for you": " -- it waits for you: its open question is refused"}.get(r["state"], "")
-        print(f"  {r['id'][:8]}  {r['title'][:40]}  ({r['state']}){note}")
+        unsaved = " (not saved)" if not r["saves"] else ""
+        print(f"  {r['id'][:8]}  {r['title'][:40]}  ({r['state']}){unsaved}{notes.get(r['state'], '')}")
     n = len(chosen)
+    saves = [r["saves"] for r in chosen]
+    kept = ("It is saved and can be resumed." if all(saves) and n == 1
+            else "They are saved and can be resumed." if all(saves)
+            else "It is not saved." if n == 1
+            else "Those marked (not saved) are not saved; the others can be resumed.")
     try:
-        answer = input(f"End {'this session' if n == 1 else f'these {n} sessions'}? "
-                       "It is saved and can be resumed. [y/N] ")
+        answer = input(f"End {'this session' if n == 1 else f'these {n} sessions'}? {kept} [y/N] ")
     except EOFError:
         answer = ""
     if answer.strip().lower() in ("y", "yes"):
         return True
     print("nothing ended")
     return False
+
+
+def _after_its_turn(svc: "client.ServiceClient", row: dict) -> bool:
+    """Wait while ``row``'s session runs a turn or has messages queued
+    (asked as a dry-run shutdown, which ends nothing); True once it has
+    none, False when the wait was interrupted (ctrl+c). Each change of the
+    session's summary -- a turn ending among them -- asks again, and every
+    few seconds regardless. What is left between the last answer and the
+    shutdown is the moment a ctrl+x twice has too."""
+    said = False
+    try:
+        while True:
+            mark = len(svc.events)
+            reply = svc.request("session.shutdown", {"sessionId": row["id"], "dryRun": True},
+                                timeout=END_WAIT_S)
+            busy = str((reply or {}).get("busy") or "") if isinstance(reply, dict) else ""
+            if busy not in TURN_BUSY:
+                return True
+            if not said:
+                print(f"waiting for {row['id'][:8]}  {row['title'][:40]}: {busy}; it ends after "
+                      "its turn (ctrl+c stops waiting and ends nothing)", flush=True)
+                said = True
+            try:
+                svc.wait_for(lambda e: e.get("type") == "session.summary"
+                             and e.get("session") == row["id"], after=mark, timeout=5.0)
+            except TimeoutError:
+                pass
+    except KeyboardInterrupt:
+        return False
 
 
 def _wait_removed(svc: "client.ServiceClient", ids: set[str], after: int,

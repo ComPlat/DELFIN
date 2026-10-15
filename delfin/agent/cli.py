@@ -5346,6 +5346,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="end: the session's id, or a unique prefix of it")
     svc.add_argument("--all-idle", dest="all_idle", action="store_true",
                      help="end: every idle session (none that works or waits for you)")
+    svc.add_argument("--after-turn", dest="after_turn", action="store_true",
+                     help="end: let a running turn finish first (without it, the turn "
+                          "is stopped at its next safe point, as ctrl+x twice does)")
     svc.add_argument("--yes", "-y", action="store_true",
                      help="end: without asking (for scripts)")
     svc.add_argument("--json", action="store_true",

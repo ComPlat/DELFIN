@@ -313,3 +313,81 @@ def test_the_gate_refuses_ending_a_session(cmd):
 ])
 def test_reading_the_sessions_stays_allowed(cmd):
     assert approval_guard.answer_command(cmd) is None
+
+
+# -- --after-turn, and what is saved ------------------------------------------------------------
+
+def _turn_running(c: ServiceClient, sid: str, text: str = "a slow one") -> int:
+    """Start a slow turn in ``sid`` and wait until it runs; the event index."""
+    start = len(c.events)
+    c.request("session.attach", {"sessionId": sid, "turns": 0})
+    c.request("session.prompt", {"sessionId": sid, "text": text})
+    c.wait_for(lambda e: e.get("type") == "turn.started" and e.get("session") == sid,
+               after=start, timeout=30)
+    return start
+
+
+def _turn_end_and_removal(c: ServiceClient, sid: str, start: int) -> tuple[dict, int, int]:
+    removed, at_removed = c.wait_for(lambda e: e.get("type") == "session.removed"
+                                     and e.get("session") == sid, after=start, timeout=90)
+    ended, at_ended = c.wait_for(lambda e: e.get("type") == "turn.ended"
+                                 and e.get("session") == sid, after=start, timeout=5)
+    return ended, at_ended, at_removed
+
+
+def test_end_stops_a_running_turn_as_ctrl_x_twice_does(service):
+    a = service.client()
+    sid = service.session(a, fakeDelay=0.05)
+    start = _turn_running(a, sid)
+    out = _cli(service, "end", sid[:8], "--yes")
+    assert out.returncode == 0, out.stdout + out.stderr
+    ended, at_ended, at_removed = _turn_end_and_removal(a, sid, start)
+    assert ended.get("stopped") is True
+    assert at_ended < at_removed
+
+
+def test_end_after_turn_lets_the_running_turn_finish_first(service):
+    a = service.client()
+    sid = service.session(a, fakeDelay=0.12)          # a turn of about six seconds
+    start = _turn_running(a, sid)
+    out = _cli(service, "end", sid[:8], "--after-turn", "--yes")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "waiting for" in out.stdout and "a turn runs" in out.stdout   # it did wait
+    assert "after its turn" in out.stdout
+    ended, at_ended, at_removed = _turn_end_and_removal(a, sid, start)
+    assert not ended.get("stopped"), ended
+    assert at_ended < at_removed
+    assert sid not in _listed(a)
+
+
+def test_end_after_turn_of_an_idle_session_ends_it_at_once(service):
+    a = service.client()
+    sid = service.session(a)
+    out = _cli(service, "end", sid[:8], "--after-turn", "--yes")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert sid not in _listed(a)
+
+
+def test_the_question_says_which_way_a_working_session_ends(service):
+    a = service.client()
+    sid = service.session(a, fakeDelay=0.2)
+    _turn_running(a, sid, "a slow one, slowly")
+    _, now = _on_a_terminal(service, "n", "end", sid[:8])
+    assert "its turn is stopped" in now, now
+    _, later = _on_a_terminal(service, "n", "end", sid[:8], "--after-turn")
+    assert "it ends once its turn has ended" in later, later
+    assert sid in _listed(a)
+
+
+def test_a_session_that_does_not_save_is_not_said_to_be_saved(service):
+    a = service.client()
+    unsaved = service.session(a, name="not saved")
+    saved = service.session(a, name="saved one", fakeSave=True)
+    rows = {r["id"]: r for r in json.loads(_cli(service, "status", "--json").stdout)["sessions"]}
+    assert rows[unsaved]["saves"] is False and rows[saved]["saves"] is True
+    out = _cli(service, "end", unsaved[:8], "--yes")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "not saved" in out.stdout and "resumes it" not in out.stdout
+    assert ": saved" not in out.stdout
+    out = _cli(service, "end", saved[:8], "--yes")
+    assert ": saved" in out.stdout and "resumes it" in out.stdout
