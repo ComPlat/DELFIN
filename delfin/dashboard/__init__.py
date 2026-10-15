@@ -13,6 +13,7 @@ import importlib
 import importlib.resources
 import html
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,7 +62,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     """
     # -- lazy imports (keep dashboard importable without ipywidgets) --------
     import ipywidgets as widgets
-    from IPython.display import clear_output, display
+    from IPython.display import display
 
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
@@ -701,10 +702,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tabs = ctx.tabs_widget
 
     # -- header bar --------------------------------------------------------
-    pull_delfin_btn = widgets.Button(
-        description='PULL DELFIN', button_style='info',
-        layout=widgets.Layout(width='150px'),
-    )
+    # One row: the branch switcher, Test, the running previews, Pull, More
+    # and the status hint; HOME, the session switch and the busy state on
+    # the right. Rare actions (Clean up, roll back) wait behind More.
+    # Messages go to one area (header_ui.Toasts) instead of an output
+    # under the bar that grew until the page was reloaded.
+    from delfin.dashboard import header_ui as _hu
+    header_toasts = _hu.Toasts()
+    pull_delfin_btn = _hu.icon_button(
+        '↓ Pull', 'Update main from origin (fast-forward only)', 'delfin-btn')
+    git_hint_btn = _hu.icon_button('…', '', 'delfin-btn', 'delfin-hint')
+    git_hint_fold = _hu.icon_button('‹', 'Show only the icon', 'delfin-icon-btn')
+    _hint_state = {'compact': bool(_hu.load_prefs().get('hint_compact')),
+                   'hint': {'text': '', 'icon': '', 'title': '', 'state': ''}}
     # Branches. Everyone works from main: the shared checkout stays on it,
     # and a branch is tried in a preview -- its own worktree and server --
     # instead of switching this checkout under every person and agent on
@@ -714,149 +724,201 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     _in_preview = _branch_preview.in_preview()
     _preview_banner = None
     branch_panel = None
+    rollback_delfin_btn = _hu.icon_button(
+        '↶ Roll back 1 commit',
+        'Move the shared checkout back by one commit (git reset --hard HEAD~1); '
+        'refused when it has uncommitted changes', 'delfin-btn', 'is-danger')
     if _in_preview:
+        from delfin.dashboard.branch_panel import preview_bar as _preview_bar
         try:
-            _preview_banner = widgets.HTML(_branch_preview.banner_html())
+            _preview_banner = _preview_bar(header_toasts)
         except Exception as _banner_err:
             _preview_banner = widgets.HTML(
-                '<div style="background:#b71c1c;color:#fff;padding:6px;">'
+                '<div class="delfin-preview-banner" style="background:#b71c1c;'
+                'color:#fff;padding:6px;">'
                 f'PREVIEW (banner failed: {html.escape(str(_banner_err))})</div>')
     else:
         if ctx.repo_dir:
             os.environ.setdefault(_branch_preview.SHARED_CHECKOUT_ENV,
                                   str(ctx.repo_dir))
         from delfin.dashboard.branch_panel import BranchPanel
-        branch_panel = BranchPanel(ctx.repo_dir)
-    rollback_delfin_btn = widgets.Button(
-        description='HEAD -1', button_style='warning',
-        layout=widgets.Layout(width='110px'),
-    )
-    git_status_label = widgets.HTML(value='')
-    pull_delfin_output = widgets.Output()
+        branch_panel = BranchPanel(
+            ctx.repo_dir, pull=pull_delfin_btn, more_extra=[rollback_delfin_btn],
+            hint=widgets.HBox([git_hint_btn, git_hint_fold],
+                              layout=widgets.Layout(align_items='center')),
+            toasts=header_toasts)
 
     home_usage_label = _build_home_usage_widget(home)
+
+    def _draw_hint():
+        h = _hint_state['hint']
+        compact = _hint_state['compact']
+        git_hint_btn.description = h['icon'] if compact else h['text']
+        git_hint_btn.tooltip = h['title']
+        for cls in ('is-behind', 'is-warn', 'is-ok'):
+            git_hint_btn.remove_class(cls)
+        if h['state']:
+            git_hint_btn.add_class(f"is-{h['state']}")
+        git_hint_fold.description = '›' if compact else '‹'
+        git_hint_fold.tooltip = 'Show the text' if compact else 'Show only the icon'
+
+    def _fold_hint(_b=None):
+        _hint_state['compact'] = not _hint_state['compact']
+        _hu.save_prefs(hint_compact=_hint_state['compact'])
+        _draw_hint()
+
+    git_hint_fold.on_click(_fold_hint)
 
     def refresh_git_status_label():
         rd = ctx.repo_dir
         if not rd or not Path(rd).exists():
-            git_status_label.value = '<span style="color:#666;">git: repo n/a</span>'
+            _hint_state['hint'] = {'text': 'no repository', 'icon': '⚠',
+                                   'title': 'No DELFIN checkout found for this dashboard',
+                                   'state': 'warn'}
             pull_delfin_btn.disabled = True
             rollback_delfin_btn.disabled = True
             if branch_panel is not None:
                 branch_panel.row.layout.display = 'none'
+            _draw_hint()
             return
-        git_status_label.value = _format_git_status_html(rd)
+        try:
+            _hint_state['hint'] = _git_status_hint(rd)
+        except Exception as exc:
+            _hint_state['hint'] = {'text': 'git status unavailable', 'icon': '⚠',
+                                   'title': str(exc), 'state': 'warn'}
         lock_present = bool(_git_index_lock_message(rd))
         pull_delfin_btn.disabled = lock_present
         rollback_delfin_btn.disabled = lock_present
+        _draw_hint()
 
     refresh_git_status_label()
     if branch_panel is not None:
         branch_panel.on_change = refresh_git_status_label
         branch_panel.refresh()
 
-    def handle_pull_delfin(button):
-        with pull_delfin_output:
-            clear_output()
-            rd = ctx.repo_dir
-            if not rd or not Path(rd).exists():
-                print(f'Repo path not found: {rd}')
-                return
-            ctx.set_busy(True)
-            try:
-                with _dashboard_git_write_lock(rd, 'git pull'):
-                    if _ensure_git_index_lock_clear(rd, 'Pull'):
-                        print('Removed stale Git index lock before pull.')
-                    # Detached at a branch (one another worktree holds):
-                    # git pull has no branch to merge into, so move to the
-                    # branch's current commit, fast-forward only.
-                    from delfin.agent import held_branch as _hb
-                    moved = _hb.update_detached(rd)
-                    if moved is not None:
-                        print(moved.message)
-                        return
-                    # Fast-forward main only: the shared checkout is the
-                    # main checkout, and a merge commit made here would be
-                    # a commit nobody wrote on a branch everybody runs.
-                    current = _get_current_git_branch(rd)
-                    if current != 'main':
-                        print(
-                            f'PULL only fast-forwards main; the shared checkout '
-                            f'is on {current or "a detached HEAD"}. Commit or '
-                            'move its changes, then run "git switch main" in '
-                            'a terminal. To try a branch, use Test branch.')
-                        return
-                    print(f'Fast-forwarding main in {rd} ...')
-                    result = _run_git_write(rd, 'pull', '--ff-only', 'origin', 'main')
-                    print(result.stdout.strip() or '(no output)')
-            except RuntimeError as e:
-                print(str(e))
-            except Exception as e:
-                print(f'Error: {e}')
-            finally:
-                refresh_git_status_label()
-                ctx.set_busy(False)
+    def handle_pull_delfin(button=None):
+        rd = ctx.repo_dir
+        if not rd or not Path(rd).exists():
+            header_toasts.show('No DELFIN checkout found for this dashboard.',
+                               level='error', details=f'path: {rd}')
+            return
+        header_toasts.show('Updating main …', level='busy', key='pull')
+        ctx.set_busy(True)
+        out = []
+        level, text = 'error', "Couldn't update main."
+        try:
+            with _dashboard_git_write_lock(rd, 'git pull'):
+                if _ensure_git_index_lock_clear(rd, 'Pull'):
+                    out.append('Removed stale Git index lock before pull.')
+                # Detached at a branch (one another worktree holds):
+                # git pull has no branch to merge into, so move to the
+                # branch's current commit, fast-forward only.
+                from delfin.agent import held_branch as _hb
+                moved = _hb.update_detached(rd)
+                if moved is not None:
+                    out.append(moved.message)
+                    level, text = 'ok', moved.message.splitlines()[0][:160]
+                    return
+                # Fast-forward main only: the shared checkout is the
+                # main checkout, and a merge commit made here would be
+                # a commit nobody wrote on a branch everybody runs.
+                current = _get_current_git_branch(rd)
+                if current != 'main':
+                    level = 'error'
+                    text = (f'Pull only updates main; the shared checkout is on '
+                            f'{current or "a detached commit"}.')
+                    out.append('Commit or move its changes, then run "git switch '
+                               'main" in a terminal. To try a branch, use Test.')
+                    return
+                before = _run_git_capture(rd, 'rev-parse', 'HEAD').stdout.strip()
+                result = _run_git_write(rd, 'pull', '--ff-only', 'origin', 'main')
+                out.append(result.stdout.strip() or '(no output)')
+                if result.returncode == 0:
+                    n = _run_git_capture(rd, 'rev-list', '--count',
+                                         f'{before}..HEAD').stdout.strip()
+                    level = 'ok'
+                    text = ('main is up to date.' if n in ('', '0')
+                            else f'Updated main: {n} new commit(s).')
+                else:
+                    text = "Couldn't update main (fast-forward only)."
+        except RuntimeError as e:
+            out.append(str(e))
+        except Exception as e:
+            out.append(f'Error: {e}')
+        finally:
+            refresh_git_status_label()
+            ctx.set_busy(False)
+            header_toasts.show(text, level=level, details='\n'.join(out), key='pull')
 
     pull_delfin_btn.on_click(handle_pull_delfin)
+    git_hint_btn.on_click(handle_pull_delfin)
 
+    def handle_rollback_delfin(button=None):
+        rd = ctx.repo_dir
+        if not rd or not Path(rd).exists():
+            header_toasts.show('No DELFIN checkout found for this dashboard.',
+                               level='error', details=f'path: {rd}')
+            return
+        ctx.set_busy(True)
+        out = []
+        level, text = 'error', "Couldn't roll back."
+        try:
+            with _dashboard_git_write_lock(rd, 'git reset --hard HEAD~1'):
+                if _ensure_git_index_lock_clear(rd, 'Rollback'):
+                    out.append('Removed stale Git index lock before rollback.')
 
-    def handle_rollback_delfin(button):
-        with pull_delfin_output:
-            clear_output()
-            rd = ctx.repo_dir
-            if not rd or not Path(rd).exists():
-                print(f'Repo path not found: {rd}')
-                return
-            ctx.set_busy(True)
-            try:
-                with _dashboard_git_write_lock(rd, 'git reset --hard HEAD~1'):
-                    if _ensure_git_index_lock_clear(rd, 'Rollback'):
-                        print('Removed stale Git index lock before rollback.')
+                status_result = _run_git_capture(rd, 'status', '--porcelain')
+                if status_result.returncode != 0:
+                    out.append(status_result.stdout.strip() or 'git status failed')
+                    return
+                if status_result.stdout.strip():
+                    text = 'Not rolled back: the shared checkout has uncommitted changes.'
+                    out.append('Please commit, stash, or discard local changes first.')
+                    return
 
-                    status_result = _run_git_capture(rd, 'status', '--porcelain')
-                    if status_result.returncode != 0:
-                        print(status_result.stdout.strip() or 'git status failed')
-                        return
-                    if status_result.stdout.strip():
-                        print('Rollback aborted: working tree is not clean.')
-                        print('Please commit, stash, or discard local changes first.')
-                        return
+                old_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD')
+                target_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD~1')
+                if target_head.returncode != 0:
+                    text = 'Not rolled back: there is no earlier commit.'
+                    out.append(target_head.stdout.strip())
+                    return
 
-                    old_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD')
-                    target_head = _run_git_capture(rd, 'rev-parse', '--short', 'HEAD~1')
-                    if target_head.returncode != 0:
-                        print(target_head.stdout.strip() or 'No previous commit available.')
-                        return
-
-                    print(
-                        'Rolling DELFIN back one commit: '
-                        f"{old_head.stdout.strip() or 'HEAD'} -> {target_head.stdout.strip()}"
-                    )
-                    result = _run_git_write(rd, 'reset', '--hard', 'HEAD~1')
-                    print(result.stdout.strip() or '(no output)')
-                    if result.returncode == 0:
-                        _force_reload_delfin()
-            except RuntimeError as e:
-                print(str(e))
-            except Exception as e:
-                print(f'Error: {e}')
-            finally:
-                refresh_git_status_label()
-                ctx.set_busy(False)
+                out.append(
+                    'Rolling DELFIN back one commit: '
+                    f"{old_head.stdout.strip() or 'HEAD'} -> {target_head.stdout.strip()}"
+                )
+                result = _run_git_write(rd, 'reset', '--hard', 'HEAD~1')
+                out.append(result.stdout.strip() or '(no output)')
+                if result.returncode == 0:
+                    level, text = 'ok', 'Rolled back one commit.'
+                    _force_reload_delfin()
+        except RuntimeError as e:
+            out.append(str(e))
+        except Exception as e:
+            out.append(f'Error: {e}')
+        finally:
+            refresh_git_status_label()
+            ctx.set_busy(False)
+            header_toasts.show(text, level=level, details='\n'.join(out))
 
     rollback_delfin_btn.on_click(handle_rollback_delfin)
 
+    # Esc, / and Ctrl+K for the branch menu; kept for a resumed page.
+    _keys = _hu.keys_js()
+    ctx.page_scripts.append(_keys)
+    _append_js(ctx, _keys)
+
     # -- display -----------------------------------------------------------
     title_html = (
-        '<div style="display:flex; align-items:center; gap:12px;">'
+        '<div style="display:flex; align-items:center; gap:8px;">'
         + (
             f'<img src="{logo_data_uri}" alt="DELFIN logo" '
-            'style="height:46px; width:46px; object-fit:contain;" />'
+            'style="height:34px; width:34px; object-fit:contain;" />'
             if logo_data_uri else ''
         )
         # Wordmark in the logo's own blue (#628FBF, sampled from the dolphin
         # disc) so header and mark read as one unit.
-        + '<h1 style="color:#628FBF; margin:0; font-size:38px; '
+        + '<h1 style="color:#628FBF; margin:0; font-size:28px; '
           'font-weight:700; line-height:1; letter-spacing:1px;">DELFIN</h1>'
         + '</div>'
     )
@@ -882,39 +944,33 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         _closing_beacon = None
 
-    _header_root = widgets.VBox(([_preview_banner] if _preview_banner else [])
-                                + ([_returning] if _returning else [])
+    # The right-hand group: what the dashboard is doing and holding.
+    _status_group = widgets.HBox(
+        [busy_indicator, ctx.agent_status_html, home_usage_label, _session_strip])
+    _status_group.add_class('delfin-group')
+    _spacer = widgets.HBox([], layout=widgets.Layout(flex='1 1 auto'))
+    _bar = widgets.HBox(
+        [widgets.HTML(title_html)]
+        + ([_preview_banner] if _preview_banner is not None else [])
+        + ([branch_panel.row] if branch_panel is not None else [])
+        + [_spacer, _status_group],
+        # Wrap rather than shrink: the session strip carries an address,
+        # and a row that squeezes its items renders it unreadable before
+        # it overflows.
+        layout=widgets.Layout(width='100%'))
+    _bar.add_class('delfin-topbar')
+    _header_root = widgets.VBox(([_returning] if _returning else [])
                                 + ([_closing_beacon] if _closing_beacon else [])
                                 + [
         busy_css,
         create_page_css(),
-        widgets.HBox([
-            widgets.HTML(title_html),
-            widgets.HBox(
-                [
-                    busy_indicator,
-                    ctx.agent_status_html,
-                    home_usage_label,
-                    git_status_label,
-                ]
-                + ([branch_panel.row] if branch_panel is not None else [])
-                + ([] if _in_preview else [pull_delfin_btn, rollback_delfin_btn])
-                + [_session_strip],
-                # Wrap rather than shrink: the session strip carries an
-                # address, and a row that squeezes its items renders it
-                # unreadable before it overflows.
-                layout=widgets.Layout(
-                    margin='0 0 0 12px', align_items='center', gap='8px',
-                    flex_flow='row wrap',
-                ),
-            ),
-        ], layout=widgets.Layout(
-            align_items='center', justify_content='space-between', width='100%',
-        )),
+        _hu.css_widget(),
+        header_toasts.box,
+        _bar,
     ]
-        + ([branch_panel.box] if branch_panel is not None else [])
-        + [pull_delfin_output],
+        + ([branch_panel.box] if branch_panel is not None else []),
         layout=widgets.Layout(width='100%'))
+    _header_root.add_class('delfin-hdr')
     _body_root = widgets.VBox([js_output, tabs])
 
     # The two roots are kept before they are shown, not after.
@@ -1254,6 +1310,61 @@ def _format_git_status_html(repo_dir):
         f'{html.escape(text)}</span>'
     )
 
+def _git_status_hint(repo_dir):
+    """The header's status hint for the shared checkout, as data.
+
+    Output: ``{'text', 'icon', 'title', 'state'}`` -- ``text`` a few words
+    (``main ✓ up to date``, ``main ↓ 3 new commits``), ``icon`` the same
+    in one or two characters for the compact form, ``title`` the full
+    status line of :func:`_format_git_status_html` plus what a click does,
+    ``state`` ``ok`` / ``behind`` / ``warn``. Ahead and behind are counted
+    against the upstream as of the last fetch (a click pulls, which
+    fetches).
+    """
+    result = _run_git_capture(repo_dir, 'status', '--porcelain=2', '--branch')
+    if result.returncode != 0:
+        msg = result.stdout.strip() or 'git status failed'
+        return {'text': 'git status failed', 'icon': '⚠', 'title': msg,
+                'state': 'warn'}
+    branch, ahead, behind = '?', 0, 0
+    for line in result.stdout.splitlines():
+        if line.startswith('# branch.head '):
+            branch = line.removeprefix('# branch.head ').strip()
+        elif line.startswith('# branch.ab '):
+            for part in line.removeprefix('# branch.ab ').split():
+                try:
+                    if part.startswith('+'):
+                        ahead = int(part[1:])
+                    elif part.startswith('-'):
+                        behind = int(part[1:])
+                except ValueError:
+                    pass
+    full = re.sub(r'<[^>]+>', '', _format_git_status_html(repo_dir))
+    full = html.unescape(full)
+    click = 'Click to update main (fast-forward only).'
+    if _git_index_lock_message(repo_dir):
+        return {'text': f'{branch} ⚠ git is busy', 'icon': '⚠',
+                'title': f'{full}\nAnother git command holds the index lock.',
+                'state': 'warn'}
+    if branch == '(detached)':
+        try:
+            from delfin.agent.held_branch import checkout_label
+            label = checkout_label(repo_dir).split(' @ ')[0] or 'detached'
+        except Exception:
+            label = 'detached'
+        return {'text': f'{label} (detached)', 'icon': '⚠',
+                'title': f'{full}\n{click}', 'state': 'warn'}
+    if behind:
+        return {'text': f'{branch} ↓ {behind} new commit' + ('s' if behind != 1 else ''),
+                'icon': f'↓{behind}', 'title': f'{full}\n{click}', 'state': 'behind'}
+    if ahead:
+        return {'text': f'{branch} ↑ {ahead} local commit' + ('s' if ahead != 1 else ''),
+                'icon': f'↑{ahead}', 'title': f'{full}\nCommits here that origin does '
+                'not have.', 'state': 'warn'}
+    return {'text': f'{branch} ✓ up to date', 'icon': '✓',
+            'title': f'{full} (as of the last fetch)\n{click}', 'state': 'ok'}
+
+
 def _get_current_git_branch(repo_dir):
     """Return the current local branch name, or ``None`` when detached/unknown."""
     result = _run_git_capture(repo_dir, 'branch', '--show-current')
@@ -1350,16 +1461,16 @@ def _build_home_usage_widget(home_dir, warn_threshold_gb=400):
     """Build an asynchronously refreshed HOME usage widget."""
     import ipywidgets as widgets
     label = widgets.HTML(
-        '<span style="font-family:monospace; color:#455a64; '
-        'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
-        'HOME: measuring...</span>'
+        '<span class="delfin-home" title="Space used in your home directory">'
+        '🏠 …</span>'
     )
 
-    def _set_label(message, color='#455a64'):
+    def _set_label(message, color='#455a64', *, short='', title=''):
+        warn = color == '#b71c1c'
+        tip = title or message
         label.value = (
-            f'<span style="font-family:monospace; color:{color}; '
-            f'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
-            f'{html.escape(message)}</span>'
+            f'<span class="delfin-home{" is-warn" if warn else ""}" '
+            f'title="{html.escape(tip)}">🏠 {html.escape(short or message)}</span>'
         )
 
     def _refresh():
@@ -1371,7 +1482,8 @@ def _build_home_usage_widget(home_dir, warn_threshold_gb=400):
         except Exception:
             usage = None
         if usage is None:
-            _set_label('HOME: n/a', color='#757575')
+            _set_label('HOME: n/a', color='#757575', short='n/a',
+                       title='Home usage is not available on this machine')
             return
         used_gb = usage.used_bytes / (1024 ** 3)
         if usage.soft_limit_bytes:
@@ -1381,10 +1493,15 @@ def _build_home_usage_widget(home_dir, warn_threshold_gb=400):
             _set_label(
                 f'HOME: {used_gb:.1f} / {limit_gb:.0f} GB ({percent:.0f}%)',
                 color='#b71c1c' if over else '#455a64',
+                short=f'{percent:.0f}%',
+                title=(f'Home directory: {used_gb:.1f} of {limit_gb:.0f} GB used '
+                       f'({percent:.0f}%), from the quota accounting'),
             )
         else:
             color = '#b71c1c' if used_gb >= float(warn_threshold_gb) else '#455a64'
-            _set_label(f'HOME: {used_gb:.1f} GB', color=color)
+            _set_label(f'HOME: {used_gb:.1f} GB', color=color,
+                       short=f'{used_gb:.1f} GB',
+                       title=f'Home directory: {used_gb:.1f} GB used')
 
     threading.Thread(target=_refresh, daemon=True).start()
     return label

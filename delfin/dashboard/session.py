@@ -466,11 +466,12 @@ def build_status_strip():
             "keeps working, forms and open calculations stay. Scroll "
             "positions do not come back."
         ),
-        icon="thumb-tack",
+        # Drawn as a switch by the header's style (header_ui): its state
+        # is the knob's position, and the label stays "Keep session".
         # flex 0 0 auto: the header is a flex row, and a control that may
         # shrink is one that renders twenty pixels wide the moment the
         # row is full -- seen in a browser, clickable and unreadable.
-        layout=widgets.Layout(width="130px", flex="0 0 auto"),
+        layout=widgets.Layout(flex="0 0 auto"),
     )
 
     def _on_toggle(change):
@@ -500,6 +501,7 @@ def build_status_strip():
         if on:
             announce(name)
 
+    toggle.add_class("delfin-switch")
     toggle.observe(_on_toggle, names="value")
     if _armed:
         # The observer fires on a CHANGE; a control that starts armed

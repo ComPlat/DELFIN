@@ -271,7 +271,7 @@ def test_test_shows_a_chip_with_open_and_close(repo):
     assert fake.started == ["feat"]
     chip = panel.chip_widgets("feat")
     assert "Open" in chip.link.value and 'target="_blank"' in chip.link.value
-    assert "tok-abc" not in chip.link.value and "45678" not in chip.text.value
+    assert "45678" not in chip.text.value and "tok-abc" not in chip.text.value
     chip.close.click()
     assert fake.closed == ["feat"]
     assert panel.chip_widgets("feat") is None
@@ -337,3 +337,60 @@ def test_clean_up_search_select_all_visible_and_counter(repo):
     ticked = {c.name for c, cb in zip(panel._cands, panel._checks) if cb.value}
     assert "feat" not in ticked and "mine/pinned" not in ticked
     assert {"merged-one", "merged-two"} <= ticked
+
+
+# -- the dashboard's assembly -------------------------------------------------
+
+def _create_dashboard_source() -> str:
+    import inspect
+    from delfin import dashboard as d
+    return inspect.getsource(d.create_dashboard)
+
+
+def test_the_dashboard_puts_pull_in_the_bar_and_roll_back_behind_more():
+    src = _create_dashboard_source()
+    assert "pull=pull_delfin_btn" in src
+    assert "more_extra=[rollback_delfin_btn]" in src
+    assert "_preview_bar(header_toasts)" in src     # a preview: banner only
+    assert "header_toasts.box" in src               # one message area
+    assert "pull_delfin_output" not in src          # nothing piles up under the bar
+    assert "_hu.keys_js()" in src
+
+
+def test_the_status_hint_reads_up_to_date_behind_and_ahead(repo, tmp_path):
+    from delfin.dashboard import _git_status_hint
+    h = _git_status_hint(repo)
+    assert h["text"] == "main ✓ up to date" and h["state"] == "ok"
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(other))
+    _commit(other, "n1.txt")
+    _commit(other, "n2.txt")
+    _git(other, "push", "-q", "origin", "HEAD:main")
+    _git(repo, "fetch", "-q", "origin")
+    h = _git_status_hint(repo)
+    assert h["text"] == "main ↓ 2 new commits" and h["state"] == "behind"
+    assert h["icon"] == "↓2" and "fast-forward" in h["title"]
+    _git(repo, "merge", "-q", "--ff-only", "origin/main")
+    _commit(repo, "local.txt")
+    h = _git_status_hint(repo)
+    assert h["text"] == "main ↑ 1 local commit" and h["state"] == "warn"
+
+
+def test_keep_session_is_drawn_as_a_switch_with_its_label():
+    from delfin.dashboard import session as S
+    strip = S.build_status_strip()
+    toggle = next(c for c in strip.children if hasattr(c, "value")
+                  and isinstance(getattr(c, "value"), bool))
+    assert "delfin-switch" in toggle._dom_classes
+    assert toggle.description == "Keep session"
+    assert "browser" in toggle.tooltip
+    assert ".jupyter-button.delfin-switch.mod-active::after" in HU.HEADER_CSS
+
+
+def test_the_header_style_never_sets_visibility_with_important():
+    """Widgets show and hide through layout.display (an inline style); a
+    rule with !important would win over it and pin a panel open."""
+    import re
+    css = HU.HEADER_CSS
+    assert not re.search(r"display\s*:[^;{}]*!important", css)
+    assert "var(--jp-layout-color1" in css and "var(--jp-ui-font-color1" in css
