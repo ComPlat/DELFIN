@@ -781,9 +781,25 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
     return args
 
 
+#: Characters firejail expands in a path option: file globs and the
+#: ``${HOME}``-style macros.
+_FIREJAIL_PATTERN_CHARS = frozenset("*?[]$")
+
+
 def _firejail_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
-    """Build a firejail argv with comparable restrictions."""
+    """Build a firejail argv with comparable restrictions.
+
+    Raises ``ValueError`` for a repository path holding a glob or macro
+    character (``_FIREJAIL_PATTERN_CHARS``) or a control character:
+    firejail expands those in ``--whitelist=`` and ``--chdir=``, so the
+    whitelist would name every path the pattern matches."""
     repo = str(repo_dir.resolve())
+    for ch in repo:
+        if ch in _FIREJAIL_PATTERN_CHARS or ord(ch) < 0x20 or ord(ch) == 0x7f:
+            raise ValueError(
+                f"firejail cannot whitelist the repository {repo!r}: it "
+                f"contains {ch!r}, which firejail expands as a pattern. Use a "
+                "repository path without * ? [ ] $ or control characters")
     args: list[str] = [
         "firejail",
         "--quiet",
@@ -892,7 +908,28 @@ def run_agent_command(
         argv = _bwrap_argv(cmd, repo_dir, cfg.allow_network)
         shell = False
     elif cfg.mode == "firejail":
-        argv = _firejail_argv(cmd, repo_dir, cfg.allow_network)
+        try:
+            argv = _firejail_argv(cmd, repo_dir, cfg.allow_network)
+        except ValueError as exc:
+            elapsed = time.monotonic() - t0
+            _audit({
+                "ts": time.time(),
+                "cwd": str(repo_dir),
+                "mode": cfg.mode,
+                "cmd": cmd,
+                "blocked": True,
+                "block_reason": str(exc),
+                "elapsed_s": round(elapsed, 4),
+            })
+            return RunResult(
+                blocked=True,
+                block_reason=str(exc),
+                returncode=-1,
+                stdout="",
+                stderr="",
+                mode=cfg.mode,
+                elapsed_s=elapsed,
+            )
         shell = False
     else:
         # 'off' or 'allowlist' or 'auto-fell-back-to-allowlist'. Routed

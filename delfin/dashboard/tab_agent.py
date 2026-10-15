@@ -17788,12 +17788,12 @@ def create_tab(ctx):
 
             if res.blocked:
                 _append_system_message(
-                    f"\u26d4 BLOCKED by allow-list: {res.block_reason}\n"
+                    f"\u26d4 BLOCKED by the sandbox: {res.block_reason}\n"
                     f"  $ {cmd}\n"
                     f"Run it manually in a terminal if you really need it."
                 )
                 input_textarea.value = (
-                    f"That command was blocked by the allow-list "
+                    f"That command was blocked by the sandbox "
                     f"({res.block_reason}). Please suggest a safer alternative."
                 )
                 _on_send(None)
