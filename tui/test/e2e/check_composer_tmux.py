@@ -3,6 +3,7 @@ service, typed into like a person would.
 
   /st             the command list opens, from the session's own commands
   /dep            a workspace command (.delfin/commands/deploy.md) is offered
+  /git , /model   what the command takes, the current model marked
   @del + tab      paths complete from the workspace, folder by folder
   alt+enter       a prompt of two lines goes out as one message
   a large paste   stands in as [Pasted text #1 +30 lines], arrives whole
@@ -72,6 +73,12 @@ def main() -> int:
         clear()
         tmux.type("/dep")
         expect(r"/deploy\s+Ship the build", "a workspace command")
+        clear()
+        tmux.type("/git ")
+        expect(r"role\s+maintainer or contributor here", "the values /git takes")
+        clear()
+        tmux.type("/model ")
+        expect(r"fake-model\s+\(now\)", "the models, the current one marked")
         clear()
         tmux.type("look at @del")
         expect(r"@delfin/", "the path list")

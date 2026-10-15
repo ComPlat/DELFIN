@@ -78,7 +78,7 @@ types are generated from that. This page explains what the messages mean.
 | `permission.reply` | `requestId`, `choice?`, `answers?`, `reason?`, `persist?` | `applied`, `message` | Answer an open approval. See "Approvals". |
 | `session.commands` | | `commands[]`: `name`, `summary`, `category`, `takesArgs`, `source` | Every `/command` a line may start with. See "Completion and pickers". |
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
-| `session.choices` | `what`: `model`, `effort` or `mode` | `current`, `choices[]`: `value`, `detail?` | What a picker offers. |
+| `session.choices` | `what`: `model`, `effort`, `mode` or `args`; `command?` (with `args`) | `current`, `choices[]`: `value`, `detail?`, `usage?` | What a picker offers; with `args`, what may follow `command`. |
 | `session.toggleTasks` | | `showTasks` | ctrl+t: the open task list at the end of each turn, on or off, as in the REPL (a notice says which). |
 | `session.setTitle` | `title` | `title` | What the session is called: what it is saved under and every window shows (a `session.updated` follows); one plain line of at most 80 characters (escapes and control characters become spaces). Its address -- the `name` it started with, or its id, by which mail, approvals and its presence record reach it -- does not change. Answered for a sleeping session too, without waking it. |
 
@@ -108,6 +108,20 @@ the session's:
   cannot be read, it offers the curated roster
   (`model_capabilities._KIT_PREFERENCE`) with a detail saying so; the
   current model is always among the choices.
+
+- `session.choices` with `what: "args"` and a `command` (`/git`) answers
+  what may follow that command and a space, for the menu the window
+  shows once the command is typed: `choices[].value` is the text after
+  the command, as typed (`status`, `watch on`, a model's name),
+  `current` the one in force where there is one (`/model`, `/effort`,
+  `/mode`, `/permissions`), and `usage` a line saying what the command
+  takes when its values cannot all be listed (`/compact [what the
+  summary must keep]`, a user command's `argument-hint`). Values that
+  change while the session runs (memories, plans, staged diffs,
+  background jobs) are read when asked. A command the session does not
+  run, or one that takes no argument, gets `choices: []` and
+  `usage: ""`; a service before this field refuses `what: "args"`, and
+  the window then shows no menu.
 
 A pick is applied by sending what the user would type: `/model <name>`,
 `/effort <level>`, `/mode <name>` as a `session.prompt`, so it is queued

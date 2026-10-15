@@ -73,10 +73,11 @@ REQUESTS: dict[str, dict[str, str]] = {
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort
-    # | mode). A pick is applied by sending the command, as typed.
+    # | mode), or what may follow a /command (what: args, command: "/git").
+    # A pick is applied by sending the command, as typed.
     "session.commands": {},
     "session.completePath": {"fragment": "string"},
-    "session.choices": {"what": "string"},
+    "session.choices": {"what": "string", "command": "string?"},
     # ctrl+t: show or hide the open task list at the end of each turn, as
     # in the REPL (its notice says which).
     "session.toggleTasks": {},
@@ -107,8 +108,9 @@ RESULTS: dict[str, dict[str, str]] = {
     # subagent -- in the order a typed line tries them.
     "session.commands": {"commands": "[object]"},
     "session.completePath": {"paths": "[string]"},
-    # choices: value, detail? (where a model runs, what it costs)
-    "session.choices": {"current": "string", "choices": "[object]"},
+    # choices: value, detail? (where a model runs, what it costs); usage:
+    # what a /command takes when its values cannot all be listed (args)
+    "session.choices": {"current": "string", "choices": "[object]", "usage": "string?"},
     "session.toggleTasks": {"showTasks": "boolean"},
     "session.setTitle": {"title": "string"},
 }

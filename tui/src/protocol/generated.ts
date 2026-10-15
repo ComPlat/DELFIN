@@ -53,6 +53,7 @@ export interface SessionCompletePathParams {
 }
 export interface SessionChoicesParams {
   "what": string
+  "command"?: string | null
 }
 export interface SessionToggleTasksParams {}
 export interface SessionSetTitleParams {
@@ -117,6 +118,7 @@ export interface SessionCompletePathResult {
 export interface SessionChoicesResult {
   "current": string
   "choices": Record<string, unknown>[]
+  "usage"?: string | null
 }
 export interface SessionToggleTasksResult {
   "showTasks": boolean

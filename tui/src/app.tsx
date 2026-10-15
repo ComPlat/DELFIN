@@ -13,7 +13,8 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, renameOf } from "./commands"
+import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf } from "./commands"
+import type { ArgumentChoices } from "./composer/complete"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
 import type { AgentScreen } from "./agents/screen"
 import { createAgentView, needsInput, peekLines, sessionName, type AgentRow } from "./agents/view"
@@ -283,6 +284,12 @@ export function App(props: AppProps): JSX.Element {
       say(outcome.note)
       return outcome.text ? deliver(outcome.text) : true
     }
+    const resumed = resumeOf(text)
+    if (resumed !== null && !how) {
+      if (resumed === sid()) say("that session is the one in view")
+      else props.onResume?.(resumed, workspaces.get(resumed) ?? "")
+      return true
+    }
     if (/^\/keys$/.test(text.trim()) && !how) {
       props.onLines?.("keys in this window", keyTable(props.keymap))
       return true
@@ -303,6 +310,8 @@ export function App(props: AppProps): JSX.Element {
     keymap: props.keymap,
     say,
     send,
+    argumentChoices: (command) => argumentChoices(command),
+    clickPauseMs: props.clickPauseMs,
   })
 
   // -- the agent view ----------------------------------------------------------
@@ -517,6 +526,47 @@ export function App(props: AppProps): JSX.Element {
     const d = Math.max(0, Date.now() / 1000 - secs)
     return d < 3600 ? `${Math.round(d / 60)}m ago` : d < 86400 ? `${Math.round(d / 3600)}h ago` : `${Math.round(d / 86400)}d ago`
   }
+  /** Where each listed session works (a saved one is started there). */
+  const workspaces = new Map<string, string>()
+  /** The sessions running in the service first, then the saved ones of
+   *  this workspace (the resume picker, `/resume `'s menu). */
+  const resumeRows = (s: SessionState) => Promise.all([
+    props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
+    props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
+  ]).then(([listed, past]) => {
+    const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
+      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
+      detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
+      current: r.sessionId === s.id,
+    }))
+    const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
+      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
+      detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
+        .filter(Boolean).join(" · "),
+      current: false,
+    }))
+    for (const r of [...running, ...saved]) workspaces.set(r.id, r.workspace)
+    return [...running, ...saved]
+  })
+  /** What may follow a command on the prompt: the window's own commands
+   *  here, the session's from session.choices ("args"). */
+  const argumentChoices = async (command: string): Promise<ArgumentChoices> => {
+    const s = session()
+    if (command === "/rename") return { current: "", choices: [], usage: "/rename [name]  (no name: after its first prompt)" }
+    if (command === "/resume") {
+      if (!s) return { current: "", choices: [], usage: "" }
+      const rows = await resumeRows(s)
+      return { current: s.id, usage: "/resume <session id>",
+               choices: rows.map((r) => ({ value: r.id, label: r.title, detail: r.detail })) }
+    }
+    const got = await props.client.request("session.choices", { sessionId: sid(), what: "args", command })
+    return {
+      current: String(got?.current ?? ""),
+      usage: String(got?.usage ?? ""),
+      choices: ((got?.choices ?? []) as any[]).filter((c) => c?.value)
+        .map((c) => ({ value: String(c.value), detail: c.detail ? String(c.detail) : "" })),
+    }
+  }
   const openPicker = (what: string) => {
     const s = session()
     if (!s) return
@@ -536,26 +586,9 @@ export function App(props: AppProps): JSX.Element {
         })
         return
       case "resume":
-        // The sessions running in the service first, then the saved ones of
-        // this workspace (the agent view will show the running ones too).
-        picker.open("resume a session", Promise.all([
-          props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
-          props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
-        ]).then(([listed, past]) => {
-          const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
-            label: r.title || "(untitled)",
-            detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
-            value: `${r.sessionId}\t${r.workspace}`,
-            current: r.sessionId === s.id,
-          }))
-          const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
-            label: r.title || "(untitled)",
-            detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
-              .filter(Boolean).join(" · "),
-            value: `${r.sessionId}\t${r.workspace}`,
-          }))
-          return [...running, ...saved]
-        }), (c) => {
+        picker.open("resume a session", resumeRows(s).then((rows) => rows.map((r) => ({
+          label: r.title, detail: r.detail, value: `${r.id}\t${r.workspace}`, current: r.current,
+        }))), (c) => {
           const [id, workspace] = c.value.split("\t")
           if (id && id !== sid()) props.onResume?.(id, workspace ?? "")
         })

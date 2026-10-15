@@ -1513,7 +1513,11 @@ class Worker:
 
     def _m_session_choices(self, params: dict) -> dict:
         try:
-            return choices.choices(self.engine, str(params.get("what") or ""))
+            what = str(params.get("what") or "")
+            if what == "args":
+                return choices.argument_choices(self.engine, self.workspace,
+                                                str(params.get("command") or ""))
+            return choices.choices(self.engine, what)
         except ValueError as exc:
             raise _Refusal(protocol.INVALID_PARAMS, str(exc)) from None
 
