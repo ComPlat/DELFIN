@@ -5,8 +5,9 @@ name: CI
 # are required.
 #
 # Everything in this file either gates or is cheap enough to sit beside what
-# gates: `tests` (fast suite, required), `lint` (required), `audit`, and
-# `coverage` on the nightly schedule. What that buys is a run conclusion that
+# gates: `tests` (fast suite), `lint`, `container`, `toolchains` and
+# `reference-env` (all five required on main, docs/MAIN_PROTECTION.md),
+# `audit` (reported, not required), and `coverage` on the nightly schedule. What that buys is a run conclusion that
 # means something — CI green says the gate passed, and nothing else in here
 # can take that away.
 #
