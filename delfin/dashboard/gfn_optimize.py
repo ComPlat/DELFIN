@@ -868,7 +868,7 @@ def ensure_binary(method: Any = None,
     outcome = install_xtb(on_line=on_line, timeout=timeout, tool=tool)
     # Ask again from scratch: the answer kept about the old binary says
     # nothing about the one that has just replaced it.
-    _XTB_JUDGED.clear()
+    _forget_found_binaries()
     now = find_binary(method)
     fixed = judge_xtb(now) if (now and tool == 'xtb') else {'ok': bool(now), 'why': ''}
     if now and fixed['ok']:
@@ -877,6 +877,27 @@ def ensure_binary(method: Any = None,
     return {'path': now, 'installed': True, 'ok': False,
             'status': (f'{tool}: {why}. Installing one did not put it right: '
                        f'{fixed.get("why") or outcome.get("status") or "no reason given"}')}
+
+
+def _forget_found_binaries() -> None:
+    """Drop every remembered xtb lookup and verdict after an install.
+
+    Two caches hold answers about binaries: ``_XTB_JUDGED`` (version
+    verdicts, keyed by path and mtime) and qm_runtime's resolver cache
+    (keyed by the environment). An install changes neither key's input --
+    the environment is the same, and an older xtb further down the chain
+    still exists -- so without this the resolver returned the binary found
+    before the install and a successful install was reported as not having
+    helped (tests/test_tools_that_answer.py,
+    test_an_install_is_found_although_an_older_xtb_was_found_first).
+    """
+    _XTB_JUDGED.clear()
+    try:
+        from delfin.qm_runtime import clear_resolver_cache
+
+        clear_resolver_cache()
+    except Exception:
+        pass
 
 
 def install_xtb(
@@ -939,6 +960,7 @@ def install_xtb(
         except Exception:
             pass
     spent = time.perf_counter() - started
+    _forget_found_binaries()
     binary = find_gxtb() if tool == 'gxtb' else find_xtb()
     name = 'g-xTB' if tool == 'gxtb' else 'xtb'
     if running.returncode == 0 and binary:
