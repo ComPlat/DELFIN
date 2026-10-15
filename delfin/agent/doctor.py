@@ -1050,6 +1050,27 @@ def _check_disk(ctx: dict) -> list[dict]:
     )]
 
 
+def _check_tui(ctx: dict) -> list[dict]:
+    """The terminal window (`delfin-agent tui`): its binary, or Bun with
+    its packages, or not set up -- and whether the first start would set
+    it up by itself. No network, no install: launcher.tui_command and the
+    opt-out only."""
+    from delfin.agent.service import tui_setup
+
+    kind, detail = tui_setup.describe()
+    if kind != "missing":
+        return [_row("terminal window", PASS, detail)]
+    if tui_setup.auto_install_enabled():
+        detail += "; the first `delfin-agent tui` sets it up (a pinned Bun and bun.lock's packages)"
+    else:
+        detail += "; automatic setup is off (DELFIN_TUI_AUTO_INSTALL=0 or agent.tui_auto_install=false)"
+    return [_row("terminal window", WARN, detail,
+                 "delfin-agent tui --setup (about 42 MB Bun from github.com, SHA-256 pinned, "
+                 "and about 21 MB of npm packages checked against bun.lock), or set "
+                 "DELFIN_TUI_BINARY to a delfin-tui binary",
+                 command="delfin-agent tui --setup")]
+
+
 # Names are looked up on the module at run time so tests can monkeypatch
 # a single ``_check_*`` function without rebuilding this table.
 _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
@@ -1071,6 +1092,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("bash isolation", "_check_bash_isolation"),
     ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
+    ("terminal window", "_check_tui"),
 )
 
 
