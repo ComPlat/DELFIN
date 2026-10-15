@@ -13551,8 +13551,11 @@ _LEAVING_BASH = re.compile(r"""(?x)
      | (?:conda|mamba|micromamba)\s+(?:install|create|update)\b)
 """)
 
-# Gated tools that run inside the workspace and send nothing out; under
-# Bypass they reach the second opinion with every other gated tool.
+# Gated tools that write only inside the workspace and send nothing out;
+# under Bypass they reach the second opinion with every other gated tool.
+# make_plot may READ outside the workspace (energy_profile outputs in the
+# calculation folders), only through _check_read_access: the read roots,
+# the secret-deny list, and a question or refusal for any other path.
 _WORKSPACE_LOCAL_TOOLS = frozenset({"run_tests", "make_plot"})
 
 

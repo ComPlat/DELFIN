@@ -437,7 +437,6 @@ _FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures" / "energy_p
 @pytest.fixture
 def xtb_outputs(tmp_path):
     import gzip
-    pytest.importorskip("cclib")
     for name in ("BH3", "NH3", "H3NBH3"):
         (tmp_path / f"{name}.out").write_bytes(
             gzip.decompress((_FIXTURES / f"xtb_{name}.out.gz").read_bytes()))
@@ -484,7 +483,6 @@ def test_a_free_energy_in_the_wrong_unit_is_refused(xtb_outputs, monkeypatch):
 
 
 def test_an_unknown_file_is_named_not_guessed():
-    pytest.importorskip("cclib")
     with pytest.raises(ValueError, match="not an output of ORCA"):
         ep.read_output("hello\nnothing here\n", "notes.txt", "gibbs")
 
@@ -525,9 +523,9 @@ def test_typed_values_must_say_which_energy_they_are(tmp_path):
 def test_the_source_names_its_own_quantity(tmp_path, outputs):
     (tmp_path / "p.csv").write_text(_CYCLE, encoding="utf-8")
     assert ep.csv_quantity(_CYCLE) == "ΔG"
-    plot({"kind": "energy_profile", "data": {"file": "p.csv"}},
-         out_dir=str(tmp_path))                      # header says deltaG
-    from matplotlib.figure import Figure  # noqa: F401  (drawn above)
+    res = plot({"kind": "energy_profile", "data": {"file": "p.csv"}},
+               out_dir=str(tmp_path))                # header says deltaG
+    assert res.labels[1] == "ΔG"
     res = plot({"kind": "energy_profile", "energy": "electronic", "series": [
         {"files": ["hcn.out", "ts.out", "hnc.out"]}]}, out_dir=str(outputs))
     assert res.labels[1] == "ΔE"

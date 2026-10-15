@@ -221,13 +221,15 @@ _BASELINE_TOKENS = 11_422
 # balance and TS modes checked by the tool). It arrived at +129 tokens.
 # Trimmed first -- format dropped (PNG is the kind's default), the
 # labelling and provenance rules moved to the energy-profile skill and
-# into the tool's own refusals -- which leaves +42: the kind's name, the
+# into the tool's own refusals -- which leaves +44 (make_plot 71 -> 115;
+# total measured 10_176 -> 10_220): the kind's name, the
 # per-state shape {name, value|files}, that a files list is ONE state's
 # fragments, null for an uncomputed TS, and series for pathways. Live runs
 # measured each: given parallel x/y lists the model wrote one series per
 # state; without files it grepped the outputs and did the Hartree
 # arithmetic itself; without the never-script clause it wrote its own
-# matplotlib. The budget moves 10_178 -> 10_220.
+# matplotlib. Two of the 44 come from the slack main left under its
+# budget, so the budget moves +42, 10_178 -> 10_220.
 _TOKEN_BUDGET = 10_220
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have

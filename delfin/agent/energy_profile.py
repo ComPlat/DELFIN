@@ -263,7 +263,8 @@ def _read_with_cclib(text: str, path: str, energy: str) -> dict:
     except ImportError:
         raise ValueError(
             f"{path} is not an ORCA output; reading other programs needs "
-            f"cclib (pip install 'delfin[analysis]')") from None
+            f"cclib, a dependency of DELFIN that is not installed in this "
+            f"environment (pip install 'cclib>=1.8.1,<1.9')") from None
     import io
     import logging
     try:
