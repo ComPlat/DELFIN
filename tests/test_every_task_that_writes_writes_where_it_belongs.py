@@ -249,11 +249,16 @@ def test_the_counts_still_match_what_was_measured():
     # fixture repo from setup/a_fix_claim_repo.py, which writes only
     # into its own folder under the workspace.
     #
+    # generic_project 17 -> 18 on 2026-10-14:
+    # gen_a_held_branch_is_reached_by_detaching, setup
+    # a_checkout_whose_main_is_held.py, which builds a repository and a
+    # second worktree under <workspace>/held_main and writes nothing else.
+    #
     # generalist 0 -> 17 on 2026-10-14: tasks_generalist.yaml. Each setup
     # builds one git repository in its own subdirectory of
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
-    assert counts == {"office": 13, "behavior": 16, "generic_project": 17,
+    assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
                       "science": 23, "chemistry": 5, "generalist": 17,
                       "other": 52}, counts
 
