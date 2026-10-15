@@ -98,6 +98,8 @@ export interface SessionState {
   wait: string
   /** The session's task list, as it sent it last. */
   tasks: TaskRow[]
+  /** Auto mode's one-line state ("" while off), as the session sent it. */
+  auto: string
 }
 
 export interface Elsewhere {
@@ -158,7 +160,7 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
     id, title: "", workspace: "", provider: "", model: "", mode: "", approval: "",
     effort: "", state: "starting", pending: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     turn: null, tail: "", tailKey: "", held: [], thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
-    tasks: [],
+    tasks: [], auto: "",
   }
   applyInfo(s, info)
   return s
@@ -177,6 +179,14 @@ export function applyInfo(s: SessionState, info: Record<string, unknown>): void 
   if ("approval" in info) s.approval = str(info.approval)
   if ("effort" in info) s.effort = str(info.effort)
   if ("tasks" in info && info.tasks != null) s.tasks = taskRows(info.tasks)
+  if ("auto" in info) s.auto = oneLine(str(info.auto))
+}
+
+/** The session's text as one plain line: control and invisible characters
+ *  made spaces, runs of space one, at most 160 characters. */
+function oneLine(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, " ")
+    .replace(/\s+/g, " ").trim().slice(0, 160)
 }
 
 /** Register a session (create, attach, a summary for one not seen yet). */
