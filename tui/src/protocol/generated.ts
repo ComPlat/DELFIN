@@ -47,6 +47,7 @@ export interface PermissionReplyParams {
   "answers"?: string[] | null
   "reason"?: string | null
   "persist"?: boolean | null
+  "text"?: string | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
