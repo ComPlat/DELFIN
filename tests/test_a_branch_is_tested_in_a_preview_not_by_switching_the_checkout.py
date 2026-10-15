@@ -55,7 +55,15 @@ _FAKE_LAUNCHER = textwrap.dedent('''
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("127.0.0.1", a.port)); s.listen(5)
     while True:
-        c, _ = s.accept(); c.close()
+        c, _ = s.accept()
+        req = c.recv(4096).decode("latin-1")
+        if "token=secret-token-123" in req.split("\\r\\n", 1)[0]:
+            c.sendall(b"HTTP/1.1 302 Found\\r\\nLocation: /voila/render/"
+                      b"delfin/notebooks/delfin_dashboard.ipynb\\r\\n"
+                      b"Content-Length: 0\\r\\n\\r\\n")
+        else:
+            c.sendall(b"HTTP/1.1 403 Forbidden\\r\\nContent-Length: 0\\r\\n\\r\\n")
+        c.close()
 ''')
 
 
@@ -148,6 +156,11 @@ def test_preview_runs_from_its_own_worktree_and_closes_cleanly(setup):
     assert wt.resolve() in Path(p.delfin_file).resolve().parents
     assert p.attached and _git(wt, "branch", "--show-current") == "feat"
     assert p.token == "secret-token-123"
+    # the address is the one the server redirects to, not a guess: the
+    # launcher serves the packaged notebook in place when it lies under
+    # the root (measured in the end-to-end run: the guessed
+    # delfin_voila_runtime/ path answered 404)
+    assert p.url_path == "/voila/render/delfin/notebooks/delfin_dashboard.ipynb"
     assert _state(co) == before                     # nothing moved here
     seen = json.loads((tmp / "out" / "env.json").read_text())
     assert seen["PYTHONPATH"] == str(wt.resolve())
