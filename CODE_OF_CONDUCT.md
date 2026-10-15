@@ -24,9 +24,10 @@ private information. Deliberately misrepresenting someone's work or results.
 
 ## If something goes wrong
 
-Raise it with the maintainers at the ComPlat group, KIT. Reports are handled
-privately, and whoever reports something is not put at a disadvantage for
-having done so.
+Raise it with the maintainers at the ComPlat group, KIT:
+`<conduct contact email to be filled by the maintainers>`. Reports are
+handled privately, and whoever reports something is not put at a
+disadvantage for having done so.
 
 Maintainers may remove comments, close threads, or block accounts where that is
 needed to keep the project usable for everybody else.

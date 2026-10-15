@@ -17,8 +17,11 @@ problem. Report it privately through GitHub's
 ["Report a vulnerability"](https://github.com/ComPlat/DELFIN/security/advisories/new)
 form (repository → *Security* → *Advisories* → *Report a vulnerability*). It
 opens a private security advisory that only the maintainers and you can see,
-and the fix can be prepared in a private fork attached to it. This is the one
-channel for security reports.
+and the fix can be prepared in a private fork attached to it. This is the
+preferred channel for security reports.
+
+Without a GitHub account, write to `<security contact email to be filled by
+the maintainers>` instead.
 
 ### What to include
 
