@@ -245,7 +245,7 @@ def test_an_every_trigger_waits_for_its_interval(repo):
         "---\ngoal: poll\ntrigger: every 30m\n---\n1. Look.\n", encoding="utf-8")
     spec = loops.load("poll", repo)
     loops.confirm(spec)
-    assert "started" in ctl.start_loop(loops.load("poll", repo), eng)
+    assert "started on branch" in ctl.start_loop(loops.load("poll", repo), eng)
     clock.advance(10)
     assert isinstance(ctl.next_prompt(eng), HarnessText)
     ctl.finish_iteration(eng, "LOOP: progress looked")
@@ -502,7 +502,7 @@ def test_a_loop_that_says_resume_resumes_after_the_users_turn(repo):
 
 def test_a_push_in_an_iteration_is_queued_not_run(repo):
     clock = Clock()
-    ctl = _ctl(repo, clock)
+    ctl = _ctl(repo, clock, Checks((1, "missing=3")))
     eng = Engine()
     ctl.start_loop(_loop(repo), eng)
     clock.advance(10)
