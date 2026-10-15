@@ -47,6 +47,7 @@ export interface PermissionReplyParams {
   "answers"?: string[] | null
   "reason"?: string | null
   "persist"?: boolean | null
+  "text"?: string | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
@@ -162,6 +163,7 @@ export interface SessionInfoEvent {
   "tasks"?: Record<string, unknown>[] | null
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
+  "auto"?: string | null
   "type": "session.info"
   "session": string
   "ts": number
@@ -175,6 +177,7 @@ export interface SessionUpdatedEvent {
   "tasks"?: Record<string, unknown>[] | null
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
+  "auto"?: string | null
   "type": "session.updated"
   "session": string
   "ts": number
@@ -501,6 +504,7 @@ export interface ServiceStatusResult {
   "host": string
   "startedAt": number
   "sessions": Record<string, unknown>[]
+  "dormant"?: Record<string, unknown>[] | null
   "windows": number
   "socket": string
 }

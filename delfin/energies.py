@@ -227,11 +227,22 @@ def find_gibbs_energy(filename: str) -> Optional[float]:
         Gibbs free energy in Hartree, or None if not found
     """
 
-    patterns = [
-        rf"Final\s+Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-        rf"Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-    ]
-    return _search_last_float(filename, patterns)
+    text = _read_text(filename)
+    if text is None:
+        return None
+    return gibbs_energy_in_text(text, filename)
+
+
+_GIBBS_PATTERNS = (
+    rf"Final\s+Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+    rf"Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+)
+
+
+def gibbs_energy_in_text(text: str, path: str = "") -> Optional[float]:
+    """:func:`find_gibbs_energy` on an output already read (*path* names it
+    in the log) -- for a caller whose read went through its own gate."""
+    return _last_float_in_text(text, _GIBBS_PATTERNS, path)
 
 def find_ZPE(filename: str) -> Optional[float]:
     """Extract zero-point energy from ORCA output file.
@@ -268,13 +279,21 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     text = _read_text(filename)
     if text is None:
         return None
+    return electronic_energy_in_text(text, filename)
 
-    patterns = [
-        rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
-        rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
-        rf"Electronic\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-    ]
-    return _last_float_in_text(own_job_text(text, filename), patterns, filename)
+
+_ELECTRONIC_PATTERNS = (
+    rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
+    rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
+    rf"Electronic\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+)
+
+
+def electronic_energy_in_text(text: str, path: str = "") -> Optional[float]:
+    """:func:`find_electronic_energy` on an output already read; *path* is
+    the output's name, which picks its own job out of a ``$new_job`` file."""
+    return _last_float_in_text(own_job_text(text, path or "x"),
+                               _ELECTRONIC_PATTERNS, path)
 
 
 def _extract_excited_state_energy(filename: str, state_number: int = 1, use_soc: bool = False) -> Optional[float]:

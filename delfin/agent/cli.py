@@ -2172,7 +2172,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
             )
             try:
                 n_records = sum(
-                    1 for line in f.open(encoding="utf-8") if line.strip()
+                    1 for line in f.open(encoding="utf-8")
+                    if line.strip() and not line.startswith('{"run_header"')
                 )
             except OSError:
                 n_records = 0
@@ -2201,6 +2202,23 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         cmp = _bm.compare_runs(baseline, candidate)
+        # Whether one instrument produced both files. A changed scorer or
+        # task pack makes the score difference partly the measure's, so
+        # the comparison is refused unless asked for explicitly; a file
+        # without a header (written before 2026-10-15) is said, not
+        # refused. The settings that differ are always printed: they
+        # should be exactly the axis the A/B declares.
+        _prov = cmp.get("provenance") or {}
+        if not args.json:
+            for _line in _bm.format_provenance_check(_prov):
+                print(_line)
+        if _prov.get("instrument_match") is False and not getattr(
+                args, "allow_instrument_change", False):
+            print("ERROR: comparison refused -- the instrument differs "
+                  "between the arms. Re-run one arm, or pass "
+                  "--allow-instrument-change to compare anyway.",
+                  file=sys.stderr)
+            return 4
         if args.json:
             print(json.dumps(cmp, indent=2, ensure_ascii=False))
             return 0
@@ -2283,7 +2301,10 @@ def cmd_bench(args: argparse.Namespace) -> int:
         print("ERROR: --model is required for `bench run`",
               file=sys.stderr)
         return 2
-    max_tokens = int(getattr(args, "max_tokens", 1024) or 1024)
+    # 0 = the role's own output limit, as in a session (engine
+    # _ROLE_MAX_TOKENS; solo 32768). 1024 cut every write_file longer than
+    # about four kilobytes into invalid JSON in the benchmark only.
+    max_tokens = int(getattr(args, "max_tokens", 0) or 0)
     backend = getattr(args, "backend", "") or "api"
     provider = getattr(args, "provider", "") or ""
     repeats = max(1, int(getattr(args, "repeats", 1) or 1))
@@ -2309,7 +2330,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   + (f"accept-q={_vq} " if _vq is not None else "")
                   + " ".join(f"{k}={_proc[k]:g}" for k in (
                       "planned", "scouted", "tested_after_last_edit",
-                      "test_runs", "edits", "tool_errors", "nonzero_exits",
+                      "passing_test_after_last_edit", "test_runs",
+                      "refused_test_runs", "edits", "measure_edits",
+                      "measure_changed", "tool_errors", "nonzero_exits",
                       "tool_budget_used") if k in _proc),
                   flush=True)
         if result.violated_signals or result.missing_signals or result.error:
@@ -2369,8 +2392,21 @@ def cmd_bench(args: argparse.Namespace) -> int:
         # output read as a crash rather than as a queue.
         print(f"\nbenchmark not started: {exc}", file=sys.stderr)
         return 3
-    path = _bm.write_run(results, model=model)
+    path = _bm.write_run(results, model=model, run_args={
+        "max_tokens": max_tokens, "repeats": repeats, "backend": backend,
+        "provider": provider})
     s = _bm.summarise_run(results)
+    _pm = s.get("process_means") or {}
+    if _pm:
+        # Rates per model, not only per task line.
+        print("process (mean over tasks): " + "  ".join(
+            f"{k}={v['mean']:g} (n={v['n']})" for k, v in _pm.items()
+            if k in ("tested_after_last_edit",
+                     "passing_test_after_last_edit", "refused_test_runs",
+                     "measure_edits", "measure_changed", "edits")))
+    if s.get("channels_total"):
+        print("channels fired: " + "  ".join(
+            f"{k}={v}" for k, v in s["channels_total"].items()))
     print(f"\n{s['n_pass']}/{s['n_tasks']} passed "
           f"({s['pass_rate']:.0%})   "
           f"avg-quality {s['avg_quality']:.1f}   "
@@ -2673,6 +2709,14 @@ def _print_behavior_rates(_bm, records) -> None:
         r = rates.get(flag)
         if r:
             print(f"  {flag:<9} {r['rate']:>4.0%}  (n={r['n']})")
+
+
+def cmd_knowledge(args: argparse.Namespace) -> int:
+    """``delfin-agent knowledge ...``: the /knowledge command. A write is
+    confirmed with a code shown and read on /dev/tty, never on stdout."""
+    from .knowledge_commands import run_cli
+    words = list(getattr(args, "words", None) or ["list"])
+    return run_cli(words)
 
 
 def _cmd_bug_report(args: argparse.Namespace) -> int:
@@ -4550,7 +4594,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help=("Prompt language. en runs each selected "
                                  "task's prompt_en under the id <id>.en and "
                                  "skips tasks without one (default: de)"))
-    bench_run.add_argument("--max-tokens", type=int, default=1024,
+    bench_run.add_argument("--max-tokens", type=int, default=0,
                            dest="max_tokens")
     bench_run.add_argument(
         "--repeats", type=int, default=1,
@@ -4620,6 +4664,11 @@ def build_parser() -> argparse.ArgumentParser:
     bench_cmp.add_argument("--markdown", action="store_true",
                            help="Emit a markdown report (PR-body ready, "
                                 "annotates profile commits between runs)")
+    bench_cmp.add_argument(
+        "--allow-instrument-change", action="store_true",
+        dest="allow_instrument_change",
+        help=("Compare two run files whose headers show a different "
+              "scorer or task pack (refused otherwise)"))
 
     bench_gate = bench_sub.add_parser(
         "gate",
@@ -4823,6 +4872,20 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Which project's store (default: this "
                                "directory)")
     mem.set_defaults(func=cmd_memory, memory_action="tidy")
+
+    # knowledge -- the global knowledge folder: views for everyone,
+    # curation for the knowledge admin (code dialog on /dev/tty only)
+    kno = sub.add_parser(
+        "knowledge",
+        help="Global knowledge: lint, index, dupes, stats; admin curation "
+             "(merge, move, retire, rename, accept, reject) as local branches")
+    kno.add_argument("words", nargs=argparse.REMAINDER,
+                     help="lint | index | dupes | stats | list | search <w> | "
+                          "queue | accept <q> | reject <q> <reason> | merge "
+                          "<keep> <drop> | move <entry> <topic> | retire "
+                          "<entry> <reason> | rename <entry> <new> | topic "
+                          "add <slug> <text>")
+    kno.set_defaults(func=cmd_knowledge)
 
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
@@ -5337,10 +5400,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     svc = sub.add_parser(
         "service",
-        help="The agent service behind `delfin-agent tui`: status, stop, restart, logs",
+        help="The agent service behind `delfin-agent tui`: status (its sessions), "
+             "end a session, stop, restart, logs",
     )
     svc.add_argument("action", nargs="?", default="status",
-                     choices=["status", "stop", "restart", "logs"])
+                     choices=["status", "end", "stop", "restart", "logs"])
+    svc.add_argument("target", nargs="?", default="",
+                     help="end: the session's id, or a unique prefix of it")
+    svc.add_argument("--all-idle", dest="all_idle", action="store_true",
+                     help="end: every idle session (none that works or waits for you)")
+    svc.add_argument("--after-turn", dest="after_turn", action="store_true",
+                     help="end: let a running turn finish first (without it, the turn "
+                          "is stopped at its next safe point, as ctrl+x twice does)")
+    svc.add_argument("--yes", "-y", action="store_true",
+                     help="end: without asking (for scripts)")
+    svc.add_argument("--json", action="store_true",
+                     help="status: as JSON, for scripts")
     svc.add_argument("--lines", type=int, default=40,
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)

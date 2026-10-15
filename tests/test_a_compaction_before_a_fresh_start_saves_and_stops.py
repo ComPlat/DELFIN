@@ -81,12 +81,7 @@ class _Client:
 def _engine(tmp_path, how="answer"):
     pack = _pack_tree(tmp_path / "pack_root")
     client = _Client(how)
-    # Without the construction-time window probe: it runs on a daemon
-    # thread and, landing after the WINDOW assignment below, replaced 4000
-    # by the resolved 32768, so no compaction was due (4 of 40 runs).
-    with patch("delfin.agent.engine.create_client", return_value=client), \
-            patch.object(AgentEngine, "_refresh_context_window",
-                         lambda self, **kw: None):
+    with patch("delfin.agent.engine.create_client", return_value=client):
         engine = AgentEngine(repo_dir=pack, backend="cli", mode="quick",
                              pack_dir=pack)
     engine.client = client
