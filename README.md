@@ -7,7 +7,7 @@
   <a href="https://github.com/ComPlat/DELFIN/graphs/commit-activity"><img src="https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=for-the-badge" alt="Maintenance"></a>
   <a href="https://github.com/ComPlat/DELFIN/issues"><img src="https://img.shields.io/github/issues/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub issues"></a>
   <a href="https://github.com/ComPlat/DELFIN/graphs/contributors"><img src="https://img.shields.io/github/contributors/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub contributors"></a>
-  <a href="https://doi.org/10.5281/zenodo.21508364"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21508364-blue.svg?style=for-the-badge" alt="DOI"></a>
+  <a href="https://doi.org/10.5281/zenodo.17208144"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17208144-blue.svg?style=for-the-badge" alt="DOI"></a>
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
@@ -1035,30 +1035,32 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 ## Please cite
 
-If you use DELFIN in a scientific publication, please cite:
+If you use DELFIN in a scientific publication, please cite the article and the software version you used. The same metadata are in [CITATION.cff](CITATION.cff).
 
-- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.21508364
-- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv (preprint). https://doi.org/10.26434/chemrxiv-2025-4c256 · [article page](https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a)
+- Hartmann, M.; Schoenle, F.; Wagner, J.; Herrmann, D.; Hodapp, P.; Jung, N.; Bräse, S. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv (preprint). https://doi.org/10.26434/chemrxiv-2025-4c256 · [article page](https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a)
+- Hartmann, M. (2026). *DELFIN: Automated prediction of preferred spin states and associated redox potentials* (v1.3.3). Zenodo. https://doi.org/10.5281/zenodo.22845502
+
+The concept DOI [10.5281/zenodo.17208144](https://doi.org/10.5281/zenodo.17208144) stands for all versions and resolves to the latest; each release has its own version DOI on Zenodo.
 
 ### BibTeX
 ```bibtex
-@software{hartmann2025delfin,
-  author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.2.0},
-  year    = {2026},
-  publisher = {Zenodo},
-  doi     = {10.5281/zenodo.21508364},
-  url     = {https://doi.org/10.5281/zenodo.21508364}
-}
-
 @article{hartmann2025chemrxiv,
-  author  = {Hartmann, Maximilian},
+  author  = {Hartmann, Maximilian and Schoenle, Fabian and Wagner, Jérome and Herrmann, David and Hodapp, Patrick and Jung, Nicole and Bräse, Stefan},
   title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
   journal = {ChemRxiv},
   year    = {2025},
   doi     = {10.26434/chemrxiv-2025-4c256},
   url     = {https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a}
+}
+
+@software{hartmann2026delfin,
+  author    = {Hartmann, Maximilian},
+  title     = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
+  version   = {1.3.3},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.22845502},
+  url       = {https://doi.org/10.5281/zenodo.22845502}
 }
 ```
 
