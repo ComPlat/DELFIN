@@ -4828,12 +4828,83 @@ class AgentEngine:
             cmd = _vg.extract_exec_command(tool_name, tool_input)
             if not cmd:
                 return
+            self._note_repeated_sequence(tool_name, tool_input)
             ledger = self._exec_commands_session
             if cmd in ledger:
                 return
             ledger.append(cmd)
             if len(ledger) > 200:
                 del ledger[:len(ledger) - 200]
+        except Exception:
+            pass
+
+    #: Segments that only look around; a sequence of them is no check.
+    _LOOK_SEGMENT_RE = re.compile(
+        r"^\s*(?:cd|ls|pwd|echo|cat|head|tail|wc|true|printf|clear|sleep|"
+        r"sed\s+-n|grep|rg|find|git\s+(?:status|log|diff|show|branch|"
+        r"rev-parse))\b")
+
+    @classmethod
+    def repeated_sequence_key(cls, command: str) -> str:
+        """The key a multi-step command is counted under, or "".
+
+        Its segments (split at ``&&``, ``||``, ``;``, ``|`` outside
+        quotes) without the ones that only look around; fewer than two
+        left is no sequence. Quoted strings, hex ids and numbers are
+        normalised away: the repetitions that matter are the same check
+        with another number, commit or inline script, not the same text."""
+        try:
+            from .api_client import _split_shell_segments
+            segs = [" ".join(x.split()) for x in _split_shell_segments(command)
+                    if not cls._LOOK_SEGMENT_RE.match(x)]
+        except Exception:
+            return ""
+        if len(segs) < 2:
+            return ""
+        key = " && ".join(segs)
+        key = re.sub(r"'[^']*'|\"[^\"]*\"", "Q", key)
+        key = re.sub(r"\b[0-9a-f]{7,40}\b", "H", key)
+        return re.sub(r"\d+", "N", key)
+
+    def _note_repeated_sequence(self, tool_name: str, tool_input: Any) -> None:
+        """The third run of one multi-step shell command in a session gets
+        one run note: a check repeated by hand belongs in a script or a
+        hook. Counted only for commands that ran; said once per sequence.
+
+        Measured on 94 archived sessions (read only): 5 notes in 3
+        sessions, each on a command a script would carry -- an environment
+        plus interpreter incantation run with three inline scripts, and two
+        hand-built push commands repeated. Rejected: counting identical
+        text only (the field repetitions were the same check with another
+        number or inline script); a hook written by the harness (hooks run commands,
+        and only the user installs one). Never raises."""
+        try:
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            if name not in ("bash", "bash_background"):
+                return
+            data = tool_input
+            if isinstance(data, str) and data.lstrip().startswith("{"):
+                data = json.loads(data)
+            cmd = (str(data.get("command") or "") if isinstance(data, dict)
+                   else str(data or ""))
+            key = self.repeated_sequence_key(cmd)
+            if not key:
+                return
+            counts = getattr(self, "_repeated_sequences", None)
+            if counts is None:
+                counts = self._repeated_sequences = {}
+            if key not in counts and len(counts) >= 300:
+                return
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] != 3:
+                return
+            shown = " ".join(cmd.split())[:100]
+            self.client.push_run_note(
+                "[repeat] This multi-step command has now run three times "
+                f"in this session: `{shown}`. A check repeated by hand "
+                "belongs in a script in the repository (or a hook the user "
+                "installs in .delfin/settings.json): write it once and call "
+                "it.")
         except Exception:
             pass
 
