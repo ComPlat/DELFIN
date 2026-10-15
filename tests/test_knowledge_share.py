@@ -401,3 +401,36 @@ def test_a_rewritten_record_keeps_the_mode_it_was_created_with(env, umask):
     assert stat.S_IMODE(p.stat().st_mode) == 0o640
     assert json.loads(p.read_text())["status"] == "rejected"
     assert [x.name for x in p.parent.iterdir()] == [p.name]
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes")
+def test_group_read_goes_only_to_the_queue_folders_group(env, monkeypatch):
+    """A shared queue is read by the admin through the queue folder's
+    group. A record whose group is something else -- the author's
+    primary group, on a folder without the setgid bit -- must not be
+    group-readable: that group is whoever shares the author's primary
+    group, not the admin. The record stays 0o600 and the share says why
+    the admin cannot read it."""
+    other = os.getegid() + 4242
+    monkeypatch.setattr(ks, "_queue_gid", lambda _folder: other,
+                        raising=False)
+    clock = Clock()
+    out = _confirm_all(_share(env, _lesson(env), clock=clock), clock)
+    assert out.status == "done", out.message
+    (rec,) = ks.read_queue()
+    p = Path(rec["_path"])
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert "setgid" in out.message
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes")
+def test_the_per_account_queue_is_never_group_readable(env, monkeypatch):
+    monkeypatch.delenv("DELFIN_KNOWLEDGE_QUEUE")
+    clock = Clock()
+    out = _confirm_all(_share(env, _lesson(env), clock=clock), clock)
+    assert out.status == "done", out.message
+    (rec,) = ks.read_queue()
+    p = Path(rec["_path"])
+    assert p.parent == env["home"] / ".delfin" / "knowledge" / "queue"
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert stat.S_IMODE(p.parent.stat().st_mode) == 0o700
