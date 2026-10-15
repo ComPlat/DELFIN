@@ -90,6 +90,10 @@ _EVIDENCE_RE = re.compile(
     r"^(?:test|session|job|commit|calc|pr|issue|doc|swarm|bench):"
     r"[^\s|]{1,160}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: Pointers anyone can follow. A job, session, calc, swarm or bench id
+#: names something on one machine: meaningless to a reader elsewhere and
+#: a fact about the machine it came from.
+PUBLIC_EVIDENCE_KINDS = ("test", "commit", "pr", "issue", "doc")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 

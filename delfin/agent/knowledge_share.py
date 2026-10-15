@@ -486,6 +486,15 @@ def entry_findings(entry: kn.Entry, target: Target, *, handle: str,
     out += [f"provenance: {f.line()}" for f in kc.check(
         meta, public=target.public, names=names, releasable=releasable)
         if f.rule != "user-specific"]
+    if target.public:
+        for p in entry.provenance:
+            kind = p.evidence.split(":", 1)[0]
+            if kind not in kn.PUBLIC_EVIDENCE_KINDS:
+                out.append(
+                    f"provenance: evidence {p.evidence!r} points at this "
+                    "machine; a public entry needs a public pointer ("
+                    + ", ".join(f"{k}:" for k in kn.PUBLIC_EVIDENCE_KINDS)
+                    + "): /lessons edit <id> evidence=<pointer>")
     if topics is None and target.layer == kn.GLOBAL:
         topics = kn.read_topics(target.folder)
     out += kn.template_findings(entry, topics=topics, layer=target.layer)

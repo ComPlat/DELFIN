@@ -264,7 +264,8 @@ LESSON = ("Situation: a cluster job is submitted from a login node. "
 
 
 def _queued(env):
-    les = kp.propose(LESSON, evidence=["job:99"], source="agent",
+    les = kp.propose(LESSON, evidence=["doc:docs/cluster.md"],
+                     source="agent",
                      topic="cluster-hpc", title="Load modules inside the "
                      "job script")
     clock = Clock()

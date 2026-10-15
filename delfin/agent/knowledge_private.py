@@ -189,10 +189,20 @@ def _update(lesson_id, **changes) -> Lesson:
 
 
 def edit(lesson_id, **fields) -> Lesson:
-    """The person's own rewording; the text is taken as given."""
+    """The person's own rewording; the text is taken as given. ``evidence``
+    replaces the pointers (space or comma separated, each kind:ref)."""
     allowed = {"title", "situation", "lesson", "why", "topic"}
     changes = {k: " ".join(str(v).split()) for k, v in fields.items()
                if k in allowed and v is not None}
+    if fields.get("evidence") is not None:
+        from .knowledge import valid_evidence
+        pointers = [x for x in re.split(r"[\s,]+", str(fields["evidence"]))
+                    if x]
+        bad = [x for x in pointers if not valid_evidence(x)]
+        if not pointers or bad:
+            raise ValueError("evidence must be kind:ref pointers, e.g. "
+                             "commit:<sha> or test:<node>")
+        changes["evidence"] = pointers
     les = get(lesson_id)
     if les is None:
         raise KeyError(f"no lesson {lesson_id}")

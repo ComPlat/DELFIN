@@ -266,7 +266,8 @@ def _fields(words) -> dict:
     out = {}
     key = None
     for w in words:
-        m = re.match(r"^(title|situation|lesson|why|topic)=(.*)$", w)
+        m = re.match(r"^(title|situation|lesson|why|topic|evidence)=(.*)$",
+                     w)
         if m:
             key = m.group(1)
             out[key] = m.group(2)

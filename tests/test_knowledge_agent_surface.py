@@ -42,6 +42,7 @@ def _run(env, name, args, mode="bypassPermissions", **attrs):
 @pytest.mark.parametrize("mode", ["default", "acceptEdits",
                                   "bypassPermissions"])
 def test_a_lesson_from_the_agent_stays_private_in_every_mode(env, mode):
+    dialogs_before = len(ks.open_dialogs())
     out = json.loads(_run(env, "remember", {
         "text": LESSON, "type": "lesson", "evidence": "test:tests/x.py::t",
         "title": "Serial before believing"}, mode=mode))
@@ -50,7 +51,7 @@ def test_a_lesson_from_the_agent_stays_private_in_every_mode(env, mode):
     les = kp.get(out["lesson"])
     assert les.status == kp.PRIVATE and les.source == "agent"
     assert not env["queue"].exists()
-    assert ks.open_dialogs() == []
+    assert len(ks.open_dialogs()) == dialogs_before
 
 
 def test_a_lesson_needs_an_evidence_pointer(env):
