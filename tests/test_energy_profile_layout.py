@@ -614,3 +614,41 @@ def test_a_long_profile_keeps_its_figure_in_the_chat(tmp_path, n_states):
     assert f"{n_states - 12} more states" in text
     for i in range(12):
         assert f"state_{i:02d}_hcn_isomer_opt_freq.out" in text
+
+
+# --------------------------------------------------------------------------
+# a y label against the quantity the outputs fix
+
+
+@pytest.mark.parametrize("energy, label", [
+    ("gibbs", "ΔE"), ("gibbs", r"$\Delta E$"), ("gibbs", "ΔH"),
+    ("gibbs", "Electronic energy"), ("electronic", "ΔG"),
+    ("electronic", "Relative free energy"), ("electronic", "dG"),
+])
+def test_a_label_contradicting_the_outputs_is_refused(outputs, energy, label):
+    """The outputs say which energy was read; a label naming another one
+    would put Gibbs energies under a ΔE axis without a word."""
+    with pytest.raises(SpecError, match="contradicts") as exc:
+        plot({"kind": "energy_profile", "energy": energy, "ylabel": label,
+              "series": [{"files": ["hcn.out", "ts.out", "hnc.out"]}]},
+             out_dir=str(outputs))
+    assert ("ΔG" if energy == "gibbs" else "ΔE") in str(exc.value)
+    assert not list(outputs.glob("*.png"))
+
+
+@pytest.mark.parametrize("energy, label", [
+    ("gibbs", "ΔG"), ("gibbs", r"$\Delta G^\ddagger$"),
+    ("gibbs", "Gibbs free energy"), ("gibbs", "Relative energy"),
+    ("electronic", "ΔE"), ("electronic", "ΔE (HF-3c)"),
+])
+def test_a_label_consistent_with_the_outputs_is_kept(outputs, energy, label):
+    res = plot({"kind": "energy_profile", "energy": energy, "ylabel": label,
+                "series": [{"files": ["hcn.out", "ts.out", "hnc.out"]}]},
+               out_dir=str(outputs))
+    assert res.labels[1] == label
+
+
+def test_a_label_on_typed_values_is_the_callers(tmp_path):
+    res = plot({"kind": "energy_profile", "ylabel": "ΔH", "y": [0, -3.1],
+                "from_user": True}, out_dir=str(tmp_path))
+    assert res.labels[1] == "ΔH"

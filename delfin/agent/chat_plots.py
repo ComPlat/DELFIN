@@ -62,6 +62,7 @@ import io
 import json
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -630,7 +631,45 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         pathways.append(pw)
     quantity = ({"gibbs": "ΔG", "electronic": "ΔE"}[energy] if outputs
                 else None)
+    if quantity:
+        _check_label_quantity(_require_str(spec, "ylabel", "").strip(),
+                              quantity, energy)
     return pathways, n, notes, quantity
+
+
+#: How a y label names an energy: the symbol (``ΔG``, ``\Delta G``,
+#: ``deltaG``, ``dG``; the letter case-sensitive) or the word.
+_LABEL_QUANTITY = {
+    q: re.compile(
+        r"(?:Δ|\\Delta|(?<![A-Za-z])[dD]elta|(?<![A-Za-z\\])d)"
+        r"[\s{]*" + q[1] + r"(?![a-z])"
+        + r"|(?i:" + words + r")")
+    for q, words in (("ΔG", r"gibbs|free\s+energ"),
+                     ("ΔH", r"enthalp"),
+                     ("ΔE", r"electronic|single[\s-]point|\bscf\b"))
+}
+
+
+def _check_label_quantity(label: str, quantity: str, energy: str) -> None:
+    """Refuse a y label that names another energy than the outputs give.
+
+    ``quantity`` is fixed by what was read (``energy``: Gibbs or
+    electronic). A label naming it, or naming no energy ("Relative
+    energy"), is kept; one naming another (``ΔE`` over Gibbs energies) is
+    refused, since the axis would misstate the data without a word.
+    """
+    named = {q for q, rx in _LABEL_QUANTITY.items() if rx.search(label)}
+    other = sorted(named - {quantity})
+    if not label or not other:
+        return
+    fix = (", or pass energy: \"electronic\" to draw ΔE" if "ΔE" in other
+           else ", or pass energy: \"gibbs\" to draw ΔG" if "ΔG" in other
+           else "; ΔH is not read from outputs")
+    raise SpecError(
+        f"ylabel {label!r} contradicts the outputs: it names "
+        f"{' and '.join(other)}, they give {quantity} (energy: "
+        f"\"{energy}\"). Leave ylabel out (the axis then reads "
+        f"{quantity}){fix}")
 
 
 def _state_key(entry, where) -> tuple[str, ...]:
