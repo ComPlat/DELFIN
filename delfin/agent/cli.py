@@ -2711,6 +2711,14 @@ def _print_behavior_rates(_bm, records) -> None:
             print(f"  {flag:<9} {r['rate']:>4.0%}  (n={r['n']})")
 
 
+def cmd_knowledge(args: argparse.Namespace) -> int:
+    """``delfin-agent knowledge ...``: the /knowledge command. A write is
+    confirmed with a code shown and read on /dev/tty, never on stdout."""
+    from .knowledge_commands import run_cli
+    words = list(getattr(args, "words", None) or ["list"])
+    return run_cli(words)
+
+
 def _cmd_bug_report(args: argparse.Namespace) -> int:
     """``bug report``: file a report for a session that already ended.
 
@@ -4865,6 +4873,20 @@ def build_parser() -> argparse.ArgumentParser:
                                "directory)")
     mem.set_defaults(func=cmd_memory, memory_action="tidy")
 
+    # knowledge -- the global knowledge folder: views for everyone,
+    # curation for the knowledge admin (code dialog on /dev/tty only)
+    kno = sub.add_parser(
+        "knowledge",
+        help="Global knowledge: lint, index, dupes, stats; admin curation "
+             "(merge, move, retire, rename, accept, reject) as local branches")
+    kno.add_argument("words", nargs=argparse.REMAINDER,
+                     help="lint | index | dupes | stats | list | search <w> | "
+                          "queue | accept <q> | reject <q> <reason> | merge "
+                          "<keep> <drop> | move <entry> <topic> | retire "
+                          "<entry> <reason> | rename <entry> <new> | topic "
+                          "add <slug> <text>")
+    kno.set_defaults(func=cmd_knowledge)
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",
@@ -5378,10 +5400,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     svc = sub.add_parser(
         "service",
-        help="The agent service behind `delfin-agent tui`: status, stop, restart, logs",
+        help="The agent service behind `delfin-agent tui`: status (its sessions), "
+             "end a session, stop, restart, logs",
     )
     svc.add_argument("action", nargs="?", default="status",
-                     choices=["status", "stop", "restart", "logs"])
+                     choices=["status", "end", "stop", "restart", "logs"])
+    svc.add_argument("target", nargs="?", default="",
+                     help="end: the session's id, or a unique prefix of it")
+    svc.add_argument("--all-idle", dest="all_idle", action="store_true",
+                     help="end: every idle session (none that works or waits for you)")
+    svc.add_argument("--after-turn", dest="after_turn", action="store_true",
+                     help="end: let a running turn finish first (without it, the turn "
+                          "is stopped at its next safe point, as ctrl+x twice does)")
+    svc.add_argument("--yes", "-y", action="store_true",
+                     help="end: without asking (for scripts)")
+    svc.add_argument("--json", action="store_true",
+                     help="status: as JSON, for scripts")
     svc.add_argument("--lines", type=int, default=40,
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)

@@ -25,7 +25,7 @@
 import type { KeyEvent } from "@opentui/core"
 import { For, createEffect, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
-import type { Keymap } from "../keymap/keymap"
+import { describe, type Keymap } from "../keymap/keymap"
 import type { AttentionItem } from "../protocol/generated"
 import { askedWhat } from "../scrollback/present"
 import { toolHeadline } from "../scrollback/tools"
@@ -546,6 +546,19 @@ export function agentHelp(view: AgentView, km: Keymap, room = Infinity): string 
   return kept.map((p) => p.text).join(" · ")
 }
 
+/** The head's keys, at its right: what opens a session (every key bound
+ *  to it), what stops one (pressed twice), what goes back -- as many as
+ *  fit in `room` columns, in that order. */
+export function headerKeys(km: Keymap | undefined, room: number): string {
+  const keys = (action: Parameters<Keymap["keys"]>[0], fallback: string[]) =>
+    km ? km.keys(action).map(describe) : fallback
+  const open = keys("agentsOpen", ["→", "enter"]).join("/")
+  const stop = keys("agentsStop", ["ctrl+x"])[0]
+  const back = keys("agentsBack", ["esc"])[0]
+  return fitParts([open ? `${open} open` : "", stop ? `${stop} ×2 stop` : "", back ? `${back} back` : ""]
+    .filter(Boolean), room)
+}
+
 /** As many of `parts` as fit in `room` columns, in their order. */
 function fitParts(parts: string[], room: number): string {
   const kept: string[] = []
@@ -629,11 +642,19 @@ export function AgentViewPanel(props: { view: AgentView; theme: () => Theme; wid
             needs ? `${needs} need${needs === 1 ? "s" : ""} you` : "",
             working ? `${working} working` : ""].filter(Boolean).join(" · ")
   }
+  /** The head: the counts at the left, the keys at the right (those that
+   *  fit, two columns apart from the counts). */
+  const head = () => {
+    const left = width("◆ AGENTS  ") + width(summary())
+    const keys = headerKeys(props.keymap, inner() - left - 2)
+    return { keys, gap: keys ? " ".repeat(Math.max(2, inner() - left - width(keys))) : "" }
+  }
   return (
     <box flexDirection="column" height={props.height()} flexShrink={0}>
       <text wrapMode="none">
         <span style={{ fg: t().accent, bold: true }}>{"◆ AGENTS  "}</span>
         <span style={{ fg: t().muted }}>{summary()}</span>
+        <span style={{ fg: t().faint }}>{head().gap + head().keys}</span>
       </text>
       <For each={lines()}>
         {(line) => {
