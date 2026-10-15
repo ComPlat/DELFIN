@@ -28,7 +28,7 @@ def _write(path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def test_the_commands_are_the_ones_a_typed_line_would_run(tmp_path):
+def test_the_commands_are_the_ones_a_typed_line_would_run(tmp_path, monkeypatch):
     ws = tmp_path / "workspace"
     _write(ws / ".delfin" / "commands" / "deploy.md",
            "---\ndescription: Ship the build\n---\nDeploy $ARGUMENTS\n")
@@ -36,6 +36,14 @@ def test_the_commands_are_the_ones_a_typed_line_would_run(tmp_path):
     _write(ws / ".delfin" / "commands" / "help.md", "---\ndescription: mine\n---\nx\n")
     _write(ws / ".delfin" / "skills" / "crest-scan" / "SKILL.md",
            "---\nname: crest-scan\ndescription: Conformer search with CREST\n---\n# CREST\n")
+    # A repository's skills load only under workspace trust: granted the
+    # way /trust grant skills does, in the store the worker reads (its
+    # scratch state, DELFIN_SCRATCH_STATE from conftest.child_env).
+    from delfin.agent import workspace_trust as WT
+    monkeypatch.setattr(WT, "_trust_store_path", lambda: (
+        tmp_path / "child_scratch" / ".delfin" / "trusted_workspaces.json"))
+    WT.trust_workspace(ws, [WT.KIND_SKILLS], actor=WT.ACTOR_USER)
+    monkeypatch.undo()
     with WorkerClient(tmp_path) as w:
         commands = w.request("session.commands")["commands"]
     names = [c["name"] for c in commands]
