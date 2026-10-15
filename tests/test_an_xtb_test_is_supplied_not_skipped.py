@@ -170,3 +170,25 @@ def test_the_suite_never_installs_a_tool_for_a_later_test(monkeypatch):
     assert outcome["ok"] is False
     assert "xtb" in outcome["status"]
     assert "xtb" not in gfn._AUTO_TRIED, "an install was attempted"
+
+
+def test_the_switch_holds_between_tests_as_well(monkeypatch):
+    """DELFIN_AUTO_INSTALL_QM_TOOLS is 0 in the gaps between tests too.
+
+    Input: this test's monkeypatch undone, which also undoes conftest's
+    autouse ``_no_test_installs_a_tool`` (they share the function-scoped
+    fixture) and leaves os.environ as it is between two tests.
+    Output: the switch still reads 0.
+
+    Measured 2026-10-15, test_gfn_methods_in_the_viewer.py alone with no
+    xtb reachable and only the per-test setting: a structure-editor worker
+    thread (structure_editor._run -> _gfn_topology_dir -> relax_steps ->
+    ensure_binary) left running by one test read the switch while the next
+    test was in setup, found it unset, and started install_qm_tools.sh
+    twice in one run; unrecorded, the same run wrote xtb 6.7.1 into the
+    checkout five seconds after it started.
+    """
+    monkeypatch.undo()
+    assert os.environ.get("DELFIN_AUTO_INSTALL_QM_TOOLS") == "0", (
+        "between tests the switch is unset: a thread outliving its test "
+        "can install a tool")
