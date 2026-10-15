@@ -18,7 +18,8 @@ name: Packaging
 # time, so one commit always builds from the same toolchain.
 #
 # A second job checks the licences of the dependencies a plain install
-# pulls in (see its own comment).
+# pulls in (see its own comment), a third that every file of the repository
+# carries copyright and licence information (REUSE.toml, `reuse lint`).
 on:
   push:
     branches: [main]
@@ -110,3 +111,27 @@ jobs:
         run: |
           pip-licenses --from=mixed --format=json --output-file deps.json
           python scripts/check_dependency_licences.py deps.json
+
+  reuse:
+    name: REUSE compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Every file has an SPDX licence and a copyright line, through the bulk
+    # annotations of REUSE.toml, and every licence named has its text in
+    # LICENSES/. A new vendored file needs an override entry there and a
+    # section in THIRD_PARTY_NOTICES.md.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Lint
+        run: |
+          python -m pip install --upgrade pip
+          pip install reuse==6.2.0
+          reuse lint

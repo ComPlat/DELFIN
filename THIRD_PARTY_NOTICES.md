@@ -11,7 +11,8 @@ This file lists
 3. Python dependencies whose licence carries obligations beyond DELFIN's own.
 
 It is an engineering record of what is where and under which licence, not legal
-advice.
+advice. The machine-readable form for every file of the repository is
+[REUSE.toml](REUSE.toml) with the licence texts in [LICENSES/](LICENSES).
 
 ## 1. Distributed with DELFIN
 
