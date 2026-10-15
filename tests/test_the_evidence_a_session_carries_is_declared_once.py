@@ -196,6 +196,9 @@ _NOT_CARRIED = {
     # The experiment-discipline steering block of the current turn, the
     # same kind of per-message pointer.
     "_experiment_hint",
+    # The message that opened the current turn, read by the turn-end
+    # edit_signals caveat; a resumed session has no turn behind it.
+    "_turn_request",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
     # Per turn: the history a fresh start cut in THIS turn, given back only

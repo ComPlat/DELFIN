@@ -3028,6 +3028,14 @@ class AgentEngine:
             # Per turn: does the message measure, compare or land a
             # change? Then the turn points at experiment-discipline.
             self._note_experiment_task(user_message or "")
+            # Per turn: what this turn's changes do to the measure and to
+            # the object (edit_signals), judged against this message.
+            self._turn_request = str(user_message or "")
+            try:
+                from . import edit_signals as _es
+                _es.reset_turn(self._edit_signal_key())
+            except Exception:
+                pass
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -4602,6 +4610,85 @@ class AgentEngine:
     _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
                                re.IGNORECASE)
 
+    def _edit_signal_key(self) -> str:
+        """The key edit_signals files this session's changes under: the
+        permissions' task session id, which the write path also reads."""
+        perms = getattr(self, "kit_permissions", None)
+        return str(getattr(perms, "task_session_id", "") or "")
+
+    def _note_check_run(self, tool_name: str, tool_input: Any,
+                        tool_output: str) -> None:
+        """Hand a test run, red or green, to edit_signals. A run_tests
+        result is JSON; its summary is rendered as runner text. Never
+        raises."""
+        try:
+            from . import edit_signals as _es
+            from . import verify_guard as _vg
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            out = tool_output or ""
+            if isinstance(tool_input, str) and tool_input.lstrip().startswith("{"):
+                try:
+                    tool_input = json.loads(tool_input)
+                except ValueError:
+                    pass
+            if name == "run_tests":
+                data = json.loads(out) if out.lstrip().startswith("{") else {}
+                summary = (data or {}).get("summary") or {}
+                out = (f"{int(summary.get('passed', 0) or 0)} passed, "
+                       f"{int(summary.get('failed', 0) or 0)} failed")
+                cmd = "pytest " + str((tool_input or {}).get("target", "")
+                                      if isinstance(tool_input, dict) else "")
+            else:
+                cmd = _vg.extract_exec_command(tool_name, tool_input)
+                cmd = cmd.split(" ", 1)[1] if " " in cmd else ""
+            if cmd:
+                _es.note_command(self._edit_signal_key(), cmd, out)
+                # A CI run read through gh: a failing check is a red check
+                # the turn may set out to make pass.
+                if (self._GH_CHECKS_RE.search(cmd)
+                        and self._GH_FAILED_RE.search(out)):
+                    _es.note_red_check(self._edit_signal_key())
+        except Exception:
+            pass
+
+    _GH_CHECKS_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:view|watch|list))\b")
+    _GH_FAILED_RE = re.compile(r"\bfail(?:ure|ed|ing)?\b|\bX\s", re.IGNORECASE)
+
+    def _append_edit_signal_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Name, in the answer, a check changed to make it pass
+        (edit_signals.turn_caveat).
+
+        Caveat, not correction: the change may be right, and only the
+        model can say why the old check was wrong; a retry would rewrite
+        the sentence, not the change. It enters the transcript, so the
+        next turn sees it."""
+        try:
+            from . import edit_signals as _es
+            request = str(getattr(self, "_turn_request", "") or "")
+            caveat = _es.turn_caveat(
+                self._edit_signal_key(), request,
+                source if source is not None else text)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
         """Record a held command, but only if its result shows it ran.
 
@@ -4629,6 +4716,8 @@ class AgentEngine:
                     break
             else:
                 return
+            # Red runs too: what the turn set out to make pass.
+            self._note_check_run(name, tool_input, tool_output)
             out = (tool_output or "").strip()
             if out.lstrip().startswith('{"error"'):
                 return
@@ -4907,6 +4996,7 @@ class AgentEngine:
         out = self._append_functional_caveat(text, functional, on_token)
         out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
         out = self._append_truncated_count_caveat(out, on_token, source=source)
+        out = self._append_edit_signal_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
         return out

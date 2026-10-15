@@ -13455,6 +13455,44 @@ def _report_file_changed(path) -> None:
         pass
 
 
+def _note_edit_signals(perms, path, old_text, new_text) -> None:
+    """Hand a journalled text change to edit_signals, keyed by the
+    session. Never raises: the audit must not touch the write path."""
+    try:
+        from . import edit_signals as _es
+        _es.note_change(str(getattr(perms, "task_session_id", "") or ""),
+                        str(path), old_text, new_text,
+                        created=old_text is None)
+    except Exception:
+        pass
+
+
+def _note_edit_signals_raw(perms, path, pre_bytes, *, deleted: bool) -> None:
+    """The byte-level sibling: pre-image as bytes, post-image read back
+    (absent for a deletion). Files above 400 kB are not read."""
+    try:
+        from . import edit_signals as _es
+        if isinstance(pre_bytes, (bytes, bytearray)) and b"\0" in pre_bytes[:8192]:
+            return                      # a binary file: no lines to read
+        old = (pre_bytes.decode("utf-8", "replace")
+               if isinstance(pre_bytes, (bytes, bytearray))
+               and len(pre_bytes) <= 400_000 else None)
+        new = None
+        p = Path(path)
+        if not deleted and p.is_file() and p.stat().st_size <= 400_000:
+            raw = p.read_bytes()
+            if b"\0" in raw[:8192]:
+                return
+            new = raw.decode("utf-8", "replace")
+        if old is None and new is None:
+            return
+        _es.note_change(str(getattr(perms, "task_session_id", "") or ""),
+                        str(path), old, new, created=pre_bytes is None,
+                        deleted=deleted)
+    except Exception:
+        pass
+
+
 def _record_gate_refusal(code: str, tool: str, detail: str) -> None:
     """Report a refusal the containment panel does not record.
 
@@ -15548,6 +15586,7 @@ class _DocToolExecutor:
         journal (change_journal). Never raises — undo bookkeeping must not
         break the write path it observes."""
         _report_file_changed(resolved)
+        _note_edit_signals(perms, resolved, old_text, new_text)
         try:
             from . import change_journal as _cj
             rec = _cj.record_change(
@@ -15578,6 +15617,7 @@ class _DocToolExecutor:
         Never raises, like its text sibling.
         """
         _report_file_changed(resolved)
+        _note_edit_signals_raw(perms, resolved, pre_bytes, deleted=deleted)
         try:
             from . import change_journal as _cj
             if deleted:
