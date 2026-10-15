@@ -1053,8 +1053,7 @@ If you use DELFIN in a scientific publication, please cite:
 
 This project is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
 
-You should have received a copy of the GNU Lesser General Public License along with this repository in the file [LICENSE](LICENSE).
-If not, see <https://www.gnu.org/licenses/>.
+The licence notice is in [LICENSE](LICENSE). The full text of the GNU Lesser General Public License version 3 is in [COPYING.LESSER](COPYING.LESSER); it supplements the GNU General Public License version 3, whose full text is in [COPYING](COPYING). Both files are also inside every wheel (`*.dist-info/licenses/`) and sdist. The texts are also published at <https://www.gnu.org/licenses/>.
 
 Non-binding citation request:
 If you use this software in research, please cite the associated paper (see [CITATION.cff](./CITATION.cff)).
