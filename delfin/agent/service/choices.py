@@ -159,12 +159,27 @@ def _served_models(client: Any) -> list[dict[str, str]]:
     return found
 
 
+def _roster_fallback(engine: Any, client: Any) -> list[dict[str, str]]:
+    """The curated KIT roster (model_capabilities._KIT_PREFERENCE, best
+    first), for a KIT session whose ``/v1/models`` cannot be read: a
+    picker that offers only the current model offers no switch at all.
+    Nothing for another provider, whose names DELFIN does not curate."""
+    provider = str(getattr(engine, "provider", "") or getattr(client, "_provider", "") or "")
+    if provider.lower() != "kit":
+        return []
+    from .. import model_capabilities as mc
+    return [{"value": m, "detail": "recommended · the model list could not be read"}
+            for m in mc._KIT_PREFERENCE]
+
+
 def choices(engine: Any, what: str) -> dict[str, Any]:
     """``{current, choices: [{value, detail?}]}`` for a picker."""
     client = getattr(engine, "client", None)
     if what == "model":
         current = str(getattr(client, "model", "") or "")
         listed = _served_models(client) if client is not None else []
+        if not listed:
+            listed = _roster_fallback(engine, client)
         if current and not any(c["value"] == current for c in listed):
             listed.insert(0, {"value": current, "detail": "current"})
         return {"current": current, "choices": listed}

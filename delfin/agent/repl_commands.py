@@ -229,11 +229,47 @@ def _model(ctx, args: str) -> CommandResult:
     switch = getattr(client, "switch_model", None)
     if not callable(switch):
         return CommandResult(output="this backend cannot switch model")
+    refusal, note = _model_check(client, name)
+    if refusal:
+        return CommandResult(output=refusal)
     try:
         switch(name)
     except Exception as exc:
         return CommandResult(output=f"could not switch: {exc}")
-    return CommandResult(output=f"model → {name}")
+    return CommandResult(output=f"model → {name}{note}")
+
+
+def _model_check(client, name: str) -> tuple[str, str]:
+    """(refusal, note) for a switch to ``name``.
+
+    An OpenAI-compatible endpoint (KIT, OpenAI, vLLM) is asked which chat
+    models it serves (``/v1/models``, recorded for an hour by
+    model_capabilities); a name it does not list is refused with the
+    nearest ones. Taking it used to cost the next turn: the request 404s
+    after the prompt and the tools were sent. A listing that cannot be
+    read refuses nothing -- a new model may simply not be cached yet --
+    and the note says the name was not checked. A client without a base
+    URL (the CLI backends, the Anthropic API) checks its own names.
+    """
+    base = str(getattr(client, "_base_url", "") or "")
+    if not base:
+        return "", ""
+    try:
+        from . import model_capabilities as mc
+        served = mc.kit_models_served(base, str(getattr(client, "_api_key", "") or ""),
+                                      fetch=True)
+    except Exception:
+        served = set()
+    if not served:
+        return "", " (not checked: the model list could not be read)"
+    if name in served:
+        return "", ""
+    import difflib
+    near = difflib.get_close_matches(name, sorted(served), n=3, cutoff=0.6)
+    hint = f" Nearest: {', '.join(near)}." if near else ""
+    return (f"unknown model '{name}': the endpoint does not serve it, "
+            f"so the model stays {getattr(client, 'model', '?')}.{hint} "
+            "/model lists the ones it serves."), ""
 
 
 def _mode_cmd(ctx, args: str) -> CommandResult:

@@ -104,11 +104,21 @@ the session's:
   from its `/v1/models`, and reused for ten minutes; `detail` says where a
   model runs and, when it has a price, what it costs), the effort levels,
   or the agent modes. It is answered on a thread of its own, so a slow
-  model list never holds up the next request.
+  model list never holds up the next request. When a KIT session's list
+  cannot be read, it offers the curated roster
+  (`model_capabilities._KIT_PREFERENCE`) with a detail saying so; the
+  current model is always among the choices.
 
 A pick is applied by sending what the user would type: `/model <name>`,
 `/effort <level>`, `/mode <name>` as a `session.prompt`, so it is queued
-behind a running turn like any typed command. The approval posture is
+behind a running turn like any typed command. `/model <name>` is the
+REPL's own command (`repl_commands._model`, then the client's
+`switch_model`): on an OpenAI-compatible endpoint a name its
+`/v1/models` does not list as a chat model is refused, with the nearest
+names, and the model stays; when the list cannot be read the switch is
+made and its notice says the name was not checked. A switch changes the
+model only -- a `session.updated` with `model` follows; the approval
+posture, the permission rules and the managed policy stay as they are. The approval posture is
 `session.setMode`.
 
 ### Prompts
