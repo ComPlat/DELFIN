@@ -2730,7 +2730,9 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
     Without --yes the description and a y/N confirmation are read from
     the terminal after a preview of what goes in. With no terminal and no
     --yes nothing is written: a pipe cannot see the preview it would be
-    agreeing to.
+    agreeing to. The copy to the remote archive follows
+    ``agent.bug_upload`` (``bug_filing.upload``): asked separately without
+    --yes, never made under --yes unless the setting is ``always``.
     """
     from . import bug_filing
     from .bug_report import resolve_archive_dir
@@ -2779,7 +2781,11 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
         print(f"ERROR: bug report failed: {exc}", file=sys.stderr)
         return 1
     print(f"bug report written: {report_dir}")
-    remote = bug_filing.push_if_configured(report_dir)
+    # --yes answers the questions about writing, not the one about
+    # sending: with it nobody is asked, so the copy to the remote archive
+    # happens only under agent.bug_upload: always.
+    remote = bug_filing.upload(report_dir,
+                               ask=None if assume_yes else input)
     if remote:
         print(remote)
     return 0

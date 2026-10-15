@@ -6471,7 +6471,12 @@ def create_tab(ctx):
                 str(Path.home()), "~")
             held = len(state.get("chat_messages", []) or [])
             transfer = (settings.get("transfer") or {})
-            if transfer.get("host") and transfer.get("remote_path"):
+            from delfin.agent.bug_report import upload_policy
+            if (transfer.get("host") and transfer.get("remote_path")
+                    and upload_policy(settings) == "never"):
+                goes = (f"→ <code>{_html.escape(here)}</code>, and no further "
+                        "-- agent.bug_upload is 'never'")
+            elif transfer.get("host") and transfer.get("remote_path"):
                 goes = (f"→ <code>{_html.escape(here)}</code>, then "
                         f"<code>{_html.escape(str(transfer['host']))}</code>")
             else:
@@ -18572,12 +18577,16 @@ def create_tab(ctx):
                 from delfin.agent.bug_report import push_report_to_remote
                 _tcfg = (load_settings() or {}).get("transfer", {}) or {}
                 if _tcfg.get("host") and _tcfg.get("remote_path"):
+                    # Send was pressed under a line naming this host
+                    # (_on_bug_toggle): that press is the consent for this
+                    # report. agent.bug_upload 'never' still refuses inside.
                     ok, where = push_report_to_remote(
                         report_dir,
                         host=_tcfg.get("host", ""),
                         user=_tcfg.get("user", ""),
                         remote_path=_tcfg.get("remote_path", ""),
                         port=int(_tcfg.get("port", 22) or 22),
+                        consent=True,
                     )
                     remote_line = (
                         f"\n📤 Copied to the remote archive → `{where}`"

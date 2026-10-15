@@ -318,11 +318,15 @@ def send_report(report_dir, *, settings=None, timeout=120, target=None):
         return False, ('no transfer host is configured -- set one in the '
                        'dashboard settings and it will go there too')
     from delfin.agent.bug_report import push_report_to_remote
+    # The viewer's Send is pressed under the destination remote_target()
+    # named, so the press is the consent for this report;
+    # agent.bug_upload 'never' still refuses inside.
     return push_report_to_remote(
         report_dir,
         host=target['host'], user=target['user'],
         remote_path=target['remote_path'], port=target['port'],
-        subdir=REMOTE_SUBDIR, timeout=timeout)
+        subdir=REMOTE_SUBDIR, timeout=timeout, consent=True,
+        settings=settings)
 
 
 def _weigh(fields):

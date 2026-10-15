@@ -23,6 +23,21 @@ dashboard already uses.  Each report is its own sub-directory named
 ``<UTC-timestamp>_<user>_<session>_<rand>`` so many users sharing one
 archive never collide and the directory stays chronologically sortable.
 
+The copy to the remote archive is a second disclosure and has its own
+consent, ``settings["agent"]["bug_upload"]`` (:func:`upload_policy`):
+
+* ``"ask"`` (default; also any unknown value) -- copied only when the
+  caller passes ``consent=True`` because the person said yes for THIS
+  report (the dashboard's Send under a line naming the host, the
+  ``[y/N]`` of ``bug_filing.upload``). With nobody to ask (``--yes``, an
+  unattended caller) the report stays local and the caller says so.
+* ``"never"`` -- every report stays local, whatever a caller passes.
+* ``"always"`` -- the standing opt-in for unattended runs: copied
+  without a question whenever a transfer target is configured.
+
+The gate is inside :func:`push_report_to_remote`, the one function that
+runs rsync, so a caller that does not ask uploads nothing.
+
 The path is **never hard-coded** — it always comes from env / settings.
 """
 
@@ -129,6 +144,7 @@ def _delfin_version() -> str:
 _AGENT_SETTINGS_ALLOWED = frozenset({
     "action_repeat_limit", "auto_memory", "auto_verify",
     "auto_verify_command", "backend", "bash_isolation", "bug_archive_dir",
+    "bug_upload",
     "compact_resets_cli", "cost_soft_limit_usd", "effort", "eval_loop",
     "job_monitor", "max_action_rounds", "max_background_jobs", "max_tokens",
     "max_tool_rounds", "output_guard", "permission_mode",
@@ -879,6 +895,40 @@ def _make_group_readable(report_dir: Path) -> None:
             pass
 
 
+#: Values of ``agent.bug_upload``; the first is the default.
+UPLOAD_POLICIES = ("ask", "never", "always")
+
+
+def upload_policy(settings: dict | None = None) -> str:
+    """``agent.bug_upload`` from ``settings`` (default: the settings
+    file): ``ask``, ``never`` or ``always``. Missing, unreadable or
+    unknown is ``ask`` -- the value that uploads only after a yes; an
+    unknown value is never read as ``always``."""
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        except Exception:
+            settings = {}
+    agent = (settings or {}).get("agent") or {}
+    value = str(agent.get("bug_upload") or "").strip().lower() \
+        if isinstance(agent, dict) else ""
+    return value if value in UPLOAD_POLICIES else UPLOAD_POLICIES[0]
+
+
+def upload_refusal(*, consent: bool, settings: dict | None = None) -> str:
+    """Why a report must not be copied to the remote archive now, or ""
+    when it may be. ``consent``: the person said yes for this report."""
+    policy = upload_policy(settings)
+    if policy == "never":
+        return "not uploaded: agent.bug_upload is 'never'"
+    if policy == "ask" and not consent:
+        return ("not uploaded: nobody confirmed copying this report "
+                "(agent.bug_upload is 'ask'; confirm it when filing, or "
+                "set it to 'always' to upload without asking)")
+    return ""
+
+
 def push_report_to_remote(
     report_dir: str | Path,
     *,
@@ -888,6 +938,8 @@ def push_report_to_remote(
     port: int = 22,
     subdir: str = _BUG_SUBDIR,
     timeout: int = 120,
+    consent: bool = False,
+    settings: dict | None = None,
 ) -> tuple[bool, str]:
     """rsync a locally-written report directory into the shared remote
     archive over SSH — the same mechanism the dashboard uses for transfers.
@@ -897,6 +949,12 @@ def push_report_to_remote(
     error string.  Never raises — the caller keeps the local copy either
     way.  No-op (returns ok=False with a reason) when the transfer config
     is incomplete.
+
+    ``consent`` is True only when the person agreed to copy THIS report;
+    ``settings`` (default: the settings file) supplies
+    ``agent.bug_upload``. :func:`upload_refusal` decides, before any
+    command runs; a refusal returns ``(False, reason)`` and the local copy
+    stays where it is.
     """
     report_dir = Path(report_dir)
     host = (host or "").strip()
@@ -906,6 +964,9 @@ def push_report_to_remote(
         return False, "no remote configured (host/user/remote path missing)"
     if not report_dir.is_dir():
         return False, f"local report missing: {report_dir}"
+    refused = upload_refusal(consent=consent, settings=settings)
+    if refused:
+        return False, f"{refused}; the report stays local in {report_dir}"
 
     from delfin.ssh_transfer_jobs import (
         build_ssh_mkdir_command,
