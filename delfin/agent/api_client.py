@@ -11000,9 +11000,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "run_tests",
             "description": (
-                "Run pytest: pass/fail/error counts plus failing "
-                "node-ids. Prefer it over `bash python -m pytest`. Over "
-                "600s it runs as a job and you are told when it ends."
+                "Run the project's tests (pytest/cargo/go/npm by target): "
+                "counts incl. skipped; nothing_ran = none ran. Prefer it "
+                "over bash; over 600s it becomes a job."
             ),
             "parameters": {
                 "type": "object",
@@ -23939,6 +23939,18 @@ class _DocToolExecutor:
         if not isinstance(pytest_args, list):
             return json.dumps({"error": "pytest_args must be a list"})
         timeout = int(arguments.get("timeout_s", 300) or 300)
+        # The stack of each target (stack_tests.plan): a Rust crate, a Go
+        # module or a Node package runs its own test verb, through the bash
+        # tool and therefore its gate -- unasked inside the process cage,
+        # asked or refused outside it, exactly as the same command typed
+        # into bash. Only pytest targets take the path below.
+        try:
+            from . import stack_tests as _st
+            _groups = _st.plan(perms.workspace, target)
+        except Exception:
+            _groups = []
+        if any(g.framework != "pytest" for g in _groups):
+            return self._run_stack_tests(_groups, arguments, perms)
         # A suite longer than the shell's own ceiling is HANDED OVER, not
         # sat on. run_tests accepts up to 1800 s and runs in the
         # foreground, so one call held a turn for 30 minutes (measured
@@ -24017,6 +24029,84 @@ class _DocToolExecutor:
             result["note"] = _USER_INTERRUPT_NOTE.format(
                 secs=float(result.get("elapsed_s") or 0))
         return json.dumps(result, ensure_ascii=False)
+
+    def _run_stack_tests(self, groups: list, arguments: dict,
+                         perms: "KitToolPermissions") -> str:
+        """run_tests over targets that are not all pytest (stack_tests).
+
+        Each non-pytest group runs as one bash call (cwd = its project);
+        pytest groups go back through run_tests with their own targets.
+        Output: the run_tests shape -- one group's result as it is, with
+        ``framework``, ``command`` and ``ran_in`` (the project, relative to
+        the workspace); several groups as ``runs`` with a summed
+        ``summary`` and the worst ``status``. A command the gate refused is
+        ``status: refused`` with the gate's text, never a test result.
+        """
+        from . import stack_tests as _st
+        ws = Path(str(perms.workspace))
+        ceiling = int(getattr(perms, "bash_max_timeout_s", 600) or 600)
+        timeout = int(arguments.get("timeout_s", 300) or 300)
+        extra = [str(a) for a in (arguments.get("pytest_args") or [])]
+        runs: list[dict] = []
+        for g in groups:
+            if g.framework == "pytest":
+                sub = dict(arguments)
+                sub["target"] = " ".join(g.targets)
+                try:
+                    runs.append(json.loads(self._execute_run_tests(sub, perms)))
+                except Exception as exc:
+                    runs.append({"status": "error", "framework": "pytest",
+                                 "error": str(exc)[:200]})
+                continue
+            cmd = g.command
+            if extra:
+                cmd += (" -- " if g.framework in ("cargo", "npm") else " ") \
+                    + " ".join(shlex.quote(a) for a in extra)
+            try:
+                ran_in = str(Path(g.project).resolve().relative_to(
+                    ws.resolve())) or "."
+            except ValueError:
+                ran_in = str(g.project)
+            raw = self.execute("bash", {
+                "command": cmd, "cwd": str(g.project),
+                "timeout_s": max(5, min(timeout, ceiling)),
+                "description": f"run_tests: {g.framework} in {ran_in}",
+            }, perms)
+            try:
+                res = json.loads(raw)
+            except Exception:
+                res = {"error": str(raw)[:600]}
+            base = {"framework": g.framework, "command": cmd,
+                    "ran_in": ran_in}
+            if "exit_code" not in res:
+                err = str(res.get("error") or raw)[:1200]
+                runs.append({**base, "error": err, "status": (
+                    "refused" if ("auto-allow" in err or "not allowed" in err
+                                  or "denied" in err or "refused" in err)
+                    else "error")})
+                continue
+            code = res.get("exit_code")
+            out = str(res.get("stdout") or "") + "\n" + str(
+                res.get("stderr") or "")
+            summary = _st.summarise(g.framework, code, out)
+            runs.append({**base, "status": _st.status_of(summary, code),
+                         "exit_code": code, "summary": summary,
+                         "elapsed_s": res.get("elapsed_s"),
+                         "raw_stdout_tail": "\n".join(
+                             str(res.get("stdout") or "").splitlines()[-30:]),
+                         "raw_stderr_tail": "\n".join(
+                             str(res.get("stderr") or "").splitlines()[-15:])})
+        if len(runs) == 1:
+            return json.dumps(runs[0], ensure_ascii=False)
+        order = ["failed", "refused", "error", "nothing_ran", "ok"]
+        statuses = [str(r.get("status") or "error") for r in runs]
+        worst = next((s for s in order if s in statuses), "error")
+        total = {k: sum(int((r.get("summary") or {}).get(k, 0) or 0)
+                        for r in runs)
+                 for k in ("passed", "failed", "errors", "skipped", "xfailed")}
+        return json.dumps({"status": worst, "framework": "multi",
+                           "summary": total, "runs": runs},
+                          ensure_ascii=False)
 
     def _execute_apply_patch(
         self, arguments: dict, perms: Optional["KitToolPermissions"]

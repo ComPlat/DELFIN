@@ -203,7 +203,12 @@ def events_for_call(name: str, inp: Any, res: Any, idx: float,
         d = _as_dict(inp)
         target = call_path(inp) or (str(d.get("target") or "")
                                     if isinstance(d, dict) else "")
-        scope = ("", [_vc._norm(to_rel(t)) for t in target.split()]
+        # A stack run says where it ran (run_tests' ``ran_in``): that
+        # project is its scope, as for the same command run in bash.
+        rd = _as_dict(res)
+        ran_in = str(rd.get("ran_in") or "") if isinstance(rd, dict) else ""
+        scope = ("" if ran_in in ("", ".") else _vc._norm(ran_in),
+                 [_vc._norm(to_rel(t)) for t in target.split()]
                  if target.strip() else [])
         _run_event(ev, "test", "run_tests", res, scope)
     elif name in ("bash", "bash_background"):
