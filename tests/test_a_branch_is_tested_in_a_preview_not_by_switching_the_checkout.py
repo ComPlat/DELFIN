@@ -105,7 +105,10 @@ def setup(tmp_path, monkeypatch):
     note = home / ".delfin" / "dashboard_here.json"
     note.parent.mkdir()
     note.write_text('{"pid": 1, "from": "the running dashboard"}')
-    env = {k: v for k, v in os.environ.items()}
+    # The suite's child environment (its ~/.delfin sinks outside the real
+    # home), then the values this test checks are dropped or kept.
+    from conftest import child_env
+    env = child_env(tmp_path)
     env.update({
         "HOME": str(home), "XDG_RUNTIME_DIR": str(runtime),
         "FAKE_OUT": str(tmp_path / "out"),

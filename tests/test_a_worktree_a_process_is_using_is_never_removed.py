@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
 from delfin.dashboard import branch_cleanup as BC
 from delfin.dashboard import worktree_use as WU
 
@@ -65,7 +66,7 @@ def busy(repo, tmp_path):
     wt = tmp_path / "wt-bench"
     _git(repo, "worktree", "add", "-q", "--detach", str(wt), "main")
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
-                             cwd=str(wt))
+                             cwd=str(wt), env=child_env(tmp_path))
     time.sleep(0.3)
     yield wt, child
     child.kill()
@@ -94,7 +95,7 @@ def test_the_rule_is_checked_again_at_deletion(repo, tmp_path):
     mine = [c for c in cands if c.path == str(wt)]
     assert mine                                   # offered while idle
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
-                             cwd=str(wt))
+                             cwd=str(wt), env=child_env(tmp_path))
     try:
         time.sleep(0.3)
         report = BC.delete(repo, mine)
@@ -179,7 +180,7 @@ def test_close_preview_keeps_a_worktree_still_in_use(repo, tmp_path, monkeypatch
     ok, _m, wt, _a = BP.ensure_worktree(repo, target)
     assert ok
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
-                             cwd=str(wt))
+                             cwd=str(wt), env=child_env(tmp_path))
     try:
         time.sleep(0.3)
         p = BP.Preview(slug="main", ref="main", sha=target.sha, branch="",
