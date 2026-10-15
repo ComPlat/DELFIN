@@ -59,7 +59,7 @@ export const MONO: Theme = {
 }
 
 /**
- * How the approval posture shows at the bottom, as Claude Code's do: plan
+ * How the approval posture shows at the bottom: plan
  * and acceptEdits each in a colour of their own with its mark, the
  * unattended bypass in red, default plain. The mark (and bold) carries it
  * where there is no colour (mono).
@@ -133,7 +133,7 @@ export function diffColors(t: Theme) {
 export const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 /** The column kept free at the left of everything the window draws --
- *  scrollback, footer, agent view -- as Claude Code keeps one: text never
+ *  scrollback, footer, agent view: text never
  *  starts at the terminal's edge. What spans the width (rules, dividers)
  *  ends a column early on the right too. */
 export const GUTTER = 1

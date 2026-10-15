@@ -1107,6 +1107,8 @@ class Worker:
         self.banner = banner
         self._initialized = False
         self._seen_lock = threading.Lock()
+        self._tasks: list[dict[str, Any]] = []
+        self._tasks_key: Any = ()
         self._seen = self._session_facts()
         # Held while a request is being handled: the process does not end
         # under a request whose answer is still to be sent.
@@ -1140,7 +1142,7 @@ class Worker:
             agent.post(say)
 
     # -- state -------------------------------------------------------------------
-    def _session_facts(self) -> dict[str, str]:
+    def _session_facts(self) -> dict[str, Any]:
         client = getattr(self.engine, "client", None)
         try:
             approval = str(getattr(self.engine.kit_permissions, "mode", "") or "")
@@ -1149,12 +1151,45 @@ class Worker:
         return {"approval": approval,
                 "model": str(getattr(client, "model", "") or ""),
                 "effort": str(getattr(client, "effort", "")
-                              or getattr(self.engine, "effort", "") or "")}
+                              or getattr(self.engine, "effort", "") or ""),
+                "tasks": self._task_rows()}
+
+    def _task_rows(self) -> list[dict[str, Any]]:
+        """The session's task list as the window draws it: task_ticker.rows
+        (the dashboard's rows, in its order), each row num, status and a
+        label made one plain line -- it is the model's text.
+
+        Read again only when the store file's mtime or size, the session
+        id or the time of the last user message (which marks a block
+        stale) changed: this runs on every tick. A store that cannot be
+        read keeps the last list rather than announcing an empty one."""
+        try:
+            from .. import agent_tasks, task_ticker
+
+            sid = str(getattr(self.engine, "session_id", "") or "")
+            last = getattr(self.engine, "last_user_message_at", None)
+            try:
+                st = agent_tasks.get_store(self.workspace).path.stat()
+                stamp: Any = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                stamp = None
+            key = (stamp, sid, last)
+            if key == self._tasks_key:
+                return self._tasks
+            rows = task_ticker.rows(self.workspace, session_id=sid, last_message_at=last)
+            self._tasks = [{"num": int(r.get("num") or 0),
+                            "status": str(r.get("status") or "pending"),
+                            "label": protocol.clean_line(r.get("label"), protocol.TASK_LABEL_MAX)}
+                           for r in rows]
+            self._tasks_key = key
+        except Exception:
+            pass
+        return self._tasks
 
     def check_session(self) -> None:
-        """Announce the posture, model or effort whenever it changed,
-        however it changed: a plan approval, "stop asking about writes",
-        /permissions, /model, setMode."""
+        """Announce the posture, model, effort or task list whenever it
+        changed, however it changed: a plan approval, "stop asking about
+        writes", /permissions, /model, setMode, a task tool."""
         with self._seen_lock:
             now = self._session_facts()
             changed = {k: v for k, v in now.items() if v != self._seen.get(k)}
@@ -1184,7 +1219,8 @@ class Worker:
                 "approval": facts["approval"],
                 "title": self.title or None,
                 "banner": [l for l in self.banner if l is not None],
-                "notices": list(self.notices)}
+                "notices": list(self.notices),
+                "tasks": facts["tasks"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""

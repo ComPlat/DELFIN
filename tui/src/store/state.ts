@@ -38,6 +38,36 @@ export interface TurnLive {
   streamed: number
 }
 
+/** One row of the session's task list (session.info / session.updated
+ *  `tasks`), in the order the session sends them. */
+export interface TaskRow {
+  num: number
+  status: "pending" | "in_progress" | "blocked" | "completed"
+  /** The model's text, one plain line: drawn as it is, never as markup. */
+  label: string
+}
+
+const TASK_STATUSES = new Set(["pending", "in_progress", "blocked", "completed"])
+
+/** The rows a session sent, each field as its type says: an unknown status
+ *  is "pending", control and invisible characters become spaces (the
+ *  service cleans them too; a window does not rely on it), at most 160
+ *  characters. Anything that is not a row is left out. */
+export function taskRows(raw: unknown): TaskRow[] {
+  if (!Array.isArray(raw)) return []
+  const out: TaskRow[] = []
+  for (const r of raw as Record<string, unknown>[]) {
+    if (!r || typeof r !== "object") continue
+    const label = str(r.label)
+      .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, " ")
+      .replace(/\s+/g, " ").trim().slice(0, 160)
+    if (!label) continue
+    const status = TASK_STATUSES.has(str(r.status)) ? str(r.status) as TaskRow["status"] : "pending"
+    out.push({ num: Number(r.num) || 0, status, label })
+  }
+  return out
+}
+
 export interface SessionState {
   id: string
   title: string
@@ -66,6 +96,8 @@ export interface SessionState {
   ended: { reason: string; exitCode?: number } | null
   /** A progress line the next one replaces (waiting out an endpoint outage). */
   wait: string
+  /** The session's task list, as it sent it last. */
+  tasks: TaskRow[]
 }
 
 export interface Elsewhere {
@@ -126,6 +158,7 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
     id, title: "", workspace: "", provider: "", model: "", mode: "", approval: "",
     effort: "", state: "starting", pending: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     turn: null, tail: "", tailKey: "", held: [], thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
+    tasks: [],
   }
   applyInfo(s, info)
   return s
@@ -143,6 +176,7 @@ export function applyInfo(s: SessionState, info: Record<string, unknown>): void 
   if ("mode" in info) s.mode = str(info.mode)
   if ("approval" in info) s.approval = str(info.approval)
   if ("effort" in info) s.effort = str(info.effort)
+  if ("tasks" in info && info.tasks != null) s.tasks = taskRows(info.tasks)
 }
 
 /** Register a session (create, attach, a summary for one not seen yet). */

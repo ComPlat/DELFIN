@@ -1,5 +1,5 @@
 /**
- * The approval posture at the bottom, as Claude Code shows its own: plan
+ * The approval posture at the bottom: plan
  * and accept edits each in a colour of their own, with a mark, in bold;
  * the unattended bypass in red; default plain. The prompt marker takes the
  * posture's colour. Without colour (mono) the marks still tell them apart.

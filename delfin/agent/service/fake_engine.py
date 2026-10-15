@@ -82,6 +82,8 @@ class FakeEngine:
         self.kit_permissions = FakePermissions()
         self.client = SimpleNamespace(model="fake-model", effort="",
                                       signal_stop=self._signal_stop)
+        # /model takes any name here: there is no endpoint to list them.
+        self.client.switch_model = lambda name: setattr(self.client, "model", name)
         self.last_compaction_info = None
         self.last_turn_stop_reason = "end_turn"
         self.pending_turn_continuation = None
