@@ -163,6 +163,7 @@ from delfin.agent.bug_report import (
     _guarded_write,
     _make_group_readable,
     _report_dirname,
+    write_redaction_failed_note,
 )
 
 _FALLBACK_DIR = Path.home() / '.delfin' / 'viewer_bugs'
@@ -891,12 +892,14 @@ def write_report(journal, *, description='', widgets=None, tab='',
             start_xyz if start_xyz.endswith('\n') else start_xyz + '\n',
             encoding='utf-8')
 
+    failures = []
     redacted = _guarded_write(
         report_dir / 'report.json',
-        json.dumps(meta, ensure_ascii=False, indent=2))
+        json.dumps(meta, ensure_ascii=False, indent=2), failures)
     redacted += _guarded_write(
         report_dir / 'report.md',
-        _render_markdown(meta, timeline, summary))
+        _render_markdown(meta, timeline, summary), failures)
+    write_redaction_failed_note(report_dir, failures)
     if redacted:
         try:
             (report_dir / 'REDACTIONS.txt').write_text(

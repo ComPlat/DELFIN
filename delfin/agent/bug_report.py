@@ -496,6 +496,23 @@ def _placeholder(path: Path, reason: str) -> str:
             f"({reason[:200]}). The original stays with the reporter.]\n")
 
 
+def write_redaction_failed_note(report_dir: Path, failures: list) -> None:
+    """``REDACTION_FAILED.txt`` naming each file :func:`_guarded_write`
+    replaced by a placeholder; nothing when ``failures`` is empty. Shared
+    by the agent's and the viewer's report writers. Never raises."""
+    if not failures:
+        return
+    try:
+        (Path(report_dir) / REDACTION_FAILED_NOTE).write_text(
+            "The secret redaction failed for the files below, so each "
+            "was replaced by a placeholder and its content was not "
+            "written:\n" + "".join(f"  {f}\n" for f in failures)
+            + "The reporter still has the session; ask them directly.\n",
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _guarded_write(path: Path, text: str,
                    failures: list | None = None) -> int:
     """Write a rendered report file with the secret redactor applied.
@@ -840,16 +857,7 @@ def write_bug_report(
         ),
         failures,
     )
-    if failures:
-        try:
-            (report_dir / REDACTION_FAILED_NOTE).write_text(
-                "The secret redaction failed for the files below, so each "
-                "was replaced by a placeholder and its content was not "
-                "written:\n" + "".join(f"  {f}\n" for f in failures)
-                + "The reporter still has the session; ask them directly.\n",
-                encoding="utf-8")
-        except OSError:
-            pass
+    write_redaction_failed_note(report_dir, failures)
     if n_redacted:
         try:
             (report_dir / "REDACTIONS.txt").write_text(
