@@ -238,8 +238,10 @@ HEADER_CSS = """
 .jp-OutputArea-output:has(.delfin-hdr), .widget-output:has(.delfin-hdr) {
   overflow: visible;
 }
+/* Above page content (in-page panels use up to 60; the molecule viewer's
+   buttons 30), below full-screen overlays (9990 and up). */
 .jp-Cell:has(.delfin-hdr), .jp-OutputArea-child:has(.delfin-hdr) {
-  position: relative; z-index: 30;
+  position: relative; z-index: 1000;
 }
 .delfin-topbar { flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; }
 .delfin-hdr .delfin-group { align-items: center; gap: 6px; flex-wrap: wrap; }
