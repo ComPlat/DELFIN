@@ -16,9 +16,6 @@ identifiers:
 - type: doi
   value: "10.5281/zenodo.17208144"
   description: Concept DOI; resolves to the latest version, cite it for all versions
-- type: doi
-  value: "10.5281/zenodo.22845502"
-  description: Version DOI of release v1.3.3
 url: "https://github.com/ComPlat/DELFIN"
 repository-code: "https://github.com/ComPlat/DELFIN"
 license: LGPL-3.0-or-later

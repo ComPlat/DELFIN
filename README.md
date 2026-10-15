@@ -1038,7 +1038,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 If you use DELFIN in a scientific publication, please cite the article and the software version you used. The same metadata are in [CITATION.cff](CITATION.cff).
 
 - Hartmann, M.; Schoenle, F.; Wagner, J.; Herrmann, D.; Hodapp, P.; Jung, N.; Bräse, S. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv (preprint). https://doi.org/10.26434/chemrxiv-2025-4c256 · [article page](https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a)
-- Hartmann, M. (2026). *DELFIN: Automated prediction of preferred spin states and associated redox potentials* (v1.3.3). Zenodo. https://doi.org/10.5281/zenodo.22845502
+- Hartmann, M. (2026). *DELFIN: Automated prediction of preferred spin states and associated redox potentials* (v1.3.3). Zenodo. https://doi.org/10.5281/zenodo.17208144
 
 The concept DOI [10.5281/zenodo.17208144](https://doi.org/10.5281/zenodo.17208144) stands for all versions and resolves to the latest; each release has its own version DOI on Zenodo.
 
@@ -1059,8 +1059,8 @@ The concept DOI [10.5281/zenodo.17208144](https://doi.org/10.5281/zenodo.1720814
   version   = {1.3.3},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.22845502},
-  url       = {https://doi.org/10.5281/zenodo.22845502}
+  doi       = {10.5281/zenodo.17208144},
+  url       = {https://doi.org/10.5281/zenodo.17208144}
 }
 ```
 
