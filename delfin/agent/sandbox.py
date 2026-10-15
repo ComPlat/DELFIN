@@ -45,6 +45,15 @@ from typing import Optional
 
 # First token of each pipeline segment must be in this set OR (for the few
 # commands with sub-command grammar) match an entry in ``_ALLOW_SUBCOMMAND``.
+# A tool with a sub-command list is never also in this set: _check_segment
+# read this set first, so ``pip`` here made ``pip install`` pass and the pip
+# list unread.
+#
+# The limit of this layer: it reads the first word, and an interpreter on
+# it runs anything. ``python -c``, a script file, ``awk 'BEGIN{system()}'``,
+# ``find -exec`` and ``sed e`` are not contained by it; the OS confinement
+# of the runner (bwrap, firejail, Landlock -- see ``confinement``) is what
+# limits them, and where there is none the dashboard says so.
 _ALLOW_FIRST_TOKEN = frozenset({
     # Read-only inspection
     "ls", "cat", "head", "tail", "less", "more", "wc", "grep", "egrep",
@@ -53,7 +62,7 @@ _ALLOW_FIRST_TOKEN = frozenset({
     "basename", "dirname", "realpath", "readlink", "sort", "uniq", "tr",
     "cut", "awk", "sed", "diff", "cmp", "tee", "xargs",
     # Python tooling
-    "python", "python3", "pytest", "pip", "ruff", "black", "mypy",
+    "python", "python3", "pytest", "ruff", "black", "mypy",
     "flake8", "isort",
     # DELFIN entry-points
     "delfin", "delfin-build", "delfin-voila", "delfin-json",
@@ -68,16 +77,33 @@ _ALLOW_FIRST_TOKEN = frozenset({
 
 # Per-binary subcommand allow-list. Used when the binary itself is
 # multi-purpose (e.g. ``git``, ``pip``) — we allow only read-only or harmless
-# subcommands here. Other subcommands fall through to deny.
+# subcommands here. Other subcommands fall through to deny. ``pip`` also
+# covers ``pip3``, ``pip3.N`` and ``<python> -m pip`` (``_check_argv``).
 _ALLOW_SUBCOMMAND = {
     "git": frozenset({
         "status", "log", "diff", "show", "branch", "remote", "rev-parse",
         "rev-list", "stash", "ls-files", "ls-tree", "blame", "describe",
         "tag", "shortlog", "fsck", "cat-file", "for-each-ref", "name-rev",
-        "config",  # config alone is allowed; --global is deny-substring'd below
+        "config",  # read forms only (_SUBCOMMAND_READ_ONLY)
     }),
     "pip": frozenset({"list", "show", "freeze", "check", "config"}),
 }
+
+#: Sub-commands on the lists above whose writing forms rewrite configuration
+#: that a later git or pip OUTSIDE the sandbox trusts: ``core.pager``,
+#: ``core.hooksPath``, ``core.fsmonitor`` and an alias run code, a remote URL
+#: receives the next push, ``global.index-url`` serves the next install.
+#: For these only the read forms pass (``_read_only_form``).
+_GIT_CONFIG_READ_FLAGS = frozenset({
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color",
+    "--get-colorbool", "--list", "-l"})
+_GIT_CONFIG_WRITE_WORDS = frozenset({
+    "--add", "--unset", "--unset-all", "--replace-all", "--rename-section",
+    "--remove-section", "--edit", "-e", "set", "unset", "edit",
+    "rename-section", "remove-section"})
+#: git config options whose value is the next word.
+_GIT_CONFIG_VALUE_OPTS = frozenset({
+    "-f", "--file", "--blob", "--type", "--default", "--comment"})
 
 # Always-deny substrings (case-insensitive). These win even if the
 # first-token check passes — designed to catch obvious destructive or
@@ -601,20 +627,140 @@ def _check_segment(seg: str) -> tuple[bool, str]:
     toks = shlex.split(seg, posix=True)
     if not toks:
         return False, "empty pipeline segment"
-    head = toks[0]
-    # Strip leading env-var assignments (e.g. ``FOO=1 python …``)
-    while head and "=" in head and head.split("=", 1)[0].isidentifier():
+    return _check_argv(toks)
+
+
+#: Allowed commands that run the command given as their arguments.
+_RUNS_ITS_ARGUMENTS = frozenset({"env", "nohup", "xargs"})
+#: xargs options whose value is the next word when the option ends the
+#: word (GNU: -a -d -E -I -L -n -P -s; BSD adds -J -R -S).
+_XARGS_VALUE_SHORT = frozenset("adEILnPsJRS")
+_XARGS_VALUE_LONG = frozenset({"--arg-file", "--delimiter", "--max-args",
+                               "--max-procs", "--max-chars",
+                               "--process-slot-var"})
+
+
+def _wrapped_command(base: str, args: list[str]) -> tuple[list[str], str]:
+    """The command *base* (env, nohup, xargs) runs, and a refusal reason.
+
+    Returns ``(argv, "")``; ``argv`` is empty when the wrapper runs no
+    command of its own (``env`` alone prints the environment) and
+    ``["echo"]`` for a bare ``xargs``. A word this parser cannot place is
+    taken as the command, so a misreading refuses rather than skips."""
+    i = 0
+    if base == "nohup":
+        if args[:1] == ["--"]:
+            i = 1
+        return args[i:], ""
+    if base == "env":
+        while i < len(args):
+            a = args[i]
+            if a.startswith("-S") or a.startswith("--split-string") \
+                    or (a.startswith("-") and not a.startswith("--")
+                        and "S" in a[1:]):
+                return [], ("env -S splits a string into a command line; "
+                            "write the command out")
+            if a == "--":
+                i += 1
+                break
+            if a in ("-u", "--unset", "-C", "--chdir"):
+                i += 2
+                continue
+            if a.startswith("-") or ("=" in a and not a.startswith("=")):
+                i += 1
+                continue
+            break
+        return args[i:], ""
+    # xargs
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if a.startswith("--"):
+            i += 2 if a in _XARGS_VALUE_LONG else 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            for j, ch in enumerate(a[1:], start=1):
+                if ch in _XARGS_VALUE_SHORT:
+                    if j == len(a) - 1:
+                        i += 1          # the value is the next word
+                    break
+                if ch in "eil":         # optional value, attached only
+                    break
+            i += 1
+            continue
+        break
+    return (args[i:] or ["echo"]), ""
+
+
+def _read_only_form(tool: str, sub: str, args: list[str]) -> bool:
+    """Whether ``<tool> <sub> <args>`` only reads (see
+    ``_GIT_CONFIG_READ_FLAGS``). Sub-commands without a writing form
+    are read-only by being on the list."""
+    if (tool, sub) == ("pip", "config"):
+        return bool(args) and args[0] in ("list", "get", "debug")
+    if (tool, sub) == ("git", "remote"):
+        rest = [a for a in args if a not in ("-v", "--verbose")]
+        return not rest or rest[0] in ("show", "get-url")
+    if (tool, sub) == ("git", "config"):
+        if any(a.split("=", 1)[0] in _GIT_CONFIG_WRITE_WORDS for a in args):
+            return False
+        if args and args[0] in ("get", "list"):
+            return True
+        if any(a.split("=", 1)[0] in _GIT_CONFIG_READ_FLAGS for a in args):
+            return True
+        positional, skip = [], False
+        for a in args:
+            if skip:
+                skip = False
+            elif a in _GIT_CONFIG_VALUE_OPTS:
+                skip = True
+            elif not a.startswith("-"):
+                positional.append(a)
+        return len(positional) == 1     # ``git config <name>`` reads it
+    return True
+
+
+def _check_argv(toks: list[str], depth: int = 0) -> tuple[bool, str]:
+    """Layer 1 for one segment's argv.
+
+    Order: a tool with a sub-command list is judged by that list (and by
+    ``_read_only_form``), whatever else names it -- ``pip``, ``pip3``,
+    ``pip3.N``, ``<python> -m pip`` and ``-m pip.<sub>``; a wrapper
+    (``_RUNS_ITS_ARGUMENTS``) is judged by the command it runs; then the
+    first-token set and the tree-walk rule."""
+    while toks and "=" in toks[0] and toks[0].split("=", 1)[0].isidentifier():
         toks = toks[1:]
-        if not toks:
-            return False, "command was just env-vars"
-        head = toks[0]
-    base = os.path.basename(head)
+    if not toks:
+        return False, "command was just env-vars"
+    base = os.path.basename(toks[0])
+    tool, sub_argv = base, toks[1:]
+    if _PIP_NAME_RE.fullmatch(base):
+        tool = "pip"
+    elif _PYTHON_NAME_RE.fullmatch(base):
+        module, margs = _python_module(toks[1:])
+        if module == "pip" or module.startswith("pip."):
+            tool, sub_argv = "pip", margs
+    if tool in _ALLOW_SUBCOMMAND:
+        sub = sub_argv[0] if sub_argv else ""
+        if sub not in _ALLOW_SUBCOMMAND[tool]:
+            return False, f"{tool} subcommand not in allow-list: {sub!r}"
+        if not _read_only_form(tool, sub, sub_argv[1:]):
+            return False, (f"{tool} {sub}: only its read forms are allowed "
+                           "(the written setting is used outside the sandbox)")
+        return True, "ok"
+    if base in _RUNS_ITS_ARGUMENTS:
+        inner, reason = _wrapped_command(base, toks[1:])
+        if reason:
+            return False, reason
+        if inner:
+            if depth >= 3:
+                return False, f"{base} nested too deep to read"
+            return _check_argv(inner, depth + 1)
+        return True, "ok"
     if base in _ALLOW_FIRST_TOKEN:
         return _check_tree_walk(toks)
-    if base in _ALLOW_SUBCOMMAND:
-        if len(toks) >= 2 and toks[1] in _ALLOW_SUBCOMMAND[base]:
-            return True, "ok"
-        return False, f"{base} subcommand not in allow-list"
     return False, f"first token not in allow-list: {base!r}"
 
 
