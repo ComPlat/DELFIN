@@ -19729,6 +19729,31 @@ class _DocToolExecutor:
                 "not reach the file through another tool or a shell command "
                 "either — ask the user what they want changed instead."
             )
+        # A file a running job of this session uses. The command names
+        # it: refused, the job's result would stand for code that is no
+        # longer on disk (measured: inspect.getsource slices the edited
+        # file with the loaded line numbers). Only in its checkout: a
+        # note, since most edits there are the next step of the work.
+        try:
+            from . import bash_jobs as _bj_use
+            _use = _bj_use.job_using(
+                resolved, session_id=str(
+                    getattr(perms, "task_session_id", "") or ""))
+        except Exception:
+            _use = None
+        if _use and _use.get("kind") == "named":
+            _record_gate_refusal(
+                "running_job", name, self._display_path(resolved, perms))
+            return (
+                f"'{path_arg}' is used by background job {_use['job_id']} "
+                f"(`{str(_use.get('command') or '')[:80]}`), still running "
+                f"after {int(_use.get('elapsed_s') or 0)} s. Editing it now "
+                "makes the job's result stand for code that no longer "
+                "exists. Wait for the job (bash_status), stop it (bash_kill), "
+                "or make the change in a copy or a worktree.")
+        if _use and _use.get("kind") == "checkout":
+            _bj_use.note_checkout_write(
+                _use, self._display_path(resolved, perms))
         _change = _write_change_key(str(resolved), name, args)
         if perms.action_denied_earlier("write_change", _change):
             _record_security_event(

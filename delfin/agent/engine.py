@@ -3649,6 +3649,8 @@ class AgentEngine:
                         event.tool_name, event.tool_output or "")
                     # A function this write added that exists elsewhere.
                     self._note_new_definitions()
+                    # A write into the checkout a running job uses.
+                    self._note_running_job_writes()
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -4656,6 +4658,16 @@ class AgentEngine:
 
     _GH_CHECKS_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:view|watch|list))\b")
     _GH_FAILED_RE = re.compile(r"\bfail(?:ure|ed|ing)?\b|\bX\s", re.IGNORECASE)
+
+    def _note_running_job_writes(self) -> None:
+        """Hand the write gate's running-job notes to the run-note rail
+        (bash_jobs.take_in_use_notes; one per job). Never raises."""
+        try:
+            from . import bash_jobs as _bj
+            for text in _bj.take_in_use_notes():
+                self.client.push_run_note(text)
+        except Exception:
+            pass
 
     def _note_new_definitions(self) -> None:
         """Say it mid-turn when a write defined a function whose name, or
