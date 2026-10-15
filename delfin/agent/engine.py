@@ -4880,6 +4880,12 @@ class AgentEngine:
         out = self._append_truncated_count_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
+        if out != text:
+            try:
+                from . import channels as _channels
+                _channels.fire("answer_caveat")
+            except Exception:
+                pass
         return out
 
     def _append_figure_coverage_caveat(
@@ -5063,6 +5069,11 @@ class AgentEngine:
             parts.append(_vg.language_mismatch_feedback(wrong_language)
                          .replace("[Verify] ", "", 1))
         feedback = "[Verify] " + " ".join(parts)
+        try:
+            from . import channels as _channels
+            _channels.fire("claim_correction_turn")
+        except Exception:
+            pass
         # What the session had observed BEFORE the retry. The retry either
         # reads something new or it does not, and that is the only thing
         # that can turn an unverified claim into a verified one.

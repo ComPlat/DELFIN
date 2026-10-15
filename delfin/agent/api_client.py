@@ -12960,7 +12960,20 @@ def _resolve_tool_result_cap(model: str = "", caps=None) -> int:
 
 def _resolve_auto_verify() -> tuple[str, str]:
     """(mode, command) for auto-verification. mode ∈ smart|syntax|command|off
-    (default smart). Reads agent.auto_verify[_command]; never raises."""
+    (default smart). Reads agent.auto_verify[_command]; never raises.
+
+    ``DELFIN_AUTO_VERIFY`` in the environment overrides the setting's mode
+    (the benchmark runner pins it per attempt, benchmark_runner.
+    PINNED_BEHAVIOUR_ENV, so a run measures the shipped default and not
+    the operator's own choice)."""
+    _env_mode = str(os.environ.get("DELFIN_AUTO_VERIFY") or "").strip().lower()
+    if _env_mode in ("smart", "syntax", "command", "off"):
+        try:
+            from delfin import user_settings
+            ag = (user_settings.load_settings().get("agent", {}) or {})
+            return _env_mode, str(ag.get("auto_verify_command", "") or "").strip()
+        except Exception:
+            return _env_mode, ""
     try:
         from delfin import user_settings
         ag = (user_settings.load_settings().get("agent", {}) or {})
@@ -13412,7 +13425,14 @@ def _write_in_scope(path: Path, perms: "KitToolPermissions") -> bool:
 def _record_security_event(kind: str, tool: str, detail: str,
                            *, blocked: bool = True) -> None:
     """Surface a containment decision to the visible security-event panel.
-    Lazy + best-effort: never affects the gate's behaviour."""
+    Lazy + best-effort: never affects the gate's behaviour. Also counted
+    as the channel ``security:<kind>`` (channels.py), so a benchmark
+    attempt records which gate decisions it reached."""
+    try:
+        from . import channels as _channels
+        _channels.fire(f"security:{kind}")
+    except Exception:
+        pass
     try:
         from . import security_events
         security_events.record(kind, tool, detail, blocked=blocked)

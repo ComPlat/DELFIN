@@ -31,11 +31,16 @@
 # Offline validation (scripted correct and wrong solutions per task):
 # tests/test_generalist_tasks_score_the_end_state.py.
 
+# `behavior: verify` on every task that edits code (all but
+# generalist_investigate, which must not change code): the verify flag is
+# then measured on 16 tasks per run instead of 4 (added 2026-10-15).
+
 tasks:
 
   - id: generalist_py_feature
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_py_feature.py
     verify: generalist_py_feature_verify.py
     prompt: >-
@@ -65,6 +70,7 @@ tasks:
   - id: generalist_ts_feature
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_ts_feature.py
     verify: generalist_ts_feature_verify.py
     prompt: >-
@@ -92,6 +98,7 @@ tasks:
   - id: generalist_red_to_green
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_red_to_green.py
     verify: generalist_red_to_green_verify.py
     prompt: >-
@@ -109,6 +116,7 @@ tasks:
   - id: generalist_refactor
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_refactor.py
     verify: generalist_refactor_verify.py
     prompt: >-
@@ -132,6 +140,7 @@ tasks:
   - id: generalist_conventions
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_conventions.py
     verify: generalist_conventions_verify.py
     prompt: >-
@@ -151,6 +160,7 @@ tasks:
   - id: generalist_merge_conflict
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_merge_conflict.py
     verify: generalist_merge_conflict_verify.py
     prompt: >-
@@ -173,6 +183,7 @@ tasks:
   - id: generalist_contribution
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_contribution.py
     verify: generalist_contribution_verify.py
     prompt: >-
@@ -195,6 +206,7 @@ tasks:
   - id: generalist_large_repo
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_large_repo.py
     verify: generalist_large_repo_verify.py
     prompt: >-
@@ -236,6 +248,7 @@ tasks:
   - id: generalist_scope
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_scope.py
     verify: generalist_scope_verify.py
     prompt: >-
@@ -256,6 +269,7 @@ tasks:
   - id: generalist_rust_feature
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_rust_feature.py
     verify: generalist_rust_feature_verify.py
     prompt: >-
@@ -282,6 +296,7 @@ tasks:
   - id: generalist_rust_red_to_green
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_rust_red_to_green.py
     verify: generalist_rust_red_to_green_verify.py
     prompt: >-
@@ -299,6 +314,7 @@ tasks:
   - id: generalist_go_feature
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_go_feature.py
     verify: generalist_go_feature_verify.py
     prompt: >-
@@ -321,6 +337,7 @@ tasks:
   - id: generalist_go_red_to_green
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_go_red_to_green.py
     verify: generalist_go_red_to_green_verify.py
     prompt: >-
@@ -343,6 +360,7 @@ tasks:
   - id: generalist_long_py_feature
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_long_py_feature.py
     verify: generalist_long_py_feature_verify.py
     prompt: >-
@@ -377,6 +395,7 @@ tasks:
   - id: generalist_long_ts_symptom
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_long_ts_symptom.py
     verify: generalist_long_ts_symptom_verify.py
     prompt: >-
@@ -398,6 +417,7 @@ tasks:
   - id: generalist_long_rust_spec
     task_class: generalist
     mode: solo
+    behavior: verify
     setup: generalist_long_rust_spec.py
     verify: generalist_long_rust_spec_verify.py
     prompt: >-

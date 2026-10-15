@@ -2154,7 +2154,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
             )
             try:
                 n_records = sum(
-                    1 for line in f.open(encoding="utf-8") if line.strip()
+                    1 for line in f.open(encoding="utf-8")
+                    if line.strip() and not line.startswith('{"run_header"')
                 )
             except OSError:
                 n_records = 0
@@ -2183,6 +2184,23 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         cmp = _bm.compare_runs(baseline, candidate)
+        # Whether one instrument produced both files. A changed scorer or
+        # task pack makes the score difference partly the measure's, so
+        # the comparison is refused unless asked for explicitly; a file
+        # without a header (written before 2026-10-15) is said, not
+        # refused. The settings that differ are always printed: they
+        # should be exactly the axis the A/B declares.
+        _prov = cmp.get("provenance") or {}
+        if not args.json:
+            for _line in _bm.format_provenance_check(_prov):
+                print(_line)
+        if _prov.get("instrument_match") is False and not getattr(
+                args, "allow_instrument_change", False):
+            print("ERROR: comparison refused -- the instrument differs "
+                  "between the arms. Re-run one arm, or pass "
+                  "--allow-instrument-change to compare anyway.",
+                  file=sys.stderr)
+            return 4
         if args.json:
             print(json.dumps(cmp, indent=2, ensure_ascii=False))
             return 0
@@ -2291,7 +2309,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   + (f"accept-q={_vq} " if _vq is not None else "")
                   + " ".join(f"{k}={_proc[k]:g}" for k in (
                       "planned", "scouted", "tested_after_last_edit",
-                      "test_runs", "edits", "tool_errors", "nonzero_exits",
+                      "passing_test_after_last_edit", "test_runs",
+                      "refused_test_runs", "edits", "measure_edits",
+                      "measure_changed", "tool_errors", "nonzero_exits",
                       "tool_budget_used") if k in _proc),
                   flush=True)
         if result.violated_signals or result.missing_signals or result.error:
@@ -2353,6 +2373,17 @@ def cmd_bench(args: argparse.Namespace) -> int:
         return 3
     path = _bm.write_run(results, model=model)
     s = _bm.summarise_run(results)
+    _pm = s.get("process_means") or {}
+    if _pm:
+        # Rates per model, not only per task line.
+        print("process (mean over tasks): " + "  ".join(
+            f"{k}={v['mean']:g} (n={v['n']})" for k, v in _pm.items()
+            if k in ("tested_after_last_edit",
+                     "passing_test_after_last_edit", "refused_test_runs",
+                     "measure_edits", "measure_changed", "edits")))
+    if s.get("channels_total"):
+        print("channels fired: " + "  ".join(
+            f"{k}={v}" for k, v in s["channels_total"].items()))
     print(f"\n{s['n_pass']}/{s['n_tasks']} passed "
           f"({s['pass_rate']:.0%})   "
           f"avg-quality {s['avg_quality']:.1f}   "
@@ -4538,6 +4569,11 @@ def build_parser() -> argparse.ArgumentParser:
     bench_cmp.add_argument("--markdown", action="store_true",
                            help="Emit a markdown report (PR-body ready, "
                                 "annotates profile commits between runs)")
+    bench_cmp.add_argument(
+        "--allow-instrument-change", action="store_true",
+        dest="allow_instrument_change",
+        help=("Compare two run files whose headers show a different "
+              "scorer or task pack (refused otherwise)"))
 
     bench_gate = bench_sub.add_parser(
         "gate",
