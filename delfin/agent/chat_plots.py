@@ -6,7 +6,8 @@ followed by ``{"card": "plot", "path", "title", "text"}``. The result
 carries no figure bytes and no markup: the dashboard reads the file from
 ``path`` and shows it with the chat's existing artifact preview
 (``tab_agent._make_plot_card_html``); the model and the terminal receive
-``text`` only (``chat_viewer.card_model_text``).
+``text`` and the caption lines that follow the object
+(``chat_viewer.card_model_text``).
 
 Properties:
 
@@ -78,7 +79,8 @@ MAX_TEXT = 300
 MAX_DATA_FILE_BYTES = 5_000_000
 #: An ORCA output read for ``energy_profile``; a frequency run is tens of MB.
 MAX_OUTPUT_BYTES = 200_000_000
-#: Source lines in a caption; the dashboard reads 2000 characters of it.
+#: Source lines listed in an energy profile's caption; further states are
+#: counted, not listed. Bounds what the model re-reads every round.
 _MAX_NOTES = 14
 
 #: Prefix of a card result; shared with ``show_molecule``
@@ -921,16 +923,30 @@ def card_result(result: PlotResult) -> str:
     """The ``make_plot`` tool result for a written figure.
 
     ``DELFIN_CARD:`` + ``{"card": "plot", "path": <resolved path>,
-    "title": <file name>, "text": <plain line for the model>}`` -- a few
-    hundred characters, so it fits the dashboard's 2000-character view of
-    a result.
+    "title": <file name>, "text": "Wrote <path> -- <first caption line>"}``,
+    then, when the caption has more lines (an energy profile's source
+    notes), a newline and those lines as plain text.
+
+    The dashboard parses the JSON object from the first 2000 characters of
+    a result (``chat_viewer.card_payload``). The object holds the path
+    three times and one caption line (``MAX_TEXT`` bounds the title in it),
+    so it fits for any realistic path; the notes grow with the number of
+    states -- 11 states of ~90-character paths passed 2000 -- and travel
+    after it, where the preview need not parse them. The model receives
+    ``text`` and the notes (``chat_viewer.card_model_text``).
+
+    Rejected: a larger preview slice (any fixed limit is passed by enough
+    states) and fewer or shorter notes (the paths and per-state checks are
+    what the model reports from).
     """
-    return CARD_MARKER + json.dumps({
+    head, _, notes = result.caption.partition("\n")
+    card = CARD_MARKER + json.dumps({
         "card": "plot",
         "path": str(result.path),
         "title": result.path.name,
-        "text": f"Wrote {result.path} -- {result.caption}",
+        "text": f"Wrote {result.path} -- {head}",
     })
+    return card + "\n" + notes if notes else card
 
 
 def make_plot(spec: dict, *, out_dir: str = "", reader=None) -> str:

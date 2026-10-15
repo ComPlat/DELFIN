@@ -577,3 +577,40 @@ def test_values_and_files_are_not_mixed_in_one_pathway(tmp_path):
         plot({"kind": "energy_profile", "states": [
             {"name": "A", "value": 0}, {"name": "B", "files": "b.out"}]},
             out_dir=str(tmp_path))
+
+
+# --------------------------------------------------------------------------
+# the card: the dashboard parses the first 2000 characters of a result
+
+
+@pytest.mark.parametrize("n_states", [14, 16])
+def test_a_long_profile_keeps_its_figure_in_the_chat(tmp_path, n_states):
+    """Every state read from an output adds a caption line with its path;
+    at 11 states of ~90-character paths the card JSON passed 2000
+    characters and the chat showed the raw text instead of the figure."""
+    from delfin.agent.chat_plots import make_plot
+    from delfin.dashboard import chat_viewer
+    from delfin.dashboard import tab_agent as T
+
+    folder = tmp_path / ("calculations_" + "x" * 40) / "isomerisation"
+    folder.mkdir(parents=True)
+    files = []
+    for i in range(n_states):
+        p = folder / f"state_{i:02d}_hcn_isomer_opt_freq.out"
+        p.write_text(_out("C N H", -92.25 + 0.001 * i), encoding="utf-8")
+        files.append(str(p))
+    assert all(len(f) >= 90 for f in files)
+    res = make_plot({"kind": "energy_profile",
+                     "series": [{"files": files}]}, out_dir=str(tmp_path))
+    payload = chat_viewer.card_payload(res[:2000], "plot")
+    assert payload is not None, "the dashboard cannot parse the card"
+    assert payload["path"].endswith(".png")
+    card = T._make_plot_card_html(res[:2000])
+    assert "<img" in card
+    # The model still receives every state the caption lists (the
+    # reference and the mass balance take two of the 14 lines).
+    text = chat_viewer.card_model_text(res, "plot")
+    assert "mass balance checked" in text
+    assert f"{n_states - 12} more states" in text
+    for i in range(12):
+        assert f"state_{i:02d}_hcn_isomer_opt_freq.out" in text
