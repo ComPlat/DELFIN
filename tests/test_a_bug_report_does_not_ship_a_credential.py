@@ -237,3 +237,53 @@ def test_the_report_survives_a_broken_guard(tmp_path, monkeypatch):
     d = _write(tmp_path, error_text="something went wrong")
     assert (d / "report.json").is_file()
     assert (d / "report.md").is_file()
+
+
+# ---------------------------------------------------------------------------
+# A redactor that fails, or is switched off, writes no unredacted text
+# ---------------------------------------------------------------------------
+
+def _all_text(report_dir) -> str:
+    return "".join(p.read_text(encoding="utf-8", errors="replace")
+                   for p in sorted(report_dir.rglob("*")) if p.is_file())
+
+
+def test_a_broken_redactor_writes_no_unredacted_text(tmp_path, monkeypatch):
+    """The report is group-readable and rsynced to a shared archive. When
+    the redactor raises, what is written must be a placeholder that says
+    redaction failed -- never the text it could not check. Before, a
+    failing pattern was skipped (output_guard._redact_secrets catches per
+    pattern) and _guarded_write wrote the unguarded text on any error."""
+    import delfin.agent.output_guard as og
+
+    def boom(*a, **kw):
+        raise RuntimeError("redactor exploded")
+
+    monkeypatch.setattr(og, "_redact", boom)
+    token = _token(40, "broken-redactor")
+    d = _write(tmp_path, error_text=f"api_key={token}",
+               chat_messages=[{"role": "user",
+                               "content": f"my key is api_key={token}"}],
+               system_prompt=f"password: {token}")
+    assert token not in _all_text(d)
+    note = d / "REDACTION_FAILED.txt"
+    assert note.is_file()
+    said = note.read_text(encoding="utf-8")
+    assert "report.json" in said and "report.md" in said
+    meta = json.loads((d / "report.json").read_text(encoding="utf-8"))
+    assert meta["redaction_failed"] is True
+
+
+def test_a_switched_off_answer_guard_does_not_switch_off_the_report(
+        tmp_path, monkeypatch):
+    """``agent.output_guard.enabled = false`` is a choice about the final
+    answer on the person's own screen. It must not decide what a shared
+    archive receives; before, run_output_guards honoured it here too and
+    the report was written unredacted."""
+    import delfin.agent.output_guard as og
+    monkeypatch.setattr(og, "_load_config", lambda: {"enabled": False,
+                                                     "redact_secrets": False})
+    token = _token(40, "guard-off")
+    d = _write(tmp_path, error_text=f"api_key={token}")
+    assert token not in _all_text(d)
+    assert (d / "REDACTIONS.txt").is_file()
