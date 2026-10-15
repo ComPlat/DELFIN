@@ -44,9 +44,12 @@ Rejected alternatives
     its slowest shard is 767 s against 702 s here (+9 %).
 
 Commands
-    plan --collected FILE [--shards N] [--list K]
+    plan --collected FILE [--shards N] [--overhead S] [--list K]
         expected seconds per shard for a ``pytest --collect-only -q``
-        listing; --list prints the files of shard K.
+        listing: tests, and wall time with S seconds of per-runner setup
+        (default 130: checkout 8 s, install 65 s, collection 52 s and the
+        upload, from job 116555067461); --list prints the files of
+        shard K.
     verify ROOT --shards N [--sha SHA]
         the aggregator check over downloaded shard reports; exit 1 on any
         problem, and a summary appended to $GITHUB_STEP_SUMMARY when set.
@@ -258,6 +261,7 @@ def main(argv=None) -> int:
     p.add_argument("--collected", required=True)
     p.add_argument("--durations", default=str(DURATIONS))
     p.add_argument("--shards", type=int, default=4)
+    p.add_argument("--overhead", type=float, default=130.0)
     p.add_argument("--list", type=int, default=None)
     v = sub.add_parser("verify")
     v.add_argument("root")
@@ -281,11 +285,12 @@ def main(argv=None) -> int:
         print(f"{len(ids)} tests in {len(files)} files, {a.shards} shards; "
               f"{len(files) - len(known)} files without a measured duration "
               f"(weighted {default:.1f} s)")
-        print("shard  files  tests  expected_s")
+        print("shard  files  tests  tests_s  wall_min")
         for k in range(1, a.shards + 1):
             fs = [f for f in files if assignment[f] == k]
             secs = sum(durations.get(f, default) for f in fs)
-            print(f"{k:5d}  {len(fs):5d}  {tests[k]:5d}  {secs:10.1f}")
+            print(f"{k:5d}  {len(fs):5d}  {tests[k]:5d}  {secs:7.1f}  "
+                  f"{(secs + a.overhead) / 60:8.1f}")
         union = {f for f in files if 1 <= assignment[f] <= a.shards}
         print(f"files assigned: {len(assignment)}, union equals the "
               f"collected files: {union == set(files)}")
