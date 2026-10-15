@@ -155,10 +155,8 @@ def _memory(words, *, workspace, perms=None, **_):
     if terms:
         rows = [r for r in rows if all(t in (r[1] + " " + r[2]).lower()
                                        for t in terms)]
-    if not rows:
-        return f"no {layer if layer != 'all' else ''} entries".replace(
-            "  ", " ")
-    lines = [f"  [{label}] {text}" for _l, label, text in rows]
+    lines = [f"  [{label}] {text}" for _l, label, text in rows] or [
+        f"  no {layer + ' ' if layer != 'all' else ''}entries"]
     lines.append("  layers: private (this machine only) · swarm (this run) "
                  "· project (.delfin/knowledge, via git) · global (every "
                  "DELFIN user, via git)")
