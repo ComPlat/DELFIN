@@ -210,7 +210,7 @@ describe("the approval panel", () => {
     expect(w.replies().at(-1)).toEqual({ sessionId: "s1", requestId: "c3", choice: "A", persist: true })
   })
 
-  test("keys typed on when a question opens are not answers", async () => {
+  test("keys typed on when a question opens are not answers: they go on into the prompt", async () => {
     const w = await mount({ answerPauseMs: 350 })
     for (const e of FIXTURE.events.slice(0, FIXTURE.events.indexOf(edit))) w.store.push(e)
     await w.settle()
@@ -220,9 +220,18 @@ describe("the approval panel", () => {
     await w.t.mockInput.typeText("ease rerun")
     await w.settle()
     expect(w.replies()).toEqual([])
-    expect(w.footer().join("\n")).toContain("were not taken as answers")
-    await Bun.sleep(1100)                                 // a second of quiet, then a deliberate key
+    expect(w.footer().join("\n")).toContain("❯ please rerun")
+    await Bun.sleep(1100)
+    w.t.mockInput.pressKey("y")                           // the prompt holds a draft: y is the draft's
+    await w.settle()
+    expect(w.replies()).toEqual([])
+    expect(w.footer().join("\n")).toContain("❯ please reruny")
+    for (let i = 0; i < "please reruny".length; i++) w.t.mockInput.pressBackspace()
+    await w.settle()
+    await Bun.sleep(1100)                                 // an empty prompt, a second of quiet, then a deliberate key
     w.t.mockInput.pressKey("y")
+    await w.settle()
+    await Bun.sleep(650)                                  // alone: no key followed it (HOLD_MS)
     await w.settle()
     expect(w.replies()).toEqual([{ sessionId: "s1", requestId: edit.requestId, choice: "y" }])
   })
