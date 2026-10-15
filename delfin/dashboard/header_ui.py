@@ -3,7 +3,8 @@
 Input: text for the person (and optional details and actions), the header's
 widgets. Output:
 
-* :class:`Toasts` -- one message area (top right, fixed): the latest
+* :class:`Toasts` -- one message area (bottom right, fixed; the top right
+  is where the bar's own controls end): the latest
   message only, a dismiss action on it, success and info messages expire
   after ``auto_s`` seconds, errors and questions wait; earlier messages on
   demand (the last ``keep``). Details (paths, ports, commands) sit in a
@@ -363,9 +364,11 @@ HEADER_CSS = """
 .delfin-hdr .delfin-count { color: var(--dh-muted); font-size: 12px; white-space: nowrap; }
 /* the message area */
 .delfin-toasts {
-  position: fixed; top: 12px; right: 16px; z-index: 1000; gap: 4px;
+  position: fixed; bottom: 16px; right: 16px; z-index: 1000; gap: 4px;
   max-width: min(460px, calc(100vw - 32px)); align-items: flex-end;
+  pointer-events: none;
 }
+.delfin-toasts > * { pointer-events: auto; }
 .delfin-hdr .delfin-toast {
   align-items: flex-start; gap: 6px; padding: 8px 6px 8px 12px; border-radius: 10px;
   background: var(--dh-bg); color: var(--dh-fg); border: 1px solid var(--dh-border);

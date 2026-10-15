@@ -161,9 +161,11 @@ class BranchPanel:
         # -- the switcher
         self.branch_btn = HU.icon_button("⎇ main ▾", "Branch to test (/ or Ctrl+K)",
                                          "delfin-btn", "delfin-branch-btn")
+        # Every keystroke: Enter must see the text typed before it (with
+        # continuous_update=False it arrived after the submit).
         self.search = W.Text(placeholder="Search branches, or type a tag or commit",
-                             continuous_update=False)
-        HU.classed(self.search, "delfin-branch-search", "delfin-debounced")
+                             continuous_update=True)
+        HU.classed(self.search, "delfin-branch-search")
         self.reload_btn = HU.icon_button("⟳", "Reload: fetch from origin and the pull "
                                          "request states", "delfin-icon-btn")
         self.view = W.ToggleButtons(options=[v for v, _k in VIEWS], value="Mine",
@@ -175,7 +177,7 @@ class BranchPanel:
         self.new_open_btn = HU.icon_button("＋ New branch from main …",
                                            "Create a branch at main without switching",
                                            "delfin-btn", "delfin-brow-main")
-        self.new_text = W.Text(placeholder="name, e.g. max/idea", continuous_update=False)
+        self.new_text = W.Text(placeholder="name, e.g. max/idea", continuous_update=True)
         HU.classed(self.new_text, "delfin-branch-search")
         self.new_btn = HU.icon_button("Create", "Create the branch and add it to your list",
                                       "delfin-btn", "is-primary")
@@ -656,9 +658,9 @@ class BranchPanel:
             if p.ref in chips:
                 continue
             text = W.HTML(f'<span class="dot"></span><b>{_esc(p.ref)}</b> closed; its '
-                          'folder has changes')
-            rm = HU.icon_button("Remove", "Delete the preview folder with its changes",
-                                "delfin-link-btn")
+                          'folder was kept')
+            rm = HU.icon_button("Remove", "Delete the preview folder (it has changes or "
+                                "was still in use)", "delfin-link-btn")
             keep = HU.icon_button("Keep", "Keep the preview folder", "delfin-link-btn")
             rm.on_click(lambda _b, s=p.slug: self.answer_close(s, True))
             keep.on_click(lambda _b, s=p.slug: self.answer_close(s, False))
@@ -725,8 +727,8 @@ class BranchPanel:
 
     def _build_cleanup(self) -> None:
         W = self.W
-        self.cleanup_search = W.Text(placeholder="Search", continuous_update=False)
-        HU.classed(self.cleanup_search, "delfin-branch-search", "delfin-debounced")
+        self.cleanup_search = W.Text(placeholder="Search", continuous_update=True)
+        HU.classed(self.cleanup_search, "delfin-branch-search")
         self.select_toggle = HU.icon_button("Select none", "Tick or untick the rows shown "
                                             "(never ticks pinned branches or ones with "
                                             "their own commits)", "delfin-btn")

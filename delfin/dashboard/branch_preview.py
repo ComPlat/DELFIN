@@ -730,8 +730,13 @@ def _details(p: Preview, *lines: str, server=False, worktree=True) -> str:
     return "\n".join(body)
 
 
+#: How long a close waits for the processes of a server it just stopped
+#: (its kernels end after it) to leave the worktree.
+SETTLE_S = 15.0
+
+
 def close(s: str, *, worktree: str = "if-clean", progress=None,
-          step_timeout: float = STEP_TIMEOUT_S) -> CloseResult:
+          step_timeout: float = STEP_TIMEOUT_S, settle_s: float = SETTLE_S) -> CloseResult:
     """Close preview *s*: stop its server, then release its worktree.
 
     ``worktree``: ``if-clean`` (remove when clean, else ask), ``keep``, or
@@ -778,10 +783,11 @@ def close(s: str, *, worktree: str = "if-clean", progress=None,
     except OSError as exc:
         return CloseResult(False, "failed", f"Stopped, but the record could not be removed: {exc}.",
                            _details(p, str(exc), worktree=False))
-    return _release(p, worktree, say, step_timeout)
+    return _release(p, worktree, say, step_timeout, settle_s=settle_s)
 
 
-def _release(p: Preview, mode: str, say, step_timeout: float) -> CloseResult:
+def _release(p: Preview, mode: str, say, step_timeout: float,
+             settle_s: float = 0.0) -> CloseResult:
     path = Path(p.worktree)
     repo = p.repo
     try:
@@ -798,18 +804,27 @@ def _release(p: Preview, mode: str, say, step_timeout: float) -> CloseResult:
         return CloseResult(True, "kept", "Closed. Its folder is not a preview worktree, so it stays.",
                            f"worktree: {path}")
     say("Checking the worktree …")
-    try:
-        from delfin.dashboard.worktree_use import in_use
-        busy = _bounded(lambda: in_use([str(path)]).get(str(path)), step_timeout,
-                        "checking which programs use the worktree")
-    except Exception as exc:
-        return CloseResult(True, "kept", (
-            f"Closed. Its worktree is kept: checking it failed ({exc})."),
-            _details(p, str(exc)))
+    deadline = time.monotonic() + max(0.0, settle_s)
+    while True:
+        try:
+            from delfin.dashboard import worktree_use
+            busy = _bounded(lambda: worktree_use.in_use([str(path)]).get(str(path)),
+                            step_timeout, "checking which programs use the worktree")
+        except Exception as exc:
+            return CloseResult(True, "kept", (
+                f"Closed. Its worktree is kept: checking it failed ({exc})."),
+                _details(p, str(exc)))
+        if not busy or time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
     if busy:
+        try:
+            _save_pending(p)
+        except Exception:
+            pass
         return CloseResult(True, "kept", (
-            "Closed. Its worktree is kept because a program is still using it; "
-            "close the preview again once that has ended."), _details(p, busy))
+            "Closed. Its folder is kept because a program is still using it."),
+            _details(p, busy))
     try:
         dirty = _bounded(lambda: changes(path), step_timeout, "git status")
     except Exception as exc:

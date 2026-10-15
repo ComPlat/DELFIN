@@ -596,7 +596,8 @@ def all_rows(repo, gh: Optional[str] = "auto", *,
 
 def view_rows(rows: list[BranchRow], view: str, text: str = "") -> list[BranchRow]:
     """The rows of *view*, narrowed by *text* (a case-insensitive substring
-    of the name or the author). ``main`` stays in the default view."""
+    of the name; not the author, which matched every branch whose newest
+    commit came from main). ``main`` stays in the default view."""
     pick = {
         "mine": lambda r: r.mine,
         "all": lambda r: True,
@@ -609,7 +610,7 @@ def view_rows(rows: list[BranchRow], view: str, text: str = "") -> list[BranchRo
     for r in rows:
         if not pick(r):
             continue
-        if needle and needle not in r.ref.lower() and needle not in r.author.lower():
+        if needle and needle not in r.ref.lower():
             if not (view == "mine" and r.kind == "main"):
                 continue
         out.append(r)
