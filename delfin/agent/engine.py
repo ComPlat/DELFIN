@@ -4658,13 +4658,13 @@ class AgentEngine:
         self, text: str, on_token: Callable[[str], None] | None = None,
         *, source: str | None = None,
     ) -> str:
-        """Name, in the answer, a check changed to make it pass
-        (edit_signals.turn_caveat).
+        """Name, in the answer, a check changed to make it pass and a
+        failure silenced rather than removed (edit_signals.turn_caveat).
 
         Caveat, not correction: the change may be right, and only the
-        model can say why the old check was wrong; a retry would rewrite
-        the sentence, not the change. It enters the transcript, so the
-        next turn sees it."""
+        model can say why the old check was wrong or why the workaround
+        is the right fix there; a retry would rewrite the sentence, not
+        the change. It enters the transcript, so the next turn sees it."""
         try:
             from . import edit_signals as _es
             request = str(getattr(self, "_turn_request", "") or "")

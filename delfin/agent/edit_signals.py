@@ -1,4 +1,4 @@
-"""What a turn's file changes did to the measure.
+"""What a turn's file changes did to the measure, and to the object.
 
 Input: every file change the write path journals (the file tools through
 ``_capture_change`` with old and new text, the shell through
@@ -13,6 +13,11 @@ Output, per session and per turn:
   tolerance loosened, a test or a test file deleted, a grader file (CI
   configuration, test-runner configuration, benchmark or acceptance
   files, snapshots, thresholds) changed, rows removed from a data file;
+* :func:`symptom_fixes` -- changes to the object that silence a failure
+  instead of removing its cause: a broad except that does nothing, an
+  empty catch, ``|| true`` / ``set +e``, an added sleep or retry, a raised
+  timeout, a silenced warning, a rerun plugin or flaky marker, and a test
+  re-run unchanged until it passed;
 * :func:`turn_caveat` -- the one ``[verify]`` line naming them, or "".
 
 Semantics.
@@ -20,6 +25,10 @@ Semantics.
 * Only what a change ADDS counts: a pattern is counted in the added lines
   and in the removed lines, and only the excess is reported. Code that
   already had it is not flagged.
+* A handler that does nothing counts only around a statement the old
+  text had (existing code wrapped); new code written with a best-effort
+  handler of its own is ordinary. A sleep or retry counts in a small
+  insertion (at most four lines) or one that wraps existing lines.
 * A file this session created is its own new work: correcting it is no
   measure edit, except a skip/xfail, a loosened tolerance or a widened
   assertion (equality became membership, ``or``, an inequality or a
@@ -29,19 +38,27 @@ Semantics.
   user's message asks for a fix (a fix verb, or a failure word in a
   message of at most 400 characters).
 * It is withheld when the user's message asks for exactly that change
-  (to the test, the expectation, the threshold, the snapshot, the rows),
-  and when the answer gives the reason in a sentence that names the file.
+  (to the test, the expectation, the threshold, the snapshot, the rows;
+  or a workaround), and when the answer gives the reason in a sentence
+  that names the file.
+* A fix turn that changed the object and whose answer names no cause
+  gets one line asking for the root cause in one sentence, or the
+  statement that it was not found.
 
 Measured (offline replay of 200 recorded sessions, 531 user turns, 48 of
-them with file edits, 10 fix turns with edits): 2 caveats, both naming
-test assertions edited after a red run in files whose creation the
-replay cannot see (created through the shell, which the live write path
-journals and then exempts). 117 of 245 recorded edit calls in that
-archive keep no arguments, so the replay sees about half of the edits.
-Classification alone, over 363 real edit pairs from the undo journals
-(consecutive pre-images of one file): 10 measure findings, every one a
-real change of the kind it names (skips added for a missing program,
-removed tests, a changed expected value, a changed fixture).
+them with file edits, 10 fix turns with edits): 3 caveats. One is a
+false alarm (a refactor that moved an existing callback into a
+best-effort guard); two name test assertions edited after a red run in
+files whose creation the replay cannot see (created through the shell,
+which the live write path journals and then exempts). Before the
+wrap rule, the session-created exemption and the short-message rule,
+the same corpus gave 6 caveats with 4 false alarms. 117 of 245
+recorded edit calls in that archive keep no arguments, so the replay
+sees about half of the edits. Classification alone, over 363 real edit
+pairs from the undo journals (consecutive pre-images of one file): 10
+measure findings, every one a real change of the kind it names (skips
+added for a missing program, removed tests, a changed expected value, a
+changed fixture), and no symptom finding.
 
 Rejected: refusing the edit (a test that encodes a wrong expectation must
 be correctable, and the gate cannot tell which one it is); a model call
@@ -52,7 +69,8 @@ pass).
 
 Limits: a change outside the write path's journal (a file another
 process writes) is not seen. Patterns are lexical: a skip spelled in a
-way the tables below do not know is not counted.
+way the tables below do not know is not counted; a handler around
+rewritten (not moved) code is not counted.
 
 Cost: one difflib pass per journalled text change of at most 400 kB; no
 prompt text unless a caveat is due.
@@ -87,6 +105,8 @@ class Signal:
 class _Turn:
     seq: int = 0
     measure: list = field(default_factory=list)
+    symptom: list = field(default_factory=list)
+    object_changed: bool = False
     red_at: Optional[int] = None
     runs: list = field(default_factory=list)   # (seq, command, red)
     last_change_seq: int = 0
@@ -188,6 +208,36 @@ _TOL_RE = re.compile(
     r"\b(rel|abs|atol|rtol|tol|tolerance|delta|places|eps|epsilon|"
     r"threshold|max_diff|max_error|decimal)\s*[=:]\s*"
     r"([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", re.IGNORECASE)
+_TIMEOUT_RE = re.compile(
+    r"\b(timeout|time_limit|deadline|max_wait|wait_s|timeout_s|"
+    r"timeout_seconds)\s*[=:]\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+_SWALLOW_RES = (
+    ("broad except that does nothing",
+     re.compile(r"^\s*except(?:\s+(?:Exception|BaseException))?(?:\s+as\s+\w+)?"
+                r"\s*:\s*(?:pass|\.\.\.|continue|return(?:\s+None)?)?\s*(?:#.*)?$")),
+    ("empty catch", re.compile(r"catch\s*(?:\([^)]*\))?\s*\{\s*\}")),
+    ("`|| true` on a command", re.compile(r"\|\|\s*(?:true|:)\s*(?:$|[;)#])")),
+    ("`set +e`", re.compile(r"^\s*set\s+\+e\b")),
+    ("continue-on-error / allow_failure",
+     re.compile(r"\b(?:continue-on-error|allow_failure)\s*:\s*true\b",
+                re.IGNORECASE)),
+)
+_DOES_NOTHING_RE = re.compile(r"^\s*(?:pass|\.\.\.|continue|return(?:\s+None)?)"
+                              r"\s*(?:#.*)?$")
+_RETRY_RE = re.compile(
+    r"\btime\.sleep\(|\basyncio\.sleep\(|^\s*sleep\s+\d|\bsetTimeout\(|"
+    r"@retry\b|\btenacity\b|\bbackoff\.|\bfor\s+(?:attempt|retry|_?try|tries)"
+    r"\w*\s+in\s+range\(|\bmax_retries\s*=|\bretries\s*=", re.IGNORECASE)
+_SILENCE_RE = re.compile(
+    r"warnings\.(?:filterwarnings|simplefilter)\(\s*['\"]ignore|"
+    r"#\s*noqa\b|#\s*type:\s*ignore|eslint-disable|@SuppressWarnings|"
+    r"#\s*pragma:\s*no\s*cover|-W\s*ignore|logging\.disable\(|"
+    r"2>\s*/dev/null")
+_RERUN_RE = re.compile(
+    r"--reruns\b|@pytest\.mark\.flaky|@flaky\b|pytest-rerunfailures|"
+    r"\bjest\.retryTimes\(|\bretries\s*:\s*\d")
+
+
 def _lines(text: Optional[str]) -> list[str]:
     return (text or "")[:_MAX_TEXT].splitlines()
 
@@ -243,6 +293,12 @@ def _loosened(removed: list[str], added: list[str]) -> list[str]:
     return out
 
 
+def _raised_timeouts(removed: list[str], added: list[str]) -> list[str]:
+    before, after = _numbers(_TIMEOUT_RE, removed), _numbers(_TIMEOUT_RE, added)
+    return [f"{k} {max(v):g} -> {max(after[k]):g}" for k, v in before.items()
+            if after.get(k) and max(after[k]) > max(v)]
+
+
 _WIDE_RE = re.compile(r"\bin\s*[(\[{]|\bor\b|[<>]=?|!=|\bany\(|"
                       r"\bis\s+not\s+None\b|\bisinstance\(")
 
@@ -273,21 +329,99 @@ def _test_names(lines: list[str]) -> set:
     return out
 
 
+def _hunks(old: Optional[str], new: Optional[str]) -> list:
+    """(removed lines, added lines) per changed hunk."""
+    a, b = _lines(old), _lines(new)
+    out = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, a, b, autojunk=False).get_opcodes():
+        if tag != "equal":
+            out.append((a[i1:i2], b[j1:j2]))
+    return out
+
+
+def _strip_set(lines: Iterable[str]) -> set:
+    return {" ".join(ln.split()) for ln in lines if len(ln.strip()) >= 3}
+
+
+def _wraps_existing(hunk_removed: list[str], body: list[str]) -> bool:
+    """Whether *body* (the code the new handler guards) holds a statement
+    the old text already had: existing code was wrapped, not new code
+    written with its own handling."""
+    old = _strip_set(hunk_removed)
+    if not old:
+        return False
+    for ln in body:
+        flat = " ".join(ln.split())
+        if flat in old or any(o in flat for o in old if len(o) >= 6):
+            return True
+    return False
+
+
+def _swallows(hunks: list) -> list[str]:
+    """Handlers that do nothing, added around code the old text had.
+
+    New code written with a best-effort handler of its own is ordinary;
+    the symptom fix is the handler put around a statement that was there
+    before -- the call that failed. Measured on recorded sessions: without
+    this condition, two of six firings were new helper functions."""
+    out = []
+    for removed, added in hunks:
+        for label, rx in _SWALLOW_RES:
+            hits = []
+            for i, ln in enumerate(added):
+                if not rx.search(ln):
+                    continue
+                if label.startswith("broad except"):
+                    if not re.search(r":\s*(?:pass|\.\.\.|continue|return)", ln):
+                        nxt = next((x for x in added[i + 1:i + 3] if x.strip()),
+                                   "")
+                        if not _DOES_NOTHING_RE.match(nxt):
+                            continue
+                    start = next((k for k in range(i - 1, -1, -1)
+                                  if re.match(r"^\s*try\s*:", added[k])), None)
+                    body = added[start + 1:i] if start is not None else []
+                    if start is not None and not _wraps_existing(removed, body):
+                        continue
+                elif label == "empty catch" or label.startswith("`|| true`"):
+                    if not _wraps_existing(removed, [rx.sub("", ln)]):
+                        continue
+                hits.append(ln)
+            gone = sum(1 for ln in removed if rx.search(ln))
+            for ln in hits[gone:]:
+                out.append(f"{label}: {_short(ln)}")
+    return out
+
+
+def _retries(hunks: list) -> list[str]:
+    """A sleep or retry put into existing code: a small insertion (at most
+    four lines) or one that re-indents lines the old text had."""
+    out = []
+    for removed, added in hunks:
+        hits = _excess(_RETRY_RE, removed, added)
+        if not hits:
+            continue
+        if len(added) <= 4 or _wraps_existing(removed, added):
+            out.extend(_short(ln) for ln in hits)
+    return out
+
+
 def classify(path: str, old: Optional[str], new: Optional[str], *,
              created: bool = False, deleted: bool = False) -> dict:
     """The findings of one change: ``{"measure": [(kind, detail)],
-    "role": ...}``."""
+    "symptom": [(kind, detail)], "role": ...}``."""
     r = role(path)
     measure: list = []
+    symptom: list = []
     if deleted:
         if r == "test" and _test_names(_lines(old)):
             measure.append(("test file deleted", ""))
         elif r == "grader":
             measure.append(("grader file deleted", ""))
-        return {"role": r, "measure": measure}
+        return {"role": r, "measure": measure, "symptom": symptom}
     removed, added = _diff(old, new)
     if created:
-        return {"role": r, "measure": []}
+        return {"role": r, "measure": [], "symptom": []}
     if r == "test" and PurePosixPath(path).suffix.lower() not in _CODE_EXT:
         # A snapshot, a golden file or a fixture under tests/: its content
         # is the expectation, or the input the expectation was made for.
@@ -330,7 +464,19 @@ def classify(path: str, old: Optional[str], new: Optional[str], *,
             [ln for ln in added if ln.strip()])
         if lost > 0:
             measure.append(("rows removed", f"{lost} row(s)"))
-    return {"role": r, "measure": measure}
+    hunks = _hunks(old, new)
+    for item in _swallows(hunks):
+        symptom.append(("failure swallowed", item))
+    if r in ("object", "config", "grader"):
+        for ln in _retries(hunks):
+            symptom.append(("sleep or retry added", ln))
+        for item in _raised_timeouts(removed, added):
+            symptom.append(("timeout raised", item))
+        for ln in _excess(_SILENCE_RE, removed, added):
+            symptom.append(("warning or error silenced", _short(ln)))
+    for ln in _excess(_RERUN_RE, removed, added):
+        symptom.append(("rerun of failing tests added", _short(ln)))
+    return {"role": r, "measure": measure, "symptom": symptom}
 
 
 # ---------------------------------------------------------------------------
@@ -358,16 +504,23 @@ def note_change(session: str, path: str, old: Optional[str],
         if created:
             own.add(os.path.normpath(str(path)))
         mine = os.path.normpath(str(path)) in own
+        if found.get("role") == "object" or found.get("role") == "config":
+            t.object_changed = True
         for kind, detail in (found.get("measure") or ()):
             if mine and kind not in _WEAKENING_EVEN_IN_OWN_WORK:
                 continue
             if len(t.measure) < _MAX_EVENTS:
                 t.measure.append(Signal(path, kind, detail, t.seq))
+        for kind, detail in found.get("symptom") or ():
+            if len(t.symptom) < _MAX_EVENTS:
+                t.symptom.append(Signal(path, kind, detail, t.seq))
     return found
 
 
 def note_command(session: str, command: str, output: str) -> None:
-    """Record a test run and whether it was red. Never raises."""
+    """Record a test run and whether it was red. A test command re-run
+    unchanged, red then green with no file change in between, is a rerun
+    until green. Never raises."""
     try:
         from . import counter_test as _ct
         cmd = " ".join(str(command or "").split())
@@ -384,6 +537,11 @@ def note_command(session: str, command: str, output: str) -> None:
         t.seq += 1
         if red:
             t.red_at = t.seq
+        elif t.runs:
+            last = next((r for r in reversed(t.runs) if r[1] == cmd), None)
+            if last and last[2] and last[0] > t.last_change_seq:
+                t.symptom.append(Signal(cmd[:80], "flaky test re-run until "
+                                        "it passed", "", t.seq))
         t.runs.append((t.seq, cmd, red))
         if len(t.runs) > 60:
             del t.runs[:-60]
@@ -411,10 +569,22 @@ def measure_edits(session: str, *, after_red_only: bool = False) -> list:
         return list(t.measure)
 
 
+def symptom_fixes(session: str) -> list:
+    with _LOCK:
+        t = _TURNS.get(str(session or ""))
+        return list(t.symptom) if t else []
+
+
 def red_seen(session: str) -> bool:
     with _LOCK:
         t = _TURNS.get(str(session or ""))
         return bool(t and t.red_at is not None)
+
+
+def object_changed(session: str) -> bool:
+    with _LOCK:
+        t = _TURNS.get(str(session or ""))
+        return bool(t and t.object_changed)
 
 
 # ---------------------------------------------------------------------------
@@ -457,12 +627,28 @@ _ASKS_MEASURE_EDIT_RE = re.compile(
     r"\b(?:the\s+)?tests?\s+(?:is|are|was|were)\s+(?:wrong|outdated|"
     r"incorrect|broken)\b|\btests?\s+(?:ist|sind|war)\s+(?:falsch|veraltet)\b",
     re.IGNORECASE)
+_ASKS_WORKAROUND_RE = re.compile(
+    r"\bwork-?around\b|\bquick\s+fix\b|\bhot-?fix\b|\btemporar\w*|\bfor\s+now\b|"
+    r"\bstopgap\b|\bvorübergehend\w*|\bübergangs\w*|\bnotlösung\w*|"
+    r"\bprovisorisch\w*|\b(?:add|with|mit)\s+(?:a\s+)?retr(?:y|ies)\b|"
+    r"\b(?:raise|increase|erhöh\w*)\s+(?:the\s+)?timeout\b|"
+    r"\bsilence\b|\bsuppress\w*|\bunterdrück\w*", re.IGNORECASE)
 _REASON_RE = re.compile(
     r"\bbecause\b|\bsince\b|\bas\s+the\b|\bwas\s+(?:wrong|incorrect|outdated|"
     r"stale|based\s+on)|\bdue\s+to\b|\bcaused\s+by\b|\broot\s+cause\b|"
     r"\bthe\s+(?:cause|reason)\b|\bspec(?:ification)?\b|\bweil\b|\bda\s+|"
     r"\bwar\s+(?:falsch|veraltet)|\bursache\b|\bgrund\b|\bliegt\s+an\b|"
     r"\blag\s+an\b", re.IGNORECASE)
+_ROOT_CAUSE_RE = re.compile(
+    r"\broot\s+cause\b|\bcaused\s+by\b|\bbecause\b|\bdue\s+to\b|"
+    r"\bthe\s+(?:cause|reason|problem|issue|bug|defect|error)\s+"
+    r"(?:was|is|lay|lies)\b|\b(?:cause|reason)\s*:|\bwas\s+(?:not|never|"
+    r"missing|wrong|reading|using|called|passing|returning)\b|"
+    r"\bdid\s+not\b|\bdidn't\b|\bwasn't\b|\bwhich\s+(?:made|meant|caused)\b|"
+    r"\bnot\s+found\b|\bunknown\b|\bunclear\b|"
+    r"\bursache\b|\bweil\b|\bliegt\s+an\b|\blag\s+an\b|\bdadurch\b|"
+    r"\b(?:das|der)\s+(?:problem|fehler)\s+(?:war|ist|lag)\b|"
+    r"\bnicht\s+gefunden\b|\bunklar\b", re.IGNORECASE)
 _SENT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
@@ -515,6 +701,31 @@ def turn_caveat(session: str, user_message: str, answer: str) -> str:
                 "the check was changed in a turn that set out to make it "
                 f"pass — {items}. Say why the old check was wrong, or fix "
                 "the code it checks instead")
+        symptoms = []
+        if not _ASKS_WORKAROUND_RE.search(user_message or ""):
+            seen = set()
+            for s in symptom_fixes(session):
+                key = (s.path, s.kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if _ROOT_CAUSE_RE.search(answer or "") and _reasoned(
+                        answer, s.path, ()):
+                    continue
+                symptoms.append(s)
+        if symptoms:
+            items = "; ".join(
+                f"{_rel(s.path)}: {s.kind}" + (f" ({s.detail})" if s.detail
+                                               else "")
+                for s in symptoms[:4])
+            parts.append(
+                f"a failure is silenced rather than removed — {items}. Name "
+                "the cause it hides, or say why this is the right fix there "
+                "and that it is a workaround")
+        if (object_changed(session) and _asks_for_fix(user_message)
+                and not _ROOT_CAUSE_RE.search(answer or "")):
+            parts.append("this fix names no root cause: state it in one "
+                         "sentence, or say it was not found")
         if not parts:
             return ""
         return "\n\n[verify] " + " ".join(
@@ -532,5 +743,5 @@ def _rel(path: str) -> str:
 
 
 __all__ = ["Signal", "role", "classify", "note_change", "note_command",
-           "note_red_check", "reset_turn", "measure_edits", "red_seen",
-           "fix_turn", "turn_caveat"]
+           "note_red_check", "reset_turn", "measure_edits", "symptom_fixes",
+           "red_seen", "object_changed", "fix_turn", "turn_caveat"]
