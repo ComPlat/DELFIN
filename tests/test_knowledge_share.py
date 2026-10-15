@@ -543,3 +543,20 @@ def test_an_agent_session_cannot_withdraw_a_queued_share(env, monkeypatch):
         ks.start_unshare(qid, workspace=env["project"])
     with pytest.raises(ks.ShareRefused, match="agent session"):
         ks.start_withdraw(qid)
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX accounts")
+def test_the_admin_account_is_the_uid_not_the_user_variable(
+        env, monkeypatch):
+    """getpass.getuser() returns $LOGNAME / $USER first, which any process
+    sets as it likes: USER=<admin> made a non-admin the knowledge admin.
+    The account behind an authorisation is the real uid's name."""
+    import pwd
+    me = pwd.getpwuid(os.getuid()).pw_name
+    monkeypatch.setattr(ks, "admins", lambda: ("boss-admin",))
+    monkeypatch.setattr(ks, "_GH_LOGIN", lambda: "")
+    for var in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+        monkeypatch.setenv(var, "boss-admin")
+    assert not ks.is_admin()
+    monkeypatch.setattr(ks, "admins", lambda: (me,))
+    assert ks.is_admin()
