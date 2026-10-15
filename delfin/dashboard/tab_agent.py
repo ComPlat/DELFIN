@@ -17,6 +17,8 @@ import ipywidgets as widgets
 # rather than lazily like the rest of delfin.agent because it is a pure
 # data module with no imports of its own beyond the stdlib.
 from delfin.agent import pricing as _pricing
+# The turn composition shared with the terminal paths; stdlib-only at import.
+from delfin.agent import turn_context
 from delfin.agent.harness_rows import HarnessText
 
 
@@ -534,40 +536,9 @@ def _build_plan_hint(user_text: str) -> str:
     return ""
 
 
-# Fact-question shapes: the user is asking for exact ORCA / chemistry
-# keyword names, which is exactly where confident hallucination happens.
-_VERIFY_HINT_PATTERNS = re.compile(
-    r"(?i)("
-    r"welche[s]?\s+(?:exakten?\s+)?keyword|"        # "welche keyword(s)"
-    r"keyword[- ]?name|"                              # "keyword-name"
-    r"\bexakt(?:e|en)?\b.*\b(?:keyword|name|block)|"  # "exakte ... keyword"
-    r"nutzt\s+orca|"                                  # "nutzt ORCA"
-    r"in\s+orca|"                                     # "in ORCA"
-    r"gibt\s+es\s+(?:ein|den|das)?\s*\b\w*\s*(?:keyword|block|flag|option)|"
-    r"wie\s+hei[ßs]t\b|"                              # "wie heißt"
-    r"%\w+\s*[- ]?block"                              # "%casscf-block"
-    r")"
-)
-
-
-def _build_verify_hint(user_text: str, mode: str = "") -> str:
-    """Return a one-line ground-yourself reminder when the user asks a
-    factual ORCA/keyword question, else empty string.
-
-    Mirrors :func:`_build_plan_hint`: cheap, non-blocking, just nudges
-    the model to look the answer up instead of reciting from memory.
-    The runtime verify-guard (delfin.agent.verify_guard) still checks
-    the answer afterwards — this hint just front-loads the grounding.
-    """
-    if not user_text or len(user_text) > 4000:
-        return ""
-    if _VERIFY_HINT_PATTERNS.search(user_text):
-        return (
-            "(Factual question detected — look it up via search_docs/Read in "
-            "the manual/code BEFORE answering; only mention keywords that "
-            "are actually documented, none from memory.)"
-        )
-    return ""
+# The verify hint is shared with the terminal paths (one matcher, not one
+# per surface); the name stays for the dashboard's call sites and tests.
+_build_verify_hint = turn_context.verify_hint
 
 
 def _self_verification_note(verified: bool) -> str:
@@ -6715,7 +6686,11 @@ def create_tab(ctx):
         if perms is None:
             return
         cur = perms.mode if perms.mode in _KIT_MODE_ORDER else "default"
-        nxt = _KIT_MODE_ORDER[(_KIT_MODE_ORDER.index(cur) + 1) % len(_KIT_MODE_ORDER)]
+        # Passes over plan while a turn runs (mode_cycle): every step
+        # takes effect at once, and a call landing mid-cycle was refused.
+        from delfin.agent.mode_cycle import next_in_cycle
+        nxt = next_in_cycle(_KIT_MODE_ORDER, cur, turn_running=bool(
+            getattr(eng, "turn_in_flight", False)))
         ok = bool(eng.set_kit_permission_mode(nxt))
         if ok:
             _append_system_message(
@@ -9607,10 +9582,20 @@ def create_tab(ctx):
                     f"anything — /changes lists what was written."
                 )
             else:
-                _append_system_message(
-                    "📋 A pending plan was restored from the saved session. "
-                    "Switch to /mode plan to review + approve it."
-                )
+                # Once per plan: every restore announced it again, ten
+                # times in two sessions (session_store keeps the mark).
+                from delfin.agent.session_store import (
+                    mark_pending_plan_noticed, pending_plan_needs_notice)
+                if pending_plan_needs_notice(data):
+                    _append_system_message(
+                        "📋 A pending plan was restored from the saved session. "
+                        "Switch to /mode plan to review + approve it."
+                    )
+                    try:
+                        mark_pending_plan_noticed(
+                            str(data.get("session_id") or session_id))
+                    except Exception:
+                        pass
         # Active gate — restoring lets a paused approval keep its banner.
         saved_gate = data.get("active_gate")
         if isinstance(saved_gate, dict) and saved_gate.get("type"):
@@ -14595,11 +14580,15 @@ def create_tab(ctx):
             # case that would need a new engine.
             perm_values = [v for _, v in perm_dropdown.options]
             perm_labels = {v: label for label, v in perm_dropdown.options}
-            idx = perm_values.index(perm_dropdown.value) if perm_dropdown.value in perm_values else 0
-            next_idx = (idx + 1) % len(perm_values)
-            perm_dropdown.value = perm_values[next_idx]
+            # A step taken while a turn runs passes over plan (mode_cycle).
+            from delfin.agent.mode_cycle import next_in_cycle
+            _cur = (perm_dropdown.value if perm_dropdown.value in perm_values
+                    else perm_values[0])
+            _nxt = next_in_cycle(perm_values, _cur, turn_running=bool(
+                getattr(state.get("engine"), "turn_in_flight", False)))
+            perm_dropdown.value = _nxt
             _append_system_message(
-                f"Permission: {perm_labels[perm_values[next_idx]]} (Shift+Tab to cycle)"
+                f"Permission: {perm_labels[_nxt]} (Shift+Tab to cycle)"
             )
             return True
 
@@ -16891,6 +16880,10 @@ def create_tab(ctx):
             )
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
+            if branch_name == "HEAD":
+                from delfin.agent.held_branch import checkout_label
+                branch_name = (checkout_label(ctx.repo_dir or Path.cwd())
+                               or branch_name)
         except Exception:
             pass
 
@@ -16954,6 +16947,10 @@ def create_tab(ctx):
             )
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
+            if branch_name == "HEAD":
+                from delfin.agent.held_branch import checkout_label
+                branch_name = (checkout_label(ctx.repo_dir or Path.cwd())
+                               or branch_name)
         except Exception:
             pass
 
@@ -19574,15 +19571,9 @@ def create_tab(ctx):
                 # nothing but a greeting, and the glued hint made every
                 # first hallo pay the whole surface (37,193 tokens against
                 # 11,101, measured 2026-09-11).
-                try:
-                    from delfin.agent.engine import AgentEngine as _AE
-                    if _AE.is_bare_greeting(user_text):
-                        state["_pending_turn_hint"] = (
-                            "The user's message is a greeting and nothing "
-                            "else: reply with ONE short sentence; do NOT "
-                            "call any tools.")
-                except Exception:
-                    pass
+                _greeting = turn_context.greeting_hint(user_text)
+                if _greeting:
+                    state["_pending_turn_hint"] = _greeting
 
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.
@@ -19686,21 +19677,9 @@ def create_tab(ctx):
                     # of truth: ~/.delfin/projects/<slug>/memory/MEMORY.md +
                     # files, the "External Memory" block). Here we only load
                     # the project instruction files (DELFIN.MD / AGENTS.md)
-                    # from cwd up.
-                    from delfin.agent.project_memory import load_project_memory
-                    _memory = ""
-                    try:
-                        _kperms = engine.kit_permissions
-                        _extra = list(_kperms.extra_workspace_dirs) if _kperms else []
-                        _ws = _kperms.workspace if _kperms else None
-                    except Exception:
-                        _extra = []
-                        _ws = None
-                    _proj_mem = load_project_memory(
-                        cwd=_ws, extra_roots=_extra,
-                    )
-                    if _proj_mem:
-                        _memory = (_memory + "\n\n" + _proj_mem).strip() if _memory else _proj_mem
+                    # from the workspace up -- the loader the terminal paths
+                    # use too (turn_context).
+                    _memory = turn_context.project_instructions(engine)
                     _boot_brief = str(state.pop("_pending_boot_brief", "") or "")
                     if _boot_brief:
                         _memory = (_boot_brief + "\n\n" + _memory).strip() if _memory else _boot_brief

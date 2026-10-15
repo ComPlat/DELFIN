@@ -951,7 +951,48 @@ def load_elided_record(session_id: str, ref: str) -> dict[str, Any] | None:
     return found
 
 
-_SUMMARY_PREFIX = "[Conversation summary"
+# The headers the compactions write, repeated here (engine and
+# in_turn_compaction import this module); a test pins each to its writer.
+_SUMMARY_MARKER = "[Conversation summary — older messages compacted]"
+_IN_TURN_SUMMARY_MARKER = (
+    "[Conversation summary — earlier rounds of this turn compacted]")
+_WORKING_STATE_HEADER = (
+    "[Working state — session recap, rebuilt at each compaction]")
+# working_state._MAX_BLOCK_CHARS plus its trim marker: the farthest the
+# summary marker can sit behind a block the compaction wrote.
+_WORKING_STATE_MAX_CHARS = 2200 + len("\n... [working state trimmed]\n") + 1
+
+
+def _begins_with_compaction_summary(first) -> bool:
+    """Whether a history's first message is a compaction's summary.
+
+    Input: the first message's content (a string, or a list of blocks whose
+    first text block is read). Output: True when it starts with the summary
+    marker ``AgentEngine._compact_history`` or the in-turn compaction
+    writes, or when it starts with the working-state header and the summary
+    marker opens a line within the block's size ceiling after it -- the
+    compaction composes the block AHEAD of the summary.
+
+    Semantics: exact markers, at the positions the writers use. The former
+    test, a ``"[Conversation summary"`` prefix, missed every compaction
+    that had a working-state block, so a save without the compaction record
+    kept the long history and appended the compacted one. A marker quoted
+    later in a message, or after more text than a block can hold, is not a
+    compaction. Cost: two prefix tests and one bounded find.
+    """
+    if isinstance(first, list):
+        first = next((b.get("text") for b in first
+                      if isinstance(b, dict) and isinstance(b.get("text"), str)),
+                     "")
+    if not isinstance(first, str):
+        return False
+    if first.startswith((_SUMMARY_MARKER, _IN_TURN_SUMMARY_MARKER)):
+        return True
+    if not first.startswith(_WORKING_STATE_HEADER):
+        return False
+    at = first.find("\n" + _SUMMARY_MARKER + "\n", len(_WORKING_STATE_HEADER),
+                    _WORKING_STATE_MAX_CHARS + len(_SUMMARY_MARKER) + 2)
+    return at >= 0
 
 
 def _user_turns(messages) -> int:
@@ -1029,7 +1070,7 @@ def _keep_engine_history(session_id: str, engine_messages, chat_messages,
     if not isinstance(old, list) or len(new) >= len(old):
         return new, None
     first = new[0].get("content") if new and isinstance(new[0], dict) else ""
-    if isinstance(first, str) and first.startswith(_SUMMARY_PREFIX):
+    if _begins_with_compaction_summary(first):
         return new, None
     if _fresh_start_since(session_id, first, stored_file):
         return new, None
@@ -1053,10 +1094,9 @@ def _keep_engine_history(session_id: str, engine_messages, chat_messages,
         _atomic_write_text(kept_aside, stored_file.read_text(encoding="utf-8"))
     except OSError:
         pass
-    note = (f"engine history kept: a save would have replaced "
-            f"{len(old)} messages by {len(new)} with no compaction and no "
-            f"new cycle; kept the stored history and appended {len(added)}")
-    return old + added, note
+    # Counts only: the caller logs them, and nothing of the messages'
+    # content may reach a log line (CodeQL alert 59).
+    return old + added, (len(old), len(new), len(added))
 
 
 def save_session(
@@ -1176,8 +1216,11 @@ def save_session(
         session_id, engine_messages, chat_messages, last_compaction_info)
     if _history_kept:
         import logging
+        _stored, _offered, _added = (int(n) for n in _history_kept)
         logging.getLogger(__name__).warning(
-            "session %s: %s", session_id, _history_kept)
+            "engine history kept: a save would have replaced %d messages "
+            "by %d with no compaction and no new cycle; kept the stored "
+            "history and appended %d", _stored, _offered, _added)
 
     data = {
         # Unrecognised exporter keys first, so a named parameter always
@@ -1243,6 +1286,11 @@ def save_session(
         try:
             existing = json.loads(filepath.read_text())
             data["created_at"] = existing.get("created_at", data["updated_at"])
+            # The "already announced" mark of a pending plan survives a
+            # save of the same plan, and only that.
+            mark = existing.get("pending_plan_noticed")
+            if mark and mark == _plan_mark(data.get("pending_plan_body")):
+                data["pending_plan_noticed"] = mark
         except (json.JSONDecodeError, OSError):
             data["created_at"] = data["updated_at"]
     else:
@@ -1250,6 +1298,49 @@ def save_session(
 
     _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
     return filepath
+
+
+def _plan_mark(body: Any) -> str:
+    """A short digest naming one pending plan body; "" for none."""
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def pending_plan_needs_notice(data: dict[str, Any] | None) -> bool:
+    """Whether a restore of *data* should announce its pending plan.
+
+    Input: a loaded session record. Output: True when it holds a pending
+    plan that has not been announced yet (``pending_plan_noticed`` is
+    absent or names another plan). Every restore announced it before: 10
+    notices in 2 sessions (bug archive 2026-09-16..10-14), the same plan
+    each time."""
+    if not isinstance(data, dict):
+        return False
+    mark = _plan_mark(data.get("pending_plan_body"))
+    return bool(mark) and data.get("pending_plan_noticed") != mark
+
+
+def mark_pending_plan_noticed(session_id: str) -> bool:
+    """Record on the stored session that its pending plan was announced.
+    Touches nothing else. False when there is no such session, no plan,
+    or the file cannot be rewritten."""
+    filepath = _SESSIONS_DIR / f"{session_id}.json"
+    try:
+        data = json.loads(filepath.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    mark = _plan_mark(data.get("pending_plan_body"))
+    if not mark:
+        return False
+    data["pending_plan_noticed"] = mark
+    try:
+        _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
+    except OSError:
+        return False
+    return True
 
 
 def load_session(session_id: str) -> dict[str, Any] | None:

@@ -770,6 +770,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 with _dashboard_git_write_lock(rd, 'git pull'):
                     if _ensure_git_index_lock_clear(rd, 'Pull'):
                         print('Removed stale Git index lock before pull.')
+                    # Detached at a branch (one another worktree holds):
+                    # git pull has no branch to merge into, so move to the
+                    # branch's current commit, fast-forward only.
+                    from delfin.agent import held_branch as _hb
+                    moved = _hb.update_detached(rd)
+                    if moved is not None:
+                        print(moved.message)
+                        return
                     print(f'Running git pull in {rd} ...')
                     result = _run_git_write(rd, 'pull')
                     print(result.stdout.strip() or '(no output)')
@@ -806,6 +814,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 with _dashboard_git_write_lock(rd, f'branch-switch:{current_branch or "detached"}->{target_branch}'):
                     if _ensure_git_index_lock_clear(rd, 'Branch switch'):
                         print('Removed stale Git index lock before branch switch.')
+
+                    # Held by another worktree: git refuses the name, so run
+                    # its commit detached. Tracked changes refuse; nothing is
+                    # stashed on this path.
+                    from delfin.agent import held_branch as _hb
+                    if _hb.held_elsewhere(rd, target_branch):
+                        moved = _hb.detach_at_branch(rd, target_branch)
+                        print(moved.message)
+                        if moved.ok:
+                            refresh_git_status_label()
+                            print('Reloading dashboard to pick up code from the selected branch...')
+                            ctx.run_js('window.location.reload();')
+                        return
 
                     stash_name = ''
                     status_result = _run_git_capture(rd, 'status', '--porcelain')
@@ -1146,10 +1167,26 @@ def _run_git_capture(repo_dir, *args):
     )
 
 
+def _git_dir(repo_dir):
+    """This checkout's own git directory.
+
+    ``<repo>/.git`` in a main checkout; in a ``git worktree`` checkout
+    ``.git`` is a file and the directory (index, index.lock) is
+    ``<common>/.git/worktrees/<name>``, which only git can name."""
+    plain = Path(repo_dir) / '.git'
+    if plain.is_dir():
+        return plain
+    result = _run_git_capture(repo_dir, 'rev-parse', '--absolute-git-dir')
+    out = (result.stdout or '').strip()
+    if result.returncode == 0 and out and Path(out).is_dir():
+        return Path(out)
+    return plain
+
+
 @contextlib.contextmanager
 def _dashboard_git_write_lock(repo_dir, action_name, timeout=15.0):
     """Serialize repo-changing dashboard Git actions across kernels/processes."""
-    lock_path = Path(repo_dir) / '.git' / 'delfin-dashboard.lock'
+    lock_path = _git_dir(repo_dir) / 'delfin-dashboard.lock'
     with open(lock_path, 'a+', encoding='utf-8') as handle:
         deadline = time.monotonic() + timeout
         while True:
@@ -1184,7 +1221,7 @@ def _dashboard_git_write_lock(repo_dir, action_name, timeout=15.0):
 
 def _git_index_lock_path(repo_dir):
     """Return the Git index lock path for the repository."""
-    return Path(repo_dir) / '.git' / 'index.lock'
+    return _git_dir(repo_dir) / 'index.lock'
 
 
 def _git_index_lock_message(repo_dir):
@@ -1329,12 +1366,22 @@ def _format_git_status_html(repo_dir):
     if head_result.returncode == 0 and head_result.stdout.strip():
         head_short = head_result.stdout.strip()
 
-    parts = [f'{branch} @{head_short}']
+    if branch == '(detached)':
+        # A bare "(detached)" / "HEAD" hides that this is usually main's
+        # commit run here because another worktree holds the name.
+        try:
+            from delfin.agent.held_branch import checkout_label
+            label = checkout_label(repo_dir)
+        except Exception:
+            label = ''
+        parts = [label or f'{branch} @{head_short}']
+    else:
+        parts = [f'{branch} @{head_short}']
     if ahead:
         parts.append(f'ahead {ahead}')
     if behind:
         parts.append(f'behind {behind}')
-    if not ahead and not behind:
+    if not ahead and not behind and branch != '(detached)':
         parts.append('synced')
     if _git_index_lock_message(repo_dir):
         parts.append('index.lock present')

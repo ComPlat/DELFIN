@@ -267,3 +267,8 @@ def test_the_chat_shows_the_proposed_change_as_a_diff():
     assert "_skill_patch_card_html" in src[at:at + 600]
     card = ast.unparse(_fn(_tab_agent(), "_skill_patch_card_html"))
     assert "_build_inline_diff" in card
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

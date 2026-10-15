@@ -135,6 +135,54 @@ jobs:
           pytest -q -p no:cacheprovider -rs --timeout=300 --timeout-method=signal
           tests/test_a_command_can_run_in_a_container.py
 
+  toolchains:
+    # The generalist benchmark's Node/TypeScript, Rust and Go tasks,
+    # validated for real. The fast suite asserts their not-run path
+    # where a toolchain is missing; here node, cargo and go come from
+    # conda-forge (the same channel as the operator's delfin-toolchains
+    # env), and DELFIN_TOOLCHAIN_REQUIRED turns a missing toolchain into
+    # a failure, so the job cannot pass by not having the tools. Every
+    # fixture is dependency-free and runs offline.
+    name: generalist toolchains (node, cargo, go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the package without its chemistry stack
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-deps -e .
+          pip install pytest pytest-timeout pyyaml
+
+      - name: Install node, rust and go from conda-forge
+        run: |
+          curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+            | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          "$RUNNER_TEMP/bin/micromamba" create -y -q -p "$RUNNER_TEMP/tc" \
+            -c conda-forge "nodejs>=22.6" rust go
+          echo "DELFIN_TOOLCHAIN_BIN=$RUNNER_TEMP/tc/bin" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/tc/bin/node" --version
+          "$RUNNER_TEMP/tc/bin/cargo" --version
+          "$RUNNER_TEMP/tc/bin/go" version
+
+      - name: Generalist tasks against scripted solutions
+        env:
+          DELFIN_TOOLCHAIN_REQUIRED: "1"
+          GOTOOLCHAIN: local
+          GOPROXY: "off"
+          CARGO_NET_OFFLINE: "true"
+        run: >
+          pytest -q -p no:cacheprovider -rs --timeout=900 --timeout-method=signal
+          tests/test_generalist_tasks_score_the_end_state.py
+
   reference-env:
     name: reference environment (py3.12, numpy 2.2)
     runs-on: ubuntu-latest

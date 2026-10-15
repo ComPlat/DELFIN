@@ -480,9 +480,9 @@ def _trust(ctx, args: str) -> CommandResult:
 
     Trusting a digest nobody has read is not consent, so the bare command
     only ever SHOWS. The grant still goes through hooks_editor /
-    mcp_editor, the two thin wrappers an existing test enumerates as the
-    only call sites of `workspace_trust.trust_workspace`; this command
-    types the user's decision into them and adds no third one. Naming a
+    mcp_editor / skills, the thin wrappers an existing test enumerates as
+    the only call sites of `workspace_trust.trust_workspace`; this
+    command types the user's decision into them and adds no other. Naming a
     remedy the terminal cannot reach was the older failure: the text said
     "the hooks / MCP editors" and nothing here could open either.
     """
@@ -492,8 +492,8 @@ def _trust(ctx, args: str) -> CommandResult:
         return _trust_change(ctx, action, kind)
     if action:
         return CommandResult(output=(
-            "usage: /trust  |  /trust grant hooks|mcp  |  "
-            "/trust revoke hooks|mcp"))
+            "usage: /trust  |  /trust grant hooks|mcp|skills  |  "
+            "/trust revoke hooks|mcp|skills"))
     try:
         from . import workspace_trust
         notices = workspace_trust.pending_notices(ctx.workspace)
@@ -502,7 +502,7 @@ def _trust(ctx, args: str) -> CommandResult:
         body = "\n".join(f"  {n}" for n in notices)
         return CommandResult(output=(
             f"{body}\n"
-            "  /trust grant hooks | /trust grant mcp — only you can, and "
+            "  /trust grant hooks | mcp | skills — only you can, and "
             "only for what is listed above."))
     except Exception as exc:
         return CommandResult(output=f"trust state unavailable ({exc})")
@@ -519,8 +519,10 @@ def _trust_change(ctx, action: str, kind: str) -> CommandResult:
             from . import hooks_editor as editor
         elif kind == "mcp":
             from . import mcp_editor as editor
+        elif kind == "skills":
+            from . import skills as editor
         else:
-            return CommandResult(output="/trust grant|revoke hooks|mcp")
+            return CommandResult(output="/trust grant|revoke hooks|mcp|skills")
     except Exception as exc:
         return CommandResult(output=f"{kind} trust is unavailable here ({exc})")
     try:
@@ -575,6 +577,9 @@ def _tools(ctx, args: str) -> CommandResult:
     /tools is a hand-kept table that has to be edited whenever a tool is
     added; a second copy here would drift the same way.
     """
+    words = args.split()
+    if words and words[0].lower() in ("enable", "groups"):
+        return _tool_groups(ctx, words)
     try:
         from . import api_client as ac
         role = ""
@@ -598,6 +603,10 @@ def _tools(ctx, args: str) -> CommandResult:
                 session_denied=frozenset(
                     getattr(perms, "session_denied_tools", None) or ()),
             ))
+        toolsets = getattr(perms, "toolsets", None)
+        if toolsets is not None:
+            from .toolsets import drop_hidden
+            tools = drop_hidden(tools, toolsets.hidden_groups(role=role))
     except Exception as exc:
         return CommandResult(output=f"tool catalogue unavailable ({exc})")
     query = args.strip().lower()
@@ -614,6 +623,31 @@ def _tools(ctx, args: str) -> CommandResult:
             f"no tool matches {query!r}" if query else "no tools advertised"))
     head = f"{len(rows)} tool(s)" + (f" matching {query!r}" if query else "")
     return CommandResult(output="\n".join([head, *rows]))
+
+
+def _tool_groups(ctx, words: list[str]) -> CommandResult:
+    """``/tools groups`` lists the optional groups; ``/tools enable G``
+    offers group G from the next turn on (never withdrawn again)."""
+    from .toolsets import GROUPS
+    perms = getattr(getattr(ctx, "engine", None), "kit_permissions", None)
+    toolsets = getattr(perms, "toolsets", None)
+    if toolsets is None:
+        return CommandResult(output=(
+            "this backend offers every tool group; nothing to enable"))
+    if words[0].lower() == "enable":
+        group = words[1].lower() if len(words) > 1 else ""
+        if group not in GROUPS:
+            return CommandResult(output=(
+                "usage: /tools enable " + "|".join(GROUPS)))
+        changed = toolsets.enable(group)
+        return CommandResult(output=(
+            f"{group} tools enabled; they are offered from the next turn on"
+            if changed else f"{group} tools are already offered"))
+    decided = toolsets.decided()
+    rows = [f"  {g:<10} " + (f"offered ({decided[g]})" if g in decided
+                             else f"not loaded -- /tools enable {g}")
+            for g in GROUPS]
+    return CommandResult(output="\n".join(["tool groups", *rows]))
 
 
 def _usage(ctx, _args: str) -> CommandResult:
@@ -1883,7 +1917,9 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/mcp", "setup", "Configured MCP servers", _mcp),
         ReplCommand("/trust", "setup", "What this folder offers and withholds",
                     _trust, True),
-        ReplCommand("/tools", "setup", "Tools the model is offered",
+        ReplCommand("/tools", "setup",
+                    "Tools the model is offered; /tools groups, "
+                    "/tools enable chemistry|office",
                     _tools, True),
         ReplCommand("/hooks", "setup", "Hooks registered for this workspace",
                     _hooks),

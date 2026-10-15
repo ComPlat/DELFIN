@@ -424,3 +424,10 @@ def test_the_flag_is_documented_where_the_model_reads_it():
     skill = next(t["function"] for t in _DOC_TOOLS_OPENAI
                  if t["function"]["name"] == "skill")
     assert "delegate" in skill["parameters"]["properties"]
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")
