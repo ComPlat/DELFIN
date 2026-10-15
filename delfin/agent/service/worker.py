@@ -665,6 +665,11 @@ def _agent_class():
                     return TurnResult(error=error)
                 hooks = self.brief_hooks
                 if hooks and not harness:
+                    # The task the session end records (outcome history,
+                    # episode) is what the user typed, not the brief the
+                    # hook puts in front of it.
+                    if not self.first_task:
+                        self.first_task = str(prompt)
                     prompt = hooks[0](prompt)
                 result = super().turn(prompt)
                 error = str(getattr(result, "error", "") or "")
@@ -910,15 +915,19 @@ def _lines(text: str) -> list[str]:
 
 
 def open_real_session(args: argparse.Namespace, workspace: Path):
-    """Engine, banner lines and opening notes -- cmd_chat's steps, in order.
+    """Engine, namespace, banner and opening notes, by ``cmd_chat``'s own
+    set-up (``cli._start_interactive_session``): managed-policy start
+    decision, launch grants, isolation flags, engine, resume/claim,
+    starting posture with the policy's coercion, isolation start check,
+    banner.
 
-    Kept in step with ``cli.cmd_chat``: launch checks, isolation override,
-    engine, resume/claim, approval posture, banner. A launch finding that
-    needs a yes/no is refused here (a worker has nobody to ask yet). What
-    those steps print for the person -- "session not found, starting
-    fresh", a fork, a crash-recovery note, a partial restore, isolation
-    that was asked for and is not available -- is captured and handed to
-    the window instead of a log nobody reads.
+    Differences from ``cmd_chat``, both because a worker has nobody to ask
+    before the window attaches: a launch finding that needs a yes/no
+    refuses the start, and the isolation start check runs with
+    ``can_ask=False``. What the set-up prints for the person -- "session
+    not found, starting fresh", a fork, a crash-recovery note, a partial
+    restore, isolation that was asked for and is not available -- is
+    captured and handed to the window. Raises ``SessionRefused``.
     """
     from .. import cli as _cli
     from .. import launch_guard
@@ -933,48 +942,30 @@ def open_real_session(args: argparse.Namespace, workspace: Path):
         raise SessionRefused(
             "This folder needs a yes/no before an agent may start here:\n"
             + report.render())
-    os.chdir(workspace)
-    # cmd_chat's own steps, by its own helpers: the grants launch_guard
-    # accepted, then the isolation flags (with the line that says so).
-    _cli._apply_launch_grants(ns, report)
     said = io.StringIO()
     with contextlib.redirect_stderr(said):
-        isolation_note = _cli._apply_isolation_flags(ns)
         try:
-            engine = _cli._build_engine(ns)
+            start = _cli._start_interactive_session(ns, report, workspace,
+                                                    can_ask=False)
+        except _cli.InteractiveStartRefused as refused:
+            if refused.code == 3:
+                text = f"The agent engine could not start: {refused.detail}"
+            else:
+                text = (refused.message or said.getvalue().strip()
+                        or "This session is being written by another "
+                           "process; open a copy with --fork-session or "
+                           "start a new one.")
+            raise SessionRefused(text) from None
         except SystemExit as exc:
             raise SessionRefused(said.getvalue().strip() or
                                  f"The agent engine could not start ({exc.code})."
                                  ) from None
-        except Exception as exc:
-            raise SessionRefused(f"The agent engine could not start: {exc}") from None
-        if not _cli._open_session(engine, ns, workspace):
-            raise SessionRefused(said.getvalue().strip() or
-                                 "This session is being written by another "
-                                 "process; open a copy with --fork-session or "
-                                 "start a new one.")
-        persisted, persisted_from = _cli._persisted_default_mode(workspace)
-        posture, why = launch_guard.resolve_posture(
-            flag_mode=ns.permission_mode or "", persisted_mode=persisted,
-            unattended_opt_in=False,
-            settings_path=persisted_from or "~/.delfin/settings.json")
-        try:
-            # The starting rule, not a switch: no turn is running to be told
-            # (cmd_chat's call, with its fallback for an older engine).
-            try:
-                engine.set_kit_permission_mode(posture, announce=False)
-            except TypeError:
-                engine.set_kit_permission_mode(posture)
-        except Exception:
-            pass
-        banner = _cli._startup_banner(engine, report, workspace, why,
-                                      isolation_note,
-                                      tuple(_cli._bounding_notices(ns, engine)))
+        banner = start.banner(ns, report, workspace)
     notices = _lines(said.getvalue())
     launch = report.render()
     if launch:
         notices.append(launch)
-    return engine, ns, banner, notices
+    return start.engine, ns, banner, notices
 
 
 def stored_title(session_id: str) -> str:
@@ -1006,31 +997,18 @@ def initial_title(args: argparse.Namespace, engine) -> str:
     return title
 
 
-def end_real_session(engine, workspace: Path, title: str, *,
-                     learn: bool = True) -> None:
-    """cmd_chat's finally: save, report, learn, index. Never raises."""
+def end_real_session(engine, workspace: Path, title: str, *, agent=None,
+                     t0: float | None = None, learn: bool = True) -> None:
+    """``cmd_chat``'s session end (``cli._finish_interactive_session``):
+    save, then report, skill learning, indexing, cycle outcome, episode
+    and eval loop. ``learn`` False saves only. Never raises."""
     from .. import cli as _cli
 
     try:
-        _cli._save_session(engine, workspace, title=title)
+        _cli._finish_interactive_session(engine, agent, workspace,
+                                         title=title, t0=t0, learn=learn)
     except Exception:
         pass
-    if not learn:
-        return
-    sid = str(getattr(engine, "session_id", "") or "")
-    for step in ("report", "learn", "index"):
-        try:
-            if step == "report":
-                from ..session_report import write_session_report
-                write_session_report(sid)
-            elif step == "learn":
-                from ..session_end import learn_at_session_end
-                learn_at_session_end(_cli._display_messages(engine), session_id=sid)
-            else:
-                from ..session_end import index_at_session_end
-                index_at_session_end(sid)
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1600,6 +1578,7 @@ class Worker:
             except (ValueError, OSError):
                 pass
         code = 0
+        t0 = time.monotonic()
         try:
             code = int(self.agent.run() or 0)
         finally:
@@ -1608,7 +1587,7 @@ class Worker:
                 self.agent.cond.notify_all()
             if self.save:
                 end_real_session(self.engine, self.workspace, self.title,
-                                 learn=not self.fake)
+                                 agent=self.agent, t0=t0, learn=not self.fake)
             # A request being handled right now gets its answer out first.
             if self._handling.acquire(timeout=2.0):
                 self._handling.release()
