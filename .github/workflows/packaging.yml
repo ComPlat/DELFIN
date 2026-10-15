@@ -1,0 +1,75 @@
+name: Packaging
+
+# Builds the sdist and the wheel the way a release would and checks what is
+# inside them (scripts/check_distribution.py): the GPL-3.0 and LGPL-3.0 texts
+# and the PEP 639 licence metadata must be there, and no third-party program,
+# parameter file or native code may be.
+#
+# The published 1.1.8 to 1.1.12 releases carry xtb4stda and stda_v1.6.1
+# (LGPL-3.0, grimme-lab/xtb4stda) because the build selected whatever
+# install_qm_tools.sh had downloaded on the building machine. A CI checkout
+# never has those files, so a check on a clean tree alone would pass on the
+# configuration that shipped them. The job therefore plants stand-ins at the
+# installer's paths first and builds twice: sdist -> wheel (what PyPI gets)
+# and a wheel straight from the tree (what `pip wheel .` gives).
+#
+# Network: PyPI for the pinned build tools only. The build itself runs with
+# --no-isolation against those pins, and SOURCE_DATE_EPOCH is the commit
+# time, so one commit always builds from the same toolchain.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: packaging-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  distribution:
+    name: distribution contents
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install the pinned build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build==1.6.1 setuptools==84.0.0 wheel==0.48.0
+
+      - name: Plant installer output where a release machine would have it
+        run: |
+          mkdir -p delfin/qm_tools/bin delfin/qm_tools/share/xtb4stda delfin/qm_tools/downloads
+          printf '\177ELF\002\001\001stand-in' > delfin/qm_tools/bin/xtb4stda
+          printf '\177ELF\002\001\001stand-in' > delfin/qm_tools/bin/stda_v1.6.1
+          printf 'stand-in' > delfin/qm_tools/share/xtb4stda/.param_stda1.xtb
+          printf 'stand-in' > delfin/qm_tools/share/xtb4stda/.xtb4stdarc
+          printf 'stand-in' > delfin/qm_tools/downloads/xtb4stda
+
+      - name: Build sdist and wheel
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python -m build --no-isolation --outdir dist .
+          python -m build --no-isolation --wheel --outdir dist-direct .
+
+      - name: Check the distributions
+        run: |
+          python scripts/check_distribution.py dist/*.tar.gz dist/*.whl dist-direct/*.whl
+
+      - name: List what was built
+        if: always()
+        run: |
+          ls -l dist dist-direct || true
+          for w in dist/*.whl; do unzip -l "$w" | grep -E 'dist-info/(licenses/|METADATA)' || true; done

@@ -302,11 +302,15 @@ include = ["delfin*"]
     # animations out of the wheel loses the viewer's loading animation with
     # no error anywhere.
     "logo/*.gif",
+    # The installer scripts and notes only. The programs and parameter
+    # files they fetch (xtb4stda, stda, xtb, crest, ...) are third-party
+    # software under their own licences and are downloaded from upstream
+    # by install_qm_tools.sh into qm_tools/bin and qm_tools/share, or
+    # ~/.delfin/qm_tools; qm_runtime searches both. Shipping them would
+    # convey LGPL object code without its licence text and Corresponding
+    # Source. scripts/check_distribution.py fails a build that does.
     "qm_tools/*.txt",
     "qm_tools/*.sh",
-    "qm_tools/bin/stda_v1.6.1",
-    "qm_tools/bin/xtb4stda",
-    "qm_tools/share/xtb4stda/*",
     "csp_tools/*.sh",
     "mlp_tools/*.sh",
     "analysis_tools/*.sh",
@@ -324,14 +328,22 @@ include = ["delfin*"]
 "delfin.manta" = ["*.md"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 
+# Whatever an installer left in the source tree stays out of the wheel even
+# when MANIFEST.in would let it in (MANIFEST.in prunes the same directories
+# for the sdist).
 [tool.setuptools.exclude-package-data]
 "delfin" = [
-    "qm_tools/bin/crest",
-    "qm_tools/bin/dftb+",
-    "qm_tools/bin/std2",
-    "qm_tools/bin/stda",
-    "qm_tools/bin/xtb",
+    "qm_tools/bin/*",
+    "qm_tools/share/*",
+    "qm_tools/share/*/*",
     "qm_tools/downloads/*",
+    "qm_tools/build/*",
+    "qm_tools/third_party/*",
+    "qm_tools/logs/*",
+    "csp_tools/bin/*",
+    "mlp_tools/bin/*",
+    "analysis_tools/bin/*",
+    "ai_tools/bin/*",
 ]
 
 [tool.black]
