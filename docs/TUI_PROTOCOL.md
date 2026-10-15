@@ -294,9 +294,11 @@ closes; the next window attaches to them again.
      "session door", like the tmux and screen sockets, so the command does
      not see the socket at all (`api_client._session_doors`).
   2. **Watch-only.** A connection from a process that looks started by an
-     agent session may watch but not act. That is a descendant of a worker,
-     one that carries `DELFIN_AGENT_SESSION`, or, on Linux, one whose
-     environment cannot be read. `hello` says `mayAct: false`, and the
+     agent session may watch but not act. That is a descendant of a worker
+     (on Linux each worker is a child subreaper, so a process a command
+     detaches stays its descendant while the worker runs), one that carries
+     `DELFIN_AGENT_SESSION`, or, on Linux, one whose environment cannot be
+     read. `hello` says `mayAct: false`, and the
      connection cannot create, prompt, cancel, change modes, answer
      approvals, send messages or stop the service (-32003).
   3. **The gate.** The socket and run files are answer locations for the

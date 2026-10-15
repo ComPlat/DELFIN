@@ -1733,6 +1733,11 @@ def main(argv: list[str] | None = None) -> int:
         notes = guard_process("tui session")
     except SystemExit as exc:
         return refuse(str(exc.code or exc), 2)
+    # Before any child exists: what the session's commands detach stays
+    # below this process (Linux), so the service's ancestry check
+    # (supervisor._from_an_agent) still finds this worker above it.
+    from .subreaper import keep_descendants
+    keep_descendants()
     try:
         if args.fake:
             from .fake_engine import FakeEngine

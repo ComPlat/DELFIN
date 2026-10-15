@@ -21,8 +21,14 @@ shell, and the way Claude Code keeps its background agents.
 * An approval is answered by whichever window answers first; the worker
   refuses a second answer, and every window hears ``permission.resolved``.
 * A process an agent session started (its shell, a background job, a
-  child of those) may watch but never act: it cannot answer approvals,
+  child of those) is answered watch-only: it cannot answer approvals,
   send prompts or end sessions through this socket (``_from_an_agent``).
+  It is recognised by ancestry (each worker is a subreaper on Linux, so
+  a detached process stays below its worker while the worker runs) or by
+  the agent marker in its environment. A process that has left both --
+  its worker ended, or it started outside the worker's tree and dropped
+  the marker -- is not recognised; on hosts where the cage masks the
+  socket (bubblewrap, the socket guard, Seatbelt) it cannot connect.
 
 The service ends when ``delfin-agent service stop`` says so, on SIGTERM, on
 an emergency stop (``stop_all``), and on its own after ``--idle-exit``
@@ -787,10 +793,16 @@ class Supervisor:
         unreadable is not a window).
 
         Best effort by nature: a process of the same user can hide where it
-        came from. What keeps an agent's commands away from this socket is
-        the cage they run in: the bubblewrap process cage, the socket guard
-        or Seatbelt mask the socket's directory as a "session door"
-        (api_client._session_doors), like the tmux and screen sockets."""
+        came from. Each worker is a child subreaper on Linux
+        (``subreaper.keep_descendants``), so a process an agent command
+        detaches (``setsid -f``, a double fork) is re-parented to the
+        worker and the walk below still finds it while that worker runs;
+        on other platforms, or once the worker has ended, such a process
+        with the marker removed is answered as a window. What keeps an
+        agent's commands away from this socket is the cage they run in:
+        the bubblewrap process cage, the socket guard or Seatbelt mask the
+        socket's directory as a "session door" (api_client._session_doors),
+        like the tmux and screen sockets."""
         if pid <= 0:
             return True                       # who it is cannot be told: watch only
         workers = {s.proc.pid for s in [*self.sessions.values(), *self.starting]}

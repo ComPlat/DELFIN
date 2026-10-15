@@ -83,7 +83,10 @@ why it could not be closed here.
 ## Known limits
 
 10. Same user, no cage: an agent's own process can connect to the service;
-    it is told apart by process ancestry and may only watch.
+    it is told apart by process ancestry (workers are subreapers on Linux)
+    or its environment marker and is answered watch-only. One that leaves
+    both -- its worker ended, or it scrubbed the marker outside a worker's
+    tree, or on a platform without a subreaper -- is not told apart.
 11. Notifications are the terminal title and the hints line (◉): OpenTUI
     offers no bell or OSC 9 here.
 12. `NO_COLOR`: everything visible is in the terminal's own colours; OpenTUI
