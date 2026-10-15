@@ -2,10 +2,12 @@
  * The window: one session in view, its scrollback, and the footer.
  *
  * Keys go to the agent view while it is open (its arrows and ctrl keys;
- * letters are a new session's prompt), else to the open question (it
- * holds the turn; approval.tsx), then to the composer (completion,
- * history, search), then to the keymap's actions. ctrl+c and ctrl+d work
- * in all of them. Leaving the window (ctrl+d, or ctrl+c twice) never ends
+ * letters are a new session's prompt). With a question open the prompt
+ * keeps the keys: the question takes its own keys from an empty prompt
+ * (approval.tsx), everything else is typing, and a line sent is the
+ * question's typed answer -- or, for an approval, a message; the window's
+ * other actions wait. Else the composer (completion, history, search),
+ * then the keymap's actions. ctrl+c and ctrl+d work in all of them. Leaving the window (ctrl+d, or ctrl+c twice) never ends
  * a session: it keeps running in the agent service, and the next window
  * attaches to it again.
  */
@@ -13,7 +15,7 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf } from "./commands"
+import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf, shellLead } from "./commands"
 import type { ArgumentChoices } from "./composer/complete"
 import { CLICK_PAUSE_MS } from "./mouse"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
@@ -323,6 +325,26 @@ export function App(props: AppProps): JSX.Element {
     return result !== undefined
   }
 
+  /** A line from the prompt: with a question of the session in view open,
+   *  its typed answer (or the reason of N) -- an approval never takes a
+   *  line, which then goes out as a message, as it would during the turn.
+   *  A shell line ("!") is a command, never an answer. */
+  const sendTyped = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
+    const asked = agents.state.open ? undefined : session()?.pending[0]
+    if (asked && !how && shellLead(text) < 0) {
+      const took = approval.submitText(asked, text)
+      if (took === "reflex") {
+        say("sent as the question opened: not taken as its answer -- enter again to answer with it")
+        return false                       // the line comes back into the prompt
+      }
+      if (took === "sent") {
+        typingAt = 0
+        return true
+      }
+    }
+    return send(text, how, shown)
+  }
+
   // The agent view is made after the composer: read through this, set
   // once it exists (a "!" in its prompt is a name, an answer or a message).
   let viewOpen = () => false
@@ -333,7 +355,7 @@ export function App(props: AppProps): JSX.Element {
     history: props.history ?? new History(),
     keymap: props.keymap,
     say,
-    send,
+    send: sendTyped,
     argumentChoices: (command) => argumentChoices(command),
     clickPauseMs: props.clickPauseMs,
   })
@@ -663,8 +685,14 @@ export function App(props: AppProps): JSX.Element {
 
   const reply = async (asked: Asked, params: Record<string, unknown>): Promise<boolean> => {
     const result = await call("permission.reply", { sessionId: sid(), requestId: asked.requestId, ...params })
+    const typed = typeof params.text === "string" ? params.text : null
     if (result && result.applied === false) say("that question had already been answered elsewhere")
-    else if (result?.message && /once|persist|stop asking|readable|reject/.test(result.message)) say(result.message)
+    else if (typed !== null && result?.message === "dismissed") {
+      // A service from before typed answers reads the line as esc: the
+      // question is dismissed, and the line goes out as a message.
+      say("this agent service takes no typed answer: the question was dismissed, the line is sent as a message")
+      void deliver(typed)
+    } else if (result?.message && /once|persist|stop asking|readable|reject/.test(result.message)) say(result.message)
     return result !== undefined
   }
   // When the user last typed into the prompt -- and has not sent it: a
@@ -792,8 +820,9 @@ export function App(props: AppProps): JSX.Element {
         }
       }
     }
-    if (!asked && key.sequence && key.sequence.length >= 1 && !key.ctrl && !key.meta
-        && !km.matches("submit", key) && key.name !== "escape") typingAt = Date.now()
+    const typing = key.sequence && key.sequence.length >= 1 && !key.ctrl && !key.meta
+      && !km.matches("submit", key) && key.name !== "escape"
+    if (!asked && typing) typingAt = Date.now()
     if (agents.state.open) {
       // The view has the footer: its keys first, then the composer
       // (letters are a new session's prompt). A question of the session
@@ -834,16 +863,18 @@ export function App(props: AppProps): JSX.Element {
       return
     }
     if (asked) {
-      key.preventDefault()
-      picker.close()                       // the question holds the turn: it has the keys
-      // ctrl+d leaves the window; the question stays open for any window.
-      if (km.matches("quit", key)) {
+      picker.close()                       // the question holds the turn: no picker beside it
+      // ctrl+d on an empty prompt leaves the window; the question stays
+      // open for any window.
+      if (km.matches("quit", key) && !draft()) {
+        key.preventDefault()
         props.onQuit()
         return
       }
       // ctrl+o: the whole preview, into the scrollback (the panel shows 24
       // lines, fewer on a short terminal).
       if (km.matches("details", key) || km.matches("expand", key)) {
+        key.preventDefault()
         const what = asked.kind === "plan" ? "the plan" : asked.kind === "ask" ? "the question" : `${asked.tool}, in full`
         const body = asked.kind === "ask"
           ? [String(asked.question ?? ""), ...(asked.choices ?? []).map((c, i) => `${i + 1}. ${c}`)]
@@ -851,7 +882,21 @@ export function App(props: AppProps): JSX.Element {
         props.onLines?.(what, body)
         return
       }
-      approval.handleKey(asked, key)
+      // The prompt keeps the keys: the question's own from an empty prompt
+      // are its answer; the rest is typing (approval.tsx).
+      if (approval.handleKey(asked, key, !draft() && !composer.search())) {
+        key.preventDefault()
+        return
+      }
+      if (typing) typingAt = Date.now()
+      if (composer.handleKey(key)) {
+        key.preventDefault()
+        return
+      }
+      // The window's own actions wait for the answer: esc never ends the
+      // turn behind a question, shift+tab never moves the posture under it.
+      if ((["interrupt", "steer", "cycleMode", "palette", "redraw", "tasks"] as const)
+        .some((action) => km.matches(action, key))) key.preventDefault()
       return
     }
     if (picker.state.open) {

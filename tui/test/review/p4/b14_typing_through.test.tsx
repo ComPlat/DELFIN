@@ -1,9 +1,10 @@
 /**
- * B14: a question that opens while a message is being typed. Keys in a
- * burst are swallowed (and said once), but the first option key after any
- * ordinary pause in the typing (a breath between words, > 350 ms) answers
- * the question: here "and" -> [a] abort (refuse and end the turn). The
- * rest of the message goes nowhere.
+ * B14: a question that opens while a message is being typed. Found when
+ * keys in a burst were swallowed and the first option key after an
+ * ordinary pause in the typing (a breath between words, > 350 ms) answered
+ * the question: "and" -> [a] abort. Now the prompt keeps the keys: the
+ * message goes on into the prompt, and an option key answers only from an
+ * empty prompt.
  */
 import { afterEach, expect, test } from "bun:test"
 import { FIXTURE, mount } from "./h"
@@ -36,6 +37,7 @@ test("typing a message, a pause between words, then 'and'", async () => {
   console.log("replies:", JSON.stringify(w.replies()))
   console.log(w.footer().filter((l) => l.trim()).slice(0, 2).join("\n"))
   expect(w.replies()).toEqual([])
+  expect(w.footer().join("\n")).toContain("❯ please rerun the parser tests and check the energy")
 }, 20000)
 
 test("typing a message into a question that has been open a while answers nothing", async () => {
@@ -48,9 +50,11 @@ test("typing a message into a question that has been open a while answers nothin
   await w.keys.typeText("bash again")                    // ... and the user types a message anyway
   await w.settle()
   expect(w.replies()).toEqual([])
-  expect(w.footer().join("\n")).toContain("were not taken as answers")
+  expect(w.footer().join("\n")).toContain("❯ bash again")  // into the prompt, which keeps the keys
+  for (let i = 0; i < "bash again".length; i++) w.keys.pressBackspace()
+  await w.settle()
   await Bun.sleep(1100)
-  w.keys.pressKey("y")                                   // after a pause: a deliberate answer
+  w.keys.pressKey("y")                                   // an empty prompt, after a pause: a deliberate answer
   await w.settle()
   expect(w.replies()).toEqual([{ sessionId: "s1", requestId: "c1", choice: "y" }])
 })

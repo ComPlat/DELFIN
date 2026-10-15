@@ -1,23 +1,35 @@
 /**
  * The open question, in the footer, and the keys that answer it.
  *
+ * The prompt keeps the keys while a question is open (app.tsx): the panel
+ * takes a key only from an empty prompt, and only one of its own; any
+ * other key is typing, into the prompt.
+ *
  *   confirm   the REPL's keys, exactly the ones the session offers:
  *             y yes · n no · A always this command · k always commands like
  *             this · R always read here · e stop asking about writes ·
  *             a abort · ? explain;   esc = n, as in the REPL;
- *             N = no, and say why (the reason goes to the model)
+ *             N = no, and say why: the reason is typed in the prompt, and
+ *             enter refuses with it (the reason goes to the model)
  *   plan      d approve → default · e approve → acceptEdits · n reject
  *             (N: reject and say why)
- *   ask       1-9 pick (several: toggle, enter sends) · esc dismisses
+ *   ask       1-9 pick · ↑ ↓ the highlight · enter takes it (several:
+ *             1-9 or space toggle, enter sends) · esc dismisses · a line
+ *             typed in the prompt and sent with enter is the answer
+ *             (permission.reply `text`)
+ *
+ * A line typed in the prompt is never an approval: with a confirm or a
+ * plan open, enter sends it as a message (app.tsx), except as the reason
+ * of N.
  *
  * A and k save a rule that is global and permanent: a second step shows
  * the rule and its reach, and only y saves it (n or esc approve once).
  *
  * Every piece of state belongs to one request (by its id): picks, the
- * second step and a half-typed reason never carry over to the next
- * question. Keys typed in a burst when a question opens (the end of a
- * message being typed) are not taken as answers: an answer is a key after
- * a pause.
+ * highlight and the second step never carry over to the next question.
+ * Keys typed in a burst when a question opens (the end of a message being
+ * typed) are not taken as answers: an answer is a key after a pause, on
+ * an empty prompt. A letter typed that soon goes on into the prompt.
  *
  * The panel is built as a list of lines that each fit the width, so the
  * footer knows exactly how many rows it takes (`approvalLines`).
@@ -56,7 +68,8 @@ export interface ApprovalState {
   mode: "options" | "help" | "persist" | "reason"
   choice: string           // the key the second step is for (A, k, n)
   picked: number[]         // a multi-select question's picks (1-based)
-  reason: string
+  /** The question's highlighted choice (0-based): enter takes it. */
+  highlight: number
   openedAt: number
   lastKeyAt: number
   swallowed: boolean
@@ -71,7 +84,7 @@ export interface ApprovalState {
 }
 
 function fresh(requestId: string, now: number, burst = false, lastKeyAt = 0): ApprovalState {
-  return { requestId, mode: "options", choice: "", picked: [], reason: "", openedAt: now,
+  return { requestId, mode: "options", choice: "", picked: [], highlight: 0, openedAt: now,
            lastKeyAt, swallowed: false, sent: false, burst, shownAt: now }
 }
 
@@ -146,19 +159,23 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
       const on = ui?.requestId === asked.requestId && ui.picked.includes(n)
       const mark = asked.multiSelect ? (on ? "[x] " : "[ ] ") : ""
       const detail = asked.choiceDetails?.[i] ? `  ${asked.choiceDetails[i]}` : ""
-      const head = `  ${n}. ${mark}`
+      // The highlight: "›" where the row has a blank, so the width is the same.
+      const lit = (mine?.highlight ?? 0) === i
+      const head = `${lit ? "›" : " "} ${n}. ${mark}`
       lines.push([{ text: head, tone: "key", bold: true, act: String(n) },
-                  { text: fit(choice + detail, Math.max(1, max - width(head))), tone: on ? "bright" : "text",
+                  { text: fit(choice + detail, Math.max(1, max - width(head))), tone: on || lit ? "bright" : "text",
                     act: String(n) }])
     })
+    const typed: Span = { text: "or type an answer below", tone: "faint" }
     const keys: Span[] = asked.multiSelect
-      ? [{ text: "[1-9] pick  ", tone: "key", bold: true },
+      ? [{ text: "[1-9] [space] pick  ", tone: "key", bold: true },
          { text: "[enter] send  ", tone: "key", bold: true, act: "return" },
-         { text: "[esc] dismiss", tone: "key", bold: true, act: "escape" }]
+         { text: "[esc] dismiss  ", tone: "key", bold: true, act: "escape" }, typed]
       : choices.length
         ? [{ text: "[1-9] answer  ", tone: "key", bold: true },
-           { text: "[esc] dismiss", tone: "key", bold: true, act: "escape" }]
-        : [{ text: "[enter] or [esc] dismiss", tone: "key", bold: true, act: "escape" }]
+           { text: "[↑↓ enter] pick  ", tone: "key", bold: true },
+           { text: "[esc] dismiss  ", tone: "key", bold: true, act: "escape" }, typed]
+        : [{ text: "[enter] or [esc] dismiss  ", tone: "key", bold: true, act: "escape" }, typed]
     lines.push(...flow(keys, max))
     return lines
   }
@@ -190,22 +207,20 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
         lines.push([{ text: row, tone: "muted" }])
       }
     }
-    lines.push([{ text: "any key: back", tone: "faint", act: "back" }])
+    lines.push([{ text: "[esc] back", tone: "faint", act: "back" }])
     return lines
   }
   lines.push(...previewLines(asked, max, previewRows))
   if (mine?.burst && mine.swallowed) {
-    lines.push([{ text: fit("keys typed as it opened were not taken as answers — answer when you are ready", max),
+    lines.push([{ text: fit("keys typed as it opened were not taken as answers — answer on an empty prompt", max),
                   tone: "warn" }])
   }
   if (mode === "reason") {
-    const reason = ui!.reason
-    const room = Math.max(4, max - 11)
-    // The end of what is typed stays in view (the cursor is there).
-    const shownReason = width(reason) <= room ? reason : "…" + [...reason].slice(-(room - 1)).join("")
-    lines.push([{ text: asked.kind === "plan" ? "why not? " : "why? ", tone: "warn", bold: true },
-                { text: shownReason + "▏", tone: "bright" }])
-    lines.push([{ text: fit("enter refuses with this reason · esc back", max), tone: "faint" }])
+    // The reason is typed in the prompt below (it keeps the keys).
+    const head = asked.kind === "plan" ? "why not? " : "why? "
+    lines.push([{ text: head, tone: "warn", bold: true },
+                { text: fit("type the reason in the prompt below", Math.max(1, max - width(head))), tone: "bright" }])
+    lines.push([{ text: fit("enter refuses with it · esc on an empty prompt: back", max), tone: "faint" }])
     return lines
   }
   const keys: Span[] = asked.options.map((o) => ({ text: `[${o.key}] ${o.label}   `, tone: "key" as Tone, bold: true,
@@ -248,8 +263,17 @@ export interface ApprovalDeps {
 
 export interface ApprovalUi {
   state: ApprovalState
-  /** A key while `asked` is open; true when it was used (or swallowed). */
-  handleKey(asked: Asked, key: KeyEvent): boolean
+  /** A key while `asked` is open and the prompt keeps the keys; `empty`:
+   *  nothing is typed in the prompt. True when the panel took it (an
+   *  answer, a second step, the highlight, or a key dropped as a reflex);
+   *  false when it is the prompt's -- it then counts as typing, so a key
+   *  of the panel's right after it is not an answer either. */
+  handleKey(asked: Asked, key: KeyEvent, empty?: boolean): boolean
+  /** A line sent from the prompt while `asked` is open: "sent" when it is
+   *  the answer (a question's typed answer, the reason of N); "reflex"
+   *  when it came as the question opened (not an answer: the line stays);
+   *  "no" when it answers nothing here (an approval: it is a message). */
+  submitText(asked: Asked, text: string): "sent" | "reflex" | "no"
   /** A click on a span of the panel (its `act`), as the key it stands
    *  for; false when it was not taken (too soon after the panel changed,
    *  answered already, nothing to do). */
@@ -265,10 +289,31 @@ function keyChar(key: KeyEvent): string {
 /** A key held with ctrl, alt or super is never an answer: ctrl+y is not y
  *  (the REPL reads the byte, and \x19 is no option) -- or the editing keys
  *  a hand presses out of habit (ctrl+a, ctrl+e) would abort a turn or turn
- *  write approvals off. */
+ *  write approvals off. They are the prompt's (its editing keys). */
 function modified(key: KeyEvent): boolean {
   const k = key as KeyEvent & { super?: boolean; hyper?: boolean }
   return Boolean(k.ctrl || k.meta || k.option || k.super || k.hyper)
+}
+
+/** The keys the panel takes from an empty prompt in its present mode;
+ *  every other key is typing. */
+function panelKey(asked: Asked, mode: ApprovalState["mode"], char: string, name: string): boolean {
+  if (asked.kind === "ask") {
+    return /^[1-9]$/.test(char) || name === "up" || name === "down" || name === "return" || name === "escape"
+      || (Boolean(asked.multiSelect) && name === "space")
+  }
+  switch (mode) {
+    case "help":
+      return name === "escape" || name === "return" || char === "?" || offers(asked, char)
+    case "persist":
+      return char === "y" || char === "n" || name === "escape"
+    case "reason":
+      // The reason is typed in the prompt; from an empty prompt enter
+      // refuses without one, esc goes back to the options.
+      return name === "escape" || name === "return"
+    default:
+      return name === "escape" || offers(asked, char) || (char === "N" && offers(asked, "n"))
+  }
 }
 
 export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
@@ -292,18 +337,27 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
   }
 
   const answer = (asked: Asked, params: Record<string, unknown>) => {
-    setState({ mode: "options", choice: "", reason: "", sent: true })
+    setState({ mode: "options", choice: "", sent: true })
     void Promise.resolve(deps.reply(asked, params)).then((ok) => {
       // Not delivered: the question is the user's to answer again.
       if (ok === false && state.requestId === asked.requestId) setState({ sent: false })
     })
   }
 
-  const handleKey = (asked: Asked, key: KeyEvent): boolean => {
+  const handleKey = (asked: Asked, key: KeyEvent, empty = true): boolean => {
     sync(asked)
-    if (state.sent) return true                    // answered: nothing more to say
-    if (modified(key)) return true
+    if (modified(key)) return false               // the prompt's editing keys; never typing either
     const t = now()
+    const char = keyChar(key)
+    const own = empty && panelKey(asked, state.mode, char, key.name)
+    // Answered, waiting for the session to settle it: its keys again (a
+    // key pressed twice) are dropped, not typed into the prompt.
+    if (state.sent && own) return true
+    if (!own || state.sent) {
+      // Typing: the panel's keys right after it are its rest, not answers.
+      setState({ lastKeyAt: t, ...(pause > 0 ? { burst: true } : {}) })
+      return false
+    }
     const quiet = t - state.lastKeyAt
     setState({ lastKeyAt: t })
     if (pause > 0 && state.mode !== "reason") {
@@ -311,25 +365,32 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       const typeahead = state.burst ? quiet < QUIET_MS : t - state.openedAt < pause
       if (typeahead) {
         setState({ burst: true, swallowed: true })
-        return true
+        // A letter goes on into the prompt; enter, esc and the arrows are dropped.
+        const printable = Boolean(key.sequence) && key.sequence!.length === 1 && key.sequence! > " "
+        return !printable
       }
       if (state.burst) setState({ burst: false })
     }
-    const char = keyChar(key)
-    // A letter the question does not take means the user is typing (a
-    // message, not an answer): the rest of that typing is not an answer
-    // either, until it stops.
-    const printable = Boolean(key.sequence) && key.sequence!.length === 1 && key.sequence! > " "
-    const takes = asked.kind === "ask" ? /^[1-9]$/.test(char) : offers(asked, char) || char === "N" && offers(asked, "n")
-    if (pause > 0 && printable && !takes && state.mode !== "reason") {
-      setState({ burst: true, swallowed: true })
-      return true
+    return act(asked, char, key.name)
+  }
+
+  const submitText = (asked: Asked, text: string): "sent" | "reflex" | "no" => {
+    sync(asked)
+    if (state.sent || state.requestId !== asked.requestId) return "no"
+    if (asked.kind === "ask") {
+      // Enter at once as the question opened was meant for the prompt.
+      if (pause > 0 && now() - state.openedAt < pause) return "reflex"
+      answer(asked, { text })
+      return "sent"
     }
-    return act(asked, char, key.name, key)
+    // An approval takes typed text only as the reason of N: a refusal.
+    if (state.mode !== "reason") return "no"
+    answer(asked, { choice: "n", reason: text.trim() })
+    return "sent"
   }
 
   /** What a key (or a click, as its key) does once it is an answer. */
-  const act = (asked: Asked, char: string, name: string, key?: KeyEvent): boolean => {
+  const act = (asked: Asked, char: string, name: string): boolean => {
     if (asked.kind === "ask") return askKey(asked, name, char)
     switch (state.mode) {
       case "help":
@@ -340,14 +401,8 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
         else if (char === "n" || name === "escape") answer(asked, { choice: state.choice, persist: false })
         return true
       case "reason":
-        if (name === "escape") setState({ mode: "options", reason: "" })
-        else if (name === "return") answer(asked, { choice: "n", reason: state.reason.trim() })
-        else if (!key) return true
-        else if (name === "backspace") setState({ reason: state.reason.slice(0, -1) })
-        else if (name === "space") setState({ reason: state.reason + " " })
-        else if (!key.ctrl && !key.meta && key.sequence && key.sequence.length >= 1 && !/[\x00-\x1f\x7f]/.test(key.sequence)) {
-          setState({ reason: state.reason + key.sequence })
-        }
+        if (name === "escape") setState({ mode: "options" })
+        else if (name === "return") answer(asked, { choice: "n", reason: "" })
         return true
     }
     if (name === "escape") {
@@ -356,7 +411,7 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       return true
     }
     if (char === "N" && offers(asked, "n")) {
-      setState({ mode: "reason", reason: "", choice: "n" })
+      setState({ mode: "reason", choice: "n" })
       return true
     }
     if (char === "?" && offers(asked, "?")) {
@@ -393,24 +448,35 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       answer(asked, { answers: [] })
       return true
     }
+    if ((name === "up" || name === "down") && choices.length) {
+      const n = choices.length
+      setState({ highlight: (state.highlight + (name === "up" ? n - 1 : 1)) % n })
+      return true
+    }
+    const toggle = (n: number) =>
+      setState({ picked: state.picked.includes(n) ? state.picked.filter((x) => x !== n) : [...state.picked, n].sort() })
     const n = Number(char)
     if (Number.isInteger(n) && n >= 1 && n <= choices.length) {
       if (!asked.multiSelect) {
         answer(asked, { answers: [choices[n - 1]] })
         return true
       }
-      const picked = state.picked.includes(n) ? state.picked.filter((x) => x !== n) : [...state.picked, n].sort()
-      setState({ picked })
+      toggle(n)
       return true
     }
-    if (asked.multiSelect && name === "return") {
-      answer(asked, { answers: state.picked.map((i) => choices[i - 1]) })
+    if (asked.multiSelect && name === "space" && choices.length) {
+      toggle(Math.min(state.highlight, choices.length - 1) + 1)
+      return true
+    }
+    if (name === "return") {
+      if (asked.multiSelect) answer(asked, { answers: state.picked.map((i) => choices[i - 1]) })
+      else answer(asked, { answers: [choices[Math.min(state.highlight, choices.length - 1)]] })
       return true
     }
     return true
   }
 
-  return { state, handleKey, click, sync }
+  return { state, handleKey, submitText, click, sync }
 }
 
 // -- drawing -------------------------------------------------------------------------

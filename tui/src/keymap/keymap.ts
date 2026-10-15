@@ -157,8 +157,8 @@ export class Keymap {
  *  in its order, then the keys only the TUI has. A row names an action
  *  (its keys come from the keymap, so a rebinding shows) or a fixed key. */
 export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }[] = [
-  { action: "interrupt", does: "End this turn. A running tool call finishes first. With a question open: refuse it, as n does." },
-  { action: "submit", does: "Send what you typed; during a turn it is queued and goes out when the turn ends." },
+  { action: "interrupt", does: "End this turn. A running tool call finishes first. With a question open, on an empty prompt: refuse it, as n does (a question: dismiss it)." },
+  { action: "submit", does: "Send what you typed; during a turn it is queued and goes out when the turn ends. With a question open: the line is its answer (an approval: a message)." },
   { action: "steer", does: "Send what you typed INTO the running turn; the model reads it on its next round." },
   { action: "cycleMode", does: "Next approval posture: default, accept edits, plan, bypass (bypass only where policy and isolation allow it; its first time asks for y)." },
   { action: "details", does: "Show or hide the tool calls' details: what each printed, an edit's diff. Full screen: a click on one shows just its own. Under GNU screen, inline: the last result in full." },
@@ -174,7 +174,8 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "newline", does: "A new line in the prompt (so does a trailing \\ before enter)." },
   { action: "palette", does: "The command palette: commands, and pickers for model, posture, effort, mode, resume." },
   { keys: "ctrl+c", does: "End the turn; else clear what is typed; else, twice, leave the window." },
-  { keys: "y n A k R e a ?", does: "With a question open: the answers the session offers (? explains each). N refuses with a reason." },
+  { keys: "y n A k R e a ?", does: "With a question open, on an empty prompt: the answers the session offers (? explains each). N refuses with a reason, typed in the prompt. Typing goes into the prompt." },
+  { keys: "1-9 ↑ ↓ enter", does: "With a question of choices open, on an empty prompt: pick one, or move to one and take it (several: space or 1-9 toggle, enter sends)." },
   { action: "agents", does: "On an empty prompt: the agent view -- every session, grouped by what it needs." },
   { action: "agentsOpen", does: "In the agent view: open the selected session in this window (alt+1..9: the n-th)." },
   { action: "agentsPeek", does: "In the agent view: peek at the selected session; type and enter to reply to it." },

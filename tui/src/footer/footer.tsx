@@ -9,7 +9,8 @@
  *   tasks     the session's task list while a task is open (tasks.tsx)
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above);
- *             "!" in front: a shell line, said on the box's top border
+ *             "!" in front: a shell line, said on the box's top border.
+ *             It keeps the keys while a question is open (app.tsx).
  *   hints     posture · model · keys; at its right, quietly, what needs
  *             the user (◉ 3 · ✗ 1), or for a moment what just arrived
  *
@@ -297,6 +298,14 @@ export function Footer(props: FooterProps): JSX.Element {
     if (props.composer.shell()) {
       return props.session()?.turn ? "a shell command… (runs when the turn ends)" : "a shell command…"
     }
+    // A question open: the prompt keeps the keys (app.tsx), and says what
+    // a line does here.
+    const a = asked()
+    if (a?.kind === "ask") return "type your own answer… (or pick above)"
+    if (a && props.approval.state.mode === "reason" && props.approval.state.requestId === a.requestId) {
+      return "the reason… (enter refuses with it)"
+    }
+    if (a) return "a message… (the keys above answer on an empty prompt)"
     return props.starting?.() ? "starting the session…"
       : props.session()?.turn
       ? `queue a message… (${props.keymap.label("steer")} sends it into the turn)` : "ask DELFIN…"
@@ -373,8 +382,8 @@ export function Footer(props: FooterProps): JSX.Element {
           const look = postureLook(viewOpen() ? "" : props.session()?.approval ?? "", t())
           return look.marked ? look.color : t().accent
         }}
-        focused={() => props.focused() && (viewOpen() || !asked())}
-        pasteActive={() => props.focused() && (viewOpen() || !asked())}
+        focused={props.focused}
+        pasteActive={props.focused}
         placeholder={placeholder}
       />
       <text flexShrink={0} fg={ruleTone()} wrapMode="none">{rule()}</text>
