@@ -233,11 +233,18 @@ _GATE_BUDGET_S = 10.0
 #
 # Not marked xfail, which would be a claim about how they end. They are held
 # out until somebody fixes them; then deleting a line here is the whole
-# change, and the gate (two builds per entry) grows from about 56 s to
-# about 72 s at the 2026-10-15 figures.
+# change, and the gate (two builds per entry) grows from about 39 s to
+# about 56 s at the 2026-10-15 figures.
 _GATE_HELD_BACK = {
     "Fe(H2O)7 CN=7 homoleptic",
     "Zr(H2O)8 CN=8 homoleptic",
+}
+
+# Within the 10 s rule at the 2026-10-15 figure (8.4 s) and kept out anyway:
+# the gate set measures 39.0 s without it against a 45 s budget, and 55.8 s
+# with it. Promoting it is a change of the gate set, not of its cost table.
+_GATE_NO_BUDGET_ROOM = {
+    "Co(en)2Cl2 bidentate",
 }
 
 
@@ -248,7 +255,7 @@ def _in_gate(entry) -> bool:
     the safe direction: the cost of being wrong here is a slower merge gate
     for everyone.
     """
-    if entry["name"] in _GATE_HELD_BACK:
+    if entry["name"] in _GATE_HELD_BACK or entry["name"] in _GATE_NO_BUDGET_ROOM:
         return False
     return _BUILD_SECONDS.get(entry["name"], float("inf")) <= _GATE_BUDGET_S
 
@@ -392,8 +399,8 @@ def test_the_gate_actually_gets_some_of_this_suite():
 
 def test_the_gate_set_stays_within_its_budget():
     """Two builds per entry: one shared by the read-only tests, one more for
-    the determinism comparison. 55.8 s for the current set at the
-    2026-10-15 figures (Fe(CO)3(NHC)2 x 3 and Co(en)2Cl2); the 8.3 s this
+    the determinism comparison. 39.0 s for the current set at the
+    2026-10-15 figures (the three Fe(CO)3(NHC)2 variants); the 8.3 s this
     once said came from build times recorded 5-6x too low."""
     total = 2 * sum(_BUILD_SECONDS[e["name"]] for e in USER_SMILES if _in_gate(e))
 
