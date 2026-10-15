@@ -11211,17 +11211,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "description": (
                 "Plot into the workspace and show it in the chat. spec: "
                 "{kind: line|scatter|bar|histogram|box|energy_profile, x, y, "
-                "title, format: svg|png (energy_profile: png), filename, "
-                "...}. energy_profile is "
-                "THE reaction energy diagram (PES/HPES) -- never script "
-                "one: series [{label, x: state names, y: kcal/mol OR "
-                "files: ORCA outputs (a list = fragments summed, e.g. "
-                "[[cat.out, co2.out], catco2.out]); null = uncomputed TS}] "
-                "-- from files it converts, checks mass balance and TS "
-                "modes itself (same name = same column), or the user's "
-                "Index;deltaG csv as data {file}. label/ylabel/units only "
-                "as the user gave them; never invent names or change "
-                "units."
+                "title, ...}. energy_profile: the reaction energy diagram, "
+                "never script one; series [{label, x: states, y, or files: "
+                "ORCA outputs, [a.out, b.out] = one state}], null = "
+                "uncomputed TS."
             ),
             "parameters": {
                 "type": "object",

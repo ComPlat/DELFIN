@@ -216,7 +216,17 @@ _BASELINE_TOKENS = 11_422
 # shorter spelling; measured +5 tokens, so the budget moves
 # 10_173 -> 10_178. The preset's prompt and description are not in the
 # schema and cost nothing here.
-_TOKEN_BUDGET = 10_178
+# 2026-10-15: make_plot kind energy_profile, the group's reaction energy
+# diagram drawn from values or ORCA outputs (converted, mass balance and
+# TS modes checked by the tool). It arrived at +129 tokens. Trimmed first
+# -- format dropped (PNG is the kind's default), the labelling rules moved
+# to the energy-profile skill -- which leaves +44: the kind's name, that
+# `files` replaces `y`, that a nested list is ONE state of fragments, and
+# null for an uncomputed TS. Live runs measured each: without `files` in
+# the schema the model grepped the outputs and did the Hartree arithmetic
+# itself; without the never-script clause it wrote its own matplotlib.
+# The budget moves 10_178 -> 10_222.
+_TOKEN_BUDGET = 10_222
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

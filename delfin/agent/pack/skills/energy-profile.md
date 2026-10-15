@@ -13,7 +13,7 @@ restyle it. Your job is the chemistry and the numbers.
 - **The user gives them** (in the chat, or their `Index;deltaG` CSV):
   draw them as given -- `y` values, or `"data": {"file": "<name>.csv"}`.
 - **You collect them from calculations**: find the ORCA outputs
-  (`search_calcs`, `ls`, `read_file`) and pass the PATHS as `files` -- the
+  (`search_calcs`, `list_files`, `read_file`) and pass the PATHS as `files` -- the
   tool reads the energies with DELFIN's parser and converts them itself. Do
   not read the numbers out and do the Hartree arithmetic yourself; one
   wrong digit gives a plausible wrong profile.
