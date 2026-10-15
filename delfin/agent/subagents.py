@@ -2772,6 +2772,18 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
     # depth cap is hit (anti-recursion). Falls back gracefully if the perms
     # type predates the field.
     depth = int(getattr(parent_perms, "subagent_depth", 0)) + 1
+    # The subagents of one session share one swarm store: the parent's run
+    # id, or one named after its session at the first delegation. The
+    # clone below copies it to the child.
+    try:
+        from .swarm_memory import ENV_RUN, current_run_id
+        if not current_run_id(parent_perms) and not os.environ.get(ENV_RUN):
+            sid = str(getattr(parent_perms, "task_session_id", "") or "")
+            parent_perms.swarm_run_id = "s-" + (
+                "".join(c for c in sid if c.isalnum() or c in "-_")[:40]
+                or __import__("uuid").uuid4().hex[:12])
+    except Exception:
+        pass
     # Computed before the replace attempts so both of them can apply it: a
     # fallback that quietly dropped the narrowing would hand the child the
     # parent's full tool surface, which is the one direction this must never

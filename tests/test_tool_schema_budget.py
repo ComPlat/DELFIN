@@ -216,7 +216,16 @@ _BASELINE_TOKENS = 11_422
 # shorter spelling; measured +5 tokens, so the budget moves
 # 10_173 -> 10_178. The preset's prompt and description are not in the
 # schema and cost nothing here.
-_TOKEN_BUDGET = 10_178
+# 2026-10-15: the layered memory. remember takes two more kinds, lesson
+# (a private lesson the person may share) and finding (an entry for the
+# other agents of one swarm run), and an evidence pointer for both:
+# +43 tokens as first written. Paid from remember's own text first -- the
+# description and the type gloss cut to the shortest form that keeps
+# "secrets", "kept private" and "this run's agents" -- which returned 32;
+# the remaining 9 are the evidence property and the two enum values,
+# which have no shorter spelling. A separate swarm tool (about 100 tokens)
+# was rejected for this reason. The budget moves 10_178 -> 10_187.
+_TOKEN_BUDGET = 10_187
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

@@ -8299,6 +8299,11 @@ class KitToolPermissions:
     # Dashboard / UI session that owns the current task list. Empty means
     # "no active session-scoped task filter".
     task_session_id: str = ""
+    # The swarm run this agent belongs to (swarm_memory): set by the
+    # orchestrator through DELFIN_SWARM_RUN, or at the first delegation
+    # (subagents._derive_perms), and copied to every child by the
+    # dataclasses.replace that clones these permissions.
+    swarm_run_id: str = ""
     # Sub-agent nesting depth (0 = the top-level agent). _derive_perms bumps it
     # per child so a delegated agent can't recursively fan out sub-agents.
     subagent_depth: int = 0
@@ -9881,12 +9886,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "remember",
             "description": (
-                "Save a DURABLE fact to persistent project memory; it is "
-                "recalled automatically in future sessions. Never save "
-                "transient task details, secrets, or anything already in the "
-                "code / DELFIN.MD / git. One fact per memory; update a "
-                "similar existing one instead of duplicating; link others as "
-                "[[slug]]."
+                "Save a DURABLE fact to memory, recalled in future "
+                "sessions. Never transient details, secrets, or what code / "
+                "DELFIN.MD / git hold. One fact each; a similar one merges; "
+                "link others as [[slug]]."
             ),
             "parameters": {
                 "type": "object",
@@ -9900,12 +9903,19 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "type": {
                         "type": "string",
-                        "enum": ["user", "feedback", "project", "reference"],
+                        "enum": ["user", "feedback", "project", "reference",
+                                 "lesson", "finding"],
                         "description": (
                             "user=who they are; feedback=how to work; "
-                            "project=goal/decision/constraint not in code or "
-                            "git; reference=external URL. Default 'project'."
+                            "project=decision not in code/git; reference="
+                            "URL; lesson=reusable advice, kept private; "
+                            "finding=fact for this run's agents. Default "
+                            "project."
                         ),
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "kind:ref, e.g. test:<node>",
                     },
                     "title": {
                         "type": "string",
@@ -18384,6 +18394,9 @@ class _DocToolExecutor:
         memory_type = (arguments.get("type") or "").strip().lower() or None
         title = (arguments.get("title") or "").strip() or None
         root = perms.workspace if perms is not None else self._repo_root()
+        if memory_type in ("lesson", "finding"):
+            return self._execute_remember_layered(
+                memory_type, text, arguments, perms, root)
         try:
             from .memory_store import save_typed_memory
             path, slug, mtype = save_typed_memory(
@@ -18411,6 +18424,58 @@ class _DocToolExecutor:
             "note": (f"Saved a '{mtype}' memory. It will be recalled "
                      "automatically at the start of future sessions."),
         })
+
+    def _execute_remember_layered(self, memory_type: str, text: str,
+                                  arguments: dict, perms, root) -> str:
+        """``remember`` for the two layered kinds.
+
+        lesson: a PRIVATE lesson (knowledge_private.propose). The agent
+        never shares: ``share`` only records which layer the person asked
+        for, and the note names the /share command the person types.
+        finding: one entry in the swarm run (swarm_memory.append), author
+        the subagent id or "main"; refused outside a run and for anything
+        instruction-shaped. Neither path opens a dialog, writes a queue
+        entry or touches a repository.
+        """
+        evidence = str(arguments.get("evidence") or "").strip()
+        if memory_type == "lesson":
+            from . import knowledge_private as _kp
+            share = str(arguments.get("share") or "").strip().lower()
+            try:
+                les = _kp.propose(
+                    text, evidence=[evidence] if evidence else [],
+                    source="agent", title=str(arguments.get("title") or ""),
+                    session_id=str(getattr(perms, "task_session_id", "")
+                                   or ""),
+                    workspace=str(root),
+                    prepared_layer=share if share in ("project", "global")
+                    else "")
+            except ValueError as exc:
+                return json.dumps({"error": f"lesson not stored: {exc}"})
+            cmd = f"/share {les.id}" + (f" {les.prepared_layer}"
+                                        if les.prepared_layer else "")
+            return json.dumps({
+                "status": "ok", "layer": "private", "lesson": les.id,
+                "note": (f"Stored privately as lesson {les.id}; nothing was "
+                         f"shared. Sharing is the user's decision: {cmd} "
+                         "opens a dialog only the user can answer.")})
+        from . import swarm_memory as _sm
+        run = _sm.current_run_id(perms)
+        if not run:
+            return json.dumps({"error": "not in a swarm run: a finding is "
+                               "for the other agents of one run; use "
+                               "type=project for this workspace"})
+        author = str(getattr(perms, "subagent_id", "") or "main")
+        try:
+            entry = _sm.append(run, author=author, text=text,
+                               evidence=evidence)
+        except _sm.SwarmRefused as exc:
+            return json.dumps({"error": "finding refused: "
+                               + "; ".join(exc.reasons)})
+        except ValueError as exc:
+            return json.dumps({"error": f"finding not stored: {exc}"})
+        return json.dumps({"status": "ok", "layer": "swarm", "run": run,
+                           "seq": entry.seq})
 
     def _execute_grep_file(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
