@@ -62,7 +62,7 @@ def _constraints() -> dict[str, str]:
 
 def test_every_constraint_is_an_exact_version():
     pins = _constraints()
-    for tool in ("pip", "pytest", "pytest-timeout", "ruff", "pip-audit", "build"):
+    for tool in ("pip", "pytest", "pytest-timeout", "ruff", "pip-audit", "build", "coverage"):
         assert tool in pins, f"{tool} is installed by CI and not pinned"
 
 

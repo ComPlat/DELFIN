@@ -301,9 +301,10 @@ jobs:
     # cannot: does the reference file still resolve, and does the
     # construction still hold in the environment the paper data comes from.
     #
-    # Not a second leg of `test`. The fast suite takes about 24.6 minutes on
-    # 3.11 against a 25-minute limit, and a leg on 3.12 would sit on the same
-    # edge. So this job runs the part the reference environment is about: the
+    # Not a second leg of `test`. The fast suite measured 47.7 minutes of
+    # tests on 3.11 on 2026-10-15 and runs as four shards (test-shard); a
+    # 3.12 leg would be four more runners on every push. So this job runs the
+    # part the reference environment is about: the
     # MANTA CLI/dashboard parity, formula (every frame carries the whole
     # SMILES) and isomer-identity tests including their slow cases, and the
     # fast MANTA and user-SMILES contracts. Measured 2026-09-28 on a
@@ -396,20 +397,33 @@ jobs:
             --select F821,F811,F601,F402,F823 \
             --output-format github
 
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    # Nightly and on demand, never on a push. Measuring coverage roughly
-    # doubles a suite that already takes ten minutes, and the merge gate is
-    # what people wait on. The question it answers — which parts of 344,000
-    # lines no test reaches — does not change between one commit and the next.
+  coverage-shard:
+    # Nightly and on demand, never on a push. The question it answers --
+    # which parts of 344,000 lines no test reaches -- does not change
+    # between one commit and the next, and the merge gate is what people
+    # wait on.
     #
     # It exists because of two things this repository found the hard way: a
     # test that never ran because a later function took its name, and six of
     # nine recovery strategies that no run in the archive ever reached. Both
     # are invisible to a green suite and obvious in a coverage report.
+    #
+    # Sharded like test-shard, by the same plan. As one job it ran the whole
+    # fast suite under tracing in a 60-minute limit; the suite alone measured
+    # 47.7 min of tests on 2026-10-15 and tracing adds to that, so the job
+    # would end at its limit with no report. A shard is about 12 min of
+    # tests (702 s, ci_shards.py plan); 45 leaves room for the tracing
+    # overhead at up to 2.5x. Each shard writes its coverage data file and
+    # its shard report; `coverage` combines them.
+    name: coverage (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The verify step in `coverage` names the same count.
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
@@ -424,17 +438,89 @@ jobs:
           cache: pip
 
       - name: Install package + test deps
+        # coverage first, at the version the combining job installs (the
+        # data file format is coverage's own); pytest-cov from [dev] then
+        # finds its requirement met and keeps it. numpy<2 as in test-shard:
+        # the measurement is of the environment the gate runs.
         run: |
           python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
-          pip install -e ".[agent,docs,dev]"
+          pip install -c .github/ci/constraints-ci.txt coverage
+          pip install -e ".[agent,docs,dev]" "numpy<2"
 
-      - name: Measure coverage over the fast suite
+      - name: Measure coverage over this shard of the fast suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.github/ci
+          PYTEST_ADDOPTS: >-
+            -p shard_plugin --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+            --shard-report=shard-report
+        run: >
+          pytest -q -m "not slow" --timeout=300 --timeout-method=signal
+          --cov=delfin --cov-report=
+
+      - name: Keep the shard's data and report
+        # Also after a failure: the combined report says what was measured,
+        # and the verify step in `coverage` says whether that was all of it.
+        if: ${{ always() }}
         run: |
-          pytest -q -m "not slow" --timeout=300 --timeout-method=signal \
-            --cov=delfin --cov-report=term --cov-report=xml \
-            > coverage.txt 2>&1 || true
+          mkdir -p coverage-data
+          if [ -f .coverage ]; then mv .coverage "coverage-data/shard-${{ matrix.shard }}.coverage"; fi
+
+      - name: Upload the shard's data and report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: |
+            coverage-data/
+            shard-report/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  coverage:
+    # One report over the four shards' data. Red when the measurement does
+    # not cover the suite: a shard missing, a test that did not finish, or a
+    # failing one (ci_shards.py verify, the check `tests (py3.11)` runs). The
+    # report is written first, so a partial figure is still there to read,
+    # labelled by the verdict below it.
+    name: coverage
+    needs: coverage-shard
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # The sources: `coverage report` reads the measured files, at the
+        # same workspace path the shards ran in.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install coverage
+        run: python -m pip install -c .github/ci/constraints-ci.txt coverage
+
+      - name: Fetch the shards' data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-shard-*
+          path: coverage-shards
+
+      - name: Combine and report
+        run: |
+          shopt -s nullglob
+          data=(coverage-shards/coverage-shard-*/coverage-data/shard-*.coverage)
+          echo "data files: ${#data[@]}"
+          [ "${#data[@]}" -gt 0 ]
+          coverage combine --keep --data-file=.coverage "${data[@]}"
+          coverage report --data-file=.coverage > coverage.txt
+          coverage xml --data-file=.coverage -o coverage.xml
           {
-            echo "### Coverage"
+            echo "### Coverage (${#data[@]} of 4 shards)"
             echo
             echo '```'
             tail -1 coverage.txt
@@ -451,6 +537,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the report
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
@@ -458,3 +545,14 @@ jobs:
             coverage.txt
             coverage.xml
           retention-days: 30
+
+      - name: The shards measured every collected test exactly once
+        if: ${{ !cancelled() }}
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p shard-reports
+          for d in coverage-shards/coverage-shard-*/shard-report; do
+            [ -d "$d" ] && cp -r "$d" "shard-reports/$(basename "$(dirname "$d")")"
+          done
+          python3 .github/ci/ci_shards.py verify shard-reports --shards 4 --sha "$SHA"
