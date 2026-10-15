@@ -27,7 +27,6 @@ from delfin.agent import api_client as A
 from delfin.agent import stack_tests as st
 from delfin.agent import test_runner as TR
 from delfin.agent import turn_verification as tv
-from delfin.agent.api_client import KitToolPermissions, _doc_executor
 
 
 @pytest.fixture
@@ -145,7 +144,11 @@ def _bash_double(monkeypatch, answer):
     """The bash call run_tests makes, answered by ``answer(args)``; every
     other tool runs for real."""
     seen: list[dict] = []
-    real = A._DocToolExecutor.execute
+    # The class of the executor that will run, looked up now: a test that
+    # reloads api_client earlier in the session leaves a module-level
+    # import pointing at the previous class.
+    cls = type(A._doc_executor)
+    real = cls.execute
 
     def fake(self, name, arguments, permissions=None):
         if name == "bash":
@@ -153,13 +156,13 @@ def _bash_double(monkeypatch, answer):
             return json.dumps(answer(arguments))
         return real(self, name, arguments, permissions)
 
-    monkeypatch.setattr(A._DocToolExecutor, "execute", fake)
+    monkeypatch.setattr(cls, "execute", fake)
     return seen
 
 
 def _run(ws, target, **kw):
-    perms = KitToolPermissions(mode="default", workspace=str(ws))
-    return json.loads(_doc_executor.execute(
+    perms = A.KitToolPermissions(mode="default", workspace=str(ws))
+    return json.loads(A._doc_executor.execute(
         "run_tests", {"target": target, **kw}, perms))
 
 

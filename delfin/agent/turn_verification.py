@@ -60,6 +60,10 @@ RAN = _vc.EXECUTED | {"unobserved"}
 _RUN_REDIRECT_RE = re.compile(
     r"^\s*(?:cd\s+\S+\s*&&\s*)?[^;&|<>]+?\s>>?\s*['\"]?[\w./~-]+['\"]?\s*"
     r"(?:2>&1\s*)?$")
+# The file a write tool's result names.
+_RESULT_PATH_RE = re.compile(
+    r"(?:File created|File overwritten|Multi-edited|Edited|Appended to)"
+    r"[:\s]+([^\s:(]+)")
 # Test-file names in a red run's output: which tests failed.
 _FAILED_TEST_FILE_RE = re.compile(
     r"[\w./-]*(?:test_[\w-]+\.py|[\w-]+_test\.(?:py|go)|[\w-]+\.(?:test|spec)"
@@ -179,11 +183,14 @@ def _run_event(ev: dict, kind: str, tool: str, res: str, scope) -> None:
 
 def events_for_call(name: str, inp: Any, res: Any, idx: float,
                     to_rel: Optional[Callable[[str], str]] = None, *,
-                    observed: bool = True) -> list[dict]:
+                    observed: bool = True,
+                    jobs: Optional[dict] = None) -> list[dict]:
     """The verification events of one call (module docstring).
 
     ``observed`` False: the caller has no results at all, so an unknown
-    outcome is ``unobserved`` (counted as executed, never as passing)."""
+    outcome is ``unobserved`` (counted as executed, never as passing).
+    ``jobs``: the caller's ``{job_id: (command, cwd)}`` across calls, so a
+    finished background job's status can be read as its run."""
     to_rel = to_rel or (lambda p: p)
     res = str(res or "")
     ev = {"idx": idx, "kind": "other", "outcome": "", "path": "",
@@ -191,7 +198,13 @@ def events_for_call(name: str, inp: Any, res: Any, idx: float,
           "scope": ("", []), "passed_count": None, "failed_files": []}
     out: list[dict] = []
     if name in MUTATE_TOOLS:
-        path = _vc._norm(to_rel(call_path(inp)))
+        raw_path = call_path(inp)
+        if not raw_path:
+            # Arguments cut short (a trace keeps a head slice): the write
+            # tools name the file in their result.
+            m = _RESULT_PATH_RE.search(res[:800])
+            raw_path = m.group(1) if m else ""
+        path = _vc._norm(to_rel(raw_path))
         failed = res.lstrip().startswith('{"error"') or \
             "invalid JSON" in res[:200]
         ev.update(kind="edit", path=path,
@@ -211,11 +224,35 @@ def events_for_call(name: str, inp: Any, res: Any, idx: float,
                  [_vc._norm(to_rel(t)) for t in target.split()]
                  if target.strip() else [])
         _run_event(ev, "test", "run_tests", res, scope)
+    elif name in ("bash_status", "bash_output"):
+        # A background job that has finished: its verdict arrives here, as
+        # an exit code (and, for bash_output, its output), under the job id
+        # the start returned. The command comes from the status itself or
+        # from the start (``jobs``).
+        data = _as_dict(res)
+        if isinstance(data, dict) and data.get("running") is False and \
+                isinstance(data.get("exit_code"), int):
+            jid = str(data.get("job_id") or "")
+            cmd = str(data.get("command") or (jobs or {}).get(jid, ("",))[0])
+            cwd = str(data.get("cwd") or (jobs or {}).get(jid, ("", ""))[1])
+            kind = _vc.command_kind(cmd) or (
+                "run" if RUN_CMD_RE.search(cmd) else "")
+            if kind:
+                ev["command"] = cmd
+                _run_event(ev, kind, "bash", json.dumps({
+                    "exit_code": data["exit_code"],
+                    "stdout": str(data.get("stdout") or "")}),
+                    _vc.run_scope(cmd, "" if cwd == "." else cwd,
+                                  to_rel=to_rel))
     elif name in ("bash", "bash_background"):
         cmd = command_of(inp)
         ev["command"] = cmd
         scope = _vc.run_scope(cmd, bash_cwd(inp), to_rel=to_rel)
         kind = _vc.command_kind(cmd)
+        if name == "bash_background" and jobs is not None:
+            data = _as_dict(res)
+            if isinstance(data, dict) and data.get("job_id"):
+                jobs[str(data["job_id"])] = (cmd, bash_cwd(inp))
         if kind:
             _run_event(ev, kind, name, res, scope)
         else:
@@ -244,8 +281,10 @@ def events_for_call(name: str, inp: Any, res: Any, idx: float,
 
 
 def is_code_edit(e: dict) -> bool:
+    """Code, a test file, or a file nobody could name (counted as code:
+    an edit of unknown target may be the code under test)."""
     return (suffix(e["path"]) in CODE_SUFFIXES or e["measure"]
-            or (e["via"] == "bash" and not e["path"]))
+            or not e["path"])
 
 
 def gamed_runs(tl: list[dict]) -> set:
@@ -256,14 +295,21 @@ def gamed_runs(tl: list[dict]) -> set:
     assertion, an added skip, a deleted case). When the red output named
     the failing test files, only an edit to one of them counts. An edit
     that only added to a test file (a regression test beside the red one,
-    verify_commands.measure_edit_is_additive) does not open the window."""
+    verify_commands.measure_edit_is_additive) does not open the window,
+    and neither does an edit to a test file the turn created itself: the
+    measure the user had is unchanged; whether the agent's own new test
+    is right is the content-level question."""
     gamed: set = set()
     red: list[dict] = []
     suspect_from: Optional[float] = None
+    own: set = set()          # test files this account created itself
     for e in tl:
+        if e["kind"] == "edit" and e.get("created") and e["path"]:
+            own.add(e["path"])
         if e["kind"] == "test" and e["outcome"] == "failed":
             red.append(e)
         elif (e["kind"] == "edit" and e["measure"] and red
+              and e["path"] not in own
               and not (e.get("additive") and not e.get("created"))):
             named = {f for r in red for f in r.get("failed_files") or []}
             if not named or basename(e["path"]) in named:
@@ -288,8 +334,12 @@ class Account:
     last_edit_idx: float = -1
 
 
-def account(tl: list[dict]) -> Account:
-    """Anchor, relevance, gaming and freshness for one event list."""
+def account(tl: list[dict], read: Optional[Callable[[str], str]] = None
+            ) -> Account:
+    """Anchor, relevance, gaming and freshness for one event list.
+
+    ``read(rel_path) -> text`` (optional): a test file that imports the
+    edited module then touches it too (verify_commands.run_touches)."""
     a = Account()
     a.edits = [e for e in tl if e["kind"] == "edit"]
     code_edits = [e for e in a.edits if is_code_edit(e)]
@@ -306,7 +356,7 @@ def account(tl: list[dict]) -> Account:
         if anchor is None or not anchor["path"]:
             return True
         d, targets = e.get("scope") or ("", [])
-        return _vc.run_touches(anchor["path"], d, list(targets))
+        return _vc.run_touches(anchor["path"], d, list(targets), read=read)
 
     a_idx = anchor["idx"] if anchor else -1
     a.relevant = [e for e in a.executed_tests
@@ -349,7 +399,8 @@ def signals(tl: list[dict], *, text: str = "",
     passing = bool(a.relevant) and a.relevant[-1]["outcome"] == "passed" \
         and a.relevant[-1]["idx"] not in a.gamed
     found = [] if plan else _claims.find_claims(text)
-    false = _claims.judge(found, a.runs, edited=a.anchor is not None)
+    false = _claims.judge(found, a.runs, edited=a.anchor is not None,
+                          tried_tests=bool(a.executed_tests or a.refused))
     return {
         "tested": float(bool(a.executed_tests)),
         "tested_after_last_edit": float(bool(a.relevant)),
@@ -380,16 +431,27 @@ class TurnVerification:
         self.workspace = str(workspace or "")
         self._to_rel = rel_mapper(self.workspace)
         self.events: list[dict] = []
+        self._jobs: dict = {}
         self._n = 0
 
     def note(self, tool: str, args: Any, result: Any) -> None:
         try:
             name = str(tool or "").split("__")[-1]
             self.events.extend(events_for_call(
-                name, args, result, float(self._n), self._to_rel))
+                name, args, result, float(self._n), self._to_rel,
+                jobs=self._jobs))
         except Exception:
             pass
         self._n += 1
+
+    def extend(self, other: "TurnVerification") -> None:
+        """Append another account's events after this one's (a nested
+        correction turn continuing the turn it corrects)."""
+        base = float(self._n)
+        for e in getattr(other, "events", []) or []:
+            self.events.append({**e, "idx": base + float(e["idx"])})
+        self._n += int(getattr(other, "_n", 0) or 0)
+        self._jobs.update(getattr(other, "_jobs", {}) or {})
 
     def note_run(self, command: str, passed: bool) -> None:
         """A check the harness ran on the turn's edits (auto-verify)."""
@@ -401,8 +463,22 @@ class TurnVerification:
             "failed_files": []})
         self._n += 1
 
+    def _read(self, rel: str) -> str:
+        """A workspace file's text for the import check: inside the
+        workspace only, at most 256 kB, "" otherwise."""
+        try:
+            from pathlib import Path
+            base = Path(self.workspace or ".").resolve()
+            p = (base / rel).resolve()
+            if base not in p.parents or not p.is_file() or \
+                    p.stat().st_size > 262_144:
+                return ""
+            return p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+
     def unverified_edit(self) -> Optional[str]:
-        a = account(self.events)
+        a = account(self.events, self._read)
         if a.anchor is None:
             return None
         idx, path = a.anchor["idx"], a.anchor["path"]
@@ -410,14 +486,16 @@ class TurnVerification:
             if (e["idx"] > idx and e["kind"] in ("test", "check", "run")
                     and e["outcome"] in ("passed", "failed")):
                 d, targets = e.get("scope") or ("", [])
-                if not path or _vc.run_touches(path, d, list(targets)):
+                if not path or _vc.run_touches(path, d, list(targets),
+                                               read=self._read):
                     return None
         return path
 
     def unbacked_claims(self, text: str) -> list:
-        a = account(self.events)
+        a = account(self.events, self._read)
         return _claims.judge(_claims.find_claims(text), a.runs,
-                             edited=a.anchor is not None)
+                             edited=a.anchor is not None,
+                             tried_tests=bool(a.executed_tests or a.refused))
 
 
 __all__ = [

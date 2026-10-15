@@ -1542,6 +1542,7 @@ def _verification_timeline(calls: list[dict],
     if raw_calls is not None:
         results = _paired_results(raw_calls, results)
     out: list[dict] = []
+    jobs: dict = {}
     for c in calls:
         i = c["idx"]
         res = results[i] if i < len(results) else ""
@@ -1549,7 +1550,7 @@ def _verification_timeline(calls: list[dict],
         if "mutate" in c["kinds"] and name not in _tv.MUTATE_TOOLS:
             name = "write_file"
         out.extend(_tv.events_for_call(name, c["input"], res, i, to_rel,
-                                       observed=observed))
+                                       observed=observed, jobs=jobs))
     return out
 
 

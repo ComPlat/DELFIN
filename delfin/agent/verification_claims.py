@@ -42,6 +42,7 @@ _TEST_CLAIM_RE = re.compile(
     r"\b(?:pass(?:es|ed)?|passing|green|grün|bestanden|laufen durch|"
     r"läuft durch|succeed(?:s|ed)?|erfolgreich)\b"
     r"|\b[1-9]\d*\s+(?:passed|tests?\s+(?:pass(?:ed)?|bestanden|grün|green))\b"
+    r"|\b[1-9]\d*/[1-9]\d*\s+(?:tests?\s+)?(?:pass(?:ed)?|grün|green|bestanden)\b"
     r"|\balle\b[^.\n]{0,30}\b(?:grün|bestanden)\b"
     r"|\ball\b[^.\n]{0,30}\b(?:pass(?:ed)?|green)\b"
     r"|\b(?:grün|green)\s+(?:sind|ist|are|is)?\s*(?:alle|all)?\s*tests?\b")
@@ -55,6 +56,7 @@ _BEHAVIOUR_CLAIM_RE = re.compile(
     r"|✅|✔")
 _COUNT_RE = re.compile(
     r"(?i)\b(\d+)\s+(?:passed|tests?\s+(?:pass(?:ed)?|bestanden|grün|green))\b"
+    r"|\b(\d+)/\1\s+(?:tests?\s+)?(?:pass(?:ed)?|grün|green|bestanden)\b"
     r"|\balle\s+(\d+)\s+tests?\b|\ball\s+(\d+)\s+tests?\b")
 # A sentence that does not assert a result of this turn: a negation, a
 # condition, a plan or a request, a question, a quoted claim (the commit
@@ -86,7 +88,10 @@ _WAIVE_RE = re.compile(
     r"|\bpro (?:modul|datei|commit)\b|\bper (?:module|file|commit)\b"
     r"|\bjede[nmrs]?\b|\beach\b|\bevery\b"
     # What a run WOULD show: "der Nachweis dafür, dass cargo test grün ist".
-    r"|nachweis|\bproof that\b|\bevidence that\b")
+    r"|nachweis|\bproof that\b|\bevidence that\b"
+    # Checked by reading: a file:line citation, "Fundstellen", "Zeilen";
+    # the location scanner judges those against what was read.
+    r"|\b[\w./-]+\.\w{1,5}:\d+|fundstelle|zeilenangabe|\bcitation|\bline \d")
 # An invariant ("stay green", "bleiben grün"): in a turn that ran and edited
 # nothing it describes a goal; in a turn that did, it asserts the state.
 _INVARIANT_RE = re.compile(r"(?i)\bbleib\w*|\bremain\w*|\bstay\w*")
@@ -160,11 +165,13 @@ def find_claims(text: str) -> list[Claim]:
 
 
 def judge(claims: Iterable[Claim], runs: Iterable[Run], *,
-          edited: bool) -> list[Verdict]:
+          edited: bool, tried_tests: bool = True) -> list[Verdict]:
     """The claims the runs do not back, each with its reason.
 
     ``edited``: the turn edited code (a behaviour claim is judged only
-    then). A test claim needs a passing, fresh, non-gamed test run; a
+    then). ``tried_tests``: the turn ran or tried a test; a test claim in
+    a turn that did neither and edited nothing restates an earlier turn's
+    result ("tests are green (10/10)" in a summary) and is not judged. A test claim needs a passing, fresh, non-gamed test run; a
     behaviour claim needs, after the last code edit and touching it, a
     passing test or check, or a program run that executed (its exit code
     is the program's own answer -- a search that exits 1 on no match ran).
@@ -176,6 +183,8 @@ def judge(claims: Iterable[Claim], runs: Iterable[Run], *,
     out: list[Verdict] = []
     for c in claims:
         if c.invariant and not runs and not edited:
+            continue
+        if c.kind == "test" and not edited and not tried_tests:
             continue
         if c.kind == "test":
             passing = [r for r in runs if r.kind == "test"
@@ -204,6 +213,36 @@ def judge(claims: Iterable[Claim], runs: Iterable[Run], *,
     return out
 
 
+_REASON_TEXT = {
+    "no_covering_run": "no test, check or run after the last edit touched "
+                       "the edited code",
+    "no_passing_run": "no test run in this turn passed",
+    "stale": "the passing run came before a later edit inside its scope",
+    "gamed": "the only passing run came after an edit to the failing test "
+             "itself",
+    "count_mismatch": "the runs reported a different number of passed tests",
+}
+
+
+def caveat(verdicts: list) -> str:
+    """The visible caveat for unbacked verification claims ("" for none).
+    One line per claim, the claim quoted short, the reason in words."""
+    if not verdicts:
+        return ""
+    items = []
+    for v in verdicts[:4]:
+        quote = re.sub(r"[*`_#>]+", "", v.claim.sentence).strip()
+        if len(quote) > 90:
+            quote = quote[:87] + "..."
+        reason = _REASON_TEXT.get(v.reason, v.reason)
+        if v.reason == "count_mismatch" and v.extra.get("observed"):
+            reason += f" ({', '.join(str(n) for n in v.extra['observed'])})"
+        items.append(f"'{quote}' -- {reason}")
+    return ("\n\n[verify] Caveat: these verification claims are not "
+            "backed by a run in this turn: " + "; ".join(items)
+            + ". Please treat them as unconfirmed.")
+
+
 # The answer already says the change was not checked.
 _DISCLOSED_RE = re.compile(
     r"(?i)\b(?:untested|ungetestet|unverified|unverifiziert|not (?:yet )?"
@@ -218,4 +257,4 @@ def discloses_unverified(text: str) -> bool:
 
 
 __all__ = ["Claim", "Run", "Verdict", "find_claims", "judge",
-           "discloses_unverified"]
+           "discloses_unverified", "caveat"]

@@ -193,6 +193,9 @@ _NOT_CARRIED = {
     # The git-errors steering block of the current turn: rebuilt from each
     # user message, nothing a resumed session needs.
     "_repo_errors_hint",
+    # Per turn: what the turn verified (turn_verification), read by the
+    # test-claim caveat of the same turn; the next turn starts its own.
+    "_last_turn_verification",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
     # Per turn: the history a fresh start cut in THIS turn, given back only
