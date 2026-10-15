@@ -332,3 +332,23 @@ def test_only_the_admin_adds_a_topic(env):
     text = _git(env["repo"], "show",
                 f"{out.ref}:delfin/agent/pack/knowledge/TOPICS.md")
     assert "data-formats" in text
+
+
+def test_lint_reads_the_provenance_too(env):
+    gdir = env["gdir"]
+    kn.write_entry(gdir, _e("local-pointer", provenance=[
+        kn.Provenance("anna", "2026-09-01", "job:812345")]))
+    kn.write_index(gdir)
+    problems = kc.lint(gdir)
+    assert any("local-pointer" in p and "public pointer" in p
+               for p in problems), problems
+
+
+def test_an_admin_plan_whose_result_fails_the_check_is_blocked(env):
+    _as_admin(env)
+    parts = [dict(slug="part-a", title="Part A of the lesson",
+                  situation="Parallel failures.",
+                  lesson="Ask a@b.org before re-running.", why="Shared.")]
+    d = kc.start(kc.plan_split("serial-first", parts), clock=Clock())
+    assert d.blocked and "email" in d.preview()
+    assert "check: passed" not in d.preview()
