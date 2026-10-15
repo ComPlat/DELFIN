@@ -333,7 +333,9 @@ security panel and `delfin-agent doctor` say so.
   banner, `/mcp` and `delfin-agent doctor` say so.
 - The dashboard's approval of a CLI-backend `Bash` call runs through
   `sandbox.run_agent_command`: an allow-list, then bubblewrap or firejail,
-  selected with `DELFIN_AGENT_SANDBOX`.
+  else (mode `allowlist`) Landlock with the network denied as far as the
+  host holds it, selected with `DELFIN_AGENT_SANDBOX`; `sandbox.confinement`
+  names the state applied (`net=off`, `off-tcp` or `open`).
 
 ### 6. The managed policy
 
@@ -396,11 +398,15 @@ enforces. Its refusals are recorded as `managed_policy_deny` and
 | **Linux, Landlock** (bubblewrap refused; with seccomp user notification) | roots + git metadata + private temp + `/dev`; hooks writable (only the text check on hook paths stops a planted hook) | unreadable | refused by the socket guard | egress proxy only | can outlive the command; the lifeline and `delfin-agent stop-all` end what they find | runs isolated |
 | **Linux, partial** (Landlock without seccomp user notification) | as above | unreadable | every Unix socket refused by a plain seccomp filter | Landlock ABI 4: TCP only to the proxy's forwarder port and the direct endpoints (by port, not address; UDP not covered); older ABI: **not restricted** | can outlive the command | **refused** while the network mode is `proxy` or `none` |
 | **macOS, Seatbelt** | roots + git metadata + private temp; hooks write-denied | unreadable | Unix sockets only in the roots and the private temp | TCP only to the proxy's loopback port; in `open` mode the metadata address is not refused by address | can outlive the command; no process guard (Linux only) | runs isolated |
-| **None** (no bubblewrap, Landlock or Seatbelt) | **not restricted** — only the permission gate's reading of the command text | **not restricted** for the shell; the file tools keep their secret-path checks | where seccomp user notification exists, the session doors are refused by the socket guard; otherwise not restricted | egress proxy only, held by the socket guard, where seccomp user notification exists; otherwise **not restricted** | can outlive the command | **refused** |
+| **None** (no bubblewrap, Landlock or Seatbelt — for example Windows, or Linux with neither layer working) | **not restricted** — only the permission gate's reading of the command text | **not restricted** for the shell; the file tools keep their secret-path checks | where seccomp user notification exists, the session doors are refused by the socket guard; otherwise not restricted | egress proxy only, held by the socket guard, where seccomp user notification exists; otherwise **not restricted** | can outlive the command | **refused** |
 
-On a host in the last row an unattended (`bypassPermissions`) run still
-proceeds and records `isolation_missing`; a locked session refuses its shell
-commands and records the same kind. `delfin-agent capabilities` prints which
+On a host in the last row a `bypassPermissions` start is asked once when a
+person is present; unattended it starts in `default`
+(`isolation_posture.apply_at_start`), where a command off the auto-allow
+list is asked or, with nobody to ask, judged by the action classifier. Both
+record `isolation_missing`. A locked session refuses its shell commands
+unless the person approves one command unconfined, and records the same
+kind. `delfin-agent capabilities` prints which
 row applies.
 
 ## Where a decision is recorded
@@ -440,6 +446,10 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   row Landlock ABI 4 restricts TCP by port, not by address, and does not
   cover UDP; with an older ABI the command has the host's network. Only a
   locked session or `--isolate` refuses instead.
+- **Truncation on older kernels.** Landlock handles `truncate(2)` from ABI 3
+  (Linux 6.2) on (`landlock_exec._write_rights`). On the Landlock rows with
+  an older kernel a command can truncate a file outside the roots that the
+  account may write, although it cannot otherwise write to it.
 - **Same-uid limits.** The approval answer checks (owner, mode, age, id)
   prove that an answer came from this account; the one-time code proves
   that its writer saw the human channel. A process of the same account that

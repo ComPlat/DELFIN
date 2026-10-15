@@ -29,6 +29,15 @@ Security (hard requirements, mirrors ``job_monitor.py``):
   applying anything. The proposed patch is text in the report dir only.
 - Analysis can be disabled separately (``auto_analyze``) so watching alone
   never costs tokens; fix-proposal can be disabled (``propose_fix``).
+- **Sending is its own consent**: an analysis hands another user's report
+  (their conversation, system prompt, tool outputs) to the configured model
+  provider. ``agent.bug_watcher.send_reports`` decides (:func:`send_policy`):
+  ``"ask"`` (default; unknown values too) sends only with ``consent=True``,
+  i.e. the maintainer said yes in a terminal for this run (``bug triage``,
+  ``bug watch --once``); ``"never"`` never sends; ``"always"`` is the
+  standing opt-in the unattended daemon needs. A withheld report is neither
+  marked triaged nor announced, so it is analysed once consent exists.
+  The gate is in :func:`analyze_report`, the one function that sends.
 """
 
 from __future__ import annotations
@@ -64,6 +73,8 @@ class Triage:
     ts: float = field(default_factory=time.time)
     has_fix: bool = False
     error: str = ""
+    #: True when the content was not sent (send_refusal); not triaged.
+    withheld: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +104,104 @@ def watcher_settings(settings: dict | None = None) -> dict:
         "archive_dir": str(cfg.get("archive_dir", "") or ""),
         # Repo the fix diff is proposed against; empty = this DELFIN repo.
         "fix_repo": str(cfg.get("fix_repo", "") or ""),
+        # Whether report content may go to the model provider: ask|never|
+        # always (send_policy; module docstring).
+        "send_reports": send_policy(settings),
     }
+
+
+#: Values of ``agent.bug_watcher.send_reports``; the first is the default.
+SEND_POLICIES = ("ask", "never", "always")
+
+
+class SendWithheld(RuntimeError):
+    """A report's content may not go to the model provider now."""
+
+
+def send_policy(settings: dict | None = None) -> str:
+    """``agent.bug_watcher.send_reports``: ask, never or always. Missing,
+    unreadable or unknown is ``ask``, never read as ``always``."""
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        except Exception:
+            settings = {}
+    cfg = ((settings or {}).get("agent") or {}).get("bug_watcher") or {}
+    value = str(cfg.get("send_reports") or "").strip().lower() \
+        if isinstance(cfg, dict) else ""
+    return value if value in SEND_POLICIES else SEND_POLICIES[0]
+
+
+def send_refusal(*, consent: bool, settings: dict | None = None) -> str:
+    """Why report content must not be sent to the provider now, or ""."""
+    policy = send_policy(settings)
+    if policy == "never":
+        return ("not sent to the model provider: "
+                "agent.bug_watcher.send_reports is 'never'")
+    if policy == "ask" and not consent:
+        return ("not sent to the model provider: nobody confirmed sending "
+                "other users' reports (agent.bug_watcher.send_reports is "
+                "'ask'; answer yes in `bug triage`, or set it to 'always' "
+                "for the unattended watcher)")
+    return ""
+
+
+def send_line(settings: dict | None = None) -> str:
+    """One line for every place the watcher is started: where report
+    content goes and whether it is sent."""
+    cfg = watcher_settings(settings)
+    if not cfg["auto_analyze"]:
+        return "report content: not sent anywhere (auto_analyze is off)"
+    dest = destination(settings)
+    policy = cfg["send_reports"]
+    if policy == "always":
+        return (f"report content: SENT to {dest} without asking "
+                "(agent.bug_watcher.send_reports = always)")
+    if policy == "never":
+        return ("report content: never sent (agent.bug_watcher."
+                "send_reports = never); reports stay untriaged")
+    return (f"report content: sent to {dest} only after a yes in a "
+            "terminal (agent.bug_watcher.send_reports = ask); the "
+            "unattended watcher withholds every report")
+
+
+def ask_consent(n: int, settings: dict | None = None, *, ask=None) -> bool:
+    """The maintainer's yes for this run, or False. ``ask`` defaults to
+    ``input`` when stdin is a terminal; without one nobody is asked."""
+    if send_policy(settings) != "ask" or n <= 0:
+        return False
+    if ask is None:
+        import sys
+        try:
+            if not sys.stdin.isatty():
+                return False
+        except Exception:
+            return False
+        ask = input
+    try:
+        answer = str(ask(
+            f"Send {n} bug report(s) -- other people's conversations, "
+            f"prompts and tool output -- to {destination(settings)} for "
+            "analysis? [y/N] ") or "")
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def destination(settings: dict | None = None) -> str:
+    """The provider/model an analysis would send to, for a question."""
+    cfg = watcher_settings(settings)
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        except Exception:
+            settings = {}
+    agent_cfg = (settings or {}).get("agent") or {}
+    model = cfg["model"] or str(agent_cfg.get("model", "") or "")
+    provider = cfg["provider"] or str(agent_cfg.get("provider", "") or "")
+    return " / ".join(x for x in (provider, model) if x) or "the default model"
 
 
 def resolve_watch_archive(settings: dict | None = None) -> Path:
@@ -287,10 +395,16 @@ def analyze_report(
     *,
     settings: dict | None = None,
     engine_factory: Callable[..., Any] | None = None,
+    consent: bool = False,
 ) -> str:
     """Run ONE read-only analysis (+ fix proposal) turn. Returns the text.
 
-    Raises on a hard engine/API failure so the caller can retry later."""
+    Raises SendWithheld, before the engine is built, when
+    :func:`send_refusal` refuses; raises on a hard engine/API failure so
+    the caller can retry later."""
+    refused = send_refusal(consent=consent, settings=settings)
+    if refused:
+        raise SendWithheld(refused)
     from delfin.agent.bug_report import load_report
     report = load_report(report_dir)
     cfg = watcher_settings(settings)
@@ -335,6 +449,7 @@ def triage_report(
     *,
     settings: dict | None = None,
     engine_factory: Callable[..., Any] | None = None,
+    consent: bool = False,
 ) -> Triage:
     """Analyse one report + propose a fix, persist both. Does NOT move it to
     Solved (a triaged report is not a fixed one). Never raises. Honors
@@ -352,7 +467,12 @@ def triage_report(
     try:
         text = analyze_report(
             report_dir, settings=settings, engine_factory=engine_factory,
+            consent=consent,
         )
+    except SendWithheld as exc:   # no consent: untouched, still pending
+        t.withheld = True
+        t.summary = f"({exc})"
+        return t
     except Exception as exc:  # hard failure — leave for retry, bump attempts
         n = _bump_attempts(report_dir)
         t.error = f"{type(exc).__name__}: {exc}"[:300]
@@ -416,13 +536,17 @@ def run_once(
     archive: Path | None = None,
     settings: dict | None = None,
     engine_factory: Callable[..., Any] | None = None,
+    consent: bool = False,
 ) -> list[Triage]:
-    """Triage every currently-unsolved report once (no move). Returns results."""
+    """Triage every currently-unsolved report once (no move). Returns results.
+    A withheld report (no consent to send) is returned but not announced."""
     results: list[Triage] = []
     for d in find_unsolved(archive, settings=settings):
-        t = triage_report(d, settings=settings, engine_factory=engine_factory)
+        t = triage_report(d, settings=settings, engine_factory=engine_factory,
+                          consent=consent)
         results.append(t)
-        announce(t, settings=settings)
+        if not t.withheld:
+            announce(t, settings=settings)
     return results
 
 
@@ -515,6 +639,7 @@ def main() -> int:
               f"auto_analyze={cfg['auto_analyze']}, "
               f"propose_fix={cfg['propose_fix']}, "
               f"archive={resolve_watch_archive()}).")
+        print(send_line())
         return run_loop()
     finally:
         release_pid_lock()

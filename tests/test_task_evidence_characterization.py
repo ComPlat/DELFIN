@@ -99,7 +99,7 @@ def test_control_a_read_only_task_is_not_asked_to_produce_an_artifact(check):
 
 def test_control_a_subject_with_nothing_to_key_on_is_unchecked(check):
     res = check(
-        "Rückfrage mit Jerome klären", changes=[], observed=[], tests=[])
+        "Rückfrage mit dem Betreuer klären", changes=[], observed=[], tests=[])
     assert res["verdict"] == "unchecked"
 
 

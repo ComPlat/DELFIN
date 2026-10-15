@@ -126,7 +126,7 @@ function when(seconds: number, now: number): string {
  *  is drawn), then what the keys do with it. */
 export function itemPeek(item: AttentionItem, thisHost: string, now: number = Date.now()): string[] {
   const out: string[] = []
-  // "in ~/calc on uc3n991", "in ~/calc", "on uc3n991"
+  // "in ~/calc on login02", "in ~/calc", "on login02"
   const where = [item.workspace ? `in ${shortPath(item.workspace)}` : "", item.host ? `on ${item.host}` : ""]
     .filter(Boolean).join(" ")
   const job = jobOf(item)

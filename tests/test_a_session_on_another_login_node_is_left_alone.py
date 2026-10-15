@@ -2,9 +2,9 @@
 
 Kept sessions are announced in the home directory, which every login node
 shares; the kernel belongs to the server on the machine that wrote the
-record. On 2026-09-16 a login landed on uc3n990 while three agent sessions
-were kept on uc3n991. The button asked uc3n990's server for the kernel; it
-did not run it, took the record for stale and removed it -- and uc3n991's
+record. On 2026-09-16 a login landed on login01 while three agent sessions
+were kept on login02. The button asked login01's server for the kernel; it
+did not run it, took the record for stale and removed it -- and login02's
 server, finding its unwatched kernel no longer kept, ended it ten seconds
 later, with the three agents in it.
 """
@@ -29,7 +29,7 @@ def clean(tmp_path, monkeypatch):
     S._reset_for_tests()
 
 
-def _kept_on(host: str, name: str = "uc3n991-e2d3", kid: str = "kernel-bebd") -> Path:
+def _kept_on(host: str, name: str = "login02-e2d3", kid: str = "kernel-bebd") -> Path:
     path = Path(S.write_record(name, kid=kid))
     record = json.loads(path.read_text())
     record["host"] = host
@@ -60,36 +60,36 @@ def _return_to(name: str, known=()):
 
 def test_returning_from_another_node_keeps_the_record():
     path = _kept_on("some-other-node")
-    got, manager = _return_to("uc3n991-e2d3", known=[])
+    got, manager = _return_to("login02-e2d3", known=[])
     assert got == "fresh-kernel"
     assert path.exists(), "the record of a session on another node was removed"
-    assert R.kernel_for_session("uc3n991-e2d3") == "kernel-bebd"
+    assert R.kernel_for_session("login02-e2d3") == "kernel-bebd"
     assert R.kept_kernel_ids() == {"kernel-bebd"}, (
         "its own server would no longer see it as kept, and end it")
 
 
 def test_a_record_from_this_node_whose_kernel_is_gone_is_still_removed():
     path = _kept_on(S._hostname())
-    got, _manager = _return_to("uc3n991-e2d3", known=[])
+    got, _manager = _return_to("login02-e2d3", known=[])
     assert got == "fresh-kernel"
     assert not path.exists()
 
 
 def test_the_page_names_the_node_the_session_runs_on(monkeypatch):
-    _kept_on("uc3n991")
+    _kept_on("login02")
     monkeypatch.setattr(S, "kernel_id", lambda: "fresh-kernel")
     text = S.why_not_resumed(
-        request_url="http://h:1/voila/render/r.ipynb?session=uc3n991-e2d3")
-    assert "runs on uc3n991" in text and "log in to uc3n991" in text
+        request_url="http://h:1/voila/render/r.ipynb?session=login02-e2d3")
+    assert "runs on login02" in text and "log in to login02" in text
     assert "delfin-agent stop-all" in text
 
 
 def test_the_landing_banner_does_not_offer_a_return_it_cannot_make():
-    other = _kept_on("uc3n991")
+    other = _kept_on("login02")
     record = json.loads(other.read_text())
     html = S._banner_html([record])
     assert "Open this session" not in html
-    assert "runs on <code>uc3n991</code>" in html
+    assert "runs on <code>login02</code>" in html
 
 
 def test_the_landing_banner_still_offers_a_session_on_this_node(monkeypatch):

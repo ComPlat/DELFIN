@@ -2,7 +2,7 @@
 
 A FoB whose output is complete is marked done before scheduling, and its work
 -- the only place its energy was recorded -- never runs.  A FoB started from
-it waited for that energy: in the archive, Jerome's CoHPP was resubmitted six
+it waited for that energy: in the archive, one user's CoHPP was resubmitted six
 times, and every time initial FoB 6 (from FoB 5) and red_step_2 FoB 3 (from
 FoB 2) waited until the walltime ended the job.  Measured here on NH3: FoB 5,
 whose optimisation had given up, waited on FoB 4 with no ORCA running.

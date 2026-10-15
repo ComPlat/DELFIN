@@ -1,6 +1,6 @@
 """Lightweight web-search + web-fetch primitives for the KIT agent.
 
-When Jerome's project pulls in an external library (BoTorch, Ax, SMAC,
+When a user's project pulls in an external library (BoTorch, Ax, SMAC,
 DEAP), the agent needs to look up API specifics that aren't in the
 indexed DELFIN docs. These helpers provide just enough capability for
 that workflow without requiring API keys:

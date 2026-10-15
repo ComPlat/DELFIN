@@ -193,3 +193,17 @@ def test_swarm_harvest_and_propose(env):
     out = _cmd(env, "swarm", "propose wave-2 1")
     assert "private lesson" in out
     assert kp.list_lessons()[0].source == "swarm"
+
+
+def test_every_unshare_description_names_the_queue():
+    """/unshare also withdraws a submission still waiting for review (by
+    its queue id or lesson id). A palette line that says only 'removal
+    branch' tells the person their queued text cannot be taken back."""
+    from delfin.agent import repl_commands as rc
+    from delfin.dashboard.tab_agent import _SLASH_COMMANDS
+    (palette,) = [s for _c, cmd, s, _h in _SLASH_COMMANDS
+                  if cmd == "/unshare"]
+    assert "queue" in palette.lower()
+    repl = rc.BUILTINS["/unshare"] if isinstance(rc.BUILTINS, dict) else \
+        next(c for c in rc.BUILTINS if c.name == "/unshare")
+    assert "queue" in repl.summary.lower()

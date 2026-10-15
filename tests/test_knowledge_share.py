@@ -5,6 +5,8 @@ pushed and no network is used (the visibility probe is replaced).
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -362,3 +364,199 @@ def test_an_edited_evidence_must_still_be_a_pointer(env):
     les = _lesson(env)
     with pytest.raises(ValueError):
         kp.edit(les.id, evidence="see the chat above")
+
+
+# ---------------------------------------------------------------------------
+# the queue record's file mode
+# ---------------------------------------------------------------------------
+
+def _queued_record(env):
+    clock = Clock()
+    out = _confirm_all(_share(env, _lesson(env), clock=clock), clock)
+    assert out.status == "done", out.message
+    (rec,) = ks.read_queue()
+    return rec
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes")
+@pytest.mark.parametrize("umask", [0o022, 0o002, 0o077],
+                         ids=["022", "002", "077"])
+def test_a_rewritten_record_keeps_the_mode_it_was_created_with(env, umask):
+    """An admin decision rewrites the record. The rewrite went through
+    Path.write_text, whose mode is 0o666 minus the umask, so a 0o640
+    record in a shared queue became 0o644 or 0o664: readable by every
+    account on the host. The mode must not depend on the umask of
+    whichever process rewrites."""
+    old = os.umask(umask)
+    try:
+        rec = _queued_record(env)
+        p = Path(rec["_path"])
+        created = stat.S_IMODE(p.stat().st_mode)
+        assert created == 0o640, oct(created)
+        rec["status"] = "rejected"
+        rec["reason"] = "already in the docs"
+        ks.write_queue_record(rec)
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(p.stat().st_mode) == 0o640
+    assert json.loads(p.read_text())["status"] == "rejected"
+    assert [x.name for x in p.parent.iterdir()] == [p.name]
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes")
+def test_group_read_goes_only_to_the_queue_folders_group(env, monkeypatch):
+    """A shared queue is read by the admin through the queue folder's
+    group. A record whose group is something else -- the author's
+    primary group, on a folder without the setgid bit -- must not be
+    group-readable: that group is whoever shares the author's primary
+    group, not the admin. The record stays 0o600 and the share says why
+    the admin cannot read it."""
+    other = os.getegid() + 4242
+    monkeypatch.setattr(ks, "_queue_gid", lambda _folder: other,
+                        raising=False)
+    clock = Clock()
+    out = _confirm_all(_share(env, _lesson(env), clock=clock), clock)
+    assert out.status == "done", out.message
+    (rec,) = ks.read_queue()
+    p = Path(rec["_path"])
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert "setgid" in out.message
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes")
+def test_the_per_account_queue_is_never_group_readable(env, monkeypatch):
+    monkeypatch.delenv("DELFIN_KNOWLEDGE_QUEUE")
+    clock = Clock()
+    out = _confirm_all(_share(env, _lesson(env), clock=clock), clock)
+    assert out.status == "done", out.message
+    (rec,) = ks.read_queue()
+    p = Path(rec["_path"])
+    assert p.parent == env["home"] / ".delfin" / "knowledge" / "queue"
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert stat.S_IMODE(p.parent.stat().st_mode) == 0o700
+
+
+# ---------------------------------------------------------------------------
+# withdrawing a share that is still in the review queue
+# ---------------------------------------------------------------------------
+
+def _queued_share(env):
+    clock = Clock()
+    les = _lesson(env)
+    out = _confirm_all(_share(env, les, clock=clock), clock)
+    assert out.status == "done", out.message
+    return les, out.ref
+
+
+@pytest.mark.parametrize("by", ["queue id", "lesson id"])
+def test_a_queued_share_is_withdrawn_by_its_author(env, by):
+    """Before, /unshare looked only for entries already in git, so a
+    submission waiting for review could not be taken back, and the
+    WITHDRAWN status was read everywhere and set nowhere."""
+    les, qid = _queued_share(env)
+    ref = qid if by == "queue id" else str(les.id)
+    clock = Clock()
+    d = ks.start_unshare(ref, workspace=env["project"], clock=clock)
+    assert qid in d.title and "Serial re-run" in d.preview()
+    out = _confirm_all(d, clock)
+    assert out.status == "done", out.message
+    path = env["queue"] / f"{qid}.json"
+    rec = json.loads(path.read_text())
+    assert rec["status"] == "withdrawn"
+    # the text and the handle are gone from the record, not only hidden
+    assert "entry" not in rec and "author" not in rec
+    assert "Serial re-run" not in path.read_text()
+    assert kp.get(les.id).status == kp.WITHDRAWN
+    assert all(r.get("status") != "pending" for r in ks.read_queue())
+
+
+def test_a_withdrawn_submission_cannot_be_accepted(env, monkeypatch):
+    """An admin dialog opened before the withdrawal must not publish the
+    text after it: the decision re-reads the record and finds it
+    withdrawn, and no branch is prepared."""
+    from delfin.agent import knowledge_curation as kc
+    les, qid = _queued_share(env)
+    monkeypatch.setattr(ks, "admins", lambda: ("boss",))
+    monkeypatch.setattr(ks, "_identities", lambda: {"boss"})
+    clock = Clock()
+    accept = kc.start(kc.plan_accept(qid), clock=clock)
+    d = ks.start_unshare(qid, workspace=env["project"], clock=clock)
+    assert _confirm_all(d, clock).status == "done"
+    out = _confirm_all(accept, clock)
+    assert out.status != "done"
+    assert "withdrawn" in out.message
+    assert _git(env["delfin"], "branch", "--list").strip() == "* main"
+    assert json.loads((env["queue"] / f"{qid}.json").read_text())[
+        "status"] == "withdrawn"
+
+
+def test_only_the_account_that_wrote_the_record_withdraws_it(
+        env, monkeypatch):
+    """Ownership is the account the kernel recorded as the record's
+    owner, not a handle anyone can type: with a different account
+    asking, the handle 'maxh' on the record proves nothing."""
+    les, qid = _queued_share(env)
+    monkeypatch.setattr(ks, "_current_uid", lambda: os.getuid() + 1,
+                        raising=False)
+    with pytest.raises(ks.ShareRefused, match="account"):
+        ks.start_unshare(qid, workspace=env["project"], handle="maxh")
+    rec = json.loads((env["queue"] / f"{qid}.json").read_text())
+    assert rec["status"] == "pending" and rec["author"] == "maxh"
+
+
+def test_a_decided_submission_is_not_withdrawn_from_the_queue(env):
+    les, qid = _queued_share(env)
+    path = env["queue"] / f"{qid}.json"
+    (rec,) = ks.read_queue()
+    rec["status"] = "rejected"
+    ks.write_queue_record(rec)
+    with pytest.raises(ks.ShareRefused, match="rejected"):
+        ks.start_unshare(qid, workspace=env["project"])
+    assert json.loads(path.read_text())["status"] == "rejected"
+
+
+def test_the_queue_record_names_no_admin_account(env, monkeypatch):
+    """decided_by held the admin's OS login (getpass, i.e. $USER) and
+    nothing read it; the account that rewrote the record is its file
+    owner already."""
+    from delfin.agent import knowledge_curation as kc
+    les, qid = _queued_share(env)
+    monkeypatch.setattr(ks, "admins", lambda: ("boss",))
+    monkeypatch.setattr(ks, "_identities", lambda: {"boss"})
+    monkeypatch.setenv("USER", "boss-login")
+    monkeypatch.setenv("LOGNAME", "boss-login")
+    clock = Clock()
+    out = _confirm_all(kc.start(kc.plan_reject(qid, "already in the docs"),
+                                clock=clock), clock)
+    assert out.status == "done", out.message
+    text = (env["queue"] / f"{qid}.json").read_text()
+    assert "boss-login" not in text and "decided_by" not in text
+    assert json.loads(text)["reason"] == "already in the docs"
+
+
+def test_an_agent_session_cannot_withdraw_a_queued_share(env, monkeypatch):
+    """The owner check authenticates the account, and the agent runs as
+    that account; the withdrawal stays the person's act."""
+    les, qid = _queued_share(env)
+    monkeypatch.setenv("DELFIN_AGENT_SESSION", "123")
+    with pytest.raises(ks.ShareRefused, match="agent session"):
+        ks.start_unshare(qid, workspace=env["project"])
+    with pytest.raises(ks.ShareRefused, match="agent session"):
+        ks.start_withdraw(qid)
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX accounts")
+def test_the_admin_account_is_the_uid_not_the_user_variable(
+        env, monkeypatch):
+    """getpass.getuser() returns $LOGNAME / $USER first, which any process
+    sets as it likes: USER=<admin> made a non-admin the knowledge admin.
+    The account behind an authorisation is the real uid's name."""
+    import pwd
+    me = pwd.getpwuid(os.getuid()).pw_name
+    monkeypatch.setattr(ks, "admins", lambda: ("boss-admin",))
+    monkeypatch.setattr(ks, "_GH_LOGIN", lambda: "")
+    for var in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+        monkeypatch.setenv(var, "boss-admin")
+    assert not ks.is_admin()
+    monkeypatch.setattr(ks, "admins", lambda: (me,))
+    assert ks.is_admin()

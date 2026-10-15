@@ -1,7 +1,7 @@
 """CONTROL files written from older templates validate as they did.
 
 Checked against every archived CONTROL file, old validator against new: 264
-files that validate now failed before, 254 of them Jerome's, on two lines an
+files that validate now failed before, 254 of them from one user, on two lines an
 older template wrote itself --
 
 * ``states=[S0,S1,T1,...]``: the template's help line listed S0 among the
