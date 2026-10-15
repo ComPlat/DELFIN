@@ -412,13 +412,14 @@ describe("what needs the user, seen from anywhere in the window", () => {
     expect(hintsLine()).toMatch(/← agents +◉ 1 *$/)
   })
 
-  test("another session here that starts to wait names itself too", async () => {
+  test("another session here that starts to wait names itself in the message row; the corner counts it", async () => {
     await mount({ quietMs: 0 })
     w!.store.push({ type: "session.summary", session: "q9", ts: 0,
                     summary: { sessionId: "q9", title: "relax Fe complex", workspace: "/w", state: "needs_input",
                                pending: 1, createdAt: 901, lastActivity: now } } as never)
     await w!.settle()
-    expect(hintsLine()).toMatch(/◉ relax Fe complex asks *$/)
+    expect(panel()).toContain("◉ session 'relax Fe complex' waits for you — ← to open")
+    expect(hintsLine()).toMatch(/1 more session \(1 waits for you\) ← agents +◉ 1 *$/)
   })
 })
 

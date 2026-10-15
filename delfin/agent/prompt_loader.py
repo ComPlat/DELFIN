@@ -842,6 +842,27 @@ class PromptLoader:
             joined = (joined + "\n\n" + notice) if joined else notice
         return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
 
+    def _load_knowledge_context(self, task_text: str,
+                                max_chars: int | None = None) -> str:
+        """Repository lessons that match the task (knowledge.load_block):
+        the global pack/knowledge entries, plus the workspace
+        repository's .delfin/knowledge outside the DELFIN tree. Fenced as
+        untrusted data, expired entries and entries carrying a permission
+        instruction left out, "" when nothing matches. Volatile: it
+        depends on the task. A session that switched the external stores
+        off (--bare) reads none."""
+        if self.skip_external_memory:
+            return ""
+        try:
+            from .knowledge import load_block
+            return load_block(
+                task_text=task_text,
+                workspace=self.workspace_root or self.repo_root,
+                is_delfin_workspace=self.is_delfin_workspace,
+                max_chars=max_chars)
+        except Exception:
+            return ""
+
     def _load_episode_recall_context(self, task_text: str = "",
                                      session_id: str = "") -> str:
         """Best-effort recall of similar PAST SESSIONS (episodic memory).
@@ -2221,6 +2242,14 @@ class PromptLoader:
                     f"--- Past Sessions ---\n{episode_ctx}")
                 injected.append("episodes")
 
+            # Shared lessons (repository knowledge), only when one matches.
+            knowledge_ctx = self._load_knowledge_context(task_text)
+            if knowledge_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("knowledge", self.LAYER_VOLATILE,
+                    f"--- Shared lessons ---\n{knowledge_ctx}")
+                injected.append("knowledge")
+
             # How this workspace checks its work (tests/lint from its own
             # CI or config), so the agent calls the right runner instead
             # of guessing. Volatile: read from disk at build time, and it
@@ -2587,6 +2616,19 @@ class PromptLoader:
                 add("external_memory", self.LAYER_VOLATILE,
                     f"--- Folder Conventions (remembered) ---\n{ext_mem}")
                 injected.append("external_memory")
+
+        # Shared lessons for every role but the administrative one, whose
+        # memories are kept apart by domain (above) and whose work the
+        # technical lessons do not describe.
+        if role_id != "office_agent":
+            knowledge_ctx = self._load_knowledge_context(
+                task_text, max_chars=1200 if role_id == "dashboard_agent"
+                else None)
+            if knowledge_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("knowledge", self.LAYER_VOLATILE,
+                    f"--- Shared lessons ---\n{knowledge_ctx}")
+                injected.append("knowledge")
 
         # User model (see _user_model_section).
         _user_block = self._user_model_section(session_key, role_id)

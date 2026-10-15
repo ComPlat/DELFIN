@@ -216,6 +216,15 @@ _BASELINE_TOKENS = 11_422
 # shorter spelling; measured +5 tokens, so the budget moves
 # 10_173 -> 10_178. The preset's prompt and description are not in the
 # schema and cost nothing here.
+# 2026-10-15: the layered memory. remember takes two more kinds, lesson
+# (a private lesson the person may share) and finding (an entry for the
+# other agents of one swarm run), and an evidence pointer for both:
+# +43 tokens as first written. Paid from remember's own text first -- the
+# description and the type gloss cut to the shortest form that keeps
+# "secrets", "kept private" and "this run's agents" -- which returned 32;
+# the remaining 9 are the evidence property and the two enum values,
+# which have no shorter spelling. A separate swarm tool (about 100 tokens)
+# was rejected for this reason. The budget moves 10_178 -> 10_187.
 # 2026-10-15: make_plot kind energy_profile, the group's reaction energy
 # diagram drawn from values or outputs of any program (converted, mass
 # balance and TS modes checked by the tool). It arrived at +129 tokens.
@@ -230,7 +239,9 @@ _BASELINE_TOKENS = 11_422
 # arithmetic itself; without the never-script clause it wrote its own
 # matplotlib. Two of the 44 come from the slack main left under its
 # budget, so the budget moves +42, 10_178 -> 10_220.
-_TOKEN_BUDGET = 10_220
+# Both arrived on main the same day; measured together: 10_176 + 11
+# (memory's remember schema) + 44 (make_plot energy_profile) = 10_231.
+_TOKEN_BUDGET = 10_231
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

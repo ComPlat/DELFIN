@@ -266,6 +266,7 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "sessions.past": {"sessions": "[object]"},
     "service.status": {"pid": "integer", "host": "string",
                        "startedAt": "number", "sessions": "[object]",
+                       "dormant": "[object]?",
                        "windows": "integer", "socket": "string"},
     "service.shutdown": {"stopping": "boolean", "sessions": "integer"},
     "attention.list": {"items": "[object]", "version": "integer?"},
