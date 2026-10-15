@@ -30,6 +30,8 @@ and the model was handed the base64 instead of the caption.
 Spec (all keys optional except ``kind`` and the data):
 
     kind:        "line" | "scatter" | "bar" | "histogram" | "box"
+                 | "energy_profile" (the group's reaction energy diagram,
+                 :mod:`delfin.agent.energy_profile`)
     title, xlabel, ylabel, units: str ("units" is appended to the y label
                  and the caption)
     format:      "svg" (default) | "png"
@@ -43,6 +45,13 @@ Spec (all keys optional except ``kind`` and the data):
     data: {"file": p}  CSV with x,y (or value) columns, or JSON, inside the
                        workspace
     series: [{"label", "x"?, "y"} | {"label", "data"}]  several series
+
+energy_profile: one series per pathway, ``x`` the state names, ``y`` the
+energies, ``null`` for a transition state that was not computed (drawn as a
+hump); a state named in two pathways is one column, so a branch lines up
+by its names (``start`` places only a pathway that shares none); or
+``data: {"file": "<name>.csv"}`` in the group's ``Index;deltaG`` format. ``ylabel`` defaults to ``ΔG`` and
+``units`` to ``kcal/mol``.
 """
 
 from __future__ import annotations
@@ -72,7 +81,8 @@ MAX_DATA_FILE_BYTES = 5_000_000
 #: (``delfin.dashboard.chat_viewer.CARD_MARKER``).
 CARD_MARKER = "DELFIN_CARD:"
 
-_KINDS = frozenset({"line", "scatter", "bar", "histogram", "box"})
+_KINDS = frozenset({"line", "scatter", "bar", "histogram", "box",
+                    "energy_profile"})
 _FORMATS = frozenset({"svg", "png"})
 _KINDS_WITH_VALUES = frozenset({"histogram", "box"})
 _SVG_HASHSALT = "delfin-chat-plots"
@@ -174,8 +184,8 @@ def _categories(xs, what: str = "x") -> list:
     return xs
 
 
-def _resolve_values_from_file(path, root: Path, reader=None):
-    """Numbers or ``{x, y}`` rows from a CSV or JSON file inside ``root``.
+def _read_data_file(path, root: Path, reader=None) -> tuple[str, str]:
+    """``(text, suffix)`` of a CSV or JSON file inside ``root``.
 
     A path that resolves outside ``root`` (absolute, ``..``, symlink) is
     refused, as is a file over ``MAX_DATA_FILE_BYTES``. ``reader`` -- the
@@ -203,7 +213,12 @@ def _resolve_values_from_file(path, root: Path, reader=None):
         def reader(q):
             with q.open(encoding="utf-8") as fh:
                 return fh.read()
-    text = reader(p)
+    return reader(p), suffix
+
+
+def _resolve_values_from_file(path, root: Path, reader=None):
+    """Numbers or ``{x, y}`` rows from a CSV or JSON file inside ``root``."""
+    text, suffix = _read_data_file(path, root, reader)
     try:
         if suffix == ".json":
             return json.loads(text)
@@ -306,6 +321,90 @@ def _resolve_series(spec: dict, kind: str, root: Path, reader=None):
     return [(_require_str(spec, "label", ""), xs, ys)], len(ys)
 
 
+def _resolve_pathways(spec: dict, root: Path, reader=None):
+    """``([Pathway, ...], n_points)`` for an ``energy_profile`` spec."""
+    from delfin.agent import energy_profile as ep
+
+    data = spec.get("data")
+    for alias in ("data_file", "file"):         # what models write instead
+        if data is None and isinstance(spec.get(alias), str):
+            data = {"file": spec[alias]}
+    if isinstance(data, dict) and "file" in data:
+        text, suffix = _read_data_file(data["file"], root, reader)
+        if suffix == ".csv":
+            try:
+                pathways = ep.read_csv(text)
+            except ValueError as exc:
+                raise SpecError(f"cannot read {data['file']}: {exc}") from exc
+            if len(pathways) > MAX_SERIES:
+                raise SpecError(f"{len(pathways)} pathways; at most "
+                                f"{MAX_SERIES}")
+            return pathways, sum(len(p.values) for p in pathways)
+        try:
+            raw = json.loads(text)
+        except Exception as exc:
+            raise SpecError(f"cannot read {data['file']}: {exc}") from exc
+        spec = {"series": raw.get("series") if isinstance(raw, dict) else raw}
+    raw = spec.get("series")
+    if not raw:
+        if "y" not in spec:
+            raise SpecError(
+                "kind 'energy_profile' needs 'series' (one per pathway: "
+                "label, x = state names, y = energies, start), 'x'/'y', or "
+                "data: {file: <csv>}")
+        raw = [{"x": spec.get("x"), "y": spec["y"],
+                "start": spec.get("start", 1)}]
+    if not isinstance(raw, list):
+        raise SpecError("series must be a list of objects")
+    if len(raw) > MAX_SERIES:
+        raise SpecError(f"{len(raw)} pathways; at most {MAX_SERIES}")
+    pathways, n = [], 0
+    for idx, s in enumerate(raw):
+        if not isinstance(s, dict):
+            raise SpecError(f"series[{idx}] must be an object")
+        raw_y = s.get("y")
+        if not isinstance(raw_y, list) or not raw_y:
+            raise SpecError(f"series[{idx}].y must be a non-empty list of "
+                            f"energies (null for an uncomputed transition "
+                            f"state)")
+        if len(raw_y) > MAX_POINTS:
+            raise SpecError(f"series[{idx}].y has {len(raw_y)} values; at "
+                            f"most {MAX_POINTS}")
+        ys = [None if v is None else _number(v, f"series[{idx}].y")
+              for v in raw_y]
+        start = s.get("start", 1)
+        if isinstance(start, bool) or not isinstance(start, int) \
+                or not 0 <= start <= MAX_POINTS:
+            raise SpecError(f"series[{idx}].start must be a whole number "
+                            f"from 0, got {start!r}")
+        xs = [str(v) for v in
+              _categories(s.get("x") or [], f"series[{idx}].x")]
+        computed = sum(v is not None for v in ys)
+        if xs and len(xs) == computed < len(ys):
+            # Names for the computed states only: the uncomputed
+            # transition states have none to give.
+            names = iter(xs)
+            xs = ["TS?" if v is None else next(names) for v in ys]
+        if xs and len(xs) != len(ys):
+            raise SpecError(f"series[{idx}]: x has {len(xs)} states, "
+                            f"y has {len(ys)}")
+        if not xs:
+            n_seen = iter(range(start, start + len(ys)))
+            xs = ["TS?" if v is None else str(next(n_seen)) for v in ys]
+        states = xs
+        pw = ep.Pathway(label=_require_str(s, "label", ""),
+                        states=tuple(states), values=tuple(ys), start=start)
+        try:
+            ep.check(pw, f"series[{idx}]")
+        except ValueError as exc:
+            raise SpecError(str(exc)) from None
+        pathways.append(pw)
+        n += len(ys)
+    if n > MAX_POINTS:
+        raise SpecError(f"{n} states over all pathways; at most {MAX_POINTS}")
+    return pathways, n
+
+
 def _positions(xs):
     """``(positions, tick_labels)``; tick_labels is None for numeric x."""
     if all(isinstance(v, (int, float)) for v in xs):
@@ -352,7 +451,6 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
     spec; nothing is written in that case. The only write is the figure
     at :func:`resolve_out_path`.
     """
-    from matplotlib import rc_context
     from matplotlib.figure import Figure
 
     if not isinstance(spec, dict):
@@ -370,6 +468,9 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
                              or not isinstance(bins, int)
                              or not 1 <= bins <= MAX_BINS):
         raise SpecError(f"bins must be an integer from 1 to {MAX_BINS}")
+    if kind == "energy_profile":
+        return _plot_energy_profile(spec, out_path, out_dir_path, reader,
+                                    title=title, xlabel=xlabel)
     series, n_points = _resolve_series(spec, kind, out_dir_path, reader)
 
     fig = Figure(figsize=(6, 4))
@@ -394,10 +495,59 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
     if title:
         ax.set_title(title)
 
+    _write(fig, out_path, fmt)
+    return PlotResult(
+        path=out_path,
+        caption=_caption(title, units, kind, n_points),
+        kind=kind,
+        series=len(series),
+        labels=(xlabel, ylabel),
+        format=fmt,
+        n_points=n_points,
+    )
+
+
+def _plot_energy_profile(spec, out_path, out_dir_path, reader, *,
+                         title, xlabel) -> PlotResult:
+    from matplotlib import rc_context
+    from matplotlib.figure import Figure
+    from delfin.agent import energy_profile as ep
+
+    fmt = out_path.suffix[1:].lower()
+    ylabel = _require_str(spec, "ylabel", "ΔG").strip() or "ΔG"
+    units = (_require_str(spec, "units", "kcal/mol").strip()
+             if spec.get("units") is not None else "kcal/mol")
+    pathways, n_points = _resolve_pathways(spec, out_dir_path, reader)
+    with rc_context(ep.RC):
+        fig = Figure(figsize=ep.figsize(pathways))
+        ep.draw(fig, pathways, ylabel=ylabel, units=units, xlabel=xlabel,
+                title=title)
+        _write(fig, out_path, fmt, dpi=300)
+    highest = max((v, s) for p in pathways for _, s, v in p.points())
+    starts = [p.start for p in ep.placed(pathways)]
+    caption = (f"{_caption(title, units, 'energy_profile', n_points)}; "
+               f"{len(pathways)} pathway(s) starting at column(s) "
+               f"{', '.join(map(str, starts))}, highest {highest[0]:.2f} "
+               f"{units} at state {highest[1]}")
+    return PlotResult(
+        path=out_path,
+        caption=caption,
+        kind="energy_profile",
+        series=len(pathways),
+        labels=(xlabel, ylabel),
+        format=fmt,
+        n_points=n_points,
+    )
+
+
+def _write(fig, out_path: Path, fmt: str, dpi=None) -> None:
+    """Save ``fig`` to ``out_path`` within ``MAX_BYTES``."""
+    from matplotlib import rc_context
+
     buf = io.BytesIO()
     try:
         with rc_context({"svg.hashsalt": _SVG_HASHSALT}):
-            fig.savefig(buf, format=fmt,
+            fig.savefig(buf, format=fmt, dpi=dpi,
                         metadata={"Date": None} if fmt == "svg" else {})
     except ValueError as exc:   # a mathtext label it cannot parse, ...
         raise SpecError(f"cannot render the figure: {exc}") from exc
@@ -412,15 +562,6 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
         out_path.write_bytes(data)
     except OSError as exc:
         raise SpecError(f"cannot write {out_path}: {exc}") from exc
-    return PlotResult(
-        path=out_path,
-        caption=_caption(title, units, kind, n_points),
-        kind=kind,
-        series=len(series),
-        labels=(xlabel, ylabel),
-        format=fmt,
-        n_points=n_points,
-    )
 
 
 def card_result(result: PlotResult) -> str:

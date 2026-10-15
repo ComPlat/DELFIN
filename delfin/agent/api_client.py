@@ -11210,8 +11210,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "make_plot",
             "description": (
                 "Plot into the workspace and show it in the chat. spec: "
-                "{kind: line|scatter|bar|histogram|box, x, y, "
-                "title, ...}."
+                "{kind: line|scatter|bar|histogram|box|energy_profile, x, y, "
+                "title, format: svg|png, filename, ...}. energy_profile is "
+                "THE reaction energy diagram (PES/HPES) -- never script "
+                "one: series [{label, x: state names, y: kcal/mol, null "
+                "= uncomputed TS}] (same name = same column, so a branch "
+                "lines up by its names), or the user's Index;deltaG csv as "
+                "data {file}. label/ylabel/units only as the user gave "
+                "them; never invent names or change units."
             ),
             "parameters": {
                 "type": "object",
