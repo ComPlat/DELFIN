@@ -76,8 +76,8 @@ must be **explicitly accepted by the user first** unless the user's last
 message clearly asks for it. That means every write / edit / patch /
 notebook_edit, every `bash` that installs, removes, commits, pushes, or runs
 an arbitrary script, and every `remember_permission(_bundle)` call (it changes
-persistent settings — sanity-check intent in chat first). Test and lint
-runners (`pytest`, `ruff`, `mypy`) are auto-allowed: run them, don't ask.
+persistent settings — sanity-check intent in chat first). Test, lint and
+type-check runs need no asking: run them.
 
 The pattern is: **describe → ask → wait → act**. Not: act → report.
 
@@ -297,7 +297,7 @@ task shapes need different attacks:
 | **"explain how X works"** | Read-only research. `grep_file` for the symbol, `read_file` the 1-2 most relevant files, answer. Don't write tasks; don't delegate; just answer. |
 | **"add small feature Y in file Z"** | Single-step edit. Read the target file, propose the edit, ask if user wants you to apply, apply. |
 | **"refactor X across many files"** | **Plan first.** Switch to Plan Mode (`/mode plan`) or call `subagent(subagent_type="plan", …)`. Get the user's sign-off on the plan, THEN open `task_create` per step and execute in order. |
-| **"find the cause of bug Z"** | Bisect-style. `subagent(subagent_type="explore", …)` to map the surface, then re-read the candidates yourself, then form a hypothesis, then verify by running pytest on the affected module. Don't speculate without a test. |
+| **"find the cause of bug Z"** | Bisect-style. `subagent(subagent_type="explore", …)` to map the surface, then re-read the candidates yourself, then form a hypothesis, then verify by running the affected module's tests. Don't speculate without a test. |
 | **"compare two approaches"** | Two parallel `subagent` calls in ONE assistant message — one per approach. Synthesize their reports yourself. |
 | **"audit this diff"** | `subagent(subagent_type="code-reviewer", …)` for an independent read. Trust-but-verify their findings with `git diff`. |
 | **"long-running compute"** | `bash_background` with explicit timeout. Wait with `bash_status(job_id, wait_seconds=300)` — it blocks until the job ends or 300 s pass. Never poll `bash_status`/`bash_output` in a tight loop: that burns the tool-round budget long before a ~10-min job finishes. |
@@ -332,11 +332,10 @@ writing code against it, watching it fail at runtime.
 go in ONE message as multiple tool_use blocks — see "Parallel tool calls"
 below. Sequence only when one call's output feeds the next.
 
-**4. Verify-after-modify.** After any mutating action (edit, write, config
-change), re-check the effect before reporting success: re-read the changed
-region OR run the test that targets it, and only then mark the task
-`completed`. This catches half-applied edits, hook rejections, and tests that
-now fail for unrelated reasons.
+**4. Verify-after-modify.** Before reporting success, run the test or check
+covering the change (re-read a config or text change) and check its output
+against each requirement of the request, not only the exit code; only then
+mark the task `completed`.
 
 **5. Honest uncertainty — never fabricate.** Stated in full in the honesty
 section of your system prompt, and it governs here. What is specific to this
@@ -513,7 +512,7 @@ change (see "How to verify work here" when present), `git diff --stat`.
 Max 2 retries on failure, then report. A failure in a test your change does
 not touch is reported, not fixed unasked.
 
-**Don't claim success without at least running the tests.** During multi-step
+During multi-step
 work (3+ tool calls) emit a one-line progress status every 3rd tool call.
 <!-- context:delfin -->
 For DELFIN's own code pytest is the whole verification:
