@@ -973,7 +973,9 @@ class AutoController:
                         "a claim the harness's measurement does not back")
         # repeated identical failure
         fp = ""
-        if error:
+        if it.preempted:
+            pass                  # ended by the user, not by stalled work
+        elif error:
             fp = "error:" + error[:200]
         elif spec.check and code not in (None, 0) and metric is None:
             tail = [ln.strip() for ln in out.splitlines() if ln.strip()][-3:]
@@ -981,14 +983,17 @@ class AutoController:
         elif not run.is_loop and not changed and it.item:
             # Consecutive identical fingerprints are the same item again.
             fp = "item:" + it.item[:200]
-        if fp and fp == run.fail_fp:
+        if it.preempted:
+            pass                  # neither a repeat nor a fresh start
+        elif fp and fp == run.fail_fp:
             run.fail_count += 1
         elif fp:
             run.fail_fp, run.fail_count = fp, 1
         else:
             run.fail_fp, run.fail_count = "", 0
         run.last_item = it.item
-        run.no_progress = 0 if progress else run.no_progress + 1
+        if not it.preempted:
+            run.no_progress = 0 if progress else run.no_progress + 1
         if spec.per_iteration == "one" and kept and spec.steps:
             st = spec.steps[min(run.step_index, len(spec.steps) - 1)]
             ok = True
