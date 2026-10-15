@@ -341,6 +341,7 @@ class AutoController:
         self._resume_after_user = False
         self._user_turn = False
         self.user_waiting: Callable[[], bool] = lambda: False
+        self._defaults: list[str] = ["main", "master"]
         self.log_path = self._log_path("auto")
 
     # -- small helpers -------------------------------------------------------
@@ -623,7 +624,7 @@ class AutoController:
             name, args or {}, workspace=str(self.workspace),
             measure=spec.measure if spec else (),
             touch=spec.touch if spec else (),
-            default_branches=sorted(self.git.defaults()))
+            default_branches=self._defaults)
         if verdict is None:
             return None
         if verdict.queue:
@@ -775,6 +776,9 @@ class AutoController:
             head=self.git.head() if self.git.is_repo() else "",
             before=self.git.dirty() if self.git.is_repo() else {},
             item=item, engine=engine)
+        # Read once per iteration: the veto runs on every tool call.
+        self._defaults = sorted(self.git.defaults()) if self.iteration.head \
+            else ["main", "master"]
         self._arm(engine)
         return HarnessText(self._prompt(wake, item))
 
