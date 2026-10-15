@@ -4689,6 +4689,37 @@ class AgentEngine:
         except Exception:
             pass
 
+    def _append_comparison_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Mark a comparative figure ("12 % faster", "from 6/10 to 9/10")
+        that no paired comparison of this session backs
+        (comparison_claims). Caveat, not correction: a retry could only
+        restate the figure. Never raises."""
+        try:
+            from . import comparison_claims as _cc
+            claims = _cc.scan(source if source is not None else text,
+                              getattr(self, "_exec_commands_session", None))
+            caveat = _cc.caveat(claims)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _append_edit_signal_caveat(
         self, text: str, on_token: Callable[[str], None] | None = None,
         *, source: str | None = None,
@@ -5032,6 +5063,7 @@ class AgentEngine:
         out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
         out = self._append_truncated_count_caveat(out, on_token, source=source)
         out = self._append_edit_signal_caveat(out, on_token, source=source)
+        out = self._append_comparison_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
         return out
