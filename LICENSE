@@ -16,6 +16,10 @@ along with this program, in the file COPYING.LESSER, and a copy of the
 GNU General Public License, which it supplements, in the file COPYING.
 If not, see <https://www.gnu.org/licenses/>.
 
+Components of other authors that are distributed with this program, and
+the licences of the programs its installers download, are listed in
+THIRD_PARTY_NOTICES.md.
+
 Non-binding citation request:
 If you use this software in research, please cite the associated paper (see CITATION.cff and README).
 

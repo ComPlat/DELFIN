@@ -1,4 +1,4 @@
-include LICENSE COPYING COPYING.LESSER
+include LICENSE COPYING COPYING.LESSER THIRD_PARTY_NOTICES.md
 include README.md
 include pyproject.toml
 

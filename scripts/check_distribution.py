@@ -21,7 +21,7 @@ What it refuses:
 
 What it requires:
 
-- the licence files in :data:`REQUIRED_LICENCE_FILES`, in the wheel's
+- the licence and notice files in :data:`REQUIRED_LICENCE_FILES`, in the wheel's
   ``*.dist-info/licenses/`` and in the sdist's root directory;
 - ``License-Expression: LGPL-3.0-or-later`` and one ``License-File`` line per
   required file in the wheel's METADATA and the sdist's PKG-INFO (PEP 639).
@@ -46,7 +46,9 @@ from pathlib import Path, PurePosixPath
 LICENSE_EXPRESSION = "LGPL-3.0-or-later"
 
 #: Files that carry the project's licence and the notices of what it bundles.
-REQUIRED_LICENCE_FILES: tuple[str, ...] = ("LICENSE", "COPYING", "COPYING.LESSER")
+REQUIRED_LICENCE_FILES: tuple[str, ...] = (
+    "LICENSE", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md",
+)
 
 #: Directories the installers write into (see delfin/qm_tools/install_qm_tools.sh
 #: and the csp/mlp/analysis/ai installers).
