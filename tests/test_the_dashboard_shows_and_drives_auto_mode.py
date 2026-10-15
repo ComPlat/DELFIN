@@ -169,7 +169,9 @@ def test_loop_commands_reach_the_shared_handler(tab):
 
 def test_the_interval_form_stays_a_scheduler_entry(tab):
     t, refs, eng, ws = tab
-    _type(t, "/loop 30m /check")
+    # (An argument shaped like a path, "/check", meets the zone check
+    # that guards every slash command; that is older than this file.)
+    _type(t, "/loop 30m check the energies")
     entries = [e for e in S._GLOBAL.list_entries()
                if (e.reason or "").startswith("loop:")]
     assert len(entries) == 1 and entries[0].every_seconds == 1800
