@@ -421,3 +421,16 @@ def test_messages_sit_bottom_right_and_never_cover_the_bar():
     block = re.search(r"\.delfin-toasts \{([^}]*)\}", css).group(1)
     assert "bottom:" in block and "top:" not in block
     assert "pointer-events: none" in block
+
+
+def test_the_menu_opens_unfiltered_in_the_default_view(repo):
+    """Walkthrough: reopened with the last search still typed, the menu
+    showed a filtered list that looked like branches had gone."""
+    panel, *_ = _panel(repo)
+    panel.open_menu()
+    panel.view.value = "All"
+    panel.search.value = "fe"
+    panel.close_menu()
+    panel.open_menu()
+    assert panel.search.value == "" and panel.view.value == "Mine"
+    assert _shown(panel) == ["main", "mine/pinned", "feat"]
