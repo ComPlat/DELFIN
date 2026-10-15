@@ -220,3 +220,21 @@ def test_compute_branch_options_follows_the_new_rule(repo):
     values = [v for _l, v in _compute_branch_options(repo)]
     assert values == ["main", "feat"]
     assert BL.branch_entries(None) [0].ref == "main"
+
+
+def test_clean_up_does_not_preselect_a_branch_the_user_pinned(repo):
+    """A branch just made from main has no commits of its own, so git calls
+    it merged; it is the user's own entry, and is offered unselected."""
+    panel, _ = _panel(repo)
+    panel.new_text.value = "max/fresh"
+    panel.new_btn.click()
+    panel.cleanup_btn.value = True
+    boxes = {cb.description.split(" ")[1]: cb for cb in panel._checks
+             if cb.description.startswith("branch ")}
+    assert boxes["max/fresh"].value is False
+    assert "pinned" in boxes["max/fresh"].description
+    assert boxes["merged-one"].value is True
+    panel.cleanup_delete_btn.click()
+    panel.cleanup_confirm.children[1].click()
+    assert "Deleted 1." in panel.cleanup_result.value
+    assert _git(repo, "rev-parse", "--verify", "max/fresh")
