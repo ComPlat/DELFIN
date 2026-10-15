@@ -76,6 +76,10 @@ MAX_SERIES = 20
 MAX_BINS = 1_000
 MAX_TEXT = 300
 MAX_DATA_FILE_BYTES = 5_000_000
+#: An ORCA output read for ``energy_profile``; a frequency run is tens of MB.
+MAX_OUTPUT_BYTES = 200_000_000
+#: Source lines in a caption; the dashboard reads 2000 characters of it.
+_MAX_NOTES = 14
 
 #: Prefix of a card result; shared with ``show_molecule``
 #: (``delfin.dashboard.chat_viewer.CARD_MARKER``).
@@ -321,8 +325,36 @@ def _resolve_series(spec: dict, kind: str, root: Path, reader=None):
     return [(_require_str(spec, "label", ""), xs, ys)], len(ys)
 
 
+def _read_output(path, root: Path, reader=None) -> tuple[str, Path]:
+    """``(text, resolved path)`` of an ORCA output for ``energy_profile``.
+
+    Unlike a data file it may lie outside the workspace -- outputs live in
+    the calculation folders -- so the dispatch layer's read gate
+    (``reader``: secret-deny list, read roots) decides, exactly as it does
+    for ``read_file``. Bounded by ``MAX_OUTPUT_BYTES``.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise SpecError("each files entry must be a path string or null")
+    p = Path(path).expanduser()
+    p = (p if p.is_absolute() else root / p).resolve()
+    if not p.is_file():
+        raise SpecError(f"output not found: {path}")
+    size = p.stat().st_size
+    if size > MAX_OUTPUT_BYTES:
+        raise SpecError(f"output {path} is {size} bytes; at most "
+                        f"{MAX_OUTPUT_BYTES}")
+    if reader is None:
+        with p.open(encoding="utf-8", errors="replace") as fh:
+            return fh.read(), p
+    return reader(p), p
+
+
 def _resolve_pathways(spec: dict, root: Path, reader=None):
-    """``([Pathway, ...], n_points)`` for an ``energy_profile`` spec."""
+    """``([Pathway, ...], n_points, notes)`` for an ``energy_profile`` spec.
+
+    ``notes`` are lines for the caption: where each energy read from an
+    output came from, and every state whose frequencies contradict its name.
+    """
     from delfin.agent import energy_profile as ep
 
     data = spec.get("data")
@@ -339,39 +371,60 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
             if len(pathways) > MAX_SERIES:
                 raise SpecError(f"{len(pathways)} pathways; at most "
                                 f"{MAX_SERIES}")
-            return pathways, sum(len(p.values) for p in pathways)
+            return pathways, sum(len(p.values) for p in pathways), []
         try:
             raw = json.loads(text)
         except Exception as exc:
             raise SpecError(f"cannot read {data['file']}: {exc}") from exc
-        spec = {"series": raw.get("series") if isinstance(raw, dict) else raw}
+        spec = dict(spec, series=(raw.get("series")
+                                  if isinstance(raw, dict) else raw))
     raw = spec.get("series")
     if not raw:
-        if "y" not in spec:
+        if "y" not in spec and "files" not in spec:
             raise SpecError(
                 "kind 'energy_profile' needs 'series' (one per pathway: "
-                "label, x = state names, y = energies, start), 'x'/'y', or "
-                "data: {file: <csv>}")
-        raw = [{"x": spec.get("x"), "y": spec["y"],
-                "start": spec.get("start", 1)}]
+                "label, x = state names, y = energies or files = ORCA "
+                "outputs), 'x'/'y', or data: {file: <csv>}")
+        raw = [{k: spec[k] for k in ("x", "y", "files", "start")
+                if k in spec}]
     if not isinstance(raw, list):
         raise SpecError("series must be a list of objects")
     if len(raw) > MAX_SERIES:
         raise SpecError(f"{len(raw)} pathways; at most {MAX_SERIES}")
-    pathways, n = [], 0
+
+    energy = _require_str(spec, "energy", "gibbs").strip().lower()
+    if energy not in ("gibbs", "electronic"):
+        raise SpecError(f"energy must be gibbs or electronic, got {energy!r}")
+
+    # First pass: values as given, or Hartree read from the outputs.
+    parsed, outputs, n = [], {}, 0
     for idx, s in enumerate(raw):
         if not isinstance(s, dict):
             raise SpecError(f"series[{idx}] must be an object")
-        raw_y = s.get("y")
-        if not isinstance(raw_y, list) or not raw_y:
-            raise SpecError(f"series[{idx}].y must be a non-empty list of "
-                            f"energies (null for an uncomputed transition "
-                            f"state)")
-        if len(raw_y) > MAX_POINTS:
-            raise SpecError(f"series[{idx}].y has {len(raw_y)} values; at "
-                            f"most {MAX_POINTS}")
-        ys = [None if v is None else _number(v, f"series[{idx}].y")
-              for v in raw_y]
+        from_files = s.get("files") is not None
+        key = "files" if from_files else "y"
+        entries = s.get(key)
+        if not isinstance(entries, list) or not entries:
+            raise SpecError(
+                f"series[{idx}] needs 'y' (energies, null for an "
+                f"uncomputed transition state) or 'files' (ORCA outputs, "
+                f"null likewise)")
+        if len(entries) > MAX_POINTS:
+            raise SpecError(f"series[{idx}].{key} has {len(entries)} "
+                            f"entries; at most {MAX_POINTS}")
+        if from_files:
+            ys = []
+            for f in entries:
+                if f is None:
+                    ys.append(None)
+                    continue
+                key = _state_key(f, idx)
+                if key not in outputs:
+                    outputs[key] = _state_record(key, root, reader, energy)
+                ys.append(outputs[key]["eh"])
+        else:
+            ys = [None if v is None else _number(v, f"series[{idx}].y")
+                  for v in entries]
         start = s.get("start", 1)
         if isinstance(start, bool) or not isinstance(start, int) \
                 or not 0 <= start <= MAX_POINTS:
@@ -386,23 +439,159 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
             names = iter(xs)
             xs = ["TS?" if v is None else next(names) for v in ys]
         if xs and len(xs) != len(ys):
+            hint = (" -- several outputs that make ONE state (catalyst + "
+                    "free CO2) go in a nested list: files: [[\"a.out\", "
+                    "\"b.out\"], \"ab.out\"]") if from_files else ""
             raise SpecError(f"series[{idx}]: x has {len(xs)} states, "
-                            f"y has {len(ys)}")
+                            f"{key} has {len(ys)}{hint}")
         if not xs:
             n_seen = iter(range(start, start + len(ys)))
             xs = ["TS?" if v is None else str(next(n_seen)) for v in ys]
-        states = xs
+        parsed.append((idx, s, xs, ys, start,
+                       [None if f is None else _state_key(f, idx)
+                        for f in entries] if from_files else None))
+        n += len(ys)
+    if n > MAX_POINTS:
+        raise SpecError(f"{n} states over all pathways; at most {MAX_POINTS}")
+
+    # Second pass: outputs become energies relative to ONE reference -- the
+    # first output of the first pathway that has outputs, or ``reference`` --
+    # so a branch is measured from where the route started, not from itself.
+    notes: list[str] = []
+    ref_eh, factor = None, 1.0
+    if outputs:
+        units = (_require_str(spec, "units", "kcal/mol").strip()
+                 if spec.get("units") is not None else "kcal/mol")
+        factor = ep.HARTREE.get(units.lower().replace(" ", ""))
+        if factor is None:
+            raise SpecError(f"energies from outputs are drawn in kcal/mol, "
+                            f"kJ/mol or eV, not {units!r}")
+        ref_file = spec.get("reference")
+        if ref_file is None:
+            ref_file = next(f for *_, files in parsed if files
+                            for f in files if f is not None)
+        else:
+            ref_file = _state_key(ref_file, "reference")
+        if ref_file not in outputs:
+            outputs[ref_file] = _state_record(ref_file, root, reader, energy)
+        ref = outputs[ref_file]
+        ref_eh = ref["eh"]
+        notes.append(f"{energy} energies relative to {' + '.join(ref_file)} "
+                     f"({ref_eh:.6f} Eh), x {factor:g} {units}/Eh")
+        _check_balance(parsed, outputs, ref_file, notes)
+
+    pathways = []
+    for idx, s, xs, ys, start, files in parsed:
+        if files:
+            ys = [None if v is None else (v - ref_eh) * factor for v in ys]
+            for state, f, v in zip(xs, files, ys):
+                if f is None:
+                    continue
+                rec = outputs[f]
+                notes.append(f"{state}: {' + '.join(f)} {rec['eh']:.6f} Eh "
+                             f"-> {v:.2f}" + _frequency_note(state, rec["imag"]))
         pw = ep.Pathway(label=_require_str(s, "label", ""),
-                        states=tuple(states), values=tuple(ys), start=start)
+                        states=tuple(xs), values=tuple(ys), start=start)
         try:
             ep.check(pw, f"series[{idx}]")
         except ValueError as exc:
             raise SpecError(str(exc)) from None
         pathways.append(pw)
-        n += len(ys)
-    if n > MAX_POINTS:
-        raise SpecError(f"{n} states over all pathways; at most {MAX_POINTS}")
-    return pathways, n
+    return pathways, n, notes
+
+
+def _state_key(entry, where) -> tuple[str, ...]:
+    """A state's outputs as a tuple: one path, or several fragments whose
+    energies add up (``["cat.out", "co2.out"]`` for catalyst + free CO2)."""
+    if isinstance(entry, str):
+        return (entry,)
+    if (isinstance(entry, list) and entry
+            and all(isinstance(f, str) and f.strip() for f in entry)):
+        return tuple(entry)
+    raise SpecError(f"series[{where}]: a files entry is a path, a list of "
+                    f"paths (fragments of one state) or null, got {entry!r}")
+
+
+def _state_record(key: tuple[str, ...], root: Path, reader,
+                  energy: str) -> dict:
+    """``{"eh", "imag", "atoms", "charge"}`` of one state, its fragments
+    summed; a refusal naming the output that lacks its energy."""
+    from collections import Counter
+    from delfin.agent import energy_profile as ep
+
+    eh, imag, atoms, charge = 0.0, 0, Counter(), 0
+    for path in key:
+        text, resolved = _read_output(path, root, reader)
+        e = ep.output_energy(text, str(resolved), energy)
+        if e is None:
+            what = ("'Final Gibbs free energy' (was it run with Freq?)"
+                    if energy == "gibbs" else "'FINAL SINGLE POINT ENERGY'")
+            raise SpecError(f"{path}: no {what}; nothing is drawn for a "
+                            f"state without its energy")
+        eh += e
+        n = ep.imaginary_modes(text)
+        imag = None if imag is None or n is None else imag + n
+        comp, q = ep.composition(text), ep.total_charge(text)
+        if atoms is None or comp is None or q is None or charge is None:
+            atoms = charge = None
+        else:
+            atoms += comp
+            charge += q
+    return {"eh": eh, "imag": imag, "atoms": atoms, "charge": charge}
+
+
+def _check_balance(parsed, outputs, ref_key, notes) -> None:
+    """Every state holds the same atoms and charge as the reference.
+
+    A profile is one system followed through a reaction: CO2 binding to a
+    metal starts at catalyst + FREE CO2, not at the bare catalyst. A state
+    missing a fragment is not on the surface at all, and its energy against
+    the others means nothing -- so the plot is refused, naming what is short.
+    """
+    from delfin.agent import energy_profile as ep
+
+    ref = outputs[ref_key]
+    if ref["atoms"] is None:
+        notes.append("mass balance NOT checked: no geometry or charge in "
+                     + " + ".join(ref_key))
+        return
+    want = (ref["atoms"], ref["charge"])
+    wrong, unread = [], []
+    for idx, s, xs, ys, start, files in parsed:
+        for state, key in zip(xs, files or []):
+            if key is None:
+                continue
+            rec = outputs[key]
+            if rec["atoms"] is None:
+                unread.append(state)
+                continue
+            diff = ep.balance_difference((rec["atoms"], rec["charge"]), want)
+            if diff:
+                wrong.append(f"{state} ({' + '.join(key)}): {diff}")
+    if wrong:
+        raise SpecError(
+            "mass balance: every state must hold the same atoms and charge "
+            f"as the reference {' + '.join(ref_key)} "
+            f"[{ep.formula(*want)}]. Off: " + "; ".join(wrong) + ". Add "
+            "the missing molecules as fragments of that state, e.g. files: "
+            "[[\"cat.out\", \"co2.out\"], \"cat-co2.out\"].")
+    notes.append("mass balance checked: every state "
+                 f"{ep.formula(*want)}" + (
+                     f"; NOT checked for {', '.join(unread)} (no geometry)"
+                     if unread else ""))
+
+
+def _frequency_note(state: str, imag) -> str:
+    """What the frequencies say about a state's name, when they disagree."""
+    from delfin.agent import energy_profile as ep
+
+    if imag is None:
+        return " [no frequencies: not checked]" if ep.is_ts_name(state) else ""
+    if ep.is_ts_name(state) and imag != 1:
+        return f" [WARNING: {imag} imaginary modes, a TS needs exactly 1]"
+    if not ep.is_ts_name(state) and imag:
+        return f" [WARNING: {imag} imaginary mode(s), not a minimum]"
+    return ""
 
 
 def _positions(xs):
@@ -430,10 +619,14 @@ def resolve_out_path(spec: dict, out_dir: Path) -> Path:
     Shared by the renderer and the dispatch executor, so the path the write
     gate checks is the path written. Refuses a name outside ``out_dir``.
     """
-    fmt = _require_str(spec, "format", "svg").lower()
+    kind = _require_kind(spec)
+    # An energy profile goes on a slide or into a paper draft: PNG at
+    # 300 dpi as the group's scripts wrote it. Two live runs asked for a PNG
+    # without saying format and then converted the SVG by hand.
+    fmt = _require_str(spec, "format",
+                       "png" if kind == "energy_profile" else "svg").lower()
     if fmt not in _FORMATS:
         raise SpecError(f"format must be png or svg, got {fmt!r}")
-    kind = _require_kind(spec)
     filename = _require_str(spec, "filename", "").strip() or f"plot_{kind}.{fmt}"
     if not filename.lower().endswith(f".{fmt}"):
         filename = f"{filename}.{fmt}"
@@ -517,7 +710,20 @@ def _plot_energy_profile(spec, out_path, out_dir_path, reader, *,
     ylabel = _require_str(spec, "ylabel", "ΔG").strip() or "ΔG"
     units = (_require_str(spec, "units", "kcal/mol").strip()
              if spec.get("units") is not None else "kcal/mol")
-    pathways, n_points = _resolve_pathways(spec, out_dir_path, reader)
+    pathways, n_points, notes = _resolve_pathways(spec, out_dir_path,
+                                                  reader)
+    if not notes:
+        # Said in the result, where the model reads it at once: a live run
+        # grepped the outputs, did the Hartree arithmetic itself and then
+        # reported "no imaginary modes" for an adduct that had one.
+        notes.append("values drawn as given: mass balance and imaginary "
+                     "modes NOT checked -- if they come from ORCA outputs, "
+                     "draw again with files: [...] instead of y")
+    labels = [p.label for p in pathways if p.label]
+    if not title and len(pathways) == 1 and labels:
+        # One pathway has no legend to carry its name; a live run put the
+        # requested heading there and it vanished.
+        title = labels[0]
     with rc_context(ep.RC):
         fig = Figure(figsize=ep.figsize(pathways))
         ep.draw(fig, pathways, ylabel=ylabel, units=units, xlabel=xlabel,
@@ -529,6 +735,14 @@ def _plot_energy_profile(spec, out_path, out_dir_path, reader, *,
                f"{len(pathways)} pathway(s) starting at column(s) "
                f"{', '.join(map(str, starts))}, highest {highest[0]:.2f} "
                f"{units} at state {highest[1]}")
+    if notes:
+        # What contradicts the picture first, so a cut caption keeps it.
+        notes = ([n for n in notes if "WARNING" in n or "NOT" in n]
+                 + [n for n in notes if not ("WARNING" in n or "NOT" in n)])
+        shown = notes[:_MAX_NOTES]
+        if len(notes) > _MAX_NOTES:
+            shown.append(f"... {len(notes) - _MAX_NOTES} more states")
+        caption += "\n" + "\n".join(shown)
     return PlotResult(
         path=out_path,
         caption=caption,

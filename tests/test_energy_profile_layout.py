@@ -273,3 +273,145 @@ def test_one_pathway_gets_no_legend_two_named_do():
                   ep.Pathway("T", ("A", "B"), (0, 2))])
     assert one.get_legend() is None
     assert two.get_legend() is not None
+
+
+# --------------------------------------------------------------------------
+# energies from ORCA outputs: converted by the tool, mass balance, TS modes
+# The fixtures copy the lines of a real ORCA 6 HF-3c run.
+
+
+def _out(atoms: str, gibbs: float, imag=(0,), charge: int = 0) -> str:
+    """An ORCA output: ``imag`` gives the imaginary modes of each frequency
+    block in order (a restarted run prints several)."""
+    coords = "\n".join(f"  {e}     0.000000    0.000000    {i:.6f}"
+                       for i, e in enumerate(atoms.split()))
+    blocks = []
+    for n in imag:
+        lines = [f"     {6 + k}:   -{900 + k}.00 cm**-1  ***imaginary mode***"
+                 for k in range(n)]
+        lines.append(f"     {6 + n}:    1989.03 cm**-1")
+        blocks.append("VIBRATIONAL FREQUENCIES\n-----------------------\n\n"
+                      + "\n".join(lines) + "\n\n------------\nNORMAL MODES\n")
+    return (f" Total Charge           Charge          ....    {charge}\n"
+            "CARTESIAN COORDINATES (ANGSTROEM)\n"
+            "---------------------------------\n"
+            f"{coords}\n\n----------------------------\n"
+            + "".join(blocks)
+            + f"Final Gibbs free energy         ...    {gibbs:.8f} Eh\n")
+
+
+@pytest.fixture
+def outputs(tmp_path):
+    files = {
+        "hcn.out": _out("C N H", -92.25649008),
+        "ts.out": _out("C N H", -92.13200436, imag=(1, 1)),
+        "hnc.out": _out("C N H", -92.23316966),
+        "bh3.out": _out("B H H H", -26.20433807),
+        "nh3.out": _out("N H H H", -55.78044373),
+        "adduct.out": _out("B N H H H H H H", -82.02353356, imag=(1,)),
+    }
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def test_energies_from_outputs_are_converted_by_the_tool(outputs):
+    res = plot({"kind": "energy_profile", "series": [
+        {"x": ["HCN", "TS", "HNC"],
+         "files": ["hcn.out", "ts.out", "hnc.out"]}]}, out_dir=str(outputs))
+    assert "TS: ts.out -92.132004 Eh -> 78.12" in res.caption
+    assert "HNC: hnc.out -92.233170 Eh -> 14.63" in res.caption
+    assert "mass balance checked: every state C1 H1 N1" in res.caption
+    assert "WARNING" not in res.caption      # one mode in the LAST block
+
+
+def test_a_state_of_fragments_adds_their_energies(outputs):
+    res = plot({"kind": "energy_profile", "series": [
+        {"x": ["BH3 + NH3", "H3N-BH3"],
+         "files": [["bh3.out", "nh3.out"], "adduct.out"]}]},
+        out_dir=str(outputs))
+    assert "-> -24.32" in res.caption
+    assert "B1 H6 N1" in res.caption
+
+
+def test_an_unbalanced_profile_is_refused_naming_what_is_missing(outputs):
+    with pytest.raises(SpecError, match=r"\+3 H, \+1 N") as exc:
+        plot({"kind": "energy_profile", "series": [
+            {"x": ["BH3", "H3N-BH3"], "files": ["bh3.out", "adduct.out"]}]},
+            out_dir=str(outputs))
+    assert "fragments" in str(exc.value)
+    assert not list(outputs.glob("*.svg"))
+
+
+def test_a_charge_that_changes_is_unbalanced(outputs):
+    (outputs / "cation.out").write_text(_out("C N H", -92.0, charge=1),
+                                        encoding="utf-8")
+    with pytest.raises(SpecError, match="charge"):
+        plot({"kind": "energy_profile", "series": [
+            {"files": ["hcn.out", "cation.out"]}]}, out_dir=str(outputs))
+
+
+def test_frequencies_that_contradict_the_name_are_reported_first(outputs):
+    res = plot({"kind": "energy_profile", "series": [
+        {"x": ["BH3 + NH3", "H3N-BH3"],
+         "files": [["bh3.out", "nh3.out"], "adduct.out"]},
+        {"x": ["BH3 + NH3", "TS-x"],
+         "files": [["bh3.out", "nh3.out"], ["bh3.out", "nh3.out"]]}]},
+        out_dir=str(outputs))
+    lines = res.caption.splitlines()
+    assert "not a minimum" in lines[1]
+    assert "a TS needs exactly 1" in lines[2]
+
+
+def test_an_output_without_its_energy_draws_nothing(outputs):
+    (outputs / "sp.out").write_text("FINAL SINGLE POINT ENERGY  -1.0\n",
+                                    encoding="utf-8")
+    with pytest.raises(SpecError, match="Freq"):
+        plot({"kind": "energy_profile", "series": [
+            {"files": ["hcn.out", "sp.out"]}]}, out_dir=str(outputs))
+
+
+def test_the_last_frequency_block_is_the_one_counted():
+    assert ep.imaginary_modes(_out("C N H", -1.0, imag=(2, 1))) == 1
+    assert ep.imaginary_modes("no frequencies here") is None
+
+
+def test_an_output_read_goes_through_the_callers_gate(outputs):
+    seen = []
+
+    def gate(p):
+        seen.append(p.name)
+        return p.read_text(encoding="utf-8")
+
+    plot({"kind": "energy_profile", "series": [
+        {"files": ["hcn.out", "ts.out", "hnc.out"]}]},
+        out_dir=str(outputs), reader=gate)
+    assert seen == ["hcn.out", "ts.out", "hnc.out"]
+
+
+def test_a_profile_is_a_png_unless_asked_otherwise(tmp_path):
+    res = plot({"kind": "energy_profile", "y": [0, 1]}, out_dir=str(tmp_path))
+    assert res.path.suffix == ".png"
+    res = plot({"kind": "energy_profile", "y": [0, 1], "format": "svg"},
+               out_dir=str(tmp_path))
+    assert res.path.suffix == ".svg"
+
+
+def test_typed_values_are_said_to_be_unchecked(tmp_path):
+    """A live run did the arithmetic itself and called a saddle a minimum."""
+    res = plot({"kind": "energy_profile", "y": [0, -40.9]},
+               out_dir=str(tmp_path))
+    assert "NOT checked" in res.caption and "files" in res.caption
+
+
+def test_side_by_side_fragments_are_explained(outputs):
+    with pytest.raises(SpecError, match="nested list"):
+        plot({"kind": "energy_profile", "series": [
+            {"x": ["BH3 + NH3"], "files": ["bh3.out", "nh3.out"]}]},
+            out_dir=str(outputs))
+
+
+def test_the_name_of_a_lone_pathway_becomes_the_heading(tmp_path):
+    res = plot({"kind": "energy_profile", "series": [
+        {"label": "Lewis-Addukt", "y": [0, -24.3]}]}, out_dir=str(tmp_path))
+    assert res.caption.startswith("Lewis-Addukt")

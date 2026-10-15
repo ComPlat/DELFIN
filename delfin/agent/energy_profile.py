@@ -39,7 +39,9 @@ which would have drawn it two columns off; a name cannot be miscounted.
 
 from __future__ import annotations
 
+import re
 import textwrap
+from collections import Counter
 from dataclasses import dataclass
 
 #: Width of one state bar, in units of the spacing between states.
@@ -105,6 +107,97 @@ def check(pw: Pathway, where: str) -> None:
         if a is None and b is None:
             raise ValueError(f"{where}: two uncomputed transition states in "
                              f"a row; put the intermediate between them")
+
+
+# --------------------------------------------------------------------------
+# energies from ORCA outputs
+
+#: Hartree in the units an energy profile is drawn in (CODATA 2018).
+HARTREE = {"kcal/mol": 627.5094740631, "kj/mol": 2625.4996394799,
+           "ev": 27.211386245988}
+
+_FREQ_BLOCK = "VIBRATIONAL FREQUENCIES"
+
+
+def imaginary_modes(text: str) -> int | None:
+    """Imaginary modes in the LAST frequency block, or ``None`` without one.
+
+    Only the last block: a restarted or repeated frequency run prints one
+    block per pass, and counting the whole file counts a TS's mode twice.
+    """
+    at = text.rfind(_FREQ_BLOCK)
+    if at < 0:
+        return None
+    block = text[at:]
+    end = block.find("NORMAL MODES")
+    if end > 0:
+        block = block[:end]
+    return block.count("***imaginary mode***")
+
+
+def output_energy(text: str, path: str, energy: str) -> float | None:
+    """The ``gibbs`` or ``electronic`` energy (Eh) an ORCA output reports,
+    read by DELFIN's own parser (:mod:`delfin.energies`)."""
+    from delfin import energies
+    if energy == "gibbs":
+        return energies.gibbs_energy_in_text(text, path)
+    return energies.electronic_energy_in_text(text, path)
+
+
+_COORDS = "CARTESIAN COORDINATES (ANGSTROEM)"
+_CHARGE = re.compile(r"Total\s+Charge\s+Charge\s+\.+\s+(-?\d+)")
+
+
+def composition(text: str) -> Counter | None:
+    """Element counts of the LAST geometry an ORCA output prints."""
+    at = text.rfind(_COORDS)
+    if at < 0:
+        return None
+    lines = text[at:].splitlines()[2:]
+    counts: Counter = Counter()
+    for line in lines:
+        cells = line.split()
+        if len(cells) != 4:
+            break
+        element = cells[0].rstrip(">:").capitalize()
+        if not element.isalpha():
+            break
+        counts[element] += 1
+    return counts or None
+
+
+def total_charge(text: str) -> int | None:
+    m = _CHARGE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def formula(counts: Counter, charge: int | None = None) -> str:
+    """``C1 Co1 O2`` in Hill order, with the charge when there is one."""
+    def rank(e):      # Hill: C, then H when there is C, then alphabetical
+        return (0 if e == "C" else 1 if e == "H" and "C" in counts else 2, e)
+    order = sorted(counts, key=rank)
+    text = " ".join(f"{e}{counts[e]}" for e in order if counts[e])
+    if charge:
+        text += f" ({charge:+d})"
+    return text or "nothing"
+
+
+def balance_difference(state: tuple[Counter, int], ref: tuple[Counter, int]) -> str:
+    """What ``state`` has more (+) or less (-) than ``ref``; empty if equal."""
+    (c, q), (rc, rq) = state, ref
+    diff = []
+    for e in sorted(set(c) | set(rc)):
+        d = c[e] - rc[e]
+        if d:
+            diff.append(f"{d:+d} {e}")
+    if q != rq:
+        diff.append(f"charge {q:+d} vs {rq:+d}")
+    return ", ".join(diff)
+
+
+def is_ts_name(state: str) -> bool:
+    """Whether the user named this state a transition state (``TS1``, ``ts``)."""
+    return state.strip().upper().startswith("TS")
 
 
 # --------------------------------------------------------------------------
