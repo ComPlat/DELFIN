@@ -204,4 +204,18 @@ def judge(claims: Iterable[Claim], runs: Iterable[Run], *,
     return out
 
 
-__all__ = ["Claim", "Run", "Verdict", "find_claims", "judge"]
+# The answer already says the change was not checked.
+_DISCLOSED_RE = re.compile(
+    r"(?i)\b(?:untested|ungetestet|unverified|unverifiziert|not (?:yet )?"
+    r"(?:tested|verified|run|checked)|nicht (?:getestet|verifiziert|geprüft|"
+    r"ausgeführt|gelaufen)|could not (?:run|test|verify)|konnte [^.\n]{0,60}"
+    r"nicht (?:ausführen|testen|prüfen|laufen))\b|\bUNTESTED\b")
+
+
+def discloses_unverified(text: str) -> bool:
+    """True when the answer names its change as not checked."""
+    return bool(_DISCLOSED_RE.search(str(text or "")))
+
+
+__all__ = ["Claim", "Run", "Verdict", "find_claims", "judge",
+           "discloses_unverified"]

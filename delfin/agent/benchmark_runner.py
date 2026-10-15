@@ -1342,7 +1342,13 @@ def _toolchain_on_path(task_class: str):
 #: host ``auto_verify`` is "syntax" there, so the suite measured a
 #: py_compile-only turn end that no default installation has, and no run
 #: file said so (diagnosis 2026-10-15).
-PINNED_BEHAVIOUR_ENV: dict[str, str] = {"DELFIN_AUTO_VERIFY": "smart"}
+PINNED_BEHAVIOUR_ENV: dict[str, str] = {
+    "DELFIN_AUTO_VERIFY": "smart",
+    # The shipped default of agent.verify_nudge
+    # (api_client._VERIFY_NUDGE_DEFAULT); an arm of the three-arm
+    # measurement exports its own value.
+    "DELFIN_VERIFY_NUDGE": "off",
+}
 
 
 def pinned_behaviour_settings() -> dict[str, str]:

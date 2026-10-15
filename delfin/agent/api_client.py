@@ -12986,6 +12986,34 @@ def _resolve_auto_verify() -> tuple[str, str]:
     return mode, cmd
 
 
+#: The turn-end verification line, until the three-arm measurement
+#: (verifynudge PREREG) decides the default. Read from the code, not
+#: written into DEFAULT_SETTINGS: a merged default is stored in the user's
+#: settings file and would outlive a later change of this value.
+_VERIFY_NUDGE_DEFAULT = "off"
+_VERIFY_NUDGE_TEXT = {
+    "honest": ("[Verify] No check ran after your last edit. Check it, or "
+               "state clearly in your answer what is unverified."),
+    "test": "[Verify] Run a test that covers your last edit before you answer.",
+}
+
+
+def _resolve_verify_nudge() -> str:
+    """off | honest | test. ``DELFIN_VERIFY_NUDGE`` (the benchmark runner
+    pins it per attempt) over ``agent.verify_nudge`` over
+    ``_VERIFY_NUDGE_DEFAULT``; never raises."""
+    env = str(os.environ.get("DELFIN_VERIFY_NUDGE") or "").strip().lower()
+    if env in ("off", "honest", "test"):
+        return env
+    try:
+        from delfin import user_settings
+        ag = (user_settings.load_settings().get("agent", {}) or {})
+        val = str(ag.get("verify_nudge", "") or "").strip().lower()
+    except Exception:
+        val = ""
+    return val if val in ("off", "honest", "test") else _VERIFY_NUDGE_DEFAULT
+
+
 def _syntax_check(edited_paths: list) -> str:
     """py_compile the edited .py files (fast, no execution). Returns a summary
     of any syntax errors, or ""."""
@@ -29393,6 +29421,9 @@ class OpenAIClient(_BaseClient):
         _verify_attempts = 0
         _last_verify_problem = ""   # last red auto-verify summary this turn
         _verify_gave_up_notified = False
+        # The turn-end verification line fires at most once per turn.
+        _verify_nudged = False
+        _verify_nudge = _resolve_verify_nudge()
         # Per-turn verification mechanics, read by the engine after the turn:
         # the structured verdict from the report_verdict tool, the
         # test-evidence ledger (every real test execution this turn), and the
@@ -29400,6 +29431,15 @@ class OpenAIClient(_BaseClient):
         self._last_structured_verdict = None
         self._test_evidence: list[dict] = []
         self._red_test_files: set[str] = set()
+        # What this turn verified (turn_verification): every edit and every
+        # executed test, check or run, the same account the benchmark
+        # scores. Read at the turn end by the verification line.
+        try:
+            from . import turn_verification as _tv_mod
+            self._turn_verification = _tv_mod.TurnVerification(
+                str(getattr(self._permissions, "workspace", "") or ""))
+        except Exception:
+            self._turn_verification = None
         # Observed-files ledger (per turn + cumulative session): every file
         # the model actually read/grepped, so the code-claim citation check
         # can tell grounded statements from invented ones. The session half
@@ -30659,6 +30699,8 @@ class OpenAIClient(_BaseClient):
                         "content": context_result,
                     })
                     _round_results.append(result)
+                    if self._turn_verification is not None:
+                        self._turn_verification.note(fn_name, fn_args, result)
 
                     # Track .py files successfully edited this turn (for the
                     # turn-end auto-verify). A new edit invalidates a prior pass.
@@ -31098,6 +31140,14 @@ class OpenAIClient(_BaseClient):
                     if _problems:
                         self._red_test_files.update(
                             _failing_test_files(_problems))
+                    # A test the harness ran on the edit counts as a check
+                    # of it for the verification line; a syntax check does
+                    # not run the code and is not recorded there.
+                    if (_av_status.get("command") and not _problems
+                            and not _av_status.get("skipped")
+                            and self._turn_verification is not None):
+                        self._turn_verification.note_run(
+                            str(_av_status.get("command")), True)
                 except Exception:
                     pass
                 if _av_status.get("skipped"):
@@ -31168,6 +31218,40 @@ class OpenAIClient(_BaseClient):
                 _record_security_event(
                     "auto_verify_exhausted", "verify",
                     _last_verify_problem[:80], blocked=False)
+
+            # The turn-end verification line (agent.verify_nudge): the model
+            # is about to answer, and the last code edit of this turn has no
+            # executed test, check or run after it that touched it. One line,
+            # at most once per turn, as a harness row at the tail of the
+            # conversation (the system prompt and the cached head are not
+            # touched). Not in plan mode; not in a turn without an edit
+            # (a question); not when the answer already names the change as
+            # unverified. Costs one model round when it fires.
+            if (_verify_nudge != "off" and not _verify_nudged
+                    and self._turn_verification is not None
+                    and str(getattr(self._permissions, "mode", "") or "")
+                    != "plan"):
+                try:
+                    _unv = self._turn_verification.unverified_edit()
+                    from . import verification_claims as _vcl
+                    _answer_now = "".join(_text_chunks) if _text_chunks else ""
+                    _disclosed = _vcl.discloses_unverified(_answer_now)
+                except Exception:
+                    _unv, _answer_now, _disclosed = None, "", True
+                if _unv is not None and not _disclosed:
+                    _verify_nudged = True
+                    try:
+                        from . import channels as _channels
+                        _channels.fire("turn_end_verify")
+                        _channels.fire(f"turn_end_verify:{_verify_nudge}")
+                    except Exception:
+                        pass
+                    if _answer_now.strip():
+                        api_messages.append(
+                            {"role": "assistant", "content": _answer_now})
+                    api_messages.append(_harness_row(
+                        _VERIFY_NUDGE_TEXT[_verify_nudge]))
+                    continue
 
             # Mid-loop steering at turn end: the model gave a final answer (no
             # tool calls), but if the user steered while it ran, respond to that
