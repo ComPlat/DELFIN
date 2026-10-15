@@ -230,6 +230,16 @@ HEADER_CSS = """
 .delfin-hdr .widget-box, .delfin-hdr .widget-hbox, .delfin-hdr .widget-vbox {
   overflow: visible;
 }
+/* The branch menu hangs below the bar: the cell and output areas around the
+   header must not clip it, and the header's cell stacks above the tabs. */
+.jp-Cell:has(.delfin-hdr), .jp-Cell-outputWrapper:has(.delfin-hdr),
+.jp-OutputArea:has(.delfin-hdr), .jp-OutputArea-child:has(.delfin-hdr),
+.jp-OutputArea-output:has(.delfin-hdr), .widget-output:has(.delfin-hdr) {
+  overflow: visible;
+}
+.jp-Cell:has(.delfin-hdr), .jp-OutputArea-child:has(.delfin-hdr) {
+  position: relative; z-index: 30;
+}
 .delfin-topbar { flex-wrap: wrap; align-items: center; gap: 8px; row-gap: 6px; }
 .delfin-hdr .delfin-group { align-items: center; gap: 6px; flex-wrap: wrap; }
 /* buttons: one height, rounded, no wrapped labels, auto width */
