@@ -76,11 +76,13 @@ jobs:
       - name: Build
         # Overlap: packaging.yml (licences and packaging) also builds the
         # distributions on pull requests; this job is the one whose output
-        # is published.
+        # is published. --no-isolation: the build backend is the pinned
+        # setuptools/wheel installed here, not whatever an isolated build
+        # environment would fetch from PyPI at release time.
         run: |
           python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
-          pip install -c .github/ci/constraints-ci.txt build
-          python -m build --sdist --wheel --outdir dist/
+          pip install -c .github/ci/constraints-ci.txt build setuptools wheel
+          python -m build --no-isolation --sdist --wheel --outdir dist/
           ls -l dist/
 
       - name: The distributions are the ones a release may publish

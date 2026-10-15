@@ -75,7 +75,9 @@ def test_publishing_is_gated_on_a_tag_and_the_pypi_environment():
 def test_the_build_is_checked_and_nothing_comes_from_a_cache_or_is_replaced():
     jobs = _wf()["jobs"]
     runs = " ".join(s.get("run", "") for s in jobs["build"]["steps"])
-    assert "python -m build --sdist --wheel" in runs
+    assert "python -m build --no-isolation --sdist --wheel" in runs, (
+        "an isolated build fetches an unpinned backend at release time")
+    assert "setuptools wheel" in runs
     assert "python scripts/check_distribution.py --release dist/*" in runs
     assert '[ "$TAG" = "v$version" ]' in runs
     for job in jobs.values():
