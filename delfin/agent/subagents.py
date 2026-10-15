@@ -1505,9 +1505,11 @@ def mark_delegate_text(text: str) -> str:
         return text or ""
     try:
         from .api_client import _wrap_untrusted
+        from .untrusted import decision_hint
     except Exception:
         return body
-    return _wrap_untrusted(body)
+    hint = decision_hint(body)
+    return (f"[{hint}]\n" if hint else "") + _wrap_untrusted(body)
 
 
 @dataclass
