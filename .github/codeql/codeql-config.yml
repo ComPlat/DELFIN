@@ -12,8 +12,13 @@ name: DELFIN
 #
 # Neither directory reaches a user's machine. Tests are excluded from the
 # wheel, and scripts/ holds developer utilities that talk to a live cluster.
+# The same holds for the window's tests and its prototype (tui/test,
+# tui/spike): MANIFEST.in ships tui/src, tui/patches and three build
+# scripts, not these.
 paths-ignore:
   - tests
   - scripts
   - examples
   - docs
+  - tui/test
+  - tui/spike
