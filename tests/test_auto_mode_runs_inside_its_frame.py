@@ -680,3 +680,18 @@ def test_a_preempted_iteration_counts_against_nothing_but_the_budget(repo):
     ctl.finish_iteration(eng, "LOOP: progress none")
     assert ctl.enabled, ctl.stop_report
     assert ctl.state()["iteration"] == 2
+
+
+def test_the_veto_runs_no_git_per_call(repo):
+    clock = Clock()
+    ctl = _ctl(repo, clock)
+    eng = Engine()
+    ctl.enable(eng)
+    clock.advance(120)
+    ctl.next_prompt(eng, work=[am.WorkItem(1, "task", "x", True)])
+    calls = []
+    real = ctl.git.run
+    ctl.git.run = lambda *a, **k: calls.append(a) or real(*a, **k)
+    for _ in range(20):
+        ctl.veto("bash", {"command": "pytest -q"})
+    assert calls == []
