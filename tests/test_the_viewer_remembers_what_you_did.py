@@ -1358,3 +1358,25 @@ def test_the_sentence_the_user_is_shown_leads_somewhere(tmp_path):
         env={**child_env(tmp_path), 'PYTHONPATH': str(root)})
     assert done.returncode == 0, done.stderr
     assert 'replay' in done.stdout.lower(), done.stdout
+
+
+def test_a_viewer_report_says_when_its_redaction_failed(tmp_path,
+                                                        monkeypatch):
+    """The viewer report shares the agent report's fail-closed writer, so a
+    broken redactor leaves placeholders. The agent report then names the
+    replaced files in REDACTION_FAILED.txt; the viewer report must too, or
+    a maintainer finds an empty report.md with no reason."""
+    import delfin.agent.output_guard as og
+
+    def boom(*a, **kw):
+        raise RuntimeError('redactor exploded')
+
+    monkeypatch.setattr(og, '_redact', boom)
+    journal = ej.Journal(max_events=50, max_bytes=1024 * 1024)
+    where = ej.write_report(journal, description='password=hunter2-long-x',
+                            widgets={}, archive_dir=tmp_path / 'bugs')
+    note = where / 'REDACTION_FAILED.txt'
+    assert note.is_file()
+    said = note.read_text(encoding='utf-8')
+    assert 'report.json' in said and 'report.md' in said
+    assert 'hunter2' not in (where / 'report.md').read_text(encoding='utf-8')
