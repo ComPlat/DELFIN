@@ -174,7 +174,7 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "newline", does: "A new line in the prompt (so does a trailing \\ before enter)." },
   { action: "palette", does: "The command palette: commands, and pickers for model, posture, effort, mode, resume." },
   { keys: "ctrl+c", does: "End the turn; else clear what is typed; else, twice, leave the window." },
-  { keys: "y n A k R e a ?", does: "With a question open, on an empty prompt: the answers the session offers (? explains each). N refuses with a reason, typed in the prompt. Typing goes into the prompt." },
+  { keys: "y n A k R e a ?", does: "With a question open, on an empty prompt: the answers the session offers (? explains each). N refuses with a reason, typed in the prompt. A key answers alone: with another key right after it, both are typing, into the prompt." },
   { keys: "1-9 ↑ ↓ enter", does: "With a question of choices open, on an empty prompt: pick one, or move to one and take it (several: space or 1-9 toggle, enter sends)." },
   { action: "agents", does: "On an empty prompt: the agent view -- every session, grouped by what it needs." },
   { action: "agentsOpen", does: "In the agent view: open the selected session in this window (alt+1..9: the n-th)." },
