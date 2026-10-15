@@ -121,3 +121,32 @@ describe("an answer that ended with its whole text", () => {
   })
 })
 
+
+// A model writes the sentence after a table on the next line, without a
+// blank one. The lexer, following the table extension, takes that line as
+// one more row; the window then drew the sentence as the last row of the
+// table, in the first column, with empty cells beside it. The dashboard
+// and the plain terminal end a table at the first line without a pipe;
+// the window does the same.
+describe("a table ends at the first line without a pipe", () => {
+  const TEXT = "Werte:\n\n| a | b |\n|---|---|\n| 1 | 2 |\nDanach geht der Text weiter.\n"
+
+  test("the sentence after the table is its own block", () => {
+    const { blocks } = splitMarkdown(TEXT, true)
+    expect(blocks.some((b) => b.includes("| 1 | 2 |") && b.includes("Danach"))).toBe(false)
+    expect(blocks[blocks.length - 1]).toBe("Danach geht der Text weiter.")
+    expect(blocks).toContain("| a | b |\n|---|---|\n| 1 | 2 |")
+  })
+
+  test("streamed in any pieces, the same blocks are committed", () => {
+    const whole = splitMarkdown(TEXT, true).blocks
+    for (const sizes of [[1], [3, 7], [11]]) {
+      expect(feed(TEXT, sizes).committed).toEqual(whole)
+    }
+  })
+
+  test("a row without outer pipes is still a row", () => {
+    const { blocks } = splitMarkdown("| a | b |\n|---|---|\n1 | 2\n", true)
+    expect(blocks).toEqual(["| a | b |\n|---|---|\n1 | 2"])
+  })
+})

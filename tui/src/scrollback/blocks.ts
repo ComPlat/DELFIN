@@ -41,6 +41,22 @@ function lex(text: string): Token[] {
   }
 }
 
+/** Where a table token's raw text stops being the table: the start of its
+ *  first body line with no unescaped pipe, or -1 when every line has one.
+ *  The table extension takes such a line as one more row; a model means
+ *  the sentence after the table. The dashboard and the plain terminal end
+ *  a table at the same line (delfin/agent/markdown_table.py). */
+export function tableEnd(raw: string): number {
+  const lines = raw.split("\n")
+  let at = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    if (i >= 2 && line.trim() && !/(^|[^\\])\|/.test(line)) return at
+    at += line.length + 1
+  }
+  return -1
+}
+
 /** Split `text`; `final` commits the last block too (the answer ended). */
 export function splitMarkdown(text: string, final: boolean): MarkdownSplit {
   const normal = text.replace(/\r\n?/g, "\n")
@@ -62,6 +78,14 @@ export function splitMarkdown(text: string, final: boolean): MarkdownSplit {
   let offset = 0
   for (let i = 0; i < stableEnd; i++) {
     const token = tokens[i]!
+    const cut = token.type === "table" ? tableEnd(token.raw) : -1
+    if (cut > 0) {
+      // The table, then the rest split again from its first pipe-less line.
+      blocks.push(token.raw.slice(0, cut).replace(/\n+$/, ""))
+      const start = offset + cut
+      const rest = splitMarkdown(normal.slice(start), final)
+      return { blocks: blocks.concat(rest.blocks), tail: rest.tail, consumed: start + rest.consumed }
+    }
     offset += token.raw.length
     if (token.type === "space") continue
     const raw = token.raw.replace(/\n+$/, "")
