@@ -333,7 +333,9 @@ security panel and `delfin-agent doctor` say so.
   banner, `/mcp` and `delfin-agent doctor` say so.
 - The dashboard's approval of a CLI-backend `Bash` call runs through
   `sandbox.run_agent_command`: an allow-list, then bubblewrap or firejail,
-  selected with `DELFIN_AGENT_SANDBOX`.
+  else (mode `allowlist`) Landlock with the network denied as far as the
+  host holds it, selected with `DELFIN_AGENT_SANDBOX`; `sandbox.confinement`
+  names the state applied (`net=off`, `off-tcp` or `open`).
 
 ### 6. The managed policy
 
