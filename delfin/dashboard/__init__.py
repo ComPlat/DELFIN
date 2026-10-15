@@ -795,6 +795,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     if branch_panel is not None:
         branch_panel.on_change = refresh_git_status_label
         branch_panel.refresh()
+        branch_panel.start_polling(10.0)
 
     def handle_pull_delfin(button=None):
         rd = ctx.repo_dir

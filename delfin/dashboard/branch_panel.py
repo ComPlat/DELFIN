@@ -595,6 +595,40 @@ class BranchPanel:
             self._pending = []
         self.render_chips()
 
+    def _chip_state(self) -> tuple:
+        return (tuple(sorted((p.slug, p.port) for p in self._previews)),
+                tuple(sorted(p.slug for p in self._pending)))
+
+    def poll_previews(self) -> bool:
+        """Re-read the previews; redraw only when they changed (a preview
+        closed from its own tab, or started from another window). True
+        when the chips were redrawn."""
+        if self._starting or self._closing:
+            return False
+        before = self._chip_state()
+        try:
+            self._previews = BP.list_previews(self.repo)
+            self._pending = BP.pending_closes(self.repo)
+        except Exception:
+            return False
+        if self._chip_state() == before:
+            return False
+        self.render_chips()
+        return True
+
+    def start_polling(self, every_s: float = 10.0) -> None:
+        """Keep the chips current without a reload (a daemon thread)."""
+        import time as _time
+
+        def _loop():
+            while True:
+                _time.sleep(every_s)
+                try:
+                    self.poll_previews()
+                except Exception:
+                    pass
+        threading.Thread(target=_loop, daemon=True, name="delfin-preview-chips").start()
+
     def chip_widgets(self, ref: str) -> Optional[ChipW]:
         return self._chips.get(ref)
 
