@@ -434,3 +434,13 @@ def test_the_menu_opens_unfiltered_in_the_default_view(repo):
     panel.open_menu()
     assert panel.search.value == "" and panel.view.value == "Mine"
     assert _shown(panel) == ["main", "mine/pinned", "feat"]
+
+
+def test_the_header_stacks_above_page_content_and_below_full_screen_overlays():
+    """Walkthrough: a message was drawn under the molecule viewer's buttons
+    (z-index 30, later in the page than the header cell's 30). In-page
+    panels go up to 60; full-screen overlays start at 9990."""
+    import re
+    m = re.search(r"\.jp-Cell:has\(\.delfin-hdr\), \.jp-OutputArea-child:has\(\.delfin-hdr\) \{"
+                  r"[^}]*z-index:\s*(\d+)", HU.HEADER_CSS)
+    assert m and 60 < int(m.group(1)) < 9990
