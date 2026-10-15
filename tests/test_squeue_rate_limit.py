@@ -18,7 +18,7 @@ from delfin.dashboard.backend_slurm import SlurmJobBackend
 
 SQUEUE_OUTPUT = (
     '  JOBID   PARTITION   NAME   USER  ST  TIME  NODES  NODELIST\n'
-    '  123456      single  water   foo   R  1:02      1  uc3n123\n'
+    '  123456      single  water   foo   R  1:02      1  node123\n'
 )
 
 

@@ -45,16 +45,16 @@ def _branch_with_commit(repo, name):
 
 
 def test_lists_local_branches_main_first(repo):
-    _branch_with_commit(repo, "jerome/balance-fix")
+    _branch_with_commit(repo, "contributor/balance-fix")
     _branch_with_commit(repo, "max/experiment")
     _git(repo, "branch", "already-merged")           # no commit of its own
     opts = _compute_branch_options(repo)
     values = [v for _label, v in opts]
     assert values[0] == "main"                       # main always first
-    assert "jerome/balance-fix" in values            # contributor branch shows
+    assert "contributor/balance-fix" in values            # contributor branch shows
     assert "max/experiment" in values                # the user's own shows
     assert "already-merged" not in values            # nothing to test there
-    assert sorted(values[1:]) == ["jerome/balance-fix", "max/experiment"]
+    assert sorted(values[1:]) == ["contributor/balance-fix", "max/experiment"]
 
 
 def test_remote_branches_are_not_listed(repo, tmp_path):

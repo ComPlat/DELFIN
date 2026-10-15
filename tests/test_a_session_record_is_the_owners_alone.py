@@ -34,7 +34,7 @@ def _mode(p) -> int:
 def test_directory_and_record_are_owner_only_whatever_the_umask(tmp_path, umask):
     old = os.umask(umask)
     try:
-        path = S.write_record("uc3n990-ab12", kid=KID, root=str(tmp_path / "kept"))
+        path = S.write_record("login01-ab12", kid=KID, root=str(tmp_path / "kept"))
     finally:
         os.umask(old)
     assert path, S._last_write_error
@@ -47,13 +47,13 @@ def test_an_older_wider_directory_is_narrowed(tmp_path):
     kept.mkdir(mode=0o755)
     os.chmod(kept, 0o755)
     assert _mode(kept) == 0o755
-    S.write_record("uc3n990-ab12", kid=KID, root=str(kept))
+    S.write_record("login01-ab12", kid=KID, root=str(kept))
     assert _mode(kept) == 0o700
 
 
 def test_nothing_readable_is_left_beside_the_record(tmp_path, monkeypatch):
     kept = tmp_path / "kept"
-    S.write_record("uc3n990-ab12", kid=KID, root=str(kept))
+    S.write_record("login01-ab12", kid=KID, root=str(kept))
     leftovers = [p for p in kept.iterdir() if p.suffix == ".tmp" or p.name.startswith(".")]
     assert not leftovers
 
@@ -65,7 +65,7 @@ def test_a_record_that_cannot_be_written_leaves_no_temp_file(tmp_path, monkeypat
         raise OSError("disk says no")
 
     monkeypatch.setattr(os, "replace", boom)
-    path = S.write_record("uc3n990-ab12", kid=KID, root=str(kept))
+    path = S.write_record("login01-ab12", kid=KID, root=str(kept))
     assert path == ""
     assert "disk says no" in S._last_write_error
     assert not any(kept.iterdir())

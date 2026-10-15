@@ -68,7 +68,7 @@ def test_the_check_never_rewrites_the_text():
 @pytest.mark.parametrize("text, rule", [
     ("Lesson: the login node login2.cluster.example.edu drops jobs.",
      "hostname"),
-    ("Lesson: node uc3n990 has no scratch.", "hostname"),
+    ("Lesson: node login01 has no scratch.", "hostname"),
     ("Lesson: @someone fixed it upstream.", "username"),
     ("Lesson: the barrier is 12.37 kcal/mol for this system.", "number"),
     ("Lesson: sample MK-1043 crystallises badly.", "sample-id"),

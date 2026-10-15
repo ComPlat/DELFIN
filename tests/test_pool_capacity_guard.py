@@ -120,7 +120,7 @@ def test_fitting_job_is_left_untouched_and_silent(caplog):
 
 
 def test_pal_wide_job_matching_the_budget_exactly_is_untouched(caplog):
-    """The pre-cap production shape (Jerome, RSS_paper): PAL x maxcore == budget.
+    """The pre-cap production shape (field report, RSS_paper): PAL x maxcore == budget.
 
     40 x 6000 MB against a 240000 MB pool fits exactly. Those runs must keep
     behaving as before: no clamp, no ERROR, full PAL allocation.

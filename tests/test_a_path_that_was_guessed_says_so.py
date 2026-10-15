@@ -57,7 +57,7 @@ class TestTheHelper:
 
     def test_a_home_built_by_hand_is_told_where_home_is(self, monkeypatch,
                                                         tmp_path):
-        home = tmp_path / "home" / "ka" / "ka_ibcs" / "u12345"
+        home = tmp_path / "home" / "ka" / "ka_group" / "u12345"
         home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         said = A._why_that_path_is_not_there("/home/u12345/workspace/x.md")
@@ -94,7 +94,7 @@ class TestItReachesTheTool:
     def test_read_file_hands_the_advice_back(self, executor, monkeypatch,
                                              tmp_path):
         eng, perms = executor
-        home = tmp_path / "home" / "ka" / "ka_ibcs" / "u12345"
+        home = tmp_path / "home" / "ka" / "ka_group" / "u12345"
         home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         # Inside the workspace, so the read gate is not what answers.
@@ -125,7 +125,7 @@ class TestItReachesTheTool:
         was spelled would be a second answer to a different question --
         and it would confirm whether the file exists out there."""
         eng, perms = executor
-        home = tmp_path / "home" / "ka" / "ka_ibcs" / "u12345"
+        home = tmp_path / "home" / "ka" / "ka_group" / "u12345"
         home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         out = eng._execute_read_file(

@@ -9,7 +9,7 @@ so the failure message points at exactly which guarantee was broken.
 
 Motivated by the refactor bug wave: every large commit on main
 (`cf78545`, `3ed6566`, `e6761e4`, `cceea3e`, `39b1919`, …) silently
-broke a code path users depend on. The affected users (Tilman, Jan)
+broke a code path users depend on. The affected users
 only noticed after queued SLURM jobs failed hours later. These tests
 shift that discovery from "user-hits-it-in-production" to
 "pre-commit".
@@ -437,7 +437,7 @@ def test_submit_script_sets_pythonunbuffered():
     text = _SUBMIT_SCRIPT.read_text()
     assert "PYTHONUNBUFFERED" in text, (
         "PYTHONUNBUFFERED export is missing — Python crashes in "
-        "local_runner will be invisible in delfin_*.out (Tilman's "
+        "local_runner will be invisible in delfin_*.out (the "
         "original symptom)."
     )
 
