@@ -60,8 +60,10 @@ const type = async (text: string) => {
   await w!.keys.typeText(text)
   await w!.settle()
 }
+/** The test renderer's names for the keys that are no character. */
+const NAMED: Record<string, string> = { return: "RETURN", up: "ARROW_UP", down: "ARROW_DOWN", backspace: "BACKSPACE" }
 const press = async (key: string, mods?: Record<string, boolean>) => {
-  w!.keys.pressKey(key, mods as never)
+  w!.keys.pressKey((NAMED[key] ?? key) as never, mods as never)
   await Bun.sleep(5)
   await w!.settle()
 }
