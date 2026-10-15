@@ -1417,6 +1417,31 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.slow)
 
 
+_PACKAGE_AST_LAST: list = []
+
+
+def pytest_collection_finish(session):
+    """Name the last test of the run whose module uses ``_package_ast``.
+
+    After the final deselection (``-m``, ``-k``), so the name is one that
+    runs. ``pytest_runtest_logfinish`` drops the shared trees (~740 MB)
+    once that test is through; without a consumer nothing is held.
+    """
+    import _package_ast
+    _PACKAGE_AST_LAST.clear()
+    for item in session.items:
+        module = getattr(item, "module", None)
+        if module is not None and any(
+                value is _package_ast for value in vars(module).values()):
+            _PACKAGE_AST_LAST[:] = [item.nodeid]
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    if _PACKAGE_AST_LAST and nodeid == _PACKAGE_AST_LAST[0]:
+        import _package_ast
+        _package_ast.release()
+
+
 @pytest.fixture(autouse=True)
 def _mute_out_of_band_notifications(monkeypatch):
     """No test may reach the user's desktop or the network.
