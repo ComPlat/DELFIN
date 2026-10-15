@@ -378,7 +378,7 @@ def test_bun_is_installed_only_after_its_checksum_matches(checkout, monkeypatch)
     assert bun == tui_setup.pinned_bun_path()
     assert opener.urls == [f"https://github.com/oven-sh/bun/releases/download/"
                            f"bun-v{tui_setup.BUN_VERSION}/{ASSET}.zip"]
-    assert stat.S_IMODE(bun.stat().st_mode) == 0o755
+    assert stat.S_IMODE(bun.stat().st_mode) == 0o700        # owner only
     assert stat.S_IMODE(bun.parent.parent.stat().st_mode) == 0o700     # ~/.delfin/tools
     # Nothing else of the archive lands anywhere.
     assert sorted(p.name for p in bun.parent.iterdir()) == ["bun"]

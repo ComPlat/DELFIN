@@ -464,7 +464,7 @@ def download_bun(asset: str, *, opener=None, run=None) -> Path:
             raise SetupFailed(f"{url} holds no {member}; nothing was installed") from None
         except zipfile.BadZipFile as exc:
             raise SetupFailed(f"{url} is not a zip archive ({exc})") from None
-        os.chmod(staged, 0o755)
+        os.chmod(staged, 0o700)  # owner only, like the 0700 tools directory
         try:
             proc = run([str(staged), "--version"], capture_output=True, text=True,
                        timeout=60, stdin=subprocess.DEVNULL)
