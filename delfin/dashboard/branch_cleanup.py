@@ -268,10 +268,14 @@ def candidates(repo, *, gh: Optional[str] = "auto",
         wt_cands[path] = c
 
     held = _held_by(repo)
-    for name in sorted(set(BL._out(repo, "for-each-ref",
-                                   "--format=%(refname:short)",
-                                   "refs/heads").splitlines())):
-        name = name.strip()
+    refs: dict[str, tuple[str, str]] = {}
+    for line in BL._out(repo, "for-each-ref",
+                        "--format=%(refname:short)|%(objectname)|%(upstream:short)",
+                        "refs/heads").splitlines():
+        name, _, rest = line.partition("|")
+        sha, _, up = rest.partition("|")
+        refs[name.strip()] = (sha.strip(), up.strip())
+    for name in sorted(refs):
         if not name or name == "main" or name == current:
             continue
         pr = _pr_note(prs, name)
@@ -288,11 +292,10 @@ def candidates(repo, *, gh: Optional[str] = "auto",
             if len(removable) != len(holders) or len(holders) != 1:
                 continue
             after = removable[0]
-        up, _gone = _upstream(repo, name)
-        cands.append(Candidate(
-            "branch", name, BL._out(repo, "rev-parse", f"refs/heads/{name}"),
-            reason, unmerged=BL.ahead_of_base(repo, name, base) or 0,
-            after=after, upstream=up))
+        sha, up = refs[name]
+        unmerged = 0 if name in merged else (BL.ahead_of_base(repo, name, base) or 0)
+        cands.append(Candidate("branch", name, sha, reason, unmerged=unmerged,
+                               after=after, upstream=up))
     return cands, kept
 
 
