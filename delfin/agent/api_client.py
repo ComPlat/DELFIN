@@ -29558,7 +29558,9 @@ class OpenAIClient(_BaseClient):
         try:
             from . import turn_verification as _tv_mod
             self._turn_verification = _tv_mod.TurnVerification(
-                str(getattr(self._permissions, "workspace", "") or ""))
+                str(getattr(self._permissions, "workspace", "") or ""),
+                session=str(getattr(self._permissions, "task_session_id", "")
+                            or ""))
         except Exception:
             self._turn_verification = None
         # Observed-files ledger (per turn + cumulative session): every file

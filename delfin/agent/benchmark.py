@@ -2546,20 +2546,69 @@ def effective_behaviour_settings() -> dict[str, Any]:
     return out
 
 
+def _instrument_paths() -> list[str]:
+    base = _PACKAGE_DIR
+    return [str(base / m) for m in _INSTRUMENT_MODULES] + [
+        str(base / "pack" / "benchmark")]
+
+
 def run_provenance(*, model: str = "") -> dict[str, Any]:
-    """The header row of a run file. Keys: ``schema``, ``model``,
-    ``written_at``, ``process_start``, ``git`` (head, dirty),
-    ``instrument`` (instrument_digest), ``settings``
-    (effective_behaviour_settings)."""
-    return {
+    """The header row of a run file.
+
+    Keys: ``schema``, ``model``, ``written_at``, ``process_start``,
+    ``git`` (head, dirty; plus toplevel and dirty_hash), ``instrument``
+    (instrument_digest), ``settings`` (effective_behaviour_settings), and
+    the generic stamp fields ``taken_at``, ``host``, ``platform``,
+    ``machine``, ``python``, ``code`` -- the shape of
+    paired_compare.provenance (experiment-discipline bundle), so a
+    benchmark run and a generic paired comparison carry one stamp. When
+    that module is installed its stamp is the base (code hash over the
+    instrument files, DELFIN_* behaviour env redacted) and the keys above
+    are added; without it the same fields are filled here."""
+    import platform as _platform
+    import socket as _socket
+    base: dict[str, Any] = {}
+    try:
+        from . import paired_compare as _pc  # type: ignore[attr-defined]
+        base = dict(_pc.provenance(code=_instrument_paths(),
+                                   prefixes=("DELFIN_",),
+                                   cwd=str(_PACKAGE_DIR.parents[1])))
+    except Exception:
+        base = {}
+    git = _git_head(_PACKAGE_DIR)
+    if not base:
+        top = str(_PACKAGE_DIR.parents[1])
+        dirty_hash = ""
+        try:
+            import hashlib
+            d = subprocess.run(["git", "-C", top, "diff", "HEAD"],
+                               capture_output=True, text=True, timeout=20)
+            if d.returncode == 0 and d.stdout:
+                dirty_hash = hashlib.sha256(d.stdout.encode()).hexdigest()[:20]
+        except Exception:
+            pass
+        base = {
+            "taken_at": round(time.time(), 1),
+            "host": _socket.gethostname(),
+            "platform": _platform.platform(),
+            "machine": _platform.machine(),
+            "python": sys.version.split()[0],
+            "git": {"toplevel": top, "head": git.get("head", ""),
+                    "dirty_hash": dirty_hash},
+            "code": instrument_digest(),
+        }
+    stamp = dict(base)
+    stamp["git"] = {**(base.get("git") or {}), **git}
+    stamp.update({
         "schema": 1,
+        "stamp_schema": base.get("schema"),
         "model": model,
         "written_at": round(time.time(), 1),
         "process_start": _process_start_time(),
-        "git": _git_head(_PACKAGE_DIR),
         "instrument": instrument_digest(),
         "settings": effective_behaviour_settings(),
-    }
+    })
+    return stamp
 
 
 def read_run_header(path: Path) -> Optional[dict]:

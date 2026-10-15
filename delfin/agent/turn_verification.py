@@ -321,6 +321,27 @@ def gamed_runs(tl: list[dict]) -> set:
     return gamed
 
 
+def external_measure_paths(session: str) -> Optional[set]:
+    """Basenames of the test files the measure-edit detection names as
+    edited after a red run (edit_signals.measure_edits(session,
+    after_red_only=True), experiment-discipline bundle), or None when that
+    module is not installed -- then the account's own rule (gamed_runs)
+    decides alone. It judges the content (a loosened tolerance, an added
+    skip, a widened assertion) and spans the session's earlier turns; a
+    file it names makes a later pass gamed here too. Never raises."""
+    try:
+        from . import edit_signals as _es  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    try:
+        return {basename(str(getattr(sig, "path", "") or ""))
+                for sig in _es.measure_edits(str(session or ""),
+                                             after_red_only=True)
+                if getattr(sig, "path", "")}
+    except Exception:
+        return None
+
+
 @dataclass
 class Account:
     """The verification state of one event list (``account``)."""
@@ -334,8 +355,8 @@ class Account:
     last_edit_idx: float = -1
 
 
-def account(tl: list[dict], read: Optional[Callable[[str], str]] = None
-            ) -> Account:
+def account(tl: list[dict], read: Optional[Callable[[str], str]] = None,
+            external: Optional[set] = None) -> Account:
     """Anchor, relevance, gaming and freshness for one event list.
 
     ``read(rel_path) -> text`` (optional): a test file that imports the
@@ -350,6 +371,14 @@ def account(tl: list[dict], read: Optional[Callable[[str], str]] = None
                  and e["outcome"] == "refused"]
     a.last_edit_idx = a.edits[-1]["idx"] if a.edits else -1
     a.gamed = gamed_runs(tl)
+    if external:
+        # The measure-edit detection named these files: every pass after
+        # the first edit to one of them is gamed as well.
+        first = next((e["idx"] for e in tl if e["kind"] == "edit"
+                      and basename(e["path"]) in external), None)
+        if first is not None:
+            a.gamed |= {e["idx"] for e in tl if e["kind"] == "test"
+                        and e["outcome"] == "passed" and e["idx"] > first}
     anchor = a.anchor
 
     def touches(e: dict) -> bool:
@@ -427,8 +456,11 @@ class TurnVerification:
     and touched it ("" for an edit whose path is unknown), else None.
     ``unbacked_claims(text)``: verification_claims.judge on the answer."""
 
-    def __init__(self, workspace: str = "") -> None:
+    def __init__(self, workspace: str = "", session: str = "") -> None:
         self.workspace = str(workspace or "")
+        #: The key the measure-edit detection files this session under
+        #: (the permissions' task_session_id); see external_measure_paths.
+        self.session = str(session or "")
         self._to_rel = rel_mapper(self.workspace)
         self.events: list[dict] = []
         self._jobs: dict = {}
@@ -478,7 +510,8 @@ class TurnVerification:
             return ""
 
     def unverified_edit(self) -> Optional[str]:
-        a = account(self.events, self._read)
+        a = account(self.events, self._read,
+                    external_measure_paths(self.session))
         if a.anchor is None:
             return None
         idx, path = a.anchor["idx"], a.anchor["path"]
@@ -492,7 +525,8 @@ class TurnVerification:
         return path
 
     def unbacked_claims(self, text: str) -> list:
-        a = account(self.events, self._read)
+        a = account(self.events, self._read,
+                    external_measure_paths(self.session))
         return _claims.judge(_claims.find_claims(text), a.runs,
                              edited=a.anchor is not None,
                              tried_tests=bool(a.executed_tests or a.refused))
@@ -501,5 +535,5 @@ class TurnVerification:
 __all__ = [
     "MUTATE_TOOLS", "CODE_SUFFIXES", "REPORT_SUFFIXES", "RUN_CMD_RE", "RAN",
     "events_for_call", "is_code_edit", "gamed_runs", "account", "signals",
-    "rel_mapper", "TurnVerification",
+    "rel_mapper", "TurnVerification", "external_measure_paths",
 ]
