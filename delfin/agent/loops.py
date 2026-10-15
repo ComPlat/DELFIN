@@ -426,6 +426,22 @@ def parse(text: str, *, stem: str = "", workspace=None,
                       "its own branch, never the default branch)")
     spec.branch = branch
 
+    # The harness runs these itself, after the iteration's veto is off: a
+    # command that publishes would publish unattended. Classified by the
+    # same rules the veto uses.
+    from .auto_guard import classify_call
+    commands = [("check", spec.check)] + [
+        (f"step {i} {k}", getattr(st, k)) for i, st in enumerate(spec.steps, 1)
+        for k in ("check", "run") if getattr(st, k)]
+    for label, command in commands:
+        if not command:
+            continue
+        verdict = classify_call("bash", {"command": command},
+                                workspace=str(workspace or ""))
+        if verdict is not None and verdict.queue:
+            errors.append(f"{label}: {command!r} would publish or send "
+                          f"({verdict.reason}); a loop's commands stay local")
+
     after = str(meta.get("after_user") or "pause").strip().lower()
     if after not in ("pause", "resume"):
         errors.append(f"after_user: {after!r} is not pause or resume")

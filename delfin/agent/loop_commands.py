@@ -63,6 +63,8 @@ def auto_command(args: str, ctl, engine) -> str:
     if sub in ("", "status"):
         return _status(ctl)
     if sub == "on":
+        if engine is None:
+            return "auto mode needs a session: send a message first."
         return ctl.enable(engine)
     if sub == "off":
         return ctl.disable("turned off by the user")
@@ -222,6 +224,8 @@ def _loop(args, ctl, engine, workspace, ask, say) -> tuple[str, str]:
                 return f"loop {name} not started.", ""
             loops.confirm(spec)
             spec = loops.load(name, workspace)
+        if engine is None:
+            return "a loop needs a session: send a message first.", ""
         return ctl.start_loop(spec, engine), ""
     from .scheduler import parse_interval_seconds
     if parse_interval_seconds(sub):

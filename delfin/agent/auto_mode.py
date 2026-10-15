@@ -828,6 +828,11 @@ class AutoController:
         return "\n".join(parts)
 
     def _check(self, engine, command: str) -> tuple[int, str]:
+        verdict = auto_guard.classify_call("bash", {"command": command},
+                                           workspace=str(self.workspace))
+        if verdict is not None and verdict.queue:
+            return 126, (f"the check was not run: {verdict.reason}; a loop's "
+                         "commands stay local")
         try:
             code, out = self.run_check(engine, command)
             return int(code), str(out or "")
