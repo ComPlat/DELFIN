@@ -1,28 +1,63 @@
-"""Defense-in-depth runner for the dashboard agent's bash execution.
+"""Runner for the dashboard agent's approved CLI-backend ``Bash`` calls.
 
-Layers (applied for every command before it is executed):
+Input: a command the person approved in the dashboard (Layer 4) and the
+repository directory. Output: a ``RunResult``. In every mode the command
+first passes the shared-checkout rule (``shared_checkout.refusal``) and then
+runs as ``bash -c`` with the scrubbed shell environment (no provider keys),
+in its own session and process group, ended at exit and at the timeout
+(``contained_run.run``).
 
-  1. Allow-list   — fail-closed for unknown first-tokens; reject explicit
-                    deny-substrings even if the first-token is allowed.
-  2. Sandbox      — wrap in ``bwrap`` (preferred) or ``firejail``: read-only
-                    rootfs, repo-dir bind-mounted rw, tmpfs over /home and
-                    /tmp, network unshared by default.
-  3. Audit log    — append every command + exit + bytes to a 0600 JSONL file
-                    under ``$XDG_CACHE_HOME/delfin/agent-audit.jsonl``.
-  4. Approval     — caller's responsibility (UI shows full command, no
-                    truncation); see ``dashboard/tab_agent.py``.
+Layers, as the code applies them:
+
+  1. Command allow-list (every mode except ``off``) -- the first word of
+     each pipeline segment must be in ``_ALLOW_FIRST_TOKEN`` (or, for
+     ``git``, a sub-command in ``_ALLOW_SUBCOMMAND``), no segment may match
+     ``_DENY_SUBSTRINGS``, ``unsafe_install_refusal`` must pass, and a tree
+     walk rooted at a whole file system is refused. This is a text check,
+     not a sandbox: the list admits ``python``, ``pip``, ``awk``, ``sed``,
+     ``env``, ``xargs`` and ``tee``, each of which can run any program or
+     write any file the account can, and a deny substring is matched as
+     text only.
+  2. Confinement, by ``DELFIN_AGENT_SANDBOX`` (``detect_config``):
+
+     * ``bwrap``: read-only root file system; ``/tmp`` and ``/root`` are
+       fresh tmpfs; ``$HOME`` stays visible read-only, with the entries of
+       ``_HOME_SECRET_DIRS`` masked (tmpfs for a directory, ``/dev/null``
+       for a file) and the approval-code directory masked; the repository
+       bound read-write; PID, IPC and UTS namespaces unshared; network
+       unshared unless ``DELFIN_AGENT_SANDBOX_NETWORK=1``.
+     * ``firejail``: ``--noprofile`` with a private ``/tmp`` and ``/dev``,
+       the repository whitelisted, ``/etc`` and ``/usr`` read-only,
+       ``--noroot``, all capabilities dropped; ``--net=none`` unless
+       ``DELFIN_AGENT_SANDBOX_NETWORK=1``.
+     * ``allowlist``: no namespace. Where the kernel has Landlock the
+       command runs under ``landlock_exec`` (writes only in the repository
+       and a private temp directory, credential paths hidden); the network
+       is not restricted, and ``DELFIN_AGENT_SANDBOX_NETWORK`` has no
+       effect. Without Landlock the command runs with the file system and
+       network of the account; only Layer 1 applies.
+     * ``off``: neither Layer 1 nor confinement.
+
+  3. Audit log -- every command, blocked or run, with exit code and output
+     sizes, appended to ``$XDG_CACHE_HOME/delfin/agent-audit.jsonl``
+     (created 0600).
+  4. Approval -- the caller's responsibility (the dashboard shows the full
+     command); see ``dashboard/tab_agent.py``.
 
 Env vars (read on every call so tests can flip them with monkeypatch):
 
   ``DELFIN_AGENT_SANDBOX``           one of {auto,off,allowlist,bwrap,firejail}.
-                                     Default: auto. ``auto`` resolves to the
-                                     first available of bwrap → firejail →
-                                     allowlist-only. ``off`` disables BOTH
-                                     allow-list and sandbox (dangerous; debug
-                                     only).
-  ``DELFIN_AGENT_SANDBOX_NETWORK``   set to ``1`` to keep network in sandbox
-                                     (e.g. ``pip install``). Default: deny.
+                                     Default: auto, which resolves to the
+                                     first that works of bwrap -> firejail
+                                     (installed) -> allowlist. ``off``
+                                     disables both the allow-list and the
+                                     confinement (debug only).
+  ``DELFIN_AGENT_SANDBOX_NETWORK``   ``1`` keeps the network inside bwrap and
+                                     firejail. Default: unshared there.
   ``DELFIN_AGENT_SANDBOX_TIMEOUT``   per-command timeout in seconds. Default 60.
+
+The agent's own shell (``api_client._bash_isolation_argv``) is a different
+path with different layers; see docs/SECURITY_MODEL.md.
 """
 
 from __future__ import annotations
