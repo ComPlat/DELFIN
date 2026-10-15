@@ -26,9 +26,21 @@ import yaml
 
 _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
-# The contexts GitHub branch protection requires on main. Renaming a job
+# The contexts the `main-required-checks` ruleset requires on main, by the
+# workflow that produces them (docs/MAIN_PROTECTION.md). Renaming a job
 # renames its check and silently drops the requirement.
-_REQUIRED_CHECKS = {"tests (py3.11)", "lint (ruff)"}
+_REQUIRED_CHECKS = {
+    "ci.yml": {
+        "tests (py3.11)",
+        "lint (ruff)",
+        "container isolation (docker, podman)",
+        "generalist toolchains (node, cargo, go)",
+        "reference environment (py3.12, numpy 2.2)",
+    },
+    "codeql.yml": {"analyze (python)", "analyze (actions)"},
+    "dependency-review.yml": {"dependency review"},
+    "tui.yml": {"window and service"},
+}
 
 
 def _load(name: str) -> dict:
@@ -86,30 +98,63 @@ def test_ci_has_no_job_long_enough_to_outlive_the_gate():
 
 
 # --------------------------------------------------------------------------
-# the checks branch protection names must keep existing
+# the checks the ruleset names must keep existing, and keep reporting
 # --------------------------------------------------------------------------
 
-def test_the_required_checks_are_still_produced_by_ci():
-    """Branch protection matches on the rendered job name. Renaming one drops
-    the requirement without any error anywhere — main simply stops being
-    protected by it."""
+def _rendered_check_names(workflow: str) -> set[str]:
+    """Job names as GitHub renders them: one per matrix value of every
+    `${{ matrix.<key> }}` the name uses."""
     rendered = set()
-    for name, job in _jobs("ci.yml").items():
-        display = job.get("name", name)
-        versions = (job.get("strategy", {})
-                       .get("matrix", {})
-                       .get("python-version", []))
-        if "${{ matrix.python-version }}" in display:
-            for v in versions:
-                rendered.add(display.replace("${{ matrix.python-version }}", str(v)))
-        else:
-            rendered.add(display)
+    for key, job in _jobs(workflow).items():
+        names = [job.get("name", key)]
+        matrix = job.get("strategy", {}).get("matrix", {})
+        for var, values in matrix.items():
+            token = f"${{{{ matrix.{var} }}}}"
+            if isinstance(values, list):
+                names = [n.replace(token, str(v)) if token in n else n
+                         for n in names for v in values]
+        rendered.update(names)
+    return rendered
 
-    missing = _REQUIRED_CHECKS - rendered
+
+@pytest.mark.parametrize("workflow", sorted(_REQUIRED_CHECKS))
+def test_the_required_checks_are_still_produced(workflow):
+    """The ruleset matches on the rendered job name. Renaming one drops the
+    requirement without any error anywhere -- main simply stops being
+    protected by it."""
+    rendered = _rendered_check_names(workflow)
+    missing = _REQUIRED_CHECKS[workflow] - rendered
     assert not missing, (
-        f"{sorted(missing)} is required on main but no job in ci.yml produces "
-        f"it any more. Produced: {sorted(rendered)}"
+        f"{sorted(missing)} is required on main but no job in {workflow} "
+        f"produces it any more. Produced: {sorted(rendered)}"
     )
+
+
+@pytest.mark.parametrize("workflow", sorted(_REQUIRED_CHECKS))
+def test_a_required_check_reports_on_every_pull_request(workflow):
+    """A required check that never starts is not a failed check, it is a
+    pending one, and GitHub waits for it forever: a `paths:` filter on
+    pull_request keeps every pull request outside those paths from merging.
+    A workflow that applies to part of the tree decides inside a job and
+    skips with `if:` -- a skipped job counts as passed."""
+    on = _load(workflow)[True]  # YAML parses the key `on:` as True
+    assert "pull_request" in on, f"{workflow} does not run on pull requests"
+    pr = on["pull_request"] or {}
+    filtered = sorted(k for k in ("paths", "paths-ignore", "branches",
+                                  "branches-ignore") if k in pr)
+    assert not filtered, (
+        f"{workflow} filters pull_request by {filtered}; its required checks "
+        "would never report on a pull request outside the filter"
+    )
+
+
+def test_the_window_tests_are_skipped_only_on_a_definite_no():
+    """A job whose `needs` failed is skipped, and a skipped required check
+    passes. So the window tests must run when the job deciding whether they
+    apply did not succeed, and be skipped only when it said "not covered"."""
+    cond = _jobs("tui.yml")["test"].get("if", "")
+    assert "!cancelled()" in cond, cond
+    assert "needs.changes.result != 'success'" in cond, cond
 
 
 # --------------------------------------------------------------------------
