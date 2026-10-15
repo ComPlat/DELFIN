@@ -138,6 +138,18 @@ def cmd_service(args: argparse.Namespace) -> int:
 
 
 def _service(action: str) -> int:
+    if action in ("stop", "restart"):
+        # An agent session's own process: over the socket the service
+        # answers it watch-only, and the signal fallback below would end
+        # the service (and every session in it) past that rule.
+        from ..approval_guard import inside_agent_session
+        if inside_agent_session():
+            print(f"ERROR: `delfin-agent service {action}` is refused: this "
+                  "process was started by an agent session: it may watch, not "
+                  "act. Only the user "
+                  "stops the agent service; ask them to run it.",
+                  file=sys.stderr)
+            return 1
     hello, why = client.probe()
     if hello is None:
         pid = rundir.service_pid()
