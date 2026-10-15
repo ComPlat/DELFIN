@@ -637,3 +637,28 @@ def test_a_claim_the_check_contradicts_is_queued_for_review(repo):
     rows = [json.loads(l) for l in ctl.log_path.read_text().splitlines()]
     assert rows[-1]["claims"] and rows[-1]["kept"] is True
     assert any("claims" in n["text"] for n in ctl.needs_you)
+
+
+def test_a_queued_call_without_a_command_says_what_it_carried(repo):
+    clock = Clock()
+    ctl = _ctl(repo, clock)
+    eng = Engine()
+    ctl.enable(eng)
+    clock.advance(120)
+    ctl.next_prompt(eng, work=[am.WorkItem(1, "task", "x", True)])
+    ctl.veto("session_message", {"to": "partner", "text": "the table is done"})
+    assert "the table is done" in ctl.needs_you[-1]["text"]
+
+
+def test_the_same_item_without_a_change_is_named_as_such(repo):
+    clock = Clock()
+    ctl = _ctl(repo, clock, repeat_failures=2)
+    eng = Engine()
+    ctl.enable(eng)
+    work = [am.WorkItem(1, "task", "task 1 in progress: parser", True)]
+    for _ in range(2):
+        clock.advance(120)
+        assert ctl.next_prompt(eng, work=work)
+        ctl.finish_iteration(eng, "LOOP: progress none")
+    assert not ctl.enabled
+    assert "twice in a row without a change" in ctl.stop_report
