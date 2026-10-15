@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
-    "collect_live", "collect_saved", "preview", "file_report",
+    "collect_live", "collect_saved", "preview", "file_report", "upload",
     "resolve_session", "denied_from_trace", "files_from_trace",
 ]
 
@@ -264,28 +264,112 @@ def preview(collected: dict, archive: str | Path) -> str:
         f"  about {kib:.0f} KiB before redaction; credentials DELFIN holds "
         "and secret-shaped values are redacted",
         f"Archive: {archive}",
+        _upload_line(),
     ]
     return "\n".join(lines)
 
 
-def push_if_configured(report_dir: Path) -> str:
-    """Copy the report to the shared remote archive when a transfer
-    target is configured, as the dashboard button does. Returns the line
-    to print, "" when no target is set. Never raises."""
+def _transfer(settings: dict) -> dict | None:
+    """The configured transfer target, or None (host, user and remote
+    path all set)."""
+    t = (settings or {}).get("transfer") or {}
+    if not (t.get("host") and t.get("user") and t.get("remote_path")):
+        return None
+    try:
+        port = int(t.get("port", 22) or 22)
+    except (TypeError, ValueError):
+        port = 22
+    return {"host": str(t["host"]), "user": str(t["user"]),
+            "remote_path": str(t["remote_path"]), "port": port}
+
+
+def _shown(t: dict) -> str:
+    from .bug_report import _BUG_SUBDIR
+    base = t["remote_path"].rstrip("/")
+    if base.rsplit("/", 1)[-1] != _BUG_SUBDIR:
+        base = f"{base}/{_BUG_SUBDIR}"
+    return f"{t['user']}@{t['host']}:{base}"
+
+
+def _settings() -> dict:
     try:
         from delfin.user_settings import load_settings
-        from .bug_report import push_report_to_remote
-        tcfg = (load_settings() or {}).get("transfer", {}) or {}
-        if not (tcfg.get("host") and tcfg.get("remote_path")):
+        return load_settings() or {}
+    except Exception:
+        return {}
+
+
+def _upload_line(settings: dict | None = None) -> str:
+    """Where the report goes after it is written, for the preview."""
+    from .bug_report import upload_policy
+    settings = _settings() if settings is None else settings
+    t = _transfer(settings)
+    if t is None:
+        return "Remote copy: none (no transfer target configured)"
+    policy = upload_policy(settings)
+    if policy == "never":
+        return ("Remote copy: none -- agent.bug_upload is 'never', the "
+                "report stays on this machine")
+    if policy == "always":
+        return (f"Remote copy: {_shown(t)}, without asking "
+                "(agent.bug_upload is 'always')")
+    return (f"Remote copy: {_shown(t)} only if you say yes afterwards "
+            "(agent.bug_upload is 'ask')")
+
+
+def upload(report_dir: Path, *, ask=None) -> str:
+    """Copy a written report to the shared remote archive, with consent.
+
+    Input: the report directory and ``ask`` (question -> answer), or None
+    where nobody can answer (``--yes``, unattended callers). Output: the
+    line to print, "" when no transfer target is configured. Never raises.
+
+    ``agent.bug_upload`` (``bug_report.upload_policy``): ``never`` keeps
+    the report local; ``always`` copies without a question; ``ask`` (the
+    default) asks ``[y/N]`` naming the destination, and anything but y or
+    yes, Ctrl+C, end of input or ``ask=None`` keeps it local. The final
+    decision is made again inside ``push_report_to_remote``.
+    """
+    try:
+        from .bug_report import push_report_to_remote, upload_policy
+        settings = _settings()
+        t = _transfer(settings)
+        if t is None:
             return ""
+        policy = upload_policy(settings)
+        if policy == "never":
+            return ("not copied to the remote archive: agent.bug_upload is "
+                    f"'never'; the report stays local in {report_dir}")
+        consent = policy == "always"
+        if not consent:
+            if ask is None:
+                return ("not copied to the remote archive: nobody was asked "
+                        "(agent.bug_upload is 'ask'); the report stays "
+                        f"local in {report_dir}. Set agent.bug_upload to "
+                        "'always' to upload without asking")
+            try:
+                answer = str(ask(
+                    f"Copy it to the shared archive {_shown(t)}, where its "
+                    "maintainers can read it? [y/N] ") or "")
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer.strip().lower() not in ("y", "yes"):
+                return ("not copied to the remote archive; the report "
+                        f"stays local in {report_dir}")
+            consent = True
         ok, where = push_report_to_remote(
-            report_dir, host=tcfg.get("host", ""), user=tcfg.get("user", ""),
-            remote_path=tcfg.get("remote_path", ""),
-            port=int(tcfg.get("port", 22) or 22))
+            report_dir, host=t["host"], user=t["user"],
+            remote_path=t["remote_path"], port=t["port"],
+            consent=consent, settings=settings)
         return (f"copied to the remote archive: {where}" if ok else
                 f"remote copy not made ({where}); the local copy is kept")
     except Exception as exc:
         return f"remote copy skipped: {exc}"
+
+
+def push_if_configured(report_dir: Path, *, ask=None) -> str:
+    """:func:`upload`; kept for callers of the earlier name."""
+    return upload(report_dir, ask=ask)
 
 
 def file_report(collected: dict, *, description: str, surface: str) -> Path:

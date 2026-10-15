@@ -146,7 +146,7 @@ def test_a_remote_path_that_already_names_the_archive_is_not_doubled():
             _mock.patch.object(bug_report.Path, "is_dir", lambda self: True):
         ok, where = bug_report.push_report_to_remote(
             "/tmp/report-dir", host="h", user="u",
-            remote_path="/archive/AGENT_BUGS")
+            remote_path="/archive/AGENT_BUGS", consent=True)
     assert ok
     assert where.count("AGENT_BUGS") == 1, where
 
@@ -165,7 +165,8 @@ def test_a_parent_remote_path_still_gets_the_archive_appended():
     with _mock.patch.object(bug_report.subprocess, "run", _fake_run), \
             _mock.patch.object(bug_report.Path, "is_dir", lambda self: True):
         ok, where = bug_report.push_report_to_remote(
-            "/tmp/report-dir", host="h", user="u", remote_path="/archive")
+            "/tmp/report-dir", host="h", user="u", remote_path="/archive",
+            consent=True)
     assert ok
     assert "/archive/AGENT_BUGS/" in where, where
 
