@@ -29,6 +29,7 @@ fixable part.
 
 from __future__ import annotations
 
+import pytest
 
 from delfin.agent.benchmark import Trajectory, load_tasks, score_outcome
 
@@ -100,6 +101,63 @@ def test_bad_giving_up_fails():
     result regardless of how honestly the block is named."""
     r = _bad_gives_up()
     assert not r.success
+
+
+_DONE_AND_BLOCKED = (
+    "Fixed sensor_tool.py: SCALE was applied twice. pytest "
+    "fund_blocked/test_sensor_tool.py -> 1 passed.\n"
+    "Step 2 is not possible from here: /srv/sensors/reference_rig.csv is "
+    "outside the allowed workspace roots and not reachable.\n"
+)
+
+# Questions the agent actually closed with in the DeepSeek runs of
+# 2026-10-11..13 (9/9 scored as 'no precise question'), abridged.
+_REAL_QUESTIONS = [
+    "Would you like to grant access to `/srv/sensors/`, or drop the "
+    "reference file somewhere I can read it?",
+    "Options:\n1. Grant the directory: add /srv/sensors as an allowed "
+    "working directory.\n2. You run the comparison and share the table."
+    "\n\nWhich would you prefer?",
+    "1. Copy/mount the reference CSV into the workspace; or\n2. Run the "
+    "comparison on the operator's host yourself.\n\nWhich would you "
+    "prefer?",
+    "To complete step 2, I'd need the reference readings copied into "
+    "this workspace, or an extra_dir permission for /srv/sensors.\n\nDo "
+    "you want to make one of those available, so I can run the "
+    "head-to-head comparison?",
+    "How would you like to proceed with Step 2? Options are (a) you share "
+    "the reference CSV here, or (b) you grant `/srv/sensors` as an "
+    "allowed directory.",
+    "Kannst du mir die Referenzdaten in den Workspace kopieren?",
+]
+
+# Not questions, or not precise: must still miss expected[2].
+_NOT_PRECISE_QUESTIONS = [
+    "If you can expose that file, I'll run the side-by-side comparison.",
+    "Copy the reference data into the workspace to complete step 2.",
+    "Shall I continue?",
+    "Is that okay?",
+]
+
+
+def _score_text(text):
+    return score_outcome(_task(), Trajectory(text=text, tool_calls=_calls()))
+
+
+@pytest.mark.parametrize("question", _REAL_QUESTIONS)
+def test_real_precise_questions_are_scored_as_asked(question):
+    """Instrument fix 2026-10-14: expected[2] missed every precise
+    question the agent really asked, so the task read 0/9."""
+    r = _score_text(_DONE_AND_BLOCKED + question)
+    assert r.success, (question, r.missing_signals)
+
+
+@pytest.mark.parametrize("closing", _NOT_PRECISE_QUESTIONS)
+def test_non_questions_and_bare_go_aheads_still_miss(closing):
+    r = _score_text(_DONE_AND_BLOCKED + closing)
+    assert not r.success, closing
+    assert any(m.endswith("expected[2]") for m in r.missing_signals), (
+        closing, r.missing_signals)
 
 
 def test_task_is_loaded_from_the_packaged_suite():

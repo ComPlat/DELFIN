@@ -160,3 +160,40 @@ def test_scrub_redacts():
 
 def test_timeout_not_a_refusal():
     assert rd._categorize("approval request TIMED OUT — user away") is None
+
+
+def _write_report(root, name, session_id, entries):
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "report.json").write_text(
+        json.dumps({"session_id": session_id}), encoding="utf-8")
+    _write_trace(d, "tool_trace", entries)
+    return d
+
+
+def test_archive_root_reads_each_reports_trace_once_per_session(tmp_path):
+    """The shared bug archive holds one directory per report, each with a
+    ``tool_trace.jsonl``; a long-lived session is reported several times,
+    so the largest trace per session_id is the one counted."""
+    deny = _entry("bash", ok=False, error="not on the auto-allow list",
+                  inp="grep x")
+    _write_report(tmp_path, "20261001-a", "s1", [deny])
+    _write_report(tmp_path, "20261002-a", "s1", [deny, deny, _entry("ls")])
+    _write_report(tmp_path / "Solved", "20261003-b", "s2", [
+        _entry("write_file", ok=False, error="path escapes workspace sandbox")])
+    (tmp_path / "notes.md").write_text("not a report", encoding="utf-8")
+    data = rd.collect(archive_root=tmp_path, include_security_events=False)
+    assert data["sessions"] == 2
+    assert data["entries"] == 4
+    assert data["refusals"] == 3
+    ranked = [(r["category"], r["tool"], r["count"]) for r in data["ranked"]]
+    assert ranked == [("allowlist", "bash", 2), ("sandbox", "write_file", 1)]
+    assert data["tool_totals"]["bash"] == {"calls": 2, "errors": 2}
+
+
+def test_main_accepts_root(tmp_path, capsys):
+    _write_report(tmp_path, "r1", "s1", [
+        _entry("bash", ok=False, error="not on the auto-allow list")])
+    rd.main(["--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "1 session(s)" in out and "allowlist" in out

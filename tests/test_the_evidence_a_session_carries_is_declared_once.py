@@ -324,6 +324,12 @@ _NOT_CARRIED = {
     # resumed run that stops on its ceiling says nothing at all.
     "_budget_attention_levels",
     "_prompt_session_serial",
+    # The system prompt held since the session's first turn, with the
+    # section texts already given and the messages that carried updates.
+    # A resumed process starts with a cold cache anyway, so it rebuilds
+    # the prompt whole on its first turn; carrying it would hold message
+    # references that do not survive serialisation.
+    "_held_prompt",
 }
 
 
