@@ -19,3 +19,11 @@ include delfin/qm_tools/bin/xtb4stda
 recursive-include delfin/qm_tools/share/xtb4stda *
 include delfin/submit_templates/*.sh
 include delfin/installers/*.sh
+
+# The terminal window's sources, which setup.py copies into the wheel
+# (delfin/agent/service/tui_sources); setup.py's TUI_FILES is the list.
+include setup.py
+include tui/package.json tui/bun.lock tui/bunfig.toml tui/tsconfig.json
+recursive-include tui/src *.ts *.tsx
+include tui/patches/*.patch
+include tui/scripts/install-bun.sh tui/scripts/build-opentui-native.sh tui/scripts/build-binary.ts
