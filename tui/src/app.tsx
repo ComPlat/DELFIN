@@ -315,7 +315,11 @@ export function App(props: AppProps): JSX.Element {
     return result !== undefined
   }
 
+  // The agent view is made after the composer: read through this, set
+  // once it exists (a "!" in its prompt is a name, an answer or a message).
+  let viewOpen = () => false
   const composer = createComposer({
+    shellAllowed: () => !viewOpen(),
     request: (method, params) => props.client.request(method, params),
     sessionId: sid,
     history: props.history ?? new History(),
@@ -412,6 +416,7 @@ export function App(props: AppProps): JSX.Element {
     setDraft: (text) => (text ? composer.setText(text) : composer.clear()),
     say,
   })
+  viewOpen = () => agents.state.open
   // The alternate screen, while the view is open.
   createEffect(() => {
     if (!props.agentScreen) return

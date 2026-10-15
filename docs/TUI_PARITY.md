@@ -32,7 +32,7 @@ for some, and runs three itself.
 | `/undo-file`, `/pending`, `/approve`, `/reject` | as in chat |
 | `/git`, `/bash`, `/jobs`, `/attention` | as in chat |
 | user commands, skills, `/explore` `/review` `/plan` `/delegate` | as in chat (the order a typed line tries them in); all are completed as you type and listed in the palette |
-| `!command`, `# note` | as in chat |
+| `!command`, `# note` | as in chat; a `!` at the start of the prompt shows shell mode (the marker `!` in its own colour, the box's border says so, no completion; backspace at the line's start or esc leaves it), and the line goes out as typed. A shell line is never steered into a turn: it runs when the turn ends. In the rows it reads `$ command` |
 
 ## Keys (`/keys`)
 

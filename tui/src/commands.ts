@@ -10,6 +10,17 @@
  * with an id (the argument menu offers the sessions), that session.
  */
 
+/** What makes a line a shell command: repl_commands.SHELL_PREFIX (a test
+ *  holds the two equal). */
+export const SHELL_PREFIX = "!"
+
+/** Where the line after a leading "!" begins (blanks before the "!" are
+ *  stripped from a sent line, as the session strips them), else -1. */
+export function shellLead(text: string): number {
+  const m = /^\s*!/.exec(text)
+  return m ? m[0].length : -1
+}
+
 /** As session.commands lists the session's: what completion offers. */
 export const WINDOW_COMMANDS = [
   { name: "/rename", summary: "name this session (no name: after its first prompt)",

@@ -8,7 +8,8 @@
  *   status    spinner · what it does · elapsed · tokens · cost · esc
  *   tasks     the session's task list while a task is open (tasks.tsx)
  *   approval  the open question, with exactly the keys the session offers
- *   composer  ❯ the prompt (grows to 8 rows; completion and search above)
+ *   composer  ❯ the prompt (grows to 8 rows; completion and search above);
+ *             "!" in front: a shell line, said on the box's top border
  *   hints     posture · model · keys; at its right, quietly, what needs
  *             the user (◉ 3 · ✗ 1), or for a moment what just arrived
  *
@@ -76,6 +77,19 @@ export interface FooterProps {
   scrollRef?: (box: ScrollBoxRenderable) => void
   /** The wheel turned over the rows. */
   onUserScroll?: () => void
+}
+
+/** What the prompt box's top border says in shell mode, the longest that
+ *  fits `room` columns (the words; the border adds a blank each side). */
+export const SHELL_HINTS = [
+  "shell · runs through the agent's checks · esc or backspace on an empty line to leave",
+  "shell · runs through the agent's checks · esc to leave",
+  "shell · esc to leave",
+  "shell",
+]
+
+export function shellHint(room: number): string {
+  return SHELL_HINTS.find((h) => width(h) <= room) ?? ""
 }
 
 /** Rows the footer takes with the agent view open: all but one. */
@@ -213,10 +227,18 @@ export function Footer(props: FooterProps): JSX.Element {
     const s = props.session()
     const name = viewOpen() ? "" : (s?.title || s?.summary?.title || "")
     const total = Math.max(1, cols() - 1)
-    if (!name || total < 12) return { left: rule(), chip: "", right: "" }
-    const chip = ` ${fit(name, Math.max(4, Math.floor(total / 2)))} `
-    return { left: "─".repeat(Math.max(1, total - width(chip) - 1)), chip, right: "─" }
+    const chip = name && total >= 12 ? ` ${fit(name, Math.max(4, Math.floor(total / 2)))} ` : ""
+    // Shell mode: at the left, what the line is and how to leave it -- as
+    // much as fits beside the name ("──" before it, one "─" after).
+    const said = props.composer.shell() ? shellHint(total - width(chip) - (chip ? 1 : 0) - 5) : ""
+    const head = said ? "── " : ""
+    const words = said ? `${said} ` : ""
+    const used = width(head) + width(words) + width(chip) + (chip ? 1 : 0)
+    return { head, mode: said ? "shell" : "", words: words.slice(said ? 5 : 0),
+             left: "─".repeat(Math.max(said ? 0 : 1, total - used)), chip, right: chip ? "─" : "" }
   }
+  /** The box's rules: in the shell's colour while the line is a command. */
+  const ruleTone = () => props.composer.shell() ? t().shell : t().faint
 
   /** The task list's lines: none in the agent view, which is another
    *  session's place. */
@@ -271,6 +293,9 @@ export function Footer(props: FooterProps): JSX.Element {
       }
       if (peeked) return peeked.kind === "elsewhere" ? `a message for ${peeked.name}…` : `reply to ${peeked.name}…`
       return "a new session: what should it do?"
+    }
+    if (props.composer.shell()) {
+      return props.session()?.turn ? "a shell command… (runs when the turn ends)" : "a shell command…"
     }
     return props.starting?.() ? "starting the session…"
       : props.session()?.turn
@@ -332,9 +357,12 @@ export function Footer(props: FooterProps): JSX.Element {
       </Show>
       </Show>
       <text flexShrink={0} wrapMode="none">
-        <span style={{ fg: t().faint }}>{topRule().left}</span>
+        <span style={{ fg: ruleTone() }}>{topRule().head}</span>
+        <span style={{ fg: t().shell, bold: true }}>{topRule().mode}</span>
+        <span style={{ fg: t().muted }}>{topRule().words}</span>
+        <span style={{ fg: ruleTone() }}>{topRule().left}</span>
         <span style={{ fg: t().accentSoft }}>{topRule().chip}</span>
-        <span style={{ fg: t().faint }}>{topRule().right}</span>
+        <span style={{ fg: ruleTone() }}>{topRule().right}</span>
       </text>
       <ComposerView
         composer={props.composer}
@@ -349,7 +377,7 @@ export function Footer(props: FooterProps): JSX.Element {
         pasteActive={() => props.focused() && (viewOpen() || !asked())}
         placeholder={placeholder}
       />
-      <text flexShrink={0} fg={t().faint} wrapMode="none">{rule()}</text>
+      <text flexShrink={0} fg={ruleTone()} wrapMode="none">{rule()}</text>
       <Hints {...props} cols={cols} />
     </box>
   )

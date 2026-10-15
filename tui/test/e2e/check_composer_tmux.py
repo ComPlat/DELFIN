@@ -8,6 +8,8 @@ service, typed into like a person would.
   alt+enter       a prompt of two lines goes out as one message
   a large paste   stands in as [Pasted text #1 +30 lines], arrives whole
   up              the history brings the last prompt back
+  !               shell mode: "!" as the marker, the border says shell; the
+                  line runs as "!echo ..." and the rows head it "$ echo ..."
 
 Usage (from the repository root):
     DELFIN_PYTHON=<python with delfin> python3 tui/test/e2e/check_composer_tmux.py
@@ -87,6 +89,24 @@ def main() -> int:
         tmux.key("Tab")
         expect(r"❯ look at @delfin/xtb\.py", "the completed path")
         clear()
+        # Shell mode: "!" at the start, no completion, backspace leaves it.
+        tmux.type("!")
+        expect(r"── shell · runs through the agent's checks", "shell mode on the border")
+        expect(r"(?m)^ ! a shell command", "the shell marker")
+        tmux.type("/st")
+        time.sleep(0.8)
+        if "Model, mode, tokens, cost" in tmux.screen():
+            problems.append(f"completion in shell mode\n{tmux.screen()}")
+        for _ in range(4):
+            tmux.key("BSpace")
+        expect(r"❯ ask DELFIN", "backspace on the ! back to a prompt")
+        if "── shell ·" in tmux.screen():
+            problems.append(f"shell mode stayed after backspace\n{tmux.screen()}")
+        tmux.type("!echo shell-mode-ok")
+        expect(r"(?m)^ ! echo shell-mode-ok", "the command in shell mode")
+        tmux.key("Enter")
+        expect(r"(?m)^ \$ echo shell-mode-ok", "the command's $ line in the rows", 30)
+        expect(r"❯ ask DELFIN", "a prompt again after the command")
         # Two lines, one message.
         tmux.type("first line")
         tmux.key("M-Enter")
@@ -124,6 +144,8 @@ def main() -> int:
                 problems.append(f"the two-line prompt did not arrive as one: {said}")
             if log not in said:
                 problems.append("the paste did not arrive whole")
+            if "!echo shell-mode-ok" not in said:
+                problems.append(f"the shell line did not arrive as typed: {said}")
             c.request("service.shutdown")
         history = tmp / "scratch" / ".delfin" / "tui_history.jsonl"
         if not history.exists() or "Pasted text #1" not in history.read_text():
@@ -140,7 +162,7 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: completion, new lines, pastes and the history work live")
+    print("PASS: completion, new lines, pastes, the history and shell mode work live")
     return 0
 
 

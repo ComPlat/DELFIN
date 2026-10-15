@@ -10,6 +10,7 @@
 import { RGBA, TextAttributes, type CliRenderer, type MouseEvent, type Renderable } from "@opentui/core"
 import { writeSolidToScrollback } from "@opentui/solid"
 import { For, Show, type JSX } from "solid-js"
+import { SHELL_PREFIX } from "../commands"
 import { fit, middle, width } from "../text"
 import { DOLPHIN, LOGO_GAP, logoDepth, logoRuns, pickLogo, pickedWidth } from "../theme/logo"
 import { GUTTER, markdownStyles, type Theme } from "../theme/theme"
@@ -26,6 +27,15 @@ export function cappedLines(text: string, max: number): string {
   const lines = text.split("\n")
   if (lines.length <= max) return text
   return [...lines.slice(0, max - 1), `… ${lines.length - max + 1} more lines`].join("\n")
+}
+
+/** The command of a line the session ran as one ("!ls" -> "ls"; as
+ *  repl.py: "!" then anything but blanks), else null. */
+export function shellCommand(text: string): string | null {
+  const line = text.trim()
+  if (!line.startsWith(SHELL_PREFIX)) return null
+  const command = line.slice(SHELL_PREFIX.length).trim()
+  return command ? command : null
 }
 
 /** The marker in front of a message, by who sent it. */
@@ -98,13 +108,19 @@ export function Row(props: RowProps): JSX.Element {
       const source = String(f.source ?? "user")
       const tint = source === "harness" ? t.muted : t.bright
       const note = source === "queued" ? "  (queued)" : source === "steer" ? "  (into the turn)" : ""
+      // A "!" line the user sent ran as a command (steered, it went to the
+      // model as text): "$ command" heads what it printed, the notice
+      // under it.
+      const command = source === "user" || source === "queued" ? shellCommand(String(f.text ?? "")) : null
       // The marker in a column of its own: every further line, and every
       // wrapped one, hangs under the first.
       return (
         <box paddingTop={1} flexDirection="row">
-          <text width={2} fg={t.accent} attributes={TextAttributes.BOLD}>{SOURCE_MARK[source] ?? "❯ "}</text>
+          <text width={2} fg={command !== null ? t.shell : t.accent} attributes={TextAttributes.BOLD}>
+            {command !== null ? "$ " : SOURCE_MARK[source] ?? "❯ "}
+          </text>
           <text flexGrow={1} wrapMode="word">
-            <span style={{ fg: tint }}>{cappedLines(String(f.text ?? ""), USER_MAX_LINES)}</span>
+            <span style={{ fg: tint }}>{cappedLines(command ?? String(f.text ?? ""), USER_MAX_LINES)}</span>
             <span style={{ fg: t.faint }}>{note}</span>
           </text>
         </box>
