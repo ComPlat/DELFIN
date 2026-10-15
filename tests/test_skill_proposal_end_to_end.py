@@ -104,3 +104,8 @@ def test_full_path_propose_to_skill_tool(home, monkeypatch):
     result = client._execute_skill({"name": ghost.name}, perms)
     payload = json.loads(result)
     assert "not found" in payload.get("error", "")
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

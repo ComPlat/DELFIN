@@ -36,8 +36,8 @@ def _rec(pid, **over):
 
 
 def _write(ws, rec):
-    (ws / ".delfin").mkdir(parents=True, exist_ok=True)
-    (ws / ".delfin" / "bash_jobs.json").write_text(json.dumps({"jobs": {rec["job_id"]: rec}}))
+    BJ._registry_path(ws).parent.mkdir(parents=True, exist_ok=True)
+    BJ._registry_path(ws).write_text(json.dumps({"jobs": {rec["job_id"]: rec}}))
 
 
 def test_a_new_record_names_its_machine():
@@ -50,7 +50,7 @@ def test_a_new_record_names_its_machine():
 def test_another_nodes_running_job_is_not_announced_finished(tmp_path):
     _write(tmp_path, _rec(999999999))
     assert BJ.drain_finished_events(str(tmp_path)) == []
-    data = json.loads((tmp_path / ".delfin" / "bash_jobs.json").read_text())
+    data = json.loads(BJ._registry_path(tmp_path).read_text())
     assert data["jobs"]["bg-remote"]["finished_at"] is None
 
 

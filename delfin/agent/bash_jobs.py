@@ -24,7 +24,7 @@ running the same auto-allow / deny / secret-scan checks BEFORE any
 job is started; this module trusts its inputs.
 
 Crash safety: every started job is additionally persisted to
-``<workspace>/.delfin/bash_jobs.json`` (atomic temp-file + ``os.replace``
+the workspace's registry under ``~/.delfin/workspace_state/`` (atomic temp-file + ``os.replace``
 writes, same pattern as ``memory_store._atomic_write``). A dashboard or
 kernel restart used to orphan every running calculation — the setsid
 child survives, but the new process had no record of job ids, output
@@ -245,13 +245,12 @@ def _signal_name(num: int) -> str:
         return f"signal {num}"
 
 # --- Persistent registry (crash-safe re-attach + completion events) ------
-_REGISTRY_DIRNAME = ".delfin"        # per-workspace state directory
 _REGISTRY_FILENAME = "bash_jobs.json"
 _REGISTRY_MAX_AGE_S = 7 * 24 * 3600  # prune records older than ~7 days
 _EVENT_TAIL_CHARS = 500              # stdout/stderr tail carried per event
 _RC_UNKNOWN = -257                   # poll() sentinel: finished, code unknown
 # Per-user locator: job_id -> workspace, so a NEW process can find the right
-# <workspace>/.delfin/bash_jobs.json from a bare job_id (bash_status /
+# registry of a workspace from a bare job_id (bash_status /
 # bash_output / bash_kill carry no workspace argument).
 _INDEX_PATH = Path.home() / ".delfin" / "bash_jobs_index.json"
 # Serializes read-modify-write cycles on the registry/index files within
@@ -397,7 +396,7 @@ class BashJob:
                 "finished, but the registry could not be written: "
                 + self.record_error
                 + " A reattach or a restart will read this job as still "
-                  "running. Check the workspace's .delfin directory is "
+                  "running. Check that ~/.delfin/workspace_state is "
                   "writable.")
         return status
 
@@ -408,7 +407,20 @@ class BashJob:
 
 
 def _registry_path(workspace: str | Path) -> Path:
-    return Path(workspace).expanduser() / _REGISTRY_DIRNAME / _REGISTRY_FILENAME
+    """The job registry of ``workspace``: in its state directory under
+    ``~/.delfin/workspace_state/`` (state_paths.workspace_state_dir),
+    never inside the workspace.
+
+    Inside the workspace it was the first change git showed in every
+    pristine repository (the drain's lock sidecar), and it sat in the
+    one folder a cloned repository can ship and the agent can write --
+    a record there names the files whose tail enters the model's
+    context. A ``.delfin/bash_jobs.json`` left by an earlier version is
+    not read: a job started before the upgrade keeps running, and only
+    its completion notice is lost.
+    """
+    from . import state_paths as _state_paths
+    return _state_paths.workspace_state_dir(workspace) / _REGISTRY_FILENAME
 
 
 @contextlib.contextmanager
@@ -657,8 +669,9 @@ _OWN_OUTPUT_NAME = re.compile(r"^kit_bg_[A-Za-z0-9_-]+\.(?:stdout|stderr)$")
 def is_own_output_file(path) -> bool:
     """Whether ``path`` is an output file this module created for a job.
 
-    The registry lives in ``<workspace>/.delfin/bash_jobs.json``, inside
-    the folder the agent may write. A record written there named any file
+    The registry lived in ``<workspace>/.delfin/bash_jobs.json``, inside
+    the folder the agent may write (it is under ``~/.delfin`` now, and
+    this check stays). A record written there named any file
     as a job's output: the next completion notice put the last 500
     characters of it into the model's context (an SSH key, past every
     read gate), and pruning an old record deleted it (review 2026-09-16).
@@ -1208,7 +1221,7 @@ class ReattachedJob:
 
 
 def _reattach(job_id: str, workspace: str | Path | None = None) -> Optional[ReattachedJob]:
-    """Rebuild a job view from ``<workspace>/.delfin/bash_jobs.json``.
+    """Rebuild a job view from the workspace registry (``_registry_path``).
 
     Called for job ids the in-memory registry does not know — i.e. after a
     dashboard/kernel restart orphaned a running calculation. The workspace

@@ -1398,7 +1398,7 @@ A session starts in `default` unless `--permission-mode` or `default_mode` in yo
 
 Cycle with `/permissions` or Shift+Tab; the cycle deliberately never lands on bypass. Two things hold at **every** level: the sandbox and the deny lists stay in force, and a file that defines the agent's own permissions always requires explicit confirmation.
 
-Settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
+Settings, hook commands, MCP servers and skills (`.delfin/skills/`) that come from a checked-out repository are ignored until you trust that directory (`/trust`, then `/trust grant hooks|mcp|skills`); trust covers exactly the content you saw, and a change asks again. A repository skill never replaces a built-in or your own skill of the same name.
 
 #### Answering a choice question in your own words
 

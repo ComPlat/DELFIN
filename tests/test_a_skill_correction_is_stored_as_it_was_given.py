@@ -221,3 +221,8 @@ def test_a_test_that_proposes_writes_no_proposal_into_the_real_home():
 
     real = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".delfin"
     assert real not in skill_proposals._proposals_dir().parents
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

@@ -7502,6 +7502,15 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "**/.delfin/settings.local.json",
     ".delfin/mcp_servers.json",
     "**/.delfin/mcp_servers.json",
+    # Workspace skills (workspace_trust kind "skills"): a skill body is the
+    # procedure the model follows when it is invoked, so a write here is
+    # a way to rewrite a trusted procedure. A trusted directory whose
+    # content changes is withheld again (digest), and the confirm keeps
+    # the model from making that change unasked.
+    ".delfin/skills",
+    "**/.delfin/skills",
+    ".delfin/skills/**",
+    "**/.delfin/skills/**",
     # The record of which directories the user trusted. Writable only by
     # the user's own trust command; an edit here would grant the trust
     # the file exists to withhold.
