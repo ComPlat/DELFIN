@@ -83,6 +83,19 @@ function repaint(renderer: CliRenderer): void {
   renderer.requestRender()
 }
 
+/** The terminal's size reports: each SIGWINCH, with the size stdout has
+ *  then (none where stdout is not a terminal). */
+function terminalSizeReports(listener: (width: number, height: number) => void): () => void {
+  const onSignal = () => {
+    const { columns, rows } = process.stdout
+    if (columns > 0 && rows > 0) listener(columns, rows)
+  }
+  process.on("SIGWINCH", onSignal)
+  return () => {
+    process.off("SIGWINCH", onSignal)
+  }
+}
+
 export function startSessionView(renderer: CliRenderer, store: AppStore, theme: () => Theme,
                                  options: SessionViewOptions): SessionView {
   const target = {
@@ -159,6 +172,7 @@ export function startSessionView(renderer: CliRenderer, store: AppStore, theme: 
         }
       } else void replay()
     },
+    reports: terminalSizeReports,
   })
   let off: (() => void) | null = null
   let presenter: Presenter | null = null
