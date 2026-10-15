@@ -197,3 +197,29 @@ def test_a_check_that_publishes_is_refused(ws, front):
 def test_a_step_command_that_publishes_is_refused(ws):
     _write(ws, "pub", "---\ngoal: x\n---\n1. a\n   check: git push\n")
     assert any("step 1" in e for e in loops.load("pub", ws).errors)
+
+
+def test_a_template_never_follows_a_planted_link(ws, tmp_path):
+    """The loop file's path is a place the agent can write. A dangling
+    link there made write_template create the link's target -- any file
+    the account can create, outside the workspace -- because
+    ``path.exists()`` is False for a dangling link and ``write_text``
+    follows it."""
+    outside = tmp_path / "outside" / "planted.md"
+    outside.parent.mkdir()
+    folder = ws / ".delfin" / "loops"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "weekly-report.md").symlink_to(outside)
+    with pytest.raises(FileExistsError):
+        loops.write_template(ws, "weekly-report", goal="x")
+    assert not outside.exists()
+
+
+def test_a_template_is_not_written_through_a_linked_folder(ws, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (ws / ".delfin" / "loops").rmdir()
+    (ws / ".delfin" / "loops").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError):
+        loops.write_template(ws, "weekly-report", goal="x")
+    assert list(outside.iterdir()) == []

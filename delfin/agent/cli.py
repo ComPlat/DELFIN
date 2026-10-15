@@ -2730,7 +2730,9 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
     Without --yes the description and a y/N confirmation are read from
     the terminal after a preview of what goes in. With no terminal and no
     --yes nothing is written: a pipe cannot see the preview it would be
-    agreeing to.
+    agreeing to. The copy to the remote archive follows
+    ``agent.bug_upload`` (``bug_filing.upload``): asked separately without
+    --yes, never made under --yes unless the setting is ``always``.
     """
     from . import bug_filing
     from .bug_report import resolve_archive_dir
@@ -2779,7 +2781,11 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
         print(f"ERROR: bug report failed: {exc}", file=sys.stderr)
         return 1
     print(f"bug report written: {report_dir}")
-    remote = bug_filing.push_if_configured(report_dir)
+    # --yes answers the questions about writing, not the one about
+    # sending: with it nobody is asked, so the copy to the remote archive
+    # happens only under agent.bug_upload: always.
+    remote = bug_filing.upload(report_dir,
+                               ask=None if assume_yes else input)
     if remote:
         print(remote)
     return 0
@@ -2826,10 +2832,14 @@ def cmd_bug(args: argparse.Namespace) -> int:
         if not targets:
             print(f"No reports to triage in {archive}")
             return 0
+        print(_bw.send_line())
+        consent = _bw.ask_consent(len(targets))
         for d in targets:
             print(f"→ analysing {d.name} …", flush=True)
-            t = _bw.triage_report(d)
-            if t.error:
+            t = _bw.triage_report(d, consent=consent)
+            if t.withheld:
+                print(f"  [WITHHELD] {t.summary}")
+            elif t.error:
                 print(f"  [ERROR] {t.error}")
             else:
                 print(f"  [OK] {t.summary[:200].strip()}")
@@ -2870,9 +2880,14 @@ def cmd_bug(args: argparse.Namespace) -> int:
 
         if getattr(args, "once", False):
             print(f"Triaging {archive} once …", flush=True)
-            results = _bw.run_once(archive=archive, settings=settings)
+            print(_bw.send_line(settings))
+            consent = _bw.ask_consent(
+                len(_bw.find_unsolved(archive, settings=settings)), settings)
+            results = _bw.run_once(archive=archive, settings=settings,
+                                   consent=consent)
             for t in results:
-                tag = "ERROR" if t.error else "OK"
+                tag = ("WITHHELD" if t.withheld else
+                       "ERROR" if t.error else "OK")
                 print(f"  [{tag}] {t.report_name}: "
                       f"{(t.error or t.summary)[:150].strip()}")
             print(f"Done — {len(results)} report(s) triaged.")
@@ -2892,6 +2907,7 @@ def cmd_bug(args: argparse.Namespace) -> int:
         try:
             print(f"bug_watcher started (interval {cfg['interval_s']}s, "
                   f"archive={archive}).")
+            print(_bw.send_line(settings))
             return _bw.run_loop(settings=settings)
         finally:
             _bw.release_pid_lock()
@@ -3064,7 +3080,9 @@ def cmd_skills(args: argparse.Namespace) -> int:
             print("safety findings: none")
         return 0
 
-    who = os.environ.get("USER", "")
+    # Recorded as who accepted: the account, not $USER (os_account).
+    from .os_account import name as _account
+    who = _account()
 
     if action == "accept":
         try:
@@ -3211,7 +3229,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         # resolves against the question's own options; anything that is
         # not a choice question is refused here, not guessed at.
         from . import approval_answers as _ans
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         try:
             picks = _ans.answer(args.request_id, args.choice, by=who,
                                 code=code)
@@ -3223,7 +3242,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     if action in ("approve", "deny"):
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         # A refusal may say what to do instead, and the model reads it in
         # the same turn -- instead of guessing the same thing spelled
         # differently, which is one more dialog for the person here.
