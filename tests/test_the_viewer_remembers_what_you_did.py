@@ -1380,3 +1380,35 @@ def test_a_viewer_report_says_when_its_redaction_failed(tmp_path,
     said = note.read_text(encoding='utf-8')
     assert 'report.json' in said and 'report.md' in said
     assert 'hunter2' not in (where / 'report.md').read_text(encoding='utf-8')
+
+
+def test_the_viewer_names_no_host_when_uploads_are_off(tmp_path,
+                                                      monkeypatch):
+    """With agent.bug_upload 'never' nothing leaves the machine, so the line
+    above Send must not say 'then <host>' and the status after it must not
+    say 'Sending it to <host>' -- and nothing is handed to the transfer."""
+    pytest.importorskip('ipywidgets')
+    monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
+    monkeypatch.setattr('delfin.user_settings.load_settings',
+                        lambda *a, **k: {
+                            'transfer': {'host': 'login.cluster', 'user': 'ka',
+                                         'remote_path': '/home/grp/archive',
+                                         'port': 22},
+                            'agent': {'bug_upload': 'never'}})
+    sent = []
+    monkeypatch.setattr(ej, 'send_report',
+                        lambda *a, **k: sent.append(a) or (False, 'x'))
+    part, state, _box = _an_editor(tmp_path / 'never')
+    _command(part, 'gfngrab', '7,2')
+    ej.press(part.submit_bug_btn, True)
+    where = part.submit_bug_where.value
+    assert 'login.cluster' not in where
+    assert 'bug_upload' in where
+    ej.press(part.submit_bug_note, 'es zappelt')
+    part.submit_bug_send.click()
+    said = part.mol_status.value
+    assert 'Reported.' in said
+    assert 'Sending it to' not in said and 'login.cluster' not in said
+    assert 'stays on this machine' in said
+    time.sleep(0.2)
+    assert sent == []
