@@ -6285,17 +6285,18 @@ def create_tab(ctx):
     # Which branch Merge brings in, Branch starts from and PR goes into.
     # Not always main (user, 2026-10-09): offered from the remote branches
     # this checkout already knows, typeable for any other.
-    # Labelled: unlabelled, the field read as a second branch switch next
-    # to the one at the top of the page, which picks the branch DELFIN
-    # itself runs on. This one only names the target of the git buttons.
+    # Labelled: unlabelled, the field read as a branch switch. The shared
+    # checkout stays on main; a branch is tried with Test branch at the
+    # top of the page (a preview). This one only names the target of the
+    # git buttons.
     git_base = widgets.Combobox(
         value="origin/main", options=["origin/main"],
         description="Base:",
         placeholder="base branch", ensure_option=False,
         tooltip=("Base branch for the buttons beside it: Merge brings it "
                  "in, Branch starts from it, PR goes into it. Not the "
-                 "branch DELFIN runs on (that is the Branch switch at the "
-                 "top)."),
+                 "branch DELFIN runs on: that stays main, and Test branch "
+                 "at the top opens another branch in a preview."),
         style={"description_width": "36px"},
         layout=widgets.Layout(width="190px"))
     _git_base_cache = {"at": 0.0, "where": ""}
@@ -17944,12 +17945,12 @@ def create_tab(ctx):
 
             if res.blocked:
                 _append_system_message(
-                    f"\u26d4 BLOCKED by allow-list: {res.block_reason}\n"
+                    f"\u26d4 BLOCKED by the sandbox: {res.block_reason}\n"
                     f"  $ {cmd}\n"
                     f"Run it manually in a terminal if you really need it."
                 )
                 input_textarea.value = (
-                    f"That command was blocked by the allow-list "
+                    f"That command was blocked by the sandbox "
                     f"({res.block_reason}). Please suggest a safer alternative."
                 )
                 _on_send(None)
