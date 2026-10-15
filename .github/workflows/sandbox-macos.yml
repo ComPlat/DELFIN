@@ -51,9 +51,9 @@ jobs:
         # the optional [pymol] extra, the full set also did not resolve
         # on macOS: pymol wanted numpy 2, DELFIN numpy 1.)
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install --no-deps -e .
-          pip install pytest pytest-timeout
+          pip install -c .github/ci/constraints-ci.txt pytest pytest-timeout
 
       - name: Seatbelt and containment tests
         run: >

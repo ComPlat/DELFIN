@@ -58,7 +58,7 @@ jobs:
 
       - name: Install DELFIN
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install -e ".[agent,dev]"
 
       - name: Set up Bun 1.4.3

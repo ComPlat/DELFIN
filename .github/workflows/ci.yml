@@ -5,8 +5,10 @@ name: CI
 # are required.
 #
 # Everything in this file either gates or is cheap enough to sit beside what
-# gates: `tests` (fast suite, required), `lint` (required), `audit`, and
-# `coverage` on the nightly schedule. What that buys is a run conclusion that
+# gates: `tests` (fast suite, required), `lint` (required), and `coverage`
+# on the nightly schedule. The dependency audit is in audit.yml: it fails on
+# a published advisory, which is news about upstream, not about the change
+# under review. What that buys is a run conclusion that
 # means something — CI green says the gate passed, and nothing else in here
 # can take that away.
 #
@@ -26,7 +28,7 @@ on:
   # a workflow without this trigger never reports and the entry times out.
   merge_group:
   schedule:
-    # Nightly, for the coverage and audit reports below.
+    # Nightly, for the coverage report below.
     - cron: "17 3 * * *"
   workflow_dispatch:
 
@@ -108,7 +110,7 @@ jobs:
         # reference-environment job below; without the pin both would test
         # numpy 2 and nothing would notice a break of the 1.x line.
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install -e ".[agent,docs,dev]" "numpy<2"
 
       - name: Run fast test suite (excludes heavy + order-dependent tests)
@@ -213,9 +215,9 @@ jobs:
 
       - name: Install the package without its chemistry stack
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install --no-deps -e .
-          pip install pytest pytest-timeout
+          pip install -c .github/ci/constraints-ci.txt pytest pytest-timeout
 
       - name: Pull the default image for both runtimes
         run: |
@@ -252,14 +254,25 @@ jobs:
 
       - name: Install the package without its chemistry stack
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install --no-deps -e .
-          pip install pytest pytest-timeout pyyaml
+          pip install -c .github/ci/constraints-ci.txt pytest pytest-timeout pyyaml
 
       - name: Install node, rust and go from conda-forge
+        # micromamba 2.9.0-0, the release binary checked against its
+        # SHA-256 before it runs. The digest is the one GitHub records for
+        # the asset, the one in the release's micromamba-linux-64.sha256,
+        # and the one computed from the download on 2026-10-15; all three
+        # agree. Until then this piped .../linux-64/latest into tar: a new
+        # release, or whatever answered at that address, ran unchecked.
+        env:
+          MICROMAMBA_URL: https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-linux-64
+          MICROMAMBA_SHA256: 366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3
         run: |
-          curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
-            | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/micromamba" "$MICROMAMBA_URL"
+          echo "$MICROMAMBA_SHA256  $RUNNER_TEMP/bin/micromamba" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/bin/micromamba"
           "$RUNNER_TEMP/bin/micromamba" create -y -q -p "$RUNNER_TEMP/tc" \
             -c conda-forge "nodejs>=22.6" rust go
           echo "DELFIN_TOOLCHAIN_BIN=$RUNNER_TEMP/tc/bin" >> "$GITHUB_ENV"
@@ -312,7 +325,7 @@ jobs:
         # take the manylinux_2_35 wheel; a glibc 2.34 machine (RHEL 9)
         # installs the same command without the extra.
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install -e ".[agent,docs,dev,pymol]" -c env/reference-environment.lock
           python -c "import numpy, rdkit, scipy, openbabel, pymol; print('numpy', numpy.__version__, '| rdkit', rdkit.__version__, '| scipy', scipy.__version__)"
 
@@ -356,10 +369,11 @@ jobs:
     # the incantation that makes it pass. They stay visible through `ruff check
     # --select F` when anybody wants to work them down.
     #
-    # ruff is pinned. Unpinned, a release that adds or widens a rule turns main
-    # red for everybody without a line having changed — the same shape of
-    # accident as an unbounded dependency. Raising the pin is a small, ordinary
-    # pull request: bump it, see what the new version says, fix or accept.
+    # ruff is pinned (.github/ci/constraints-ci.txt). Unpinned, a release that
+    # adds or widens a rule turns main red for everybody without a line having
+    # changed — the same shape of accident as an unbounded dependency. Raising
+    # the pin is a small, ordinary pull request: bump it, see what the new
+    # version says, fix or accept.
 
     steps:
       - name: Checkout
@@ -373,51 +387,14 @@ jobs:
 
       - name: Install ruff
         run: |
-          python -m pip install --upgrade pip
-          pip install ruff==0.16.3
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
+          pip install -c .github/ci/constraints-ci.txt ruff
 
       - name: Lint for real defects
         run: |
           ruff check delfin/ tests/ \
             --select F821,F811,F601,F402,F823 \
             --output-format github
-
-  audit:
-    name: dependency audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Also reporting rather than gating, and green while it reports. A freshly
-    # published advisory against a transitive dependency would otherwise mark
-    # work that has nothing to do with it as failing, and DELFIN's dependency
-    # tree is deep enough that this happens regularly. The findings land in the
-    # run summary; the nightly schedule means one surfaces within a day even if
-    # nobody pushes.
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install package + audit tool
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e "." pip-audit
-
-      - name: Audit installed dependencies for known advisories
-        run: |
-          {
-            echo "### pip-audit"
-            echo
-            echo '```'
-            pip-audit --progress-spinner off || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          pip-audit --progress-spinner off || true
 
   coverage:
     name: coverage
@@ -448,7 +425,7 @@ jobs:
 
       - name: Install package + test deps
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install -e ".[agent,docs,dev]"
 
       - name: Measure coverage over the fast suite
