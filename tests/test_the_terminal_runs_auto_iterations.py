@@ -34,6 +34,11 @@ def _git(ws, *a):
 
 @pytest.fixture()
 def ws(tmp_path, monkeypatch):
+    # Background shells other tests of this process left in the shared
+    # registry would wake this session (a shell with no session is told
+    # to everyone, job_wake.finished_shells); the wake is not under test.
+    from delfin.agent import job_wake
+    monkeypatch.setattr(job_wake, "wake_enabled", lambda *a, **k: False)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
