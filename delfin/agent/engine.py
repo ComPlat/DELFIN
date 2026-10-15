@@ -460,6 +460,23 @@ class AgentEngine:
     #: The address `delfin-agent pause <session>` uses (the -n name, set by
     #: the terminal). Empty: this engine cannot be paused by name.
     pause_key: str = ""
+    #: Context window state behind the ``context_window_tokens`` and
+    #: ``_active_capabilities`` properties. Class defaults, so an engine
+    #: built with ``object.__new__`` reads the 100k fallback and no
+    #: capabilities instead of raising. ``_window_generation`` counts every
+    #: write that is not a background probe's (direct assignment, the
+    #: synchronous refresh); a probe applies its result only if the count
+    #: did not move while it ran. ``_window_assigned``: the current state
+    #: was assigned directly, so no background probe replaces it -- only a
+    #: synchronous refresh (a model switch) does.
+    _window_tokens: int = 100_000
+    _window_caps: Any = None
+    _window_generation: int = 0
+    _window_assigned: bool = False
+    #: One lock for every engine: the check-and-apply of a probe and an
+    #: assignment from another thread must not interleave. Held for a few
+    #: attribute writes only, so sharing it costs nothing measurable.
+    _WINDOW_LOCK = threading.Lock()
 
 
     def __init__(
@@ -620,7 +637,11 @@ class AgentEngine:
         # re-build its own work. 0.95 keeps the full thread until the
         # context is almost full, trading a bit more API cost for far
         # fewer context-loss double-work cycles.
-        self.context_window_tokens: int = 100_000
+        #
+        # The window itself (``context_window_tokens``, a property): the
+        # 100k default, written to the store directly so it does not count
+        # as an assignment and the construction probe below may replace it.
+        self._window_tokens: int = 100_000
         # Last authoritative input-token count the provider reported for a full
         # request (from message_start). Used as the ground-truth floor of the
         # compaction estimate so system prompt + tool schemas are never missed.
@@ -644,7 +665,9 @@ class AgentEngine:
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
-        self._active_capabilities = None
+        # (``_active_capabilities`` is a property over this store.)
+        self._window_caps = None
+        self._window_assigned: bool = False
         # Background: the cold-cache KIT probe (~5s) must not block the first
         # turn. The window upgrades from the 100k default once the probe lands.
         self._refresh_context_window(background=True)
@@ -1358,6 +1381,104 @@ class AgentEngine:
         except Exception:
             return ""
 
+    # -- the context window and the capabilities it came with ---------------
+    #
+    # Both are properties over one store so that every write which is not a
+    # background probe's can be counted: a probe started at construction (or
+    # by a turn whose capabilities are still a guess) finishes on a daemon
+    # thread, and used to assign whatever it resolved whenever it finished --
+    # the previous model's window after a quick switch, the resolved window
+    # over one a caller had just set. Rejected: a test-side switch that turns
+    # the background start off (it hides the race from the tests and leaves
+    # it in the product), and joining the probe before every write (a cold
+    # KIT probe takes ~5 s, and the model-switch path would wait for it).
+
+    @property
+    def context_window_tokens(self) -> int:
+        """The window compaction sizes its budgets from (tokens)."""
+        return self._window_tokens
+
+    @context_window_tokens.setter
+    def context_window_tokens(self, value: int) -> None:
+        self._write_window(tokens=value)
+
+    @context_window_tokens.deleter
+    def context_window_tokens(self) -> None:
+        # ``mock.patch`` restores an attribute it did not find in the
+        # instance by deleting it; back to the class default then.
+        with AgentEngine._WINDOW_LOCK:
+            self.__dict__.pop("_window_tokens", None)
+            self._window_generation = self._window_generation + 1
+
+    @property
+    def _active_capabilities(self):
+        """The ModelCapabilities the window was resolved with, or None."""
+        return self._window_caps
+
+    @_active_capabilities.setter
+    def _active_capabilities(self, value) -> None:
+        self._write_window(caps=value)
+
+    @_active_capabilities.deleter
+    def _active_capabilities(self) -> None:
+        with AgentEngine._WINDOW_LOCK:
+            self.__dict__.pop("_window_caps", None)
+            self._window_generation = self._window_generation + 1
+
+    _UNSET = object()
+
+    def _write_window(self, *, tokens=_UNSET, caps=_UNSET,
+                      assigned: bool = True) -> None:
+        """Every write of the window state that is not a background probe.
+
+        Bumps ``_window_generation``, which discards any probe in flight.
+        ``assigned=True`` (a direct attribute assignment) additionally keeps
+        later background probes from replacing the value; the synchronous
+        refresh writes with ``assigned=False``, so the per-turn re-probe may
+        still upgrade a guess it produced.
+        """
+        with AgentEngine._WINDOW_LOCK:
+            self._window_generation = self._window_generation + 1
+            self._window_assigned = assigned
+            if tokens is not AgentEngine._UNSET:
+                self._window_tokens = tokens
+            if caps is not AgentEngine._UNSET:
+                self._window_caps = caps
+
+    def _window_probe_key(self) -> tuple:
+        """What a probe's answer is about: the provider and the model the
+        client talks to now."""
+        return (str(getattr(self, "provider", "") or ""),
+                getattr(getattr(self, "client", None), "model", "") or "")
+
+    def _resolve_window(self, model) -> "tuple[int, Any] | None":
+        """(capped window, capabilities) for *model*, or None when the
+        resolver has no positive window. Network I/O on a cold cache."""
+        base_url = ""
+        inner = getattr(self.client, "client", None)
+        if inner is not None:
+            try:
+                base_url = str(getattr(inner, "base_url", "") or "")
+            except Exception:
+                base_url = ""
+        from .model_capabilities import resolve as _resolve_caps
+        # Pass the provider key so the KIT/vLLM /v1/models probe authenticates
+        # (else it 401s → static window). Doing it HERE — at construction /
+        # switch_model, off the per-turn hot path — also warms the (authed)
+        # capability cache, so the first stream_message turn reads it instantly
+        # instead of paying a ~5s synchronous probe before its first token.
+        api_key = getattr(self.client, "_api_key", "") or ""
+        caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
+        if not (caps and caps.context_window > 0):
+            return None
+        # Raised to what this backend has already accepted for the
+        # model: the table understates (131k against a 166k
+        # request that went through), and every protection fires
+        # at a share of this number. The cap still applies after.
+        from . import observed_window as _ow
+        return (_capped_context_window(
+            _ow.at_least(model, int(caps.context_window))), caps)
+
     def _refresh_context_window(self, *, background: bool = False) -> None:
         """Size the compaction budget to the ACTIVE model's real context.
 
@@ -1365,7 +1486,8 @@ class AgentEngine:
         KIT/vLLM ``/v1/models`` ``max_model_len``, else a curated static
         table) and stashes the capabilities for tool/vision decisions. Falls
         back to the legacy 100k on any error so behaviour never regresses.
-        Call after construction and after every ``client.switch_model(...)``.
+        Runs after construction and, through ``_on_model_switched``, after
+        every ``client.switch_model(...)``.
 
         With ``background=True`` the (one-time, ~5s on a cold KIT cache) live
         probe runs on a daemon thread, so engine construction never blocks the
@@ -1374,42 +1496,58 @@ class AgentEngine:
         cache makes every later construction instant regardless. A first turn
         that races the probe just uses the safe 100k window + name-regex tool/
         vision fallback for that one turn — strictly better than a 5s stall.
+
+        A background result is applied only when ``_window_generation`` did
+        not move while it ran, the client still talks to the model it was
+        resolved for, and the window was not assigned directly; otherwise
+        the window AND the capabilities are discarded (debug log). Not
+        started at all while a directly assigned window is in force.
         """
         if background:
-            import threading
+            if self._window_assigned:
+                return
+            started = (self._window_generation, self._window_probe_key())
             threading.Thread(
-                target=self._refresh_context_window,
+                target=self._probe_window_in_background, args=(started,),
                 daemon=True, name="caps-prewarm").start()
             return
+        # Newer than any probe in flight, whether or not it resolves.
+        with AgentEngine._WINDOW_LOCK:
+            self._window_generation = self._window_generation + 1
         try:
-            model = getattr(self.client, "model", "") or ""
-            base_url = ""
-            inner = getattr(self.client, "client", None)
-            if inner is not None:
-                try:
-                    base_url = str(getattr(inner, "base_url", "") or "")
-                except Exception:
-                    base_url = ""
-            from .model_capabilities import resolve as _resolve_caps
-            # Pass the provider key so the KIT/vLLM /v1/models probe authenticates
-            # (else it 401s → static window). Doing it HERE — at construction /
-            # switch_model, off the per-turn hot path — also warms the (authed)
-            # capability cache, so the first stream_message turn reads it instantly
-            # instead of paying a ~5s synchronous probe before its first token.
-            api_key = getattr(self.client, "_api_key", "") or ""
-            caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
-            if caps and caps.context_window > 0:
-                # Raised to what this backend has already accepted for the
-                # model: the table understates (131k against a 166k
-                # request that went through), and every protection fires
-                # at a share of this number. The cap still applies after.
-                from . import observed_window as _ow
-                self.context_window_tokens = _capped_context_window(
-                    _ow.at_least(model, int(caps.context_window)))
-                self._active_capabilities = caps
+            resolved = self._resolve_window(self._window_probe_key()[1])
+            if resolved is not None:
+                self._write_window(tokens=resolved[0], caps=resolved[1],
+                                   assigned=False)
         except Exception:
             # Keep whatever window is already set (100k default).
             pass
+
+    def _probe_window_in_background(self, started: tuple) -> None:
+        """The daemon thread's body: resolve for the model named in
+        *started* and apply only if nothing newer was written meanwhile."""
+        generation, key = started
+        try:
+            resolved = self._resolve_window(key[1])
+        except Exception:
+            return
+        if resolved is None:
+            return
+        with AgentEngine._WINDOW_LOCK:
+            reason = ""
+            if self._window_assigned:
+                reason = "the window was assigned directly"
+            elif self._window_generation != generation:
+                reason = "the window was written while the probe ran"
+            elif self._window_probe_key() != key:
+                reason = "the client switched model while the probe ran"
+            if not reason:
+                self._window_tokens, self._window_caps = resolved
+                return
+        import logging
+        logging.getLogger(__name__).debug(
+            "background window probe for %r discarded (%s): %s tokens",
+            key[1], reason, resolved[0])
 
     def _capture_floor(self, input_tokens: int) -> None:
         """Record an accepted request as the model's observed floor.
