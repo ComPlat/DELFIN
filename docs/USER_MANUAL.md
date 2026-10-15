@@ -1777,7 +1777,8 @@ with a quiet count of what waits for you and what failed (`◉ 3 · ✗ 1`,
 notices not counted); a new item names itself there for a few seconds,
 another session that starts to wait says so once above the prompt
 (`◉ session 'relax Fe complex' waits for you — ← to open`), and the
-terminal's title carries the count: `(4) DELFIN · name`.
+terminal's title carries the count: `(4) DELFIN · name`. The agent view's
+head names its keys (`→/enter open · ctrl+x ×2 stop · esc back`).
 
 Full screen, the view takes the window's screen and esc gives the
 conversation back. Inline, it uses the terminal's alternate screen, so esc
