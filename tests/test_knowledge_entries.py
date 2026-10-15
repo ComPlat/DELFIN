@@ -6,7 +6,6 @@ network.
 from __future__ import annotations
 
 import datetime as dt
-from pathlib import Path
 
 import pytest
 
@@ -91,8 +90,8 @@ def test_index_is_generated_and_checked_for_sync(gdir):
 def test_near_duplicates_and_contradictions():
     a = _entry()
     b = _entry(slug="b", title="Serial run before trusting suite failures",
-               lesson="Re-run the failing tests serially before believing "
-                      "them, always.")
+               lesson="Re-run the failing tests one by one, serially, before "
+                      "believing them.")
     c = _entry(slug="c", title="Trust the parallel suite",
                lesson="Never re-run the failing tests serially before "
                       "believing them.")
