@@ -613,3 +613,13 @@ def test_an_iteration_whose_turn_never_started_is_taken_back(repo):
     clock.advance(10)
     assert isinstance(ctl.next_prompt(eng), HarnessText)
     assert ctl.state()["iteration"] == 1
+
+
+def test_the_harness_never_runs_a_publishing_check(repo):
+    # A spec that slipped past validation (built in code) is still held:
+    # the check is classified before the harness runs it.
+    checks = Checks((1, "missing=3"))
+    ctl = _ctl(repo, Clock(), checks)
+    code, out = ctl._check(Engine(), "git push origin HEAD")
+    assert code != 0 and "not run" in out
+    assert checks.calls == []

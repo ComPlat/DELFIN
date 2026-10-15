@@ -183,3 +183,10 @@ def test_the_skill_ships_and_names_the_format():
     assert text.startswith("---\nname: loops\n")
     for word in ("trigger", "budget", "measure", "LOOP:", "/loop confirm"):
         assert word in text
+
+
+def test_without_a_session_yet_it_says_so(ws):
+    ctx, ctl, _ = _ctx(ws)
+    ctx.engine = None
+    assert "send a message first" in _run(ctx, "/auto on").output
+    assert not ctl.enabled

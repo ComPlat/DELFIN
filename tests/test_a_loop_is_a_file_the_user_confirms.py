@@ -181,3 +181,19 @@ def test_an_ad_hoc_loop_from_a_command_line(ws):
     assert spec.errors == [] and spec.trigger == "every"
     assert spec.every_seconds == 1800 and len(spec.steps) == 1
     assert loops.is_confirmed(spec)      # typed by the user: confirmed
+
+
+@pytest.mark.parametrize("front", [
+    "goal: x\ncheck: git push origin HEAD",
+    "goal: x\ncheck: pytest -q && gh pr create --fill",
+    "goal: x\ncheck: curl -X POST https://hooks.example/x -d @out.json",
+])
+def test_a_check_that_publishes_is_refused(ws, front):
+    _write(ws, "pub", f"---\n{front}\n---\n1. a\n")
+    spec = loops.load("pub", ws)
+    assert any("check" in e and "publish" in e for e in spec.errors), spec.errors
+
+
+def test_a_step_command_that_publishes_is_refused(ws):
+    _write(ws, "pub", "---\ngoal: x\n---\n1. a\n   check: git push\n")
+    assert any("step 1" in e for e in loops.load("pub", ws).errors)
