@@ -47,7 +47,16 @@ def _env() -> dict:
 _WS_FOR_CLASS = {
     "science_analysis": "science_workspace",
     "generic_project": "user_project_workspace",
+    "generalist": "generalist_workspace",
 }
+
+
+def _toolchain_not_run(proc) -> bool:
+    """A generalist setup on a host without node/cargo/go exits 3 with
+    ``toolchain unavailable``: the attempt is unmeasured. That is the
+    honest answer for such a host, and the test then checks that it
+    built nothing."""
+    return proc.returncode == 3 and "toolchain unavailable" in proc.stderr
 
 
 def _setups():
@@ -79,10 +88,13 @@ def test_a_setup_adds_files_and_changes_none(name, task_class, tmp_path):
 
     proc = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
                           capture_output=True, text=True, timeout=300, env=_env())
-    assert proc.returncode == 0, proc.stderr[:400]
-
     after = {p.relative_to(ws): p.read_bytes()
              for p in ws.rglob("*") if p.is_file()}
+    if _toolchain_not_run(proc):
+        assert after == before, f"{name} built something before refusing"
+        return
+    assert proc.returncode == 0, proc.stderr[:400]
+
     changed = sorted(str(k) for k, v in before.items() if after.get(k) != v)
     assert not changed, f"{name} rewrote fixture files it does not own: {changed}"
     assert set(after) - set(before), f"{name} created nothing"
@@ -99,6 +111,9 @@ def test_a_setup_refuses_to_run_twice(name, task_class, tmp_path):
     ws.mkdir(parents=True)
     first = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
                            capture_output=True, text=True, timeout=300, env=_env())
+    if _toolchain_not_run(first):
+        assert not any(ws.iterdir()), f"{name} built something before refusing"
+        return
     assert first.returncode == 0, first.stderr[:400]
     second = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
                             capture_output=True, text=True, timeout=300, env=_env())

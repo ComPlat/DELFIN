@@ -77,3 +77,10 @@ def test_context_status_reads_engine_estimate_tokens(monkeypatch):
     n = AgentEngine._estimate_context_tokens(eng)
     assert isinstance(n, int)
     assert n >= 0
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

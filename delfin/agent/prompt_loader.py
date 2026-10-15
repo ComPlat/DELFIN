@@ -1062,13 +1062,31 @@ class PromptLoader:
         try:
             from . import workspace_trust as _trust
             root = self.workspace_root or self.repo_root
-            notes = _trust.pending_notices(root, short=True)
+            # --bare switches skill discovery off for the session; the
+            # skills kind is then not looked at (and not announced).
+            bare = bool(self.skip_external_memory)
+            notes = _trust.pending_notices(
+                root, short=True,
+                skip=(_trust.KIND_SKILLS,) if bare else ())
         except Exception:
             return ""
+        # A trusted project skill refused for having a built-in's or a
+        # user skill's name is withheld too, and as silently otherwise.
+        if not bare:
+            try:
+                from .skills import shadow_notices
+                notes = list(notes) + shadow_notices(root)
+            except Exception:
+                pass
         return "\n".join(f"- {n}" for n in notes)
 
     def _load_repo_map_context(self, task_text: str) -> str:
-        """Load a compact task-scoped repository map."""
+        """Load a compact task-scoped map of the SESSION'S workspace.
+
+        ``workspace_root`` first, as every neighbouring loader does:
+        ``repo_root`` is the prompt pack's tree, and a map of it pointed
+        every foreign session at DELFIN's own source files.
+        """
         try:
             from delfin.agent.repo_map import format_repo_map_context
 
@@ -1076,7 +1094,7 @@ class PromptLoader:
             profile_path = getattr(self, "_profile_path", None)
             playbooks_path = getattr(self, "_playbooks_path", None)
             return format_repo_map_context(
-                self.repo_root,
+                Path(self.workspace_root or self.repo_root),
                 task_text,
                 provider=provider,
                 profile_path=profile_path,
@@ -1090,9 +1108,18 @@ class PromptLoader:
 
         Triggered when the task contains chemistry keywords.  Code-enforced
         rather than prompt-only to ensure compliance.
+
+        Only in a chemistry context: never when ``is_delfin_workspace`` is
+        False, because that is exactly when the tool surface strips
+        ``search_docs`` (``_DELFIN_ONLY_TOOL_NAMES``), and the protocol's
+        first step is to call it. The keyword classifier alone reads
+        "method", "functional", "scan", "spin" and "charge" as chemistry,
+        so on a code repository it fired on ordinary coding wording
+        (4 of 4 foreign probe repos). ``None`` (a caller that never set
+        the flag) keeps the old behaviour.
+        Rejected: tightening the shared classifier, which also keys the
+        outcome-history briefing and would re-bucket recorded history.
         """
-        # The protocol mandates search_docs over DELFIN's doc index, which
-        # is offered only in a DELFIN tree (_DELFIN_ONLY_TOOL_NAMES).
         if self.is_delfin_workspace is False:
             return ""
         try:

@@ -260,7 +260,7 @@ def test_exit_worktree_keeps_a_tree_that_still_runs_a_job(repo, tmp_path):
         assert info.held_by_jobs, "the guard must say what is holding the tree"
         assert info.cleaned_up is False
         assert info.path.is_dir(), "the live job's working directory survives"
-        assert (info.path / ".delfin" / "bash_jobs.json").is_file()
+        assert BJ._registry_path(info.path).is_file()
     finally:
         child.kill()
         child.wait()
