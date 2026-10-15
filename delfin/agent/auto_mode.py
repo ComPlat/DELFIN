@@ -834,6 +834,20 @@ class AutoController:
         except Exception as exc:
             return 125, f"the check could not run: {exc}"
 
+    def cancel_iteration(self, why: str = "") -> None:
+        """The surface could not start the turn the last prompt was for:
+        take the iteration back (veto off, not counted). Never raises."""
+        if self.iteration is None:
+            return
+        try:
+            self._disarm()
+        finally:
+            self.iteration = None
+            if self._run is not None and self._run.iteration > 0:
+                self._run.iteration -= 1
+            if why:
+                self._say(f"auto: iteration not started ({why})")
+
     # -- the end of an iteration -----------------------------------------------
     def finish_iteration(self, engine, answer: str = "", error: str = "") -> str:
         """Judge, commit or revert, log; returns the digest ("" when no
