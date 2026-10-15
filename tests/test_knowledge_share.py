@@ -5,6 +5,8 @@ pushed and no network is used (the visibility probe is replaced).
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -362,3 +364,40 @@ def test_an_edited_evidence_must_still_be_a_pointer(env):
     les = _lesson(env)
     with pytest.raises(ValueError):
         kp.edit(les.id, evidence="see the chat above")
+
+
+# ---------------------------------------------------------------------------
+# the queue record's file mode
+# ---------------------------------------------------------------------------
+
+def _queued_record(env):
+    clock = Clock()
+    out = _confirm_all(_share(env, _lesson(env), clock=clock), clock)
+    assert out.status == "done", out.message
+    (rec,) = ks.read_queue()
+    return rec
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes")
+@pytest.mark.parametrize("umask", [0o022, 0o002, 0o077],
+                         ids=["022", "002", "077"])
+def test_a_rewritten_record_keeps_the_mode_it_was_created_with(env, umask):
+    """An admin decision rewrites the record. The rewrite went through
+    Path.write_text, whose mode is 0o666 minus the umask, so a 0o640
+    record in a shared queue became 0o644 or 0o664: readable by every
+    account on the host. The mode must not depend on the umask of
+    whichever process rewrites."""
+    old = os.umask(umask)
+    try:
+        rec = _queued_record(env)
+        p = Path(rec["_path"])
+        created = stat.S_IMODE(p.stat().st_mode)
+        assert created == 0o640, oct(created)
+        rec["status"] = "rejected"
+        rec["reason"] = "already in the docs"
+        ks.write_queue_record(rec)
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(p.stat().st_mode) == 0o640
+    assert json.loads(p.read_text())["status"] == "rejected"
+    assert [x.name for x in p.parent.iterdir()] == [p.name]
