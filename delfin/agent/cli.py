@@ -2838,7 +2838,7 @@ def cmd_bug(args: argparse.Namespace) -> int:
             print(f"→ analysing {d.name} …", flush=True)
             t = _bw.triage_report(d, consent=consent)
             if t.withheld:
-                print(f"  [WITHHELD] {t.summary}")
+                print(f"  [WITHHELD] ({t.withheld_reason})")
             elif t.error:
                 print(f"  [ERROR] {t.error}")
             else:
@@ -2885,11 +2885,17 @@ def cmd_bug(args: argparse.Namespace) -> int:
                 len(_bw.find_unsolved(archive, settings=settings)), settings)
             results = _bw.run_once(archive=archive, settings=settings,
                                    consent=consent)
+            # One line per report from fixed fields only; the analysis
+            # itself is in triage.md (bug triage prints its first line).
             for t in results:
-                tag = ("WITHHELD" if t.withheld else
-                       "ERROR" if t.error else "OK")
-                print(f"  [{tag}] {t.report_name}: "
-                      f"{(t.error or t.summary)[:150].strip()}")
+                if t.withheld:
+                    tag, detail = "WITHHELD", f"({t.withheld_reason})"
+                elif t.error:
+                    tag, detail = "ERROR", t.error[:150]
+                else:
+                    tag = "OK"
+                    detail = f"triage → {Path(t.report_path) / 'triage.md'}"
+                print(f"  [{tag}] {t.report_name}: {detail}")
             print(f"Done — {len(results)} report(s) triaged.")
             return 0
 
