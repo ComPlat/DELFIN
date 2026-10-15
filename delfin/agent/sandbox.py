@@ -665,31 +665,126 @@ def _bwrap_works() -> bool:
         return False
 
 
-def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
+@dataclass(frozen=True)
+class Confinement:
+    """What the runner applies to a command in one mode on this host.
+
+    ``filesystem``: "bwrap", "firejail", "landlock" or "none".
+    ``network``: "off" (no connect leaves the command), "off-tcp" (TCP
+    connects refused by Landlock ABI 4, UDP not restricted), "on" (opened
+    by DELFIN_AGENT_SANDBOX_NETWORK=1) or "open" (not restricted although
+    the configuration asked for it, or a mode with no sandbox).
+    ``landlock_net``: the ``--net`` value handed to ``landlock_exec``; ""
+    when the command does not run under the Landlock helper.
+    ``notice``: one sentence when something is not in force; "" otherwise.
+    """
+    mode: str
+    filesystem: str
+    network: str
+    landlock_net: str
+    notice: str
+
+    @property
+    def network_restricted(self) -> bool:
+        return self.network in ("off", "off-tcp")
+
+    def label(self) -> str:
+        return f"mode={self.mode}, fs={self.filesystem}, net={self.network}"
+
+
+def confinement(cfg: SandboxConfig) -> Confinement:
+    """The confinement :func:`run_agent_command` applies for *cfg* here.
+
+    The one answer to "what holds this command": the runner builds its
+    argv from it (``_unsandboxed_argv``) and the dashboard prints it, so a
+    state is shown only where the runner applies it. Probes, in the order
+    of ``landlock_exec._run_guarded``: Landlock usable
+    (``api_client._landlock_functional``), seccomp user notification
+    (``socket_guard.available``: every connect judged, UDP included),
+    Landlock ABI >= 4 with the seccomp filter (TCP connects only).
+
+    Rejected: refusing every command where the network cannot be held.
+    The command was approved by the person at the screen, and the hosts
+    without bubblewrap are the ones where this mode is the only one; it
+    runs, and the state and the notice say what is missing.
+    Never raises; a failed probe counts as "not available".
+    """
+    mode = cfg.mode
+    if mode in ("bwrap", "firejail"):
+        return Confinement(mode, mode, "on" if cfg.allow_network else "off",
+                           "", "")
+    if mode != "allowlist":
+        return Confinement(mode, "none", "open", "", (
+            "sandbox off: no allow-list, no filesystem or network "
+            "confinement"))
+    try:
+        from .api_client import _landlock_functional
+        landlock = bool(_landlock_functional())
+    except Exception:
+        landlock = False
+    if not landlock:
+        return Confinement(mode, "none", "open", "", (
+            "no bubblewrap, firejail or Landlock on this host: the command "
+            "runs unconfined (allow-list and scrubbed environment only); "
+            "the filesystem and the network are NOT restricted"))
+    if cfg.allow_network:
+        return Confinement(mode, "landlock", "on", "open", "")
+    try:
+        from . import socket_guard as _sg
+        guard = bool(_sg.available())
+        filt = bool(_sg.filter_supported())
+    except Exception:
+        guard = filt = False
+    try:
+        from . import landlock_exec as _ll
+        abi = int(_ll.abi_version())
+    except Exception:
+        abi = 0
+    if guard:
+        return Confinement(mode, "landlock", "off", "none", "")
+    if abi >= 4 and filt:
+        return Confinement(mode, "landlock", "off-tcp", "none", (
+            "network partly restricted: TCP connects are refused (Landlock), "
+            "UDP is NOT restricted on this host (no seccomp user "
+            "notification)"))
+    return Confinement(mode, "landlock", "open", "open", (
+        "network NOT restricted on this host: no seccomp user notification "
+        "and no Landlock TCP rule (Linux 6.7+); the filesystem is confined "
+        "(Landlock)"))
+
+
+def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str, *,
+                      allow_network: bool = False) -> list[str]:
     """``bash -c cmd`` for the modes without bubblewrap or firejail.
 
     The allowlist mode ran commands with nothing around them: python, pip,
     awk and env are on the list, and every key was in the environment. Where
     the kernel has Landlock the command now runs under it (writes only in the
     repository and a private temp directory, credential folders unreadable),
-    as the agent's own shell does on such a host. "off" stays off."""
+    as the agent's own shell does on such a host. "off" stays off.
+
+    Filesystem and network are the ones :func:`confinement` names, so the
+    state the dashboard prints is the state applied. A restricted network
+    is passed with ``--strict 1``: should the helper find a layer missing
+    that the probe here reported, it refuses the command (exit 126)
+    instead of running it with the network open; unrestricted, ``--strict
+    0`` as before. Raises when the Landlock argv cannot be built: running
+    ``bash -c`` then would be a confinement the dashboard did not show."""
     base = ["bash", "-c", cmd]
-    if mode != "allowlist":
+    conf = confinement(SandboxConfig(mode, allow_network, 0))
+    if conf.filesystem != "landlock":
         return base
-    try:
-        from .api_client import (_landlock_hide_paths, _landlock_functional,
-                                 _private_tmp_dir)
-        from . import landlock_exec as _ll
-        if not _landlock_functional():
-            return base
-        repo = str(Path(repo_dir).resolve())
-        argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                "--write", repo]
-        for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
-            argv += ["--hide", h]
-        return argv + ["--tmpdir", _private_tmp_dir(), "--strict", "0", "--"] + base
-    except Exception:
-        return base
+    from .api_client import _landlock_hide_paths, _private_tmp_dir
+    from . import landlock_exec as _ll
+    repo = str(Path(repo_dir).resolve())
+    argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+            "--write", repo]
+    for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
+        argv += ["--hide", h]
+    strict = "1" if conf.network_restricted else "0"
+    return argv + ["--tmpdir", _private_tmp_dir(),
+                   "--net", conf.landlock_net,
+                   "--strict", strict, "--"] + base
 
 
 # Home-relative directories that are tmpfs'd inside the sandbox so the agent
@@ -920,6 +1015,7 @@ def run_agent_command(
             )
 
     # Layer 2 — choose argv based on sandbox mode
+    conf = confinement(cfg)
     if cfg.mode == "bwrap":
         argv = _bwrap_argv(cmd, repo_dir, cfg.allow_network)
         shell = False
@@ -950,8 +1046,20 @@ def run_agent_command(
     else:
         # 'off' or 'allowlist' or 'auto-fell-back-to-allowlist'. Routed
         # through bash -c explicitly so the argv stays inspectable; the
-        # allowlist mode runs under Landlock where the kernel has it.
-        argv = _unsandboxed_argv(cmd, repo_dir, cfg.mode)
+        # allowlist mode runs under Landlock where the kernel has it, with
+        # the network confinement() names.
+        try:
+            argv = _unsandboxed_argv(cmd, repo_dir, cfg.mode,
+                                     allow_network=cfg.allow_network)
+        except Exception as exc:
+            reason = (f"the Landlock confinement could not be built ({exc}); "
+                      "the command was not run")
+            _audit({"ts": time.time(), "cwd": str(repo_dir), "mode": cfg.mode,
+                    "cmd": cmd, "blocked": True, "block_reason": reason,
+                    "elapsed_s": round(time.monotonic() - t0, 4)})
+            return RunResult(blocked=True, block_reason=reason, returncode=-1,
+                             stdout="", stderr="", mode=cfg.mode,
+                             elapsed_s=time.monotonic() - t0)
         shell = False
 
     try:
@@ -975,6 +1083,8 @@ def run_agent_command(
             "cmd": cmd,
             "blocked": False,
             "exit": proc.returncode,
+            "fs": conf.filesystem,
+            "net": conf.network,
             "stdout_bytes": len(proc.stdout),
             "stderr_bytes": len(proc.stderr),
             "elapsed_s": round(elapsed, 4),
@@ -987,6 +1097,7 @@ def run_agent_command(
             stderr=proc.stderr,
             mode=cfg.mode,
             elapsed_s=elapsed,
+            extra={"confinement": conf.label()},
         )
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - t0

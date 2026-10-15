@@ -18208,9 +18208,12 @@ def create_tab(ctx):
             cmd = inp["command"]
             from delfin.agent import sandbox as _sandbox
             cfg = _sandbox.detect_config()
+            # The state the runner applies on this host (sandbox.confinement
+            # builds the argv too), never the configured wish.
+            _conf = _sandbox.confinement(cfg)
             _append_system_message(
-                f"\u2705 Approved & executing (mode={cfg.mode}, "
-                f"net={'on' if cfg.allow_network else 'off'}):\n  $ {cmd}"
+                f"\u2705 Approved & executing ({_conf.label()}):\n  $ {cmd}"
+                + (f"\n\u26a0 {_conf.notice}" if _conf.notice else "")
             )
             try:
                 res = _sandbox.run_agent_command(
