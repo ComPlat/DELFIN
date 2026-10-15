@@ -270,6 +270,7 @@ def test_the_parity_decides_which_multiplicities_are_possible():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_autospin_keeps_the_multiplicity_that_came_out_lowest():
     result = gfn.optimize_autospin(_WATER, "gfn2", charge=0)
 
@@ -369,6 +370,7 @@ def test_the_force_field_notes_say_which_field_they_are_about(editor):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_few_cycles_come_back_quickly_enough_to_loop():
     """A loop of short runs looks like a relaxation; one long run is a jump."""
     stretched = "3\nstretched\nO 0 0 0\nH 1.30 0 0\nH -0.35 1.25 0\n"
@@ -1648,6 +1650,7 @@ def test_only_all_takes_the_whole_set(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_the_energy_is_reported_like_the_force_field_reports_one(editor):
     import time
 
@@ -2076,6 +2079,7 @@ def test_a_pull_negotiates_and_a_fix_is_met():
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_what_the_editor_holds_is_what_the_optimisation_holds(editor):
     """Held on screen and given up the moment GFN is chosen is the bug this
     closes: the angle is asked for and the angle is what comes back."""
@@ -2193,6 +2197,7 @@ def test_the_follow_runs_one_process_at_a_time_and_takes_the_newest(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_the_rest_of_the_molecule_follows_the_atom_that_is_dragged(editor):
     """Point seven, played through the tab the way the browser plays it.
 
@@ -2549,6 +2554,7 @@ def test_settle_under_gfn_is_the_chosen_method_tidying_up(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_letting_go_goes_to_a_minimum_with_the_method_that_is_chosen(editor):
     """Driven the way the page drives it: a release with Auto and Dynamik Opt
     on, which is the one thing on a server method that acts on a release."""
@@ -2666,6 +2672,7 @@ def test_the_follow_is_paced_by_the_machine_not_by_a_clock(player_js):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
     """The whole of the spring-back, driven the way the page drives it.
 
@@ -2719,6 +2726,7 @@ def test_a_dragged_atom_comes_back_exactly_where_it_was_put(editor):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_pulled_atom_gets_as_far_as_the_force_allows(editor):
     """The same drag twice, with two strengths of hand.
 
@@ -3150,6 +3158,7 @@ def test_a_past_drag_has_no_hold_on_the_present(editor):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_gfnff_loses_the_bond_it_was_never_told_to_keep(tmp_path):
     """The cliff, measured, and the reason the perception has to be kept.
 
@@ -3340,6 +3349,7 @@ def test_undo_of_a_reset_brings_back_what_reset_said_it_would(editor):
         "next run is silently a different calculation")
 
 
+@_needs_real_xtb
 def test_the_bonding_is_perceived_at_the_charge_the_molecule_carries():
     """An ion is a different molecule, and the seed never ran on one.
 
@@ -3605,6 +3615,7 @@ def test_the_whole_cycle_end_to_end(editor):
     )
 
 
+@_needs_real_xtb
 def test_with_auto_on_letting_go_reaches_the_minimum_without_being_asked(editor):
     """The other mode, driven the same way and end to end.
 
@@ -3746,6 +3757,7 @@ def test_the_solvent_box_appears_with_the_method(editor):
 @_needs_xtb
 
 
+@_needs_real_xtb
 def test_a_solvent_changes_the_answer_and_the_answer_says_so(editor):
     import time as _time
 
@@ -5652,6 +5664,7 @@ def test_the_line_is_told_how_steep_the_ground_is(bare_editor):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_drag_with_the_budget_on_answers_at_all(editor):
     """The whole chain, once, with the budget switched on.
 
@@ -6925,6 +6938,7 @@ def _wait_for(test, seconds=30.0):
     return False
 
 
+@_needs_real_xtb
 def test_a_stop_of_the_climb_halts_the_page_the_way_a_minimisation_does(
         editor, monkeypatch):
     """Driven through the kernel, not read off it.
@@ -6979,6 +6993,7 @@ def test_a_stop_of_the_climb_halts_the_page_the_way_a_minimisation_does(
     assert payloads[halts[0]].get("pace") is not None
 
 
+@_needs_real_xtb
 def test_a_stop_leaves_the_box_holding_the_frame_the_picture_stopped_on(
         editor, monkeypatch):
     """Both optimisers, and the report arriving on either side of the worker.

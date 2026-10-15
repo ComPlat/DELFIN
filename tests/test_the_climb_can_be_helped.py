@@ -1970,6 +1970,7 @@ def test_the_last_rung_is_orca_and_it_reaches_what_no_climb_here_does():
     assert 'softest mode' in said[0] and 'ORCA' in said[1], said
 
 
+@pytest.mark.usefixtures("real_xtb")
 def test_a_stop_does_not_pay_for_a_hessian_nobody_asked_for():
     """What a Stop is about is the frame on screen, not where the walk stood.
 

@@ -138,16 +138,16 @@ def test_the_suite_never_installs_a_tool_for_a_later_test(monkeypatch):
     Output: a refusal that names the switch; the installer is never started.
 
     Measured 2026-10-15 on PR #278 (the fast suite split into four shards):
-    ensure_binary installs a missing xtb by default, so the first test that
-    reached optimize_with_gfn without one --
-    test_what_is_wrong_with_the_structure_is_said_without_xtb patches
-    find_xtb to None -- ran install_qm_tools.sh and put a real xtb 6.7.1
-    into delfin/qm_tools/.mamba_env (the checkout; ~/.delfin/qm_tools on a
-    machine that has one). Every later test found it before the stand-in.
-    Unsharded, 17 tests in test_gfn_methods_in_the_viewer.py and
-    test_the_budget_prices_a_relaxed_path.py passed only because of that
-    download; split into shards, they ran on the stand-in and failed, three
-    of them by a 300 s timeout.
+    ensure_binary installs a missing xtb by default. Unsharded, the first
+    test to reach it without an xtb was in
+    test_a_held_value_survives_the_press.py (file 166 of 1778); it ran
+    install_qm_tools.sh, which put xtb 6.7.1 into delfin/qm_tools/.mamba_env
+    (the checkout; ~/.delfin/qm_tools on a machine where that holds
+    anything), and every later file resolved it before the stand-in. That
+    file landed in shard 4. Shards 2 and 3 failed 17 tests that read xtb's
+    results (three by the 300 s timeout); four more passed in shard 2 only
+    because test_what_is_wrong_with_the_structure_is_said_without_xtb
+    installed xtb there mid-shard.
     """
     import subprocess as _subprocess
 
