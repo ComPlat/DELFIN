@@ -516,9 +516,9 @@ def _trust(ctx, args: str) -> CommandResult:
 
     Trusting a digest nobody has read is not consent, so the bare command
     only ever SHOWS. The grant still goes through hooks_editor /
-    mcp_editor, the two thin wrappers an existing test enumerates as the
-    only call sites of `workspace_trust.trust_workspace`; this command
-    types the user's decision into them and adds no third one. Naming a
+    mcp_editor / skills, the thin wrappers an existing test enumerates as
+    the only call sites of `workspace_trust.trust_workspace`; this
+    command types the user's decision into them and adds no other. Naming a
     remedy the terminal cannot reach was the older failure: the text said
     "the hooks / MCP editors" and nothing here could open either.
     """
@@ -528,8 +528,8 @@ def _trust(ctx, args: str) -> CommandResult:
         return _trust_change(ctx, action, kind)
     if action:
         return CommandResult(output=(
-            "usage: /trust  |  /trust grant hooks|mcp  |  "
-            "/trust revoke hooks|mcp"))
+            "usage: /trust  |  /trust grant hooks|mcp|skills  |  "
+            "/trust revoke hooks|mcp|skills"))
     try:
         from . import workspace_trust
         notices = workspace_trust.pending_notices(ctx.workspace)
@@ -538,7 +538,7 @@ def _trust(ctx, args: str) -> CommandResult:
         body = "\n".join(f"  {n}" for n in notices)
         return CommandResult(output=(
             f"{body}\n"
-            "  /trust grant hooks | /trust grant mcp — only you can, and "
+            "  /trust grant hooks | mcp | skills — only you can, and "
             "only for what is listed above."))
     except Exception as exc:
         return CommandResult(output=f"trust state unavailable ({exc})")
@@ -555,8 +555,10 @@ def _trust_change(ctx, action: str, kind: str) -> CommandResult:
             from . import hooks_editor as editor
         elif kind == "mcp":
             from . import mcp_editor as editor
+        elif kind == "skills":
+            from . import skills as editor
         else:
-            return CommandResult(output="/trust grant|revoke hooks|mcp")
+            return CommandResult(output="/trust grant|revoke hooks|mcp|skills")
     except Exception as exc:
         return CommandResult(output=f"{kind} trust is unavailable here ({exc})")
     try:

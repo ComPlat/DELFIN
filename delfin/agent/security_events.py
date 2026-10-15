@@ -58,6 +58,8 @@ _KINDS = {
     # find/du/tree/rg, grep -r or ls -R over a home or a mount point: one
     # metadata request per file on a shared file system.
     "tree_walk":      ("🌲", "Walk over a whole file system refused"),
+    # A recursive delete of scratch this session made: allowed, recorded.
+    "own_scratch_delete": ("🧹", "Session's own scratch deleted"),
     "read_grant":     ("👁", "Directory opened for reading"),
     # Bypass does not ask before a read outside the roots. Nobody clicked,
     # so the panel is the only place it is ever visible — which is exactly
@@ -65,6 +67,9 @@ _KINDS = {
     "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
     "worktree_merge_refused": ("⛔", "Worktree merge refused (a file it writes is not allowed)"),
     "approval_timeout": ("⌛", "Approval window expired"),
+    # A second approval of the same kind in a turn whose first one went
+    # unanswered: not asked again, refused, and the panel says so.
+    "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "isolation_missing": ("⚠", "Filesystem isolation NOT active"),
     # A client built without a permissions policy runs only the index tools.

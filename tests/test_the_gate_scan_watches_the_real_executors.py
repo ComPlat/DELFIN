@@ -38,6 +38,11 @@ _GREP_WALK = ("files of the walk of search_path, which _check_read_access "
               "_looks_binary or open; os.walk does not follow directory "
               "links. The walk itself is a flow the scan does not follow")
 
+_OWNED_SOURCE = ("`git show HEAD:./<name>` of the path the secret-deny "
+                 "check is deciding, to compare its HEAD blob with the "
+                 "session's journalled pre-image; the bytes are hashed, "
+                 "never returned, and a False only keeps the refusal")
+
 #: (executor, function holding the access, sink kind) -> why it needs no
 #: gate.  Each was driven through the real executor in a tmp workspace.
 EXPLAINED = {
@@ -53,6 +58,12 @@ EXPLAINED = {
         _SIBLINGS,
     ("_execute_notebook_edit", "_on_another_sessions_branch", "iterdir"):
         _SIBLINGS,
+    ("_execute_grep_file", "_session_owned_source", "subprocess.run"):
+        _OWNED_SOURCE,
+    ("_execute_apply_patch", "_session_owned_source", "subprocess.run"):
+        _OWNED_SOURCE,
+    ("_execute_code_nav", "_session_owned_source", "subprocess.run"):
+        _OWNED_SOURCE,
     ("_execute_grep_file", "_gitignore_skip_dirs", "read_text"): _GITIGNORE,
     ("_execute_list_files", "_gitignore_skip_dirs", "read_text"): _GITIGNORE,
     ("_execute_list_files", "_iter_scan_files", "os.walk"):

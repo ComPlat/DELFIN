@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from . import activity as _activity
 from . import repl_render as rr
 
 __all__ = [
@@ -673,6 +674,9 @@ class TerminalConfirmBroker:
         # reason from one thread's refusal must not land on another's.
         self._refusal_reason = threading.local()
         self.aborted = False
+        # Where the wait for the person is marked: an activity.Activity,
+        # a callable returning one, or None. The REPL binds the engine's.
+        self.activity: Any = None
 
     # -- the three bindings ----------------------------------------------
     @property
@@ -699,20 +703,25 @@ class TerminalConfirmBroker:
 
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
-        req = self._enqueue(ConfirmRequest(
-            kind=CONFIRM, tool=str(tool_name or ""),
-            args=dict(args or {}), preview=str(preview or "")))
-        return bool(self._wait(req))
+        with _activity.awaiting_person(self.activity, _activity.APPROVAL):
+            req = self._enqueue(ConfirmRequest(
+                kind=CONFIRM, tool=str(tool_name or ""),
+                args=dict(args or {}), preview=str(preview or "")))
+            return bool(self._wait(req))
 
     def ask_user(self, payload: dict) -> dict:
-        req = self._enqueue(ConfirmRequest(
-            kind=ASK, tool="ask_user_question", payload=dict(payload or {})))
-        answer = self._wait(req)
+        with _activity.awaiting_person(self.activity, _activity.ANSWER):
+            req = self._enqueue(ConfirmRequest(
+                kind=ASK, tool="ask_user_question",
+                payload=dict(payload or {})))
+            answer = self._wait(req)
         return answer if isinstance(answer, dict) else {"answers": []}
 
     def approve_plan(self, plan: str) -> dict:
-        req = self._enqueue(ConfirmRequest(kind=PLAN, preview=str(plan or "")))
-        answer = self._wait(req)
+        with _activity.awaiting_person(self.activity, _activity.APPROVAL):
+            req = self._enqueue(ConfirmRequest(kind=PLAN,
+                                               preview=str(plan or "")))
+            answer = self._wait(req)
         if isinstance(answer, dict):
             return answer
         return {"approved": False, "new_mode": "plan"}

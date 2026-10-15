@@ -73,18 +73,31 @@ def test_bash_background_round_trip(workspace):
 
 
 def test_bash_background_output_while_running(workspace):
+    """A running job's output is readable before it ends. The job prints
+    its second line only after the test releases it (a file in the
+    workspace), and the first line is polled for with a deadline: a fixed
+    0.2 s wait failed on a loaded CI runner, where starting the sandboxed
+    shell alone took longer."""
     perms = KitToolPermissions(workspace=workspace, mode="bypassPermissions")
     out = _doc_executor.execute("bash_background", {
-        "command": "echo first; sleep 0.6; echo second",
+        "command": ("echo first; while [ ! -e release ]; do sleep 0.05; done; "
+                    "echo second"),
         "description": "streaming",
     }, perms)
     job_id = json.loads(out)["job_id"]
-    time.sleep(0.2)
-    o = json.loads(_doc_executor.execute(
-        "bash_output", {"job_id": job_id}, perms))
-    assert "first" in o["stdout"]
-    assert "second" not in o["stdout"]
-    assert o["running"] is True
+    deadline = time.monotonic() + 30
+    while True:
+        o = json.loads(_doc_executor.execute(
+            "bash_output", {"job_id": job_id}, perms))
+        if "first" in o["stdout"] or time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
+    try:
+        assert "first" in o["stdout"]
+        assert "second" not in o["stdout"]
+        assert o["running"] is True
+    finally:
+        (Path(workspace) / "release").write_text("")
 
 
 def test_bash_kill_terminates_long_job(workspace):
