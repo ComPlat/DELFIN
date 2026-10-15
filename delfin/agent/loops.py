@@ -537,17 +537,39 @@ after_user: pause
 def write_template(workspace: Path | str, name: str, *, goal: str = "",
                    first_step: str = "Describe the first step.",
                    iterations: int = DEFAULT_ITERATIONS) -> Path:
-    """Write a new, unconfirmed loop file; FileExistsError when one exists."""
+    """Write a new, unconfirmed loop file.
+
+    Output: the path of the new file. FileExistsError when anything is
+    at that path already -- a file, or a link, dangling or not; the file
+    is created with ``O_CREAT | O_EXCL | O_NOFOLLOW``, so the check and
+    the creation are one step and a planted link is never followed.
+    ValueError when the loops folder resolves outside the workspace (a
+    linked ``.delfin`` or ``.delfin/loops``). Both are places the agent
+    can write; before, ``exists()`` (False for a dangling link) and
+    ``write_text`` (which follows one) created the link's target.
+    """
     if not _NAME_RE.match(name or ""):
         raise ValueError(f"{name!r} is not a loop name (lower case letters, "
                          "digits, - or _)")
-    path = project_dir(workspace) / f"{name}.md"
-    if path.exists():
-        raise FileExistsError(str(path))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_TEMPLATE.format(
+    folder = project_dir(workspace)
+    root = Path(workspace).resolve()
+    real = folder.resolve()
+    if real != root and root not in real.parents:
+        raise ValueError(f"{folder} resolves to {real}, outside the "
+                         "workspace; a loop file is not written there")
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{name}.md"
+    text = _TEMPLATE.format(
         name=name, goal=" ".join((goal or "Say what is true when done.").split()),
-        iterations=int(iterations), first_step=first_step), encoding="utf-8")
+        iterations=int(iterations), first_step=first_step)
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fd = os.open(str(path), flags, 0o644)
+    except FileExistsError:
+        raise FileExistsError(str(path)) from None
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
     return path
 
 
