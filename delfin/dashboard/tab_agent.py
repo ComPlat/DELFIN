@@ -2758,7 +2758,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/memory", "Every memory layer with its label: private, swarm, project, global (filter: /memory <layer> [words])", False),
     ("Memory", "/lessons", "Your lessons (/lessons show|edit|delete <id>)", False),
     ("Memory", "/share", "Share a lesson: the dialog shows the exact text and the check; /share confirm <dialog> <code>", True),
-    ("Memory", "/unshare", "Withdraw your shared entry as a removal branch", True),
+    ("Memory", "/unshare", "Withdraw your share: from the review queue (/unshare <queue or lesson id>), or a merged entry as a removal branch", True),
     ("Memory", "/swarm", "Findings of a swarm run (/swarm harvest|propose|close)", False),
     ("Memory", "/knowledge", "Global knowledge by topic, search, lint, dupes, stats; queue and curation for the admin", False),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),

@@ -2015,7 +2015,8 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/share", "history", "Share a lesson after a "
                     "confirmation only you can answer", _layered("share"),
                     True),
-        ReplCommand("/unshare", "history", "Withdraw your shared entry",
+        ReplCommand("/unshare", "history", "Withdraw your share: from the "
+                    "review queue, or a merged entry as a removal branch",
                     _layered("unshare"), True),
         ReplCommand("/swarm", "history", "Findings of a swarm run: harvest, "
                     "propose", _layered("swarm"), True),
