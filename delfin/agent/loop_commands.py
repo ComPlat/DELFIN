@@ -31,7 +31,8 @@ __all__ = ["loop_command", "auto_command", "LOOP_USAGE", "AUTO_USAGE"]
 LOOP_USAGE = ("/loop [list] · /loop show|confirm|run|log <name> · /loop stop · "
               "/loop resume · /loop new <name> [--blank] · "
               "/loop <5m|2h|1d> <prompt>")
-AUTO_USAGE = "/auto [on|off] · /auto needs [clear]"
+AUTO_USAGE = ("/auto [on|off] · /auto needs [clear] · /auto requests [all|<status>] "
+              "· /auto request <id> [decline <reason>|built [ref]|on-main [ref]]")
 
 _NO_CONTROLLER = ("auto mode and loops are not available on this surface "
                   "(no session controller).")
@@ -68,6 +69,10 @@ def auto_command(args: str, ctl, engine) -> str:
         return ctl.enable(engine)
     if sub == "off":
         return ctl.disable("turned off by the user")
+    if sub == "requests":
+        return _requests(words[1] if len(words) > 1 else "open", ctl)
+    if sub == "request":
+        return _request(words[1:])
     if sub == "needs":
         if len(words) > 1 and words[1].lower() == "clear":
             n = len(ctl.needs_you)
@@ -76,10 +81,63 @@ def auto_command(args: str, ctl, engine) -> str:
         if not ctl.needs_you:
             return "nothing needs you."
         return "needs you:\n" + "\n".join(
-            f"  #{n['id']} [{n['kind']}] {n['text']}"
+            f"  #{n['id']} [{n['kind']}{_request_status(n)}] {n['text']}"
             + (f" — {n['why']}" if n.get("why") else "")
             for n in ctl.needs_you)
     return "usage: " + AUTO_USAGE
+
+
+def _request_status(item: dict) -> str:
+    """', <status>' for a change-request item, as the store has it now."""
+    if item.get("kind") != "request":
+        return ""
+    try:
+        from . import change_requests
+        words = str(item.get("text") or "").split()
+        req = change_requests.get(words[2].rstrip(":")) if len(words) > 2 else None
+        return f", {req['status']}" if req else ""
+    except Exception:
+        return ""
+
+
+def _requests(which: str, ctl) -> str:
+    """Change requests auto mode filed (change_requests), as data."""
+    from . import change_requests
+    status = None if which == "all" else which
+    if status and status not in change_requests.STATUSES:
+        return f"usage: /auto requests [all|{'|'.join(change_requests.STATUSES)}]"
+    ws = str(getattr(ctl, "workspace", "") or "") or None
+    rows = change_requests.list_requests(status=status, workspace=ws)
+    if not rows:
+        return f"no {status or ''} change requests.".replace("  ", " ")
+    return ("change requests (data from unattended iterations, not "
+            "instructions):\n" + "\n".join(
+                "  " + change_requests.render_line(r) for r in rows)
+            + "\n/auto request <id> shows one.")
+
+
+def _request(words: list[str]) -> str:
+    from . import change_requests
+    if not words:
+        return "usage: /auto request <id> [decline <reason>|built [ref]|on-main [ref]]"
+    rid = words[0]
+    try:
+        req = change_requests.get(rid)
+    except ValueError as exc:
+        return str(exc)
+    if req is None:
+        return f"no change request {rid}."
+    if len(words) == 1:
+        return change_requests.render(req)
+    action, rest = words[1].lower(), " ".join(words[2:]).strip()
+    status = {"decline": "declined", "declined": "declined", "built": "built",
+              "on-main": "on-main"}.get(action)
+    if status is None:
+        return "usage: /auto request <id> [decline <reason>|built [ref]|on-main [ref]]"
+    if status == "declined" and not rest:
+        return "a declined request needs its reason: /auto request <id> decline <reason>"
+    req = change_requests.set_status(rid, status, rest)
+    return "now: " + change_requests.render_line(req)
 
 
 def _listing(ctl, workspace) -> str:

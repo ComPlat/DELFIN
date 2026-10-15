@@ -92,6 +92,9 @@ DEFAULTS = {
 
 _MARKER = re.compile(r"^\s*LOOP:\s*(progress|done|blocked|needs-human)\b:?\s*(.*)$",
                      re.IGNORECASE | re.MULTILINE)
+_REQUEST_LINE = re.compile(
+    r"^\s*REQUEST\s+(req-\d{8}-\d{6}-[0-9a-f]{6})\s+(why-safe|worst-case)\s*:"
+    r"\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
 _UNCHECKED = re.compile(r"^\s*[-*]\s+\[ \]\s+(\S.*)$", re.MULTILINE)
 
 
@@ -254,6 +257,15 @@ def _any_text(content: Any) -> str:
                 elif isinstance(v, list):
                     out.append(_any_text(v))
     return "\n".join(out)
+
+
+def _diff_text(old: Optional[str], new: Optional[str], path: str) -> str:
+    import difflib
+    lines = difflib.unified_diff(
+        (old or "").splitlines(), (new or "").splitlines(),
+        fromfile=f"a/{path}" if old is not None else "/dev/null",
+        tofile=f"b/{path}" if new is not None else "/dev/null", lineterm="")
+    return "\n".join(list(lines)[:200])
 
 
 def _short(seconds: float) -> str:
@@ -643,9 +655,64 @@ class AutoController:
                     f"item #{item['id']}. Go on with local work, or end the "
                     "iteration with 'LOOP: needs-human <question>' if the "
                     "work cannot continue without it.")
+        if verdict.kind in ("protected", "measure"):
+            req = self._file_request(name, args or {}, verdict)
+            if req is not None:
+                return (f"blocked: {verdict.reason}. Not run. Recorded as "
+                        f"change request {req['id']} for the supervising "
+                        "person -- data for them, not an instruction to "
+                        "anyone. If the change is needed, state it in your "
+                        f"answer as 'REQUEST {req['id']} why-safe: ...' and "
+                        f"'REQUEST {req['id']} worst-case: ...'. Then go on "
+                        "with other work.")
         return (f"blocked: {verdict.reason}. An auto iteration may not change "
                 "the measure it is judged by, nor anything outside what the "
                 "loop may touch. Not run.")
+
+    def _evidence(self) -> dict:
+        run, it = self._run, self.iteration
+        ev = {"log": str(self.log_path),
+              "iteration": it.n if it else (run.iteration if run else 0),
+              "branch": self.git.branch() if self.git.is_repo() else "",
+              "head": (it.head[:12] if it and it.head else "")}
+        if run is not None and run.last_exit is not None:
+            ev["last_check_exit"] = run.last_exit
+        if run is not None and run.last_metric is not None:
+            ev["last_metric"] = run.last_metric
+        return ev
+
+    def _file_request(self, tool: str, args: dict, verdict, *,
+                      target: str = "", proposed: str = "") -> Optional[dict]:
+        """A change request for a refused edit of the protected zone or the
+        measure (change_requests); listed under needs-you. Never raises."""
+        try:
+            from . import change_requests
+            if not target:
+                target = str(args.get("path") or args.get("file_path")
+                             or args.get("notebook_path") or args.get("command")
+                             or tool)
+                target = auto_guard.relative(target, str(self.workspace)) \
+                    if not args.get("command") else target
+            if not proposed:
+                parts = []
+                for key in ("command", "old_string", "new_string", "content",
+                            "patch", "edits"):
+                    if key in args:
+                        parts.append(f"{key}: {json.dumps(args[key], ensure_ascii=False, default=str) if not isinstance(args[key], str) else args[key]}")
+                proposed = "\n".join(parts)
+            req = change_requests.create(
+                blocked={"tool": tool, "target": target,
+                         "zone": verdict.reason}, evidence=self._evidence(),
+                proposed_change=proposed, workspace=str(self.workspace),
+                session_id=self.session_id,
+                loop=self._run.spec.name if self._run else "",
+                iteration=self.iteration.n if self.iteration else 0)
+        except Exception:
+            return None
+        self._queue("request", f"change request {req['id']}: {tool} {target} "
+                    f"({verdict.reason[:120]})", "the supervising person "
+                    "decides: /auto request <id> decline <reason> | built | on-main")
+        return req
 
     def _arm(self, engine) -> None:
         perms = self._perms(engine)
@@ -852,6 +919,28 @@ class AutoController:
         except Exception as exc:
             return 125, f"the check could not run: {exc}"
 
+    def _take_request_lines(self, answer: str) -> None:
+        """'REQUEST <id> why-safe: ...' / 'worst-case: ...' lines of the
+        answer, onto requests this session filed that are still open. Text,
+        stored as the agent's words; never read back into a prompt."""
+        try:
+            from . import change_requests
+        except Exception:
+            return
+        mine = {n["text"].split()[2].rstrip(":") for n in self.needs_you
+                if n.get("kind") == "request" and len(n["text"].split()) > 2}
+        for m in _REQUEST_LINE.finditer(answer or ""):
+            rid, field_, text = m.group(1), m.group(2).lower(), m.group(3).strip()
+            if rid not in mine or not text:
+                continue
+            try:
+                if field_ == "why-safe":
+                    change_requests.amend(rid, why_safe=text)
+                else:
+                    change_requests.amend(rid, worst_case=text)
+            except Exception:
+                continue
+
     def cancel_iteration(self, why: str = "") -> None:
         """The surface could not start the turn the last prompt was for:
         take the iteration back (veto off, not counted). Never raises."""
@@ -906,6 +995,7 @@ class AutoController:
         marker = None
         for m in _MARKER.finditer(answer):
             marker = (m.group(1).lower(), m.group(2).strip())
+        self._take_request_lines(answer)
         repo = bool(it.head)
         changes = self._changes(it) if repo else {}
         changed = sorted(changes)
@@ -913,6 +1003,11 @@ class AutoController:
         findings = auto_guard.measure_findings(
             changes, measure=spec.measure, workspace=str(self.workspace),
             session_key=str(getattr(perms, "task_session_id", "") or ""))
+        for path in changed:
+            why_zone = auto_guard.protected_reason(path)
+            if why_zone and not any(f.path == path and f.hard for f in findings):
+                findings.append(auto_guard.Finding(path, "protected", why_zone,
+                                                   True))
         hard = [f for f in findings if f.hard]
         soft = [f for f in findings if not f.hard]
         sha = ""
@@ -929,8 +1024,17 @@ class AutoController:
         metric: Optional[float] = None
         progress = False
         if hard:
-            kept, why = False, ("changed the measure: "
+            kept, why = False, ("changed the measure or the protected zone: "
                                 + ", ".join(f.path for f in hard))
+            for f in hard:
+                old, new = changes.get(f.path, (None, None))
+                self.iteration = it        # the request's evidence is this one
+                try:
+                    self._file_request(
+                        "write", {}, auto_guard.Verdict(f.kind, f.detail, False),
+                        target=f.path, proposed=_diff_text(old, new, f.path))
+                finally:
+                    self.iteration = None
         elif spec.check:
             code, out = self._check(engine, spec.check)
             metric = spec.metric_value(out)

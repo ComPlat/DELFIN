@@ -268,6 +268,57 @@ _REDIRECT = re.compile(r"(?<![0-9&<])>>?\|?\s*([^\s;&|<>]+)|[0-9]>>?\s*([^\s&;|<
 
 _last_source = "builtin"
 
+# The protected zone: what keeps an unattended iteration honest and
+# contained. An iteration never edits it; a refused edit becomes a change
+# request (change_requests) for the supervising person instead.
+_GUARD_MODULES = (
+    "sandbox", "approval_guard", "approval_code", "approval_answers",
+    "cli_gate", "permission_rules", "managed_policy", "principles_guard",
+    "landlock_exec", "seatbelt", "socket_guard", "process_guard",
+    "egress_proxy", "mcp_isolation", "isolation_posture", "workspace_trust",
+    "launch_guard", "verify_guard", "edit_signals", "experiment",
+    "experiment_hints", "paired_compare", "comparison_claims", "auto_guard",
+    "auto_mode", "loops", "change_requests", "boundaries", "untrusted",
+    "output_guard", "contained_run", "terminal_confirm", "file_confirm",
+    "kit_confirm", "security_events", "audit_log", "gate_coverage",
+    "verification_claims", "turn_verification", "verify_commands",
+    "caged_test_runners")
+_ZONE_RULES: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"(^|/)delfin/agent/(" + "|".join(_GUARD_MODULES) + r")\.py$"),
+     "a sandbox, approval, gate or honesty guard of DELFIN"),
+    (re.compile(r"(^|/)delfin/agent/pack/benchmark/"),
+     "benchmark tasks and acceptance scripts"),
+    (re.compile(r"(^|/)[^/]*principles[^/]*$"), "the principles"),
+    (re.compile(r"(^|/)managed_policy\.json$"), "the managed policy"),
+    (re.compile(r"(^|/)\.delfin/(settings[^/]*\.json|hooks[^/]*|"
+                r"permissions[^/]*|mcp[^/]*\.json|managed[^/]*)$"),
+     "DELFIN's settings, hooks or permissions for this workspace"),
+    (re.compile(r"(^|/)(\.github/workflows/|\.circleci/|\.gitlab-ci\.ya?ml$|"
+                r"Jenkinsfile$|azure-pipelines\.ya?ml$|\.pre-commit-config\.ya?ml$)"),
+     "CI configuration"),
+)
+
+
+def protected_reason(path: str) -> str:
+    """Why *path* (workspace-relative) is in the protected zone, or ""."""
+    rel = str(path or "").replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    if not rel:
+        return ""
+    for rx, why in _ZONE_RULES:
+        if rx.search(rel):
+            return why
+    try:
+        from . import edit_signals as _es
+        if _es.role(rel) == "grader":
+            return ("a grader file: test-runner configuration, a benchmark, "
+                    "an acceptance script, a threshold or a snapshot")
+        return ""
+    except Exception:
+        return ("a grader file (test-runner, benchmark, acceptance or "
+                "threshold)") if _GRADER_PATH.search(rel) else ""
+
 
 def _bare(name: str) -> str:
     name = str(name or "")
@@ -364,6 +415,11 @@ def _shell_verdict(cmd: str, workspace: str, measure: Iterable[str],
             if mm and any(n == mm or _covers(mm, n) for n in named if n):
                 return Verdict("measure", f"the command may change {mm}, "
                                "which this loop is judged by", False)
+    for n in sorted(x for x in named if x):
+        why = protected_reason(n)
+        if why:
+            return Verdict("protected", f"the command may change {n}, which "
+                           f"is in the protected zone ({why})", False)
     return None
 
 
@@ -405,6 +461,10 @@ def _classify(name, args, workspace, measure, touch, defaults, ssh_hosts=()):
                                    "this loop is judged by", False)
             if rel == ".git" or rel.startswith(".git/"):
                 return Verdict("scope", f"{rel} is git's own state", False)
+            why = protected_reason(rel)
+            if why:
+                return Verdict("protected", f"{rel} is in the protected zone "
+                               f"({why})", False)
             if touch and not any(_covers(_norm(t, workspace), rel)
                                  for t in touch):
                 return Verdict("scope", f"{rel} is outside what this loop may "

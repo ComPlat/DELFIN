@@ -512,10 +512,11 @@ def test_a_push_in_an_iteration_is_queued_not_run(repo):
     item = ctl.needs_you[-1]
     assert item["kind"] == "outward" and "git push" in item["text"]
     assert ctl._notes          # told out-of-band (attention inbox)
-    # A measure write is refused, not queued.
+    # A measure write is refused, not queued as an action to run; it is
+    # filed as a change request for the supervising person.
     out = ctl.veto("write_file", {"path": "scripts/check_table.py"})
-    assert out and "queued" not in out
-    assert ctl.needs_you[-1]["kind"] == "outward"
+    assert out and "queued" not in out and "change request" in out
+    assert ctl.needs_you[-1]["kind"] == "request"
 
 
 def test_the_veto_is_disarmed_outside_an_iteration(repo):
