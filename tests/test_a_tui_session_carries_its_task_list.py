@@ -77,3 +77,18 @@ def test_a_replay_header_carries_the_current_list(tmp_path):
 def test_the_protocol_declares_the_field():
     assert protocol.EVENTS["session.info"]["tasks"] == "[object]?"
     assert protocol.EVENTS["session.updated"]["tasks"] == "[object]?"
+
+
+def test_the_list_moves_while_the_turn_runs(tmp_path):
+    """What the window draws during a run: each step of the list arrives
+    as it happens, before the turn ends -- not one update at its end."""
+    with WorkerClient(tmp_path, delay=0.02) as w:
+        start, end = w.turn("work through the tasks")
+        updates = [(i, e["tasks"]) for i, e in enumerate(w.events[start:end], start)
+                   if e.get("type") == "session.updated" and e.get("tasks")]
+        in_hand = [rows[0]["label"] for _, rows in updates if rows[0]["status"] == "in_progress"]
+        # Each task was seen in hand, in turn, under its active form.
+        assert [l for i, l in enumerate(in_hand) if l not in in_hand[:i]] == [
+            "reading the input files", "fixing the energy parser", "running the tests"]
+        ended = next(i for i in range(start, end + 1) if w.events[i].get("type") == "turn.ended")
+        assert updates and all(i < ended for i, _ in updates[:-1])

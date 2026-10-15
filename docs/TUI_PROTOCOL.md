@@ -71,14 +71,14 @@ types are generated from that. This page explains what the messages mean.
 | `initialize` | `protocolVersion`, `client?` | `protocolVersion`, `pid`, `session`, `state`, `pending[]` | Handshake. Repeatable: a window attaching later gets the state and the open approvals. |
 | `session.prompt` | `text`, `how?` | `accepted`, `queued?`, `steered?` | A line exactly as the user typed it. See "Prompts". |
 | `session.cancel` | | `stopping`, `refused` | Esc. See "Cancelling". |
-| `session.setMode` | `mode` | `approval` | Approval posture: `plan`, `default` or `acceptEdits`. Never `bypassPermissions`; that needs a new session started with `--unattended`. |
+| `session.setMode` | `mode`, `confirmed?` | `approval` | Approval posture: `default`, `acceptEdits`, `plan` or `bypassPermissions` (shift+tab's ladder, delfin/agent/posture_cycle.py). `bypassPermissions` is refused where the session's `bypassBlocked` is not empty (the managed policy disallows it, no layer holds each command, the unisolated fallback), and the first time in a session unless `confirmed: true` -- the window sends that only for a y typed on its confirm row, after the answer pause. Like every ACTING method, refused to a process an agent session started. |
 | `session.status` | | engine counters, `state`, `approval`, `queued` | The engine's token and cost counters, plus the session's state. |
 | `session.replay` | `turns?` | `events[]` | The durable events from the start of the `turns`-th last turn (0 means all). See "Replay". |
 | `session.shutdown` | `ifIdle?`, `dryRun?` | `closing`, `busy?` | End the session as described in Lifecycle. `ifIdle`: only when nothing runs (a turn, a question, a background shell, a subagent); otherwise `closing: false` and `busy` says what runs. `dryRun`: only say so, never close (an update deciding whether a restart would cut anything). |
 | `permission.reply` | `requestId`, `choice?`, `answers?`, `reason?`, `persist?` | `applied`, `message` | Answer an open approval. See "Approvals". |
 | `session.commands` | | `commands[]`: `name`, `summary`, `category`, `takesArgs`, `source` | Every `/command` a line may start with. See "Completion and pickers". |
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
-| `session.choices` | `what`: `model`, `effort` or `mode` | `current`, `choices[]`: `value`, `detail?` | What a picker offers. |
+| `session.choices` | `what`: `model`, `effort`, `mode` or `args`; `command?` (with `args`) | `current`, `choices[]`: `value`, `detail?`, `usage?` | What a picker offers; with `args`, what may follow `command`. |
 | `session.toggleTasks` | | `showTasks` | ctrl+t: the open task list at the end of each turn, on or off, as in the REPL (a notice says which). |
 | `session.setTitle` | `title` | `title` | What the session is called: what it is saved under and every window shows (a `session.updated` follows); one plain line of at most 80 characters (escapes and control characters become spaces). Its address -- the `name` it started with, or its id, by which mail, approvals and its presence record reach it -- does not change. Answered for a sleeping session too, without waking it. |
 
@@ -108,6 +108,20 @@ the session's:
   cannot be read, it offers the curated roster
   (`model_capabilities._KIT_PREFERENCE`) with a detail saying so; the
   current model is always among the choices.
+
+- `session.choices` with `what: "args"` and a `command` (`/git`) answers
+  what may follow that command and a space, for the menu the window
+  shows once the command is typed: `choices[].value` is the text after
+  the command, as typed (`status`, `watch on`, a model's name),
+  `current` the one in force where there is one (`/model`, `/effort`,
+  `/mode`, `/permissions`), and `usage` a line saying what the command
+  takes when its values cannot all be listed (`/compact [what the
+  summary must keep]`, a user command's `argument-hint`). Values that
+  change while the session runs (memories, plans, staged diffs,
+  background jobs) are read when asked. A command the session does not
+  run, or one that takes no argument, gets `choices: []` and
+  `usage: ""`; a service before this field refuses `what: "args"`, and
+  the window then shows no menu.
 
 A pick is applied by sending what the user would type: `/model <name>`,
 `/effort <level>`, `/mode <name>` as a `session.prompt`, so it is queued
@@ -181,8 +195,8 @@ carry their final values.
 | Event | Fields | Durable |
 |---|---|---|
 | `worker.ready` | `protocolVersion`, `pid` | |
-| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]`, `tasks[]?` | ✓ |
-| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?`, `tasks[]?` | ✓ |
+| `session.info` | `sessionId`, `workspace`, `provider`, `model`, `mode`, `approval`, `title?`, `banner[]`, `notices[]`, `tasks[]?`, `bypassBlocked?`, `bypassConfirmed?` | ✓ |
+| `session.updated` | the fields that changed: `approval?`, `model?`, `effort?`, `title?`, `tasks[]?`, `bypassBlocked?`, `bypassConfirmed?` | ✓ |
 | `session.state` | `state`: `idle`, `running`, `needs_input` or `ended` | |
 | `session.ended` | `reason`, `exitCode` | ✓ |
 | `user.message` | `text`, `source`: `user`, `queued`, `steer` or `harness` | ✓ |
@@ -210,6 +224,9 @@ carry their final values.
 - `session.updated` follows every change of posture, model or effort,
   however it happened: a plan approval, "stop asking about writes",
   `/permissions` or `/model` sent as a prompt, `session.setMode`.
+- `bypassBlocked` says why shift+tab steps over `bypassPermissions` ("" when it may
+  stop there); `bypassConfirmed` that its first step was confirmed in this session (the
+  ladder passes through it without asking again). A window told neither steps over it.
 - `tasks` is the session's task list as it is now, whole: the rows the
   dashboard and the REPL draw (`task_ticker.rows`), in their order (in
   progress, blocked, pending, completed), each `num` (the number the user

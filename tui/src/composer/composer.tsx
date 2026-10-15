@@ -6,8 +6,22 @@
  *   shift/alt+enter, ctrl+j, a trailing "\" + enter    a new line
  *   ↑ / ↓          the history, from the first / last line of the prompt
  *   ctrl+r         search the history (again: older; enter takes it)
- *   tab            complete a /command or an @path
+ *   tab            complete a /command, its argument or an @path
+ *   click          on a row of the list: take it, as enter does (full
+ *                  screen; not within CLICK_PAUSE_MS of the list changing)
  *   esc            close the completion list
+ *   !              at the start of the prompt: shell mode (below)
+ *
+ * Shell mode: a line that starts with "!" is not a prompt for the model --
+ * the session runs it as a command, through the same deny-list, secret
+ * scan, allow-list and approval as the model's own bash calls
+ * (delfin/agent/repl.py `_handle_line`, `SHELL_PREFIX`). The composer
+ * takes the "!" out of the text and shows it as the prompt marker
+ * instead, with no completion (nothing of a /command or an @path applies
+ * to a shell line); backspace at the start of the line, or esc, puts the
+ * line back to a prompt. What is sent is "!" + the line, as typed, so the
+ * session sees exactly what it saw before the mode existed. A shell line
+ * is never steered into a running turn: the model would read it as text.
  *
  * Large pastes stand in as `[Pasted text #1 +42 lines]` (paste.ts) and go
  * out whole. `createComposer` holds the state and the key handling, so the
@@ -17,17 +31,18 @@
 import { decodePasteBytes, stripAnsiSequences, TextAttributes, type ColorInput, type KeyEvent,
          type TextareaRenderable } from "@opentui/core"
 import { usePaste } from "@opentui/solid"
-import { For, Show, createSignal, type JSX } from "solid-js"
+import { For, Show, createEffect, createSignal, on, type JSX } from "solid-js"
 import type { Keymap } from "../keymap/keymap"
 import { fit, width } from "../text"
 import type { Theme } from "../theme/theme"
 import {
-  applyCandidate, matchCommands, pathCandidates, tokenAt,
-  type Candidate, type Command, type Token,
+  applyCandidate, argumentAt, matchArguments, matchCommands, pathCandidates, tokenAt,
+  type ArgumentChoices, type Candidate, type Command, type Token,
 } from "./complete"
+import { CLICK_PAUSE_MS, clickable } from "../mouse"
 import { HistoryWalk, type Entry, type History } from "./history"
 import { Pastes, normalisePaste, shouldCollapse } from "./paste"
-import { WINDOW_COMMANDS } from "../commands"
+import { SHELL_PREFIX, WINDOW_COMMANDS, shellLead } from "../commands"
 
 /** The prompt grows to this many rows, then scrolls. */
 export const COMPOSER_MAX_ROWS = 8
@@ -45,6 +60,15 @@ export interface ComposerDeps {
    *  comes back into the composer, if nothing else was typed meanwhile. */
   send(text: string, how?: "steer", shown?: string): Promise<boolean> | boolean | void
   say(text: string): void
+  /** What may follow `command` (the app's: the window's own commands, else
+   *  the session's session.choices "args"). Without it no argument list. */
+  argumentChoices?(command: string): Promise<ArgumentChoices>
+  /** The pause before a click on the list is taken (tests: 0). */
+  clickPauseMs?: number
+  /** Whether a leading "!" means shell mode here (not while the prompt is
+   *  for something else: the agent view's names, answers and messages).
+   *  Always, when not given. */
+  shellAllowed?: () => boolean
 }
 
 interface Popup {
@@ -68,6 +92,9 @@ export interface Composer {
   readonly rows: () => number
   readonly popup: () => Popup | null
   readonly search: () => Search | null
+  /** The line is a shell command ("!"): the marker, the border and the
+   *  missing completion say so. */
+  readonly shell: () => boolean
   /** Rows the composer takes in the footer, completion and search included. */
   readonly height: () => number
   attach(textarea: TextareaRenderable): void
@@ -82,6 +109,9 @@ export interface Composer {
   remeasure(): void
   /** Leave a ctrl+r search, the draft put back (a question opened). */
   cancelSearch(): void
+  /** A click on the list's row `index` (of the candidates): as enter on
+   *  it; false when not taken (too soon, a usage line, no list). */
+  clickAt(index: number): boolean
 }
 
 const isPlain = (key: KeyEvent) => !key.ctrl && !key.meta && !key.option && !(key as { super?: boolean }).super
@@ -89,8 +119,19 @@ const isPlain = (key: KeyEvent) => !key.ctrl && !key.meta && !key.option && !(ke
 export function createComposer(deps: ComposerDeps): Composer {
   let area: TextareaRenderable | undefined
   const [text, setTextSignal] = createSignal("")
+  const [shell, setShell] = createSignal(false)
+  const shellAllowed = () => deps.shellAllowed?.() ?? true
   const [rows, setRows] = createSignal(1)
-  const [popup, setPopup] = createSignal<Popup | null>(null)
+  const [popup, setPopupSignal] = createSignal<Popup | null>(null)
+  // When the list's rows last changed: a click that soon is not taken.
+  let popupShownAt = 0
+  const setPopup = (next: Popup | null) => {
+    const before = popup()
+    if (!next || !before || next.candidates !== before.candidates) popupShownAt = Date.now()
+    setPopupSignal(next)
+  }
+  const argsCache = new Map<string, { at: number; got: ArgumentChoices }>()
+  let argAsk = 0
   const [search, setSearch] = createSignal<Search | null>(null)
   const pastes = new Pastes()
   let walk = new HistoryWalk(deps.history)
@@ -116,14 +157,43 @@ export function createComposer(deps: ComposerDeps): Composer {
     setRows(Math.min(COMPOSER_MAX_ROWS, totalRows()))
   }
 
-  const setAreaText = (value: string) => {
+  /** The line as it is sent: the "!" of shell mode in front. */
+  const full = () => (shell() ? SHELL_PREFIX : "") + (area?.plainText ?? "")
+
+  /** Put `value` (a whole line, "!" and all) in the textarea, the cursor
+   *  at `cursor` of it (the end when not given): a leading "!" becomes
+   *  shell mode and leaves the text. */
+  const place = (value: string, cursor?: number) => {
     if (!area) return
-    quiet = value
-    area.setText(value)
-    area.gotoBufferEnd()
-    setTextSignal(value)
+    const lead = shellAllowed() ? shellLead(value) : -1
+    const inner = lead >= 0 ? value.slice(lead) : value
+    setShell(lead >= 0)
+    quiet = inner
+    area.setText(inner)
+    if (cursor === undefined) area.gotoBufferEnd()
+    else area.cursorOffset = Math.max(0, Math.min(inner.length, cursor - Math.max(0, lead)))
+    setTextSignal(full())
     measure()
   }
+  const setAreaText = (value: string) => place(value)
+
+  /** Out of shell mode: the "!" is gone, the rest stays as a prompt (one
+   *  that begins with "!" again is a shell line again). */
+  const leaveShell = () => {
+    if (!area) return
+    setShell(false)
+    place(area.plainText, area.cursorOffset)
+    if (!shell()) refreshCompletion()
+  }
+
+  // The prompt became something else's (the agent view opened): the "!"
+  // goes back into the text; back to a prompt, a leading "!" is shell
+  // mode again.
+  createEffect(on(shellAllowed, () => {
+    if (!area || area.isDestroyed) return
+    const cursor = area.cursorOffset + (shell() ? SHELL_PREFIX.length : 0)
+    place(full(), cursor)
+  }, { defer: true }))
 
   const loadCommands = async (): Promise<Command[]> => {
     const sid = deps.sessionId()
@@ -143,10 +213,54 @@ export function createComposer(deps: ComposerDeps): Composer {
     return commands
   }
 
+  /** What may follow `command`, if it takes anything: asked again after
+   *  10 s (memories, staged diffs and jobs change while a session runs). */
+  const loadArguments = async (command: string): Promise<ArgumentChoices | null> => {
+    if (!deps.argumentChoices) return null
+    const list = await loadCommands()
+    const known = list.find((c) => c.name.toLowerCase() === command.toLowerCase())
+    if (!known?.takesArgs) return null
+    const key = `${deps.sessionId()}\t${known.name}`
+    const hit = argsCache.get(key)
+    if (hit && Date.now() - hit.at < 10_000) return hit.got
+    try {
+      const got = await deps.argumentChoices(known.name)
+      argsCache.set(key, { at: Date.now(), got })
+      return got
+    } catch {
+      return null                      // a service that cannot say: no list
+    }
+  }
+
   const refreshCompletion = () => {
     if (!area) return
+    if (shell()) {
+      // A shell line has no /commands or @paths of DELFIN's.
+      setPopup(null)
+      return
+    }
     const value = area.plainText
-    const token = tokenAt(value, area.cursorOffset)
+    const token = tokenAt(value, area.cursorOffset) ?? argumentAt(value, area.cursorOffset)
+    if (token?.kind === "argument") {
+      if (token.start === dismissedAt) {
+        setPopup(null)
+        return
+      }
+      const ask = ++argAsk
+      void loadArguments(token.command!).then((got) => {
+        if (ask !== argAsk || !area) return
+        const now = argumentAt(area.plainText, area.cursorOffset)
+        if (!got || !now || now.command !== token.command || now.text !== token.text) {
+          if (!got) setPopup(null)
+          return
+        }
+        const candidates = matchArguments(got, now.text)
+        // Only exactly what is typed: no list.
+        const useful = candidates.some((c) => c.hint || c.insert !== now.text)
+        setPopup(useful ? { token: now, candidates, selected: 0 } : null)
+      })
+      return
+    }
     if (!token || token.start === dismissedAt) {
       if (!token) dismissedAt = -1
       setPopup(null)
@@ -178,7 +292,14 @@ export function createComposer(deps: ComposerDeps): Composer {
   const onContent = () => {
     if (!area) return
     const value = area.plainText
-    setTextSignal(value)
+    if (!shell() && shellAllowed() && shellLead(value) >= 0 && !search()) {
+      // A "!" in front by another way than the key (a paste, an edit at
+      // the start): shell mode, as the session will read the line.
+      place(value, area.cursorOffset)
+      setPopup(null)
+      return
+    }
+    setTextSignal(full())
     measure()
     if (value === quiet) return
     quiet = null
@@ -194,8 +315,11 @@ export function createComposer(deps: ComposerDeps): Composer {
     // The list may be older than what is typed now (its answer was on its
     // way): it applies only to the token at the cursor, and only while the
     // candidate still extends what is typed.
-    const now = tokenAt(area.plainText, area.cursorOffset)
-    if (!now || now.kind !== p.token.kind || now.start !== p.token.start || !candidate.insert.startsWith(now.text)) {
+    const now = p.token.kind === "argument" ? argumentAt(area.plainText, area.cursorOffset)
+      : tokenAt(area.plainText, area.cursorOffset)
+    // An argument's value is matched by its words, not as a prefix.
+    const extends_ = p.token.kind === "argument" || candidate.insert.startsWith(now?.text ?? "")
+    if (!now || now.kind !== p.token.kind || now.start !== p.token.start || !extends_) {
       setPopup(null)
       refreshCompletion()
       return
@@ -208,8 +332,18 @@ export function createComposer(deps: ComposerDeps): Composer {
     measure()
     setPopup(null)
     dismissedAt = -1
-    // A folder: the list goes on inside it.
-    if (candidate.descends) refreshCompletion()
+    // A folder: the list goes on inside it; a command that takes an
+    // argument: the list of what it takes.
+    if (candidate.descends || (p.token.kind === "command" && candidate.insert.endsWith(" "))) refreshCompletion()
+  }
+
+  /** Enter (or a click) on a candidate: taken, and a value or a command
+   *  without arguments runs. A usage line is not taken. */
+  const choose = (chosen: Candidate): boolean => {
+    if (chosen.hint) return false
+    take(chosen)
+    if (chosen.runs) submit()
+    return true
   }
 
   const clear = () => {
@@ -224,8 +358,15 @@ export function createComposer(deps: ComposerDeps): Composer {
   const submit = (how?: "steer"): boolean => {
     if (!area) return false
     // Stripped as the REPL strips a typed line (the session does too).
-    const raw = area.plainText.trim()
+    const raw = full().trim()
     if (!raw) return false
+    // A "!" with nothing after it: no command to run, and no prompt either.
+    if (shell() && shellLead(raw) === raw.length) return false
+    if (shell() && how === "steer") {
+      // Steered, the model would read the line as text: it runs after the turn.
+      deps.say("a shell line is not steered: it runs when the turn ends")
+      how = undefined
+    }
     const expanded = pastes.expand(raw)
     const used = pastes.used(raw)
     deps.history.add({ text: raw, pastes: used })
@@ -249,7 +390,7 @@ export function createComposer(deps: ComposerDeps): Composer {
   }
 
   const current = (): Entry => {
-    const raw = area?.plainText ?? ""
+    const raw = full()
     return { text: raw, pastes: pastes.used(raw) }
   }
 
@@ -304,6 +445,20 @@ export function createComposer(deps: ComposerDeps): Composer {
     if (!area) return false
     const s = search()
     if (s) return searchKey(s, key)
+    if (shell() && isPlain(key)) {
+      // Out of shell mode: esc, or backspace on the "!" (the start of the line).
+      if (key.name === "escape" || (key.name === "backspace" && area.cursorOffset === 0)) {
+        leaveShell()
+        return true
+      }
+    } else if (!shell() && shellAllowed() && isPlain(key) && key.sequence === SHELL_PREFIX
+               && area.cursorOffset === 0) {
+      // "!" at the start: the line becomes a shell line, the "!" its marker.
+      setShell(true)
+      setPopup(null)
+      setTextSignal(full())
+      return true
+    }
     const km = deps.keymap
     const p = popup()
     if (p) {
@@ -314,7 +469,8 @@ export function createComposer(deps: ComposerDeps): Composer {
         return true
       }
       if (key.name === "tab" && isPlain(key)) {
-        take(p.candidates[p.selected]!)
+        const chosen = p.candidates[p.selected]!
+        if (!chosen.hint) take(chosen)
         return true
       }
       if (key.name === "escape") {
@@ -324,10 +480,10 @@ export function createComposer(deps: ComposerDeps): Composer {
       }
       if (km.matches("submit", key)) {
         const chosen = p.candidates[p.selected]!
-        // Already typed out in full: Enter sends, as without the list.
-        if (chosen.insert.trimEnd() !== p.token.text) {
-          take(chosen)
-          if (chosen.runs) submit()
+        // Already typed out in full, or only the usage shown: Enter sends,
+        // as without the list.
+        if (!chosen.hint && chosen.insert.trimEnd() !== p.token.text) {
+          choose(chosen)
           return true
         }
         setPopup(null)
@@ -366,7 +522,7 @@ export function createComposer(deps: ComposerDeps): Composer {
       return true
     }
     if (key.name === "tab" && isPlain(key) && !key.shift) {
-      const token = tokenAt(area.plainText, area.cursorOffset)
+      const token = tokenAt(area.plainText, area.cursorOffset) ?? argumentAt(area.plainText, area.cursorOffset)
       if (token) {
         dismissedAt = -1
         refreshCompletion()
@@ -386,10 +542,11 @@ export function createComposer(deps: ComposerDeps): Composer {
 
   return {
     text,
-    value: () => area?.plainText ?? "",
+    value: () => full(),
     rows,
     popup,
     search,
+    shell,
     height: () => rows() + (search() ? 1 : 0) + Math.min(POPUP_ROWS, popup()?.candidates.length ?? 0),
     attach(textarea) {
       area = textarea
@@ -398,7 +555,8 @@ export function createComposer(deps: ComposerDeps): Composer {
         // The cursor moved off the token the list is for: the list follows.
         const p = popup()
         if (!p || !area) return
-        const now = tokenAt(area.plainText, area.cursorOffset)
+        const now = p.token.kind === "argument" ? argumentAt(area.plainText, area.cursorOffset)
+          : tokenAt(area.plainText, area.cursorOffset)
         if (!now || now.start !== p.token.start) setPopup(null)
       }
       measure()
@@ -412,6 +570,14 @@ export function createComposer(deps: ComposerDeps): Composer {
       setAreaText(value)
     },
     remeasure: measure,
+    clickAt(index) {
+      const p = popup()
+      const chosen = p?.candidates[index]
+      if (!p || !chosen) return false
+      const pause = deps.clickPauseMs ?? CLICK_PAUSE_MS
+      if (pause > 0 && Date.now() - popupShownAt < pause) return false
+      return choose(chosen)
+    },
     cancelSearch() {
       const s = search()
       if (!s) return
@@ -448,7 +614,8 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
     const p = c.popup()
     if (!p) return []
     const first = Math.max(0, Math.min(p.selected - POPUP_ROWS + 1, p.candidates.length - POPUP_ROWS))
-    return p.candidates.slice(first, first + POPUP_ROWS).map((cand, i) => ({ cand, selected: first + i === p.selected }))
+    return p.candidates.slice(first, first + POPUP_ROWS).map((cand, i) => ({ cand, selected: first + i === p.selected,
+                                                                             index: first + i }))
   }
   return (
     <box flexShrink={0} flexDirection="column">
@@ -458,8 +625,14 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
           const room = Math.max(8, (props.width?.() ?? 100) - 5)
           const label = fit(row.cand.label, Math.max(4, Math.floor(room * 0.5)))
           const detail = row.cand.detail ? fit(`  ${row.cand.detail}`, Math.max(0, room - width(label))) : ""
+          // A row is the candidate: a click takes it, as enter does.
+          const hit = row.cand.hint ? undefined : clickable(() => "take", () => void c.clickAt(row.index))
+          if (row.cand.hint) {
+            return <text wrapMode="none" fg={t().faint}>{"    " + fit(`usage: ${row.cand.label}`, room)}</text>
+          }
           return (
-            <text wrapMode="none">
+            <text wrapMode="none" ref={hit?.ref} onMouseDown={hit?.onMouseDown} onMouseUp={hit?.onMouseUp}
+                  onMouseDrag={hit?.onMouseDrag}>
               <span style={{ fg: row.selected ? t().accent : t().faint }}>{row.selected ? "  › " : "    "}</span>
               <span style={{ fg: row.selected ? t().bright : t().text, bold: Boolean(row.selected) }}>
                 {label}
@@ -487,7 +660,10 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
         }}
       </Show>
       <box flexDirection="row">
-        <text flexShrink={0} width={2} fg={props.mark?.() ?? t().accent} attributes={TextAttributes.BOLD}>{"❯ "}</text>
+        {/* Shell mode: "!" in the shell's colour -- the mark is the text,
+            so it reads the same without colour (NO_COLOR). */}
+        <text flexShrink={0} width={2} fg={c.shell() ? t().shell : props.mark?.() ?? t().accent}
+              attributes={TextAttributes.BOLD}>{c.shell() ? SHELL_PREFIX + " " : "❯ "}</text>
         <textarea
           flexBasis={0}
           flexShrink={1}
@@ -503,7 +679,7 @@ export function ComposerView(props: ComposerViewProps): JSX.Element {
           focusedTextColor={t().bright}
           backgroundColor="transparent"
           focusedBackgroundColor="transparent"
-          cursorColor={t().accent}
+          cursorColor={c.shell() ? t().shell : t().accent}
           keyBindings={[{ name: "return", action: "submit" }]}
           onSubmit={() => void c.submit()}
         />

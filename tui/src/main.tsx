@@ -19,13 +19,15 @@ import { Pins } from "./agents/pins"
 import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
-import { loadConfig, screenModeOf } from "./config/config"
+import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
+import { leavingNote } from "./leaving"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
 import { readState, updateState } from "./config/state"
+import { logoCellsFor, logoDepthFor, setLogoCells, setLogoDepth } from "./theme/logo"
 import { noColor, themeFor } from "./theme/theme"
 import { bounded } from "./scrollback/queue"
 import { createScreenItems } from "./scrollback/screenview"
@@ -114,10 +116,11 @@ const renderer = await createCliRenderer({
   // the window itself never writes to stdout while it runs.
   externalOutputMode: full ? "passthrough" : "capture-stdout",
   // Full screen takes the mouse: the wheel scrolls the conversation, a
-  // drag selects and copies (shift+drag is the terminal's own selection).
+  // drag selects and copies (shift+drag is the terminal's own selection),
+  // a click answers a question or picks from a list (config.ts mouseOn).
   // Buttons and drags only (no reports of every move: nothing hovers), and
   // a click never takes the keys from the prompt (its focus is the app's).
-  useMouse: full,
+  useMouse: mouseOn(loaded.config.mouse, full ? "full" : "inline"),
   enableMouseMovement: false,
   autoFocus: false,
   exitOnCtrlC: false,
@@ -141,6 +144,12 @@ let mode: "dark" | "light" | "mono" = loaded.config.theme !== "auto" ? loaded.co
   : noColor() ? "mono"
   : remembered === "light" ? "light" : "dark"
 const [theme, setTheme] = createSignal(themeFor(mode, loaded.config.colors))
+// The logo as a picture where the terminal says it draws colours
+// (COLORTERM, TERM); braille in the accent otherwise and under NO_COLOR.
+// Sextant cells; octants or half blocks under DELFIN_TUI_LOGO. Its size
+// follows the terminal's rows and columns (pickLogo).
+setLogoDepth(logoDepthFor(process.env, mode))
+setLogoCells(logoCellsFor(process.env))
 if (auto) {
   void renderer.waitForThemeMode(1500).then((said) => {
     if (said !== "dark" && said !== "light") return
@@ -557,39 +566,37 @@ function quit(): void {
     // OpenTUI flushes queued scrollback after destroy; the process ends on
     // its own once that is written (never exit from onDestroy).
     renderer.destroy()
-    // Full screen gives the shell its lines back as they were: one line
-    // says what became of the session -- written as the process ends, when
-    // the terminal is surely the shell's again (OpenTUI restores it after
-    // destroy() returns).
-    if (full) {
-      const note = leavingNote()
-      process.once("exit", () => {
-        try {
-          process.stdout.write(note)
-        } catch {
-          // a terminal already gone
-        }
-      })
-    }
+    printWhenGone()
   })()
 }
 
-/** What leaving a full-screen window says: why it closed when the service
- *  went (said in the window too, but that screen is gone), else whether
- *  the session runs on -- and how to come back to it. */
-function leavingNote(): string {
-  const plain = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-  if (connection.problem) return `DELFIN: ${plain(connection.problem)}\n`
+/** Once: what became of the session and the command that opens it again,
+ *  written as the process ends -- when the terminal is surely the shell's
+ *  again (OpenTUI restores it after destroy() returns), in both screens:
+ *  full screen gives the shell its lines back, inline leaves the
+ *  conversation above, and the line lands under either. */
+let printed = false
+function printWhenGone(): void {
+  if (printed) return
+  printed = true
   const s = current ? store.state.sessions[current] : undefined
-  if (!s) return ""
-  const name = s.title || s.summary?.title || `session ${s.id.slice(0, 8)}`
-  if (s.state === "ended") return `DELFIN: ${plain(name)} has ended${s.ended?.reason ? ` (${plain(s.ended.reason)})` : ""}.\n`
-  return `DELFIN: ${plain(name)} keeps running in the agent service -- `
-    + `delfin-agent tui --resume ${s.id} opens it again (or ← in any window).\n`
+  const note = leavingNote({
+    problem: connection.problem || undefined,
+    session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended } : undefined,
+  })
+  if (!note) return
+  process.once("exit", () => {
+    try {
+      process.stdout.write(note)
+    } catch {
+      // a terminal already gone
+    }
+  })
 }
 
 function leaveNow(): void {
   connection.close()
+  printWhenGone()
   try {
     renderer.destroy()
   } catch {
@@ -612,6 +619,8 @@ renderer.on("destroy", () => {
   quitting = true
   // The shell's way: a window ended by a signal exits with 128 + its number.
   if (signalled) process.exitCode = 128 + signalled
+  // A hangup has no terminal left to print to; any other end says the way back.
+  if (signalled !== 1) printWhenGone()
   connection.close()
   view.stop()
   ;(setTimeout(() => process.exit(signalled ? 128 + signalled : 0), 1500) as { unref?: () => void }).unref?.()
