@@ -2758,7 +2758,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/memory", "Every memory layer with its label: private, swarm, project, global (filter: /memory <layer> [words])", False),
     ("Memory", "/lessons", "Your lessons (/lessons show|edit|delete <id>)", False),
     ("Memory", "/share", "Share a lesson: the dialog shows the exact text and the check; /share confirm <dialog> <code>", True),
-    ("Memory", "/unshare", "Withdraw your shared entry as a removal branch", True),
+    ("Memory", "/unshare", "Withdraw your share: from the review queue (/unshare <queue or lesson id>), or a merged entry as a removal branch", True),
     ("Memory", "/swarm", "Findings of a swarm run (/swarm harvest|propose|close)", False),
     ("Memory", "/knowledge", "Global knowledge by topic, search, lint, dupes, stats; queue and curation for the admin", False),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
@@ -6471,7 +6471,12 @@ def create_tab(ctx):
                 str(Path.home()), "~")
             held = len(state.get("chat_messages", []) or [])
             transfer = (settings.get("transfer") or {})
-            if transfer.get("host") and transfer.get("remote_path"):
+            from delfin.agent.bug_report import upload_policy
+            if (transfer.get("host") and transfer.get("remote_path")
+                    and upload_policy(settings) == "never"):
+                goes = (f"→ <code>{_html.escape(here)}</code>, and no further "
+                        "-- agent.bug_upload is 'never'")
+            elif transfer.get("host") and transfer.get("remote_path"):
                 goes = (f"→ <code>{_html.escape(here)}</code>, then "
                         f"<code>{_html.escape(str(transfer['host']))}</code>")
             else:
@@ -18575,12 +18580,16 @@ def create_tab(ctx):
                 from delfin.agent.bug_report import push_report_to_remote
                 _tcfg = (load_settings() or {}).get("transfer", {}) or {}
                 if _tcfg.get("host") and _tcfg.get("remote_path"):
+                    # Send was pressed under a line naming this host
+                    # (_on_bug_toggle): that press is the consent for this
+                    # report. agent.bug_upload 'never' still refuses inside.
                     ok, where = push_report_to_remote(
                         report_dir,
                         host=_tcfg.get("host", ""),
                         user=_tcfg.get("user", ""),
                         remote_path=_tcfg.get("remote_path", ""),
                         port=int(_tcfg.get("port", 22) or 22),
+                        consent=True,
                     )
                     remote_line = (
                         f"\n📤 Copied to the remote archive → `{where}`"

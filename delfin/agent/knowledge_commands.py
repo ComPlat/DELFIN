@@ -15,8 +15,11 @@ Commands (``handle(name, args, ...)``):
     window, CLI on /dev/tty) the code is read from the person's next line;
     without it (dashboard) the dialog stays open and
     ``/share confirm <dialog> <code>`` answers it.
-``/unshare <entry>``
-    withdraws one's own shared entry as a removal branch.
+``/unshare <entry> | <queue id> | <lesson id>``
+    withdraws one's own shared entry as a removal branch; a submission
+    still in the admin's review queue (its queue id, or the id of the
+    queued lesson) is withdrawn from the queue itself, checked against
+    the account that queued it.
 ``/lessons [show <id> | edit <id> field=text ... | delete <id>]``
     the person's own lessons; an edit is taken as typed and re-checked
     by the next /share.
@@ -251,7 +254,8 @@ def _share(words, *, workspace, ask=None, say=None, **_):
 
 def _unshare(words, *, workspace, ask=None, say=None, **_):
     if not words:
-        return "usage: /unshare <entry> [as <handle>]"
+        return ("usage: /unshare <entry> [as <handle>] | /unshare "
+                "<queue id or lesson id>")
     handle = words[2] if len(words) > 2 and words[1] == "as" else ""
     d = ks.start_unshare(words[0], workspace=workspace, handle=handle,
                          clock=_CLOCK)

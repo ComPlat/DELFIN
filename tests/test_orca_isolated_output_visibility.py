@@ -31,6 +31,26 @@ import pytest
 from delfin.orca import _run_orca_isolated
 
 
+@pytest.fixture(autouse=True)
+def _a_fake_orca_is_not_waited_for(monkeypatch):
+    """No fixed waits around a shell script that exits at once.
+
+    Per run, measured: the progress monitor sleeps 30 s without looking at
+    its stop event, so the two joins after the run time out (2 s + 1 s);
+    _cleanup_isolated_dir waits 0.5 s for MPI file handles. Neither is what
+    this file checks (where the .out lands). DELFIN_ORCA_PROGRESS=0 is the
+    product's own switch; initial_delay its own parameter. The 0.5 s sleep
+    in _cleanup_process_group has neither and stays.
+    """
+    from delfin import orca
+
+    monkeypatch.setenv("DELFIN_ORCA_PROGRESS", "0")
+    real = orca._cleanup_isolated_dir
+    monkeypatch.setattr(orca, "_cleanup_isolated_dir",
+                        lambda iso_dir, initial_delay=0.0: real(
+                            iso_dir, initial_delay=0.0))
+
+
 def _make_fake_orca(tmp_path: Path, script_body: str) -> Path:
     """Create an executable shell script that mimics ORCA for testing.
 

@@ -3460,12 +3460,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         held = _journal_mod.how_much_is_held(journal.summary())
         here = _under_home(_journal_mod.resolve_archive_dir())
         target = _journal_mod.remote_target()
+        off = _journal_mod.upload_off() if target is None else ''
         goes = f'→ <code>{html.escape(here)}</code>'
         if target is None:
-            goes += ', and no further -- no transfer host is configured'
+            why = off or 'no transfer host is configured'
+            goes += f', and no further -- {html.escape(why)}'
             submit_bug_send.tooltip = (
-                'Write the report. It stays on this machine: no transfer '
-                'host is configured.')
+                f'Write the report. It stays on this machine: {why}.')
         else:
             goes += (', then <code>'
                      + html.escape(target['shown']) + '</code>')
@@ -3573,9 +3574,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         target = _journal_mod.remote_target()
         if target is None:
+            off = _journal_mod.upload_off()
+            why = (off[0].upper() + off[1:]) if off else (
+                'No transfer host is configured')
             _set_mol_status(
                 f'Reported. {did}',
-                'No transfer host is configured, so it stays on this '
+                f'{why}, so it stays on this '
                 'machine. It can be played back into a viewer to see the '
                 'same thing happen again.' + went + again + empty + wordless)
         else:

@@ -209,14 +209,24 @@ def test_too_many_points_are_refused(tmp_path):
 
 
 def test_a_data_file_over_the_size_cap_is_not_read(tmp_path, monkeypatch):
+    """The gate sees the path first; the file is measured after it and
+    refused before it is opened."""
+    from pathlib import Path
     from delfin.agent import chat_plots
     monkeypatch.setattr(chat_plots, "MAX_DATA_FILE_BYTES", 10)
     (tmp_path / "d.csv").write_text("value\n1\n2\n3\n4\n", encoding="utf-8")
-    read = []
+    gated = []
+
+    def gate(p, max_bytes):
+        gated.append(p)
+        monkeypatch.setattr(Path, "open", lambda *a, **k: pytest.fail(
+            "an oversized file was opened"))
+        return chat_plots.read_text(p, max_bytes)
+
     with pytest.raises(SpecError, match="bytes"):
         plot({"kind": "box", "data": {"file": "d.csv"}},
-             out_dir=str(tmp_path), reader=lambda p: read.append(p) or "")
-    assert read == []
+             out_dir=str(tmp_path), reader=gate)
+    assert gated == [(tmp_path / "d.csv").resolve()]
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), "inf", True])

@@ -486,3 +486,20 @@ def test_the_audit_record_reaches_the_managed_destination(env):
                      log_path=env["home"] / "audit.log")
     lines = target.read_text().splitlines()
     assert json.loads(lines[-1])["command"] == "echo"
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX accounts")
+def test_the_audit_destination_follows_the_uid_not_the_user_variable(
+        env, monkeypatch):
+    """``{user}`` in a managed audit path came from getpass.getuser(),
+    i.e. $LOGNAME/$USER: a session started with USER=<someone else>
+    wrote its audit records into that person's file and none into its
+    own."""
+    import pwd
+    me = pwd.getpwuid(os.getuid()).pw_name
+    for var in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+        monkeypatch.setenv(var, "somebody-else")
+    dest = env["tmp"] / "audit" / "{user}.jsonl"
+    _write_policy(env["policy"], {"audit_log": str(dest)})
+    [target] = MP.audit_destinations()
+    assert target.name == f"{me}.jsonl"
