@@ -346,6 +346,18 @@ def check(text: str, *, public: bool, identity: Optional[dict] = None,
                                f"({', '.join(_PUBLIC_URL_HOSTS)})",
                                url, m.start(), m.start() + len(url)))
     _instruction(text, out)
+    # The peer-decision shapes (#269): a shared lesson that reads like an
+    # approval or a verdict would reach every reader as one.
+    try:
+        from .untrusted import _DECISION_RE
+        m = _DECISION_RE.search(text)
+        if m:
+            out.append(Finding("decision-shape", "reads like an approval or "
+                               "a verdict; a lesson states what to do and "
+                               "why, never that something is approved",
+                               m.group(0), m.start(), m.end()))
+    except Exception:
+        pass
 
     if public:
         url_spans = [(m.start(), m.end()) for m in _URL_RE.finditer(text)]
