@@ -1849,6 +1849,116 @@ def running_jobs_for_workspace(workspace: str | Path) -> list[dict]:
     return out
 
 
+_CHECKOUT_TOPS: dict = {}
+_IN_USE_NOTES: list = []
+_IN_USE_NOTED: set = set()
+_IN_USE_LOCK = threading.Lock()
+
+
+def _checkout_top(cwd: str) -> str:
+    """The git top directory of *cwd*, cached per directory; "" outside a
+    checkout."""
+    if cwd in _CHECKOUT_TOPS:
+        return _CHECKOUT_TOPS[cwd]
+    top = ""
+    try:
+        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            top = os.path.realpath(r.stdout.strip())
+    except Exception:
+        top = ""
+    _CHECKOUT_TOPS[cwd] = top
+    return top
+
+
+def _named_paths(command: str, cwd: str) -> list[str]:
+    """Real paths of the files and directories a command names: its words
+    that exist relative to *cwd*, ``path::node`` test ids by their file,
+    and ``-m pkg.mod`` by the module's file."""
+    import shlex
+    try:
+        words = shlex.split(command or "")
+    except ValueError:
+        words = (command or "").split()
+    out: list[str] = []
+    prev = ""
+    for w in words:
+        cands = []
+        if prev == "-m" and re.fullmatch(r"[A-Za-z_][\w.]*", w):
+            mod = w.replace(".", "/")
+            cands += [mod + ".py", mod + "/__init__.py"]
+        elif not w.startswith("-") and "=" not in w.split("/")[0]:
+            cands.append(w.split("::", 1)[0])
+        prev = w
+        for c in cands:
+            if not c or len(c) > 4096:
+                continue
+            p = Path(c) if os.path.isabs(c) else Path(cwd) / c
+            try:
+                if p.exists():
+                    out.append(os.path.realpath(p))
+            except OSError:
+                continue
+    return out
+
+
+def job_using(path, *, session_id: str = "") -> Optional[dict]:
+    """The running job of this process that uses *path*, or None.
+
+    ``kind`` is ``named`` when the job's command names the file or a
+    directory holding it (the script, the test file, the tests directory,
+    the module of ``-m``), and ``checkout`` when the job runs in the git
+    checkout holding the file. A job of another session (a non-empty
+    session id that differs) is not counted. Never raises."""
+    try:
+        target = os.path.realpath(str(path))
+    except Exception:
+        return None
+    found: Optional[dict] = None
+    try:
+        jobs = get_registry().list_jobs(include_finished=False)
+    except Exception:
+        return None
+    for job in jobs:
+        sid = str(getattr(job, "session_id", "") or "")
+        if session_id and sid and sid != session_id:
+            continue
+        cwd = str(getattr(job, "cwd", "") or "")
+        for named in _named_paths(job.command, cwd):
+            if target == named or target.startswith(named.rstrip("/") + "/"):
+                return {"job_id": job.job_id, "command": job.command,
+                        "kind": "named", "elapsed_s": job.elapsed_s()}
+        top = _checkout_top(cwd) if cwd else ""
+        if found is None and top and target.startswith(top + "/"):
+            found = {"job_id": job.job_id, "command": job.command,
+                     "kind": "checkout", "elapsed_s": job.elapsed_s()}
+    return found
+
+
+def note_checkout_write(use: dict, path) -> None:
+    """Queue one note per job: a write landed in the checkout it runs in."""
+    key = str(use.get("job_id") or "")
+    with _IN_USE_LOCK:
+        if not key or key in _IN_USE_NOTED:
+            return
+        _IN_USE_NOTED.add(key)
+        _IN_USE_NOTES.append(
+            f"[running job] `{path}` is in the checkout background job "
+            f"{key} runs in (`{str(use.get('command') or '')[:80]}`, "
+            f"{int(use.get('elapsed_s') or 0)} s). The job reads code from "
+            "this checkout as it imports it, so its result may mix the old "
+            "and the new code: run it again after the change, or work in a "
+            "worktree while it runs.")
+
+
+def take_in_use_notes() -> list[str]:
+    with _IN_USE_LOCK:
+        out = _IN_USE_NOTES[:]
+        _IN_USE_NOTES.clear()
+        return out
+
+
 def live_jobs() -> list[dict]:
     """Every background job of this user that is still running, anywhere.
 

@@ -3627,6 +3627,27 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # about the installation, not the project.
     r"^\s*delfin-agent\s+ops\s+status(?:\s+(?:--json|-h|--help|"
     r"--repo(?:=|\s+)[A-Za-z0-9_./~@:+=-]+))*\s*$",
+    # The paired comparison (paired_compare.py): `provenance` prints a
+    # stamp (code hash, git, platform, behaviour environment, a runner's
+    # start time) and `compare-arms` reads two result files and their
+    # stamps. The one write is `provenance --save NAME`: a new file
+    # ~/.delfin/provenance/NAME.json, NAME one plain word, created with
+    # O_EXCL so no stamp is ever replaced -- the program's own record,
+    # not a path the caller chooses. Rejected: a shell redirect of the
+    # printed stamp (refused as a write without pre-image, and a stamp
+    # the session writes itself is a stamp it can edit). In every
+    # workspace: an experiment is run in any project, and the comparison
+    # is what keeps it honest there.
+    *(_cli_read_only("delfin-agent", w, flags=f, valued=v, positional=p)
+      for w, f, v, p in (
+          ("provenance", (),
+           ("--code", "--command", "--pid", "--prefix", "--cwd", "--save"),
+           False),
+          ("compare-arms", ("--json", "--lower-is-better",
+                            "--allow-shared-switches"),
+           ("--stamp-a", "--stamp-b", "--axis", "--default", "--key",
+            "--ok", "--defect", "--quality", "--min-n", "--probe",
+            "--sample", "--rerun-a", "--prereg"), True))),
 )
 
 # DELFIN-specific bash auto-allow patterns — merged into the auto-allow
@@ -13444,6 +13465,44 @@ def _report_file_changed(path) -> None:
         pass
 
 
+def _note_edit_signals(perms, path, old_text, new_text) -> None:
+    """Hand a journalled text change to edit_signals, keyed by the
+    session. Never raises: the audit must not touch the write path."""
+    try:
+        from . import edit_signals as _es
+        _es.note_change(str(getattr(perms, "task_session_id", "") or ""),
+                        str(path), old_text, new_text,
+                        created=old_text is None)
+    except Exception:
+        pass
+
+
+def _note_edit_signals_raw(perms, path, pre_bytes, *, deleted: bool) -> None:
+    """The byte-level sibling: pre-image as bytes, post-image read back
+    (absent for a deletion). Files above 400 kB are not read."""
+    try:
+        from . import edit_signals as _es
+        if isinstance(pre_bytes, (bytes, bytearray)) and b"\0" in pre_bytes[:8192]:
+            return                      # a binary file: no lines to read
+        old = (pre_bytes.decode("utf-8", "replace")
+               if isinstance(pre_bytes, (bytes, bytearray))
+               and len(pre_bytes) <= 400_000 else None)
+        new = None
+        p = Path(path)
+        if not deleted and p.is_file() and p.stat().st_size <= 400_000:
+            raw = p.read_bytes()
+            if b"\0" in raw[:8192]:
+                return
+            new = raw.decode("utf-8", "replace")
+        if old is None and new is None:
+            return
+        _es.note_change(str(getattr(perms, "task_session_id", "") or ""),
+                        str(path), old, new, created=pre_bytes is None,
+                        deleted=deleted)
+    except Exception:
+        pass
+
+
 def _record_gate_refusal(code: str, tool: str, detail: str) -> None:
     """Report a refusal the containment panel does not record.
 
@@ -15537,6 +15596,7 @@ class _DocToolExecutor:
         journal (change_journal). Never raises — undo bookkeeping must not
         break the write path it observes."""
         _report_file_changed(resolved)
+        _note_edit_signals(perms, resolved, old_text, new_text)
         try:
             from . import change_journal as _cj
             rec = _cj.record_change(
@@ -15567,6 +15627,7 @@ class _DocToolExecutor:
         Never raises, like its text sibling.
         """
         _report_file_changed(resolved)
+        _note_edit_signals_raw(perms, resolved, pre_bytes, deleted=deleted)
         try:
             from . import change_journal as _cj
             if deleted:
@@ -19734,6 +19795,31 @@ class _DocToolExecutor:
                 "not reach the file through another tool or a shell command "
                 "either — ask the user what they want changed instead."
             )
+        # A file a running job of this session uses. The command names
+        # it: refused, the job's result would stand for code that is no
+        # longer on disk (measured: inspect.getsource slices the edited
+        # file with the loaded line numbers). Only in its checkout: a
+        # note, since most edits there are the next step of the work.
+        try:
+            from . import bash_jobs as _bj_use
+            _use = _bj_use.job_using(
+                resolved, session_id=str(
+                    getattr(perms, "task_session_id", "") or ""))
+        except Exception:
+            _use = None
+        if _use and _use.get("kind") == "named":
+            _record_gate_refusal(
+                "running_job", name, self._display_path(resolved, perms))
+            return (
+                f"'{path_arg}' is used by background job {_use['job_id']} "
+                f"(`{str(_use.get('command') or '')[:80]}`), still running "
+                f"after {int(_use.get('elapsed_s') or 0)} s. Editing it now "
+                "makes the job's result stand for code that no longer "
+                "exists. Wait for the job (bash_status), stop it (bash_kill), "
+                "or make the change in a copy or a worktree.")
+        if _use and _use.get("kind") == "checkout":
+            _bj_use.note_checkout_write(
+                _use, self._display_path(resolved, perms))
         _change = _write_change_key(str(resolved), name, args)
         if perms.action_denied_earlier("write_change", _change):
             _record_security_event(
@@ -20551,6 +20637,19 @@ class _DocToolExecutor:
             if walk:
                 _record_security_event("tree_walk", "bash", cmd[:80])
                 return f"command rejected: {walk}"
+            # The shared checkout stays on main: a branch move there moves
+            # every session and the dashboard on it. In the deny tier, so
+            # it holds in every mode and before the auto-allow list (which
+            # allows a plain git switch). See shared_checkout.py.
+            try:
+                from .shared_checkout import refusal as _shared_refusal
+                _shared = _shared_refusal(_prose_blanked(cmd), _wd)
+            except Exception:
+                _shared = ""
+            if _shared:
+                _record_security_event("shared_checkout_switch", "bash",
+                                       cmd[:80])
+                return _shared
             identity = _commit_text_identity_hit(cmd)
             if identity is not None:
                 _record_security_event("identity_in_commit", "bash", cmd[:80])
@@ -20849,7 +20948,10 @@ class _DocToolExecutor:
                 "The user asked for the pull-request route in this "
                 "repository, and that holds for the rest of the session "
                 "whatever the git role allows: commit on a branch of your "
-                "own (`git switch -c <user>/<topic>`), push that branch "
+                "own (`git switch -c <user>/<topic>`; in DELFIN's own "
+                "checkout, which stays on main: "
+                "enter_worktree(base_ref=\"origin/main\") and "
+                "`git push -u origin HEAD:<user>/<topic>`), push that branch "
                 "(`git push -u origin <branch>`), open the pull request "
                 "and give the user its link. Only a later message of "
                 "theirs asking for the direct push lifts this.")
@@ -20908,7 +21010,9 @@ class _DocToolExecutor:
                         f"blocked: {_repo} is contributor, and `{_onto[0]}` "
                         "is the default branch. Changes reach it through a "
                         "pull request, not a push: commit on a branch of "
-                        "your own (`git switch -c <user>/<topic>`), push "
+                        "your own (`git switch -c <user>/<topic>`; in "
+                        "DELFIN's own checkout, which stays on main: "
+                        "enter_worktree(base_ref=\"origin/main\")), push "
                         "that branch (`git push -u origin <branch>`), and "
                         "give the user the link to open the pull request. "
                         "Only the user changes the role (`/git role "

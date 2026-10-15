@@ -4151,6 +4151,70 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_provenance(args: argparse.Namespace) -> int:
+    """Print the provenance stamp of one arm as JSON (paired_compare).
+    Reads code, git and an environment; writes nothing."""
+    from . import paired_compare as _pc
+    pid = None
+    if args.pid:
+        try:
+            pid = int(args.pid)
+        except ValueError:
+            print(f"--pid must be a number, got {args.pid!r}", file=sys.stderr)
+            return 2
+    stamp = _pc.provenance(code=list(args.code or ()), command=args.command,
+                           pid=pid, prefixes=list(args.prefix or ()),
+                           cwd=args.cwd)
+    if args.save:
+        try:
+            path = _pc.save_stamp(args.save, stamp)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"saved stamp {args.save!r}: {path}", file=sys.stderr)
+    print(json.dumps(stamp, indent=1, sort_keys=True))
+    return 0
+
+
+def cmd_compare_arms(args: argparse.Namespace) -> int:
+    """Judge two arm result files as a paired comparison
+    (paired_compare.compare). Exit 0 when a comparison stands and a
+    person should look, 3 when it was refused or blocked, 2 on bad
+    input. Reads only."""
+    from . import paired_compare as _pc
+
+    _stamp = _pc.load_stamp
+
+    defaults = {}
+    for item in args.default or ():
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            print(f"--default takes VAR=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        defaults[name] = value
+    try:
+        a = _pc.load_records(args.arm_a)
+        b = _pc.load_records(args.arm_b)
+        stamp_a, stamp_b = _stamp(args.stamp_a), _stamp(args.stamp_b)
+        rerun = _pc.load_records(args.rerun_a) if args.rerun_a else None
+    except (OSError, ValueError) as exc:
+        print(f"cannot read an input: {exc}", file=sys.stderr)
+        return 2
+    verdict = _pc.compare(
+        a, b, stamp_a=stamp_a, stamp_b=stamp_b, axis=list(args.axis or ()),
+        key=args.key, ok=args.ok, defects=list(args.defect or ()),
+        quality=args.quality, lower_is_better=args.lower_is_better,
+        min_n=args.min_n, probe=args.probe, sample=args.sample,
+        defaults=defaults,
+        allow_shared_switches=True if args.allow_shared_switches else None,
+        rerun_a=rerun, prereg=args.prereg)
+    if args.json:
+        print(json.dumps(verdict, indent=1, default=str))
+    else:
+        print(_pc.format_report(verdict))
+    return _pc.exit_code(verdict)
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -5041,6 +5105,79 @@ def build_parser() -> argparse.ArgumentParser:
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
 
+    # provenance / compare-arms -- a paired comparison of two runs that
+    # refuses skewed pairs and null tests (paired_compare.py). Read only.
+    prov = sub.add_parser(
+        "provenance",
+        help="Print the stamp of one experiment arm: code hash, git head "
+             "and diff, platform, behaviour environment (reads only)")
+    prov.add_argument("--code", action="append", default=[],
+                      help="A file or directory of the instrument (repeat)")
+    prov.add_argument("--command", default="",
+                      help="The arm's command line; its VAR=value, env and "
+                           "export assignments are applied to this shell's "
+                           "environment")
+    prov.add_argument("--pid", default="",
+                      help="A runner already running: read its environment, "
+                           "start time and directory")
+    prov.add_argument("--prefix", action="append", default=[],
+                      help="A further behaviour-variable prefix (repeat); "
+                           "the checkout's own NAME_ is always taken")
+    prov.add_argument("--cwd", default="",
+                      help="Directory whose git checkout is stamped "
+                           "(default: here, or the runner's)")
+    prov.add_argument("--save", default="",
+                      help="Also keep the stamp, once, under this name in "
+                           "~/.delfin/provenance (compare-arms takes the name)")
+    prov.set_defaults(func=cmd_provenance)
+
+    cmp_p = sub.add_parser(
+        "compare-arms",
+        help="Judge two arm result files as one paired comparison: same "
+             "population, one instrument, declared axis, never-worse cases "
+             "(reads only; exit 3 when refused or blocked)")
+    cmp_p.add_argument("arm_a", help="Arm A results (JSONL or JSON list)")
+    cmp_p.add_argument("arm_b", help="Arm B results (JSONL or JSON list)")
+    cmp_p.add_argument("--stamp-a", default="",
+                       help="Arm A stamp: a saved name or a JSON file")
+    cmp_p.add_argument("--stamp-b", default="",
+                       help="Arm B stamp: a saved name or a JSON file")
+    cmp_p.add_argument("--axis", action="append", default=[],
+                       help="What differs on purpose: an env variable, "
+                            "'code' or 'platform' (repeat)")
+    cmp_p.add_argument("--default", action="append", default=[],
+                       help="VAR=VALUE: the code's default of an axis "
+                            "variable, so an unset arm resolves")
+    cmp_p.add_argument("--key", default="", help="Item id field")
+    cmp_p.add_argument("--ok", default="", help="Per-item success field")
+    cmp_p.add_argument("--defect", action="append", default=[],
+                       help="Per-item defect count/flag field (repeat)")
+    cmp_p.add_argument("--quality", default="",
+                       help="Per-item quality value (higher is better)")
+    cmp_p.add_argument("--lower-is-better", action="store_true",
+                       help="With --quality: lower values are better")
+    cmp_p.add_argument("--min-n", type=int, default=100,
+                       help="Paired items below which nothing is concluded "
+                            "automatically (default 100)")
+    cmp_p.add_argument("--probe", type=int, default=24,
+                       help="Leading items whose identity flags a null test "
+                            "(default 24)")
+    cmp_p.add_argument("--sample", type=int, default=100,
+                       help="Size of the stratified sample to look at "
+                            "(default 100)")
+    cmp_p.add_argument("--rerun-a", default="",
+                       help="A second run of arm A: differing items are "
+                            "nondeterminism and block")
+    cmp_p.add_argument("--prereg", default="",
+                       help="The pre-registration file; reported whether it "
+                            "predates the first stamp")
+    cmp_p.add_argument("--allow-shared-switches", action="store_true",
+                       help="Accept behaviour variables set identically in "
+                            "both arms")
+    cmp_p.add_argument("--json", action="store_true",
+                       help="Print the verdict as JSON")
+    cmp_p.set_defaults(func=cmd_compare_arms)
+
     # watch — every step every session takes, as it takes it, and above
     # all the ones the gate refused.
     watch_p = sub.add_parser(
@@ -5212,6 +5349,10 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")
+    tui.add_argument("--setup", action="store_true",
+                     help="Set the window up (a pinned Bun and its packages, checked) and "
+                          "exit; done by itself on the first start unless "
+                          "DELFIN_TUI_AUTO_INSTALL=0 or agent.tui_auto_install=false")
     # Scripted sessions, no model: for working on the window and its tests.
     tui.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
     tui.set_defaults(func=_cmd_tui)
