@@ -1,8 +1,9 @@
 """The verification signals use the measure-edit detection when it exists.
 
-Interfaces with the experiment-discipline bundle, which is not on this
-base; both are used through adapters that degrade to this bundle's own
-checks:
+Interfaces with the experiment-discipline modules (edit_signals,
+paired_compare; on main since #269), both used through adapters that
+degrade to this bundle's own checks when the module cannot be imported.
+Both paths are tested: the real modules, and an import that fails.
 
 * edit_signals.measure_edits(session, after_red_only=True): a test file it
   names makes every later pass gamed (turn_verification.account), on top
@@ -68,11 +69,35 @@ def _fake_edit_signals(monkeypatch, paths):
     return seen
 
 
-def test_without_the_detection_the_own_rule_decides():
-    sys.modules.pop("delfin.agent.edit_signals", None)
+def _without(monkeypatch, name):
+    """The import of delfin.agent.<name> fails, as on a tree without it."""
+    import delfin.agent as pkg
+    monkeypatch.setitem(sys.modules, f"delfin.agent.{name}", None)
+    monkeypatch.delattr(pkg, name, raising=False)
+
+
+def test_without_the_detection_the_own_rule_decides(monkeypatch):
+    _without(monkeypatch, "edit_signals")
     assert tv.external_measure_paths("s1") is None
     acc = _account(*_STEPS, session="s1")
     assert acc.unbacked_claims("All tests pass (3 passed).") == []
+
+
+def test_the_real_detection_names_a_widened_assertion(tmp_path):
+    from delfin.agent import edit_signals as es
+    session = "verify-iface-real"
+    es.reset_turn(session)
+    path = str(tmp_path / "tests" / "test_t.py")
+    es.note_command(session, "pytest -q", "1 failed, 2 passed")
+    found = es.note_change(session, path,
+                           "def test_a():\n    assert f() == 2\n",
+                           "def test_a():\n    assert f() in (2, 3)\n")
+    assert es.measure_edits(session, after_red_only=True), found
+    assert tv.external_measure_paths(session) == {"test_t.py"}
+    acc = _account(*_STEPS, session=session)
+    assert [v.reason for v in acc.unbacked_claims(
+        "All tests pass (3 passed).")] == ["gamed"]
+    es.reset_turn(session)
 
 
 def test_a_file_the_detection_names_makes_the_later_pass_gamed(monkeypatch):
@@ -112,6 +137,24 @@ def test_counter_test_and_the_account_agree_on_an_edited_red_test():
     verdict = ct.assess([{"path": "pkg/m.py", "ts": 2.0},
                          {"path": "tests/test_t.py", "ts": 2.0}], runs)
     assert verdict and verdict.startswith("no control run")
+
+
+def test_the_run_header_has_the_generic_stamp_fields_without_the_module(
+        monkeypatch):
+    _without(monkeypatch, "paired_compare")
+    head = bm.run_provenance(model="m")
+    assert head.get("stamp_schema") is None
+    for key in ("taken_at", "host", "platform", "machine", "python", "code",
+                "instrument", "settings", "process_start"):
+        assert key in head, key
+    assert {"head", "dirty_hash"} <= set(head["git"])
+
+
+def test_the_run_header_is_the_real_paired_compare_stamp():
+    from delfin.agent import paired_compare as pc
+    head = bm.run_provenance(model="m")
+    assert head["stamp_schema"] == pc.SCHEMA
+    assert head["code"] and head["instrument"]["sha256"]
 
 
 def test_the_run_header_has_the_generic_stamp_fields():

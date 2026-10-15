@@ -198,3 +198,20 @@ def test_a_cut_argument_takes_the_path_from_the_result(tmp_path):
 ])
 def test_claim_forms(text, kinds):
     assert [c.kind for c in vcl.find_claims(text)] == kinds
+
+
+def test_a_gamed_pass_named_by_the_measure_edit_caveat_is_not_said_twice(
+        agent_tree):
+    acc = _account(agent_tree,
+                   ("bash", {"command": "pytest -q"}, _ok("pytest -q", 1, "1 failed")),
+                   ("edit_file", {"path": "tests/test_t.py", "old_string": "== 2",
+                                  "new_string": "== 3"}, "Edited tests/test_t.py"),
+                   ("bash", {"command": "pytest -q"}, _ok("pytest -q", 0, "4 passed")))
+    eng, _ = _engine(agent_tree, "x", acc)
+    eng._last_turn_verification = acc
+    answer = "All tests pass now (4 passed)."
+    theirs = (answer + "\n\n[verify] The check was changed in a turn that set "
+              "out to make it pass — tests/test_t.py: expected value changed.")
+    assert eng._append_test_claim_caveat(theirs, None, source=answer) == theirs
+    assert "an edit to the failing test" in eng._append_test_claim_caveat(
+        answer, None, source=answer)

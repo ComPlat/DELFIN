@@ -5210,7 +5210,8 @@ class AgentEngine:
                 verdicts = [v for v in verdicts if v.claim.kind == "test"]
             # The measure-edit caveat (edit_signals.turn_caveat) already
             # names a check changed to pass: the same fact is not said twice.
-            if "the check was changed in a turn that set out to make it" in text:
+            if ("the check was changed in a turn that set out to make it"
+                    in text.lower()):
                 verdicts = [v for v in verdicts if v.reason != "gamed"]
             caveat = _vcl.caveat(verdicts)
         except Exception:
