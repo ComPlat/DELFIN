@@ -188,8 +188,17 @@ def run_entry(
     workspace = Path(str(entry.workspace)).expanduser()
     factory = engine_factory or _default_engine_factory
     engine = factory(str(workspace), settings)
-    # Nobody watches a scheduled run: the ceilings the settings leave at
-    # 0 get their unattended defaults (run_limits).
+    # An entry's own budget is the run's USD ceiling (one scheduled run is
+    # one turn, so it is the per-turn cap below as well); set first, so the
+    # unattended default does not replace it.
+    try:
+        _entry_usd = float(getattr(entry, "budget_usd", 0.0) or 0.0)
+        if _entry_usd > 0:
+            engine.run_budget_usd = _entry_usd
+    except Exception:
+        pass
+    # Nobody watches a scheduled run: the ceilings the entry and the
+    # settings leave at 0 get their unattended defaults (run_limits).
     try:
         from .run_limits import apply_unattended
         apply_unattended(engine)
