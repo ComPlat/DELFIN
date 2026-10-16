@@ -782,3 +782,45 @@ def test_commit_detection_reads_a_bounded_command(home):
     t0 = time.monotonic()
     assert "commit" not in _kinds(ops_interface.poll(state))
     assert time.monotonic() - t0 < 5
+
+
+# --------------------------------------------------------------------------
+# printed and stored values are validated originals, never scrubber output
+# --------------------------------------------------------------------------
+
+_TOKEN = "ghp_" + "Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8"
+
+
+def test_a_field_is_its_text_or_a_fixed_sentence(home):
+    """The scrubber's verdict decides; its output is never the value (it
+    is computed from the credential values the scrubber holds)."""
+    shown = ops_interface._bounded(f"push with {_TOKEN} failed")
+    assert shown == ops_interface.NOT_SHOWN
+    assert ops_interface._bounded("plain \x1b[2Jtext") == "plain text"
+    assert ops_interface._bounded("x" * 50, 10) == "x" * 10
+
+
+def test_send_prints_the_receipt_fields_only(home, capsys):
+    h, ws, _ = home
+    _open("probe-p", "6" * 32, ws)
+    from delfin.agent import cli
+    args = cli.build_parser().parse_args(
+        ["ops", "send", "probe-p", "--text", f"use {_TOKEN} now"])
+    assert args.func(args) == 0
+    row = json.loads(capsys.readouterr().out)
+    assert set(row) == {"id", "to", "sent_at"}
+    assert row["to"] == "probe-p"
+
+
+def test_a_pause_reason_is_validated_before_it_is_stored(home, capsys):
+    from delfin.agent import cli, session_pause
+    parser = cli.build_parser()
+    args = parser.parse_args(["ops", "pause", "probe-q", "--reason",
+                              f"token {_TOKEN}"])
+    assert args.func(args) == 2
+    assert not session_pause.is_paused("probe-q")
+    rec = session_pause.pause("probe-q", "stalled\x1b]0;x\x07 " + "y" * 500)
+    stored = json.loads(session_pause._path("probe-q").read_text())
+    assert stored["reason"] == rec["reason"]
+    assert "\x1b" not in stored["reason"] and "\x07" not in stored["reason"]
+    assert len(stored["reason"]) <= session_pause.REASON_MAX
