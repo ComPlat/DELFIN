@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import stat
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -119,11 +118,11 @@ def _session(ws, tools, *, mode="bypassPermissions", answer=None,
     """One session: ``requests`` requests, each assembling the surface.
     Returns ({tool name: description} per request, questions asked)."""
     asked: list = []
-    callback = None
-    if answer is not None:
-        def callback(name, args, preview):
-            asked.append((name, args, preview))
-            return answer
+
+    def _confirm(name, args, preview):
+        asked.append((name, args, preview))
+        return answer
+    callback = _confirm if answer is not None else None
     caps = mc.ModelCapabilities(model="m", provider="ollama",
                                 context_window=200_000, supports_tools=True)
     registry = _Registry(tools, sources)
