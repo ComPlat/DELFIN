@@ -110,6 +110,16 @@ dependencies = [
     "pexpect>=4.8,<5",
     "umap-learn>=0.5,<0.7",
     "scikit-learn>=1.3,<2",
+    # Reads the outputs of programs other than ORCA (Gaussian, xtb, Psi4,
+    # GAMESS, Molpro, ...) for the agent's energy profiles; ORCA stays on
+    # DELFIN's own parser, which cclib 1.8.1 cannot replace (it stops with
+    # an IndexError on ORCA 6 outputs). Core rather than [analysis] so a
+    # profile from a Gaussian run works where the agent runs. Capped below
+    # 1.9 because what energy_profile corrects was measured on 1.8.1 against
+    # real outputs: xtb's free energy arrives in eV, Psi4's energies not at
+    # all. Its own requirements (numpy, scipy, packaging, periodictable)
+    # move nothing DELFIN pins.
+    "cclib>=1.8.1,<1.9",
 ]
 
 [project.optional-dependencies]

@@ -4,7 +4,7 @@ The block tells the model how close it is to the engine's auto-compaction
 trigger (95% of the token window, with a gentle trim from 70%) so it can
 proactively delegate to subagents before compaction fires. Compaction is now
 purely token-driven — the legacy 12-message trigger was removed because it
-fired at ~15% window full and threw away live context (Jerome 2026-06-13).
+fired at ~15% window full and threw away live context (field report 2026-06-13).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def test_status_block_only_injected_for_solo_role(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Open-tasks reminder (Jerome 2026-06-13: agent forgets to check off tasks)
+# Open-tasks reminder (field report 2026-06-13: agent forgets to check off tasks)
 # ---------------------------------------------------------------------------
 
 def _perms_for(tmp_path, sid):

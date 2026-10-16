@@ -16,7 +16,11 @@ file content.
 
 ``make_plot`` (``delfin.agent.chat_plots.card_result``) writes a figure and
 returns the same marker with ``{"card": "plot", "path", "title", "text"}``;
-the dashboard shows that file with the chat's artifact preview.
+the dashboard shows that file with the chat's artifact preview. A card may
+be followed by a newline and further lines for the model (an energy
+profile's source notes): the dashboard parses the JSON object alone, so the
+object stays within the 2000-character preview of a result however long
+those lines are, and :func:`card_model_text` appends them to ``text``.
 
 Rejected: an ``<iframe sandbox srcdoc>`` card built here. The sandboxed
 document cannot see the dashboard's bundled 3Dmol and fetched an unpinned
@@ -100,12 +104,10 @@ def card_payload(result, card: str = "molecule") -> "dict | None":
     not start with the marker, is of another kind, or whose JSON is not
     exactly that kind's shape (wrong types, missing keys).
     """
-    if not isinstance(result, str) or not result.startswith(CARD_MARKER):
+    split = _split_card(result)
+    if split is None:
         return None
-    try:
-        payload = json.loads(result[len(CARD_MARKER):])
-    except (ValueError, TypeError):
-        return None
+    payload = split[0]
     if not isinstance(payload, dict) or payload.get("card") != card:
         return None
     for key in ("path", "title", "text"):
@@ -118,7 +120,31 @@ def card_payload(result, card: str = "molecule") -> "dict | None":
     return payload
 
 
+def _split_card(result) -> "tuple[object, str] | None":
+    """``(decoded JSON, lines after it)`` of a card result, or None.
+
+    The JSON object follows the marker and ends the result or a line; what
+    follows that newline is plain text for the model. Anything else after
+    the object makes the result no card.
+    """
+    if not isinstance(result, str) or not result.startswith(CARD_MARKER):
+        return None
+    try:
+        payload, end = json.JSONDecoder().raw_decode(
+            result, len(CARD_MARKER))
+    except (ValueError, TypeError):
+        return None
+    tail = result[end:]
+    if tail and not tail.startswith("\n"):
+        return None
+    return payload, tail[1:]
+
+
 def card_model_text(result, card: str = "molecule") -> "str | None":
-    """The plain summary the model receives for a card result, or None."""
+    """The plain summary the model receives for a card result, or None:
+    ``text``, then the lines that follow the JSON object."""
     payload = card_payload(result, card)
-    return payload["text"] if payload is not None else None
+    if payload is None:
+        return None
+    tail = _split_card(result)[1]
+    return payload["text"] + ("\n" + tail if tail else "")

@@ -7460,7 +7460,7 @@ def _is_delfin_workspace(workspace: Path | str | None) -> bool:
 
     Detection rule: either ``delfin/agent/__init__.py`` or
     ``delfin/__init__.py`` is present at the workspace root. Errs on
-    the side of "not DELFIN" — false negatives just mean Jerome's
+    the side of "not DELFIN" — false negatives just mean a user's
     private project gets a leaner tool surface, which is the goal.
     """
     if workspace is None:
@@ -11268,8 +11268,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "make_plot",
             "description": (
                 "Plot into the workspace and show it in the chat. spec: "
-                "{kind: line|scatter|bar|histogram|box, x, y, "
-                "title, ...}."
+                "{kind: line|scatter|bar|histogram|box|energy_profile, x, y, "
+                "title, ...}. energy_profile: reaction energy diagram, "
+                "never script one: states [{name, value|files}] (files list "
+                "= fragments; null = uncomputed TS); series [{label, "
+                "states}]."
             ),
             "parameters": {
                 "type": "object",
@@ -13660,8 +13663,11 @@ _LEAVING_BASH = re.compile(r"""(?x)
      | (?:conda|mamba|micromamba)\s+(?:install|create|update)\b)
 """)
 
-# Gated tools that run inside the workspace and send nothing out; under
-# Bypass they reach the second opinion with every other gated tool.
+# Gated tools that write only inside the workspace and send nothing out;
+# under Bypass they reach the second opinion with every other gated tool.
+# make_plot may READ outside the workspace (energy_profile outputs in the
+# calculation folders), only through _check_read_access: the read roots,
+# the secret-deny list, and a question or refusal for any other path.
 _WORKSPACE_LOCAL_TOOLS = frozenset({"run_tests", "make_plot"})
 
 
@@ -26417,10 +26423,12 @@ class _DocToolExecutor:
         Output: the ``DELFIN_CARD:`` plot result (``chat_plots.card_result``)
         or a JSON error. Refused before anything is written: no permissions
         or no workspace, plan mode, an output path the write gate
-        (``_gate_write_path``) refuses. A ``data: {file: ...}`` source is
-        read only after ``_check_read_access`` admits it (secret-deny list,
-        read roots). The model receives only the result's ``text``; the
-        loop splits it off by tool name.
+        (``_gate_write_path``) refuses. A ``data: {file: ...}`` source and
+        every energy_profile output (``files``, which may lie outside the
+        workspace) are read only after ``_check_read_access`` admits them
+        (secret-deny list, read roots), decoded as UTF-8 with replacement.
+        The model receives only the result's ``text``; the loop splits it
+        off by tool name.
         """
         spec = arguments.get("spec")
         if not isinstance(spec, dict):
@@ -26452,12 +26460,15 @@ class _DocToolExecutor:
         if refuse is not None:
             return json.dumps({"error": refuse})
 
-        def _reader(p: Path) -> str:
+        def _reader(p: Path, max_bytes: int) -> str:
+            # The gate before anything looks at the file: a refused path
+            # is neither found, missed nor measured. read_text decodes
+            # with replacement (outputs echo their input, comments
+            # included, in whatever encoding it was written).
             err = self._check_read_access(permissions, p, "make_plot")
             if err is not None:
-                raise _cp.SpecError(f"data file {p} refused: {err}")
-            with p.open(encoding="utf-8") as fh:
-                return fh.read()
+                raise _cp.SpecError(f"reading {p} refused: {err}")
+            return _cp.read_text(p, max_bytes)
 
         try:
             return _cp.make_plot(spec, out_dir=str(ws), reader=_reader)
@@ -28287,7 +28298,7 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 
 
 # A handful of API/stream failures are TRANSIENT — a shared-proxy hiccup, not a
-# bad request. On Jerome's long KIT runs (vLLM behind an Open-WebUI proxy) a
+# bad request. On long KIT runs in a field report (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
 _STREAM_RETRY_MAX = 3
 

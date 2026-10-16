@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+import _package_ast
 from delfin.agent import contained_run
 
 _PKG = Path(contained_run.__file__).resolve().parents[1]
@@ -78,7 +79,7 @@ def test_no_caller_in_the_package_passes_shell_to_run():
     offenders = []
     for path in _PKG.rglob("*.py"):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _package_ast.parse(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
         for node in ast.walk(tree):

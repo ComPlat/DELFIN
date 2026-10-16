@@ -194,6 +194,9 @@ class Plan:
     after: Optional[Callable[[str], None]] = None
     diff: str = ""
     notes: list = field(default_factory=list)
+    #: The review-queue record this plan decides; re-checked as pending
+    #: before anything is written (it may have been withdrawn meanwhile).
+    queue_id: str = ""
 
     def preview(self) -> str:
         lines = list(self.notes)
@@ -337,11 +340,20 @@ def _recheck(e: kn.Entry) -> None:
 
 
 def _decide(rec: dict, status: str, *, reason: str = "") -> Callable:
+    """The write of an admin decision, made on the record as it is on
+    disk at that moment: a record withdrawn since the plan was built
+    raises ValueError instead of being overwritten with the decision.
+
+    No ``decided_by``: it held the admin's login ($USER via getpass),
+    nothing read it, and the account that rewrote the record is the
+    file's owner already."""
+    qid = rec["id"]
+
     def after(branch: str) -> None:
-        import getpass
-        rec.update(status=status, reason=reason, branch=branch,
-                   decided_by=getpass.getuser())
-        ks.write_queue_record(rec)
+        fresh = _record(qid)
+        fresh.pop("decided_by", None)
+        fresh.update(status=status, reason=reason, branch=branch)
+        ks.write_queue_record(fresh)
     return after
 
 
@@ -359,6 +371,7 @@ def plan_accept(qid: str) -> Plan:
                 + "; ".join(p.render() for p in e.provenance),
                 f"accept-{e.slug}", notes=notes)
     plan.after = _decide(rec, "accepted")
+    plan.queue_id = qid
     return _finish(plan)
 
 
@@ -369,6 +382,7 @@ def plan_reject(qid: str, reason: str) -> Plan:
     plan = Plan(f"Reject {qid} ({rec.get('author')}): {reason}", {},
                 "", "reject", public=False)
     plan.after = _decide(rec, "rejected", reason=reason.strip())
+    plan.queue_id = qid
     return plan
 
 
@@ -381,6 +395,7 @@ def plan_queue_merge(qid: str, into: str) -> Plan:
                 f"Knowledge: extend {into} with queue {qid}",
                 f"extend-{into}")
     plan.after = _decide(rec, "merged", reason=f"merged into {into}")
+    plan.queue_id = qid
     return _finish(plan)
 
 
@@ -396,6 +411,7 @@ def plan_queue_edit(qid: str, **fields) -> Plan:
                 f"Knowledge: add '{e.title}' (edited in review)\n\nQueue "
                 f"{qid}", f"accept-{e.slug}")
     plan.after = _decide(rec, "edited", reason="accepted with edits")
+    plan.queue_id = qid
     return _finish(plan)
 
 
@@ -406,6 +422,8 @@ def plan_queue_edit(qid: str, **fields) -> Plan:
 def start(plan: Plan, *, clock=None) -> "ks.Dialog":
     """Open the admin's confirmation for ``plan``."""
     def perform() -> tuple:
+        if plan.queue_id:
+            _record(plan.queue_id)
         if not plan.changes and plan.branch_hint != "index":
             if plan.after:
                 plan.after("")

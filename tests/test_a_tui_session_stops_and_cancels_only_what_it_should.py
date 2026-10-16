@@ -229,7 +229,10 @@ def test_prompts_sent_together_are_shown_and_run_in_the_order_sent(tmp_path):
 
 
 def test_a_steer_that_comes_after_the_answer_goes_out_next(tmp_path):
-    with WorkerClient(tmp_path) as w:
+    # Every "steer" turn here only has to see its window elapse: a steer
+    # that leaked is already in the engine's queue when the turn starts and
+    # is read at once. 1 s instead of the fake's 5 s: 10 windows, -40 s.
+    with WorkerClient(tmp_path, steer_window=1.0) as w:
         for n in range(5):
             start = len(w.events)
             w.request("session.prompt", {"text": f"hello {n}"})

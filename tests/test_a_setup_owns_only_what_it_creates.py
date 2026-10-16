@@ -59,6 +59,15 @@ def _toolchain_not_run(proc) -> bool:
     return proc.returncode == 3 and "toolchain unavailable" in proc.stderr
 
 
+#: name -> the fixture-copy workspace a passing
+#: test_a_setup_adds_files_and_changes_none left its output in. The
+#: refuse-twice test runs its second run there instead of building a
+#: first one of its own: one interpreter start per script saved (four
+#: -> three), and the second run meets its output in the workspace the
+#: benchmark runner gives it (the fixture copy), not in an empty one.
+_BUILT: dict[str, Path] = {}
+
+
 def _setups():
     seen = {}
     for t in load_tasks():
@@ -98,6 +107,7 @@ def test_a_setup_adds_files_and_changes_none(name, task_class, tmp_path):
     changed = sorted(str(k) for k, v in before.items() if after.get(k) != v)
     assert not changed, f"{name} rewrote fixture files it does not own: {changed}"
     assert set(after) - set(before), f"{name} created nothing"
+    _BUILT[name] = ws
 
 
 @pytest.mark.parametrize("name,task_class", _setups())
@@ -107,14 +117,20 @@ def test_a_setup_refuses_to_run_twice(name, task_class, tmp_path):
     rel = _WS_FOR_CLASS.get(task_class)
     if rel is None:
         pytest.skip(f"no fixture workspace mapped for {task_class}")
-    ws = tmp_path / rel
-    ws.mkdir(parents=True)
-    first = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
-                           capture_output=True, text=True, timeout=300, env=_env())
-    if _toolchain_not_run(first):
-        assert not any(ws.iterdir()), f"{name} built something before refusing"
-        return
-    assert first.returncode == 0, first.stderr[:400]
+    ws = _BUILT.pop(name, None)
+    if ws is None or not ws.is_dir():
+        # The adds-files test did not pass for this script in this run
+        # (deselected, skipped, failed, or its directory removed): build
+        # the first run here, into an empty workspace.
+        ws = tmp_path / rel
+        ws.mkdir(parents=True)
+        first = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
+                               capture_output=True, text=True, timeout=300,
+                               env=_env())
+        if _toolchain_not_run(first):
+            assert not any(ws.iterdir()), f"{name} built something before refusing"
+            return
+        assert first.returncode == 0, first.stderr[:400]
     second = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
                             capture_output=True, text=True, timeout=300, env=_env())
     assert second.returncode != 0, (
