@@ -193,6 +193,29 @@ class Chat:
                 return state
         return state
 
+    def wait_until(self, check, timeout: float = 15.0) -> bool:
+        """Pump until ``check(self)`` holds; False after *timeout* seconds.
+
+        For a redraw that has no state of its own (a recalled line, a
+        notice): a fixed settle after the keystroke passes on an idle
+        machine and reads the frame before the redraw on a loaded one.
+        """
+        end = time.monotonic() + timeout
+        while True:
+            if check(self):
+                return True
+            if time.monotonic() >= end or not self.child.isalive():
+                return bool(check(self))
+            self.pump(0.2)
+
+    def ended_within(self, seconds: float) -> bool:
+        """True once the child has exited and been reaped, polling up to
+        *seconds* and reading its output meanwhile; never sends a key."""
+        return _gone_within(self.child, seconds, self._keep)
+
+    def _keep(self, data: bytes) -> None:
+        self._raw.append(data.decode("utf-8", "replace"))
+
     def turn(self, text: str, timeout: float = 30.0) -> str:
         """Type *text*, press Enter, wait until the turn has ended."""
         self.send(text, 0.2)
@@ -202,15 +225,198 @@ class Chat:
     # -- teardown ------------------------------------------------------------
 
     def close(self) -> int | None:
+        """End the session (see ``end_child``); return its exit status.
+
+        Safe to call twice. The endpoint is shut down in every case.
+        """
         try:
-            if self.child.isalive():
-                self.child.sendcontrol("d")
-                self.pump(3)
+            end_child(self.child, keep=self._keep)
         finally:
-            if self.child.isalive():
-                self.child.close(force=True)
-            else:
-                self.child.close()
             if self._server is not None:
                 self._server.shutdown()
+                self._server = None
         return self.child.exitstatus
+
+
+def close_all(sessions) -> None:
+    """Close every session, then raise the first teardown error, if any.
+
+    A loop of plain close() calls stops at the first error and leaves the
+    later sessions' processes running past the test.
+    """
+    errors = []
+    for session in sessions:
+        try:
+            session.close()
+        except Exception as exc:        # noqa: BLE001  (re-raised below)
+            errors.append(exc)
+    if errors:
+        raise errors[0]
+
+
+#: How long the child gets to leave after Ctrl+D, and again after SIGTERM.
+#: Measured: leaving costs 0.25-0.3 s of CPU against 1.2 s for reaching the
+#: prompt, so a child slowed evenly enough to need the fixtures' whole 60 s
+#: start budget leaves in about 15 s; 30 s is twice that. Wall time on two
+#: CPUs with seven busy loops per CPU: 2.0-2.5 s.
+LEAVE_S = 30.0
+#: How long a SIGKILLed child may take to be reaped.
+REAP_S = 10.0
+
+
+def _proc_state(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return "unknown"
+    try:
+        with open(f"/proc/{pid}/wchan") as fh:
+            wchan = fh.read().strip()
+    except OSError:
+        wchan = ""
+    return f"{state} wchan={wchan or '-'}"
+
+
+def _drain_fd(child, seconds: float, keep) -> bool:
+    """Read what the child wrote within *seconds*; False once at EOF.
+
+    os.read on the master fd, not pexpect's read: at EOF pexpect calls
+    isalive() with a blocking waitpid(), which does not return while a
+    child that closed its side of the pty is still running.
+    """
+    import select
+    fd = getattr(child, "child_fd", -1)
+    if fd is None or fd < 0:
+        return False
+    try:
+        ready, _, _ = select.select([fd], [], [], seconds)
+    except (OSError, ValueError):
+        return False
+    if not ready:
+        return True
+    try:
+        data = os.read(fd, 65536)
+    except OSError:
+        data = b""             # EIO: every slave fd is closed
+    if not data:
+        return False
+    if keep is not None:
+        keep(data)
+    return True
+
+
+def _gone_within(child, seconds: float, keep=None) -> bool:
+    end = time.monotonic() + seconds
+    open_pty = True
+    while True:
+        # After EOF on the pty, pexpect's isalive() calls a blocking
+        # waitpid(); cleared, it polls with WNOHANG and the wait stays
+        # bounded.
+        child.flag_eof = False
+        if not child.isalive():
+            return True
+        if time.monotonic() >= end:
+            return False
+        if open_pty:
+            # a child writing on its way out never blocks on a full pty
+            open_pty = _drain_fd(child, 0.1, keep)
+        else:
+            time.sleep(0.05)
+
+
+def end_child(child, *, leave_s: float = LEAVE_S, reap_s: float = REAP_S,
+              keep=None) -> None:
+    """End a pexpect child the way a user leaves, and prove it is gone.
+
+    Input: a ``pexpect.spawn`` child, which pexpect starts as the leader of
+    its own session and process group. While waiting, its output is read
+    from the pty (so it never blocks writing) and handed to ``keep(bytes)``
+    when given. Steps, each only if the previous one did not end it:
+
+      1. Ctrl+U, Ctrl+D -- clear the input line, then leave. Ctrl+D alone
+         on a non-empty line deletes forward (readline semantics) and the
+         session stays.                                     wait leave_s
+      2. SIGTERM to the child's process group.              wait leave_s
+      3. SIGKILL to the child's process group.              wait reap_s
+
+    Output: None once the child is reaped and its pty closed. Raises
+    AssertionError when step 2 or 3 was needed (the session must leave on
+    Ctrl+D, and must end on SIGTERM) and when the child is still there
+    reap_s after SIGKILL, with the child's /proc state; the child is
+    signalled and the pty closed in every case. The group is signalled
+    only while its leader is unreaped, so its id cannot have been reused.
+
+    Rejected: pexpect's ``close(force=True)``. It sends SIGHUP, SIGCONT,
+    SIGINT and SIGKILL 0.1 s apart and raises "Could not terminate the
+    child" when the child is not reaped 0.1 s after SIGKILL. The session
+    takes SIGHUP as a leave that saves the conversation, so on a loaded
+    runner the escalation reaches SIGKILL, and a child that gets no CPU
+    for 0.1 s to finish dying is reported as unkillable. Reproduced with
+    the child at nice 10 or 15 on one CPU beside four busy loops: 6 of 6
+    teardowns raised that error, and every child was reaped 0.4-1.4 s
+    after its SIGKILL.
+    """
+    import signal
+
+    if child.closed:
+        return
+    pid = child.pid
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        pgid = None
+    if pgid == os.getpgrp():
+        pgid = None                     # never signal the test's own group
+
+    def _signal(sig: int) -> None:
+        try:
+            if pgid is not None:
+                os.killpg(pgid, sig)
+            else:
+                os.kill(pid, sig)
+        except OSError:
+            pass                        # gone between the check and here
+
+    needed = ""
+    try:
+        try:
+            child.send("\x15\x04")     # Ctrl+U, Ctrl+D
+        except OSError:
+            pass                        # pty already hung up
+        if _gone_within(child, leave_s, keep):
+            return
+        state = _proc_state(pid)
+        needed = (f"did not leave within {leave_s:g} s of Ctrl+D "
+                  f"(state {state})")
+        _signal(signal.SIGTERM)
+        if _gone_within(child, leave_s, keep):
+            needed += "; SIGTERM ended it"
+            return
+        state = _proc_state(pid)
+        needed += (f"; still there {leave_s:g} s after SIGTERM "
+                   f"(state {state})")
+        _signal(signal.SIGKILL)
+        if _gone_within(child, reap_s, keep):
+            needed += "; SIGKILL ended it"
+            return
+        needed += (f"; still not reaped {reap_s:g} s after SIGKILL "
+                   f"(state {_proc_state(pid)})")
+    finally:
+        child.flag_eof = False          # keep the last check non-blocking
+        if not child.isalive():
+            child.close()               # reaped: closes the fd, no signals
+        else:
+            # Survived SIGKILL, or the wait itself was interrupted: kill it
+            # (a no-op after step 3), then close the fd without pexpect's
+            # escalation, which would raise its own error over this one,
+            # here and again in ptyprocess's __del__.
+            _signal(signal.SIGKILL)
+            try:
+                child.ptyproc.fileobj.close()
+            except OSError:
+                pass
+            child.ptyproc.closed = True
+            child.closed = True
+        if needed:
+            raise AssertionError(f"pty child {pid} {needed}")

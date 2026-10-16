@@ -1,0 +1,94 @@
+name: Dependency audit
+
+# Known advisories against what DELFIN installs, and red when there is one.
+#
+# Until 2026-10-15 this was a job in ci.yml that ran `pip-audit ... || true`:
+# green whatever it found, so an advisory showed up only for somebody who
+# opened the run summary. Making that job fail inside ci.yml would have made
+# every pull request red on the day an upstream advisory is published, for a
+# reason unrelated to the change under review, and ci.yml's conclusion is
+# the merge verdict (tests/test_the_gate_can_still_say_it_passed.py). So it
+# is its own workflow: nightly and on demand, not a required check, and red
+# when an advisory is open -- the state is visible in the Actions list and
+# on main's commit status, and it turns green by upgrading or by recording a
+# decision in .github/ci/audit-ignore.txt.
+#
+# What is audited: the closure pip resolves for `.[agent,docs]` into an
+# empty environment (.github/ci/audit_closure.py), i.e. what a user installs.
+# Not the runner's interpreter: on 2026-10-15 the old job's only finding
+# was the hosted Python's own setuptools 79.0.1 (PYSEC-2026-3447), which no
+# DELFIN install brings. Pull requests that change dependencies are covered
+# by dependency-review.yml, which fails on a high-severity advisory being
+# added.
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    # A change to the audit itself is tested by running it.
+    paths:
+      - ".github/workflows/audit.yml"
+      - ".github/ci/audit_closure.py"
+      - ".github/ci/audit-ignore.txt"
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the audit tool
+        run: |
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
+          pip install -c .github/ci/constraints-ci.txt pip-audit
+
+      - name: Resolve what DELFIN installs
+        # --dry-run --ignore-installed: the set pip would put into an empty
+        # environment, without installing it. The minimum and the two
+        # expected names refuse an empty or truncated closure, which
+        # pip-audit would report as "No known vulnerabilities found".
+        run: |
+          pip install --dry-run --ignore-installed --quiet --report "$RUNNER_TEMP/resolved.json" ".[agent,docs]"
+          python .github/ci/audit_closure.py "$RUNNER_TEMP/resolved.json" \
+            --minimum 50 --expect numpy --expect rdkit > "$RUNNER_TEMP/closure.txt"
+          echo "closure: $(wc -l < "$RUNNER_TEMP/closure.txt") distributions"
+
+      - name: Audit the closure
+        run: |
+          ignores=()
+          while read -r id _; do
+            ignores+=(--ignore-vuln "$id")
+          done < <(grep -Ev '^[[:space:]]*(#|$)' .github/ci/audit-ignore.txt)
+          echo "ignored by decision: $(( ${#ignores[@]} / 2 ))"
+          set +e
+          pip-audit --progress-spinner off --no-deps --disable-pip --desc off \
+            -r "$RUNNER_TEMP/closure.txt" "${ignores[@]}" > "$RUNNER_TEMP/audit.txt" 2>&1
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/audit.txt"
+          {
+            echo "### pip-audit ($(wc -l < "$RUNNER_TEMP/closure.txt") distributions, exit $code)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/audit.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"

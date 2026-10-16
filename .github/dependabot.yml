@@ -1,10 +1,22 @@
 # Dependency updates.
 #
-# Two ecosystems, deliberately treated differently:
+# Three ecosystems, deliberately treated differently:
 #
 #   github-actions — the workflows are the merge gate, and a compromised or
-#     abandoned action runs with whatever the workflow grants it. These updates
-#     are small, readable and safe to take, so they arrive individually.
+#     abandoned action runs with whatever the workflow grants it. Every
+#     `uses:` is pinned to a commit SHA with its version as a comment
+#     (tests/test_every_action_is_pinned_to_a_commit.py); Dependabot moves
+#     the SHA and the comment together. These updates are small, readable and
+#     safe to take, so they arrive individually -- after a week's cooldown, so
+#     a release that is retracted or found compromised within days of
+#     publication never reaches the gate.
+#
+#   bun (tui/) — the terminal window's dependencies, read from tui/bun.lock.
+#     Grouped weekly like pip, majors left out. @opentui/* is excluded: the
+#     window runs a patched @opentui/core (tui/patches/, keyed to 0.6.4 in
+#     package.json) and a native library built from the pinned source by
+#     tui/scripts/build-opentui-native.sh, so moving that version is a
+#     migration of three files, not a lockfile bump.
 #
 #   pip — DELFIN's results depend on the numerics underneath it (rdkit, numpy,
 #     ase, scipy). A version bump there can change a computed number without
@@ -19,10 +31,37 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "ci"
     labels:
       - dependencies
+
+  - package-ecosystem: bun
+    directory: "/tui"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(tui)"
+    labels:
+      - dependencies
+    groups:
+      tui-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+      # Patched and natively rebuilt at a pinned version; see the header.
+      - dependency-name: "@opentui/*"
 
   - package-ecosystem: pip
     directory: "/"
