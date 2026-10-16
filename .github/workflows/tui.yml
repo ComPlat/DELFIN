@@ -24,10 +24,16 @@ on:
       - ".github/workflows/tui.yml"
   pull_request:
   workflow_dispatch:
+  # `window and service` is required, so a merge queue waits for it on its
+  # gh-readonly-queue/main/* ref as well. merge_group takes no paths filter:
+  # the window tests run for every queue entry. Each entry has a ref of its
+  # own, and the queue removes or rebuilds entries itself, so nothing here
+  # cancels a queue run.
+  merge_group:
 
 concurrency:
   group: tui-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -133,6 +139,9 @@ jobs:
   binary:
     name: binary (${{ matrix.target }})
     needs: test
+    # Not required, and two of its four runners are scarce macOS images; a
+    # queue entry does not wait for it, so it does not build there.
+    if: ${{ github.event_name != 'merge_group' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:

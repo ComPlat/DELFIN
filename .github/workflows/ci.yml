@@ -1,7 +1,8 @@
 name: CI
 
-# The gate for every push to main and every pull request. The suite is fully
-# mocked (no live KIT/Ollama calls), so no secrets are required.
+# The gate for every push to main, every pull request and every merge-queue
+# group. The suite is fully mocked (no live KIT/Ollama calls), so no secrets
+# are required.
 #
 # Everything in this file either gates or is cheap enough to sit beside what
 # gates: `tests` (fast suite), `lint`, `container`, `toolchains` and
@@ -21,6 +22,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A merge queue tests the combination it is about to merge on a
+  # gh-readonly-queue/main/* ref and waits for every required check there;
+  # a workflow without this trigger never reports and the entry times out.
+  merge_group:
   schedule:
     # Nightly, for the coverage and audit reports below.
     - cron: "17 3 * * *"
@@ -43,29 +48,45 @@ on:
 # before them. So on main the commit itself is the group -- a run there is
 # alone in its group, waits its turn, and is never superseded. Elsewhere
 # the ref is the group, which is what makes a new revision replace the old.
+#
+# A merge-queue run is the main case, not the pull-request one: its commit
+# is what main becomes if it passes, and the queue removes or rebuilds an
+# entry itself. So it is grouped by its own commit (prefixed, so the push
+# of the same commit after the merge never shares its group) and never
+# cancelled from here.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'merge_group' && format('queue-{0}', github.sha) || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: tests (py${{ matrix.python-version }})
+  test-shard:
+    # The fast suite, split by test file over four runners. In one job it
+    # ran 27-34 min on 2026-10-13 and 47.7 min of tests on 2026-10-15
+    # against a 50-minute limit; three of the five runs on main before that
+    # were cancelled at the limit. Each shard collects the whole suite and
+    # runs the files .github/ci/ci_shards.py assigns it by measured
+    # duration (702 s of the 2810 s measured on the runner). The required
+    # check is `tests (py3.11)` below, which passes only when the four
+    # together ran every collected test exactly once.
+    #
+    # Each shard is its own runner, so no state is shared between them.
+    # The plan is a function of the commit alone, so a re-run of one shard
+    # runs the same files.
+    name: tests (py3.11, shard ${{ matrix.shard }} of ${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    # The fast suite ran 27-34 min on main (2026-10-13) and the open security
-    # PRs add a few thousand gate cases; at 35 the job was cancelled mid-run.
-    # 2026-10-15: after the day's merges the suite reached 100 % at 49.5 min
-    # and the job was cancelled at 50 (main e1f3dd55, PR #264). Each test
-    # keeps its own 300 s limit (--timeout below), so a hang still fails at
-    # once; this only covers the suite's total length. 60 is the ceiling
-    # tests/test_the_gate_can_still_say_it_passed.py holds for the gate.
-    timeout-minutes: 60
+    # A shard is a quarter of the suite (about 12 min expected); 30 is
+    # 2.5 times that. The unsharded job needed 60 on 2026-10-15 (#276)
+    # after reaching 100 % at 49.5 min. Each test keeps its own 300 s
+    # limit (--timeout below), so a hang still fails at once.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11"]
+        # The verify step in `test` names the same count.
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
@@ -76,10 +97,10 @@ jobs:
           # lacks it -> 0 cases -> that guard test fails.
           fetch-depth: 0
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.11
         uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: pip
 
       - name: Install package + test deps
@@ -90,6 +111,37 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[agent,docs,dev]" "numpy<2"
+
+      # A real xtb for the tests that read its results (conftest.real_xtb;
+      # without one they skip). The conda-forge build, pinned to version and
+      # build string: the one the unsharded job had been using without
+      # declaring it -- DELFIN's automatic install, started by the first test
+      # that reached optimize_with_gfn without an xtb, fetched xtb>=6.7.1
+      # from conda-forge into delfin/qm_tools/.mamba_env, which resolved to
+      # this build (compiled 2026-06-10). The suite no longer installs
+      # anything (conftest sets DELFIN_AUTO_INSTALL_QM_TOOLS=0).
+      #
+      # Not the release binary slow-tests.yml uses: under pytest it returned
+      # a frequency 1.055e-6 cm-1 apart between two runs of the same input on
+      # 6 of 20 pairs, while this build was identical 20 of 20.
+      #
+      # micromamba is fetched the way the generalist job below fetches it
+      # (latest, unpinned, no checksum); the package itself is pinned.
+      #
+      # Onto PATH through GITHUB_PATH, from the step right before the tests:
+      # the test step's run line must stay exactly the project's test
+      # command (verify_recipe; test_a_shard_runs_what_the_unsharded_job_ran),
+      # and the only later step is the report upload.
+      - name: Install xtb 6.7.1 (conda-forge, build gfortran_ha02e54d_5)
+        env:
+          MAMBA_ROOT_PREFIX: ${{ runner.temp }}/mamba
+        run: |
+          curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+            | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          "$RUNNER_TEMP/bin/micromamba" create -y -q -p "$RUNNER_TEMP/xtb" \
+            -c conda-forge --override-channels "xtb==6.7.1=gfortran_ha02e54d_5"
+          "$RUNNER_TEMP/xtb/bin/xtb" --version | grep "xtb version 6.7.1"
+          echo "$RUNNER_TEMP/xtb/bin" >> "$GITHUB_PATH"
 
       - name: Run fast test suite (excludes heavy + order-dependent tests)
         # A per-TEST deadline, for the reason pytest-timeout is declared in
@@ -103,7 +155,75 @@ jobs:
         # above the slowest test here and still turns a hang into one named
         # failure within five minutes. --timeout-method=signal so a test
         # blocked in C code (a lock, a socket) is interrupted too.
+        #
+        # The shard comes in through the environment, so the command stays
+        # the one to run locally (and the one delfin.agent.verify_recipe
+        # reads as this project's test command). PYTEST_ADDOPTS loads
+        # .github/ci/shard_plugin.py, which reports the other shards' files
+        # as deselected, as -m does for slow tests, and removes both
+        # variables before the first test, so no subprocess a test starts
+        # inherits them.
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.github/ci
+          PYTEST_ADDOPTS: >-
+            -p shard_plugin --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+            --shard-report=shard-report
         run: pytest -q -m "not slow" --timeout=300 --timeout-method=signal
+
+      - name: Keep the shard's report
+        # Also after a failure: the report names what ran. overwrite, so a
+        # re-run of this shard replaces its report instead of failing on
+        # the name.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: tests-shard-${{ matrix.shard }}
+          path: shard-report/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  test:
+    # The required check. It runs whenever the shards ran, whatever they
+    # concluded (a job whose needs failed is otherwise skipped, and a
+    # skipped required check counts as passed), and fails unless every
+    # shard succeeded AND their reports prove the split complete: four
+    # reports for this commit, one collected suite, disjoint files, union
+    # equal to the suite, every selected test finished. A missing report
+    # is a failure.
+    name: tests (py3.11)
+    needs: test-shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Every shard succeeded
+        env:
+          SHARDS_RESULT: ${{ needs.test-shard.result }}
+        run: |
+          echo "shards: $SHARDS_RESULT"
+          [ "$SHARDS_RESULT" = success ]
+
+      - name: Checkout the check
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/ci
+          persist-credentials: false
+
+      - name: Fetch the shard reports
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v8
+        with:
+          pattern: tests-shard-*
+          path: shard-reports
+
+      - name: The shards ran every collected test exactly once
+        # Also when a shard failed, for the summary of what each one ran.
+        if: ${{ !cancelled() }}
+        env:
+          SHA: ${{ github.sha }}
+        run: python3 .github/ci/ci_shards.py verify shard-reports --shards 4 --sha "$SHA"
 
   container:
     # agent.bash_isolation = "container", driven for real. The fast suite
