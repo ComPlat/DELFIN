@@ -3762,15 +3762,7 @@ _GIT_HOOK_CONFIG_WRITE_RE = re.compile(
 #: section and variable names case-insensitively. Subsection names
 #: (``<driver>``, ``<url>``, ``<format>``) are case-sensitive in git; the
 #: match lower-cases them too, which only widens it.
-_GIT_PROGRAM_CONFIG_KEY_RE = re.compile(
-    r"(?:core\.(?:hookspath|fsmonitor|sshcommand|pager|editor|askpass|"
-    r"gitproxy|alternaterefscommand)"
-    r"|sequence\.editor|gpg\.(?:.+\.)?program|credential\.(?:.+\.)?helper"
-    r"|diff\.external|diff\..+\.(?:textconv|command)"
-    r"|filter\..+\.(?:clean|smudge|process)|merge\..+\.driver"
-    r"|(?:difftool|mergetool)\..+\.cmd|interactive\.difffilter"
-    r"|remote\..+\.(?:uploadpack|receivepack)|submodule\..+\.update"
-    r"|pager\..+|alias\..+|include\.path|includeif\..+\.path)")
+from .safe_git import PROGRAM_KEY_RE as _GIT_PROGRAM_CONFIG_KEY_RE  # noqa: E402  one list for the gate and DELFIN's own reads
 #: ``pager.<cmd>`` takes a boolean as well as a program.
 _GIT_BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "on", "off",
                                  "1", "0", ""})
