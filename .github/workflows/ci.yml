@@ -112,6 +112,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[agent,docs,dev]" "numpy<2"
 
+      # A real xtb for the tests that read its results (conftest.real_xtb;
+      # without one they skip). The conda-forge build, pinned to version and
+      # build string: the one the unsharded job had been using without
+      # declaring it -- DELFIN's automatic install, started by the first test
+      # that reached optimize_with_gfn without an xtb, fetched xtb>=6.7.1
+      # from conda-forge into delfin/qm_tools/.mamba_env, which resolved to
+      # this build (compiled 2026-06-10). The suite no longer installs
+      # anything (conftest sets DELFIN_AUTO_INSTALL_QM_TOOLS=0).
+      #
+      # Not the release binary slow-tests.yml uses: under pytest it returned
+      # a frequency 1.055e-6 cm-1 apart between two runs of the same input on
+      # 6 of 20 pairs, while this build was identical 20 of 20.
+      #
+      # micromamba is fetched the way the generalist job below fetches it
+      # (latest, unpinned, no checksum); the package itself is pinned.
+      #
+      # Onto PATH through GITHUB_PATH, from the step right before the tests:
+      # the test step's run line must stay exactly the project's test
+      # command (verify_recipe; test_a_shard_runs_what_the_unsharded_job_ran),
+      # and the only later step is the report upload.
+      - name: Install xtb 6.7.1 (conda-forge, build gfortran_ha02e54d_5)
+        env:
+          MAMBA_ROOT_PREFIX: ${{ runner.temp }}/mamba
+        run: |
+          curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+            | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          "$RUNNER_TEMP/bin/micromamba" create -y -q -p "$RUNNER_TEMP/xtb" \
+            -c conda-forge --override-channels "xtb==6.7.1=gfortran_ha02e54d_5"
+          "$RUNNER_TEMP/xtb/bin/xtb" --version | grep "xtb version 6.7.1"
+          echo "$RUNNER_TEMP/xtb/bin" >> "$GITHUB_PATH"
+
       - name: Run fast test suite (excludes heavy + order-dependent tests)
         # A per-TEST deadline, for the reason pytest-timeout is declared in
         # pyproject: without one, a single test that waits forever sits
