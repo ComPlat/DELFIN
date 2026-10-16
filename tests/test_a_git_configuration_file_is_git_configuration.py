@@ -250,11 +250,22 @@ def test_an_ordinary_file_is_not_asked_about(work, repo, mode):
         assert (ws / rel).read_text() == "x\n", (rel, out)
 
 
-def test_a_harmless_git_config_write_runs(repo):
+def test_a_harmless_git_config_write_is_not_asked_and_the_mount_decides(repo):
+    """The gate does not ask about a harmless key. Whether the write lands
+    is the sandbox's: bubblewrap and Seatbelt keep .git/config read-only
+    (the config names programs git runs outside the sandbox later), so
+    there the command fails with git's own message and the file is
+    unchanged; on a host without such a layer the write lands."""
     perms = _perms(repo, "bypassPermissions")
+    cfg = repo / ".git" / "config"
+    before = cfg.read_text()
     out = json.loads(_run(perms, "bash", {"command": "git config user.name x"}))
-    assert out.get("exit_code") == 0, out
-    assert "name = x" in (repo / ".git" / "config").read_text()
+    assert perms.asked == []
+    if out.get("exit_code") == 0:
+        assert "name = x" in cfg.read_text()
+    else:
+        assert "could not write config file" in out.get("stderr", ""), out
+        assert cfg.read_text() == before
 
 
 def test_reading_a_configuration_file_is_not_asked(work):

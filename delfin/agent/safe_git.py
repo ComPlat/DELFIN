@@ -196,6 +196,10 @@ def run(args: Sequence[str], cwd, *, timeout: float = _DEFAULT_TIMEOUT_S,
     try:
         return subprocess.run(argv, capture_output=True, text=text, input=input,
                               timeout=timeout, env=_env(env), check=False)
+    except FileNotFoundError as exc:
+        msg = f"git is not installed: {exc}"
+        return subprocess.CompletedProcess(argv, 127, "" if text else b"",
+                                           msg if text else msg.encode())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(argv, 1, "" if text else b"",
                                            str(exc) if text else str(exc).encode())
