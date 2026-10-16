@@ -33,6 +33,9 @@ reloads, and a page whose login ended shows a notice (:func:`keepalive_js`).
 Rejected: an idle timeout counted on HTTP requests alone -- an open page
 makes none while idle (measured: 0 requests in 60 s), but a page in use
 makes none either.
+
+Also here, because it is the same login: :class:`RefusedLogins`, the
+rate-limited record of refused dashboard logins as a security event.
 """
 
 from __future__ import annotations
@@ -213,6 +216,69 @@ class Sessions:
 def store_path(runtime_dir: str, port: Any) -> Path:
     """Where the server on *port* keeps its sessions."""
     return Path(runtime_dir) / f"{STORE_PREFIX}{int(port)}.json"
+
+
+# -- refused logins as a security event -----------------------------------------
+
+#: The ``security_events`` kind of a refused dashboard login.
+REFUSED_KIND = "dashboard_login_refused"
+
+
+class RefusedLogins:
+    """Refused dashboard logins, recorded at most once per *window* seconds.
+
+    Input: one call per refusal -- a wrong token on the login form, or a
+    wrong token in the URL or the ``Authorization`` header -- with the
+    client address and the path (never the presented token, never the
+    query string). Output: a ``security_events`` record of kind
+    :data:`REFUSED_KIND` (blocked, so it also reaches the attention inbox
+    once per server process) and a WARNING in the server log, for the
+    first refusal of a window; refusals inside the window are counted and
+    the count is named in the next record. A flood of wrong tokens thus
+    costs one record a minute, not one per request.
+    """
+
+    def __init__(self, *, window: float = 60.0,
+                 clock: Callable[[], float] = time.time,
+                 record: Optional[Callable[..., None]] = None,
+                 log: Any = None):
+        self.window = float(window)
+        self.clock = clock
+        self._record = record
+        self.log = log
+        self._last = None          # time of the last record
+        self._held = 0             # refusals since then, not yet recorded
+
+    def refused(self, how: str, remote_ip: str, path: str) -> bool:
+        """Note one refusal; returns True if it was recorded now."""
+        now = self.clock()
+        if self._last is not None and now - self._last < self.window:
+            self._held += 1
+            return False
+        held, self._held, self._last = self._held, 0, now
+        where = str(path or "/").split("?", 1)[0][:120]
+        detail = f"{how} from {str(remote_ip or '?')[:64]} on {where}"
+        if held:
+            detail += (f" (and {held} more in the {int(self.window)} s "
+                       "before it)")
+        if self.log is not None:
+            try:
+                self.log.warning("[delfin] dashboard login refused: %s", detail)
+            except Exception:
+                pass
+        record = self._record
+        if record is None:
+            try:
+                from delfin.agent import security_events
+                record = security_events.record
+            except Exception:
+                record = None
+        if record is not None:
+            try:
+                record(REFUSED_KIND, "dashboard", detail, blocked=True)
+            except Exception:
+                pass
+        return True
 
 
 # -- the browser side ------------------------------------------------------------
