@@ -108,7 +108,7 @@ def test_the_store_is_owner_only_and_holds_no_session_id(tmp_path):
     assert sid not in path.read_text(encoding="utf-8")
 
 
-def test_a_restart_keeps_a_login_and_keeps_a_logout(tmp_path):
+def test_the_store_keeps_a_login_and_a_logout_across_a_restart(tmp_path):
     clock = Clock()
     first = _store(tmp_path, clock)
     kept, ended = first.open(), first.open()

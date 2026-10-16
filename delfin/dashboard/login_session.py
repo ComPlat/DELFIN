@@ -118,7 +118,9 @@ class Sessions:
             return
         try:
             info = os.fstat(fd)
-            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            getuid = getattr(os, "getuid", None)   # absent on Windows
+            if getuid is not None and (info.st_uid != getuid()
+                                       or info.st_mode & 0o077):
                 # Not this account's, or readable by others: not trusted.
                 return
             with os.fdopen(fd, "r", encoding="utf-8") as handle:
