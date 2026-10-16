@@ -2165,6 +2165,16 @@ class PromptLoader:
                 add("progressive_note", self.LAYER_STABLE,
                     self._build_progressive_disclosure_note())
 
+            # Per-model notes (model_profiles.MODEL_NOTES), each switched
+            # by its own profile field. Fixed for the model, so the last
+            # stable section: a model switch re-sends this tail, nothing
+            # before it. Empty for every profile that switches none on.
+            try:
+                from .model_profiles import model_notes as _model_notes
+                add("model_notes", self.LAYER_STABLE, _model_notes(model))
+            except Exception:
+                pass
+
             # ---- Layer 2: per-turn material ------------------------------
             # Everything below is derived from the current task text, the
             # working tree or the UI, so it changes between turns.
