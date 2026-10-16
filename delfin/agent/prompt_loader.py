@@ -979,14 +979,12 @@ class PromptLoader:
             pass
 
         def _git(*args: str) -> str:
+            from . import safe_git
             try:
-                out = subprocess.run(
-                    ["git", *args], cwd=str(repo),
-                    capture_output=True, text=True, timeout=2.0,
-                )
+                out = safe_git.run(args, repo, timeout=2.0)
                 if out.returncode == 0:
                     return out.stdout.strip()
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            except Exception:
                 pass
             return ""
 
