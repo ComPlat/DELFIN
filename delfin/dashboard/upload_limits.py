@@ -19,6 +19,12 @@ a crafted archive can declare anything). Files are created with
 ``O_EXCL | O_NOFOLLOW``, so an existing name or a planted link at the
 destination is never written through.
 
+Every ``FileUpload`` of the dashboard writes through here: the Calculations
+browser and the Literature tab create new files (:func:`write_new_file`),
+the ORCA Builder's job directory and the agent's upload folder replace what
+is there (:func:`write_replacing`); the name the browser sends is reduced
+to a file name first (:func:`upload_name`). Uploaded files are 0600.
+
 Rejected: a compression-ratio limit. An absolute bound on what is written
 covers the same denial of service without refusing legitimately sparse
 data (cube files and zero-padded binaries compress 100:1 and more).
@@ -170,6 +176,55 @@ def write_new_bytes(destination: Path, payload: bytes) -> int:
     import io
 
     return write_new_file(destination, io.BytesIO(bytes(payload)))
+
+
+def upload_name(name: object) -> str:
+    """The file name an upload is saved under: the last path component.
+
+    The browser sends a bare name, but the value reaches the kernel from
+    the page, and a page is not trusted to have sent one. ``../x``,
+    ``/a/b/x`` and ``a\\x`` become ``x``; a name that is empty, ``.``,
+    ``..`` or holds a NUL is refused.
+    """
+    raw = str(name or "").replace("\\", "/")
+    base = raw.rsplit("/", 1)[-1].strip()
+    if not base or base in (".", "..") or "\0" in base:
+        raise UploadRefused(f"{raw!r} is not a file name.")
+    return base
+
+
+def write_replacing(destination: Path, payload: bytes) -> int:
+    """Write *payload* to *destination*, replacing what is there; return its size.
+
+    For the uploads whose destination may already exist (a job directory
+    the ORCA Builder saves into again, the agent's upload folder). The
+    bytes go to a new owner-only (0600) file beside the destination,
+    created ``O_EXCL | O_NOFOLLOW``, which is then renamed over it: a link
+    that sits at the destination is replaced, never written through, and
+    a reader never sees half a file. A directory at the destination is an
+    error (``IsADirectoryError``/``OSError``); so is a payload over
+    ``DELFIN_UPLOAD_MAX_BYTES`` (:class:`UploadRefused`). Nothing is left
+    behind on any error.
+    """
+    import secrets
+
+    destination = Path(destination)
+    payload = bytes(payload)
+    check_upload_size(len(payload), destination.name)
+    if destination.is_dir() and not destination.is_symlink():
+        raise IsADirectoryError(str(destination))
+    tmp = destination.with_name(
+        f".{destination.name}.{secrets.token_hex(4)}.upload")
+    write_new_bytes(tmp, payload)
+    try:
+        os.replace(str(tmp), str(destination))
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
+    return len(payload)
 
 
 def remove_tree(path: Path) -> None:

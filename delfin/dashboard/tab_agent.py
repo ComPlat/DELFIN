@@ -9067,6 +9067,10 @@ def create_tab(ctx):
 
         Buffering moves the decision to the moment the workspace is known.
         """
+        from delfin.dashboard import upload_limits as _upload_limits
+
+        # The tab's own cap, or the installation's upload limit if lower.
+        cap = min(_UPLOAD_SIZE_CAP, _upload_limits.max_upload_bytes())
         files = image_upload.value
         buffered: list[tuple[str, bytes]] = []
         items = (files.items() if isinstance(files, dict)
@@ -9078,13 +9082,18 @@ def create_tab(ctx):
             if not content:
                 _append_system_message(f"File empty, skipped: {fname}")
                 continue
-            if len(content) > _UPLOAD_SIZE_CAP:
+            if len(content) > cap:
                 _append_system_message(
-                    f"File too large (>{_UPLOAD_SIZE_CAP // (1024*1024)} MB): "
+                    f"File too large (>{cap / (1024 * 1024):.0f} MB): "
                     f"{fname}"
                 )
                 continue
-            buffered.append((Path(fname).name, bytes(content)))
+            try:
+                name = _upload_limits.upload_name(fname)
+            except _upload_limits.UploadRefused as exc:
+                _append_system_message(f"Skipped: {exc}")
+                continue
+            buffered.append((name, bytes(content)))
         # Cap the buffer as a whole, not just each file: the per-file cap
         # bounded one drop, not fifty. The whole means everything still
         # waiting, since drops accumulate until the next send.
@@ -9152,10 +9161,13 @@ def create_tab(ctx):
                         "that folder yourself, or switch to a mode that can "
                         "reach it.")
                     continue
+            # Owner-only, and a link the session planted under that name is
+            # replaced rather than written through.
             try:
-                target.write_bytes(content)
+                from delfin.dashboard import upload_limits as _upload_limits
+                _upload_limits.write_replacing(target, content)
                 saved.append(target)
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 _append_system_message(f"Save failed for {name}: {exc}")
         state["_pending_uploads"] = []
         if saved:

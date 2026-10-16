@@ -18,6 +18,7 @@ import uuid
 import numpy as np
 
 from . import structure_editor as _structure_editor
+from . import upload_limits as _upload_limits
 
 from IPython import get_ipython
 from IPython.display import clear_output, display, HTML
@@ -1049,8 +1050,15 @@ def create_tab(ctx):
                 content = f['content'] if isinstance(f, dict) else f.content
                 files_to_save[name] = content
         for filename, content in files_to_save.items():
-            (job_dir / filename).write_bytes(content)
-            saved.append(filename)
+            # A browser-sent name is reduced to a file name, and the file is
+            # written owner-only and never through a link at that name.
+            try:
+                name = _upload_limits.upload_name(filename)
+                _upload_limits.write_replacing(job_dir / name, content)
+            except (_upload_limits.UploadRefused, OSError) as exc:
+                print(f'Warning: {filename!r} not saved: {exc}')
+                continue
+            saved.append(name)
         for line in orca_path_files.value.strip().splitlines():
             p = Path(line.strip())
             if not p.name:
@@ -2340,8 +2348,8 @@ def create_tab(ctx):
             (room / filename).write_text(xyz_content)
         for name, content in (state.get('extra_files') or {}).items():
             try:
-                (room / name).write_bytes(
-                    content if isinstance(content, bytes) else bytes(content))
+                _upload_limits.write_replacing(
+                    room / _upload_limits.upload_name(name), bytes(content))
             except Exception:                           # noqa: BLE001
                 pass
 
@@ -2546,16 +2554,32 @@ def create_tab(ctx):
                 print(submit_result.stderr or submit_result.stdout)
 
     def update_uploaded_files_label(change=None):
+        refused = []
         if orca_file_upload.value:
             for f in orca_file_upload.value:
                 name = f['name'] if isinstance(f, dict) else f.name
                 content = f['content'] if isinstance(f, dict) else f.content
+                # Held in the kernel until SAVE/SUBMIT: bounded here, by the
+                # same limit the write applies.
+                try:
+                    name = _upload_limits.upload_name(name)
+                    _upload_limits.check_upload_size(len(content), name)
+                except _upload_limits.UploadRefused as exc:
+                    refused.append(str(exc))
+                    continue
                 state['extra_files'][name] = content
+        note = ''
+        if refused:
+            note = ('<br><span style="color:#d32f2f;">Not taken: '
+                    + html.escape(' '.join(refused)) + '</span>')
         if state['extra_files']:
             filenames = list(state['extra_files'].keys())
-            orca_uploaded_files_label.value = f"<b>Files to upload:</b> {html.escape(', '.join(filenames))}"
+            orca_uploaded_files_label.value = (
+                f"<b>Files to upload:</b> {html.escape(', '.join(filenames))}"
+                + note)
         else:
-            orca_uploaded_files_label.value = '<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>'
+            orca_uploaded_files_label.value = (
+                '<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>' + note)
 
     # -- wiring ---------------------------------------------------------
     orca_save_btn.on_click(handle_orca_save)
