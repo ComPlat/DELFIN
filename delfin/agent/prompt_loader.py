@@ -157,6 +157,32 @@ _MEMORY_BLOCK_PREAMBLE = (
 _SOURCE_LABELS = {"user": "the user stated", "agent": "the agent noted"}
 
 
+def _fence_notes(source: str, text: str) -> str:
+    """``text`` inside an ``untrusted`` notes fence, or "" for empty text.
+
+    Recalled memory, past-session episodes and the outcome briefing are
+    text earlier sessions wrote, partly after reading files, pages and tool
+    results; a line in them that reads like an instruction must arrive
+    labelled as a note. The nonce is ``project_memory._fence_nonce`` of the
+    content: unknowable to whoever wrote the stored text (a per-process
+    key), and the same for the same content, so the prompt prefix stays
+    byte-stable between builds. Rejected: a random nonce per build (every
+    turn's prompt would differ and the prefix cache would miss); a content
+    hash alone (anyone who can hash could write the matching closer)."""
+    if not (text or "").strip():
+        return ""
+    from . import untrusted
+    from .project_memory import _fence_nonce
+    return untrusted.wrap_as("notes", source, text, nonce=_fence_nonce(text))
+
+
+def _notes_fence_overhead(source: str) -> int:
+    """Characters a notes fence adds around a body (header, closer and the
+    two newlines), for callers that pay it from a fixed budget."""
+    from . import untrusted
+    return len(untrusted.wrap_as("notes", source, "", nonce="0" * 16))
+
+
 def _memory_entry_header(title: str, rel: str, raw: str) -> str:
     """The provenance line that introduces one recalled memory.
 
@@ -730,6 +756,8 @@ class PromptLoader:
         # of the same budget rather than added on top of it: ``max_chars``
         # stays the ceiling for everything the block contributes.
         max_chars = max(0, max_chars - len(_MEMORY_BLOCK_PREAMBLE) - 2)
+        # The fence around the recalled text is paid from the same budget.
+        max_chars = max(0, max_chars - _notes_fence_overhead("memory"))
 
         # The index competes for the same characters as the bodies now. Each
         # store's pointer list is capped at a share of the budget so a fat
@@ -840,7 +868,7 @@ class PromptLoader:
             joined = joined[:max(0, room)]
         if notice:
             joined = (joined + "\n\n" + notice) if joined else notice
-        return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
+        return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{_fence_notes('memory', joined)}"
 
     def _load_knowledge_context(self, task_text: str,
                                 max_chars: int | None = None) -> str:
@@ -887,9 +915,9 @@ class PromptLoader:
             from .episodes import recall_episodes
             # Same root as the memory store, and for the same reason: the
             # writer keys episodes by the workspace.
-            return recall_episodes(
+            return _fence_notes("episodes", recall_episodes(
                 Path(self.workspace_root or self.repo_root), task_text,
-                exclude_session_id=session_id)
+                exclude_session_id=session_id))
         except Exception:
             return ""
 
@@ -1181,7 +1209,8 @@ class PromptLoader:
             from delfin.agent.briefing import generate_briefing
 
             provider = getattr(self, "_active_provider", "claude")
-            return generate_briefing(provider, task_text)
+            return _fence_notes("briefing",
+                                generate_briefing(provider, task_text))
         except Exception:
             return ""
 
