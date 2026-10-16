@@ -46,3 +46,13 @@ def test_where_token_prints_only_the_token(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(where, "record_path", lambda: note)
     assert where.main(["--token"]) == 0
     assert capsys.readouterr().out.strip() == "SECRET-TOKEN-7f3a"
+
+
+def test_the_cli_forwards_the_token_flag(monkeypatch):
+    from delfin.agent import cli
+
+    seen = {}
+    monkeypatch.setattr(where, "main", lambda flags: seen.setdefault("f", flags) and 0)
+    args = cli.build_parser().parse_args(["where", "--token"])
+    cli.cmd_where(args)
+    assert seen["f"] == ["--token"]
