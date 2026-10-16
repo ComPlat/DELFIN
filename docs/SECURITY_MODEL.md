@@ -1,7 +1,8 @@
 # DELFIN agent security model
 
 This document describes the threat model of the DELFIN agent (`delfin-agent`,
-the dashboard's agent tab and the scheduled runs) as the code on `main`
+the dashboard's agent tab and the scheduled runs), and of the dashboard's
+web server (section "The dashboard server"), as the code on `main`
 implements it: what is protected, against whom, which layer provides which
 guarantee on which host, and what is not covered. Reporting a vulnerability
 is described in [SECURITY.md](../SECURITY.md).
@@ -28,6 +29,8 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; DELFIN's own git reads of the workspace run no program the repository names (`safe_git`). |
 | Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; uploading workspace data is asked or, unattended, refused. |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
+| Shared lessons and memory | The lessons later sessions are shown (`delfin/agent/pack/knowledge`, a repository's `.delfin/knowledge`) and the memory stores under `~/.delfin` are protected paths for the agent's write tools; a note the model writes into memory may not carry an instruction channel. |
+| What the model takes for an instruction | Text whose author is not the user -- files, command output, web pages, MCP results and tool descriptions, other sessions' messages, delegates' reports, recalled memory -- reaches the model inside a nonce'd fence that labels it as data. |
 
 ## Against whom
 
@@ -101,8 +104,13 @@ call, before it runs. It applies, among others:
   `.git/**`, `.env`, keys, `.ssh`, credential files) and the secret-path
   checks for reads;
 - the protected paths (`api_client._DEFAULT_PATH_PROTECTED_GLOBS`: the
-  permission layer, the confirmation UI, the settings modules): a write is
-  asked in every mode, and refused where nobody can be asked;
+  permission layer, the confirmation UI, the settings modules, and the
+  shared lessons in `api_client._KNOWLEDGE_PROTECTED_GLOBS`), and the
+  memory and lesson stores under `~/.delfin` (`api_client._is_memory_store_path`,
+  reachable only through a granted directory): a write is asked in every
+  mode, and refused where nobody can be asked. The person's own share and
+  curation dialogs (`knowledge_share`, `knowledge_curation`) write through
+  their own code after a one-time code, not through these tools;
 - the git configuration files: in the work tree
   `api_client._GIT_CONFIG_PROTECTED_GLOBS` (`.gitattributes`, `.gitmodules`,
   a `.git` gitfile, `HEAD`); outside it every file git reads as
@@ -394,6 +402,119 @@ the start banner and `/permissions` name each file, its trust and what it
 enforces. Its refusals are recorded as `managed_policy_deny` and
 `managed_policy_ask`.
 
+## Text the model reads
+
+Every layer above judges what the model *does*. This section is about what
+it is *shown*: text whose author is not the user reaches the model inside
+an untrusted fence (`untrusted.wrap`, `untrusted.wrap_reference`,
+`untrusted.wrap_as`). The fence's opener and closer carry the same 16-hex
+nonce, so a closer written into the content has a nonce its author could
+not know and stays text inside the block; the source label is escaped.
+Where the fence sits in the cached prompt, the nonce is an HMAC of the
+content under a per-process key (`project_memory._fence_nonce`), so the
+bytes do not change between turns.
+
+| Text | Fence |
+|------|-------|
+| `web_fetch`, `web_search`, MCP tool results, MCP resources and prompts, `session_search` hits | data (`api_client._wrap_untrusted`) |
+| `read_file`, `grep_file`, `notebook_read`, `read_document`, `bash`, `bash_output` output | "tool output" (`api_client._FENCED_OUTPUT_TOOLS`); not the harness's own error envelopes and refusals |
+| A delegate's report | data, with a decision hint in front (`subagents.mark_delegate_text`) |
+| Another session's message | the harness's sender header, then the text in a "message" fence (`session_messages.render`) |
+| MCP tool descriptions | "tool description" (`mcp_client.advertised_description`); one that carries an instruction shape is withheld and recorded |
+| AGENTS.md and the repository's instruction files | reference (`project_memory.fence_project_text`) |
+| Shared lessons, swarm findings | data (`knowledge`, `swarm_memory`) |
+| Recalled memory, past-session episodes, the outcome briefing | "notes" from earlier sessions |
+
+Memory is also checked on the way in. A note the model writes
+(`remember`, the distill pass) is refused when
+`untrusted.instruction_shapes` finds a role marker, a fence marker,
+tool-call syntax, an override of earlier instructions, a standing consent
+that skips the user, or concealment from the user
+(`memory_store.memory_instruction_refusals`); the note records which tool
+wrote it, the session, and the tools whose fenced output the turn had read
+(`read_before`), and recall shows that list. An agent note that carries a
+shape anyway is withheld at recall. The user's own words are not filtered.
+
+## The dashboard server
+
+`delfin-voila` runs the dashboard as the Voila extension of a jupyter-server,
+bound to `127.0.0.1` unless `--ip` says otherwise (a non-loopback bind is
+refused without `--allow-remote-bind`). The protections below are installed into
+that server by the `delfin.dashboard.server_guard` extension
+(`delfin/dashboard/web_security.py`); each one that cannot be installed is
+named in the server log.
+
+**Authentication.** Every route that serves user data or runs code requires
+the server token or the login cookie it sets: the rendered dashboard, the
+kernel API and websocket, Jupyter's `/files/` and the Voila file route
+`/voila/files/`. Voila registers that route with a plain tornado static
+handler that checks nothing; the extension replaces it with an
+authenticated handler (Jupyter's own file handler, with its XSRF and
+same-host Referer check), or, if that cannot be built, with one that
+refuses every request. The token is at least 32 characters and reaches the
+server through its environment, not its command line. Served without
+the token, as jupyter-server requires for its login page: the package's own
+static assets (`/static/`, `/voila/static/`, `/voila/templates/`,
+`/voila/labextensions/`) and the drawing editor's bundle, published from
+`~/.delfin/served` (a public open-source build, nothing else).
+
+**What `/voila/files/` serves.** Files below the server root whose real path
+(links resolved) stays inside the real root, with no path component that
+starts with `.` except the editor's launch copy `.delfin/ketcher`, and whose
+name matches the allow-list: images, PDFs and that launch copy. Outside
+DELFIN's own directories only raster images and PDFs are sent as
+themselves; anything else, also under a widened allow-list, is sent as
+`text/plain` with `Content-Disposition: attachment` and a `sandbox` CSP, so
+an HTML or SVG file from a calculation or an upload never runs as a page on
+the dashboard's origin. The root is the launch directory when it is below
+the home directory and not the home directory itself, otherwise a private
+cache directory; `DELFIN_VOILA_ROOT_DIR` overrides it only with an existing
+directory that is not `/`, `/home`, `/tmp` or the home directory
+(`DELFIN_VOILA_ALLOW_BROAD_ROOT` = 1 allows those); a refused value is
+reported and the default is used.
+
+**Headers.** Every response carries `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin`, a
+`Permissions-Policy` that denies camera, microphone and geolocation, and a
+Content-Security-Policy of at least `object-src 'none'; base-uri 'self';
+form-action 'self'; frame-ancestors 'self'` (API responses add
+`default-src 'none'`, file downloads `sandbox`). The page CSP has no
+`script-src`: the page runs inline scripts and `eval` through widget
+outputs and loads 3Dmol, xterm and mermaid from cdn.jsdelivr.net and
+3Dmol.org, so a script policy would have to allow inline code and those
+hosts. `same-origin` rather than `no-referrer` because Jupyter accepts a
+cookie-authenticated file request without an XSRF token only when the
+Referer names the same host.
+
+**Session.** The login cookie is HttpOnly and `SameSite=Lax`, and is valid
+for `DELFIN_DASHBOARD_LOGIN_DAYS` days (default 7, at most 30), checked on
+every request; the XSRF cookie is `SameSite=Lax` too. The address the
+launcher prints on a private terminal carries the token once, for the first
+login; a link back into a kept session (the session strip, `delfin-agent where`)
+does not: the browser that logged in has the cookie, any other one gets the
+login page, which takes the token (printed alone by `delfin-agent where`
+with `--token`) and continues to the same link. A kept session's kernel has no maximum age:
+ending it would end the run it was kept for.
+
+**Output encoding.** Text from outside DELFIN (file names, file contents,
+exception messages, the output of cluster commands, job records) is
+HTML-escaped where it is put into dashboard markup, and written into an
+inline `<script>` only with `<`, `>` and `&` as JavaScript escapes (also
+for what py3Dmol embeds). SVG files shown in the agent chat are shown as
+images, links in a converted Word document are kept only for http, https,
+mailto and fragment targets. `tests/test_dashboard_html_escapes_external_text.py`
+holds the dashboard to this for the values that are always external.
+
+**Uploads.** One uploaded file is at most `DELFIN_UPLOAD_MAX_BYTES` (default
+2 GiB); a ZIP unpacks to at most `DELFIN_ZIP_MAX_UNPACKED_BYTES` (default
+8 GiB, counted on the bytes written) and `DELFIN_ZIP_MAX_ENTRIES` files
+(default 20 000); an archive over a limit leaves nothing unpacked. Entries
+with absolute paths, drive letters or `..` are refused, every destination
+must resolve inside the browser's root, and files are created without
+following a link that already sits at the destination. The Calculations
+browser does not enter a folder, or open a file, whose real path is outside
+its root (`DELFIN_BROWSER_FOLLOW_LINKS` = 1 allows it).
+
 ## What each layer guarantees on which host
 
 "Isolated command" below means a shell command under `agent.bash_isolation`
@@ -427,7 +548,8 @@ most relevant to this model:
 - isolation: `isolation`, `isolation_missing`, `no_sandbox`, `no_sandbox_mcp`
 - the gate: `deny_pattern`, `secret_path`, `self_mod`, `outside_ws`,
   `denied_path_via_bash`, `git_config_program`, `script_dir_unknown`,
-  `caged_unasked`
+  `caged_unasked`, `knowledge_write`
+- the context: `memory_refused`, `mcp_description_withheld`
 - permission rules: `permission_rule_deny`, `permission_rule_ask`,
   `permission_rule_allow`
 - the managed policy: `managed_policy_deny`, `managed_policy_ask`
@@ -514,11 +636,32 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   from the shell deny patterns is stopped only where the cage blocks the
   keychain, and its output is still redacted. A keyring call that times
   out is abandoned, not cancelled.
+- **The dashboard page runs inline script.** Its CSP restricts plugins,
+  framing, `<base>` and form targets but not script sources, so markup that
+  escapes the output encoding would run. The output-encoding test covers
+  the values that are always external; an interpolation it does not
+  recognise as external is reviewed by hand. The login cookie has no idle
+  timeout, only the absolute lifetime, and logging out is closing the
+  server.
 - **Kernel and sandbox bugs.** Bubblewrap, Landlock, seccomp and Seatbelt
   are only as strong as their implementations. DELFIN does not defend against
   a kernel exploit.
 - **What the model is shown is sent to the provider.** Credential redaction
   is pattern-based and best-effort.
+- **A fence is a label, not a barrier.** The untrusted fence tells the
+  model which text is data; a model can still follow an instruction inside
+  it. What the model then does passes every layer above. The instruction
+  check on memory and on MCP tool descriptions matches worded shapes and
+  is best-effort; a paraphrase outside them is stored, fenced as a note.
+  MCP descriptions are not pinned: a server that changes a description is
+  shown the new one, fenced or withheld.
+- **Session messages on one account.** A message's sender is the session
+  that wrote the inbox file; a process of the same account can write one
+  under another session's name. The text is fenced and the decision hint
+  applies, but the sender is not authenticated.
+- **Shell writes into the memory stores.** The write tools ask; a shell
+  command reaches a granted `~/.delfin` store only through the bash gate
+  and, where isolation holds, the cage's read-only binds.
 
 ## How to run safest
 

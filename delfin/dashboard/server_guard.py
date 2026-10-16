@@ -5,6 +5,10 @@ may hold a provider key the user exported, and every kernel it starts runs
 agent commands. A protection set before ``exec`` does not survive it, so
 this server extension applies ``process_guard.protect`` inside the server
 once it runs.
+
+It also installs the HTTP-level protections of ``web_security`` (the
+authenticated ``/voila/files/`` route, security headers, the cookie
+policy), the browser-close beacon route and the preview proxy.
 """
 
 
@@ -18,6 +22,17 @@ def _load_jupyter_server_extension(serverapp) -> None:
         process_guard.protect("dashboard server")
     except Exception:
         pass
+    # Authentication on Voila's file route, security headers on every
+    # response, SameSite and a bounded lifetime for the login cookie.
+    # Each part that fails is named in the log; the file route fails
+    # closed (web_security.install_files_route).
+    try:
+        from delfin.dashboard import web_security
+        web_security.install(serverapp)
+    except Exception as exc:
+        serverapp.log.warning(
+            "[delfin] the dashboard's web protections were not installed: %s",
+            exc)
     # The route a closing page sends its beacon to. Without it every
     # close and every dropped connection look the same, and a session
     # whose link went quiet for a minute would be ended as if the
@@ -48,6 +63,18 @@ def _load_jupyter_server_extension(serverapp) -> None:
                 "are linked by their own port")
     except Exception as exc:
         serverapp.log.warning("[delfin] the preview proxy was not installed: %s", exc)
+
+
+async def _start_jupyter_server_extension(serverapp) -> None:
+    """Runs once every extension is loaded: Voila's file route exists by now
+    whichever order the extensions were loaded in."""
+    try:
+        from delfin.dashboard import web_security
+        web_security.install_files_route(serverapp.web_app, serverapp.log)
+    except Exception as exc:
+        serverapp.log.warning(
+            "[delfin] /voila/files/ could not be put behind authentication: %s",
+            exc)
 
 
 # Older jupyter_server spelling.

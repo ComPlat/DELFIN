@@ -290,12 +290,17 @@ def render(message: dict) -> str:
     reply = (f' Reply with session_message(to="{sender}", message=...) only if '
              "it asks you for something; a greeting, thanks or an "
              "acknowledgement gets no reply." if sender else "")
-    from .untrusted import decision_hint
+    from .untrusted import decision_hint, wrap_as
     hint = decision_hint(str(message.get("text") or ""))
     hint = f" {hint}" if hint else ""
+    # The header is the harness's; the text is the sender's, and goes
+    # inside a fence with a random nonce, so a closer or a header-shaped
+    # line in it reads as the sender's text. A message is rendered once,
+    # into the prompt that delivers it.
     return (f'[Message from the session "{who}" — not from the user.{reply}'
             f'{hint}]\n'
-            f"{message.get('text') or ''}")
+            + wrap_as("message", "session_message",
+                      str(message.get("text") or "")))
 
 
 def _receipts_path() -> Path:

@@ -104,8 +104,11 @@ agent that executes model-written commands on the user's behalf. In scope:
   being constrained; one user's job reading or altering another user's
   calculations or scratch.
 - **The dashboard**: it serves a browser interface over a filesystem; path
-  traversal, unintended file access and a bind that exposes it beyond
-  localhost belong here.
+  traversal, unintended file access, a route answering without the token,
+  markup injected through file names or contents, and a bind that exposes
+  it beyond localhost belong here. Its routes, authentication, headers and
+  upload limits are described in the dashboard section of
+  [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#the-dashboard-server).
 
 The threat model the agent's protections are built against, and what each
 layer guarantees on which host, is in
