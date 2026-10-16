@@ -31,7 +31,7 @@ pytest.importorskip("pexpect")
 pytest.importorskip("termios")
 
 from agent_terminal_probes import fake_model            # noqa: E402
-from agent_terminal_probes.pty_chat import Chat         # noqa: E402
+from agent_terminal_probes.pty_chat import Chat, close_all  # noqa: E402
 
 DEFAULT = ("--permission-mode", "default")
 BYPASS = ("--permission-mode", "bypassPermissions", "--unattended")
@@ -55,8 +55,7 @@ def chat(tmp_path):
         return session
 
     yield _open
-    for session in opened:
-        session.close()
+    close_all(opened)
 
 
 def _requests(session: Chat) -> list[dict]:
@@ -227,6 +226,39 @@ def test_a_session_with_a_draft_in_the_box_still_leaves_on_ctrl_d(chat):
     session.send("a draft that is never sent", 0.5)
     assert session.close() == 0
     assert session.child.signalstatus is None
+
+
+_IGNORES = ("import signal, sys, time\n"
+            "for s in {sigs}: signal.signal(s, signal.SIG_IGN)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(120)\n")
+
+
+def _stub(sigs: str):
+    import sys
+    import pexpect
+    child = pexpect.spawn(sys.executable, ["-c", _IGNORES.format(sigs=sigs)],
+                          encoding="utf-8", timeout=10)
+    child.expect("ready")
+    return child
+
+
+def test_a_child_that_only_sigterm_ends_fails_its_teardown():
+    """Ending on SIGTERM is not leaving: the teardown says which step."""
+    from agent_terminal_probes.pty_chat import end_child
+    child = _stub("(signal.SIGHUP, signal.SIGINT)")
+    with pytest.raises(AssertionError, match=r"Ctrl\+D.*SIGTERM ended it"):
+        end_child(child, leave_s=1.0)
+    assert not child.isalive() and child.signalstatus == 15
+
+
+def test_a_child_that_ignores_every_leave_is_killed_and_reported():
+    from agent_terminal_probes.pty_chat import end_child
+    child = _stub("(signal.SIGHUP, signal.SIGINT, signal.SIGTERM)")
+    with pytest.raises(AssertionError, match=r"after SIGTERM.*SIGKILL ended"):
+        end_child(child, leave_s=1.0)
+    assert not child.isalive() and child.signalstatus == 9
+    assert child.closed
 
 
 def test_a_path_is_still_a_message(chat):
