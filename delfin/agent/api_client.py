@@ -20793,6 +20793,13 @@ class _DocToolExecutor:
                     "approval_self_answer", name,
                     str(args.get("command", "") or "")[:120], blocked=True)
                 return _approval_guard.refusal(_answers)
+            _operator = _approval_guard.operator_command(
+                _prose_blanked(str(args.get("command", "") or "")))
+            if _operator:
+                _record_security_event(
+                    "operator_action_refused", name,
+                    str(args.get("command", "") or "")[:120], blocked=True)
+                return _approval_guard.operator_refusal(_operator)
 
         if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (

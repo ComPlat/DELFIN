@@ -109,7 +109,7 @@ def _run(cmd, ws, mode):
 def test_an_operator_action_is_refused_in_every_mode(cmd, mode, ws, events):
     w, mark = ws
     out = _run(cmd, w, mode)
-    assert "the operator" in out and out.startswith("blocked"), out
+    assert "acts as the operator" in out and "blocked:" in out, out
     assert "operator_action_refused" in events
     assert not mark.exists(), mark.read_text()
 

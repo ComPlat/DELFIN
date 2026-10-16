@@ -3640,9 +3640,24 @@ def _print_stop_all_check(report: dict) -> int:
     return 0
 
 
+def _refuse_pause_inside_agent(verb: str) -> bool:
+    """True (and says so) when an agent session started this process: a
+    pause or a resume decides over another session, which is the
+    person's, as for ``ops pause`` (ops_interface._refuse_inside_agent)."""
+    from . import approval_guard
+    if not approval_guard.inside_agent_session():
+        return False
+    print(f"ERROR: {verb} is run by the person, not from inside an agent "
+          "session", file=sys.stderr)
+    return True
+
+
 def cmd_pause(args: argparse.Namespace) -> int:
     """Pause one session (see ``session_pause``). It takes effect at the
-    session's next tool call; nothing else is touched."""
+    session's next tool call; nothing else is touched. Refused inside an
+    agent session."""
+    if _refuse_pause_inside_agent("delfin-agent pause"):
+        return 2
     from . import session_pause
     session_pause.pause(args.session, args.reason or "delfin-agent pause")
     print(f"paused {args.session}: it stops at its next tool call; "
@@ -3651,7 +3666,10 @@ def cmd_pause(args: argparse.Namespace) -> int:
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    """Lift a pause set by ``delfin-agent pause``."""
+    """Lift a pause set by ``delfin-agent pause``. Refused inside an agent
+    session."""
+    if _refuse_pause_inside_agent("delfin-agent resume"):
+        return 2
     from . import session_pause
     was = session_pause.resume(args.session)
     print(f"resumed {args.session}" if was else f"{args.session} was not paused")

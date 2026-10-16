@@ -112,6 +112,9 @@ _KINDS = {
     # An agent session reaching for an approval: the answer command, an
     # answer function, or a write where answers and the CLI gate state live.
     "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
+    # An agent session running the operator's actions (ops send, escalate,
+    # pause; delfin-agent pause/resume).
+    "operator_action_refused": ("🚫", "Agent tried to act as the operator"),
     # An answer from outside the waiting process without the one-time
     # code it showed (file_confirm reads it; cli refuses to write it).
     "approval_code_refused": ("🚫", "Approval answer without the session's code"),
