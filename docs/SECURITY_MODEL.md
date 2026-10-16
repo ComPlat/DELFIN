@@ -265,7 +265,9 @@ Two guards complete the Linux mechanisms:
   At start-up a provider key exported in the shell environment is moved into
   the credential store (`process_guard.put_exported_keys_away`), and
   every agent child gets an environment without provider keys and secrets
-  (`api_client._scrubbed_bash_env`).
+  (`api_client._scrubbed_bash_env`). MCP servers and hooks get the same
+  environment plus only the variables their own entry names in `env`
+  (`api_client._configured_child_env`).
 
 The credential store is the operating system's keyring (macOS Keychain,
 Secret Service, Windows Credential Manager, through the optional `keyring`

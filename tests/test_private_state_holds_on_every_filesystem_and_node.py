@@ -91,10 +91,17 @@ def test_the_parent_death_signal_does_not_name_glibc():
 
 
 def test_hooks_and_mcp_servers_do_not_get_the_provider_keys(monkeypatch):
+    """Nor any other credential unless their entry names it; driven with
+    real children in test_mcp_servers_and_hooks_get_the_scrubbed_
+    environment.py."""
     monkeypatch.setenv("KIT_TOOLBOX_API_KEY", "kit-provider-key")
     monkeypatch.setenv("GITHUB_TOKEN", "a-servers-own-token")
     env = HK._build_env("PreToolUse", tool_name="bash")
-    assert "KIT_TOOLBOX_API_KEY" not in env and env["GITHUB_TOKEN"] == "a-servers-own-token"
+    assert "KIT_TOOLBOX_API_KEY" not in env and "GITHUB_TOKEN" not in env
+    named = HK._build_env("PreToolUse", tool_name="bash",
+                          env_spec={"GITHUB_TOKEN": "${GITHUB_TOKEN}"})
+    assert named["GITHUB_TOKEN"] == "a-servers-own-token"
+    assert "KIT_TOOLBOX_API_KEY" not in named
     import inspect
-    src = inspect.getsource(MC)
-    assert "if k not in _DELFIN_PROVIDER_KEYS}" in src
+    src = inspect.getsource(MC.MCPServer.start)
+    assert "_configured_child_env(self.env" in src

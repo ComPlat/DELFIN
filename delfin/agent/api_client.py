@@ -27309,6 +27309,45 @@ def _scrubbed_bash_env() -> dict:
     return env
 
 
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def env_spec(raw) -> dict:
+    """A configuration's ``env`` entry as ``{name: value template}``.
+
+    A list names variables to pass from the parent environment (each
+    becomes ``"${NAME}"``); an object maps names to values, where
+    ``${NAME}`` stands for the parent's NAME. Anything else is ``{}``.
+    """
+    if isinstance(raw, (list, tuple)):
+        return {str(n).strip(): "${" + str(n).strip() + "}"
+                for n in raw if str(n or "").strip()}
+    if isinstance(raw, dict):
+        return {str(k): "" if v is None else str(v) for k, v in raw.items()}
+    return {}
+
+
+def _configured_child_env(spec=None) -> dict:
+    """``_scrubbed_bash_env`` plus what an MCP server's or a hook's own
+    configuration names (``env_spec``).
+
+    The scrubbed environment is the one every bash child gets: no model
+    provider key, no ``*_TOKEN``/``*_SECRET``/``*_API_KEY``/``*_PASSWORD``
+    variable, no ``GH_TOKEN``/``GITHUB_TOKEN``/AWS secrets. A variable the
+    entry names is put back explicitly: ``${NAME}`` takes the parent's
+    value ("" when unset), anything else is taken literally. Removing by
+    default and adding by name is the allow-list; a server that needs a
+    token says so in its configuration, where the user can read it.
+    """
+    env = _scrubbed_bash_env()
+    for name, template in env_spec(spec).items():
+        if not name:
+            continue
+        env[name] = _ENV_REF.sub(
+            lambda m: os.environ.get(m.group(1), ""), template)
+    return env
+
+
 def _redact_tool_result(text: str) -> str:
     """Redact credentials in a tool result before it enters the context.
 

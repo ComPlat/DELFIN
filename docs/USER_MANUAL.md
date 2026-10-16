@@ -1977,6 +1977,8 @@ External Model Context Protocol servers are configured in `~/.delfin/mcp_servers
 
 A tool reached through MCP runs in a process DELFIN did not start a command line for, so the shell sandbox is not around it. Give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it is started inside a namespace holding only those paths. A server that declares neither runs uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all name it as such.
 
+A stdio server and a hook start with the environment DELFIN's shell commands get: no model provider key, no `GH_TOKEN`/`GITHUB_TOKEN`, no AWS or other cloud secret, and no variable whose name ends in a credential marker such as `_TOKEN`, `_SECRET` or `_API_KEY`. A server or hook that needs one names it in its own entry: `"env": {"GH_TOKEN": "${GH_TOKEN}", "MODE": "ci"}` passes `GH_TOKEN` from your environment and sets `MODE`; `"env": ["GH_TOKEN"]` is the short form for passing names unchanged. For a hook, `env` goes on the command entry beside `command`.
+
 DELFIN ships three servers of its own: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions). They can take their roots from your settings with `agent.mcp_isolation: "builtin"`.
 
 ### Tool groups per workspace
