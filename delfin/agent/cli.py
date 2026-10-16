@@ -70,6 +70,55 @@ def guard_principles_or_exit(pack_dir: "Path | None" = None) -> None:
         raise SystemExit(f"refusing to start: {exc}") from None
 
 
+def _resolve_provider(args: argparse.Namespace,
+                      fallback: "dict | None" = None) -> str:
+    """The provider a session is built with.
+
+    Input: the parsed flags and the settings-file defaults (``fallback``;
+    read here when None and the command takes them). Output: ``--provider``
+    when given, else the settings file's provider, else the provider the
+    model id names (``pricing.infer_provider``: ``kit.``/``azure.`` -> kit,
+    ``name:tag`` -> ollama, ``gpt-``/``o1``/``o3``/``o4`` -> openai,
+    ``claude`` -> claude), else "". An inferred provider is recorded on
+    ``args`` for ``_provider_notes``.
+
+    Rejected: leaving it empty, which sent ``--model kit.<id>`` to the
+    Anthropic backend and its key error; a second prefix table here (the
+    pricing table is the one answerer for "which provider is this id").
+    """
+    if fallback is None:
+        fallback = (_engine_defaults()
+                    if getattr(args, "settings_defaults", False) else {})
+    try:
+        args.provider_inferred_note = ""
+    except Exception:
+        pass
+    provider = (getattr(args, "provider", "") or ""
+                or fallback.get("provider", "") or "")
+    if provider:
+        return provider
+    model = getattr(args, "model", "") or fallback.get("model", "") or ""
+    try:
+        from .pricing import infer_provider
+        inferred = infer_provider(model) if model else ""
+    except Exception:
+        inferred = ""
+    if inferred:
+        try:
+            args.provider_inferred_note = (
+                f"provider   {inferred}, read from the model name {model} "
+                "(no --provider given; --provider names another)")
+        except Exception:
+            pass
+    return inferred
+
+
+def _provider_notes(args: argparse.Namespace) -> list[str]:
+    """The start note of a provider read from the model name, or []."""
+    note = getattr(args, "provider_inferred_note", "") or ""
+    return [note] if note else []
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -87,7 +136,7 @@ def _build_engine(args: argparse.Namespace):
     fallback = _engine_defaults() if getattr(args, "settings_defaults", False) else {}
     backend = args.backend or fallback.get("backend", "") or "api"
     model = args.model or fallback.get("model", "")
-    provider = args.provider or fallback.get("provider", "")
+    provider = _resolve_provider(args, fallback)
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
     engine = AgentEngine(
@@ -701,7 +750,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 3
     # The headless half has no banner, so the can't-deliver lines go to
     # stderr — stdout carries the answer and nothing else.
-    for _note in _bounding_notices(args, engine):
+    for _note in _provider_notes(args) + _bounding_notices(args, engine):
         print(_note, file=sys.stderr)
     if prepare is None:
         _resume_or_create(engine, args)
@@ -1935,7 +1984,8 @@ def _start_interactive_session(args: argparse.Namespace, report,
     # The same start check as cmd_run: bypass without isolation is
     # confirmed once here, else the session starts in default.
     from .isolation_posture import apply_at_start
-    start_notes = tuple(apply_at_start(engine, can_ask=can_ask))
+    start_notes = tuple(_provider_notes(args))
+    start_notes += tuple(apply_at_start(engine, can_ask=can_ask))
     # --unattended: the default run ceilings. Not keyed on can_ask: the
     # window's worker starts with can_ask=False and a person attaches.
     from .run_limits import apply_unattended
@@ -4478,7 +4528,9 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",
-                   help="claude / openai / kit / ollama")
+                   help="claude / openai / kit / ollama (not given: the "
+                        "configured one for chat, else the one the model "
+                        "id names)")
     p.add_argument("--model", default="",
                    help="Model name (provider-specific)")
     p.add_argument("--effort", default="",

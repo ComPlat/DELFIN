@@ -1356,7 +1356,7 @@ Switch with `/mode`. Older mode names (`quick`, `reviewed`, `tdd`, `cluster`, `f
 | `kit` | `KIT_TOOLBOX_API_KEY` | University-hosted, OpenAI-compatible |
 | `ollama` | none | Any OpenAI-compatible endpoint: Ollama, vLLM, LM Studio, llama.cpp-server. `OLLAMA_HOST`, default `http://localhost:11434` |
 
-Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's real context window and its tool, vision and reasoning support — live from the endpoint where that is possible, otherwise from a built-in table — and sizes context management to it. For Ollama it sends the matching `num_ctx`, so a local model is not silently capped.
+Choose with `--provider` / `--model` or `/model`. Without `--provider` and without a provider in the settings file, a model id that names its provider chooses it (`kit.` / `azure.` → kit, `name:tag` → ollama, `gpt-` / `o1` / `o3` / `o4` → openai, `claude` → claude) and the start notes say so; `--provider` always wins. DELFIN detects each model's real context window and its tool, vision and reasoning support — live from the endpoint where that is possible, otherwise from a built-in table — and sizes context management to it. For Ollama it sends the matching `num_ctx`, so a local model is not silently capped.
 
 **A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
 
