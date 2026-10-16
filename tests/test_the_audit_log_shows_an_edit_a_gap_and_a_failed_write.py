@@ -129,6 +129,10 @@ def test_a_rotation_carries_the_chain(tmp_path):
     lines = _lines(path)
     rec = json.loads(lines[0])
     rec["ts"] = "2020-01-01T00:00:00Z"
+    # The signature covered the old timestamp; this record now stands as
+    # one written before the key (tests/test_the_audit_chain_is_keyed.py
+    # covers a signed rotation).
+    rec.pop("mac", None)
     path.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
     AL._write_head(path, AL._line_hash(path.read_bytes().rstrip(b"\n")),
                    path.stat().st_size)
