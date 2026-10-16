@@ -65,6 +65,19 @@ owner. The checks bind administrators too; the one way around them is a
 documented, logged emergency procedure. Both are described in
 [docs/MAIN_PROTECTION.md](docs/MAIN_PROTECTION.md).
 
+## What a release and a fetched component are checked against
+
+A release is built by `.github/workflows/release.yml` from a tag, with its
+build tools installed by SHA-256 (`pip install --require-hashes`); each
+distribution carries a SLSA provenance attestation and a CycloneDX SBOM
+attestation, and the SBOM is attached to the GitHub release
+(`gh attestation verify`, see [docs/RELEASING.md](docs/RELEASING.md)).
+What DELFIN fetches at run time is pinned the same way: the Ketcher drawing
+editor is one build refused unless its SHA-256 matches and unpacked only
+inside its own directory, and the agent's default container image is named
+by digest. The full table of pins and the tests that hold them is in
+docs/RELEASING.md.
+
 ## Scope
 
 DELFIN runs quantum-chemical software, often on shared clusters, and ships an

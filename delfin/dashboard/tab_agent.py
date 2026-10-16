@@ -13033,7 +13033,7 @@ def create_tab(ctx):
                 _append_system_message(
                     "No MCP servers configured.\n"
                     "Add one with: /mcp add <name> <command> [args ...]\n"
-                    "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp"
+                    "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem@1.0.0 /tmp"
                 )
                 return True
             lines = ["MCP servers in effect (source shown per entry):"]

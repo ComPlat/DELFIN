@@ -77,7 +77,7 @@ def test_the_build_is_checked_and_nothing_comes_from_a_cache_or_is_replaced():
     runs = " ".join(s.get("run", "") for s in jobs["build"]["steps"])
     assert "python -m build --no-isolation --sdist --wheel" in runs, (
         "an isolated build fetches an unpinned backend at release time")
-    assert "setuptools wheel" in runs
+    assert "pip install --require-hashes -r .github/ci/release-requirements.txt" in runs
     assert "python scripts/check_distribution.py --release dist/*" in runs
     assert '[ "$TAG" = "v$version" ]' in runs
     for job in jobs.values():
