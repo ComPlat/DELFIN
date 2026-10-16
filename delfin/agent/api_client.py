@@ -4391,6 +4391,8 @@ def _steer_label(text: str) -> str:
     The chat must not put words in the user's mouth.
     """
     head = str(text or "").lstrip()
+    if head.startswith("[Message from the session mailbox, sender unverified"):
+        return "✉ [unverified sender, mid-run]: "
     if head.startswith("[Message from the session"):
         return "✉ [another session, mid-run]: "
     if head.startswith("[scheduled]"):

@@ -15,11 +15,13 @@ from delfin.dashboard import agent_sessions as AS
 
 
 def test_a_delivered_message_does_not_name_the_session():
-    delivered = SM.render({"from": "abc", "from_title": "other", "text": "Hallo"})
-    state = {"chat_messages": [{"role": "user", "content": delivered},
-                               {"role": "user", "content": "Lies bitte notes.txt"}]}
-    assert AS._session_title(state) == "Lies bitte notes.txt"
-    assert AS._session_title({"chat_messages": [{"role": "user", "content": delivered}]}) == "New session"
+    for verified in (True, False):
+        delivered = SM.render({"from": "abc", "from_title": "other",
+                               "text": "Hallo", "verified": verified})
+        state = {"chat_messages": [{"role": "user", "content": delivered},
+                                   {"role": "user", "content": "Lies bitte notes.txt"}]}
+        assert AS._session_title(state) == "Lies bitte notes.txt"
+        assert AS._session_title({"chat_messages": [{"role": "user", "content": delivered}]}) == "New session"
 
 
 def test_a_delivered_message_does_not_pin_the_language():
@@ -29,7 +31,8 @@ def test_a_delivered_message_does_not_pin_the_language():
 
 
 def test_the_wrapper_asks_for_a_reply_only_to_a_request():
-    text = SM.render({"from": "abc", "from_title": "other", "text": "Danke!"})
+    text = SM.render({"from": "abc", "from_title": "other", "text": "Danke!",
+                      "verified": True})
     assert "only if it asks you for something" in text
     assert "acknowledgement gets no reply" in text
     assert "if it needs one" not in text

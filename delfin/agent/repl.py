@@ -4099,8 +4099,8 @@ class TerminalAgent:
             if not messages:
                 return ""
             for message in messages:
-                sender = (message.get("from_title") or message.get("from")
-                          or "an operator")
+                # Named only when its signature checks (session_messages).
+                sender = _msgs.sender_label(message)
                 # The text too, not only the sender: the message becomes
                 # the next prompt, and a prompt is not echoed. Somebody
                 # watching the pane has to be able to read what arrived.

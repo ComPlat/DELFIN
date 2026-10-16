@@ -53,7 +53,7 @@ def test_a_legacy_fact_keeps_no_credential(held_key, tmp_path):
 def test_a_session_message_passes_on_no_credential(held_key, tmp_path, monkeypatch):
     monkeypatch.setattr(SM, "_DIR", tmp_path)
     SM.send("abc", f"here is the key: {KIT_KEY}", from_key="me", from_title=GH)
-    raw = "".join(f.read_text() for f in tmp_path.iterdir())
+    raw = "".join(f.read_text() for f in tmp_path.glob("*.jsonl"))
     assert KIT_KEY not in raw and GH not in raw
     got = SM.take("abc")
     assert got and "[redacted:credential]" in got[0]["text"]

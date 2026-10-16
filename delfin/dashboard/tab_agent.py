@@ -8576,7 +8576,8 @@ def create_tab(ctx):
         if not messages:
             return
         for message in messages:
-            sender = message.get("from_title") or message.get("from") or "a session"
+            # Named only when its signature checks (session_messages).
+            sender = _msgs.sender_label(message)
             _append_system_message(
                 f"✉ Message from {sender}: {str(message.get('text') or '')[:300]}")
         text = HarnessText("\n\n".join(_msgs.render(m) for m in messages))
