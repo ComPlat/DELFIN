@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+
+from . import safe_git
 from pathlib import Path
 
 __all__ = [
@@ -133,10 +135,7 @@ def workspace_refusal_message(path: Path | str) -> str:
 
 def _git(workspace: Path, *args: str) -> str:
     try:
-        proc = subprocess.run(
-            ["git", *args], cwd=str(workspace), capture_output=True,
-            text=True, timeout=_GIT_TIMEOUT_S, check=False,
-        )
+        proc = safe_git.run(args, workspace, timeout=_GIT_TIMEOUT_S)
     except Exception:
         return ""
     # Only the trailing newline. `--porcelain` puts the status in columns

@@ -3762,15 +3762,7 @@ _GIT_HOOK_CONFIG_WRITE_RE = re.compile(
 #: section and variable names case-insensitively. Subsection names
 #: (``<driver>``, ``<url>``, ``<format>``) are case-sensitive in git; the
 #: match lower-cases them too, which only widens it.
-_GIT_PROGRAM_CONFIG_KEY_RE = re.compile(
-    r"(?:core\.(?:hookspath|fsmonitor|sshcommand|pager|editor|askpass|"
-    r"gitproxy|alternaterefscommand)"
-    r"|sequence\.editor|gpg\.(?:.+\.)?program|credential\.(?:.+\.)?helper"
-    r"|diff\.external|diff\..+\.(?:textconv|command)"
-    r"|filter\..+\.(?:clean|smudge|process)|merge\..+\.driver"
-    r"|(?:difftool|mergetool)\..+\.cmd|interactive\.difffilter"
-    r"|remote\..+\.(?:uploadpack|receivepack)|submodule\..+\.update"
-    r"|pager\..+|alias\..+|include\.path|includeif\..+\.path)")
+from .safe_git import PROGRAM_KEY_RE as _GIT_PROGRAM_CONFIG_KEY_RE  # noqa: E402  one list for the gate and DELFIN's own reads
 #: ``pager.<cmd>`` takes a boolean as well as a program.
 _GIT_BOOLEAN_VALUES = frozenset({"true", "false", "yes", "no", "on", "off",
                                  "1", "0", ""})
@@ -15883,8 +15875,24 @@ class _DocToolExecutor:
             pass
 
     def _shell_snapshot(self, perms: "KitToolPermissions"):
-        """The writable roots before a shell command (shell_changes).
-        None when it cannot be taken. Never raises."""
+        """The writable roots before a shell command (shell_changes), with
+        the git config watch (git_config_watch) attached as ``git_watch``.
+        None when neither can be taken. Never raises."""
+        try:
+            from . import git_config_watch as _gcw
+            gsnap = _gcw.take(getattr(perms, "workspace", "."))
+        except Exception:
+            gsnap = None
+        snap = self._shell_snapshot_files(perms)
+        if snap is None:
+            return _GitWatchOnly(gsnap) if gsnap is not None else None
+        try:
+            snap.git_watch = gsnap
+        except Exception:
+            pass
+        return snap
+
+    def _shell_snapshot_files(self, perms: "KitToolPermissions"):
         try:
             from . import change_journal as _cj
             from . import shell_changes as _sc
@@ -15903,6 +15911,21 @@ class _DocToolExecutor:
             return None
 
     def _journal_shell_changes(
+        self, tool: str, snap, perms: "KitToolPermissions",
+    ) -> list[str]:
+        """The git config watch first (a program entry the command added to
+        the repository's config is undone), then the file journal."""
+        notes: list[str] = []
+        try:
+            from . import git_config_watch as _gcw
+            notes = _gcw.check(getattr(snap, "git_watch", None))
+        except Exception:
+            notes = []
+        if snap is None or isinstance(snap, _GitWatchOnly):
+            return notes
+        return notes + self._journal_shell_file_changes(tool, snap, perms)
+
+    def _journal_shell_file_changes(
         self, tool: str, snap, perms: "KitToolPermissions",
     ) -> list[str]:
         """Journal what a shell command changed under the roots, one
@@ -26860,6 +26883,20 @@ def _landlock_hide_paths(write_roots) -> list[str]:
 _GIT_ROOTS_CACHE: dict = {}
 
 
+#: Inside a git directory, what a sandboxed command may read but not write:
+#: hooks run programs, and config, config.worktree and info/ (attributes)
+#: name the programs git runs (filters, fsmonitor, pager, textconv, ...).
+_GIT_READ_ONLY_IN_THE_SANDBOX = ("hooks", "config", "config.worktree", "info")
+
+
+class _GitWatchOnly:
+    """A shell snapshot that holds only the git config watch (the file
+    snapshot could not be taken)."""
+
+    def __init__(self, git_watch):
+        self.git_watch = git_watch
+
+
 def _git_metadata_roots(workspace) -> list[str]:
     """The git directories an isolated command must be able to write for
     ordinary version control to work: the shared object store and the
@@ -27136,7 +27173,8 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
     roots += [str(Path(p).resolve()) for p in extra_write]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     roots += [r for r in git_roots if r not in roots]
-    hook_dirs = [str(Path(g) / "hooks") for g in git_roots]
+    hook_dirs = [str(Path(g) / name) for g in git_roots
+                 for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
     env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"]
@@ -28317,8 +28355,15 @@ def _bash_isolation_argv(
             continue
     # A git hook the command plants would run on the user's next git
     # command: existing hooks stay readable, new ones cannot be written.
+    # The same holds for what tells git which programs to run -- the
+    # repository and per-worktree config and info/ (info/attributes): a
+    # change there would act on the git commands that run outside the
+    # sandbox afterwards, DELFIN's own and the user's. Commits, branches
+    # and objects stay writable; `git config` from inside the sandbox is
+    # refused by the mount ("could not write config file").
     for g in git_roots:
-        args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+        for name in _GIT_READ_ONLY_IN_THE_SANDBOX:
+            args += ["--ro-bind-try", str(Path(g) / name), str(Path(g) / name)]
     if caged_unasked:
         # Nobody saw this command. The files whose write is asked about in
         # every mode (git metadata, CI and workspace configuration, the
