@@ -50,6 +50,8 @@ _CONTENT_KINDS: frozenset = frozenset({
     "filesystem_walk",        # a walk over a shared file system
     "pr_merge_contributor",   # the installation's role is not a merger's, and neither is its user's
     "data_egress",            # the user's content leaving the machine
+    "gh_credential_print",    # the account's GitHub login, printed
+    "gh_api_write",           # a GitHub write past the push/PR/merge checks
     # These two read as consent -- both refusals say a human would make
     # them fine -- and are deliberately NOT handed over. A push names a
     # branch on the project's own remote and is bounded by that. A

@@ -5613,6 +5613,104 @@ def _is_gh_pr_merge(cmd: str) -> bool:
     return bool(_GH_PR_MERGE_RE.search(_with_shell_bodies(cmd)))
 
 
+# -- the account's GitHub login, past the gates that guard it -----------------
+#
+# Two kinds of command take the user's GitHub login around the checks that
+# guard it. One prints the credential (`gh auth token`, `gh auth status
+# --show-token`, `gh auth git-credential`, `git credential fill`): the tool
+# result is redacted, but the value is usable inside the same command
+# (`curl -H "Authorization: token $(gh auth token)" ...`). The other writes
+# through the raw API: `gh api -X PUT repos/o/r/pulls/7/merge` merges with
+# none of the consent `gh pr merge` needs, and the same holds for refs,
+# contents, rulesets and collaborators. Inside the bwrap cage ~/.config/gh is
+# masked and both fail (measured 2026-10-16); these rules hold where there
+# is no cage -- no bubblewrap, a Landlock or "none" fallback, or
+# agent.bash_isolation "off". Matching is generous, like a deny rule: a
+# false positive costs a refusal, never a write.
+
+_GH_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;\n|&()`]")
+_COMMAND_WRAPPERS = frozenset({"sudo", "command", "exec", "env", "nohup",
+                               "time", "nice", "stdbuf", "timeout"})
+
+
+def _command_words(cmd: str) -> list:
+    """Each simple command of *cmd*, and of every shell body it hands on,
+    as words: leading assignments and wrappers dropped, the program as its
+    base name. A part that does not parse is split on white space."""
+    out = []
+    for part in _GH_SEGMENT_SPLIT_RE.split(_with_shell_bodies(cmd or "")):
+        try:
+            words = shlex.split(part)
+        except ValueError:
+            words = part.split()
+        while words and (words[0] in _COMMAND_WRAPPERS
+                         or words[0].startswith("-")
+                         or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                         or re.match(r"^\d+(?:\.\d+)?[smhd]?$", words[0])):
+            words = words[1:]
+        if words:
+            out.append([os.path.basename(words[0])] + words[1:])
+    return out
+
+
+def _prints_a_credential(cmd: str) -> str:
+    """The command in *cmd* that prints the GitHub login, or ""."""
+    for w in _command_words(cmd):
+        if w[0] == "gh" and len(w) > 2 and w[1] == "auth":
+            if w[2] in ("token", "git-credential"):
+                return f"gh auth {w[2]}"
+            if w[2] == "status" and any(
+                    a == "--show-token" or a.startswith("--show-token=")
+                    or (a.startswith("-") and not a.startswith("--")
+                        and a[1:].isalpha() and "t" in a[1:])
+                    for a in w[3:]):
+                return "gh auth status --show-token"
+        if w[0] == "git":
+            sub = _git_subcommand(w[1:])
+            if sub == "credential" or sub.startswith("credential-"):
+                return f"git {sub}"
+    return ""
+
+
+def _gh_api_write(cmd: str) -> str:
+    """The ``gh api`` call in *cmd* that writes, or "".
+
+    A write is an explicit method other than GET or HEAD, or a request
+    body (``-f``/``-F``/``--field``/``--raw-field``/``--input``) without
+    an explicit GET, which makes gh send a POST. Every GraphQL call is
+    counted as one: a query and a mutation take the same shape, and
+    telling them apart would mean reading the query text.
+    """
+    for w in _command_words(cmd):
+        if w[0] != "gh" or len(w) < 2 or w[1] != "api":
+            continue
+        args = w[2:]
+        method, body = "", False
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ("-X", "--method") and i + 1 < len(args):
+                method = args[i + 1].upper()
+                i += 2
+                continue
+            if a.startswith("--method="):
+                method = a.split("=", 1)[1].upper()
+            elif a.startswith("-X") and len(a) > 2:
+                method = a[2:].upper()
+            elif (a in ("-f", "-F", "--field", "--raw-field", "--input")
+                  or a.startswith(("--field=", "--raw-field=", "--input="))
+                  or (a[:2] in ("-f", "-F") and len(a) > 2)):
+                body = True
+            i += 1
+        if "graphql" in args:
+            return "gh api graphql"
+        if method and method not in ("GET", "HEAD"):
+            return f"gh api -X {method}"
+        if body and not method:
+            return "gh api with a request body (a POST)"
+    return ""
+
+
 # -- a push to GitHub, the one way out of the process cage ---------------------
 #
 # SSH is closed inside the cage (keys, agent and control sockets are masked,
@@ -21045,6 +21143,29 @@ class _DocToolExecutor:
             # cannot run the command at all (no git; for pr create/merge
             # no gh or no gh login) has nothing to consent to, so refuse
             # with the remedy and never prompt. No git ls-remote here.
+            # The GitHub login stays behind the checks that guard it, in
+            # every mode: nothing here needs the credential printed, and a
+            # raw API write skips the consent below (_prints_a_credential).
+            _credential = _prints_a_credential(cmd)
+            if _credential:
+                _record_security_event("gh_credential_print", "bash",
+                                       cmd[:80], blocked=True)
+                return (f"blocked: `{_credential}` prints the account's "
+                        "GitHub login. Nothing here needs it: `git push` "
+                        "and the gh subcommands use the login themselves, "
+                        "and the push path hands it to git without showing "
+                        "it. Tell the user what you wanted to do with it.")
+            _api_write = _gh_api_write(cmd)
+            if _api_write:
+                _record_security_event("gh_api_write", "bash", cmd[:80],
+                                       blocked=True)
+                return (f"blocked: `{_api_write}` writes to GitHub through "
+                        "the raw API, which skips the request a push, a pull "
+                        "request or a merge needs here. Use the gh "
+                        "subcommand for it (`gh pr create`, `gh pr comment`, "
+                        "`gh pr merge`, `gh issue comment`), which goes "
+                        "through that check. Reads (`gh api <path>` without "
+                        "-X or a request body) run as before.")
             _publishes = (_is_gh_pr_merge(cmd) or _is_git_push(cmd)
                           or _is_gh_pr_create(cmd))
             if _publishes:
