@@ -83,9 +83,14 @@ def test_an_included_file_is_read_as_the_repository_s_own(repo, tmp_path):
     inc = tmp_path / "more.cfg"
     inc.write_text("[diff \"x\"]\n\ttextconv = false\n")
     run("config", "include.path", str(inc))
+    run("config", f"includeIf.gitdir:{r}/.git.path", str(inc))
     ov = _overrides(SG.argv_for(["status"], str(r)))
     assert "diff.x.textconv=" in ov
-    assert "include.path=" in ov
+    # git refuses an include key on the command line; the included entry
+    # is what is overridden, and git still runs.
+    assert not any(o.startswith(("include.", "includeif.")) for o in ov)
+    res = SG.run(["rev-parse", "--show-toplevel"], r)
+    assert res.returncode == 0, res.stderr
 
 
 def test_the_user_s_own_global_configuration_is_left_alone(repo, tmp_path):
