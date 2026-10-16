@@ -26740,6 +26740,12 @@ def _landlock_hide_paths(write_roots) -> list[str]:
 _GIT_ROOTS_CACHE: dict = {}
 
 
+#: Inside a git directory, what a sandboxed command may read but not write:
+#: hooks run programs, and config, config.worktree and info/ (attributes)
+#: name the programs git runs (filters, fsmonitor, pager, textconv, ...).
+_GIT_READ_ONLY_IN_THE_SANDBOX = ("hooks", "config", "config.worktree", "info")
+
+
 def _git_metadata_roots(workspace) -> list[str]:
     """The git directories an isolated command must be able to write for
     ordinary version control to work: the shared object store and the
@@ -27016,7 +27022,8 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
     roots += [str(Path(p).resolve()) for p in extra_write]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
     roots += [r for r in git_roots if r not in roots]
-    hook_dirs = [str(Path(g) / "hooks") for g in git_roots]
+    hook_dirs = [str(Path(g) / name) for g in git_roots
+                 for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
     env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"]
@@ -28158,8 +28165,15 @@ def _bash_isolation_argv(
             continue
     # A git hook the command plants would run on the user's next git
     # command: existing hooks stay readable, new ones cannot be written.
+    # The same holds for what tells git which programs to run -- the
+    # repository and per-worktree config and info/ (info/attributes): a
+    # change there would act on the git commands that run outside the
+    # sandbox afterwards, DELFIN's own and the user's. Commits, branches
+    # and objects stay writable; `git config` from inside the sandbox is
+    # refused by the mount ("could not write config file").
     for g in git_roots:
-        args += ["--ro-bind-try", str(Path(g) / "hooks"), str(Path(g) / "hooks")]
+        for name in _GIT_READ_ONLY_IN_THE_SANDBOX:
+            args += ["--ro-bind-try", str(Path(g) / name), str(Path(g) / name)]
     if caged_unasked:
         # Nobody saw this command. The files whose write is asked about in
         # every mode (git metadata, CI and workspace configuration, the
