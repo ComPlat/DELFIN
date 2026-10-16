@@ -202,7 +202,9 @@ commands are refused on a host where nothing can hold them.
 `agent.bash_isolation` = `container` runs `bash`, `bash_background` and
 `run_tests` in a container instead (`container_exec`, Apptainer/Singularity,
 Podman or Docker, chosen by `agent.container.runtime`, image
-`agent.container.image`). The container mounts the writable roots and the
+`agent.container.image`; without one, `container_exec.DEFAULT_OCI_IMAGE`,
+python:3.11-slim named by the digest of its image index rather than by a
+tag the registry can move). The container mounts the writable roots and the
 git metadata read-write, the read-only roots, the git hooks and the
 approval answer locations read-only, covers the credential locations of
 `sandbox._HOME_SECRET_DIRS` that lie inside a mounted root, and mounts
@@ -330,7 +332,13 @@ security panel and `delfin-agent doctor` say so.
   `roots`/`read_roots` starts in a namespace holding only those paths
   (`mcp_isolation`; `agent.mcp_isolation` = `builtin` does this for DELFIN's
   own servers). A server that declares neither runs uncontained, and the
-  banner, `/mcp` and `delfin-agent doctor` say so.
+  banner, `/mcp` and `delfin-agent doctor` say so. The documented examples
+  name the package version: `npx -y` without one runs the newest upload
+  of the package at every start.
+- **The model behind a name.** Each request line records the model id the
+  provider's response reports beside the name DELFIN asked for
+  (`turn_metrics.record_request`, `served_model`), so a routing alias that
+  the endpoint repoints shows in the metrics and in a bug report.
 - The dashboard's approval of a CLI-backend `Bash` call runs through
   `sandbox.run_agent_command`: an allow-list, then bubblewrap or firejail,
   else (mode `allowlist`) Landlock with the network denied as far as the
