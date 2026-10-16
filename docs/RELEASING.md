@@ -100,7 +100,9 @@ and the other three jobs still run.
 | Bun | version + SHA-256 | by hand | `tui/scripts/install-bun.sh` |
 | TUI packages | `tui/bun.lock` (sha512 per entry) | Dependabot `bun` (minor/patch, not `@opentui/*`) | `bun install --frozen-lockfile` |
 | xtb4stda, stda, their parameter files | tag v1.0 / its commit + SHA-256 per file | by hand | `fetch_verified` in `delfin/qm_tools/install_qm_tools.sh` |
-| Python dependencies | ranges in `pyproject.toml` | Dependabot `pip` (grouped) | `dependency-review.yml` on PRs; `audit.yml` nightly |
+| Ketcher drawing editor (fetched on first use, served by the dashboard) | version 3.18.0 + size + SHA-256 in `delfin/dashboard/ketcher.py` | by hand | `tests/test_the_editor_download_is_pinned_and_unpacked_inside.py`; `install()` refuses a mismatch and any archive member outside its directory |
+| agent container image (`agent.bash_isolation = "container"`) | `python@sha256:` digest in `delfin/agent/container_exec.py` | Dependabot `docker` on `.github/ci/agent-container/Dockerfile`, 7-day cooldown; the PR stays red until the constant matches | `tests/test_what_the_agent_runs_on_is_named_exactly.py` |
+| Python dependencies | ranges in `pyproject.toml`; voila, jupyter-server and tornado floored at the releases that fix their known advisories | Dependabot `pip` (grouped) | `dependency-review.yml` on PRs; `audit.yml` nightly |
 
 `audit.yml` fails on a known advisory in the closure of `.[agent,docs]`; an
 advisory accepted on purpose goes in `.github/ci/audit-ignore.txt` with its
