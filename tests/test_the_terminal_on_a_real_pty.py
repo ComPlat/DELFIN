@@ -213,6 +213,22 @@ def test_only_a_near_miss_of_a_builtin_is_held_back(line, near):
     assert rc.nearest_builtin(line) == near
 
 
+# ---------------------------------------------------------------------------
+# Teardown
+# ---------------------------------------------------------------------------
+
+def test_a_session_with_a_draft_in_the_box_still_leaves_on_ctrl_d(chat):
+    """Ctrl+D on a non-empty line deletes forward (readline), not leaves.
+
+    A close() that sends only Ctrl+D leaves such a session to pexpect's
+    forced close, whose SIGKILL is given 0.1 s to be reaped.
+    """
+    session = chat()
+    session.send("a draft that is never sent", 0.5)
+    assert session.close() == 0
+    assert session.child.signalstatus is None
+
+
 def test_a_path_is_still_a_message(chat):
     """The suggestion must not swallow text that only starts with a slash."""
     session = chat()
