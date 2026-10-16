@@ -466,8 +466,9 @@ shape anyway is withheld at recall. The user's own words are not filtered.
 bound to `127.0.0.1` unless `--ip` says otherwise (a non-loopback bind is
 refused without `--allow-remote-bind`). The protections below are installed into
 that server by the `delfin.dashboard.server_guard` extension
-(`delfin/dashboard/web_security.py`); each one that cannot be installed is
-named in the server log.
+(`delfin/dashboard/web_security.py`) and, for logins, by the identity
+provider the launcher selects (`delfin.dashboard.identity`); each one that
+cannot be installed is named in the server log or on the terminal.
 
 **Authentication.** Every route that serves user data or runs code requires
 the server token or the login cookie it sets: the rendered dashboard, the
@@ -501,25 +502,79 @@ reported and the default is used.
 **Headers.** Every response carries `X-Content-Type-Options: nosniff`,
 `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin`, a
 `Permissions-Policy` that denies camera, microphone and geolocation, and a
-Content-Security-Policy of at least `object-src 'none'; base-uri 'self';
-form-action 'self'; frame-ancestors 'self'` (API responses add
-`default-src 'none'`, file downloads `sandbox`). The page CSP has no
-`script-src`: the page runs inline scripts and `eval` through widget
-outputs and loads 3Dmol, xterm and mermaid from cdn.jsdelivr.net and
-3Dmol.org, so a script policy would have to allow inline code and those
-hosts. `same-origin` rather than `no-referrer` because Jupyter accepts a
-cookie-authenticated file request without an XSRF token only when the
-Referer names the same host.
+Content-Security-Policy (`delfin.dashboard.web_security.PAGE_CSP`; API responses add
+`default-src 'none'`, file downloads `sandbox`) that names where the page
+may load from:
 
-**Session.** The login cookie is HttpOnly and `SameSite=Lax`, and is valid
-for `DELFIN_DASHBOARD_LOGIN_DAYS` days (default 7, at most 30), checked on
-every request; the XSRF cookie is `SameSite=Lax` too. The address the
-launcher prints on a private terminal carries the token once, for the first
-login; a link back into a kept session (the session strip, `delfin-agent where`)
-does not: the browser that logged in has the cookie, any other one gets the
-login page, which takes the token (printed alone by `delfin-agent where`
-with `--token`) and continues to the same link. A kept session's kernel has no maximum age:
-ending it would end the run it was kept for.
+- `script-src 'self' 'unsafe-inline' 'unsafe-eval'` and three files on
+  cdn.jsdelivr.net, each by its full versioned path and loaded with an SRI
+  hash (xterm, its fit add-on, mermaid; the list is
+  `delfin/dashboard/pinned_cdn.py`). Another version, another package on
+  the same CDN, or any other host is refused;
+- `style-src 'self' 'unsafe-inline'` and the pinned xterm stylesheet;
+- `connect-src 'self'`: `fetch`, `XMLHttpRequest` and websockets reach only
+  the dashboard's own origin;
+- `img-src` and `media-src 'self' data: blob:`, `font-src 'self' data:`,
+  `worker-src 'self' blob:`, `frame-src 'self' data: blob:`,
+  `manifest-src 'self'`, and `object-src 'none'; base-uri 'self';
+  form-action 'self'; frame-ancestors 'self'`.
+
+`'unsafe-inline'` and `'unsafe-eval'` are measured necessities, not
+defaults: widget outputs run code through inline scripts and inline
+handlers, and Voila runs every `Javascript` output -- the dashboard's
+start-up script among them -- through `eval`; without them the page does
+not start. The 3D viewers use the bundled 3Dmol only (there is no network
+fallback); MathJax is pointed at an empty script on the same origin
+(`delfin.dashboard.web_security.NO_TYPESETTING_ROUTE`), so `script-src` has no `data:`.
+Voila's page template links Font Awesome from cdn.jsdelivr.net with a
+version range and no SRI; the policy refuses both stylesheets (two console
+messages per load) and the icons render from the copy bundled in Voila's
+own scripts. Measured in headless Chromium with every tab, every nested tab
+bar, two viewers and the drawing editor's frame opened: no other
+violation, no response of 400 or above. `same-origin` rather than
+`no-referrer` because Jupyter accepts a cookie-authenticated file request
+without an XSRF token only when the Referer names the same host.
+
+**Session.** A login is a session on the server
+(`delfin.dashboard.identity`, jupyter-server's token provider with
+server-side sessions; `delfin.dashboard.login_session`). The login cookie
+is HttpOnly and `SameSite=Lax` and carries a random session id; the
+server keeps, per id, when the login was made and when it was last used,
+in an owner-only file in jupyter-server's runtime directory (only a hash
+of each id; a restart keeps logins and logouts). A cookie authenticates
+nothing once its session is:
+
+- logged out: the header's **Log out** control (or `GET /logout`) ends the
+  session on the server, so a copy of the cookie stops working too;
+- idle for longer than `DELFIN_DASHBOARD_IDLE_HOURS` hours (default 12, at
+  least 15 minutes, at most the lifetime). Use is every authenticated
+  request and, because a page in use talks to its kernel over a websocket
+  that is authenticated once, any key, pointer or wheel input in the page,
+  reported at most every five minutes; a page whose login ended says so;
+- older than `DELFIN_DASHBOARD_LOGIN_DAYS` days (default 7, at most 30).
+
+The XSRF cookie is `SameSite=Lax` too. A token login cannot set a
+permanent password (jupyter-server's `allow_password_change` is off: it
+wrote a password hash into the Jupyter configuration, valid for every
+Jupyter server of the account). If `delfin.dashboard.identity` cannot be
+loaded the launcher says so and the server runs with jupyter-server's own
+provider: no logout on the server and no idle timeout. The address the
+launcher prints on a private terminal carries the token once, for the
+first login; a link back into a kept session (the session strip,
+`delfin-agent where`) does not: the browser that logged in has the cookie,
+any other one -- or one whose login ended -- gets the login page, which
+takes the token (printed alone by `delfin-agent where` with `--token`) and
+continues to the same link. A kept session's kernel has no maximum age:
+ending a login does not end it, and an open page keeps its open
+connection until it reloads.
+
+**Refused logins.** A wrong token -- on the login form, in the URL or in
+the `Authorization` header -- is recorded as the security event
+`dashboard_login_refused` (at most one record a minute; the next one names
+how many were held back) with the client address and the path, never the
+token: a warning line in the server log and a durable entry in the
+attention inbox. A cookie that has expired or does not verify is not
+recorded (tornado reports both the same way, and expiry is routine).
 
 **Output encoding.** Text from outside DELFIN (file names, file contents,
 exception messages, the output of cluster commands, job records) is
@@ -531,14 +586,20 @@ mailto and fragment targets. `tests/test_dashboard_html_escapes_external_text.py
 holds the dashboard to this for the values that are always external.
 
 **Uploads.** One uploaded file is at most `DELFIN_UPLOAD_MAX_BYTES` (default
-2 GiB); a ZIP unpacks to at most `DELFIN_ZIP_MAX_UNPACKED_BYTES` (default
-8 GiB, counted on the bytes written) and `DELFIN_ZIP_MAX_ENTRIES` files
-(default 20 000); an archive over a limit leaves nothing unpacked. Entries
-with absolute paths, drive letters or `..` are refused, every destination
-must resolve inside the browser's root, and files are created without
-following a link that already sits at the destination. The Calculations
-browser does not enter a folder, or open a file, whose real path is outside
-its root (`DELFIN_BROWSER_FOLLOW_LINKS` = 1 allows it).
+2 GiB; the agent tab's attachments at most 32 MiB); a ZIP unpacks to at
+most `DELFIN_ZIP_MAX_UNPACKED_BYTES` (default 8 GiB, counted on the bytes
+written) and `DELFIN_ZIP_MAX_ENTRIES` files (default 20 000); an archive
+over a limit leaves nothing unpacked. Entries with absolute paths, drive
+letters or `..` are refused, every destination must resolve inside the
+browser's root, and files are created without following a link that
+already sits at the destination. The same rules hold for every upload
+widget (the Calculations browser, the Literature tab, the ORCA Builder,
+the agent tab): the name the page sends is reduced to a file name,
+uploaded files are owner-only (0600), and where an upload replaces a file
+(an ORCA job directory, the agent's upload folder) it is written beside it
+and renamed over it, so a link at that name is replaced, not followed. The
+Calculations browser does not enter a folder, or open a file, whose real
+path is outside its root (`DELFIN_BROWSER_FOLLOW_LINKS` = 1 allows it).
 
 ## What each layer guarantees on which host
 
@@ -695,13 +756,19 @@ that path append-only for users.
   from the shell deny patterns is stopped only where the cage blocks the
   keychain, and its output is still redacted. A keyring call that times
   out is abandoned, not cancelled.
-- **The dashboard page runs inline script.** Its CSP restricts plugins,
-  framing, `<base>` and form targets but not script sources, so markup that
-  escapes the output encoding would run. The output-encoding test covers
+- **The dashboard page runs inline script.** Its CSP limits where
+  scripts, styles, images and connections come from, but it has to allow
+  inline script and `eval` (widget outputs run that way), so markup that
+  escapes the output encoding would run. What such script could reach is
+  narrowed: no script from another host or another CDN file, no
+  connection off the dashboard's origin. The output-encoding test covers
   the values that are always external; an interpolation it does not
-  recognise as external is reviewed by hand. The login cookie has no idle
-  timeout, only the absolute lifetime, and logging out is closing the
-  server.
+  recognise as external is reviewed by hand.
+- **An open page outlives its login.** Ending a session (logout, idle,
+  lifetime) refuses every new request with that cookie, but a websocket
+  that is already open stays open until the page reloads: jupyter-server
+  has no hook to close it, and the kernel behind it may be a kept session
+  whose run must continue.
 - **Kernel and sandbox bugs.** Bubblewrap, Landlock, seccomp and Seatbelt
   are only as strong as their implementations. DELFIN does not defend against
   a kernel exploit.

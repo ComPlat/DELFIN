@@ -29,7 +29,8 @@ the running jupyter-server. Three parts:
     tree; nothing in the UI needs it.
 
 ``headers``
-    :data:`SECURITY_HEADERS` are merged into ``settings["headers"]``, which
+    :data:`SECURITY_HEADERS` (the page CSP among them, :func:`_page_csp`)
+    are merged into ``settings["headers"]``, which
     every ``JupyterHandler`` applies; :class:`SecurityHeadersTransform` adds
     the same headers to every other response (Voila's own static handlers
     are plain tornado handlers and set none).
@@ -52,19 +53,79 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-#: What the dashboard pages may not do, enforced on every response.
+from delfin.dashboard import pinned_cdn as _pinned_cdn
+
+
+def _page_csp() -> str:
+    """The Content-Security-Policy of every dashboard page.
+
+    Measured in headless Chromium (every tab opened, every nested tab bar
+    clicked, the drawing editor's frame included) against a report-only
+    policy of ``'self'`` alone; each source below answers a violation that
+    policy produced, or a load the page makes on demand:
+
+    ``script-src 'unsafe-inline' 'unsafe-eval'``
+        Inline ``<script>`` in widget HTML outputs and the Voila template,
+        inline handlers (``<img onerror=...>`` is how an HTML widget runs
+        code), and ``eval`` in Voila's own bundle, which is how every
+        ``Javascript`` output -- the dashboard's start-up script among
+        them -- is run. Without them the page does not start.
+    ``script-src <pinned files>``
+        xterm, its fit add-on and mermaid, each by its full versioned path
+        and loaded with an SRI hash (:mod:`pinned_cdn`). Nothing else from
+        cdn.jsdelivr.net: py3Dmol's own loader (``3dmol@<version>``) never
+        runs because the bundled 3Dmol is defined first, and the CSP keeps
+        it from running if it did.
+    ``style-src 'unsafe-inline' <xterm.css>``
+        Several hundred inline style attributes and ``<style>`` elements
+        from ipywidgets, Voila and the dashboard.
+    ``img-src data: blob:``, ``font-src data:``
+        Inline images (logo, plots, the MANTA animation) and the fonts the
+        bundles embed.
+    ``worker-src blob:``
+        The force-field worker is built from a ``Blob``.
+    ``frame-src data: blob:``
+        The literature viewer falls back to a ``data:`` PDF.
+    ``connect-src 'self'``
+        The kernel websocket, the contents API, the beacon. A browser that
+        implements CSP Level 3 matches ``ws:``/``wss:`` to the page's own
+        origin under ``'self'``.
+
+    Not allowed, and measured to cost nothing: Voila's template links
+    Font Awesome from ``cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@^5``
+    (a version range, no SRI). The same font is bundled in Voila's and the
+    widget manager's own scripts and renders from there.
+    """
+    scripts = " ".join(_pinned_cdn.urls("script"))
+    styles = " ".join(_pinned_cdn.urls("style"))
+    return "; ".join([
+        f"script-src 'self' 'unsafe-inline' 'unsafe-eval' {scripts}",
+        f"style-src 'self' 'unsafe-inline' {styles}",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'self'",
+        "worker-src 'self' blob:",
+        "frame-src 'self' data: blob:",
+        "media-src 'self' data: blob:",
+        "manifest-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'self'",
+    ])
+
+
+#: What every dashboard page may load and run (:func:`_page_csp`).
 #:
-#: Fetch directives (``script-src``, ``connect-src`` ...) are deliberately
-#: absent: the page runs inline scripts and ``eval`` through widget
-#: ``Javascript`` outputs and loads 3Dmol, xterm and mermaid from
-#: cdn.jsdelivr.net / 3Dmol.org, so an enforcing ``script-src`` would have to
-#: carry ``'unsafe-inline' 'unsafe-eval'`` and those hosts -- little defence
-#: against injected markup, at the risk of breaking a tab nobody tested.
-#: The directives below cost no function: no plugin content, no ``<base>``
-#: pointing elsewhere, no form posting off the origin, no framing by
-#: another site.
-PAGE_CSP = ("object-src 'none'; base-uri 'self'; form-action 'self'; "
-            "frame-ancestors 'self'")
+#: No ``default-src``: Jupyter appends ``default-src 'none'`` to the policy
+#: of its API responses, and the first occurrence of a directive is the one
+#: a browser applies.
+PAGE_CSP = _page_csp()
+
+#: A same-origin, empty script the launcher hands Voila as ``mathjax_url``
+#: (the dashboard typesets nothing; see ``cli_voila``), so ``script-src``
+#: needs no ``data:``.
+NO_TYPESETTING_ROUTE = "/delfin/no-typesetting.js"
 
 #: For a file that is a download or a passive image: nothing in it runs.
 FILE_CSP = "default-src 'none'; frame-ancestors 'self'; sandbox"
@@ -317,6 +378,48 @@ def _make_transform():
 SecurityHeadersTransform = _make_transform()
 
 
+def install_no_typesetting_route(web_app: Any) -> None:
+    """Serve :data:`NO_TYPESETTING_ROUTE`: a constant, empty script."""
+    from jupyter_server.base.handlers import JupyterHandler
+    from jupyter_server.utils import url_path_join
+    from tornado import web
+
+    class NoTypesetting(JupyterHandler):
+        @web.authenticated
+        def get(self):
+            self.set_header("Content-Type", "text/javascript; charset=utf-8")
+            self.set_header("Cache-Control", "max-age=86400")
+            self.finish("// no typesetting\n")
+
+    base = web_app.settings.get("base_url", "/")
+    web_app.add_handlers(".*$", [(url_path_join(base, NO_TYPESETTING_ROUTE),
+                                  NoTypesetting)])
+
+
+def install_session_route(web_app: Any) -> None:
+    """Serve ``login_session.ALIVE_ROUTE``: 204 for a live login.
+
+    Authenticating the request is the whole point: the identity provider
+    records it as use of the session (``identity.DelfinIdentityProvider``).
+    """
+    from jupyter_server.base.handlers import JupyterHandler
+    from jupyter_server.utils import url_path_join
+    from tornado import web
+
+    from delfin.dashboard.login_session import ALIVE_ROUTE
+
+    class SessionAlive(JupyterHandler):
+        @web.authenticated
+        def get(self):
+            self.set_header("Cache-Control", "no-store")
+            self.set_status(204)
+            self.finish()
+
+    base = web_app.settings.get("base_url", "/")
+    web_app.add_handlers(".*$", [(url_path_join(base, ALIVE_ROUTE),
+                                  SessionAlive)])
+
+
 def install(serverapp: Any) -> list[str]:
     """Install every part; return the names of the parts that failed."""
     failed: list[str] = []
@@ -324,6 +427,9 @@ def install(serverapp: Any) -> list[str]:
     for name, step in (
         ("headers", lambda: install_headers(serverapp.web_app)),
         ("cookies", lambda: install_cookie_policy(serverapp)),
+        ("typesetting stand-in",
+         lambda: install_no_typesetting_route(serverapp.web_app)),
+        ("session route", lambda: install_session_route(serverapp.web_app)),
         ("files route", lambda: install_files_route(serverapp.web_app, log)),
     ):
         try:

@@ -98,6 +98,9 @@ _KINDS = {
     "audit_write_failed": ("📒", "Audit log could not be written"),
     "audit_chain_broken": ("📒", "Audit log changed outside DELFIN"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
+    # A wrong token sent to the dashboard server (login form, URL or
+    # header), at most one record a minute (dashboard/login_session.py).
+    "dashboard_login_refused": ("🔑", "Dashboard login refused (wrong token)"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid
     # for once and permanently.
