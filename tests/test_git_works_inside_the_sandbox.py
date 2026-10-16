@@ -4,8 +4,8 @@ The isolation confines a command to its workspace. A git worktree checks
 out under ``<repo>/.delfin/worktrees/<name>`` but keeps its metadata and
 object store under the main repo's ``.git`` -- outside the workspace -- so
 every git command failed with "not a git repository" (driven 2026-09-17).
-The sandbox now grants git's own directories, so commit, branch and config
-work, while a hook the command tries to plant is refused (bubblewrap and
+The sandbox now grants git's own directories, so commit and branch
+work, while a hook, the repository config and info/ stay read-only (bubblewrap and
 Seatbelt) or caught by the command gate.
 """
 import json
@@ -101,3 +101,62 @@ def test_git_config_is_not_hidden_from_the_sandbox():
     from delfin.agent.sandbox import _HOME_SECRET_DIRS
     assert ".config/git" not in _HOME_SECRET_DIRS
     assert ".config/gh" in _HOME_SECRET_DIRS      # the token store stays hidden
+
+
+@pytest.mark.parametrize("name", ["config", "config.worktree", "info"])
+def test_bubblewrap_binds_the_git_config_read_only(worktree, monkeypatch, name):
+    """The repository's config, the per-worktree config and info/ (where
+    info/attributes lives) are what git reads to decide which programs it
+    runs. A command must not be able to change them for the git commands
+    that run outside the sandbox later -- DELFIN's own and the user's."""
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    monkeypatch.setattr(A.shutil, "which", lambda _x: "/usr/bin/bwrap")
+    monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
+    repo, ws = worktree
+    perms = A.KitToolPermissions(workspace=str(ws), lock_workspace=True)
+    argv = A._bash_isolation_argv("git status", str(ws), perms)
+    for gitdir in (repo / ".git", repo / ".git" / "worktrees" / "s1"):
+        target = str((gitdir / name).resolve())
+        assert target in argv, (name, gitdir)
+        i = argv.index(target)
+        assert argv[i - 1] == "--ro-bind-try"
+        assert argv.index("--bind", 0, i) < i
+
+
+@pytest.mark.skipif(not A._bwrap_functional(), reason="needs bubblewrap")
+def test_a_sandboxed_command_leaves_the_git_config_as_it_was(worktree, monkeypatch):
+    """Driven, not read from the argv: a git command and a script that both
+    try to change the repository config leave it byte for byte as it was,
+    and a commit in the same command still lands."""
+    monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
+    repo, ws = worktree
+    config = repo / ".git" / "config"
+    before = config.read_bytes()
+    perms = A.KitToolPermissions(workspace=str(ws), lock_workspace=True)
+    cmd = ("git config example.key value; "
+           "python3 -c \"import sys; open(sys.argv[1], 'a').write('[example]\\\\n')\" "
+           f"{config}; "
+           "printf hi > g.txt && git add g.txt && "
+           "git -c user.email=t@t -c user.name=t commit -q -m more && echo COMMIT-OK")
+    argv = A._bash_isolation_argv(cmd, str(ws), perms)
+    out = subprocess.run(argv, cwd=str(ws), capture_output=True, text=True, timeout=90)
+    assert config.read_bytes() == before, out.stderr
+    assert "COMMIT-OK" in out.stdout, (out.stdout, out.stderr)
+
+
+def test_seatbelt_denies_writing_the_git_config(worktree, monkeypatch):
+    """macOS: the profile denies writes below hooks/, config,
+    config.worktree and info/ of every git dir -- read here from the
+    profile text, since Seatbelt does not run on this host."""
+    monkeypatch.setattr(A, "_record_security_event", lambda *a, **k: None)
+    from delfin.agent import seatbelt as SB
+    seen = {}
+    monkeypatch.setattr(SB, "argv", lambda plain, prof: seen.setdefault("p", prof) and plain)
+    repo, ws = worktree
+    perms = A.KitToolPermissions(workspace=str(ws), lock_workspace=True)
+    A._seatbelt_argv(["true"], perms)
+    deny = [ln for ln in seen["p"].splitlines() if ln.startswith("(deny file-write* (subpath")]
+    assert deny, seen["p"]
+    for gitdir in (repo / ".git", repo / ".git" / "worktrees" / "s1"):
+        for name in ("hooks", "config", "config.worktree", "info"):
+            assert str((gitdir / name).resolve()) in deny[-1], (gitdir, name)

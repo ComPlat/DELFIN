@@ -25,7 +25,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Secrets | The model provider's key, stored credentials (the OS keyring, or `~/.delfin/credentials.json`), SSH, cloud and package-index credentials are not readable by the agent's commands and do not reach a transcript. |
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
-| Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked. |
+| Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; DELFIN's own git reads of the workspace run no program the repository names (`safe_git`). |
 | Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; uploading workspace data is asked or, unattended, refused. |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 
@@ -478,10 +478,23 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   question where bubblewrap and Landlock hold it; what it can do is bounded
   by the cage, not by anyone reading it.
 - **Git configuration.** The git configuration checks read the paths a
-  write names. A program the command starts that writes a git configuration
-  file is not seen by them; only isolation, which keeps files outside the
-  roots unwritable, stops it. On the Landlock row, hooks are guarded by
-  command text only.
+  write names; a program the command starts that writes a git configuration
+  file is not seen by them. Three further layers cover that case:
+  bubblewrap binds `hooks/`, `config`, the per-worktree config and `info/` of
+  every git directory read-only, and Seatbelt denies writes below them
+  (`_GIT_READ_ONLY_IN_THE_SANDBOX`; cost: `git config` from inside the
+  sandbox fails); on every host, `git_config_watch` compares `config` and
+  the per-worktree config before and after each shell command and background job
+  and undoes a new or changed program-naming entry, keeping other changes;
+  and DELFIN's own git reads of the workspace go through `safe_git`, which
+  overrides every program-naming key the repository defines and runs git
+  with no fsmonitor, hooks, pager, textconv or external diff. Remaining:
+  on the Landlock row a hook or an `info/attributes` file can be written
+  (Landlock cannot make a path read-only inside a writable root); the
+  watch acts after the command, so a background job's entry exists until
+  the job ends; and git run by the user in a terminal reads whatever the
+  config holds at that moment. Modules not yet on `safe_git` are listed in
+  `tests/test_delfins_own_git_reads_go_through_safe_git.py`.
 - **Files reached through a symlink inside an allowed folder.** Any executor
   that walks a folder the gate admitted and opens what it finds can follow a
   link placed there to a file outside the roots, unless it checks each entry
