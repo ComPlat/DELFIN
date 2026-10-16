@@ -28,6 +28,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+import _package_ast
+
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # Where the call is allowed to appear, and what makes each one safe.
@@ -140,9 +142,9 @@ def test_every_tool_that_takes_a_path_asks_about_it():
 
     ungated = []
     for path in sorted(_ROOT.joinpath("delfin", "agent").glob("*.py")):
-        src = path.read_text(encoding="utf-8", errors="replace")
         try:
-            tree = ast.parse(src)
+            src = _package_ast.source(path, errors="replace")
+            tree = _package_ast.parse(path, errors="replace")
         except SyntaxError:
             continue
         lines = src.splitlines()

@@ -17,7 +17,7 @@ check that each refactor-sensitive stage of the pipeline still:
 
 If anything in that list breaks, users' CO2-coordination runs silently
 stop producing results. These tests are the tripwire that turns
-"Jan's 5 overnight runs crashed" into "the commit is blocked before
+"a user's 5 overnight runs crashed" into "the commit is blocked before
 it hits main".
 """
 
@@ -202,14 +202,14 @@ def test_control_txt_preserves_numeric_resource_settings(config):
 
 
 def test_control_txt_exposes_reduction_and_oxidation_steps(config):
-    """Jan's workflow runs reduction_steps=1,2 — the pipeline reads this
+    """The reported workflow runs reduction_steps=1,2 — the pipeline reads this
     exact field name to decide which red_step_N OCCUPIER jobs to create."""
     red = config.get("reduction_steps")
     # Parser turns the comma-separated list into a Python list of strings
     assert red == ["1", "2"], (
         f"reduction_steps must parse to ['1','2'], got {red!r}. "
         f"Downstream OCCUPIER job-builders iterate this list to create "
-        f"red_step_1, red_step_2 — losing the list breaks Jan's workflow."
+        f"red_step_1, red_step_2 — losing the list breaks the reported workflow."
     )
     ox = config.get("oxidation_steps", "")
     assert ox in ("", [], None), f"oxidation_steps must be empty, got {ox!r}"
@@ -247,14 +247,14 @@ def test_occupier_sequence_block_is_captured(config):
 
 
 def test_occupier_sequence_resolver_picks_even_for_charge_zero(config):
-    """For Jan's Ni complex at neutral charge (even electron count, 180
+    """For the reported Ni complex at neutral charge (even electron count, 180
     electrons), the resolver must hand back the even-electron sequence."""
     from delfin.occupier_sequences import resolve_sequences_for_delta
 
     bundle = resolve_sequences_for_delta(config, delta=0, parity_hint="even")
     assert isinstance(bundle, dict)
     assert "even_seq" in bundle, (
-        "Resolver did not return an even_seq — Jan's template defines one, "
+        "Resolver did not return an even_seq — the reported template defines one, "
         "losing it silently means OCCUPIER falls back to a default sequence."
     )
     entries = bundle["even_seq"]
@@ -263,18 +263,18 @@ def test_occupier_sequence_resolver_picks_even_for_charge_zero(config):
     )
     assert [e["index"] for e in entries] == [1, 4, 7]
     assert [e["m"] for e in entries] == [1, 3, 5], (
-        "even_seq multiplicities from Jan's template are 1/3/5 — any other "
+        "even_seq multiplicities from the reported template are 1/3/5 — any other "
         "values indicate the resolver dropped the custom profile."
     )
 
 
 # ===========================================================================
-# 3. CO2 Coordinator — the feature that makes this specifically Jan's flow
+# 3. CO2 Coordinator — the feature that makes this specifically the reported flow
 # ===========================================================================
 
 
 def test_co2_coordinator_public_api_exists():
-    """Jan's pipeline relies on setup_co2_from_delfin() being importable.
+    """The reported pipeline relies on setup_co2_from_delfin() being importable.
 
     Bug-class guard: a refactor could rename the function or move it
     under a subpackage; this test catches that before users hit it.
@@ -327,7 +327,7 @@ def test_co2_species_delta_name_mapping():
 # 4. OCCUPIER FoB (Fragment-of-Basis) job graph
 # ===========================================================================
 #
-# This is exactly where Jan's runs crashed: build_flat_occupier_fob_jobs
+# This is exactly where the reported runs crashed: build_flat_occupier_fob_jobs
 # constructs the WorkflowJob list for initial_fob_1, initial_fob_4,
 # initial_fob_7, initial_fob_best. The crash was in the inline-job path
 # (_submit) — but the job-building itself is a pure function of config.
@@ -364,7 +364,7 @@ def test_guppy_settings_preserved_in_parsed_config(config):
 
 
 def test_guppy_entry_point_is_importable():
-    """delfin-guppy CLI must still resolve — part of Jan's SMILES→XYZ path."""
+    """delfin-guppy CLI must still resolve — part of the reported SMILES→XYZ path."""
     from delfin.guppy_sampling import main
     assert callable(main)
 
@@ -375,7 +375,7 @@ def test_guppy_entry_point_is_importable():
 
 
 def test_pipeline_run_occuper_phase_entry_point():
-    """Jan's crash stack: cli.py:1760 → run_occuper_phase(). This is the
+    """The reported crash stack: cli.py:1760 → run_occuper_phase(). This is the
     exact entry point his CONTROL.txt triggers. Must stay importable."""
     from delfin.workflows.pipeline import run_occuper_phase
     assert callable(run_occuper_phase)
@@ -400,7 +400,7 @@ def test_pipeline_context_dataclass_fields():
 
     fields = {f.name for f in dataclasses.fields(PipelineContext)}
     # These are the fields the phase functions access — if any disappear,
-    # Jan's pipeline breaks somewhere deep. Pinned against pre-refactor
+    # The reported pipeline breaks somewhere deep. Pinned against pre-refactor
     # contract: control_file_path, config, input_file, metals,
     # main_basisset, metal_basisset, solvent, charge, multiplicity,
     # total_electrons_txt, name, PAL, number_explicit_solv_molecules,
@@ -441,7 +441,7 @@ def test_imag_config_fields_preserved(config):
     """IMAG configuration flags — required for the IMAG phase gate."""
     assert config.get("IMAG") == "yes"
     assert config.get("IMAG_scope") == "initial"
-    # Option 2 = "SCF_tight_relax" (or similar) in Jan's workflow
+    # Option 2 = "SCF_tight_relax" (or similar) in the reported workflow
     assert str(config.get("IMAG_option")) == "2"
 
 
@@ -451,7 +451,7 @@ def test_imag_config_fields_preserved(config):
 
 
 def test_metal_basis_per_atom_flag_preserved(config):
-    """Jan's config uses per-metal basis for coordination sphere atoms.
+    """The reported config uses per-metal basis for coordination sphere atoms.
     Losing this flag silently falls back to uniform basis → wrong energies."""
     assert config.get("first_coordination_sphere_metal_basisset") == "yes"
     # The scale factor is a float — refactor bug could make it str

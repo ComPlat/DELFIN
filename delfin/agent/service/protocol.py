@@ -65,11 +65,14 @@ REQUESTS: dict[str, dict[str, str]] = {
     "session.shutdown": {"ifIdle": "boolean?", "dryRun": "boolean?"},
     # The answer to a permission.asked event: ``choice`` is one of the
     # option keys it offered (confirm, plan); ``answers`` the chosen labels
-    # of a question (ask). ``persist`` is the second "yes" the keys that
-    # save a permanent rule (A, k) need; without it they approve once.
+    # of a question (ask). ``text`` is a line typed for a question (ask
+    # only): an option when it names one, else the answer as typed
+    # (approval_answers.typed_answer); refused for a confirm or a plan.
+    # ``persist`` is the second "yes" the keys that save a permanent rule
+    # (A, k) need; without it they approve once.
     "permission.reply": {"requestId": "string", "choice": "string?",
                          "answers": "[string]?", "reason": "string?",
-                         "persist": "boolean?"},
+                         "persist": "boolean?", "text": "string?"},
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort
@@ -128,7 +131,8 @@ EVENTS: dict[str, dict[str, str]] = {
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",
-                     "bypassBlocked": "string?", "bypassConfirmed": "boolean?"},
+                     "bypassBlocked": "string?", "bypassConfirmed": "boolean?",
+                     "auto": "string?"},
     # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
     # may stop there: the managed policy allows it and isolation holds
     # each command; posture_cycle.bypass_refusal); bypassConfirmed: its
@@ -137,10 +141,12 @@ EVENTS: dict[str, dict[str, str]] = {
     # tasks: the session's task list (task_ticker.rows) as it is now, in
     # display order (in progress, blocked, pending, completed), each row
     # num, status, label -- sent whole whenever any of it changed.
+    # auto: auto mode's one-line state (loop, iteration n/max, last
+    # result, how many items need the user); "" while it is off.
     "session.updated": {"approval": "string?", "model": "string?",
                         "effort": "string?", "title": "string?",
                         "tasks": "[object]?", "bypassBlocked": "string?",
-                        "bypassConfirmed": "boolean?"},
+                        "bypassConfirmed": "boolean?", "auto": "string?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},
@@ -266,6 +272,7 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "sessions.past": {"sessions": "[object]"},
     "service.status": {"pid": "integer", "host": "string",
                        "startedAt": "number", "sessions": "[object]",
+                       "dormant": "[object]?",
                        "windows": "integer", "socket": "string"},
     "service.shutdown": {"stopping": "boolean", "sessions": "integer"},
     "attention.list": {"items": "[object]", "version": "integer?"},

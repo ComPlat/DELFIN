@@ -6,7 +6,8 @@ followed by ``{"card": "plot", "path", "title", "text"}``. The result
 carries no figure bytes and no markup: the dashboard reads the file from
 ``path`` and shows it with the chat's existing artifact preview
 (``tab_agent._make_plot_card_html``); the model and the terminal receive
-``text`` only (``chat_viewer.card_model_text``).
+``text`` and the caption lines that follow the object
+(``chat_viewer.card_model_text``).
 
 Properties:
 
@@ -61,6 +62,8 @@ import io
 import json
 import math
 import os
+import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,7 +81,8 @@ MAX_TEXT = 300
 MAX_DATA_FILE_BYTES = 5_000_000
 #: An ORCA output read for ``energy_profile``; a frequency run is tens of MB.
 MAX_OUTPUT_BYTES = 200_000_000
-#: Source lines in a caption; the dashboard reads 2000 characters of it.
+#: Source lines listed in an energy profile's caption; further states are
+#: counted, not listed. Bounds what the model re-reads every round.
 _MAX_NOTES = 14
 
 #: Prefix of a card result; shared with ``show_molecule``
@@ -188,14 +192,45 @@ def _categories(xs, what: str = "x") -> list:
     return xs
 
 
+def read_text(path: Path, max_bytes: int) -> str:
+    """The text of the regular file ``path``, of at most ``max_bytes``.
+
+    Decoded as UTF-8 with undecodable bytes replaced (outputs echo their
+    input in whatever encoding it was written). Existence and size are
+    looked at here and nowhere before: a caller with a read gate calls
+    this only once the gate admitted ``path``, so a refused path is
+    neither found, missed nor measured. A file larger than ``max_bytes``
+    is refused before it is opened.
+    """
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        raise SpecError(f"not found: {path}") from None
+    except OSError as exc:
+        raise SpecError(f"cannot read {path}: {exc.strerror}") from None
+    if not stat.S_ISREG(st.st_mode):
+        raise SpecError(f"not a regular file: {path}")
+    if st.st_size > max_bytes:
+        raise SpecError(f"{path} is {st.st_size} bytes; at most {max_bytes}")
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(max_bytes + 1)
+    except OSError as exc:
+        raise SpecError(f"cannot read {path}: {exc.strerror}") from None
+    if len(data) > max_bytes:               # grew since the stat
+        raise SpecError(f"{path} is over {max_bytes} bytes")
+    return data.decode("utf-8", errors="replace")
+
+
 def _read_data_file(path, root: Path, reader=None) -> tuple[str, str]:
     """``(text, suffix)`` of a CSV or JSON file inside ``root``.
 
     A path that resolves outside ``root`` (absolute, ``..``, symlink) is
     refused, as is a file over ``MAX_DATA_FILE_BYTES``. ``reader`` -- the
     dispatch layer's read gate (secret-deny list, read roots) -- is called
-    with the resolved path and returns the text; without it the file is
-    read directly.
+    as ``reader(path, max_bytes)`` with the resolved path before the file
+    is looked at, and returns the text (:func:`read_text` once admitted);
+    without it :func:`read_text` reads the file directly.
     """
     if not isinstance(path, str) or not path:
         raise SpecError("data.file must be a path string")
@@ -204,20 +239,10 @@ def _read_data_file(path, root: Path, reader=None) -> tuple[str, str]:
     if not _is_within(p, root_res):
         raise SpecError(f"data file {path!r} resolves outside the workspace "
                         f"{root}")
-    if not p.is_file():
-        raise SpecError(f"data file not found: {path}")
-    size = p.stat().st_size
-    if size > MAX_DATA_FILE_BYTES:
-        raise SpecError(f"data file {path} is {size} bytes; at most "
-                        f"{MAX_DATA_FILE_BYTES}")
     suffix = p.suffix.lower()
     if suffix not in (".csv", ".json"):
         raise SpecError(f"unsupported data file type: {suffix or path}")
-    if reader is None:
-        def reader(q):
-            with q.open(encoding="utf-8") as fh:
-                return fh.read()
-    return reader(p), suffix
+    return (reader or read_text)(p, MAX_DATA_FILE_BYTES), suffix
 
 
 def _resolve_values_from_file(path, root: Path, reader=None):
@@ -423,27 +448,21 @@ def _refuse_hartree_as_given(parsed, spec: dict) -> None:
 
 
 def _read_output(path, root: Path, reader=None) -> tuple[str, Path]:
-    """``(text, resolved path)`` of an ORCA output for ``energy_profile``.
+    """``(text, resolved path)`` of an output for ``energy_profile``.
 
     Unlike a data file it may lie outside the workspace -- outputs live in
     the calculation folders -- so the dispatch layer's read gate
     (``reader``: secret-deny list, read roots) decides, exactly as it does
-    for ``read_file``. Bounded by ``MAX_OUTPUT_BYTES``.
+    for ``read_file``. The gate runs first: ``reader(path, max_bytes)``
+    looks at the file (:func:`read_text`) only once it admitted the path,
+    so a refusal is the same whether the path exists or not. Bounded by
+    ``MAX_OUTPUT_BYTES``.
     """
     if not isinstance(path, str) or not path.strip():
         raise SpecError("each files entry must be a path string or null")
     p = Path(path).expanduser()
     p = (p if p.is_absolute() else root / p).resolve()
-    if not p.is_file():
-        raise SpecError(f"output not found: {path}")
-    size = p.stat().st_size
-    if size > MAX_OUTPUT_BYTES:
-        raise SpecError(f"output {path} is {size} bytes; at most "
-                        f"{MAX_OUTPUT_BYTES}")
-    if reader is None:
-        with p.open(encoding="utf-8", errors="replace") as fh:
-            return fh.read(), p
-    return reader(p), p
+    return (reader or read_text)(p, MAX_OUTPUT_BYTES), p
 
 
 def _resolve_pathways(spec: dict, root: Path, reader=None):
@@ -591,6 +610,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         notes.append(f"{energy} energies relative to {' + '.join(ref_file)} "
                      f"({ref_eh:.6f} Eh), x {factor:g} {units}/Eh")
         _check_balance(parsed, outputs, ref_file, notes)
+        if energy == "gibbs":
+            _standard_state_note(parsed, notes)
 
     typed = any(not files for *_, files in parsed)
     from_user = spec.get("from_user") is True or any(
@@ -629,7 +650,45 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         pathways.append(pw)
     quantity = ({"gibbs": "ΔG", "electronic": "ΔE"}[energy] if outputs
                 else None)
+    if quantity:
+        _check_label_quantity(_require_str(spec, "ylabel", "").strip(),
+                              quantity, energy)
     return pathways, n, notes, quantity
+
+
+#: How a y label names an energy: the symbol (``ΔG``, ``\Delta G``,
+#: ``deltaG``, ``dG``; the letter case-sensitive) or the word.
+_LABEL_QUANTITY = {
+    q: re.compile(
+        r"(?:Δ|\\Delta|(?<![A-Za-z])[dD]elta|(?<![A-Za-z\\])d)"
+        r"[\s{]*" + q[1] + r"(?![a-z])"
+        + r"|(?i:" + words + r")")
+    for q, words in (("ΔG", r"gibbs|free\s+energ"),
+                     ("ΔH", r"enthalp"),
+                     ("ΔE", r"electronic|single[\s-]point|\bscf\b"))
+}
+
+
+def _check_label_quantity(label: str, quantity: str, energy: str) -> None:
+    """Refuse a y label that names another energy than the outputs give.
+
+    ``quantity`` is fixed by what was read (``energy``: Gibbs or
+    electronic). A label naming it, or naming no energy ("Relative
+    energy"), is kept; one naming another (``ΔE`` over Gibbs energies) is
+    refused, since the axis would misstate the data without a word.
+    """
+    named = {q for q, rx in _LABEL_QUANTITY.items() if rx.search(label)}
+    other = sorted(named - {quantity})
+    if not label or not other:
+        return
+    fix = (", or pass energy: \"electronic\" to draw ΔE" if "ΔE" in other
+           else ", or pass energy: \"gibbs\" to draw ΔG" if "ΔG" in other
+           else "; ΔH is not read from outputs")
+    raise SpecError(
+        f"ylabel {label!r} contradicts the outputs: it names "
+        f"{' and '.join(other)}, they give {quantity} (energy: "
+        f"\"{energy}\"). Leave ylabel out (the axis then reads "
+        f"{quantity}){fix}")
 
 
 def _state_key(entry, where) -> tuple[str, ...]:
@@ -742,6 +801,25 @@ def _check_balance(parsed, outputs, ref_key, notes) -> None:
                      if unread else ""))
 
 
+def _standard_state_note(parsed, notes) -> None:
+    """Say so when the number of separate molecules changes along a profile.
+
+    Free energies from outputs refer to 1 atm; in solution the reference is
+    1 M, RT ln 24.46 = 1.89 kcal/mol per molecule at 298.15 K, which does
+    not cancel when molecules associate or dissociate. Not applied: the
+    temperature, the phase and whether the outputs already include it are
+    the caller's to state.
+    """
+    counts = [len(key) for *_, files in parsed for key in files or []
+              if key is not None]
+    if counts and min(counts) != max(counts):
+        notes.append(
+            f"number of molecules changes ({counts[0]} -> "
+            f"{next(c for c in counts if c != counts[0])}): the 1 atm -> 1 M "
+            f"standard-state correction (RT ln 24.46 = 1.89 kcal/mol per "
+            f"molecule at 298.15 K) is NOT applied")
+
+
 def _frequency_note(state: str, imag) -> str:
     """What the frequencies say about a state's name, when they disagree."""
     from delfin.agent import energy_profile as ep
@@ -803,7 +881,9 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
 
     Raises :class:`SpecError` for a malformed, unsupported or over-bound
     spec; nothing is written in that case. The only write is the figure
-    at :func:`resolve_out_path`.
+    at :func:`resolve_out_path`. ``reader(path, max_bytes) -> str`` is the
+    caller's read gate for data files and outputs: it refuses with a
+    :class:`SpecError` or returns :func:`read_text`.
     """
     from matplotlib.figure import Figure
 
@@ -904,9 +984,10 @@ def _plot_energy_profile(spec, out_path, out_dir_path, reader, *,
                f"{', '.join(map(str, starts))}, highest {highest[0]:.2f} "
                f"{units} at state {highest[1]}")
     if notes:
-        # What contradicts the picture first, so a cut caption keeps it.
-        notes = ([n for n in notes if "WARNING" in n or "NOT" in n]
-                 + [n for n in notes if not ("WARNING" in n or "NOT" in n)])
+        # What contradicts the picture first, then what was not checked or
+        # applied, so a cut caption keeps both.
+        notes = sorted(notes, key=lambda n: (0 if "WARNING" in n else
+                                             1 if "NOT" in n else 2))
         shown = notes[:_MAX_NOTES]
         if len(notes) > _MAX_NOTES:
             shown.append(f"... {len(notes) - _MAX_NOTES} more states")
@@ -950,16 +1031,30 @@ def card_result(result: PlotResult) -> str:
     """The ``make_plot`` tool result for a written figure.
 
     ``DELFIN_CARD:`` + ``{"card": "plot", "path": <resolved path>,
-    "title": <file name>, "text": <plain line for the model>}`` -- a few
-    hundred characters, so it fits the dashboard's 2000-character view of
-    a result.
+    "title": <file name>, "text": "Wrote <path> -- <first caption line>"}``,
+    then, when the caption has more lines (an energy profile's source
+    notes), a newline and those lines as plain text.
+
+    The dashboard parses the JSON object from the first 2000 characters of
+    a result (``chat_viewer.card_payload``). The object holds the path
+    three times and one caption line (``MAX_TEXT`` bounds the title in it),
+    so it fits for any realistic path; the notes grow with the number of
+    states -- 11 states of ~90-character paths passed 2000 -- and travel
+    after it, where the preview need not parse them. The model receives
+    ``text`` and the notes (``chat_viewer.card_model_text``).
+
+    Rejected: a larger preview slice (any fixed limit is passed by enough
+    states) and fewer or shorter notes (the paths and per-state checks are
+    what the model reports from).
     """
-    return CARD_MARKER + json.dumps({
+    head, _, notes = result.caption.partition("\n")
+    card = CARD_MARKER + json.dumps({
         "card": "plot",
         "path": str(result.path),
         "title": result.path.name,
-        "text": f"Wrote {result.path} -- {result.caption}",
+        "text": f"Wrote {result.path} -- {head}",
     })
+    return card + "\n" + notes if notes else card
 
 
 def make_plot(spec: dict, *, out_dir: str = "", reader=None) -> str:

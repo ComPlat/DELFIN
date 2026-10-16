@@ -378,10 +378,10 @@ def test_solo_domain_state_starts_with_header():
 def test_solo_domain_state_renders_calc_and_selected():
     out = _format_solo_domain_state({
         "calc_dir": "/home/user/calc",
-        "selected": "Jerome/complexes_1_200/job1",
+        "selected": "user_a/complexes_1_200/job1",
     })
     assert "calc_dir: /home/user/calc" in out
-    assert "selected: Jerome/complexes_1_200/job1" in out
+    assert "selected: user_a/complexes_1_200/job1" in out
 
 
 def test_solo_domain_state_renders_control_compact():
@@ -1189,8 +1189,8 @@ def test_session_boot_renders_commits_and_branch():
 
 
 def test_session_boot_renders_calc_path():
-    out = _format_session_boot(calc_path="/home/u/calc/Jerome/c1")
-    assert "Active calc folder: /home/u/calc/Jerome/c1" in out
+    out = _format_session_boot(calc_path="/home/u/calc/user_a/c1")
+    assert "Active calc folder: /home/u/calc/user_a/c1" in out
 
 
 def test_session_boot_truncates_above_max_chars():

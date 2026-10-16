@@ -29,6 +29,10 @@ none, unless ``agent.sandbox_network.mode`` is ``open``. The user's uid
 no capabilities, no-new-privileges, a read-only root filesystem (OCI
 ``--read-only``; a SIF image is read-only by construction).
 
+A path the runtime's mount syntax would split (Apptainer: ',' ':' '\\';
+Docker/Podman: ':'; any control character), or an image reference
+starting with '-', gives a refusal argv that names the path and the fix.
+
 ``None`` means no container can run (no runtime, no image, unknown
 runtime name): the caller falls back to bubblewrap/Landlock/Seatbelt and
 a notice is recorded once. It is never an open shell and never a broken
@@ -177,13 +181,45 @@ def _empty_dir() -> str:
     return _EMPTY_DIR
 
 
+class UnsafeMountPath(ValueError):
+    """A path that the runtime's mount syntax cannot carry as one mount."""
+
+
+#: Characters a path may not hold in a mount spec, per runtime family.
+#: Apptainer's ``--bind`` is a comma-separated list of ``src:dst:opts``
+#: with backslash escapes; ``-v`` of Docker and Podman splits on ':' only.
+_APPTAINER_SPEC_CHARS = frozenset(",:\\")
+_OCI_SPEC_CHARS = frozenset(":")
+
+
+def _check_mount_path(runtime: str, path: str) -> str:
+    """``path`` unchanged, or ``UnsafeMountPath`` naming the character."""
+    forbidden = _APPTAINER_SPEC_CHARS if runtime in _APPTAINER else _OCI_SPEC_CHARS
+    for ch in path:
+        if ch in forbidden or ord(ch) < 0x20 or ord(ch) == 0x7f:
+            raise UnsafeMountPath(
+                f"the path {path!r} contains {ch!r}, which the {runtime} "
+                "mount syntax reads as a separator, so it cannot be mounted "
+                "as one path")
+    return path
+
+
 def build_argv(runtime: str, binary: str, image: str, command: list[str], *,
                cwd: str, write_roots, read_roots, mask_dirs=(), mask_files=(),
                network: str = "none", uid: int | None = None,
                gid: int | None = None) -> list[str]:
     """The runtime's argv for ``command``. Pure apart from the existence
     checks: a root that does not exist is not mounted (Docker would create
-    it as root, Podman would refuse to start)."""
+    it as root, Podman would refuse to start).
+
+    Raises ``UnsafeMountPath`` for a mounted path that the runtime's spec
+    syntax would split (see ``_check_mount_path``), and ``ValueError`` for
+    an empty image or one starting with '-', which the runtime would parse
+    as an option."""
+    image = str(image or "")
+    if not image or image.startswith("-"):
+        raise ValueError(f"the container image {image!r} is not an image "
+                         "reference (empty, or read as an option)")
     uid = os.getuid() if uid is None else uid
     gid = os.getgid() if gid is None else gid
     seen: set[str] = set()
@@ -199,6 +235,9 @@ def build_argv(runtime: str, binary: str, image: str, command: list[str], *,
         empty = _empty_dir()
         mounts += [(empty, str(d), "ro") for d in mask_dirs]
     mounts += [("/dev/null", str(f), "ro") for f in mask_files]
+    for src, dst, _mode in mounts:
+        _check_mount_path(runtime, src)
+        _check_mount_path(runtime, dst)
     closed = network != "open"
 
     if runtime in _APPTAINER:
@@ -317,10 +356,24 @@ def session_argv(cmd: str, run_cwd, perms, extra_write=()) -> list[str] | None:
         f"commands run in a {choice.runtime} container (image {choice.image}): "
         "only the session's roots are mounted, as the user's uid, without "
         f"capabilities; network {network}{note}"))
-    return build_argv(choice.runtime, choice.binary, choice.image,
-                      ["/bin/bash", "-c", cmd],
-                      cwd=str(Path(run_cwd).resolve()),
-                      write_roots=[str(p) for p in writable],
-                      read_roots=[str(p) for p in read_only],
-                      mask_dirs=mask_dirs, mask_files=mask_files,
-                      network=network)
+    try:
+        return build_argv(choice.runtime, choice.binary, choice.image,
+                          ["/bin/bash", "-c", cmd],
+                          cwd=str(Path(run_cwd).resolve()),
+                          write_roots=[str(p) for p in writable],
+                          read_roots=[str(p) for p in read_only],
+                          mask_dirs=mask_dirs, mask_files=mask_files,
+                          network=network)
+    except ValueError as exc:
+        # Refused, not handed to another layer: the setting asks for the
+        # container, and a path is what decides here, not the host.
+        reason = (f"container isolation cannot run this command: {exc}. "
+                  "Use a workspace (and added directories) whose path has "
+                  "none of these characters, or set agent.container.image "
+                  "to an image reference")
+        try:
+            ac._record_security_event("isolation", "bash", reason[:300],
+                                      blocked=True)
+        except Exception:
+            pass
+        return ac._refusal_argv(reason)

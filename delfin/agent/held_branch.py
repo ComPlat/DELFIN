@@ -202,7 +202,7 @@ def detach_at_branch(repo, branch: str, *, remote: bool = False,
             False,
             f"Update aborted: this checkout has commits that {target} does "
             f"not contain, so moving to {target} is not a fast-forward. "
-            "Put them on a branch first (git switch -c <name>).",
+            "Name them first with git branch <name> (no switch needed).",
             target=target)
     before = _out(repo, "rev-parse", "HEAD")
     r = _git(repo, "checkout", "--quiet", "--detach", target)

@@ -23,3 +23,8 @@
 
 # The agent's permission boundaries.
 /delfin/agent/                     @hmaximilian
+
+# The global knowledge every DELFIN user loads after git pull. Entries
+# arrive through the knowledge admin's review queue; the admin owns the
+# folder, so no entry is merged without the admin's review.
+/delfin/agent/pack/knowledge/      @hmaximilian

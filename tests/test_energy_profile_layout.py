@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from delfin.agent import energy_profile as ep
-from delfin.agent.chat_plots import SpecError, plot
+from delfin.agent.chat_plots import SpecError, plot, read_text
 
 
 # The three shapes of the group's Index;deltaG files.
@@ -384,9 +384,9 @@ def test_the_last_frequency_block_is_the_one_counted():
 def test_an_output_read_goes_through_the_callers_gate(outputs):
     seen = []
 
-    def gate(p):
+    def gate(p, max_bytes):
         seen.append(p.name)
-        return p.read_text(encoding="utf-8")
+        return read_text(p, max_bytes)
 
     plot({"kind": "energy_profile", "series": [
         {"files": ["hcn.out", "ts.out", "hnc.out"]}]},
@@ -437,7 +437,6 @@ _FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures" / "energy_p
 @pytest.fixture
 def xtb_outputs(tmp_path):
     import gzip
-    pytest.importorskip("cclib")
     for name in ("BH3", "NH3", "H3NBH3"):
         (tmp_path / f"{name}.out").write_bytes(
             gzip.decompress((_FIXTURES / f"xtb_{name}.out.gz").read_bytes()))
@@ -484,7 +483,6 @@ def test_a_free_energy_in_the_wrong_unit_is_refused(xtb_outputs, monkeypatch):
 
 
 def test_an_unknown_file_is_named_not_guessed():
-    pytest.importorskip("cclib")
     with pytest.raises(ValueError, match="not an output of ORCA"):
         ep.read_output("hello\nnothing here\n", "notes.txt", "gibbs")
 
@@ -525,9 +523,9 @@ def test_typed_values_must_say_which_energy_they_are(tmp_path):
 def test_the_source_names_its_own_quantity(tmp_path, outputs):
     (tmp_path / "p.csv").write_text(_CYCLE, encoding="utf-8")
     assert ep.csv_quantity(_CYCLE) == "ΔG"
-    plot({"kind": "energy_profile", "data": {"file": "p.csv"}},
-         out_dir=str(tmp_path))                      # header says deltaG
-    from matplotlib.figure import Figure  # noqa: F401  (drawn above)
+    res = plot({"kind": "energy_profile", "data": {"file": "p.csv"}},
+               out_dir=str(tmp_path))                # header says deltaG
+    assert res.labels[1] == "ΔG"
     res = plot({"kind": "energy_profile", "energy": "electronic", "series": [
         {"files": ["hcn.out", "ts.out", "hnc.out"]}]}, out_dir=str(outputs))
     assert res.labels[1] == "ΔE"
@@ -577,3 +575,210 @@ def test_values_and_files_are_not_mixed_in_one_pathway(tmp_path):
         plot({"kind": "energy_profile", "states": [
             {"name": "A", "value": 0}, {"name": "B", "files": "b.out"}]},
             out_dir=str(tmp_path))
+
+
+# --------------------------------------------------------------------------
+# the card: the dashboard parses the first 2000 characters of a result
+
+
+@pytest.mark.parametrize("n_states", [14, 16])
+def test_a_long_profile_keeps_its_figure_in_the_chat(tmp_path, n_states):
+    """Every state read from an output adds a caption line with its path;
+    at 11 states of ~90-character paths the card JSON passed 2000
+    characters and the chat showed the raw text instead of the figure."""
+    from delfin.agent.chat_plots import make_plot
+    from delfin.dashboard import chat_viewer
+    from delfin.dashboard import tab_agent as T
+
+    folder = tmp_path / ("calculations_" + "x" * 40) / "isomerisation"
+    folder.mkdir(parents=True)
+    files = []
+    for i in range(n_states):
+        p = folder / f"state_{i:02d}_hcn_isomer_opt_freq.out"
+        p.write_text(_out("C N H", -92.25 + 0.001 * i), encoding="utf-8")
+        files.append(str(p))
+    assert all(len(f) >= 90 for f in files)
+    res = make_plot({"kind": "energy_profile",
+                     "series": [{"files": files}]}, out_dir=str(tmp_path))
+    payload = chat_viewer.card_payload(res[:2000], "plot")
+    assert payload is not None, "the dashboard cannot parse the card"
+    assert payload["path"].endswith(".png")
+    card = T._make_plot_card_html(res[:2000])
+    assert "<img" in card
+    # The model still receives every state the caption lists (the
+    # reference and the mass balance take two of the 14 lines).
+    text = chat_viewer.card_model_text(res, "plot")
+    assert "mass balance checked" in text
+    assert f"{n_states - 12} more states" in text
+    for i in range(12):
+        assert f"state_{i:02d}_hcn_isomer_opt_freq.out" in text
+
+
+# --------------------------------------------------------------------------
+# a y label against the quantity the outputs fix
+
+
+@pytest.mark.parametrize("energy, label", [
+    ("gibbs", "ΔE"), ("gibbs", r"$\Delta E$"), ("gibbs", "ΔH"),
+    ("gibbs", "Electronic energy"), ("electronic", "ΔG"),
+    ("electronic", "Relative free energy"), ("electronic", "dG"),
+])
+def test_a_label_contradicting_the_outputs_is_refused(outputs, energy, label):
+    """The outputs say which energy was read; a label naming another one
+    would put Gibbs energies under a ΔE axis without a word."""
+    with pytest.raises(SpecError, match="contradicts") as exc:
+        plot({"kind": "energy_profile", "energy": energy, "ylabel": label,
+              "series": [{"files": ["hcn.out", "ts.out", "hnc.out"]}]},
+             out_dir=str(outputs))
+    assert ("ΔG" if energy == "gibbs" else "ΔE") in str(exc.value)
+    assert not list(outputs.glob("*.png"))
+
+
+@pytest.mark.parametrize("energy, label", [
+    ("gibbs", "ΔG"), ("gibbs", r"$\Delta G^\ddagger$"),
+    ("gibbs", "Gibbs free energy"), ("gibbs", "Relative energy"),
+    ("electronic", "ΔE"), ("electronic", "ΔE (HF-3c)"),
+])
+def test_a_label_consistent_with_the_outputs_is_kept(outputs, energy, label):
+    res = plot({"kind": "energy_profile", "energy": energy, "ylabel": label,
+                "series": [{"files": ["hcn.out", "ts.out", "hnc.out"]}]},
+               out_dir=str(outputs))
+    assert res.labels[1] == label
+
+
+def test_a_label_on_typed_values_is_the_callers(tmp_path):
+    res = plot({"kind": "energy_profile", "ylabel": "ΔH", "y": [0, -3.1],
+                "from_user": True}, out_dir=str(tmp_path))
+    assert res.labels[1] == "ΔH"
+
+
+# --------------------------------------------------------------------------
+# outputs through the executor's read gate
+
+
+def _dispatch(spec, ws, **perms):
+    from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
+    return _DocToolExecutor()._dispatch(
+        "make_plot", {"spec": spec},
+        KitToolPermissions(workspace=str(ws), mode="default", **perms))
+
+
+def test_an_output_that_is_not_utf8_is_read_through_the_gate(tmp_path):
+    """ORCA echoes the input file, comments included; a Latin-1 umlaut in
+    one made the gated read fail with a codec error."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "hcn.out").write_bytes(
+        b"# Rechnung f\xfcr HCN\n" + _out("C N H", -92.25649008).encode())
+    (ws / "hnc.out").write_text(_out("C N H", -92.23316966), encoding="utf-8")
+    out = _dispatch({"kind": "energy_profile", "series": [
+        {"x": ["HCN", "HNC"], "files": ["hcn.out", "hnc.out"]}]}, ws)
+    assert out.startswith("DELFIN_CARD:"), out
+    assert "HNC: hnc.out (ORCA) -92.233170 Eh -> 14.63" in out
+
+
+def test_a_refused_output_is_not_called_a_data_file(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / ".ssh").mkdir(parents=True)
+    (ws / ".ssh" / "hcn.out").write_text(_out("C N H", -92.25),
+                                         encoding="utf-8")
+    (ws / "hnc.out").write_text(_out("C N H", -92.23), encoding="utf-8")
+    out = _dispatch({"kind": "energy_profile", "series": [
+        {"files": [".ssh/hcn.out", "hnc.out"]}]}, ws)
+    assert not out.startswith("DELFIN_CARD:")
+    assert "denied" in out and "data file" not in out
+
+
+def _refusal_with_and_without(target, spec, ws):
+    """The result for ``spec`` while ``target`` exists, then once it is
+    gone; each call with fresh permissions (no refusal ledger)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_out("C N H", -92.25), encoding="utf-8")
+    present = _dispatch(spec, ws)
+    target.unlink()
+    absent = _dispatch(spec, ws)
+    return present, absent
+
+
+@pytest.mark.parametrize("where", ["outside", "secret"])
+def test_a_refused_output_does_not_say_whether_it_exists(tmp_path, where):
+    """The gate runs before the file is looked at: "output not found"
+    against a refusal told the model which paths exist (~/.ssh/...), and
+    the size of a refused file."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "hnc.out").write_text(_out("C N H", -92.23), encoding="utf-8")
+    target = (tmp_path / "elsewhere" / "a.out" if where == "outside"
+              else ws / ".ssh" / "a.out")
+    spec = {"kind": "energy_profile", "series": [
+        {"files": [str(target), "hnc.out"]}]}
+    present, absent = _refusal_with_and_without(target, spec, ws)
+    assert "denied" in present, present
+    assert present == absent
+
+
+def test_a_refused_output_is_not_measured(tmp_path, monkeypatch):
+    from delfin.agent import chat_plots
+    monkeypatch.setattr(chat_plots, "MAX_OUTPUT_BYTES", 10)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / ".ssh" / "big.out"
+    spec = {"kind": "energy_profile", "series": [{"files": [str(target)]}]}
+    present, absent = _refusal_with_and_without(target, spec, ws)
+    assert "bytes" not in present and present == absent
+
+
+def test_an_admitted_output_that_is_missing_or_no_file_is_named(outputs):
+    import os
+    cases = [("gone.out", "not found")]
+    if hasattr(os, "mkfifo"):           # a FIFO would block an open()
+        os.mkfifo(outputs / "pipe.out")
+        cases.append(("pipe.out", "not a regular file"))
+    for name, match in cases:
+        with pytest.raises(SpecError, match=match):
+            plot({"kind": "energy_profile", "series": [
+                {"files": ["hcn.out", name]}]}, out_dir=str(outputs))
+
+
+@pytest.mark.parametrize("where", ["outside", "secret", "inside"])
+def test_make_plot_reads_outputs_only_through_the_read_gate(tmp_path, where):
+    """_execute_make_plot with files: outside the roots and under .ssh
+    refused before anything is written, inside the workspace read."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    folder = {"outside": tmp_path / "elsewhere", "secret": ws / ".ssh",
+              "inside": ws / "calc"}[where]
+    folder.mkdir()
+    (folder / "hcn.out").write_text(_out("C N H", -92.25649008),
+                                    encoding="utf-8")
+    (folder / "hnc.out").write_text(_out("C N H", -92.23316966),
+                                    encoding="utf-8")
+    out = _dispatch({"kind": "energy_profile", "series": [
+        {"x": ["HCN", "HNC"],
+         "files": [str(folder / "hcn.out"), str(folder / "hnc.out")]}]}, ws)
+    if where == "inside":
+        assert out.startswith("DELFIN_CARD:"), out
+        assert "-> 14.63" in out
+        assert (ws / "plot_energy_profile.png").is_file()
+    else:
+        assert not out.startswith("DELFIN_CARD:")
+        assert "refused: read denied" in out
+        assert ("secret deny-glob" in out) == (where == "secret")
+        assert "Eh" not in out
+        assert not list(ws.glob("*.png"))
+
+
+def test_a_change_in_the_number_of_molecules_names_the_standard_state(outputs):
+    """Association in solution: free energies from gas-phase 1 atm outputs
+    need RT ln 24.46 per molecule lost; the tool says it did not apply it."""
+    spec = {"kind": "energy_profile", "series": [
+        {"x": ["BH3 + NH3", "H3N-BH3"],
+         "files": [["bh3.out", "nh3.out"], "adduct.out"]}]}
+    res = plot(spec, out_dir=str(outputs))
+    assert "1 atm -> 1 M" in res.caption and "2 -> 1" in res.caption
+    assert "1.89 kcal/mol" in res.caption
+    res = plot(dict(spec, energy="electronic"), out_dir=str(outputs))
+    assert "1 atm" not in res.caption
+    res = plot({"kind": "energy_profile", "series": [
+        {"files": ["hcn.out", "ts.out", "hnc.out"]}]}, out_dir=str(outputs))
+    assert "1 atm" not in res.caption

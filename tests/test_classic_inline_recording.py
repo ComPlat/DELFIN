@@ -1,7 +1,7 @@
 """Regression tests for the classic workflow engine's inline job path.
 
 Guards against the NameError in `_WorkflowManager._submit` that aborted
-entire pipelines (all 5 of Jan's OCCUPIER runs in zzz_Bugs/) at the
+entire pipelines (all 5 OCCUPIER runs of one field report) at the
 best-FoB selection step. Root cause: the inline branch called
 `self._record_duration(job, duration, cores)` but `cores` was only
 defined in the sibling `runner` closure for non-inline jobs.

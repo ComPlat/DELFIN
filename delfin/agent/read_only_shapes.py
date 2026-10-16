@@ -18,7 +18,13 @@ read-only git rule already decides those).
   git apply --check <path>          reads the patch, writes nothing
   git hash-object <path>            prints a hash, stores no object
   git switch -c pr/<name> origin/main   a WRITE, approved by rule: a new
-                                    local branch from the remote main
+                                    local branch from the remote main.
+                                    Approved in a worktree or an own
+                                    repository; in the shared checkout
+                                    DELFIN runs from it is refused before
+                                    this list is read (shared_checkout.py:
+                                    that checkout stays on main), with
+                                    enter_worktree as the route
   gh --version | gh version
 
 <path> is one word, relative or absolute, that resolves (links followed)

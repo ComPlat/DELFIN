@@ -75,6 +75,11 @@ EXPLAINED = {
     ("_execute_grep_file", "_looks_binary", "open"): _GREP_WALK,
     ("_execute_grep_file", "_looks_binary", "read"): _GREP_WALK,
     ("_execute_grep_file", "_execute_grep_file", "open"): _GREP_WALK,
+    ("_execute_apply_patch", "_note_edit_signals_raw", "read_bytes"):
+        "the post-image of a file the write path has just changed and is "
+        "journalling (_capture_raw_change, after _gate_write_path ran on "
+        "it), at most 400 kB, read to classify the change for "
+        "edit_signals; the bytes are never returned",
     ("_execute_apply_patch", "_execute_apply_patch", "read_bytes"):
         "pre-images under perms.workspace, read after _run_permission_gate "
         "ran _gate_write_path on every file of the diff; both sit under "

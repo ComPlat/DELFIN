@@ -460,6 +460,23 @@ class AgentEngine:
     #: The address `delfin-agent pause <session>` uses (the -n name, set by
     #: the terminal). Empty: this engine cannot be paused by name.
     pause_key: str = ""
+    #: Context window state behind the ``context_window_tokens`` and
+    #: ``_active_capabilities`` properties. Class defaults, so an engine
+    #: built with ``object.__new__`` reads the 100k fallback and no
+    #: capabilities instead of raising. ``_window_generation`` counts every
+    #: write that is not a background probe's (direct assignment, the
+    #: synchronous refresh); a probe applies its result only if the count
+    #: did not move while it ran. ``_window_assigned``: the current state
+    #: was assigned directly, so no background probe replaces it -- only a
+    #: synchronous refresh (a model switch) does.
+    _window_tokens: int = 100_000
+    _window_caps: Any = None
+    _window_generation: int = 0
+    _window_assigned: bool = False
+    #: One lock for every engine: the check-and-apply of a probe and an
+    #: assignment from another thread must not interleave. Held for a few
+    #: attribute writes only, so sharing it costs nothing measurable.
+    _WINDOW_LOCK = threading.Lock()
 
 
     def __init__(
@@ -620,7 +637,11 @@ class AgentEngine:
         # re-build its own work. 0.95 keeps the full thread until the
         # context is almost full, trading a bit more API cost for far
         # fewer context-loss double-work cycles.
-        self.context_window_tokens: int = 100_000
+        #
+        # The window itself (``context_window_tokens``, a property): the
+        # 100k default, written to the store directly so it does not count
+        # as an assignment and the construction probe below may replace it.
+        self._window_tokens: int = 100_000
         # Last authoritative input-token count the provider reported for a full
         # request (from message_start). Used as the ground-truth floor of the
         # compaction estimate so system prompt + tool schemas are never missed.
@@ -644,7 +665,9 @@ class AgentEngine:
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
-        self._active_capabilities = None
+        # (``_active_capabilities`` is a property over this store.)
+        self._window_caps = None
+        self._window_assigned: bool = False
         # Background: the cold-cache KIT probe (~5s) must not block the first
         # turn. The window upgrades from the 100k default once the probe lands.
         self._refresh_context_window(background=True)
@@ -1358,6 +1381,104 @@ class AgentEngine:
         except Exception:
             return ""
 
+    # -- the context window and the capabilities it came with ---------------
+    #
+    # Both are properties over one store so that every write which is not a
+    # background probe's can be counted: a probe started at construction (or
+    # by a turn whose capabilities are still a guess) finishes on a daemon
+    # thread, and used to assign whatever it resolved whenever it finished --
+    # the previous model's window after a quick switch, the resolved window
+    # over one a caller had just set. Rejected: a test-side switch that turns
+    # the background start off (it hides the race from the tests and leaves
+    # it in the product), and joining the probe before every write (a cold
+    # KIT probe takes ~5 s, and the model-switch path would wait for it).
+
+    @property
+    def context_window_tokens(self) -> int:
+        """The window compaction sizes its budgets from (tokens)."""
+        return self._window_tokens
+
+    @context_window_tokens.setter
+    def context_window_tokens(self, value: int) -> None:
+        self._write_window(tokens=value)
+
+    @context_window_tokens.deleter
+    def context_window_tokens(self) -> None:
+        # ``mock.patch`` restores an attribute it did not find in the
+        # instance by deleting it; back to the class default then.
+        with AgentEngine._WINDOW_LOCK:
+            self.__dict__.pop("_window_tokens", None)
+            self._window_generation = self._window_generation + 1
+
+    @property
+    def _active_capabilities(self):
+        """The ModelCapabilities the window was resolved with, or None."""
+        return self._window_caps
+
+    @_active_capabilities.setter
+    def _active_capabilities(self, value) -> None:
+        self._write_window(caps=value)
+
+    @_active_capabilities.deleter
+    def _active_capabilities(self) -> None:
+        with AgentEngine._WINDOW_LOCK:
+            self.__dict__.pop("_window_caps", None)
+            self._window_generation = self._window_generation + 1
+
+    _UNSET = object()
+
+    def _write_window(self, *, tokens=_UNSET, caps=_UNSET,
+                      assigned: bool = True) -> None:
+        """Every write of the window state that is not a background probe.
+
+        Bumps ``_window_generation``, which discards any probe in flight.
+        ``assigned=True`` (a direct attribute assignment) additionally keeps
+        later background probes from replacing the value; the synchronous
+        refresh writes with ``assigned=False``, so the per-turn re-probe may
+        still upgrade a guess it produced.
+        """
+        with AgentEngine._WINDOW_LOCK:
+            self._window_generation = self._window_generation + 1
+            self._window_assigned = assigned
+            if tokens is not AgentEngine._UNSET:
+                self._window_tokens = tokens
+            if caps is not AgentEngine._UNSET:
+                self._window_caps = caps
+
+    def _window_probe_key(self) -> tuple:
+        """What a probe's answer is about: the provider and the model the
+        client talks to now."""
+        return (str(getattr(self, "provider", "") or ""),
+                getattr(getattr(self, "client", None), "model", "") or "")
+
+    def _resolve_window(self, model) -> "tuple[int, Any] | None":
+        """(capped window, capabilities) for *model*, or None when the
+        resolver has no positive window. Network I/O on a cold cache."""
+        base_url = ""
+        inner = getattr(self.client, "client", None)
+        if inner is not None:
+            try:
+                base_url = str(getattr(inner, "base_url", "") or "")
+            except Exception:
+                base_url = ""
+        from .model_capabilities import resolve as _resolve_caps
+        # Pass the provider key so the KIT/vLLM /v1/models probe authenticates
+        # (else it 401s → static window). Doing it HERE — at construction /
+        # switch_model, off the per-turn hot path — also warms the (authed)
+        # capability cache, so the first stream_message turn reads it instantly
+        # instead of paying a ~5s synchronous probe before its first token.
+        api_key = getattr(self.client, "_api_key", "") or ""
+        caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
+        if not (caps and caps.context_window > 0):
+            return None
+        # Raised to what this backend has already accepted for the
+        # model: the table understates (131k against a 166k
+        # request that went through), and every protection fires
+        # at a share of this number. The cap still applies after.
+        from . import observed_window as _ow
+        return (_capped_context_window(
+            _ow.at_least(model, int(caps.context_window))), caps)
+
     def _refresh_context_window(self, *, background: bool = False) -> None:
         """Size the compaction budget to the ACTIVE model's real context.
 
@@ -1365,7 +1486,8 @@ class AgentEngine:
         KIT/vLLM ``/v1/models`` ``max_model_len``, else a curated static
         table) and stashes the capabilities for tool/vision decisions. Falls
         back to the legacy 100k on any error so behaviour never regresses.
-        Call after construction and after every ``client.switch_model(...)``.
+        Runs after construction and, through ``_on_model_switched``, after
+        every ``client.switch_model(...)``.
 
         With ``background=True`` the (one-time, ~5s on a cold KIT cache) live
         probe runs on a daemon thread, so engine construction never blocks the
@@ -1374,42 +1496,58 @@ class AgentEngine:
         cache makes every later construction instant regardless. A first turn
         that races the probe just uses the safe 100k window + name-regex tool/
         vision fallback for that one turn — strictly better than a 5s stall.
+
+        A background result is applied only when ``_window_generation`` did
+        not move while it ran, the client still talks to the model it was
+        resolved for, and the window was not assigned directly; otherwise
+        the window AND the capabilities are discarded (debug log). Not
+        started at all while a directly assigned window is in force.
         """
         if background:
-            import threading
+            if self._window_assigned:
+                return
+            started = (self._window_generation, self._window_probe_key())
             threading.Thread(
-                target=self._refresh_context_window,
+                target=self._probe_window_in_background, args=(started,),
                 daemon=True, name="caps-prewarm").start()
             return
+        # Newer than any probe in flight, whether or not it resolves.
+        with AgentEngine._WINDOW_LOCK:
+            self._window_generation = self._window_generation + 1
         try:
-            model = getattr(self.client, "model", "") or ""
-            base_url = ""
-            inner = getattr(self.client, "client", None)
-            if inner is not None:
-                try:
-                    base_url = str(getattr(inner, "base_url", "") or "")
-                except Exception:
-                    base_url = ""
-            from .model_capabilities import resolve as _resolve_caps
-            # Pass the provider key so the KIT/vLLM /v1/models probe authenticates
-            # (else it 401s → static window). Doing it HERE — at construction /
-            # switch_model, off the per-turn hot path — also warms the (authed)
-            # capability cache, so the first stream_message turn reads it instantly
-            # instead of paying a ~5s synchronous probe before its first token.
-            api_key = getattr(self.client, "_api_key", "") or ""
-            caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
-            if caps and caps.context_window > 0:
-                # Raised to what this backend has already accepted for the
-                # model: the table understates (131k against a 166k
-                # request that went through), and every protection fires
-                # at a share of this number. The cap still applies after.
-                from . import observed_window as _ow
-                self.context_window_tokens = _capped_context_window(
-                    _ow.at_least(model, int(caps.context_window)))
-                self._active_capabilities = caps
+            resolved = self._resolve_window(self._window_probe_key()[1])
+            if resolved is not None:
+                self._write_window(tokens=resolved[0], caps=resolved[1],
+                                   assigned=False)
         except Exception:
             # Keep whatever window is already set (100k default).
             pass
+
+    def _probe_window_in_background(self, started: tuple) -> None:
+        """The daemon thread's body: resolve for the model named in
+        *started* and apply only if nothing newer was written meanwhile."""
+        generation, key = started
+        try:
+            resolved = self._resolve_window(key[1])
+        except Exception:
+            return
+        if resolved is None:
+            return
+        with AgentEngine._WINDOW_LOCK:
+            reason = ""
+            if self._window_assigned:
+                reason = "the window was assigned directly"
+            elif self._window_generation != generation:
+                reason = "the window was written while the probe ran"
+            elif self._window_probe_key() != key:
+                reason = "the client switched model while the probe ran"
+            if not reason:
+                self._window_tokens, self._window_caps = resolved
+                return
+        import logging
+        logging.getLogger(__name__).debug(
+            "background window probe for %r discarded (%s): %s tokens",
+            key[1], reason, resolved[0])
 
     def _capture_floor(self, input_tokens: int) -> None:
         """Record an accepted request as the model's observed floor.
@@ -1538,8 +1676,8 @@ class AgentEngine:
 
     def _build_open_tasks_block(self) -> str:
         """Per-turn reminder of OPEN tasks so the agent doesn't forget to mark
-        finished steps ``completed`` (Jerome 2026-06-13: "sometimes forgets to
-        actually check off done tasks"). Read-only; empty string when there are
+        finished steps ``completed`` (field report 2026-06-13: finished
+        tasks were left open). Read-only; empty string when there are
         no open tasks. Mirrors the session filter of the ``task_list`` tool so
         the agent sees exactly the list it manages. The rendered list is capped
         so a long backlog can't bloat the prompt (the remainder count still
@@ -2258,6 +2396,31 @@ class AgentEngine:
         """This turn's pointer to the git-errors skill (may be empty)."""
         return str(getattr(self, "_repo_errors_hint", "") or "")
 
+    def _note_experiment_task(self, user_message: str) -> None:
+        """Set this turn's pointer to the experiment-discipline skill, or
+        clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_experiment_block`` returns for this turn. Empty unless the
+        message asks for, or acts on, a measured comparison
+        (``experiment_hints.user_hint``), and empty in a session that
+        reads no skills. Cost: 71 tokens in the turn's tail, only in a
+        turn that matched.
+        """
+        self._experiment_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .experiment_hints import user_hint
+            self._experiment_hint = user_hint(user_message or "")
+        except Exception:
+            self._experiment_hint = ""
+
+    def _build_experiment_block(self) -> str:
+        """This turn's pointer to the experiment-discipline skill."""
+        return str(getattr(self, "_experiment_hint", "") or "")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2414,6 +2577,7 @@ class AgentEngine:
         pairs.append(("skill_correction",
                       self._build_skill_correction_block()))
         pairs.append(("repo_errors", self._build_repo_errors_block()))
+        pairs.append(("experiment", self._build_experiment_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2999,6 +3163,18 @@ class AgentEngine:
             # Per turn: does the message name a repository error or ask
             # about DELFIN's checkouts? Then the turn points at git-errors.
             self._note_repo_errors(user_message or "")
+            # Per turn: does the message measure, compare or land a
+            # change? Then the turn points at experiment-discipline.
+            self._note_experiment_task(user_message or "")
+            # Per turn: what this turn's changes do to the measure and to
+            # the object (edit_signals), judged against this message.
+            self._turn_request = str(user_message or "")
+            self._exists_first_turn = {"noted": False, "index": None}
+            try:
+                from . import edit_signals as _es
+                _es.reset_turn(self._edit_signal_key())
+            except Exception:
+                pass
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -3609,6 +3785,10 @@ class AgentEngine:
                     # Commit the held command only if it actually ran.
                     self._commit_exec_command(
                         event.tool_name, event.tool_output or "")
+                    # A function this write added that exists elsewhere.
+                    self._note_new_definitions()
+                    # A write into the checkout a running job uses.
+                    self._note_running_job_writes()
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -4016,6 +4196,20 @@ class AgentEngine:
                 self.client, "_last_structured_verdict", None)
             self._last_test_evidence = list(
                 getattr(self.client, "_test_evidence", None) or [])
+            # What the turn verified (turn_verification): the account the
+            # test-claim caveat judges the answer against.
+            # A claim-correction turn runs nested inside the turn it
+            # corrects; its account continues that turn's instead of
+            # replacing it, or the edits being judged would vanish.
+            _tv_new = getattr(self.client, "_turn_verification", None)
+            _tv_old = getattr(self, "_last_turn_verification", None)
+            if (getattr(self, "_claim_guard_active", False)
+                    and hasattr(_tv_old, "extend")
+                    and hasattr(_tv_new, "events")
+                    and _tv_new is not _tv_old):
+                _tv_old.extend(_tv_new)
+            else:
+                self._last_turn_verification = _tv_new
             # Observed-files ledger (session-cumulative) for the code-claim
             # citation check — files the model actually read/grepped. The
             # availability flag distinguishes "backend keeps no ledger"
@@ -4573,6 +4767,160 @@ class AgentEngine:
     _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
                                re.IGNORECASE)
 
+    def _edit_signal_key(self) -> str:
+        """The key edit_signals files this session's changes under: the
+        permissions' task session id, which the write path also reads."""
+        perms = getattr(self, "kit_permissions", None)
+        return str(getattr(perms, "task_session_id", "") or "")
+
+    def _note_check_run(self, tool_name: str, tool_input: Any,
+                        tool_output: str) -> None:
+        """Hand a test run, red or green, to edit_signals. A run_tests
+        result is JSON; its summary is rendered as runner text. Never
+        raises."""
+        try:
+            from . import edit_signals as _es
+            from . import verify_guard as _vg
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            out = tool_output or ""
+            if isinstance(tool_input, str) and tool_input.lstrip().startswith("{"):
+                try:
+                    tool_input = json.loads(tool_input)
+                except ValueError:
+                    pass
+            if name == "run_tests":
+                data = json.loads(out) if out.lstrip().startswith("{") else {}
+                summary = (data or {}).get("summary") or {}
+                out = (f"{int(summary.get('passed', 0) or 0)} passed, "
+                       f"{int(summary.get('failed', 0) or 0)} failed")
+                cmd = "pytest " + str((tool_input or {}).get("target", "")
+                                      if isinstance(tool_input, dict) else "")
+            else:
+                cmd = _vg.extract_exec_command(tool_name, tool_input)
+                cmd = cmd.split(" ", 1)[1] if " " in cmd else ""
+            if cmd:
+                _es.note_command(self._edit_signal_key(), cmd, out)
+                # A CI run read through gh: a failing check is a red check
+                # the turn may set out to make pass.
+                if (self._GH_CHECKS_RE.search(cmd)
+                        and self._GH_FAILED_RE.search(out)):
+                    _es.note_red_check(self._edit_signal_key())
+        except Exception:
+            pass
+
+    _GH_CHECKS_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:view|watch|list))\b")
+    _GH_FAILED_RE = re.compile(r"\bfail(?:ure|ed|ing)?\b|\bX\s", re.IGNORECASE)
+
+    def _note_running_job_writes(self) -> None:
+        """Hand the write gate's running-job notes to the run-note rail
+        (bash_jobs.take_in_use_notes; one per job). Never raises."""
+        try:
+            from . import bash_jobs as _bj
+            for text in _bj.take_in_use_notes():
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _note_new_definitions(self) -> None:
+        """Say it mid-turn when a write defined a function whose name, or
+        nearly its name, is already defined in another file
+        (exists_first). Once per turn, at most five names judged, test
+        files skipped; the definition index is built once per turn.
+        Advises; a second definition can be deliberate. Never raises."""
+        try:
+            from . import edit_signals as _es
+            defs = _es.take_new_defs(self._edit_signal_key())
+            state = getattr(self, "_exists_first_turn", None)
+            if state is None:
+                state = self._exists_first_turn = {"noted": False,
+                                                   "index": None}
+            if not defs or state.get("noted"):
+                return
+            defs = [(p, n) for p, n in defs if _es.role(p) != "test"][:5]
+            if not defs:
+                return
+            from . import exists_first as _xf
+            if not _xf.enabled():
+                return
+            perms = getattr(self, "kit_permissions", None)
+            ws = str(getattr(perms, "workspace", "") or "")
+            if not ws:
+                return
+            if state.get("index") is None:
+                state["index"] = _xf.build_index(ws)
+            text = _xf.note(defs, state["index"], workspace=ws)
+            if text:
+                state["noted"] = True
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _append_comparison_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Mark a comparative figure ("12 % faster", "from 6/10 to 9/10")
+        that no paired comparison of this session backs
+        (comparison_claims). Caveat, not correction: a retry could only
+        restate the figure. Never raises."""
+        try:
+            from . import comparison_claims as _cc
+            claims = _cc.scan(source if source is not None else text,
+                              getattr(self, "_exec_commands_session", None))
+            caveat = _cc.caveat(claims)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
+    def _append_edit_signal_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Name, in the answer, a check changed to make it pass and a
+        failure silenced rather than removed (edit_signals.turn_caveat).
+
+        Caveat, not correction: the change may be right, and only the
+        model can say why the old check was wrong or why the workaround
+        is the right fix there; a retry would rewrite the sentence, not
+        the change. It enters the transcript, so the next turn sees it."""
+        try:
+            from . import edit_signals as _es
+            request = str(getattr(self, "_turn_request", "") or "")
+            caveat = _es.turn_caveat(
+                self._edit_signal_key(), request,
+                source if source is not None else text)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
         """Record a held command, but only if its result shows it ran.
 
@@ -4600,6 +4948,8 @@ class AgentEngine:
                     break
             else:
                 return
+            # Red runs too: what the turn set out to make pass.
+            self._note_check_run(name, tool_input, tool_output)
             out = (tool_output or "").strip()
             if out.lstrip().startswith('{"error"'):
                 return
@@ -4632,12 +4982,83 @@ class AgentEngine:
             cmd = _vg.extract_exec_command(tool_name, tool_input)
             if not cmd:
                 return
+            self._note_repeated_sequence(tool_name, tool_input)
             ledger = self._exec_commands_session
             if cmd in ledger:
                 return
             ledger.append(cmd)
             if len(ledger) > 200:
                 del ledger[:len(ledger) - 200]
+        except Exception:
+            pass
+
+    #: Segments that only look around; a sequence of them is no check.
+    _LOOK_SEGMENT_RE = re.compile(
+        r"^\s*(?:cd|ls|pwd|echo|cat|head|tail|wc|true|printf|clear|sleep|"
+        r"sed\s+-n|grep|rg|find|git\s+(?:status|log|diff|show|branch|"
+        r"rev-parse))\b")
+
+    @classmethod
+    def repeated_sequence_key(cls, command: str) -> str:
+        """The key a multi-step command is counted under, or "".
+
+        Its segments (split at ``&&``, ``||``, ``;``, ``|`` outside
+        quotes) without the ones that only look around; fewer than two
+        left is no sequence. Quoted strings, hex ids and numbers are
+        normalised away: the repetitions that matter are the same check
+        with another number, commit or inline script, not the same text."""
+        try:
+            from .api_client import _split_shell_segments
+            segs = [" ".join(x.split()) for x in _split_shell_segments(command)
+                    if not cls._LOOK_SEGMENT_RE.match(x)]
+        except Exception:
+            return ""
+        if len(segs) < 2:
+            return ""
+        key = " && ".join(segs)
+        key = re.sub(r"'[^']*'|\"[^\"]*\"", "Q", key)
+        key = re.sub(r"\b[0-9a-f]{7,40}\b", "H", key)
+        return re.sub(r"\d+", "N", key)
+
+    def _note_repeated_sequence(self, tool_name: str, tool_input: Any) -> None:
+        """The third run of one multi-step shell command in a session gets
+        one run note: a check repeated by hand belongs in a script or a
+        hook. Counted only for commands that ran; said once per sequence.
+
+        Measured on 94 archived sessions (read only): 5 notes in 3
+        sessions, each on a command a script would carry -- an environment
+        plus interpreter incantation run with three inline scripts, and two
+        hand-built push commands repeated. Rejected: counting identical
+        text only (the field repetitions were the same check with another
+        number or inline script); a hook written by the harness (hooks run commands,
+        and only the user installs one). Never raises."""
+        try:
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            if name not in ("bash", "bash_background"):
+                return
+            data = tool_input
+            if isinstance(data, str) and data.lstrip().startswith("{"):
+                data = json.loads(data)
+            cmd = (str(data.get("command") or "") if isinstance(data, dict)
+                   else str(data or ""))
+            key = self.repeated_sequence_key(cmd)
+            if not key:
+                return
+            counts = getattr(self, "_repeated_sequences", None)
+            if counts is None:
+                counts = self._repeated_sequences = {}
+            if key not in counts and len(counts) >= 300:
+                return
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] != 3:
+                return
+            shown = " ".join(cmd.split())[:100]
+            self.client.push_run_note(
+                "[repeat] This multi-step command has now run three times "
+                f"in this session: `{shown}`. A check repeated by hand "
+                "belongs in a script in the repository (or a hook the user "
+                "installs in .delfin/settings.json): write it once and call "
+                "it.")
         except Exception:
             pass
 
@@ -4878,9 +5299,81 @@ class AgentEngine:
         out = self._append_functional_caveat(text, functional, on_token)
         out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
         out = self._append_truncated_count_caveat(out, on_token, source=source)
+        out = self._append_edit_signal_caveat(out, on_token, source=source)
+        out = self._append_comparison_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
+        out = self._append_test_claim_caveat(out, on_token, source=source)
+        if out != text:
+            try:
+                from . import channels as _channels
+                _channels.fire("answer_caveat")
+            except Exception:
+                pass
         return out
+
+    def _append_test_claim_caveat(
+        self, text: str, on_token: Callable[[str], None] | None,
+        *, source: str,
+    ) -> str:
+        """Name a verification claim no run of this turn backs.
+
+        Input: the model's own text (``source``) and the turn's account
+        (``_last_turn_verification``, from the client). A claim ("tests
+        pass", "5 passed", "alle Tests grün"; "verified", "funktioniert
+        jetzt" in a turn that edited code) is unbacked when no executed,
+        fresh, relevant, non-gamed run backs it
+        (verification_claims.judge); a pass after an edit to the failing
+        test backs nothing. A caveat, not a correction turn: a retry
+        cannot run what the gate refused, and the caveat costs no round.
+        Behaviour claims stand down where the functional-claim caveat
+        already spoke. Plan turns propose and are not judged.
+
+        Measured before wiring (benchmark corpus 1,063 answers: 3 flagged,
+        3 true; field reports, 249 aligned turns: 5 flagged, 2 true)."""
+        tv_acc = getattr(self, "_last_turn_verification", None)
+        try:
+            from . import turn_verification as _tvm
+        except Exception:
+            return text
+        # Only a real account: a client without one (the CLI backend, a
+        # test double) has nothing to judge against.
+        if not isinstance(tv_acc, _tvm.TurnVerification) \
+                or self._turn_describes_intent():
+            return text
+        try:
+            from . import verification_claims as _vcl
+            verdicts = tv_acc.unbacked_claims(source)
+            if "the following was NOT checked in this session" in text:
+                verdicts = [v for v in verdicts if v.claim.kind == "test"]
+            # The measure-edit caveat (edit_signals.turn_caveat) already
+            # names a check changed to pass: the same fact is not said twice.
+            if ("the check was changed in a turn that set out to make it"
+                    in text.lower()):
+                verdicts = [v for v in verdicts if v.reason != "gamed"]
+            caveat = _vcl.caveat(verdicts)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        try:
+            from . import channels as _channels
+            _channels.fire("test_claim_flagged", len(verdicts))
+        except Exception:
+            pass
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
 
     def _append_figure_coverage_caveat(
         self, text: str, on_token: Callable[[str], None] | None,
@@ -5063,6 +5556,11 @@ class AgentEngine:
             parts.append(_vg.language_mismatch_feedback(wrong_language)
                          .replace("[Verify] ", "", 1))
         feedback = "[Verify] " + " ".join(parts)
+        try:
+            from . import channels as _channels
+            _channels.fire("claim_correction_turn")
+        except Exception:
+            pass
         # What the session had observed BEFORE the retry. The retry either
         # reads something new or it does not, and that is the only thing
         # that can turn an unverified claim into a verified one.
@@ -6212,8 +6710,9 @@ class AgentEngine:
         # Full compaction is driven by CONTEXT PRESSURE (token budget), never
         # by raw message count alone: a dozen short messages can sit at ~15%
         # of the window, and summarising there throws away the live working
-        # context — forcing the agent to re-discover its own work (Jerome
-        # 2026-06-13: "compacted at 15% full → agent confused"). This was the
+        # context — forcing the agent to re-discover its own work (field
+        # report 2026-06-13: compaction at 15% full lost the working
+        # context). This was the
         # legacy ``msg_count >= 12 OR tokens > 95%`` trigger; the OR meant the
         # 0.95 token threshold (raised precisely to avoid early compaction)
         # was undermined by the message count.

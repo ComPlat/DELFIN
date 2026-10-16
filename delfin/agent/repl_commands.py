@@ -1789,12 +1789,14 @@ def _bug(ctx, args: str) -> CommandResult:
     produces in the archive ``resolve_archive_dir`` names
     ($DELFIN_BUG_ARCHIVE > agent.bug_archive_dir > ~/.delfin/agent_bugs),
     surface ``terminal``, then a copy to the transfer target when one is
-    configured.
+    configured and ``agent.bug_upload`` allows it (``bug_filing.upload``).
 
-    Two questions, both defaulting to no: the description, then y/N after
-    a preview of what goes in (counts and size, not content). An empty
-    description, any answer but y/yes, Ctrl+C or end of input writes
-    nothing. A context without ``ask`` cannot confirm and refuses.
+    Questions, each defaulting to no: the description, then y/N after a
+    preview of what goes in (counts and size, not content, and where a
+    remote copy would go). An empty description, any answer but y/yes,
+    Ctrl+C or end of input writes nothing. Under ``agent.bug_upload: ask``
+    a third y/N names the remote archive; a no keeps the written report
+    local. A context without ``ask`` cannot confirm and refuses.
     """
     from . import bug_filing
     from .bug_report import resolve_archive_dir
@@ -1827,10 +1829,43 @@ def _bug(ctx, args: str) -> CommandResult:
     lines = [f"bug report written: {report_dir}"]
     if (report_dir / "REDACTIONS.txt").is_file():
         lines.append("credential-shaped values were redacted (REDACTIONS.txt)")
-    remote = bug_filing.push_if_configured(report_dir)
+    if (report_dir / "REDACTION_FAILED.txt").is_file():
+        lines.append("redaction failed for some files; they were replaced "
+                     "by placeholders (REDACTION_FAILED.txt)")
+    remote = bug_filing.upload(report_dir, ask=ctx.ask)
     if remote:
         lines.append(remote)
     return CommandResult(output="\n".join(lines))
+
+
+def _loop(ctx, args: str) -> CommandResult:
+    from . import loop_commands
+    text, prompt = loop_commands.loop_command(
+        args, getattr(ctx, "auto", None), ctx.engine, ctx.workspace,
+        ask=ctx.ask, say=ctx.say)
+    return CommandResult(output=text, prompt=prompt)
+
+
+def _auto(ctx, args: str) -> CommandResult:
+    from . import loop_commands
+    return CommandResult(output=loop_commands.auto_command(
+        args, getattr(ctx, "auto", None), ctx.engine))
+
+
+def _layered(name: str) -> Callable[[Any, str], CommandResult]:
+    """A knowledge command (``knowledge_commands.handle``): the layered
+    memory view, the share dialog, the person's lessons, the swarm
+    harvest and the curation tools. The dialog's code is read through
+    ``ctx.ask`` -- the person's next line -- and shown through ``ctx.say``;
+    nothing goes to the model."""
+    def handler(ctx, args: str) -> CommandResult:
+        from . import knowledge_commands
+        perms = getattr(getattr(ctx, "engine", None), "kit_permissions",
+                        None)
+        return CommandResult(output=knowledge_commands.handle(
+            name, args, workspace=ctx.workspace, ask=ctx.ask, say=ctx.say,
+            perms=perms))
+    return handler
 
 
 def _clear(ctx, _args: str) -> CommandResult:
@@ -1973,6 +2008,21 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/forget", "history", "Delete one memory by name",
                     _forget, True),
         ReplCommand("/plans", "history", "Saved plans", _plans, True),
+        ReplCommand("/memory", "history", "Every memory layer: private, "
+                    "swarm, project, global", _layered("memory"), True),
+        ReplCommand("/lessons", "history", "Your lessons: show, edit, delete",
+                    _layered("lessons"), True),
+        ReplCommand("/share", "history", "Share a lesson after a "
+                    "confirmation only you can answer", _layered("share"),
+                    True),
+        ReplCommand("/unshare", "history", "Withdraw your share: from the "
+                    "review queue, or a merged entry as a removal branch",
+                    _layered("unshare"), True),
+        ReplCommand("/swarm", "history", "Findings of a swarm run: harvest, "
+                    "propose", _layered("swarm"), True),
+        ReplCommand("/knowledge", "history", "Global knowledge: list, lint, "
+                    "stats; curation for the admin", _layered("knowledge"),
+                    True),
         ReplCommand("/undo-file", "changes", "Restore files from the undo "
                     "journal", _undo_file, True),
         ReplCommand("/pending", "changes", "Diffs waiting for approval",
@@ -1992,6 +2042,12 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/attention", "workspace",
                     "The attention inbox; `clear [kind]` empties it",
                     _attention, True),
+        ReplCommand("/loop", "workspace",
+                    "Loops: list | show | confirm | run | stop | new | log",
+                    _loop, True),
+        ReplCommand("/auto", "workspace",
+                    "Auto mode: on | off | needs — work on without input",
+                    _auto, True),
     ]
 }
 
@@ -2022,6 +2078,9 @@ class ReplContext:
     # where such a handler refuses instead of acting unconfirmed.
     ask: Callable[[str], str] | None = None
     say: Callable[[str], None] | None = None
+    # The session's auto_mode.AutoController; None on a surface without
+    # one, where /loop and /auto say so.
+    auto: Any = None
 
 
 def dispatch(text: str, ctx: ReplContext) -> CommandResult:

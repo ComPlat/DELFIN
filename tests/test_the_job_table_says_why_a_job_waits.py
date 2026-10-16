@@ -99,7 +99,7 @@ def test_the_summary_counts_the_whole_queue_even_when_the_table_is_filtered():
 
 def test_a_name_cannot_inject_markup():
     job = JobInfo(job_id="902", name='<b>x</b>" onmouseover="y', status="R",
-                  extra={"reason": "uc3n024"})
+                  extra={"reason": "node024"})
     html = build_slurm_job_table([job], [], now=NOW)
     assert "&lt;b&gt;x&lt;/b&gt;" in html and "<b>x</b>" not in html
     assert '" onmouseover="' not in html, "a quote in a name must not leave its title attribute"

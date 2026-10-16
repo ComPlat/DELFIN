@@ -1468,10 +1468,13 @@ tasks:
   # (a tool call, not a sentence about one), and that the attribution is
   # right. An agent can get the conclusion right by guessing -- it is a
   # coin flip -- so the run is what the first signal is for.
+  # No `behavior: verify` tag (removed 2026-10-15): the task expects no
+  # edit, and the verify flag needs one, so it scored 0 on every attempt
+  # and pulled the verified rate down by a constant. The control run is
+  # scored by expected[0..1] below.
   - id: gen_a_red_test_is_attributed_by_a_control
     task_class: generic_project
     mode: solo
-    behavior: verify
     setup: a_repo_whose_test_was_already_broken.py
     prompt: >-
       In ensemble_tools/ liegt ein kleines Repo. Der Test test_weights.py

@@ -9,9 +9,12 @@
  *   tasks     the session's task list while a task is open (tasks.tsx)
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above);
- *             "!" in front: a shell line, said on the box's top border
- *   hints     posture · model · keys; at its right, quietly, what needs
- *             the user (◉ 3 · ✗ 1), or for a moment what just arrived
+ *             "!" in front: a shell line, said on the box's top border.
+ *             It keeps the keys while a question is open (app.tsx).
+ *   hints     posture · model · keys -- with the other sessions of the
+ *             service ("2 more sessions (1 waits for you) ← agents"); at
+ *             its right, quietly, what needs the user (◉ 3 · ✗ 1), or
+ *             for a moment what just arrived
  *
  * The agent view (←) takes the whole terminal but its last row: its list
  * in place of the tail, status and question, the composer under it.
@@ -69,6 +72,12 @@ export interface FooterProps {
    *  for an answer (other sessions here, questions parked anywhere), what
    *  failed, and a new one's note, shown for a few seconds instead. */
   attention?: () => { asks: number; failed: number; note: string }
+  /** The other sessions running in the agent service (not the one in
+   *  view, none asleep or ended), and how many of them wait for the user:
+   *  said in the hints line beside the agent view's key. */
+  others?: () => { running: number; waiting: number }
+  /** A click on that part of the hints line (full screen): the agent view. */
+  onOthersClick?: () => void
   focused: () => boolean
   /** Full screen: the footer is the window -- the session's rows (or the
    *  agent view) above, the composer at the bottom -- and the answer's
@@ -91,6 +100,23 @@ export const SHELL_HINTS = [
 
 export function shellHint(room: number): string {
   return SHELL_HINTS.find((h) => width(h) <= room) ?? ""
+}
+
+/** The hints line's last part: the agent view's key, with how many other
+ *  sessions run and wait -- the longest wording that fits `room` columns,
+ *  the shortest when none does. */
+export function othersHint(others: { running: number; waiting: number } | undefined, key: string,
+                           room: number): string {
+  const tail = `${key} agents`
+  const n = others?.running ?? 0
+  if (n <= 0) return tail
+  const w = Math.min(n, others?.waiting ?? 0)
+  const forms = [
+    `${n} more session${n === 1 ? "" : "s"}${w ? ` (${w} wait${w === 1 ? "s" : ""} for you)` : ""} ${tail}`,
+    `${n} more${w ? ` (${w} waiting)` : ""} ${tail}`,
+    `${n} more ${tail}`,
+  ]
+  return forms.find((f) => width(f) <= room) ?? forms[forms.length - 1]!
 }
 
 /** Rows the footer takes with the agent view open: all but one. */
@@ -298,6 +324,14 @@ export function Footer(props: FooterProps): JSX.Element {
     if (props.composer.shell()) {
       return props.session()?.turn ? "a shell command… (runs when the turn ends)" : "a shell command…"
     }
+    // A question open: the prompt keeps the keys (app.tsx), and says what
+    // a line does here.
+    const a = asked()
+    if (a?.kind === "ask") return "type your own answer… (or pick above)"
+    if (a && props.approval.state.mode === "reason" && props.approval.state.requestId === a.requestId) {
+      return "the reason… (enter refuses with it)"
+    }
+    if (a) return "a message… (the keys above answer on an empty prompt)"
     return props.starting?.() ? "starting the session…"
       : props.session()?.turn
       ? `queue a message… (${props.keymap.label("steer")} sends it into the turn)` : "ask DELFIN…"
@@ -374,8 +408,8 @@ export function Footer(props: FooterProps): JSX.Element {
           const look = postureLook(viewOpen() ? "" : props.session()?.approval ?? "", t())
           return look.marked ? look.color : t().accent
         }}
-        focused={() => props.focused() && (viewOpen() || !asked())}
-        pasteActive={() => props.focused() && (viewOpen() || !asked())}
+        focused={props.focused}
+        pasteActive={props.focused}
         placeholder={placeholder}
       />
       <text flexShrink={0} fg={ruleTone()} wrapMode="none">{rule()}</text>
@@ -465,7 +499,8 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
   const line = createMemo(() => {
     const room = Math.max(0, props.cols() - 1 - (cornerWidth() ? cornerWidth() + 2 : 0))
     if (props.agents?.state.open) {
-      return { lead: fit("  " + agentHelp(props.agents, props.keymap, props.cols() - 3), room), posture: null, rest: "" }
+      return { lead: fit("  " + agentHelp(props.agents, props.keymap, props.cols() - 3), room), posture: null, rest: "",
+               agents: "" }
     }
     const s = props.session()
     const lead: string[] = []
@@ -474,18 +509,39 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     if (props.starting?.()) lead.push("starting the session…")
     if (s?.state === "ended") lead.push("session ended")
     const rest: string[] = []
+    if (s?.auto) rest.push(s.auto)
     if (s?.model) rest.push(s.model)
     if (s?.usage.costUsd && !s.turn) rest.push(`$${s.usage.costUsd.toFixed(4)}`)
-    rest.push(`${props.keymap.label("cycleMode")} mode`, `${props.keymap.label("agents")} agents`)
+    rest.push(`${props.keymap.label("cycleMode")} mode`)
+    // Last: the agent view's key, with the other sessions -- in as many
+    // words as the room left for it takes.
+    const agentsIn = (used: number) => othersHint(props.others?.(), props.keymap.label("agents"),
+                                                  Math.max(0, room - used - 3))
     const look = s?.approval ? postureLook(s.approval, t()) : null
     const head = "  " + lead.map((part) => `${part} · `).join("")
-    if (!look) return { lead: fit(head + rest.join(" · "), room), posture: null, rest: "" }
+    if (!look) {
+      const before = head + rest.join(" · ")
+      const agents = agentsIn(width(before))
+      return { lead: fit(`${before} · ${agents}`, room), posture: null, rest: "", agents }
+    }
     // The posture keeps its room: a note before it is cut first.
     const postureText = fit(look.text, Math.max(0, room - 2))
     const leadText = fit(head, Math.max(0, room - width(postureText)))
-    const restText = fit(rest.length ? ` · ${rest.join(" · ")}` : "", Math.max(0, room - width(leadText) - width(postureText)))
-    return { lead: leadText, posture: postureText ? { ...look, text: postureText } : null, rest: restText }
+    const before = ` · ${rest.join(" · ")}`
+    const agents = agentsIn(width(leadText) + width(postureText) + width(before))
+    const restText = fit(`${before} · ${agents}`, Math.max(0, room - width(leadText) - width(postureText)))
+    return { lead: leadText, posture: postureText ? { ...look, text: postureText } : null, rest: restText, agents }
   })
+  /** A click on the agents part (full screen): the agent view, as its key. */
+  const agentsHit = clickable((col) => {
+    const l = line()
+    if (!l.agents || !props.onOthersClick) return null
+    const shown = l.lead + (l.posture?.text ?? "") + l.rest
+    const at = shown.lastIndexOf(l.agents)
+    if (at < 0) return null
+    const from = width(shown.slice(0, at))
+    return col >= from && col < from + width(l.agents) ? "agents" : null
+  }, () => props.onOthersClick?.())
   const gap = () => {
     if (!cornerWidth()) return ""
     const used = width(line().lead) + width(line().posture?.text ?? "") + width(line().rest)
@@ -493,7 +549,8 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
   }
   const markTone = (mark: string) => mark === "✗" ? t().err : t().warn
   return (
-    <text flexShrink={0} wrapMode="none">
+    <text flexShrink={0} wrapMode="none" ref={agentsHit.ref} onMouseDown={agentsHit.onMouseDown}
+          onMouseUp={agentsHit.onMouseUp} onMouseDrag={agentsHit.onMouseDrag}>
       <span style={{ fg: t().faint }}>{line().lead}</span>
       <span style={{ fg: line().posture?.color ?? t().faint, bold: Boolean(line().posture?.marked) }}>
         {line().posture?.text ?? ""}

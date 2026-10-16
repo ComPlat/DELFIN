@@ -824,7 +824,8 @@ def _fitz():
     except Exception as exc:                     # pragma: no cover - env specific
         raise PdfError(
             'PDF viewing is unavailable: PyMuPDF is not installed '
-            f'({exc}).'
+            f'({exc}). It is the optional extra [pdf] because PyMuPDF is '
+            "licensed AGPL-3.0: pip install 'delfin-complat[pdf]'."
         ) from exc
     return fitz
 

@@ -1645,7 +1645,10 @@ delfin-agent tui                       # a new session in the current folder
 delfin-agent tui --resume <id>         # a saved session (or one that runs)
 delfin-agent tui --model kit.deepseek-v4-flash --permission-mode acceptEdits
 delfin-agent tui --inline              # in the terminal's own scrollback
-delfin-agent service status            # the service, its sessions, its windows
+delfin-agent service status            # the service, its sessions, its windows (--json)
+delfin-agent service end <id>          # end one session, as ctrl+x twice (a running turn is stopped; saved; a unique id prefix will do)
+delfin-agent service end --all-idle    # end every idle one
+delfin-agent service end <id> --after-turn  # let a running turn finish first
 delfin-agent service stop              # end it; sessions are saved
 delfin-agent service restart           # e.g. after an update
 delfin-agent service logs
@@ -1767,10 +1770,16 @@ box ("Job 4711 failed with OUT_OF_MEMORY. What went wrong, and what should
 we change?"). Nothing is sent until you press enter. A prepared job fix is
 applied in the dashboard (`/fix`).
 
-From anywhere in the window, the hints line ends with a quiet count of
-what waits for you and what failed (`◉ 3 · ✗ 1`, notices not counted); a
-new one names itself there for a few seconds (`◉ relax Fe complex asks`),
-and the terminal's title carries the count: `(4) DELFIN · name`.
+From anywhere in the window, the hints line says how many other sessions
+the agent service runs and how many of them wait for you (`2 more sessions
+(1 waits for you) ← agents`; shorter on a narrow terminal, nothing when
+there are none; full screen, a click on it opens the agent view). It ends
+with a quiet count of what waits for you and what failed (`◉ 3 · ✗ 1`,
+notices not counted); a new item names itself there for a few seconds,
+another session that starts to wait says so once above the prompt
+(`◉ session 'relax Fe complex' waits for you — ← to open`), and the
+terminal's title carries the count: `(4) DELFIN · name`. The agent view's
+head names its keys (`→/enter open · ctrl+x ×2 stop · esc back`).
 
 Full screen, the view takes the window's screen and esc gives the
 conversation back. Inline, it uses the terminal's alternate screen, so esc
@@ -1886,13 +1895,58 @@ Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 
 `/remember`, `/memories`, `/forget` manage memory; a line starting with `#` is a note to memory. Memory is scoped, so a preference recorded while coding does not surface in an office session. Long conversations are compacted token-aware; `/compact` and `/context` show the state.
 
+### Shared memory: lessons, swarm findings and repository knowledge
+
+What an agent learns stays on your machine unless **you** share it. There are four layers; `/memory` lists every entry with its layer, `/memory <layer> [words]` filters.
+
+| Layer | Where | Who reads it | How it gets there |
+|-------|-------|--------------|-------------------|
+| `private` | `~/.delfin` (owner-only files) | you, on this machine | the agent's memories and lessons; never leaves the machine on its own |
+| `swarm` | `~/.delfin/swarm/<run>/` | the agents of one run (a wave, or one session and its subagents) | an agent records a finding with evidence during the run |
+| `project` | `.delfin/knowledge/` in a repository | everyone with access to that repository | your `/share`, as a branch you turn into a pull request |
+| `global` | `delfin/agent/pack/knowledge/` in DELFIN | every DELFIN user after `git pull` | your `/share`, then the knowledge admin's review, then a pull request |
+
+Inside the DELFIN repository itself there is one repository layer, `global`: an entry is tagged `scope: always` (loaded in every workspace) or `scope: delfin-development` (loaded only when you work on DELFIN's own code).
+
+**Lessons.** When the agent thinks something it learned would help others, it stores a private lesson and says so once at the end of the turn: *This lesson could help others: /share 3 (public)*. Nothing has been shared at that point. `/lessons` lists your lessons, `/lessons show 3` shows one, and `/lessons edit 3 lesson=... why=... evidence=commit:<sha>` rewords it; `/lessons delete 3` removes it. A lesson is one entry with a one-line title, the situation it applies to, what to do, and why, together at most 150 words, with an evidence pointer (`test:`, `commit:`, `pr:`, `issue:`, `doc:`). Longer material belongs in a skill or in the documentation.
+
+**Sharing.** `/share 3 project` or `/share 3 global` (optionally `scope=always`, `topic=<topic>`, `as <your handle>`, `release=<value>`) opens a dialog that shows:
+
+- the exact text that would be written, front matter included;
+- the result of the check, with every finding and where it is in the text;
+- the target (repository, folder, scope), whether the repository is public, and who will see the entry;
+- whether the lesson duplicates an existing entry (it then extends that entry, keeping both authors) or contradicts one (the admin decides).
+
+The dialog shows a code; you confirm by typing it. For a **public** repository (and for one whose visibility cannot be established, which counts as public) the dialog says *PUBLIC: anyone can read this, and it cannot be taken back after merging*, and a second code appears with the full final text; an answer typed sooner than two seconds after it is not accepted. In the dashboard you answer with `/share confirm <dialog> <code>`. If you ask the agent in the chat to share something, it can only prepare the lesson; the dialog is still yours to answer, and no text from the agent, a tool or a web page can answer it.
+
+**What the check refuses.** Credentials, keys and tokens; email addresses; your home path, account and machine names; machine references (absolute paths, `user@host`, job ids); licensed or internal markers (CSD refcodes and refcode-shaped tokens, "unpublished", "confidential", terms you list in `agent.knowledge.unpublished_terms`); text written about one person or session ("I", "yesterday"); text that reads like an approval; and any instruction about permissions, checks, the sandbox or DELFIN's protected files. For a public repository it also refuses host and node names, `@handles`, numbers and values with units, sample and project names, URLs other than doi.org and arxiv.org, and evidence pointers that only mean something on your machine. The check never rewrites your text: you reword and share again. A published value can be released for one share with `release=<value>`; personal data and instructions cannot.
+
+**Withdrawing.** A global share still waiting in the review queue is withdrawn with `/unshare <queue id>` or `/unshare <lesson id>`, confirmed by a code: the record keeps only its id, dates and the status `withdrawn`. Only the OS account that queued it can do this; once the admin has decided, ask the admin. For an entry already in a repository, `/unshare <entry>` prepares a branch that removes your own entry, or only your name from an entry several people wrote. A removal does not erase text from the git history.
+
+**Where a share lands.** A project share becomes a local branch `delfin-knowledge/<entry>` in that repository; your working tree and index are not touched, nothing is pushed, and the push and pull-request commands are printed for you. A global share goes to the knowledge admin's review queue first: `$DELFIN_KNOWLEDGE_QUEUE`, else `agent.knowledge.queue_dir`, else `~/.delfin/knowledge/queue`. `/memory` shows the outcome, and the admin's reason when an entry is rejected.
+
+**What the agent reads.** Only entries that match the task, within a budget (`agent.knowledge.budget_chars`, 1600 characters by default), marked as data that grants no permission. Expired entries (past their `review_by` date) and entries that carry an instruction about permissions are not loaded. `--bare` loads none.
+
+**Swarm runs.** Agents started for one wave share a run when the orchestrator sets `DELFIN_SWARM_RUN=<run>`; the subagents of a session share one automatically. An agent records a finding with evidence ("test X is flaky, cause Y"); the others see each new finding once, between their tool calls, as data. A finding that tries to change permissions or switch off a check is refused. `/swarm` lists the runs, `/swarm harvest <run>` lists the findings with their evidence, `/swarm propose <run> <n>` keeps one as your private lesson, and `/swarm close <run>` ends a run and archives it.
+
+**The knowledge admin.** The admins are listed as `knowledge_admins` in the managed policy (`/etc/delfin/managed_policy.json`, written by an administrator; it takes precedence), else as `agent.knowledge_admins` in your settings. An admin is recognised by the operating-system account (the account of the process's uid, not the `$USER` variable) or the GitHub login, never by the handle you choose for your entries. Everyone can use `/knowledge` (entries by topic), `/knowledge search <words>`, `/knowledge lint`, `/knowledge dupes` (near-duplicates and contradictions) and `/knowledge stats` (expired entries, entries never loaded on this machine, references to files, functions or commands that no longer exist). Only the admin can use `/knowledge queue`, `accept <id>`, `reject <id> <reason>`, `edit <id> lesson=...`, `merge-into <id> <entry>`, `merge <keep> <drop>`, `move <entry> <topic>`, `rename <entry> <new>`, `retire <entry> <reason>`, `index` and `topic add <topic> <description>`. Each one shows the resulting diff, needs the admin's own code (two for the public DELFIN repository) and produces a local branch. The same commands run outside a session as `delfin-agent knowledge <command>`, with the code on the terminal. In CI, `tests/test_knowledge_lint.py` checks every entry: template, topic, length, content rules, duplicates, and that `INDEX.md` matches the entries.
+
+**What is never shared.** Your memories, your lessons until you share them, and swarm findings: none of these is ever written into a repository. Nothing is pushed for you. The agent cannot share, withdraw, confirm or curate, in any permission mode.
+
+**Limits.** The dialog protects you inside DELFIN; it is not a wall around your account:
+
+- On a machine without command isolation, a program running under your account can write files under `~/.delfin`, including a queue entry that claims your handle. The admin's review and the repository's code owners are what stop it from being published.
+- Knowledge in a repository you clone is loaded without asking, like `AGENTS.md`. It is marked as data and filtered for instructions, but it can still be wrong.
+- Without a managed policy, the admin list in your own settings only applies to your machine and your local branches.
+- The check errs on the side of refusing: an ordinary version number or a common word can be flagged in a public share. Reword it, or release the value.
+
 ### Commands
 
 | Group | Commands |
 |-------|----------|
 | Session | `/help` `/status` `/cost` `/usage` `/context` `/compact` `/export` `/undo` `/bug` `/clear` |
 | Setup | `/model` `/mode` `/permissions` `/effort` `/doctor` `/init` `/mcp` `/trust` `/tools` `/agents` `/skills` |
-| History | `/session` `/rewind` `/tasks` `/memories` `/plans` |
+| History | `/session` `/rewind` `/tasks` `/memories` `/plans` `/memory` `/lessons` `/share` `/unshare` `/swarm` `/knowledge` |
 | Changes | `/pending` `/approve` `/reject` `/undo-file` |
 | Workspace | `/git` (`status` `diff` `log` `branch` `role`) `/bash` `/jobs` `/attention` |
 | DELFIN (dashboard) | `/control key <key> <value>` · `/orca set` · `/calc ls\|read\|info\|tree` · `/analyze energy\|convergence\|errors` · `/recalc check-all\|auto` · `/submit` `/cancel` |
@@ -1911,9 +1965,11 @@ delfin-agent bug report --session latest -m "the plot came back empty"
 
 `--session` takes `latest` (the newest session of the current directory, or of `--workspace`), a session id, or the first characters of one as `/session ls` prints them. Without `--yes` the same preview and question come first; with no terminal to ask on, `--yes` is required.
 
-All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many.
+All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many. If the redaction of a file fails, the file is replaced by a placeholder and `REDACTION_FAILED.txt` names it; the text is never written unredacted. A binary file the session touched is not copied, only listed with its size and sha256.
 
-Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report is also copied there over SSH; the local copy is always kept.
+Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report can also be copied there over SSH, under `agent.bug_upload` (Settings tab, "Bug upload"): `ask` (the default) copies it only after a yes for that report (a second `[y/N]` naming the destination after `/bug` and `delfin-agent bug report`; in the dashboard, Send under the line naming the host), and with `--yes` or no one to ask the report stays local; `never` keeps every report local; `always` copies without asking, also in unattended runs. The local copy is always kept.
+
+A report also carries your account name, the host name, the workspace path and copies of up to 40 text files the session touched, and it is made readable to the archive directory's group. Reports in a configured or shared archive are not deleted by DELFIN; the per-user fallback folder `~/.delfin/agent_bugs` keeps them for 30 days.
 
 ### MCP servers
 
