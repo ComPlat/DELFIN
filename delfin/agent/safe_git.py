@@ -150,6 +150,14 @@ def repository_program_overrides(cwd: str, *, timeout: float = 10.0) -> list[str
             continue
         if not PROGRAM_KEY_RE.fullmatch(key.lower()):
             continue
+        if key.lower().startswith(("include.", "includeif.")):
+            # Not overridable: git refuses an include key on the command
+            # line ("relative config includes must come from files"), and
+            # actions/checkout writes an includeIf into every CI checkout.
+            # Nothing is lost: --includes lists the included entries under
+            # the including scope, so a program key in an included file is
+            # overridden like any other.
+            continue
         if "=" in key:
             raise Refused(f"the repository's configuration names a program "
                           f"under a key DELFIN cannot override: {key[:80]!r}")

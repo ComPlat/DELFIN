@@ -115,7 +115,9 @@ def _restore(path: Path, data: Optional[bytes]) -> bool:
         if data is None:
             path.unlink(missing_ok=True)
             return True
-        mode = 0o644
+        # The file's own mode is kept; a file that cannot be read for its
+        # mode gets owner-only.
+        mode = 0o600
         try:
             mode = path.stat().st_mode & 0o777
         except OSError:
