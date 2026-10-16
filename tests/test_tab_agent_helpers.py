@@ -734,8 +734,10 @@ def test_artifact_svg_inline(tmp_path):
     )
     html = _render_artifact_inline(p)
     assert html is not None
-    assert "<svg" in html
-    assert "<?xml" not in html  # XML declaration is stripped
+    # Shown as an image, not as inline markup: an SVG file can carry script
+    # and event handlers, which an <img> never runs.
+    assert "<svg" not in html
+    assert 'src="data:image/svg+xml;base64,' in html
     assert "fig.svg" in html
 
 

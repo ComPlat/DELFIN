@@ -29,6 +29,7 @@ from delfin.user_settings import (
     load_orca_templates, save_orca_template, delete_orca_template,
 )
 
+from .helpers import js_string_literal
 from .molecule_viewer import (
     strip_xyz_header,
     DEFAULT_3DMOL_ZOOM,
@@ -1416,7 +1417,7 @@ def create_tab(ctx):
             .replace('__RESET__', reset_js)
             .replace('__RESETFLAG__', 'true' if reset_view else 'false')
             .replace('__MOUSE__', mouse_js)
-            .replace('__XYZ__', json.dumps(xyz_data))
+            .replace('__XYZ__', js_string_literal(xyz_data))
             .replace('__STYLE__', profile['style_js'])
             .replace('__VIEWER_CONFIG__', profile['viewer_config_js'])
             .replace('__LABELS__', label_js)
@@ -1462,9 +1463,9 @@ def create_tab(ctx):
             '    if(prev&&window.__delfinDisposeViewer){window.__delfinDisposeViewer(prev);}\n'
             f'    var viewer=window.__delfinCreateViewer(el,{profile["viewer_config_js"]});\n'
             f'    {mouse_js}\n'
-            f'    viewer.addModel({json.dumps(target_xyz)},"xyz");\n'
+            f'    viewer.addModel({js_string_literal(target_xyz)},"xyz");\n'
             f'    viewer.setStyle({{model:0}},{target_style_js});\n'
-            f'    viewer.addModel({json.dumps(reference_xyz)},"xyz");\n'
+            f'    viewer.addModel({js_string_literal(reference_xyz)},"xyz");\n'
             f'    viewer.setStyle({{model:1}},{reference_style_js});\n'
             '    if(saved&&typeof viewer.setView==="function"){\n'
             '      try{viewer.setView(saved);}catch(_e){viewer.zoomTo();viewer.center();viewer.zoom(' + zoom + ');}\n'
@@ -1510,8 +1511,8 @@ def create_tab(ctx):
             target = (blocks[block_idx][0]
                       if 0 <= block_idx < len(blocks) else 'target')
             reference = blocks[0][0] if blocks else 'reference'
-            red = f'<b style="color:{_OVERLAY_REFERENCE_COLOUR};">{reference}</b>'
-            blue = f'<b style="color:{_OVERLAY_TARGET_COLOUR};">{target}</b>'
+            red = f'<b style="color:{_OVERLAY_REFERENCE_COLOUR};">{html.escape(str(reference))}</b>'
+            blue = f'<b style="color:{_OVERLAY_TARGET_COLOUR};">{html.escape(str(target))}</b>'
             labels = [
                 f'Overlay: {red} over {blue}',
                 f'Aligned reference: {red}, turned to lie over {blue}',
@@ -1532,7 +1533,7 @@ def create_tab(ctx):
             idx = state['xyz_view_idx']
             orca_mol_nav_label.value = (
                 f'<span style="font-size:12px;">'
-                f'{idx + 1}&thinsp;/&thinsp;{n}: {blocks[idx][0]}'
+                f'{idx + 1}&thinsp;/&thinsp;{n}: {html.escape(str(blocks[idx][0]))}'
                 f'</span>'
             )
             orca_mol_prev_btn.layout.display = ''
@@ -2562,7 +2563,7 @@ def create_tab(ctx):
                 state['extra_files'][name] = content
         if state['extra_files']:
             filenames = list(state['extra_files'].keys())
-            orca_uploaded_files_label.value = f"<b>Files to upload:</b> {', '.join(filenames)}"
+            orca_uploaded_files_label.value = f"<b>Files to upload:</b> {html.escape(', '.join(filenames))}"
         else:
             orca_uploaded_files_label.value = '<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>'
 

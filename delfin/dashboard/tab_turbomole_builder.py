@@ -1,5 +1,6 @@
 """TURBOMOLE Builder tab: interactive define + job submission (SLURM only)."""
 
+import html as _html
 import json
 import time as _time
 from pathlib import Path
@@ -243,7 +244,7 @@ def create_tab(ctx):
             tm_start_define_btn.layout.display = 'none'
             tm_stop_define_btn.layout.display = 'none'
         except Exception as e:
-            tm_control_status.value = f'<span style="color:red;">Control load error: {e}</span>'
+            tm_control_status.value = f'<span style="color:red;">Control load error: {_html.escape(str(e))}</span>'
 
     def _hide_control_editor():
         tm_control_area.layout.display = 'none'
@@ -359,15 +360,15 @@ def create_tab(ctx):
         tm_status.value = '<span style="color:orange;">Converting SMILES...</span>'
         xyz_string, num_atoms, method, error = smiles_to_xyz(raw)
         if error or not xyz_string:
-            tm_status.value = f'<span style="color:red;">SMILES conversion failed: {error}</span>'
+            tm_status.value = f'<span style="color:red;">SMILES conversion failed: {_html.escape(str(error))}</span>'
             return
         xyz_block = f'{num_atoms}\nConverted from SMILES ({method})\n{xyz_string}'
         coord_text, coord_note = _xyz_to_coord(xyz_block, state['smiles_cache'])
         tm_coords.value = coord_text
         if coord_note:
-            tm_status.value = f'<span style="color:green;">{coord_note}</span>'
+            tm_status.value = f'<span style="color:green;">{_html.escape(str(coord_note))}</span>'
         else:
-            tm_status.value = f'<span style="color:green;">SMILES converted via {method}</span>'
+            tm_status.value = f'<span style="color:green;">SMILES converted via {_html.escape(str(method))}</span>'
 
     def handle_start_define(button):
         job_name = tm_job_name.value.strip().lstrip('/')
@@ -398,9 +399,9 @@ def create_tab(ctx):
             print('Starting define... (this may take a moment)')
             print('=' * 50)
 
-        tm_status.value = f'<span style="color:green;">Dir: {job_dir}</span>'
+        tm_status.value = f'<span style="color:green;">Dir: {_html.escape(str(job_dir))}</span>'
         if coord_note:
-            tm_status.value = f'<span style="color:green;">Dir: {job_dir} \u00b7 {coord_note}</span>'
+            tm_status.value = f'<span style="color:green;">Dir: {_html.escape(str(job_dir))} \u00b7 {_html.escape(str(coord_note))}</span>'
             with tm_define_output:
                 print(coord_note)
 
@@ -444,7 +445,7 @@ def create_tab(ctx):
                 pass
 
         except Exception as e:
-            tm_status.value = f'<span style="color:red;">Error: {e}</span>'
+            tm_status.value = f'<span style="color:red;">Error: {_html.escape(str(e))}</span>'
             with tm_define_output:
                 print(f'Error starting define: {e}')
                 import traceback
@@ -540,8 +541,8 @@ def create_tab(ctx):
                 (job_dir / 'control').write_text(tm_control_area.value)
                 tm_control_status.value = '<span style="color:green;">CONTROL updated.</span>'
             except Exception as e:
-                tm_control_status.value = f'<span style="color:red;">Control save error: {e}</span>'
-        tm_status.value = f'<span style="color:green;">Saved: {job_dir}</span>'
+                tm_control_status.value = f'<span style="color:red;">Control save error: {_html.escape(str(e))}</span>'
+        tm_status.value = f'<span style="color:green;">Saved: {_html.escape(str(job_dir))}</span>'
 
     def handle_tm_submit(button):
         job_name = tm_job_name.value.strip().lstrip('/')
@@ -561,7 +562,7 @@ def create_tab(ctx):
                 (job_dir / 'control').write_text(tm_control_area.value)
                 tm_control_status.value = '<span style="color:green;">CONTROL updated.</span>'
             except Exception as e:
-                tm_control_status.value = f'<span style="color:red;">Control save error: {e}</span>'
+                tm_control_status.value = f'<span style="color:red;">Control save error: {_html.escape(str(e))}</span>'
 
         result = ctx.backend.submit_turbomole(
             job_dir=job_dir, job_name=job_name,
@@ -587,7 +588,7 @@ def create_tab(ctx):
                 json_file.write_text(json.dumps(data, indent=2))
             except Exception:
                 pass
-            tm_status.value = f'<span style="color:green;">Submitted! {result.stdout.strip()}</span>'
+            tm_status.value = f'<span style="color:green;">Submitted! {_html.escape(result.stdout.strip())}</span>'
             tm_job_name.value = ''
             tm_coords.value = ''
             with tm_define_output:
@@ -599,7 +600,7 @@ def create_tab(ctx):
             tm_define_send.disabled = True
             _hide_control_editor()
         else:
-            tm_status.value = f'<span style="color:red;">{result.stderr or result.stdout}</span>'
+            tm_status.value = f'<span style="color:red;">{_html.escape(str(result.stderr or result.stdout))}</span>'
 
     def handle_tm_load(button):
         if not tm_job_name.value.strip():
@@ -636,10 +637,10 @@ def create_tab(ctx):
             with tm_define_output:
                 clear_output(wait=True)
                 print(f"Loaded {len(state['pending_replay'])} commands. Start Define, then click Replay.")
-            tm_status.value = f'<span style="color:green;">Loaded from {load_dir.name}</span>'
+            tm_status.value = f'<span style="color:green;">Loaded from {_html.escape(load_dir.name)}</span>'
             _hide_control_editor()
         except Exception as e:
-            tm_status.value = f'<span style="color:red;">{e}</span>'
+            tm_status.value = f'<span style="color:red;">{_html.escape(str(e))}</span>'
 
     def handle_tm_replay(button):
         if not state['pending_replay']:
@@ -654,7 +655,7 @@ def create_tab(ctx):
                 (state['job_dir'] / 'control').write_text(tm_control_area.value)
                 tm_control_status.value = '<span style="color:green;">CONTROL synced.</span>'
             except Exception as e:
-                tm_control_status.value = f'<span style="color:red;">Control sync error: {e}</span>'
+                tm_control_status.value = f'<span style="color:red;">Control sync error: {_html.escape(str(e))}</span>'
                 return
         cmds = state['pending_replay'][:]
         state['pending_replay'] = []

@@ -14,6 +14,8 @@ like the other dashboard tabs.
 
 from __future__ import annotations
 
+import html as _html
+
 from typing import Any
 
 try:
@@ -32,7 +34,7 @@ def _safe(fn):
     try:
         return fn()
     except Exception as exc:  # noqa: BLE001
-        return f"<p style='color:#dc3545'>unavailable: {exc}</p>"
+        return f"<p style='color:#dc3545'>unavailable: {_html.escape(str(exc))}</p>"
 
 
 # --- pure HTML renderers --------------------------------------------------
@@ -93,7 +95,7 @@ def render_tool_status_html() -> str:
     for t in inv:
         if t["available"]:
             status = "<span style='color:#28a745'>✓ installed</span>"
-            how = f"<span style='font-size:0.8em;color:#666'>{t['detail']}</span>"
+            how = f"<span style='font-size:0.8em;color:#666'>{_html.escape(str(t['detail']))}</span>"
         else:
             status = "<span style='color:#dc3545'>✗ missing</span>"
             if t["policy"] == "auto":
@@ -150,8 +152,8 @@ def render_keys_html() -> str:
         ks = platform.describe_key(name)
         n_allowed = len(ks.enum) if ks.enum else ""
         parts.append(
-            f"<tr><td>{ks.name}</td><td>{ks.type}</td>"
-            f"<td>{ks.default if ks.default is not None else ''}</td>"
+            f"<tr><td>{_html.escape(str(ks.name))}</td><td>{_html.escape(str(ks.type))}</td>"
+            f"<td>{_html.escape(str(ks.default)) if ks.default is not None else ''}</td>"
             f"<td>{n_allowed}</td></tr>"
         )
     parts.append("</table>")
@@ -181,9 +183,10 @@ def render_runs_html(limit: int = 20) -> str:
     ]
     if runs:
         rows = "".join(
-            f"<tr><td>{r.id}</td><td>{r.name}</td><td>{r.status}</td>"
-            f"<td>{_fmt_outputs(r.outputs)}</td>"
-            f"<td style='font-size:0.8em;color:#666'>{r.work_dir or ''}</td></tr>"
+            f"<tr><td>{_html.escape(str(r.id))}</td><td>{_html.escape(str(r.name))}</td>"
+            f"<td>{_html.escape(str(r.status))}</td>"
+            f"<td>{_html.escape(_fmt_outputs(r.outputs))}</td>"
+            f"<td style='font-size:0.8em;color:#666'>{_html.escape(str(r.work_dir or ''))}</td></tr>"
             for r in runs[:limit]
         )
         parts.append(_TABLE + _TH
@@ -253,17 +256,17 @@ def render_run_detail_html(run_id: str, *, tail_lines: int = 40) -> str:
         return "<p><em>Select a run to see its details.</em></p>"
     diag = platform.run_diagnostics(run_id)
     if "status" not in diag:
-        return f"<p style='color:#dc3545'>{diag.get('error', 'unknown run')}</p>"
+        return f"<p style='color:#dc3545'>{_html.escape(str(diag.get('error', 'unknown run')))}</p>"
 
     colour = {"success": "#28a745", "failed": "#dc3545", "cancelled": "#6c757d"}.get(
         diag["status"], "#0366d6")
-    parts = [f"<h4>Run {diag['id']} — {diag['name']} "
-             f"<span style='color:{colour}'>[{diag['status']}]</span></h4>"]
+    parts = [f"<h4>Run {_html.escape(str(diag['id']))} — {_html.escape(str(diag['name']))} "
+             f"<span style='color:{colour}'>[{_html.escape(str(diag['status']))}]</span></h4>"]
     if diag.get("error"):
         parts.append(f"<p style='color:#dc3545'>error: {_html.escape(str(diag['error']))}</p>")
     if diag.get("outputs"):
         parts.append(f"<p>outputs: <code>{_html.escape(_fmt_outputs(diag['outputs']))}</code></p>")
-    parts.append(f"<p><small>work dir: <code>{diag.get('work_dir') or '—'}</code></small></p>")
+    parts.append(f"<p><small>work dir: <code>{_html.escape(str(diag.get('work_dir') or '—'))}</code></small></p>")
 
     events = diag.get("events") or []
     if events:
@@ -437,7 +440,7 @@ class ToolsPanel:
                     self._status.value = ("<p style='color:#dc3545'>Some installs "
                                           "failed — check the run logs.</p>")
             except Exception as exc:  # noqa: BLE001
-                self._status.value = f"<p style='color:#dc3545'>install failed: {exc}</p>"
+                self._status.value = f"<p style='color:#dc3545'>install failed: {_html.escape(str(exc))}</p>"
             finally:
                 self._install_btn.disabled = False
                 self._install_sel_btn.disabled = False
