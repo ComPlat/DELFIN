@@ -14,7 +14,7 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parents[1] / "delfin" / "agent"
 _MODULES = ("launch_guard", "prompt_loader", "project_introspect",
-            "evidence_freshness", "held_branch", "worktree")
+            "evidence_freshness", "held_branch", "worktree", "egress_proxy")
 _RUNNERS = {"run", "check_output", "check_call", "call", "Popen"}
 
 
