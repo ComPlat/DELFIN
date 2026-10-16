@@ -191,3 +191,15 @@ def test_a_file_linked_from_outside_the_root_is_not_shown(browser):
 
     refs["calc_open_input"].value = next(l for l in labels if l.endswith("plain.txt"))
     assert "plain.txt" in str(state.get("selected_file_path") or "")
+
+
+def test_an_uploaded_file_is_readable_by_its_owner_only(tmp_path):
+    import io
+    import os
+    from delfin.dashboard import upload_limits as UL
+    old = os.umask(0)
+    try:
+        UL.write_new_file(tmp_path / "up.bin", io.BytesIO(b"x"))
+    finally:
+        os.umask(old)
+    assert ((tmp_path / "up.bin").stat().st_mode & 0o777) == 0o600

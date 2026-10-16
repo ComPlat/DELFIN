@@ -138,12 +138,13 @@ def write_new_file(destination: Path, source: BinaryIO,
                    budget: Budget | None = None) -> int:
     """Copy *source* into a file that must not exist yet; return its size.
 
-    The file is created ``O_EXCL | O_NOFOLLOW`` (mode 0644 before umask).
+    The file is created ``O_EXCL | O_NOFOLLOW``, owner-only (0600): on a
+    shared host an upload is the uploader's until they share it.
     On any error -- the budget exceeded included -- the partial file is
     removed and the error re-raised.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(str(destination), flags, 0o644)
+    fd = os.open(str(destination), flags, 0o600)
     written = 0
     try:
         with os.fdopen(fd, "wb") as sink:
