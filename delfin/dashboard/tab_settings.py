@@ -2297,14 +2297,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             if shutil.which('micromamba') or shutil.which('conda'):
                 _set_status('micromamba/conda is already available.', color='#2e7d32')
                 return
+            from delfin.runtime_setup import get_packaged_micromamba_fetcher
             local_bin = Path.home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
+            # The installers' shared fetcher: one pinned release per
+            # platform, installed only when its SHA-256 matches. The
+            # retry with TLS verification switched off is gone.
             result = subprocess.run(
-                ['bash', '-c',
-                 'URL=https://micro.mamba.pm/api/micromamba/linux-64/latest; '
-                 'DST="$HOME/.local/bin/"; '
-                 '{ curl -fsSL "$URL" || curl -fsSL --insecure "$URL"; } '
-                 '| tar -xvj -C "$DST" --strip-components=1 bin/micromamba'],
+                ['bash', str(get_packaged_micromamba_fetcher()),
+                 str(local_bin / 'micromamba')],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

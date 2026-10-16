@@ -96,6 +96,7 @@ and the other three jobs still run.
 | CI tools (pip, pytest, ruff, pip-audit, build, coverage) | `.github/ci/constraints-ci.txt` | by hand | `tests/test_ci_installs_what_it_names.py` |
 | release build tools (pip, build, setuptools, wheel + closure), SBOM generator (cyclonedx-bom + closure) | version + SHA-256 of every PyPI file, `.github/ci/release-requirements.txt`, `.github/ci/sbom-requirements.txt` (`pip install --require-hashes`) | by hand: `.github/ci/hashed_requirements.py`, command in each file's header (7-day cooldown) | `tests/test_the_release_tools_are_installed_by_hash.py` |
 | micromamba in CI | version 2.9.0-0 + SHA-256 | by hand | `sha256sum -c` in the job |
+| micromamba fetched by the installers (`install_delfin.sh`, `install_qm_tools.sh`, `install_ai_tools.sh`, `install_analysis_tools.sh`) and by the Settings tab | version 2.9.0-0 + SHA-256 per platform (linux-64, linux-aarch64, osx-64, osx-arm64) in `delfin/installers/fetch_micromamba.sh`, the one copy all of them run | by hand: the release's `.sha256` files, compared with the asset digests GitHub records | `tests/test_micromamba_is_fetched_as_one_pinned_release.py`, which also holds the CI pin equal to the linux-64 entry; a mismatch, an unpinned platform or a host without a SHA-256 tool installs nothing |
 | xtb release binary (slow tests) | version 6.7.1 + SHA-256 | by hand | `sha256sum -c` in the job |
 | Bun | version + SHA-256 | by hand | `tui/scripts/install-bun.sh` |
 | TUI packages | `tui/bun.lock` (sha512 per entry) | Dependabot `bun` (minor/patch, not `@opentui/*`) | `bun install --frozen-lockfile` |
@@ -109,10 +110,9 @@ advisory accepted on purpose goes in `.github/ci/audit-ignore.txt` with its
 reason. CodeQL analyses Python, the workflows, the TypeScript window
 (`tui/src`) and the C# launcher.
 
-Not yet pinned: the micromamba bootstraps of the installers under
-`delfin/` and the Settings tab (`micro.mamba.pm/.../latest`), and the
-conda-forge packages the toolchains job installs (versions float; conda
-checks each package's digest against the channel's repodata).
+Not yet pinned: the conda-forge packages the toolchains job installs
+(versions float; conda checks each package's digest against the
+channel's repodata).
 
 ## Releases already on PyPI
 

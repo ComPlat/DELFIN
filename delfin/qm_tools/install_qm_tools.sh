@@ -389,11 +389,26 @@ install_conda_stack() {
 # Fetch micromamba itself, when there is none and one is needed.
 #
 # Telling a user that Settings can install it, and then not installing it, is
-# the shape of problem this whole layer exists to remove. It is ten megabytes
-# and one file; it goes into the tool directory beside everything else rather
+# the shape of problem this whole layer exists to remove. It is one file of
+# about 18 MB; it goes into the tool directory beside everything else rather
 # than into the home directory, so it is as removable as the tools it builds.
-MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
 AUTO_MICROMAMBA="${AUTO_MICROMAMBA:-1}"
+
+# The shared micromamba fetcher (delfin/installers/fetch_micromamba.sh): one
+# pinned release per platform, held to its SHA-256. Beside this script when
+# the installer was staged into a tool directory, one level up in a checkout
+# or an installed package.
+micromamba_fetcher() {
+  local here candidate
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for candidate in "${here}/fetch_micromamba.sh" "${here}/../installers/fetch_micromamba.sh"; do
+    if [ -f "${candidate}" ]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 bootstrap_micromamba() {
   # Whatever this function prints to stdout is its answer -- the path. Every
@@ -401,23 +416,20 @@ bootstrap_micromamba() {
   # measured, "[qm_tools] no micromamba on this machine; fetching one" was
   # captured into the variable and then executed as a command.
   [[ "${AUTO_MICROMAMBA}" == "1" ]] || return 1
-  have curl || { log >&2 "no curl, so micromamba cannot be fetched either"; return 1; }
-  local target="${ROOT}/bin/micromamba"
+  local target="${ROOT}/bin/micromamba" fetcher
   if [[ -x "${target}" ]]; then
     printf "%s\n" "${target}"
     return 0
   fi
-  log >&2 "no micromamba on this machine; fetching one (about 10 MB)"
-  local work="${ROOT}/downloads/micromamba-$$"
-  mkdir -p "${work}" "${ROOT}/bin"
-  if ! curl -fsSL "${MICROMAMBA_URL}" | tar -xj -C "${work}" bin/micromamba 2>/dev/null; then
-    rm -rf "${work}"
-    log >&2 "micromamba could not be fetched"
+  if ! fetcher="$(micromamba_fetcher)"; then
+    log >&2 "fetch_micromamba.sh is missing beside this installer, so micromamba is not fetched"
     return 1
   fi
-  install -m 755 "${work}/bin/micromamba" "${target}"
-  rm -rf "${work}"
-  log >&2 "micromamba is at ${target}"
+  log >&2 "no micromamba on this machine; fetching the pinned release"
+  if ! bash "${fetcher}" "${target}" >&2; then
+    log >&2 "micromamba could not be fetched and verified"
+    return 1
+  fi
   printf "%s\n" "${target}"
   return 0
 }

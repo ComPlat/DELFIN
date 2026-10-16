@@ -182,7 +182,7 @@ def test_no_installer_names_the_moving_endpoint_and_all_reach_the_fetcher():
         assert "fetch_micromamba.sh" in text, path
     tab = SETTINGS_TAB.read_text(encoding="utf-8")
     assert "micro.mamba.pm" not in tab
-    assert "fetch_micromamba.sh" in tab
+    assert "get_packaged_micromamba_fetcher" in tab
     assert "--insecure" not in tab
 
 
@@ -231,6 +231,53 @@ def test_a_staged_installer_finds_the_fetcher(tmp_path):
 def test_the_settings_button_runs_the_shared_fetcher():
     """The handler hands the destination to the fetcher and nothing else."""
     tab = SETTINGS_TAB.read_text(encoding="utf-8")
+    from delfin.runtime_setup import get_packaged_micromamba_fetcher
+
+    assert get_packaged_micromamba_fetcher() == FETCHER.resolve()
     body = tab.split("def _on_install_micromamba(button):", 1)[1].split("\n    def ", 1)[0]
-    assert "fetch_micromamba.sh" in body
-    assert "curl" not in body and "tar" not in body
+    assert "get_packaged_micromamba_fetcher()" in body
+    assert not re.search(r"\b(curl|wget|tar)\b|--insecure", body), body
+
+
+def _function(text: str, name: str) -> str:
+    return name + "() {" + text.split("\n" + name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+
+
+@pytest.mark.parametrize("stage_name,script,entry", [
+    ("stage_packaged_qm_tools", "install_qm_tools.sh", "bootstrap_micromamba"),
+    ("stage_packaged_ai_tools", "install_ai_tools.sh", "find_micromamba"),
+    ("stage_packaged_analysis_tools", "install_analysis_tools.sh", "find_micromamba"),
+])
+def test_a_staged_installer_bootstraps_only_a_verified_micromamba(tmp_path, stage_name,
+                                                                  script, entry):
+    """The installer's own bootstrap, run from its staged copy: a download
+    that matches no digest leaves no micromamba; a matching one is used."""
+    from delfin import runtime_setup
+
+    target = getattr(runtime_setup, stage_name)(tmp_path / "tools")
+    text = (target / script).read_text(encoding="utf-8")
+    helpers = "".join(_function(text, n) for n in ("log", "warn", "have")
+                      if ("\n" + n + "() {") in text)
+    one_liners = "".join(line + "\n" for line in text.splitlines()
+                         if re.match(r"^(log|warn|have)\(\) \{ .* \}$", line))
+    probe = target / "probe.sh"
+    probe.write_text(
+        "set -uo pipefail\n"
+        f'ROOT="{target}"\nAUTO_MICROMAMBA=1\nDELFIN_QM_TOOLS_ROOT="{tmp_path}/none"\n'
+        + one_liners + helpers + _function(text, "micromamba_fetcher") + _function(text, entry)
+        + f'{entry}\n', encoding="utf-8")
+
+    fake = _fake_tools(tmp_path, b"stand-in bytes\n")
+    env = {"PATH": str(fake), "HOME": str(tmp_path)}
+    refused = subprocess.run([str(fake / "bash"), str(probe)], capture_output=True, text=True,
+                             timeout=60, env=env)
+    assert refused.returncode != 0
+    assert not (target / "bin" / "micromamba").exists()
+    assert "checksum mismatch" in refused.stderr
+
+    env["MICROMAMBA_SHA256"] = hashlib.sha256(b"stand-in bytes\n").hexdigest()
+    taken = subprocess.run([str(fake / "bash"), str(probe)], capture_output=True, text=True,
+                           timeout=60, env=env)
+    assert taken.returncode == 0, taken.stderr
+    assert taken.stdout.strip() == str(target / "bin" / "micromamba")
+    assert (target / "bin" / "micromamba").read_bytes() == b"stand-in bytes\n"

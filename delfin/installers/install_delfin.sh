@@ -92,7 +92,6 @@ OPENMPI_PREFIX="${OPENMPI_PREFIX:-}"
 PYTHON_CHOICE="${DELFIN_PYTHON:-}"
 DELFIN_CALC_DIR="${DELFIN_CALC_DIR:-$HOME/calc}"
 DELFIN_ARCHIVE_DIR="${DELFIN_ARCHIVE_DIR:-$HOME/archive}"
-MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
 if [ -z "${MAKE_JOBS:-}" ]; then
   # A login node is shared with everybody else on it: eight compile jobs at most.
   MAKE_JOBS="$(nproc 2>/dev/null || echo 4)"
@@ -247,22 +246,21 @@ find_micromamba() {
 # A Python of DELFIN's own, for a machine that has no 3.10/3.11 at all. No root,
 # no module system: micromamba is one static binary.
 bootstrap_python() {
-  local env_dir="$PREFIX/delfin-python" mamba work
+  local env_dir="$PREFIX/delfin-python" mamba fetcher
   if [ -x "$env_dir/bin/python" ] && python_ok "$env_dir/bin/python"; then
     BASE_PYTHON="$env_dir/bin/python"
     return 0
   fi
   if ! mamba="$(find_micromamba)"; then
-    have curl || die "no Python 3.10/3.11 here and no curl to fetch one; pass --python PATH"
-    log "no Python 3.10/3.11 here; fetching micromamba (about 10 MB)"
-    mkdir -p "$PREFIX/micromamba/bin"
-    work="$(mktemp -d "$PREFIX/.micromamba.XXXXXX")"
-    if ! curl -fsSL "$MICROMAMBA_URL" | tar -xj -C "$work" bin/micromamba; then
-      rm -rf "$work"
-      die "micromamba could not be fetched from $MICROMAMBA_URL; pass --python PATH"
-    fi
-    install -m 755 "$work/bin/micromamba" "$PREFIX/micromamba/bin/micromamba"
-    rm -rf "$work"
+    # The shared fetcher: one pinned release per platform, held to its
+    # SHA-256. Beside this script, else in the checkout resolve_repo found
+    # or cloned (this script may have been downloaded on its own).
+    fetcher="$SCRIPT_DIR/fetch_micromamba.sh"
+    [ -f "$fetcher" ] || fetcher="$DELFIN_REPO/delfin/installers/fetch_micromamba.sh"
+    [ -f "$fetcher" ] || die "no Python 3.10/3.11 here and no fetch_micromamba.sh to fetch one with; pass --python PATH"
+    log "no Python 3.10/3.11 here; fetching micromamba"
+    bash "$fetcher" "$PREFIX/micromamba/bin/micromamba" \
+      || die "micromamba could not be fetched and verified; pass --python PATH"
     mamba="$PREFIX/micromamba/bin/micromamba"
   fi
   log "creating Python 3.11 at $env_dir"

@@ -679,7 +679,21 @@ install_nglview() {
 
 # ---------------------------------------------------------------------------
 # micromamba wherever DELFIN or the user put it; fetched when there is none.
-MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
+# The shared micromamba fetcher (delfin/installers/fetch_micromamba.sh): one
+# pinned release per platform, held to its SHA-256. Beside this script when
+# the installer was staged into a tool directory, one level up in a checkout
+# or an installed package.
+micromamba_fetcher() {
+  local here candidate
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for candidate in "${here}/fetch_micromamba.sh" "${here}/../installers/fetch_micromamba.sh"; do
+    if [ -f "${candidate}" ]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 find_micromamba() {
   local candidate
@@ -691,15 +705,9 @@ find_micromamba() {
       return 0
     fi
   done
-  have curl || return 1
-  local work="${ROOT}/downloads/micromamba-$$"
-  mkdir -p "${work}" "${ROOT}/bin"
-  if ! curl -fsSL "${MICROMAMBA_URL}" | tar -xj -C "${work}" bin/micromamba 2>/dev/null; then
-    rm -rf "${work}"
-    return 1
-  fi
-  install -m 755 "${work}/bin/micromamba" "${ROOT}/bin/micromamba"
-  rm -rf "${work}"
+  local fetcher
+  fetcher="$(micromamba_fetcher)" || return 1
+  bash "${fetcher}" "${ROOT}/bin/micromamba" >&2 || return 1
   printf "%s\n" "${ROOT}/bin/micromamba"
 }
 
