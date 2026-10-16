@@ -108,10 +108,13 @@ def test_glm_answers_are_left_as_they_are(settings):
     assert mp.MODEL_NOTES["concise_answers"] not in _solo_prompt(_GLM)
 
 
-def test_session_affinity_is_a_glm_knob(settings):
+def test_session_affinity_is_a_glm_knob_and_off_by_default(settings):
+    # Off by default: the A/B showed no cache or latency gain (see the profile).
+    assert mp.get_profile(_GLM).session_affinity is False
+    assert mp.get_profile(_DEEPSEEK).session_affinity is False
+    settings({"kit.glm": {"session_affinity": True}})
     assert mp.get_profile(_GLM).session_affinity is True
     assert mp.get_profile("kit.glm-5.3").session_affinity is True
-    assert mp.get_profile(_DEEPSEEK).session_affinity is False
 
 
 # --- session affinity: the request carries a stable opaque `user` -----------
@@ -208,7 +211,8 @@ def _turn(client):
         "sys", [{"role": "user", "content": "hallo"}], max_tokens=100)]
 
 
-def test_glm_requests_carry_a_stable_opaque_user(kit_client):
+def test_glm_requests_carry_a_stable_opaque_user(kit_client, settings):
+    settings({"kit.glm": {"session_affinity": True}})
     client, sent = kit_client(_GLM, session="trace-1234")
     _turn(client)
     _turn(client)
@@ -219,7 +223,8 @@ def test_glm_requests_carry_a_stable_opaque_user(kit_client):
     assert "trace-1234" not in users[0] and "1234" not in users[0]
 
 
-def test_another_session_gets_another_route_key(kit_client):
+def test_another_session_gets_another_route_key(kit_client, settings):
+    settings({"kit.glm": {"session_affinity": True}})
     a, sent_a = kit_client(_GLM, session="trace-a")
     _turn(a)
     b, sent_b = kit_client(_GLM, session="trace-b")
@@ -227,7 +232,8 @@ def test_another_session_gets_another_route_key(kit_client):
     assert sent_a[0]["user"] != sent_b[0]["user"]
 
 
-def test_the_route_key_is_not_computed_from_the_session(monkeypatch):
+def test_the_route_key_is_not_computed_from_the_session(monkeypatch, settings):
+    settings({"kit.glm": {"session_affinity": True}})
     # Drawn at random per key, not derived: the same key in a fresh
     # registry gets another id, so no digest of session data is sent.
     first = mp.session_route_key(_GLM, "trace-same")
@@ -244,8 +250,7 @@ def test_deepseek_requests_are_unchanged(kit_client):
     assert "user" not in sent[0]
 
 
-def test_session_affinity_switches_off(kit_client, settings):
-    settings({"kit.glm": {"session_affinity": False}})
+def test_glm_sends_no_user_by_default(kit_client):
     client, sent = kit_client(_GLM)
     _turn(client)
     assert "user" not in sent[0]

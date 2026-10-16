@@ -258,7 +258,13 @@ _GLM_5_3 = ModelProfile(
     # before a single tool call, on a 45-line change -- and the arms above
     # showed no answer that low did not give.
     max_effort="low",
-    session_affinity=True,
+    # Off by default, decided by the A/B of 2026-10-15/16 (5 rounds per arm,
+    # 68 tasks): with a stable `user` on 94% of requests the cache-hit share
+    # (0.624 vs 0.627), the cold share after the first request (0.274 vs
+    # 0.265) and TTFT did not move, and wall time per attempt was if anything
+    # higher (+9 s, p=0.068). The KIT gateway does not appear to route on
+    # `user`. The mechanism stays; `kit.glm.session_affinity: true` turns it on.
+    session_affinity=False,
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "
