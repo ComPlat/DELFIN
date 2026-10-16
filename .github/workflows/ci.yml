@@ -501,7 +501,7 @@ jobs:
             --shard-report=shard-report
         run: >
           pytest -q -m "not slow" --timeout=300 --timeout-method=signal
-          --cov=delfin --cov-report=
+          --cov=delfin --cov-branch --cov-report=
 
       - name: Keep the shard's data and report
         # Also after a failure: the combined report says what was measured,
@@ -565,18 +565,31 @@ jobs:
           coverage combine --keep --data-file=.coverage "${data[@]}"
           coverage report --data-file=.coverage > coverage.txt
           coverage xml --data-file=.coverage -o coverage.xml
+          # Branch data (--cov-branch): the columns are Stmts Miss Branch
+          # BrPart Cover, and Cover counts statements and branches together.
+          # The security-relevant modules get a table of their own; no
+          # threshold yet, the figure is to be read.
+          include="$(grep -vE '^\s*(#|$)' .github/ci/security-modules.txt | paste -sd, -)"
+          coverage report --data-file=.coverage --include="$include" > coverage-security.txt
           {
-            echo "### Coverage (${#data[@]} of 4 shards)"
+            echo "### Coverage (${#data[@]} of 4 shards, statements and branches)"
             echo
             echo '```'
+            head -1 coverage.txt
             tail -1 coverage.txt
+            echo '```'
+            echo
+            echo "#### Security-relevant modules (.github/ci/security-modules.txt)"
+            echo
+            echo '```'
+            cat coverage-security.txt
             echo '```'
             echo
             echo "#### Least covered modules"
             echo
             echo '```'
             grep -E '^delfin/' coverage.txt \
-              | awk '{gsub("%","",$4); if ($4 != "") print $4, $1}' \
+              | awk '{c = $NF; gsub("%", "", c); if (c != "") print c, $1}' \
               | sort -n | head -25 \
               | awk '{printf "%5s%%  %s\n", $1, $2}'
             echo '```'
@@ -589,6 +602,7 @@ jobs:
           name: coverage
           path: |
             coverage.txt
+            coverage-security.txt
             coverage.xml
           retention-days: 30
 
