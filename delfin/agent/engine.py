@@ -1676,8 +1676,8 @@ class AgentEngine:
 
     def _build_open_tasks_block(self) -> str:
         """Per-turn reminder of OPEN tasks so the agent doesn't forget to mark
-        finished steps ``completed`` (Jerome 2026-06-13: "sometimes forgets to
-        actually check off done tasks"). Read-only; empty string when there are
+        finished steps ``completed`` (field report 2026-06-13: finished
+        tasks were left open). Read-only; empty string when there are
         no open tasks. Mirrors the session filter of the ``task_list`` tool so
         the agent sees exactly the list it manages. The rendered list is capped
         so a long backlog can't bloat the prompt (the remainder count still
@@ -6710,8 +6710,9 @@ class AgentEngine:
         # Full compaction is driven by CONTEXT PRESSURE (token budget), never
         # by raw message count alone: a dozen short messages can sit at ~15%
         # of the window, and summarising there throws away the live working
-        # context — forcing the agent to re-discover its own work (Jerome
-        # 2026-06-13: "compacted at 15% full → agent confused"). This was the
+        # context — forcing the agent to re-discover its own work (field
+        # report 2026-06-13: compaction at 15% full lost the working
+        # context). This was the
         # legacy ``msg_count >= 12 OR tokens > 95%`` trigger; the OR meant the
         # 0.95 token threshold (raised precisely to avoid early compaction)
         # was undermined by the message count.

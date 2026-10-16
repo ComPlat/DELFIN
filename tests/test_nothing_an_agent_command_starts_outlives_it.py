@@ -240,7 +240,7 @@ def repo(tmp_path):
                        capture_output=True)
     git("init", "-q", "-b", "main")
     git("remote", "add", "origin", "git@github.com:ComPlat/DELFIN.git")
-    git("remote", "add", "cluster", "ka_user@uc3n991:repo.git")
+    git("remote", "add", "cluster", "ka_user@login02:repo.git")
     return tmp_path, git
 
 
@@ -286,7 +286,7 @@ def test_anything_else_stays_in_the_cage(repo, cmd):
 
 def test_a_remote_rewritten_away_from_github_stays_in_the_cage(repo):
     path, git = repo
-    git("config", "url.ka_user@uc3n991:.pushInsteadOf", "git@github.com:ComPlat/")
+    git("config", "url.ka_user@login02:.pushInsteadOf", "git@github.com:ComPlat/")
     assert A._github_push_plan("git push origin main", path) is None
 
 

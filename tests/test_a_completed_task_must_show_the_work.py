@@ -187,7 +187,7 @@ def test_an_edit_task_whose_work_predates_the_status_flip_still_counts():
 
 
 @pytest.mark.parametrize("subject", [
-    "Rückfrage mit Jerome klären",
+    "Rückfrage mit dem Betreuer klären",
     "Decide on the review order",
     "Mit dem Kunden telefonieren",
 ])
@@ -264,7 +264,7 @@ def test_the_check_runs_before_the_store_says_completed(agent_home):
     record never passes through a state where it claims done and knows
     nothing about it."""
     perms = _perms(agent_home)
-    tid = _create_and_start(perms, "Rückfrage mit Jerome klären")
+    tid = _create_and_start(perms, "Rückfrage mit dem Betreuer klären")
     out = json.loads(_doc_executor.execute(
         "task_update", {"task_id": tid, "status": "completed"}, perms))
     task = out["task"]

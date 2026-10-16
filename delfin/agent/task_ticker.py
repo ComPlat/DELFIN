@@ -188,7 +188,7 @@ def render_html(
     )
     # Bounded, scrollable list: a long backlog stays a compact panel with a
     # side scrollbar instead of growing into a giant wall of tasks that pushes
-    # the chat off-screen (Jerome 2026-06-13). The summary header stays fixed
+    # the chat off-screen (field report 2026-06-13). The summary header stays fixed
     # above the scroll area so the counts are always visible.
     scroll_open = "<div style='max-height:220px;overflow-y:auto;'>"
     if bare:

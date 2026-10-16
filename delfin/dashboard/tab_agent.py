@@ -2758,7 +2758,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/memory", "Every memory layer with its label: private, swarm, project, global (filter: /memory <layer> [words])", False),
     ("Memory", "/lessons", "Your lessons (/lessons show|edit|delete <id>)", False),
     ("Memory", "/share", "Share a lesson: the dialog shows the exact text and the check; /share confirm <dialog> <code>", True),
-    ("Memory", "/unshare", "Withdraw your shared entry as a removal branch", True),
+    ("Memory", "/unshare", "Withdraw your share: from the review queue (/unshare <queue or lesson id>), or a merged entry as a removal branch", True),
     ("Memory", "/swarm", "Findings of a swarm run (/swarm harvest|propose|close)", False),
     ("Memory", "/knowledge", "Global knowledge by topic, search, lint, dupes, stats; queue and curation for the admin", False),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
@@ -3553,7 +3553,7 @@ def _calc_missing_file_hint(filepath: str, look_dir: Path, calc_dir: Path) -> st
 
     The agent (any model) tends to GUESS output names like ``orca.out``
     that don't match DELFIN's actual filenames, then gets stuck
-    repeating "Not a file" (Jerome's error-detection bug). Instead of a
+    repeating "Not a file" (an error-detection bug from a field report). Instead of a
     dead-end, list what's really in the folder — surfacing
     ``.out``/``.log``/``.inp`` with OK/ERROR markers — and point at the
     structured analysis command so even a weak model self-corrects.
@@ -6015,7 +6015,7 @@ def create_tab(ctx):
 
     # Show only models that actually work for the current auth. When OpenAI runs
     # through the Codex CLI on a ChatGPT-account login (no OPENAI_API_KEY), the
-    # API-only '*-codex' models fail with a 400 (bug 2026-06-25: Jerome picked
+    # API-only '*-codex' models fail with a 400 (bug 2026-06-25: a user picked
     # gpt-5.3-codex → "not supported when using Codex with a ChatGPT account").
     # Drop them from the offered list. A live fetch (which needs an API key, i.e.
     # API mode) overwrites this with the full list, so API users still see all.
@@ -6279,7 +6279,7 @@ def create_tab(ctx):
         tooltip="Export this session's chemistry steps as a Jupyter notebook",
     )
 
-    # Git workflows (requested by Tilmann, 2026-10-09). Each button sends
+    # Git workflows (user feedback, 2026-10-09). Each button sends
     # its slash command -- the same text a person could type, in the
     # dashboard or the terminal -- and the shipped skill of that name
     # (delfin/agent/pack/skills/) is the playbook the model follows:
@@ -6298,7 +6298,7 @@ def create_tab(ctx):
     # Not always main (user, 2026-10-09): offered from the remote branches
     # this checkout already knows, typeable for any other.
     # Labelled: unlabelled, the field read as a branch switch. The shared
-    # checkout stays on main; a branch is tried with Test branch at the
+    # checkout stays on main; a branch is tried with ⎇ and ▶ Test at the
     # top of the page (a preview). This one only names the target of the
     # git buttons.
     git_base = widgets.Combobox(
@@ -6307,7 +6307,7 @@ def create_tab(ctx):
         placeholder="base branch", ensure_option=False,
         tooltip=("Base branch for the buttons beside it: Merge brings it "
                  "in, Branch starts from it, PR goes into it. Not the "
-                 "branch DELFIN runs on: that stays main, and Test branch "
+                 "branch DELFIN runs on: that stays main, and ▶ Test "
                  "at the top opens another branch in a preview."),
         style={"description_width": "36px"},
         layout=widgets.Layout(width="190px"))
@@ -6471,7 +6471,12 @@ def create_tab(ctx):
                 str(Path.home()), "~")
             held = len(state.get("chat_messages", []) or [])
             transfer = (settings.get("transfer") or {})
-            if transfer.get("host") and transfer.get("remote_path"):
+            from delfin.agent.bug_report import upload_policy
+            if (transfer.get("host") and transfer.get("remote_path")
+                    and upload_policy(settings) == "never"):
+                goes = (f"→ <code>{_html.escape(here)}</code>, and no further "
+                        "-- agent.bug_upload is 'never'")
+            elif transfer.get("host") and transfer.get("remote_path"):
                 goes = (f"→ <code>{_html.escape(here)}</code>, then "
                         f"<code>{_html.escape(str(transfer['host']))}</code>")
             else:
@@ -6500,7 +6505,7 @@ def create_tab(ctx):
     # Their widget objects stay alive (handlers/toggles still wired), just
     # not placed in any visible row.
     #   Export / Export as notebook -> the bug report downloads a copy of
-    #     everything when it is sent (Tilmann/user, 2026-10-09)
+    #     everything when it is sent (user feedback, 2026-10-09)
     for _hidden in (new_cycle_btn, advance_btn, undo_btn, commit_btn,
                     push_btn, push_confirm_btn, push_cancel_btn,
                     export_btn, nb_export_btn):
@@ -13750,7 +13755,7 @@ def create_tab(ctx):
         if cmd == "/grant" or cmd.startswith("/grant "):
             # Parse the argument from the ORIGINAL-case text, not the
             # lowercased ``cmd`` — paths are case-sensitive on Linux
-            # (Jerome's bug: ``.../Porpoise`` was searched as
+            # (a field report: ``.../Porpoise`` was searched as
             # ``.../porpoise`` and "not found"). The "/grant" token is
             # 6 chars regardless of case.
             arg = text.strip()[len("/grant"):].strip()
@@ -18208,9 +18213,12 @@ def create_tab(ctx):
             cmd = inp["command"]
             from delfin.agent import sandbox as _sandbox
             cfg = _sandbox.detect_config()
+            # The state the runner applies on this host (sandbox.confinement
+            # builds the argv too), never the configured wish.
+            _conf = _sandbox.confinement(cfg)
             _append_system_message(
-                f"\u2705 Approved & executing (mode={cfg.mode}, "
-                f"net={'on' if cfg.allow_network else 'off'}):\n  $ {cmd}"
+                f"\u2705 Approved & executing ({_conf.label()}):\n  $ {cmd}"
+                + (f"\n\u26a0 {_conf.notice}" if _conf.notice else "")
             )
             try:
                 res = _sandbox.run_agent_command(
@@ -18572,12 +18580,16 @@ def create_tab(ctx):
                 from delfin.agent.bug_report import push_report_to_remote
                 _tcfg = (load_settings() or {}).get("transfer", {}) or {}
                 if _tcfg.get("host") and _tcfg.get("remote_path"):
+                    # Send was pressed under a line naming this host
+                    # (_on_bug_toggle): that press is the consent for this
+                    # report. agent.bug_upload 'never' still refuses inside.
                     ok, where = push_report_to_remote(
                         report_dir,
                         host=_tcfg.get("host", ""),
                         user=_tcfg.get("user", ""),
                         remote_path=_tcfg.get("remote_path", ""),
                         port=int(_tcfg.get("port", 22) or 22),
+                        consent=True,
                     )
                     remote_line = (
                         f"\n📤 Copied to the remote archive → `{where}`"
@@ -22243,7 +22255,7 @@ def create_tab(ctx):
         The repo to operate on is determined by walking up from the
         edited file until a ``.git`` directory is found \u2014 necessary
         because the agent now writes into extra_workspace_dirs that are
-        unrelated to ``ctx.repo_dir`` (e.g. Jerome's TestOpt project
+        unrelated to ``ctx.repo_dir`` (e.g. a user's TestOpt project
         while the dashboard runs from the DELFIN repo).
 
         If the edit was a fresh ``write_file`` (untracked file in git),

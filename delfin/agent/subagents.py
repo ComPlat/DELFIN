@@ -110,7 +110,7 @@ def _subagent_limits() -> dict:
     """Resolve per-run subagent limits from settings, with fallbacks.
 
     ``settings["agent"]["subagents"]`` may set ``max_tool_calls``,
-    ``max_wall_s`` and ``max_output_tokens`` — so Jerome can tune how deep and
+    ``max_wall_s`` and ``max_output_tokens`` — so a user can tune how deep and
     how long a delegated subagent may run from the dashboard, without code
     changes. Missing/zero values fall back to the module defaults above.
     """

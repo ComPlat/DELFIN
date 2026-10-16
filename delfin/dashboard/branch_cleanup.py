@@ -202,8 +202,14 @@ def candidates(repo, *, gh: Optional[str] = "auto",
                stale_days: float = DEFAULT_STALE_DAYS,
                now: Optional[float] = None,
                protect_paths: Iterable[str] = (),
-               refresh: bool = False) -> tuple[list[Candidate], list[Kept]]:
-    """What Clean up offers to delete, and what it keeps (with why)."""
+               refresh: bool = False,
+               include_unmerged: bool = False) -> tuple[list[Candidate], list[Kept]]:
+    """What Clean up offers to delete, and what it keeps (with why).
+
+    ``include_unmerged`` also offers the local branches with commits not in
+    ``origin/main`` and no merged or closed pull request (the only route to
+    delete one from the dashboard); their ``unmerged`` count is set, so
+    :func:`delete` still wants the second confirmation."""
     now = time.time() if now is None else float(now)
     base = BL.base_ref(repo)
     prs = BL.pull_requests(repo, gh, refresh=refresh) or {}
@@ -289,6 +295,9 @@ def candidates(repo, *, gh: Optional[str] = "auto",
             reason = f"merged into {base}"
         elif pr is not None:
             reason = f"PR #{pr.number} {pr.state.lower()}"
+        elif include_unmerged:
+            n = BL.ahead_of_base(repo, name, base) or 0
+            reason = f"{n} commit(s) not in {base}"
         else:
             continue
         holders = held.get(name, [])
@@ -317,6 +326,29 @@ def _branch_refusal(repo, name: str) -> str:
                f"refs/heads/{name}").returncode != 0:
         return "it is not a local branch"
     return ""
+
+
+def delete_refusals(repo, names: Iterable[str]) -> dict[str, str]:
+    """``{name: why it may not be deleted}`` ("" = may be, under
+    :func:`delete`'s rules), with the worktree list read once."""
+    names = list(names)
+    current = BL.current_branch(repo)
+    held = _held_by(repo)
+    local = set(BL._out(repo, "for-each-ref", "--format=%(refname:short)",
+                        "refs/heads").splitlines())
+    out = {}
+    for name in names:
+        if name == "main":
+            out[name] = "main is never deleted"
+        elif name not in local:
+            out[name] = "it is not a local branch"
+        elif name == current:
+            out[name] = "it is the branch the shared checkout is on"
+        elif held.get(name):
+            out[name] = f"it is checked out in {held[name][0]}"
+        else:
+            out[name] = ""
+    return out
 
 
 def _undo_branch(repo, name: str, sha: str, upstream: str) -> str:

@@ -226,7 +226,7 @@ def test_the_command_asks_first_and_stops_nothing_on_no(stop_file, monkeypatch, 
 def test_the_command_says_what_it_did(stop_file, monkeypatch, capsys):
     from delfin.agent import cli
     monkeypatch.setattr(S, "request", lambda reason="", **k: {
-        "at": time.time(), "host": "uc3n990", "pid": 1, "reason": reason,
+        "at": time.time(), "host": "login01", "pid": 1, "reason": reason,
         "count": 1, "schedules_disabled": 2, "found_here": [11, 12],
         "ended_here": [12]})
     assert cli.main(["stop-all", "--yes"]) == 0
@@ -336,7 +336,7 @@ def test_the_shell_a_stop_is_typed_into_is_not_one_of_the_agents():
 
 
 def _report(**overrides):
-    report = {"host": "uc3n990", "at": time.time(), "last_stop": {},
+    report = {"host": "login01", "at": time.time(), "last_stop": {},
               "open_sessions": [], "kept_sessions": [], "active_schedules": [],
               "daemon_pid_files": {}, "agent_processes_here": [],
               "outlived_their_start_here": []}
@@ -347,7 +347,7 @@ def _report(**overrides):
 def test_a_session_silent_for_minutes_is_not_reported_as_running(capsys):
     from delfin.agent import cli
     code = cli._print_stop_all_check(_report(open_sessions=[
-        {"host": "uc3n991", "title": "Session C", "seconds_since_heartbeat": 600}]))
+        {"host": "login02", "title": "Session C", "seconds_since_heartbeat": 600}]))
     out = capsys.readouterr().out
     assert code == 0
     assert "ended" in out and "left over" in out
@@ -356,7 +356,7 @@ def test_a_session_silent_for_minutes_is_not_reported_as_running(capsys):
 def test_a_session_with_a_fresh_heartbeat_is_running(capsys):
     from delfin.agent import cli
     code = cli._print_stop_all_check(_report(open_sessions=[
-        {"host": "uc3n991", "title": "Session C", "seconds_since_heartbeat": 30}]))
+        {"host": "login02", "title": "Session C", "seconds_since_heartbeat": 30}]))
     assert code == 1
     assert "something is running" in capsys.readouterr().out
 
@@ -364,12 +364,12 @@ def test_a_session_with_a_fresh_heartbeat_is_running(capsys):
 def test_left_over_records_are_named_but_not_counted_as_running(capsys):
     from delfin.agent import cli
     code = cli._print_stop_all_check(_report(
-        kept_sessions=[{"session": "uc3n991-e2d3", "host": "uc3n991",
+        kept_sessions=[{"session": "login02-e2d3", "host": "login02",
                         "since": time.time(), "here": False, "alive_here": False}],
         daemon_pid_files={"scheduler_daemon": {"pid": 4242, "alive_here": False}}))
     out = capsys.readouterr().out
     assert code == 0
-    assert "run this check on uc3n991" in out
+    assert "run this check on login02" in out
     assert "left over unless it runs on another login node" in out
 
 

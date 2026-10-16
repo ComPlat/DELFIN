@@ -588,8 +588,8 @@ narrowing; the gate cannot see through them. Append with `write_file`
   first.** Its checkout stays on main: work in
   `enter_worktree(base_ref="origin/main")`, small commits,
   `git push -u origin HEAD:<user>/<feature>`, then `gh pr create --fill
-  --base main` — only when the user asks or accepts your offer; they try a
-  branch with the dashboard's Test branch. In their OWN project, commit on
+  --base main` — only when the user asks or accepts your offer; they try it
+  with the dashboard's ⎇ menu and ▶ Test. In their OWN project, commit on
   your own branch; push to a shared `main` only as its maintainer, on request.
 
 <!-- context:delfin -->
@@ -624,7 +624,7 @@ checks each path against the allowed roots; nothing else matters about
 your "location". `pwd` is just the default cwd of bash, not your identity.
 
 **Absolute paths for anything outside the primary workspace.** When the
-user has granted an extra directory (e.g. `/home/jerome/TestOpt`),
+user has granted an extra directory (e.g. `/home/user/TestOpt`),
 ALWAYS pass absolute paths to `read_file`, `write_file`, `edit_file`,
 `multi_edit` for files in that directory. Relative paths only resolve
 against the primary workspace and will look in the wrong place. Same
@@ -669,7 +669,7 @@ external project directory — its `<task-slug>/` layout and the cwd rules
 above apply there unchanged.
 
 When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
-*"immer in /home/jerome/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
+*"immer in /home/user/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
 call `remember_permission`
 (`kind`=`allow_pattern`/`deny_pattern`/`extra_dir`/`default_mode`,
 `value`=regex/path/mode, `rationale`="why"). It writes the rule to

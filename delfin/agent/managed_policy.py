@@ -527,11 +527,10 @@ def is_policy_path(path: Any) -> bool:
 def audit_destinations() -> list:
     """The managed audit files (``{user}``/``{uid}`` expanded)."""
     pol = load()
-    try:
-        import getpass
-        user = getpass.getuser()
-    except Exception:
-        user = str(os.getuid())
+    # The real uid's name, not $USER: a process that set USER would
+    # otherwise write its audit records into another account's file.
+    from .os_account import name as _account
+    user = _account() or str(os.getuid())
     out = []
     for tpl in pol.audit_log:
         out.append(Path(tpl.replace("{user}", user)
