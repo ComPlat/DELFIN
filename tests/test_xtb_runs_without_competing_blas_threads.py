@@ -1,0 +1,100 @@
+"""The dashboard's xtb runs give BLAS one thread; OpenMP gets the cores.
+
+Input: an xtb stand-in on PATH that records the OPENBLAS_NUM_THREADS it was
+started with, then each dashboard path that starts xtb for a structure on
+screen -- an optimisation (gfn_optimize.optimize_with_gfn), the climb's
+gradient by the command line (climb._CommandLine) and the climb's Hessian
+(climb.Climb.modes_from_xtb).
+Output: every recorded value is "1".
+
+The paths set OMP_NUM_THREADS and MKL_NUM_THREADS to the cores they want and
+left OpenBLAS alone. The conda-forge xtb -- the build DELFIN's installer
+fetches and the one CI runs -- is linked against OpenBLAS, which then starts
+as many threads again as the CPUs it may use, on top of xtb's OpenMP team.
+Measured 2026-10-16, conda-forge xtb 6.7.1 gfortran_ha02e54d_5, GFN2,
+relax_steps with 20 cycles, median of three, wall time in ms:
+
+    CPUs   molecule (cores asked)   OpenBLAS unset   OPENBLAS_NUM_THREADS=1
+       4   glycine (4)                       323                       34
+       4   ibuprofen (8)                     421                      216
+       4   eicosane (16)                     670                      319
+       8   ibuprofen (8)                    9277                      269
+       8   eicosane (16)                    6991                      368
+     384   glycine (4)                        66                       68
+     384   eicosane (16)                     320                      270
+
+With CPUs to spare the setting changes nothing; with as many CPUs as threads
+asked -- a four-core laptop, a SLURM allocation, a CI runner -- unset was 2x
+to 34x slower. The xtb release binary (static, MKL) was not affected.
+
+Rejected: OPENBLAS_NUM_THREADS equal to the cores. Measured on four CPUs it
+is what unset already does (270 ms for glycine); the two thread pools then
+compete for the same CPUs.
+"""
+from __future__ import annotations
+
+import os
+import stat
+
+import pytest
+
+
+_XYZ = "3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n"
+
+
+@pytest.fixture
+def recording_xtb(tmp_path, monkeypatch):
+    """An xtb on PATH that answers --version and records its BLAS threads."""
+    from delfin.dashboard import gfn_optimize as gfn
+    from delfin.qm_runtime import clear_resolver_cache
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marks = tmp_path / "marks.txt"
+    script = bin_dir / "xtb"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *--version*) echo "xtb version 6.7.1 (recorder)"; '
+        "exit 0;; esac\n"
+        f'echo "${{OPENBLAS_NUM_THREADS-unset}}" >> "{marks}"\n'
+        "exit 1\n", encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin")
+    monkeypatch.setenv("DELFIN_QM_TOOLS_ROOT", str(tmp_path / "no-tools"))
+    monkeypatch.delenv("XTBHOME", raising=False)
+    monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
+    gfn._XTB_JUDGED.clear()
+    clear_resolver_cache()
+    assert gfn.find_xtb() == str(script)
+    yield marks
+    gfn._XTB_JUDGED.clear()
+    clear_resolver_cache()
+
+
+def _recorded(marks):
+    return marks.read_text(encoding="utf-8").split() if marks.exists() else []
+
+
+def test_an_optimisation_gives_blas_one_thread(recording_xtb):
+    from delfin.dashboard import gfn_optimize as gfn
+
+    gfn.optimize_with_gfn(_XYZ, "gfn2", max_steps=1, timeout=30)
+    assert _recorded(recording_xtb) and set(_recorded(recording_xtb)) == {"1"}
+
+
+def test_the_climb_gives_blas_one_thread(recording_xtb):
+    from delfin.dashboard import climb
+
+    walk = climb.Climb(_XYZ, "gfn2")
+    try:
+        walk.modes_from_xtb()
+    finally:
+        walk.close()
+    line = climb._CommandLine([8, 1, 1], walk.bohr, "gfn2", 0, 0, None, 4)
+    try:
+        with pytest.raises(Exception):
+            line(walk.bohr)
+    finally:
+        line.close()
+    got = _recorded(recording_xtb)
+    assert len(got) >= 2 and set(got) == {"1"}, got
