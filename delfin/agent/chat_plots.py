@@ -639,7 +639,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
                 rec = outputs[f]
                 notes.append(f"{state}: {' + '.join(f)} ({rec['program']}) "
                              f"{rec['eh']:.6f} Eh -> {v:.2f}"
-                             + _frequency_note(state, rec["imag"]))
+                             + _frequency_note(state, rec["imag"])
+                             + (f" [{rec['opi']}]" if rec.get("opi") else ""))
         pw = ep.Pathway(label=_require_str(s, "label", ""),
                         states=tuple(xs), values=tuple(ys), start=start)
         try:
@@ -710,6 +711,7 @@ def _state_record(key: tuple[str, ...], root: Path, reader,
     from delfin.agent import energy_profile as ep
 
     eh, imag, atoms, charge, programs = 0.0, 0, Counter(), 0, []
+    witnessed = []
     for path in key:
         text, resolved = _read_output(path, root, reader)
         try:
@@ -717,6 +719,8 @@ def _state_record(key: tuple[str, ...], root: Path, reader,
         except ValueError as exc:
             raise SpecError(f"{exc}; nothing is drawn for a state without "
                             f"its energy") from None
+        if rec["program"] == "ORCA":
+            witnessed.append(_opi_says(resolved, rec["eh"], energy, reader))
         eh += rec["eh"]
         programs.append(rec["program"])
         n = rec["imag"]
@@ -727,8 +731,33 @@ def _state_record(key: tuple[str, ...], root: Path, reader,
         else:
             atoms += comp
             charge += q
+    # One verdict for the state: any disagreement wins, and "confirmed"
+    # only when every fragment was confirmed.
+    opi = next((w for w in witnessed if "WARNING" in w), "")
+    if not opi and witnessed and all(witnessed):
+        opi = "confirmed by OPI"
     return {"eh": eh, "imag": imag, "atoms": atoms, "charge": charge,
-            "program": "/".join(dict.fromkeys(programs))}
+            "program": "/".join(dict.fromkeys(programs)), "opi": opi}
+
+
+def _opi_says(output: Path, eh: float, energy: str, reader) -> str:
+    """ORCA's property.json beside ``output``, through OPI, on ``eh``.
+
+    Used automatically when the [orca] extra is installed and the JSON is
+    there (:mod:`delfin.opi_witness`); otherwise ``""`` and nothing
+    changes. The JSON passes the same read gate as the output.
+    """
+    from delfin import opi_witness
+
+    found = opi_witness.json_beside(output)
+    if found is None or not opi_witness.available():
+        return ""
+    if reader is not None:
+        try:
+            reader(found)
+        except SpecError:
+            return ""
+    return opi_witness.compare(eh, opi_witness.structured(found), energy)
 
 
 def _check_balance(parsed, outputs, ref_key, notes) -> None:
