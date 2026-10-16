@@ -83,6 +83,11 @@ SUBPROCESS_SINK_METHODS: frozenset[str] = frozenset({
     "run", "Popen", "call", "check_call", "check_output",
 })
 
+#: ``safe_git.<name>(...)`` (DELFIN's git runner) -> position of the
+#: directory git runs in; the argv list, where there is one, is read like a
+#: subprocess argv.
+SAFE_GIT_SINKS: dict[str, int] = {"run": 1, "check_output": 1, "out": 0}
+
 #: Gate name -> position of its path argument, or None when the gate takes
 #: the path elsewhere (the whole arguments dict, a command string) and so
 #: covers any path.
@@ -278,6 +283,22 @@ def _detect_sink(call: ast.Call) -> Optional[Sink]:
                   if kw.arg in ("cwd", "executable")
                   and not isinstance(kw.value, ast.Constant)]
         return make(f"subprocess.{func.attr}", "subprocess", paths) \
+            if paths else None
+    if mod in ("safe_git", "_safe_git") and func.attr in SAFE_GIT_SINKS:
+        at = SAFE_GIT_SINKS[func.attr]
+        paths = []
+        if at == 1 and call.args and isinstance(call.args[0],
+                                                (ast.List, ast.Tuple)):
+            paths += [_expr_key(e) for e in call.args[0].elts
+                      if _argv_path(e)]
+        elif at == 1 and call.args and not isinstance(call.args[0],
+                                                      ast.Constant):
+            paths.append(_expr_key(call.args[0]))
+        where = call.args[at] if len(call.args) > at else next(
+            (kw.value for kw in call.keywords if kw.arg == "cwd"), None)
+        if where is not None and not isinstance(where, ast.Constant):
+            paths.append(_expr_key(where))
+        return make(f"safe_git.{func.attr}", "safe_git", paths) \
             if paths else None
     if func.attr in PATH_METHODS:
         paths = [_expr_key(func.value)]

@@ -31,8 +31,10 @@ _FIX_MESSAGE = "fix parse_x for comma decimals"
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=str(repo),
-                          capture_output=True, text=True)
+    # The repository is what the model left; safe_git runs no program
+    # its config names.
+    from delfin.agent import safe_git
+    return safe_git.run(args, repo, timeout=60)
 
 
 def check(workspace: str, expected: str) -> int:

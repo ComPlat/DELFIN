@@ -968,8 +968,9 @@ def create_tab(ctx):
                 continue
             try:
                 safe_name = _safe_literature_entry_name(name)
+                _upload_limits.check_upload_size(len(content), safe_name)
                 dest = _resolve_literature_path(lit_dir, target / safe_name)
-            except ValueError as exc:
+            except ValueError as exc:      # UploadRefused is a ValueError
                 _set_status(f'Upload skipped: {exc}', '#d32f2f')
                 continue
             if dest.exists():
@@ -979,7 +980,13 @@ def create_tab(ctx):
                     dest = _resolve_literature_path(lit_dir, target / f'{stem}_{c}{sfx}')
                     c += 1
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(bytes(content))
+            # A new owner-only file; a name that appeared meanwhile, or a
+            # link planted there, is not written through.
+            try:
+                _upload_limits.write_new_bytes(dest, bytes(content))
+            except OSError as exc:
+                _set_status(f'Upload skipped: {exc}', '#d32f2f')
+                continue
             saved += 1
         if saved:
             _set_status(f'Uploaded {saved} file(s) — re-indexing...', '#2e7d32')
@@ -1129,7 +1136,7 @@ def create_tab(ctx):
                             lit_dir, _cur_dir() / f'{stem}_{c}{sfx}'
                         )
                         c += 1
-                dest.write_bytes(payload)
+                _upload_limits.write_new_bytes(dest, payload)
                 batch['saved'].append(dest.name)
                 batch['completed'].add(upload_id)
                 upload_bridge_state['files'].pop(upload_id, None)

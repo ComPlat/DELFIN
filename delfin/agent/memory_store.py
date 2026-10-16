@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import threading
 import time
 import unicodedata
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import german as _german
+from . import safe_git
 
 
 _DEFAULT_PATH = Path.home() / ".delfin" / "agent_memory.json"
@@ -207,17 +207,15 @@ def _head_ref(root: Path | str) -> str:
     Cost: two git calls per newly written body, none on recall.
     """
     try:
-        head = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--short=12", "HEAD"],
-            capture_output=True, text=True, timeout=5)
+        head = safe_git.run(["rev-parse", "--short=12", "HEAD"], root,
+                            timeout=5)
         if head.returncode != 0:
             return ""
         commit = (head.stdout or "").strip()
         if not commit:
             return ""
-        name = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=5)
+        name = safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"], root,
+                            timeout=5)
         branch = (name.stdout or "").strip() if name.returncode == 0 else ""
         if not branch or branch == "HEAD":
             branch = "detached"
@@ -936,9 +934,8 @@ def _first_commit(root: Path) -> str:
     in the creation time separates a repository from its own backup.
     """
     try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "rev-list", "--max-parents=0", "HEAD"],
-            capture_output=True, text=True, timeout=5)
+        out = safe_git.run(["rev-list", "--max-parents=0", "HEAD"], root,
+                           timeout=5)
         if out.returncode != 0:
             return ""
         first = (out.stdout or "").strip().splitlines()
@@ -969,10 +966,8 @@ def _repository_root(path: Path) -> Path:
         return cached
     answer = resolved
     try:
-        out = subprocess.run(
-            ["git", "-C", str(resolved), "rev-parse",
-             "--path-format=absolute", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5)
+        out = safe_git.run(["rev-parse", "--path-format=absolute",
+                            "--git-common-dir"], resolved, timeout=5)
         common = (out.stdout or "").strip()
         if out.returncode == 0 and common:
             root = Path(common).parent

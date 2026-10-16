@@ -1060,12 +1060,31 @@ def main(argv=None):
         env[_ct.ENABLED_ENV] = "1"
     else:
         env.pop("DELFIN_CLAUDE_TERMINAL", None)
+    import json
+
+    from delfin.dashboard.web_security import NO_TYPESETTING_ROUTE
+
+    # Server-side login sessions (logout, idle timeout) and refused logins
+    # as security events: delfin.dashboard.identity. If it does not import
+    # with this jupyter-server, the server starts with jupyter-server's own
+    # provider and the terminal says what is missing.
+    _identity_args = []
+    try:
+        from delfin.dashboard import identity as _identity
+        _identity_args = [
+            "--ServerApp.identity_provider_class=" + _identity.CLASS_PATH]
+    except Exception as _identity_exc:  # noqa: BLE001
+        print("Warning: dashboard logins have no logout or idle timeout on "
+              f"this server ({_identity_exc}); they end only after "
+              "DELFIN_DASHBOARD_LOGIN_DAYS.", file=sys.stderr)
+
     cmd = [
         sys.executable,
         "-m",
         "jupyter",
         "server",
         f"--ServerApp.jpserver_extensions={_extensions}",
+        *_identity_args,
         *(["--ServerApp.kernel_manager_class="
            + kernel_manager_class] if kernel_manager_class else []),
         # A kernel whose last window closed is ended by the server after
@@ -1128,11 +1147,15 @@ def main(argv=None):
         # dashboard shows, and this is a speed fix. The rendered document is
         # identical either way: 7626 elements, 15 script tags.
         #
-        # The trailing // is load-bearing: Voila appends ?config=... and the
-        # comment swallows it. And it goes through tornado_settings because
-        # the dashboard runs Voila as a jupyter-server extension, where the
-        # Voila app's own mathjax_url trait is never read.
-        '--ServerApp.tornado_settings={"mathjax_url": "data:text/javascript,//"}',
+        # The URL is an empty script on the dashboard's own origin
+        # (web_security.NO_TYPESETTING_ROUTE, installed by server_guard), so
+        # the page CSP's script-src needs no data:. Voila appends
+        # ?config=..., which the route ignores. It goes through
+        # tornado_settings because the dashboard runs Voila as a
+        # jupyter-server extension, where the Voila app's own mathjax_url
+        # trait is never read.
+        "--ServerApp.tornado_settings="
+        + json.dumps({"mathjax_url": NO_TYPESETTING_ROUTE}),
         # Frontend extensions the browser fetches, parses and evaluates at
         # every load, for widgets this dashboard never makes.
         #

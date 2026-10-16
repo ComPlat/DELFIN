@@ -358,6 +358,32 @@ def test_a_page_csp_forbids_plugins_foreign_base_and_foreign_forms(server):
         assert directive in csp, csp
 
 
+@pytest.mark.parametrize("path,owner", [
+    ("/login", False),                         # a Jupyter page
+    ("/voila/static/no-such-file.js", False),  # Voila's plain tornado handler
+])
+def test_a_page_csp_names_where_scripts_styles_and_connections_may_come_from(
+        server, path, owner):
+    from delfin.dashboard import web_security
+
+    _, headers, _ = (_owner if owner else _get)(server["port"], path)
+    csp = headers.get("content-security-policy", "")
+    assert csp.startswith(web_security.PAGE_CSP), (path, csp)
+    for directive in ("script-src 'self'", "style-src 'self'",
+                      "img-src 'self'", "connect-src 'self';"):
+        assert directive in csp, (path, csp)
+
+
+def test_the_typesetting_stand_in_is_an_empty_script_on_the_same_origin(server):
+    from delfin.dashboard import web_security
+
+    route = web_security.NO_TYPESETTING_ROUTE + "?config=TeX-AMS_HTML"
+    status, headers, body = _owner(server["port"], route)
+    assert status == 200, status
+    assert headers["content-type"].startswith("text/javascript")
+    assert body.strip().startswith(b"//") and b"\n" not in body.strip()
+
+
 # -- the login cookie ------------------------------------------------------------
 
 def _cookie(headers: dict, prefix: str) -> str:

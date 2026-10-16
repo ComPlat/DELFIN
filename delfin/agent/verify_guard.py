@@ -401,7 +401,6 @@ def _sibling_roots(root: Path) -> list[Path]:
     checkout; none of these resolve against its own root.
     """
     import os
-    import subprocess
     import time
     key = str(root)
     now = time.time()
@@ -410,10 +409,8 @@ def _sibling_roots(root: Path) -> list[Path]:
         return hit[1]
     found: list[Path] = []
     try:
-        r = subprocess.run(
-            ["git", "-C", key, "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, timeout=5,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        from . import safe_git
+        r = safe_git.run(["worktree", "list", "--porcelain"], key, timeout=5)
         if r.returncode == 0:
             for ln in r.stdout.splitlines():
                 if ln.startswith("worktree "):

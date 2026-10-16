@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
+
+from . import safe_git
 
 ROLES = ("maintainer", "contributor")
 
@@ -53,12 +54,10 @@ _URL_RE = re.compile(
 
 
 def _git(where: Any, *args: str) -> Optional[str]:
-    """stdout of a read-only git command, or None. Never raises."""
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith("GIT_") or k in _KEPT_GIT_ENV}
+    """stdout of a read-only git command, or None. Never raises.
+    safe_git keeps _KEPT_GIT_ENV and drops every other GIT_* variable."""
     try:
-        r = subprocess.run(["git", *args], cwd=str(where), capture_output=True,
-                           text=True, timeout=10, env=env)
+        r = safe_git.run(args, where, timeout=10)
     except Exception:
         return None
     return r.stdout.strip() if r.returncode == 0 else None

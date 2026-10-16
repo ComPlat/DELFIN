@@ -106,6 +106,9 @@ _KINDS = {
     # The account key store (trust_store.py) held a file that is not a
     # private key of this account: nothing is signed with it.
     "trust_store_refused": ("🔑", "Account key store refused"),
+    # A wrong token sent to the dashboard server (login form, URL or
+    # header), at most one record a minute (dashboard/login_session.py).
+    "dashboard_login_refused": ("🔑", "Dashboard login refused (wrong token)"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid
     # for once and permanently.

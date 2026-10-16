@@ -3456,11 +3456,6 @@ def create_tab(ctx):
             display(HTML(f"""
                 <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
                 <script>
-                if (typeof $3Dmol === "undefined") {{
-                    var _s = document.createElement("script");
-                    _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-                    document.head.appendChild(_s);
-                }}
                 (function() {{
                     var tries = 0;
                     function initViewer() {{
@@ -4235,11 +4230,6 @@ def create_tab(ctx):
             <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
         </div>
         <script>
-        if (typeof $3Dmol === "undefined") {{
-            var _s = document.createElement("script");
-            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-            document.head.appendChild(_s);
-        }}
         (function() {{
             var tries = 0;
             function initViewer() {{
@@ -7307,11 +7297,6 @@ def create_tab(ctx):
             <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
         </div>
         <script>
-        if (typeof $3Dmol === "undefined") {{
-            var _s = document.createElement("script");
-            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-            document.head.appendChild(_s);
-        }}
         (function() {{
             var tries = 0;
             function initViewer() {{
@@ -7510,11 +7495,6 @@ def create_tab(ctx):
         html = f"""
         {viewer_container}
         <script>
-        if (typeof $3Dmol === "undefined") {{
-            var _s = document.createElement("script");
-            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-            document.head.appendChild(_s);
-        }}
         (function() {{
             var tries = 0;
             function initViewer() {{
@@ -7617,11 +7597,6 @@ def create_tab(ctx):
                     <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
                 </div>
                 <script>
-                if (typeof $3Dmol === "undefined") {{
-                    var _s = document.createElement("script");
-                    _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-                    document.head.appendChild(_s);
-                }}
                 (function() {{
                     var tries = 0;
                     function initViewer() {{
