@@ -196,7 +196,7 @@ _CLI_SECRET_PATTERNS: tuple[str, ...] = (
     "**/.netrc", "~/.netrc", "**/.git-credentials", "~/.git-credentials",
     "**/.aws/credentials", "~/.aws/credentials", "**/.npmrc", "**/.pypirc",
     "**/.pgpass", "~/.kube/**", "~/.docker/config.json",
-    "~/.delfin/credentials.json",
+    "~/.delfin/credentials.json", "~/.delfin/trust_store/**",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
 )
 
@@ -7703,6 +7703,9 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # the directory, and the name is DELFIN's own.
     "approval_codes", "approval_codes/**",
     "**/approval_codes", "**/approval_codes/**",
+    # The account key and the pins beside it (trust_store): DELFIN's own
+    # processes outside agent sessions read them, no agent route does.
+    "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -27072,16 +27075,16 @@ def _landlock_hide_paths(write_roots) -> list[str]:
     globs, the bash read scan, ``approval_guard``) protect the 0600,
     short-lived code file there. That happens only for a granted
     ``~/.delfin`` or a workspace holding ``$HOME``. The credential
-    locations keep their behaviour (hidden, at that cost)."""
+    locations keep their behaviour (hidden, at that cost), and so does the
+    account key store (``trust_store``): its key lives as long as the
+    account, unlike a code that lives while one request waits."""
     hides = _home_secret_paths()
     soft: set[str] = set()
     try:
-        from delfin.agent.sandbox import runtime_masked_dirs
-        soft.update(runtime_masked_dirs())
-    except Exception:
-        pass
-    try:
         from delfin.agent import approval_code as _ac
+        d = _ac.ensure_codes_dir()
+        if d is not None:
+            soft.add(str(d.resolve()))
         soft.add(str(_ac.home_codes_dir().resolve()))
     except Exception:
         pass

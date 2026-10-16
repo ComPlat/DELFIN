@@ -1010,6 +1010,9 @@ _HOME_SECRET_DIRS = (
     # One-time approval codes of runs with no terminal (approval_code):
     # the person's `delfin-agent approvals` reads them, no agent may.
     ".delfin/approval_codes",
+    # The account key and the MCP pins (trust_store): read by DELFIN's
+    # own processes, never by a command an agent runs.
+    ".delfin/trust_store",
 )
 
 
@@ -1019,12 +1022,22 @@ def runtime_masked_dirs() -> list[str]:
     does not exist yet, also where the location is redirected (tests, a
     benchmark attempt). A cage masks these AFTER its binds, so a granted
     parent cannot re-expose them. Never raises."""
+    out: list[str] = []
     try:
         from . import approval_code as _ac
         d = _ac.ensure_codes_dir()
-        return [str(d.resolve())] if d is not None else []
+        if d is not None:
+            out.append(str(d.resolve()))
     except Exception:
-        return []
+        pass
+    try:
+        from . import trust_store as _ts
+        d = _ts.ensure_store_dir()
+        if d is not None and str(d.resolve()) not in out:
+            out.append(str(d.resolve()))
+    except Exception:
+        pass
+    return out
 
 
 def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:

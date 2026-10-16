@@ -98,6 +98,9 @@ _KINDS = {
     "audit_write_failed": ("📒", "Audit log could not be written"),
     "audit_chain_broken": ("📒", "Audit log changed outside DELFIN"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
+    # The account key store (trust_store.py) held a file that is not a
+    # private key of this account: nothing is signed with it.
+    "trust_store_refused": ("🔑", "Account key store refused"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid
     # for once and permanently.
