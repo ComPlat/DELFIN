@@ -31,7 +31,7 @@ pytest.importorskip("pexpect")
 pytest.importorskip("termios")
 
 from agent_terminal_probes import fake_model            # noqa: E402
-from agent_terminal_probes.pty_chat import Chat         # noqa: E402
+from agent_terminal_probes.pty_chat import Chat, close_all  # noqa: E402
 
 DEFAULT = ("--permission-mode", "default")
 BYPASS = ("--permission-mode", "bypassPermissions", "--unattended")
@@ -55,8 +55,7 @@ def chat(tmp_path):
         return session
 
     yield _open
-    for session in opened:
-        session.close()
+    close_all(opened)
 
 
 def _requests(session: Chat) -> list[dict]:
@@ -193,13 +192,15 @@ def test_a_result_cut_for_display_says_so_and_shows_its_head(chat):
 def test_a_mistyped_command_names_the_nearest_and_sends_nothing(chat):
     session = chat()
     session.send("/hlep\r", 1.5)
+    session.wait_until(lambda s: "unknown command /hlep" in s.text())
     assert session.wait_for("idle", 15) == "idle"
     text = session.text()
     assert "/help" in text and "unknown command /hlep" in text, (
         "\n".join(session.visible()))
     assert _requests(session) == [], "the typo went to the model"
     session.send("\x1b[A", 0.6)
-    assert session.visible()[-3].startswith("> /hlep"), (
+    assert session.wait_until(
+        lambda s: s.visible()[-3].startswith("> /hlep")), (
         "↑ did not bring the line back:\n" + "\n".join(session.visible()[-4:]))
 
 
@@ -211,6 +212,114 @@ def test_a_mistyped_command_names_the_nearest_and_sends_nothing(chat):
 def test_only_a_near_miss_of_a_builtin_is_held_back(line, near):
     from delfin.agent import repl_commands as rc
     assert rc.nearest_builtin(line) == near
+
+
+# ---------------------------------------------------------------------------
+# Teardown
+# ---------------------------------------------------------------------------
+
+def test_a_session_with_a_draft_in_the_box_still_leaves_on_ctrl_d(chat):
+    """Ctrl+D on a non-empty line deletes forward (readline), not leaves.
+
+    A close() that sends only Ctrl+D leaves such a session to pexpect's
+    forced close, whose SIGKILL is given 0.1 s to be reaped.
+    """
+    session = chat()
+    session.send("a draft that is never sent", 0.5)
+    assert session.close() == 0
+    assert session.child.signalstatus is None
+
+
+_IGNORES = ("import signal, sys, time\n"
+            "for s in {sigs}: signal.signal(s, signal.SIG_IGN)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(120)\n")
+
+
+def _stub(sigs: str):
+    import sys
+    import pexpect
+    child = pexpect.spawn(sys.executable, ["-c", _IGNORES.format(sigs=sigs)],
+                          encoding="utf-8", timeout=10)
+    child.expect("ready")
+    return child
+
+
+def test_a_child_that_only_sigterm_ends_fails_its_teardown():
+    """Ending on SIGTERM is not leaving: the teardown says which step."""
+    from agent_terminal_probes.pty_chat import end_child
+    child = _stub("(signal.SIGHUP, signal.SIGINT)")
+    with pytest.raises(AssertionError, match=r"Ctrl\+D.*SIGTERM ended it"):
+        end_child(child, leave_s=1.0)
+    assert not child.isalive() and child.signalstatus == 15
+
+
+def test_a_child_that_ignores_every_leave_is_killed_and_reported():
+    from agent_terminal_probes.pty_chat import end_child
+    child = _stub("(signal.SIGHUP, signal.SIGINT, signal.SIGTERM)")
+    with pytest.raises(AssertionError, match=r"after SIGTERM.*SIGKILL ended"):
+        end_child(child, leave_s=1.0)
+    assert not child.isalive() and child.signalstatus == 9
+    assert child.closed
+
+
+def test_a_child_that_closed_its_pty_is_still_ended_in_bounded_time():
+    """pexpect's read at EOF waits in a blocking waitpid() while the child
+    lives on; the teardown reads the fd itself and stays bounded."""
+    import time
+
+    import sys
+
+    import pexpect
+
+    from agent_terminal_probes.pty_chat import end_child
+    child = pexpect.spawn(sys.executable, ["-c", (
+        "import os, signal, time\n"
+        "for s in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):\n"
+        "    signal.signal(s, signal.SIG_IGN)\n"
+        "os.write(1, b'ready')\n"
+        "for fd in (0, 1, 2):\n"
+        "    os.close(fd)\n"
+        "time.sleep(120)\n")], timeout=10)
+    child.expect("ready")
+    t0 = time.monotonic()
+    kept: list[bytes] = []
+    with pytest.raises(AssertionError, match=r"SIGKILL ended it"):
+        end_child(child, leave_s=1.0, keep=kept.append)
+    assert time.monotonic() - t0 < 15
+    assert child.signalstatus == 9
+
+
+def test_a_probe_whose_session_outlives_its_teardown_fails(tmp_path,
+                                                         monkeypatch):
+    """The probe runner reports a teardown that needed SIGKILL; it used to
+    call close(force=True) and drop whatever that raised."""
+    import functools
+    import os
+    import sys
+    import types
+
+    from agent_terminal_probes import pty_chat, runner
+
+    stub = tmp_path / "stub.py"
+    stub.write_text(
+        "import os, signal, time\n"
+        "for s in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):\n"
+        "    signal.signal(s, signal.SIG_IGN)\n"
+        "os.write(1, b'> ')\n"
+        "time.sleep(120)\n")
+    box = types.SimpleNamespace(
+        shim=stub, workspace=tmp_path,
+        env=lambda _key: {"PATH": os.environ.get("PATH", "")})
+    monkeypatch.setattr(runner.sb, "python", lambda: sys.executable)
+    monkeypatch.setattr(runner, "end_child", functools.partial(
+        pty_chat.end_child, leave_s=1.0, reap_s=5.0))
+    probe = runner.Probe(name="stub", prompts=[],
+                         check=lambda _box, _text: (True, "check passed"))
+    out = runner.run_probe(probe, box, api_key="", model="m", timeout=3)
+    assert not out.passed
+    assert out.detail.startswith("teardown: pty child "), out.detail
+    assert "SIGKILL ended it" in out.detail and "check passed" in out.detail
 
 
 def test_a_path_is_still_a_message(chat):
