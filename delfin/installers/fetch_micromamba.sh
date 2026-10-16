@@ -54,7 +54,7 @@ delfin_micromamba_platform() {
 
 # The pinned digest of a platform name (linux-64 ...); status 1 when none.
 delfin_micromamba_sha256() {
-  local var="DELFIN_MICROMAMBA_SHA256_$(printf '%s' "$1" | tr '-' '_')"
+  local var="DELFIN_MICROMAMBA_SHA256_${1//-/_}"
   local value="${!var:-}"
   [ -n "${value}" ] || return 1
   printf '%s\n' "${value}"
