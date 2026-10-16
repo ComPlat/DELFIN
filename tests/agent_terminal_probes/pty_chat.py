@@ -208,6 +208,11 @@ class Chat:
                 return bool(check(self))
             self.pump(0.2)
 
+    def ended_within(self, seconds: float) -> bool:
+        """True once the child has exited and been reaped, polling up to
+        *seconds* and reading its output meanwhile; never sends a key."""
+        return _gone_within(self.child, seconds, self.pump)
+
     def turn(self, text: str, timeout: float = 30.0) -> str:
         """Type *text*, press Enter, wait until the turn has ended."""
         self.send(text, 0.2)
