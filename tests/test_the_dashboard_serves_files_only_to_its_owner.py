@@ -328,3 +328,31 @@ def test_a_failed_handler_build_leaves_the_route_refusing(monkeypatch):
     targets = [rule.target for rule in web_security._rules(app.wildcard_router)]
     assert AllowListFileHandler not in targets
     assert any(t.__name__ == "RefuseFiles" for t in targets if isinstance(t, type))
+
+
+# -- security headers on every response ----------------------------------------
+
+@pytest.mark.parametrize("path,owner", [
+    ("/login", False),                         # a Jupyter page
+    ("/api/status", True),                     # a Jupyter API handler
+    ("/voila/files/pic.png", True),            # the files route
+    ("/voila/static/no-such-file.js", False),  # Voila's plain tornado handler
+    ("/no/such/route", False),                 # tornado's 404
+])
+def test_every_response_carries_the_security_headers(server, path, owner):
+    status, headers, _ = (_owner if owner else _get)(server["port"], path)
+    assert status < 500, status
+    csp = headers.get("content-security-policy", "")
+    assert "frame-ancestors 'self'" in csp, (path, csp)
+    assert "object-src 'none'" in csp or "default-src 'none'" in csp, (path, csp)
+    assert headers.get("x-content-type-options") == "nosniff", path
+    assert headers.get("referrer-policy") == "same-origin", path
+    assert headers.get("x-frame-options") == "SAMEORIGIN", path
+
+
+def test_a_page_csp_forbids_plugins_foreign_base_and_foreign_forms(server):
+    _, headers, _ = _get(server["port"], "/login")
+    csp = headers.get("content-security-policy", "")
+    for directive in ("object-src 'none'", "base-uri 'self'",
+                      "form-action 'self'", "frame-ancestors 'self'"):
+        assert directive in csp, csp
