@@ -5,7 +5,10 @@ Active only for a child whose PYTHONPATH starts with this directory
 ``sitecustomize`` from sys.path at start-up. ``LEAVE_SHIM`` selects:
 
   hang-after-save  the first session-end stage (the session report)
-                   sleeps 120 s, after the session is saved
+                   writes LEAVE_SHIM_DIR/stage-start and sleeps 120 s,
+                   after the session is saved
+  slow-stage       the same stage writes stage-start, sleeps 15 s,
+                   writes stage-done
   slow-save        session_store.save_session writes LEAVE_SHIM_DIR/
                    save-start, sleeps 2 s, saves, writes save-done
 
@@ -29,6 +32,16 @@ if _MODE == "hang-after-save":
         time.sleep(120)
 
     session_report.write_session_report = _hang
+
+elif _MODE == "slow-stage":
+    from delfin.agent import session_report
+
+    def _slow(*_a, **_k):
+        (_DIR / "stage-start").write_text("")
+        time.sleep(15)
+        (_DIR / "stage-done").write_text("")
+
+    session_report.write_session_report = _slow
 
 elif _MODE == "slow-save":
     from delfin.agent import session_store
