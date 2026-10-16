@@ -786,33 +786,19 @@ def test_past_the_minimum_tells_a_product_from_a_deformation():
     assert pm([0, 1, 0.9, 2, 1.9, 3.5]) is None
 
 
-def test_a_walk_that_runs_downhill_from_the_start_still_stops_at_the_product(
-        monkeypatch):
-    """The start counts as the high point a walk came down from.
+def _replayed_walk(monkeypatch, energies, settle=None):
+    """walk_under_load on a butane whose levels settle at *energies*.
 
-    Input: walk_under_load on a butane with the engine and the per-level
-    relaxation replaced, so the levels settle at the energies one real run
-    gave (kcal/mol against the unloaded start, 2026-10-16, GFN2, four xtb
-    threads): -0.590, -0.385, -0.144, -0.920, -0.396, 1.683, 5.458, 14.682.
-    Output: the walk stops at the floor (level 4 of 8, -0.920) and says so in
-    ``reached``.
-
-    past_the_minimum arms only after the energy has fallen PAST_A_BARRIER
-    (0.8 kcal/mol) below the highest point before the floor, and its own
-    contract -- and test_past_the_minimum_tells_a_product_from_a_deformation
-    -- counts the start as that point when the walk runs downhill from it.
-    The walk handed it the levels without the start: the highest level
-    before the floor was -0.144, 0.776 below nothing, so the detector never
-    armed and the ramp ran on to +14.7 kcal/mol past the product. With four
-    xtb threads the level energies scatter by about a kcal run to run, and
-    test_a_push_stops_at_a_conformational_product_not_past_it failed 1 of 10
-    idle and 3 of 23 under load this way; with one thread (no scatter) the
-    same level came out at -0.037 and it passed.
+    The engine and the per-level relaxation are replaced, so each level's
+    plain energy is the next value (kcal/mol against the unloaded start) and
+    nothing moves; after the levels the release settle returns *settle*
+    (default: the lowest value). Eight levels from 3 to 90 kcal/mol/A, the
+    ramp of test_a_push_stops_at_a_conformational_product_not_past_it.
     """
     from delfin.dashboard import climb as _climb
 
-    levels = iter([-0.590297, -0.385281, -0.144176, -0.920086, -0.39622,
-                   1.682914, 5.458062, 14.681581])
+    levels = iter(energies)
+    rest = min(energies) if settle is None else settle
     kcal = _climb.HARTREE_IN_KCAL
 
     class _Engine:
@@ -820,7 +806,7 @@ def test_a_walk_that_runs_downhill_from_the_start_still_stops_at_the_product(
             return 0.0, np.zeros_like(np.asarray(bohr, dtype=float))
 
     class _FakeLoaded:
-        def __init__(self, symbols, numbers, angstrom, *rest):
+        def __init__(self, symbols, numbers, angstrom, *more):
             self.bohr = np.asarray(angstrom, dtype=float) / _climb.BOHR
             self.engine = _Engine()
 
@@ -828,22 +814,86 @@ def test_a_walk_that_runs_downhill_from_the_start_still_stops_at_the_product(
             pass
 
     def _settles(loaded, bohr, forces, **_kw):
-        # After the levels, the release settle: the floor again.
         return {'ok': True, 'bohr': np.asarray(bohr, dtype=float),
-                'energy': next(levels, -0.920086) / kcal, 'gradients': 1}
+                'energy': next(levels, rest) / kcal, 'gradients': 1}
 
     monkeypatch.setattr(load, '_Loaded', _FakeLoaded)
     monkeypatch.setattr(load, 'relax_under_load', _settles)
     butane = ("4\nbutane\nC 0 0 0\nC 1.5 0 0\nC 2.0 1.4 0\n"
               "C 3.5 1.4 0.3\n")
-    got = load.walk_under_load(
+    return load.walk_under_load(
         butane, [{'atom': 0, 'vector': (0.0, 0.0, -6.0)},
                  {'atom': 3, 'vector': (0.0, 0.0, 6.0)}],
         'gfn2', steps=8, force_from=3.0, force_to=90.0)
 
+
+def test_a_walk_that_runs_downhill_from_the_start_still_stops_at_the_product(
+        monkeypatch):
+    """A product whose sampled barrier was low is still the product.
+
+    Input: the level energies of a real run (kcal/mol against the unloaded
+    start, 2026-10-16, GFN2, four xtb threads): -0.590, -0.385, -0.144,
+    -0.920, -0.396, 1.683, 5.458, 14.682.
+    Output: the walk stops at the floor (level 4 of 8, -0.920) and says so in
+    ``reached``.
+
+    The highest level before the floor, -0.144, is 0.776 kcal/mol above it:
+    the eight-level ramp samples the gauche-anti barrier wherever its levels
+    happen to land, and with four xtb threads that level scatters by about a
+    kcal between runs of the same input.
+    """
+    got = _replayed_walk(monkeypatch, [-0.590297, -0.385281, -0.144176,
+                                       -0.920086, -0.39622, 1.682914,
+                                       5.458062, 14.681581])
     assert got['reached'] is not None, 'the ramp ran past the product minimum'
     assert got['reached']['energy'] == pytest.approx(-0.920086, abs=1e-4)
     assert len(got['points']) < 8, [p['energy'] for p in got['points']]
+
+
+def test_a_product_above_the_reactant_is_still_a_product(monkeypatch):
+    """The floor that matters is the one after the barrier, not the lowest.
+
+    Input: the level energies of the run that failed
+    test_a_push_stops_at_a_conformational_product_not_past_it in CI (4-vCPU
+    runner, conda-forge xtb 6.7.1, after PR #278), as reproduced locally on
+    4 CPUs: -0.582, -0.228, 0.118, -0.408, -0.183, 1.176, 7.075, 18.152.
+    Output: the walk stops at level 4 (-0.408), the basin after the barrier
+    at level 3, instead of running all eight levels.
+
+    past_the_minimum took the lowest energy of the whole walk as the floor.
+    Here that is the first level, the reactant under the gentlest load
+    (-0.582), not the product: in some runs the gauche-to-anti level settles
+    0.4 to 0.5 kcal/mol higher than in others, above the first level, and
+    the detector then waited for the walk to climb out of a reactant basin it
+    had already left. 4 of 53 walks on 4 CPUs ran past the product this way.
+    """
+    got = _replayed_walk(monkeypatch, [-0.582, -0.228, 0.118, -0.408, -0.183,
+                                       1.176, 7.075, 18.152])
+    assert got['reached'] is not None, 'the ramp ran past the product minimum'
+    assert got['reached']['energy'] == pytest.approx(-0.408, abs=1e-6)
+    assert len(got['points']) < 8, [p['energy'] for p in got['points']]
+
+
+def test_an_unrelaxed_start_is_not_a_barrier_the_walk_came_down(monkeypatch):
+    """A walk that only relaxes and then climbs has no product to stop at.
+
+    Input: levels that fall 3 kcal/mol below the unloaded start -- the
+    structure as the user handed it over, before anything relaxed it -- and
+    then climb without a dip: -3.0, -3.1, -1.5, 0.5, 3.0, 6.0, 10.0, 15.0.
+    Output: no ``reached``; the ramp runs on, because it has not crossed
+    anything.
+
+    Counting the start as a peak the walk came down from (the arming used
+    since PR #278) declared the relaxed reactant a product as soon as the
+    first barrier climb rose a kcal above it, and stopped the push before
+    the reaction it was set up to drive.
+    """
+    got = _replayed_walk(monkeypatch, [-3.0, -3.1, -1.5, 0.5, 3.0, 6.0, 10.0,
+                                       15.0], settle=-3.1)
+    assert got['reached'] is None, (
+        'the relaxation of the start was taken for a crossed barrier: '
+        f"{got['reached']['energy']}")
+    assert len(got['points']) == 8
 
 
 @_needs_xtb
