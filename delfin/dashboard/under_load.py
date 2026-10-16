@@ -512,11 +512,18 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
             # stops at the floor, and settles from there rather than from the
             # wreck at the far end of the ramp.
             if reached is None and gave is None and not whole:
+                # From the start, which is the zero every level is quoted
+                # against: a walk that runs downhill from it has the start as
+                # the high point it came down from, which is how
+                # past_the_minimum reads its first value. Without it a ramp
+                # whose sampled barrier sat below the start never armed
+                # (test_a_walk_that_runs_downhill_from_the_start_still_stops_
+                # at_the_product).
                 index = past_the_minimum(
-                    [one['energy'] for one in points],
+                    [0.0] + [one['energy'] for one in points],
                     fell=PAST_A_BARRIER, rose=OUT_OF_THE_BASIN)
-                if index is not None:
-                    reached = points[index]
+                if index is not None and index > 0:
+                    reached = points[index - 1]
                     break
         # And then the load comes off.
         #
