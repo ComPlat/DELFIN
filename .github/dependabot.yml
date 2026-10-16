@@ -117,6 +117,11 @@ updates:
     # useful; pushing the ceilings out is a decision for a person who has run
     # the suite against real calculations.
     versioning-strategy: increase-if-necessary
+    # Two weeks, the age the pinned dev tools must have (pyproject [dev]):
+    # a release that is withdrawn or found compromised in its first days
+    # never becomes a pull request here.
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
