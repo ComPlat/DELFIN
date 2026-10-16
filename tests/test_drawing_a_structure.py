@@ -173,9 +173,12 @@ def test_a_build_at_the_top_of_the_archive_is_installed_too(tmp_path, monkeypatc
         bundle.writestr("static/js/main.abc.js", "// the editor")
         bundle.writestr("static/js/popup.xyz.js", "// a demo page's bundle")
     payload = archive.getvalue()
-    monkeypatch.setattr(kt, "latest_release", lambda timeout=20.0: {
+    import hashlib
+
+    monkeypatch.setattr(kt, "pinned_release", lambda: {
         "ok": True, "version": "3.18.0", "url": "https://example.invalid/ketcher.zip",
-        "size": len(payload), "status": ""})
+        "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
+        "status": ""})
     monkeypatch.setattr(kt.urllib.request, "urlopen",
                         lambda request, timeout=None: io.BytesIO(payload))
 
@@ -187,15 +190,19 @@ def test_a_build_at_the_top_of_the_archive_is_installed_too(tmp_path, monkeypatc
     assert not (kt.stored_directory() / "static" / "js" / "popup.xyz.js").exists()
 
 
-def test_the_newest_build_is_asked_for_rather_than_pinned():
-    """Keeping up to date is a button, not an edit to this file."""
-    source = open(ketcher.__file__, encoding="utf-8").read()
-    assert "releases/latest" in ketcher.RELEASES
+def test_one_versioned_build_is_pinned():
+    """The editor is served on the dashboard's origin, so the build is named
+    by version and digest in code rather than by whatever releases/latest
+    points at (tests/test_the_editor_download_is_pinned_and_unpacked_inside.py
+    checks the digest is enforced)."""
     assert ketcher._ASSET.match("ketcher-standalone-3.17.0.zip")
     assert not ketcher._ASSET.match("ketcher-standalone.zip"), (
         "two files of the same content, and only one says which build it is"
     )
-    assert "3.17" not in source.split('"""')[2], "no version is pinned in code"
+    name = ketcher.ARCHIVE_URL.rsplit("/", 1)[-1]
+    assert ketcher._ASSET.match(name).group(1) == ketcher.VERSION
+    assert f"/v{ketcher.VERSION}/" in ketcher.ARCHIVE_URL
+    assert len(ketcher.ARCHIVE_SHA256) == 64
 
 
 # ---------------------------------------------------------------------------

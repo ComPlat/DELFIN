@@ -14,7 +14,15 @@ Output: the properties that make the combined figure mean "the fast suite":
   `ci_shards.py verify` over the same shard count, so a missing shard, an
   unfinished test or a failing one turns it red;
 - nothing in it runs on a push or a pull request, and no job outlives the
-  gate's 60-minute ceiling (test_the_gate_can_still_say_it_passed.py).
+  gate's 60-minute ceiling (test_the_gate_can_still_say_it_passed.py);
+- branches are measured (``--cov-branch``), so the report's ``Cover``
+  column is statements and branches together and a guard whose refusing
+  branch no test takes is visible; the summary reads that column by
+  position from the end (``$NF``), not as the fourth field, which with
+  branch columns is the branch count;
+- the summary has a section for the security-relevant modules listed in
+  .github/ci/security-modules.txt, every one of which exists. No
+  threshold gates on it yet.
 
 Before: one job ran the fast suite under tracing in 60 minutes while the
 suite alone measured 47.7 minutes of tests (2026-10-15), with
@@ -52,7 +60,8 @@ def test_the_coverage_shards_split_the_suite_like_the_gate():
     cov_run = _step(cov, "Measure coverage")
     assert cov_run["env"] == gate_run["env"]
     assert " ".join(cov_run["run"].split()) == (
-        " ".join(gate_run["run"].split()) + " --cov=delfin --cov-report=")
+        " ".join(gate_run["run"].split())
+        + " --cov=delfin --cov-branch --cov-report=")
     assert '"numpy<2"' in _step(cov, "Install")["run"]
     assert int(cov["timeout-minutes"]) <= 60
 
@@ -89,3 +98,30 @@ def test_coverage_runs_only_at_night_or_on_demand():
     jobs = _jobs()
     for name in ("coverage-shard", "coverage"):
         assert _NIGHTLY in jobs[name]["if"], jobs[name]["if"]
+
+
+SECURITY_MODULES = ROOT / ".github" / "ci" / "security-modules.txt"
+
+
+def _security_modules() -> list[str]:
+    lines = SECURITY_MODULES.read_text(encoding="utf-8").splitlines()
+    return [ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")]
+
+
+def test_the_summary_reads_the_cover_column_and_names_the_security_modules():
+    run = _step(_jobs()["coverage"], "Combine")["run"]
+    assert "$NF" in run and "$4" not in run, (
+        "with branch columns the fourth field is the branch count")
+    assert ".github/ci/security-modules.txt" in run
+    assert "--include=" in run
+
+
+def test_every_security_module_listed_exists():
+    listed = _security_modules()
+    assert len(listed) >= 20
+    for path in listed:
+        assert path.startswith("delfin/") and path.endswith(".py"), path
+        assert (ROOT / path).is_file(), f"{path} is listed and does not exist"
+    for needed in ("delfin/agent/sandbox.py", "delfin/agent/permission_rules.py",
+                   "delfin/agent/egress_proxy.py", "delfin/cli_voila.py"):
+        assert needed in listed, needed

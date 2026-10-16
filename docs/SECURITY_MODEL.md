@@ -29,6 +29,8 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; DELFIN's own git reads of the workspace run no program the repository names (`safe_git`). |
 | Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
+| Shared lessons and memory | The lessons later sessions are shown (`delfin/agent/pack/knowledge`, a repository's `.delfin/knowledge`) and the memory stores under `~/.delfin` are protected paths for the agent's write tools; a note the model writes into memory may not carry an instruction channel. |
+| What the model takes for an instruction | Text whose author is not the user -- files, command output, web pages, MCP results and tool descriptions, other sessions' messages, delegates' reports, recalled memory -- reaches the model inside a nonce'd fence that labels it as data. |
 
 ## Against whom
 
@@ -106,8 +108,13 @@ call, before it runs. It applies, among others:
   `.git/**`, `.env`, keys, `.ssh`, credential files) and the secret-path
   checks for reads;
 - the protected paths (`api_client._DEFAULT_PATH_PROTECTED_GLOBS`: the
-  permission layer, the confirmation UI, the settings modules): a write is
-  asked in every mode, and refused where nobody can be asked;
+  permission layer, the confirmation UI, the settings modules, and the
+  shared lessons in `api_client._KNOWLEDGE_PROTECTED_GLOBS`), and the
+  memory and lesson stores under `~/.delfin` (`api_client._is_memory_store_path`,
+  reachable only through a granted directory): a write is asked in every
+  mode, and refused where nobody can be asked. The person's own share and
+  curation dialogs (`knowledge_share`, `knowledge_curation`) write through
+  their own code after a one-time code, not through these tools;
 - the git configuration files: in the work tree
   `api_client._GIT_CONFIG_PROTECTED_GLOBS` (`.gitattributes`, `.gitmodules`,
   a `.git` gitfile, `HEAD`); outside it every file git reads as
@@ -207,7 +214,9 @@ commands are refused on a host where nothing can hold them.
 `agent.bash_isolation` = `container` runs `bash`, `bash_background` and
 `run_tests` in a container instead (`container_exec`, Apptainer/Singularity,
 Podman or Docker, chosen by `agent.container.runtime`, image
-`agent.container.image`). The container mounts the writable roots and the
+`agent.container.image`; without one, `container_exec.DEFAULT_OCI_IMAGE`,
+python:3.11-slim named by the digest of its image index rather than by a
+tag the registry can move). The container mounts the writable roots and the
 git metadata read-write, the read-only roots, the git hooks and the
 approval answer locations read-only, covers the credential locations of
 `sandbox._HOME_SECRET_DIRS` that lie inside a mounted root, and mounts
@@ -350,7 +359,13 @@ security panel and `delfin-agent doctor` say so.
   `roots`/`read_roots` starts in a namespace holding only those paths
   (`mcp_isolation`; `agent.mcp_isolation` = `builtin` does this for DELFIN's
   own servers). A server that declares neither runs uncontained, and the
-  banner, `/mcp` and `delfin-agent doctor` say so.
+  banner, `/mcp` and `delfin-agent doctor` say so. The documented examples
+  name the package version: `npx -y` without one runs the newest upload
+  of the package at every start.
+- **The model behind a name.** Each request line records the model id the
+  provider's response reports beside the name DELFIN asked for
+  (`turn_metrics.record_request`, `served_model`), so a routing alias that
+  the endpoint repoints shows in the metrics and in a bug report.
 - **Sub-agents** get a copy of the session's permissions with the mode
   clamped to the parent's and the role's tool list intersected into the
   session tool list (`subagents._derive_perms`). Where that copy cannot be
@@ -411,6 +426,39 @@ write route (`managed_policy.is_policy_path`); `delfin-agent capabilities`,
 the start banner and `/permissions` name each file, its trust and what it
 enforces. Its refusals are recorded as `managed_policy_deny` and
 `managed_policy_ask`.
+
+## Text the model reads
+
+Every layer above judges what the model *does*. This section is about what
+it is *shown*: text whose author is not the user reaches the model inside
+an untrusted fence (`untrusted.wrap`, `untrusted.wrap_reference`,
+`untrusted.wrap_as`). The fence's opener and closer carry the same 16-hex
+nonce, so a closer written into the content has a nonce its author could
+not know and stays text inside the block; the source label is escaped.
+Where the fence sits in the cached prompt, the nonce is an HMAC of the
+content under a per-process key (`project_memory._fence_nonce`), so the
+bytes do not change between turns.
+
+| Text | Fence |
+|------|-------|
+| `web_fetch`, `web_search`, MCP tool results, MCP resources and prompts, `session_search` hits | data (`api_client._wrap_untrusted`) |
+| `read_file`, `grep_file`, `notebook_read`, `read_document`, `bash`, `bash_output` output | "tool output" (`api_client._FENCED_OUTPUT_TOOLS`); not the harness's own error envelopes and refusals |
+| A delegate's report | data, with a decision hint in front (`subagents.mark_delegate_text`) |
+| Another session's message | the harness's sender header, then the text in a "message" fence (`session_messages.render`) |
+| MCP tool descriptions | "tool description" (`mcp_client.advertised_description`); one that carries an instruction shape is withheld and recorded |
+| AGENTS.md and the repository's instruction files | reference (`project_memory.fence_project_text`) |
+| Shared lessons, swarm findings | data (`knowledge`, `swarm_memory`) |
+| Recalled memory, past-session episodes, the outcome briefing | "notes" from earlier sessions |
+
+Memory is also checked on the way in. A note the model writes
+(`remember`, the distill pass) is refused when
+`untrusted.instruction_shapes` finds a role marker, a fence marker,
+tool-call syntax, an override of earlier instructions, a standing consent
+that skips the user, or concealment from the user
+(`memory_store.memory_instruction_refusals`); the note records which tool
+wrote it, the session, and the tools whose fenced output the turn had read
+(`read_before`), and recall shows that list. An agent note that carries a
+shape anyway is withheld at recall. The user's own words are not filtered.
 
 ## The dashboard server
 
@@ -527,7 +575,8 @@ inbox. The kinds most relevant to this model:
   `unisolated_refused`
 - the gate: `deny_pattern`, `secret_path`, `self_mod`, `outside_ws`,
   `denied_path_via_bash`, `git_config_program`, `script_dir_unknown`,
-  `caged_unasked`
+  `caged_unasked`, `knowledge_write`
+- the context: `memory_refused`, `mcp_description_withheld`
 - permission rules: `permission_rule_deny`, `permission_rule_ask`,
   `permission_rule_allow`
 - the managed policy: `managed_policy_deny`, `managed_policy_ask`
@@ -646,6 +695,20 @@ that path append-only for users.
   a kernel exploit.
 - **What the model is shown is sent to the provider.** Credential redaction
   is pattern-based and best-effort.
+- **A fence is a label, not a barrier.** The untrusted fence tells the
+  model which text is data; a model can still follow an instruction inside
+  it. What the model then does passes every layer above. The instruction
+  check on memory and on MCP tool descriptions matches worded shapes and
+  is best-effort; a paraphrase outside them is stored, fenced as a note.
+  MCP descriptions are not pinned: a server that changes a description is
+  shown the new one, fenced or withheld.
+- **Session messages on one account.** A message's sender is the session
+  that wrote the inbox file; a process of the same account can write one
+  under another session's name. The text is fenced and the decision hint
+  applies, but the sender is not authenticated.
+- **Shell writes into the memory stores.** The write tools ask; a shell
+  command reaches a granted `~/.delfin` store only through the bash gate
+  and, where isolation holds, the cage's read-only binds.
 
 ## How to run safest
 

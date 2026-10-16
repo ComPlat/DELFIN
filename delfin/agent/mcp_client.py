@@ -25,7 +25,7 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
       "servers": {
         "fs": {
           "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+          "args": ["-y", "@modelcontextprotocol/server-filesystem@1.0.0", "/tmp"],
           "env": {"FOO": "bar", "GH_TOKEN": "${GH_TOKEN}"},
           "enabled": true,
           "roots": ["/data/project"],
@@ -49,6 +49,10 @@ GitHub, cloud or other ``*_TOKEN``/``*_SECRET``/``*_API_KEY`` variable.
 ``env`` puts back what the server needs, by name: an object sets values
 (``"${NAME}"`` takes the parent's NAME), a list of names passes those
 variables unchanged.
+
+The example names the package version (``@1.0.0``): ``npx -y <package>``
+without one fetches and runs the newest upload of that package at every
+start, so what the agent talks to changes without any change here.
 
 ``roots`` / ``read_roots`` on a stdio entry launch that server inside a
 namespace holding only those paths — the one containment that works for a
@@ -325,6 +329,38 @@ class MCPTool:
     @property
     def namespaced_name(self) -> str:
         return f"{_NAMESPACE_PREFIX}{self.server}__{self.name}"
+
+
+def advertised_description(tool: "MCPTool") -> tuple[str, list[str]]:
+    """The description the model is shown for ``tool``, and why it was
+    withheld ([] when it was not).
+
+    Input: a discovered tool; its description is text the server's author
+    wrote, read by the model in the tool schema of every request. Output:
+    the description inside an ``untrusted`` "tool_description" fence
+    (``src: mcp:<server>``) with a content-keyed nonce
+    (``project_memory._fence_nonce``: the schema sits in the cached
+    prefix, so the bytes must not change between requests); or, when the
+    text carries an ``untrusted.instruction_shapes`` finding, a one-line
+    notice naming the tool and the kinds, and the findings. The tool stays
+    on the surface either way: its calls pass the MCP gate like any other.
+
+    Rejected: refusing the tool (a server with one odd sentence would lose
+    every tool); pinning descriptions by hash and asking on a change (a
+    store and a dialog per server -- the fence and the shape check are the
+    part that holds on every host). Cost: 186 characters plus the server
+    name per tool, paid from the MCP schema budget."""
+    raw = str(getattr(tool, "description", "") or "").strip() or tool.name
+    from . import untrusted
+    found = untrusted.instruction_shapes(raw)
+    if found:
+        kinds = ", ".join(f.split(":", 1)[0] for f in found)
+        return (f"(The description of {tool.name} from MCP server "
+                f"{tool.server} was withheld: it carries text shaped as an "
+                f"instruction ({kinds}).)", found)
+    from .project_memory import _fence_nonce
+    return (untrusted.wrap_as("tool_description", f"mcp:{tool.server}", raw,
+                              nonce=_fence_nonce(raw)), [])
 
 
 @dataclass

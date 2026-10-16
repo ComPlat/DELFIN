@@ -22176,7 +22176,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     )
     submit_draw_update_btn = widgets.Button(
         description='Update', icon='refresh',
-        tooltip='Fetch the newest published Ketcher.',
+        tooltip='Fetch the pinned Ketcher build, SHA-256 checked.',
         layout=widgets.Layout(width='100px', display='none'),
     )
     submit_draw_frame = widgets.HTML(value='', layout=widgets.Layout(
@@ -22348,7 +22348,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'from, and this dashboard is not serving one.')
             return
         state['draw_installing'] = True
-        _set_mol_status('Looking up the newest Ketcher...', spinner=True)
+        _set_mol_status('Looking up the Ketcher build...', spinner=True)
 
         def _work():
             newest = _ketcher.latest_release()
@@ -22367,16 +22367,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 _set_mol_status(
                     f'Ketcher {newest["version"]} is not here yet: '
                     f'{newest["size"] / 1e6:.0f} MB from '
-                    'github.com/epam/ketcher, unpacked to about 32 MB beside '
-                    'the dashboard. Press Fetch it to get it.')
+                    'github.com/epam/ketcher, checked against its pinned '
+                    'SHA-256 and unpacked to about 32 MB beside the '
+                    'dashboard. Press Fetch it to get it.')
 
             schedule_ui_update(_ask)
 
-        _start_background(_work, 'The lookup of the newest Ketcher',
+        _start_background(_work, 'The lookup of the Ketcher build',
                           guards={'draw_installing': False})
 
     def on_submit_draw_update(_button=None):
-        """Fetch the newest build -- the first time, or over an older one."""
+        """Fetch the pinned build -- the first time, or over an older one."""
         if state.get('draw_installing'):
             return
         state['draw_installing'] = True

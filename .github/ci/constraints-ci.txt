@@ -59,9 +59,12 @@ tomli-w==1.2.0
 typing-extensions==4.16.0
 urllib3==2.8.0
 
-# release.yml and packaging.yml (sdist and wheel; packaging.yml builds with
-# --no-isolation, so the backend is pinned here too: pyproject.toml asks
-# for setuptools>=77 and wheel)
+# release.yml and packaging.yml (sdist and wheel; both build with
+# --no-isolation, so the backend is pinned too: pyproject.toml asks for
+# setuptools>=77 and wheel). Those two jobs install them by hash from
+# .github/ci/release-requirements.txt; the versions here are the same ones
+# (tests/test_the_release_tools_are_installed_by_hash.py), so raising one
+# means regenerating that file as its header says.
 build==1.6.1
 pyproject-hooks==1.3.3
 setuptools==84.0.0
