@@ -211,7 +211,10 @@ class Chat:
     def ended_within(self, seconds: float) -> bool:
         """True once the child has exited and been reaped, polling up to
         *seconds* and reading its output meanwhile; never sends a key."""
-        return _gone_within(self.child, seconds, self.pump)
+        return _gone_within(self.child, seconds, self._keep)
+
+    def _keep(self, data: bytes) -> None:
+        self._raw.append(data.decode("utf-8", "replace"))
 
     def turn(self, text: str, timeout: float = 30.0) -> str:
         """Type *text*, press Enter, wait until the turn has ended."""
@@ -227,7 +230,7 @@ class Chat:
         Safe to call twice. The endpoint is shut down in every case.
         """
         try:
-            end_child(self.child, drain=self.pump)
+            end_child(self.child, keep=self._keep)
         finally:
             if self._server is not None:
                 self._server.shutdown()
@@ -275,8 +278,37 @@ def _proc_state(pid: int) -> str:
     return f"{state} wchan={wchan or '-'}"
 
 
-def _gone_within(child, seconds: float, drain) -> bool:
+def _drain_fd(child, seconds: float, keep) -> bool:
+    """Read what the child wrote within *seconds*; False once at EOF.
+
+    os.read on the master fd, not pexpect's read: at EOF pexpect calls
+    isalive() with a blocking waitpid(), which does not return while a
+    child that closed its side of the pty is still running.
+    """
+    import select
+    fd = getattr(child, "child_fd", -1)
+    if fd is None or fd < 0:
+        return False
+    try:
+        ready, _, _ = select.select([fd], [], [], seconds)
+    except (OSError, ValueError):
+        return False
+    if not ready:
+        return True
+    try:
+        data = os.read(fd, 65536)
+    except OSError:
+        data = b""             # EIO: every slave fd is closed
+    if not data:
+        return False
+    if keep is not None:
+        keep(data)
+    return True
+
+
+def _gone_within(child, seconds: float, keep=None) -> bool:
     end = time.monotonic() + seconds
+    open_pty = True
     while True:
         # After EOF on the pty, pexpect's isalive() calls a blocking
         # waitpid(); cleared, it polls with WNOHANG and the wait stays
@@ -286,18 +318,21 @@ def _gone_within(child, seconds: float, drain) -> bool:
             return True
         if time.monotonic() >= end:
             return False
-        if drain is not None:
-            drain(0.1)         # a child writing on its way out never blocks
-        time.sleep(0.02)       # drain() returns at once after EOF
+        if open_pty:
+            # a child writing on its way out never blocks on a full pty
+            open_pty = _drain_fd(child, 0.1, keep)
+        else:
+            time.sleep(0.05)
 
 
 def end_child(child, *, leave_s: float = LEAVE_S, reap_s: float = REAP_S,
-              drain=None) -> None:
+              keep=None) -> None:
     """End a pexpect child the way a user leaves, and prove it is gone.
 
     Input: a ``pexpect.spawn`` child, which pexpect starts as the leader of
-    its own session and process group; ``drain(seconds)`` reads its output
-    while waiting. Steps, each only if the previous one did not end it:
+    its own session and process group. While waiting, its output is read
+    from the pty (so it never blocks writing) and handed to ``keep(bytes)``
+    when given. Steps, each only if the previous one did not end it:
 
       1. Ctrl+U, Ctrl+D -- clear the input line, then leave. Ctrl+D alone
          on a non-empty line deletes forward (readline semantics) and the
@@ -349,20 +384,20 @@ def end_child(child, *, leave_s: float = LEAVE_S, reap_s: float = REAP_S,
             child.send("\x15\x04")     # Ctrl+U, Ctrl+D
         except OSError:
             pass                        # pty already hung up
-        if _gone_within(child, leave_s, drain):
+        if _gone_within(child, leave_s, keep):
             return
         state = _proc_state(pid)
         needed = (f"did not leave within {leave_s:g} s of Ctrl+D "
                   f"(state {state})")
         _signal(signal.SIGTERM)
-        if _gone_within(child, leave_s, drain):
+        if _gone_within(child, leave_s, keep):
             needed += "; SIGTERM ended it"
             return
         state = _proc_state(pid)
         needed += (f"; still there {leave_s:g} s after SIGTERM "
                    f"(state {state})")
         _signal(signal.SIGKILL)
-        if _gone_within(child, reap_s, drain):
+        if _gone_within(child, reap_s, keep):
             needed += "; SIGKILL ended it"
             return
         needed += (f"; still not reaped {reap_s:g} s after SIGKILL "
