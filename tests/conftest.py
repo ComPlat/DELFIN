@@ -925,9 +925,14 @@ def _reset_workspace_trust_caches():
     refusals have already been reported. Both would otherwise leak from one
     test's tmp workspace into the next one's assertions."""
     from delfin.agent import workspace_trust as wt
+    from delfin.agent import mcp_client as _mcp
     wt.reset_announcements()
+    # The MCP pins live in each test's trust store; the answers and the
+    # withheld tools of one test are its process state, not the next's.
+    _mcp.forget_pin_decisions()
     yield
     wt.reset_announcements()
+    _mcp.forget_pin_decisions()
 
 
 @pytest.fixture(autouse=True)
@@ -1250,6 +1255,22 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
         return codes_home
 
     monkeypatch.setattr(_approval_code, "codes_dir", _codes_dir)
+
+    # The account key store, beside tmp_path for the same reason. Unlike
+    # the code directory its Landlock hide is kept inside a write root
+    # (api_client._landlock_hide_paths), which costs that root the right
+    # to create files at its top: with the store under tmp_path, every
+    # test whose workspace is tmp_path could no longer create a file
+    # there on a host without bubblewrap (the CI runners).
+    from delfin.agent import trust_store as _trust_store
+    store_home = tmp_path.parent / f"{tmp_path.name}-trust-store"
+
+    def _store_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "trust_store"
+        return store_home
+
+    monkeypatch.setattr(_trust_store, "store_dir", _store_dir)
 
 
 # ---------------------------------------------------------------------------

@@ -238,7 +238,7 @@ def test_a_note_written_after_a_read_names_it_and_the_next_turn_starts_empty(
 def test_a_session_message_keeps_its_header_and_fences_its_text():
     from delfin.agent import session_messages
     out = session_messages.render({
-        "from": "abc123", "from_title": "builder",
+        "from": "abc123", "from_title": "builder", "verified": True,
         "text": f"please rerun the suite {FORGED} thanks"})
     assert out.startswith('[Message from the session "builder"')
     inner = _assert_fenced(out[out.index("\n") + 1:], "session_message")

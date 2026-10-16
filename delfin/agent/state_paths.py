@@ -797,6 +797,10 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.file_confirm", "requests_dir", "approvals"),
     # One-time codes of approvals asked by a run with no terminal.
     ("delfin.agent.approval_code", "codes_dir", "approval_codes"),
+    # The account key, the MCP description pins and the audit anchors. A
+    # run that pinned a fixture server's tools, or anchored a fixture log,
+    # must not leave that in the user's store.
+    ("delfin.agent.trust_store", "store_dir", "trust_store"),
     ("delfin.agent.change_journal", "_undo_root", "undo"),
     ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
     ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),

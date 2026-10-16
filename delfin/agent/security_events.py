@@ -49,6 +49,11 @@ _KINDS = {
     "memory_refused": ("🧠", "Instruction-shaped memory refused"),
     "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
     "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
+    # Descriptions pinned on first use (mcp_client.pin_check): a first
+    # sight, a change the user accepted, and a change withheld.
+    "mcp_pinned": ("🔌", "MCP tool descriptions pinned on first use"),
+    "mcp_description_accepted": ("🔌", "Changed MCP tool accepted by the user"),
+    "mcp_description_changed": ("🔌", "Changed MCP tool withheld"),
     "calc_edit":      ("🧪", "Stored-calculation edit"),
     "read_only_write": ("📕", "Write into a read-only location"),
     "out_of_write_scope": ("📐", "Write outside the repo's write scope"),
@@ -98,6 +103,9 @@ _KINDS = {
     "audit_write_failed": ("📒", "Audit log could not be written"),
     "audit_chain_broken": ("📒", "Audit log changed outside DELFIN"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
+    # The account key store (trust_store.py) held a file that is not a
+    # private key of this account: nothing is signed with it.
+    "trust_store_refused": ("🔑", "Account key store refused"),
     # A wrong token sent to the dashboard server (login form, URL or
     # header), at most one record a minute (dashboard/login_session.py).
     "dashboard_login_refused": ("🔑", "Dashboard login refused (wrong token)"),
@@ -112,6 +120,9 @@ _KINDS = {
     # An agent session reaching for an approval: the answer command, an
     # answer function, or a write where answers and the CLI gate state live.
     "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
+    # An agent session running the operator's actions (ops send, escalate,
+    # pause; delfin-agent pause/resume).
+    "operator_action_refused": ("🚫", "Agent tried to act as the operator"),
     # An answer from outside the waiting process without the one-time
     # code it showed (file_confirm reads it; cli refuses to write it).
     "approval_code_refused": ("🚫", "Approval answer without the session's code"),
@@ -128,6 +139,9 @@ _KINDS = {
     "pr_merge_unpinned": ("🚫", "Merge not pinned to a green PR head"),
     "gh_credential_print": ("🔑", "GitHub login printed by a command"),
     "gh_api_write": ("🚫", "GitHub write through the raw API"),
+    # A gh alias or extension that would carry the login past those two.
+    "gh_alias_refused": ("🚫", "gh alias that hides a guarded command"),
+    "gh_extension_refused": ("🚫", "gh extension install refused"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
     # The user's permission rules (permission_rules.py).
     "permission_rule_deny": ("⛔", "Refused by a permission rule"),

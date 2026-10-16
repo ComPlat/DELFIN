@@ -197,7 +197,7 @@ _CLI_SECRET_PATTERNS: tuple[str, ...] = (
     "**/.netrc", "~/.netrc", "**/.git-credentials", "~/.git-credentials",
     "**/.aws/credentials", "~/.aws/credentials", "**/.npmrc", "**/.pypirc",
     "**/.pgpass", "~/.kube/**", "~/.docker/config.json",
-    "~/.delfin/credentials.json",
+    "~/.delfin/credentials.json", "~/.delfin/trust_store/**",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
 )
 
@@ -4379,6 +4379,8 @@ def _steer_label(text: str) -> str:
     The chat must not put words in the user's mouth.
     """
     head = str(text or "").lstrip()
+    if head.startswith("[Message from the session mailbox, sender unverified"):
+        return "✉ [unverified sender, mid-run]: "
     if head.startswith("[Message from the session"):
         return "✉ [another session, mid-run]: "
     if head.startswith("[scheduled]"):
@@ -5717,6 +5719,168 @@ def _gh_api_write(cmd: str) -> str:
         if body and not method:
             return "gh api with a request body (a POST)"
     return ""
+
+
+# -- a gh alias or extension: the same login, out of the command's text ------
+#
+# The two rules above read the command text. An alias moves that text out
+# of it: after `gh alias set t 'auth token'` the call is `gh t`, and gh
+# appends the call's own arguments to a plain alias, so an alias for
+# `api`, `auth` or `config` turns `gh a -X PUT ...` or `gh s --show-token`
+# into the refused command. A shell alias (`--shell`, or `!` first) runs
+# its body through sh, with the call's arguments as $1... An extension is
+# a program gh runs with the login, which no rule reads. So the body is
+# judged where the alias is defined, and an extension is not installed.
+
+#: Plain-alias expansions that hide a guarded subcommand group.
+_GH_ALIAS_HIDDEN_GROUPS = frozenset({"auth", "api", "config", "alias",
+                                     "extension", "extensions", "ext"})
+_GH_ALIAS_RUNTIME_RE = re.compile(r"[$`]")
+_SHELL_OPERATORS = frozenset({";", "&&", "||", "|", "&", "(", ")", "|&",
+                              ";;", "&>", ">&"})
+
+
+def _simple_commands_quoted(cmd: str) -> list:
+    """Each simple command of *cmd* (and of the shell bodies it hands on)
+    as words, quotes kept together: ``gh alias set x 'a | b'`` keeps
+    ``a | b`` as one word, which ``_command_words`` (split on operators
+    first) does not. Leading assignments and wrappers dropped, as there."""
+    out = []
+    for line in _with_shell_bodies(cmd or "").split("\n"):
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            tokens = list(lex)
+        except ValueError:
+            tokens = line.split()
+        current: list = []
+        for tok in tokens + [";"]:
+            if tok in _SHELL_OPERATORS or set(tok) <= set(";&|()"):
+                words = current
+                while words and (words[0] in _COMMAND_WRAPPERS
+                                 or words[0].startswith("-")
+                                 or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=",
+                                             words[0])
+                                 or re.match(r"^\d+(?:\.\d+)?[smhd]?$",
+                                             words[0])):
+                    words = words[1:]
+                if words:
+                    out.append([os.path.basename(words[0])] + words[1:])
+                current = []
+            else:
+                current.append(tok)
+    return out
+
+
+def _gh_alias_body_problem(expansion: str, shell: bool) -> str:
+    """Why an alias with this expansion would carry the login past the
+    gate, or "". ``shell``: a --shell alias (a leading ``!`` makes one
+    too)."""
+    body = str(expansion or "")
+    if body.startswith("!"):
+        shell, body = True, body[1:]
+    if body.strip() in ("", "-"):
+        return "its body is read from stdin, which this check cannot see"
+    if shell:
+        if _GH_ALIAS_RUNTIME_RE.search(body):
+            return ("it is a shell alias that builds its command at run "
+                    "time ($ or backticks), which this check cannot read")
+        why = _prints_a_credential(body)
+        if why:
+            return f"its body `{why}` prints the account's GitHub login"
+        why = _gh_api_write(body)
+        if why:
+            return f"its body `{why}` writes to GitHub through the raw API"
+        nested = _gh_alias_or_extension(body, None)
+        return nested[1] if nested else ""
+    try:
+        words = shlex.split(body)
+    except ValueError:
+        return "its body cannot be read as gh arguments"
+    if words and words[0] in _GH_ALIAS_HIDDEN_GROUPS:
+        return (f"it stands for `gh {words[0]}`, and gh appends the "
+                "call's own arguments to it, so `gh <alias> ...` would run "
+                f"a `gh {words[0]}` command this check never sees")
+    why = _prints_a_credential("gh " + body) or _gh_api_write("gh " + body)
+    return f"its body `{why}` is refused on its own" if why else ""
+
+
+def _gh_alias_import_entries(source: str, cwd) -> Optional[dict]:
+    """The aliases a ``gh alias import`` file defines, or None when the
+    file cannot be read here (stdin, missing, too large, not YAML)."""
+    if not source or source == "-":
+        return None
+    try:
+        path = Path(os.path.expanduser(source))
+        if not path.is_absolute():
+            path = Path(cwd or ".") / path
+        with open(path, "rb") as fh:
+            raw = fh.read(65537)
+        if len(raw) > 65536:
+            return None
+        import yaml
+        data = yaml.safe_load(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(k): ("" if v is None else str(v)) for k, v in data.items()}
+
+
+def _gh_alias_or_extension(cmd: str, cwd) -> Optional[tuple]:
+    """``(kind, refusal)`` for a gh alias or extension in *cmd* that would
+    carry the account's GitHub login past the rules above, else None.
+
+    Input: a shell command (prose blanked by the caller) and the directory
+    an import file is read from. Kinds: ``gh_alias_refused`` (``gh alias
+    set`` or ``gh alias import`` with a body judged by
+    ``_gh_alias_body_problem``, or a body that cannot be read here) and
+    ``gh_extension_refused`` (``gh extension install|upgrade``)."""
+    for w in _simple_commands_quoted(cmd):
+        if w[0] != "gh":
+            continue
+        sub = _gh_subcommand_args(w)
+        if len(sub) < 2:
+            continue
+        group, verb, rest = sub[0], sub[1], sub[2:]
+        if group in ("extension", "extensions", "ext") and verb in (
+                "install", "upgrade"):
+            return ("gh_extension_refused", (
+                f"blocked: `gh {group} {verb}` installs a program that gh "
+                "runs with the account's GitHub login, and none of the "
+                "checks here reads it. Ask the user to install the "
+                "extension themselves if it is needed."))
+        if group != "alias" or verb not in ("set", "import"):
+            continue
+        if verb == "set":
+            shell = any(a in ("--shell", "-s") for a in rest)
+            positional = [a for a in rest if not a.startswith("-") or a == "-"]
+            name = positional[0] if positional else ""
+            expansion = positional[1] if len(positional) > 1 else "-"
+            why = _gh_alias_body_problem(expansion, shell)
+            entries = {name: why} if why else {}
+        else:
+            positional = [a for a in rest if not a.startswith("-") or a == "-"]
+            got = _gh_alias_import_entries(
+                positional[0] if positional else "-", cwd)
+            if got is None:
+                entries = {"(import)": "its aliases are read from stdin or "
+                           "from a file this check cannot read"}
+            else:
+                entries = {}
+                for name, expansion in got.items():
+                    why = _gh_alias_body_problem(expansion, False)
+                    if why:
+                        entries[name] = why
+        if entries:
+            name, why = next(iter(entries.items()))
+            return ("gh_alias_refused", (
+                f"blocked: the gh alias {name} is refused: {why}. An alias "
+                "would let the account's GitHub login past the checks that "
+                "guard it (no printing it, no raw API writes). Define "
+                "aliases for other subcommands, or ask the user to add "
+                "this one themselves."))
+    return None
 
 
 # -- a push to GitHub, the one way out of the process cage ---------------------
@@ -7681,6 +7845,9 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # the directory, and the name is DELFIN's own.
     "approval_codes", "approval_codes/**",
     "**/approval_codes", "**/approval_codes/**",
+    # The account key and the pins beside it (trust_store): DELFIN's own
+    # processes outside agent sessions read them, no agent route does.
+    "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -20761,6 +20928,13 @@ class _DocToolExecutor:
                     "approval_self_answer", name,
                     str(args.get("command", "") or "")[:120], blocked=True)
                 return _approval_guard.refusal(_answers)
+            _operator = _approval_guard.operator_command(
+                _prose_blanked(str(args.get("command", "") or "")))
+            if _operator:
+                _record_security_event(
+                    "operator_action_refused", name,
+                    str(args.get("command", "") or "")[:120], blocked=True)
+                return _approval_guard.operator_refusal(_operator)
 
         if mode == "plan" and not _plan_mode_admits_for_delegate(name, perms):
             return (
@@ -21271,6 +21445,12 @@ class _DocToolExecutor:
                         "and the gh subcommands use the login themselves, "
                         "and the push path hands it to git without showing "
                         "it. Tell the user what you wanted to do with it.")
+            _alias = _gh_alias_or_extension(
+                cmd, getattr(perms, "workspace", None))
+            if _alias:
+                _record_security_event(_alias[0], "bash", cmd[:80],
+                                       blocked=True)
+                return _alias[1]
             _api_write = _gh_api_write(cmd)
             if _api_write:
                 _record_security_event("gh_api_write", "bash", cmd[:80],
@@ -21819,6 +21999,14 @@ class _DocToolExecutor:
         if perms is None:
             _record_security_event("no_sandbox_mcp", name, "", blocked=True)
             return _no_sandbox_refusal(name)
+        from . import mcp_client as _mcp_pins
+        if name in _mcp_pins.PIN_WITHHELD:
+            server = name[len("mcp__"):].split("__", 1)[0]
+            return (f"'{name}' is withheld: its MCP server changed the tool's "
+                    "description or schema since it was first seen (or added "
+                    "the tool), and the user has not accepted the change. The "
+                    "user accepts it with `delfin-agent mcp-pins accept "
+                    f"{server}`; do not reach the same server another way.")
         base = name.rsplit("__", 1)[-1]
 
         # (0) Per-role execution allow-list. MCP tools are dispatched without
@@ -26764,6 +26952,108 @@ class _DocToolExecutor:
 _MCP_WITHHELD_REPORTED: set[str] = set()
 
 
+def _mcp_pin_admits(tool, registry, perms, all_tools=()) -> bool:
+    """Whether ``tool`` may be advertised, by its pin (mcp_client).
+
+    Input: a discovered tool, the registry it came from (for the server's
+    source and launch), the session's permissions, and every tool of the
+    pass (a server seen for the first time is pinned whole). Output: True
+    to advertise. A server whose entry is DELFIN's own ("built-in") is not
+    pinned. A first sight pins and admits (``mcp_pinned``, once per server
+    and process). A changed description or schema, or a new tool on a
+    pinned server, is admitted only when the user accepts it: asked once
+    per change and process where someone can be asked (not in plan or
+    bypass), answered ``mcp_description_accepted`` or refused
+    ``mcp_description_changed``; with nobody to ask it is withheld, kept as
+    pending for ``delfin-agent mcp-pins accept``, and recorded blocked once.
+
+    Rejected: showing the changed text fenced and asking afterwards (the
+    model has read it by then); refusing the whole server (one changed tool
+    would cost every other one). Cost: one SHA-256 of description and
+    schema per tool and request, one store read per request."""
+    from . import mcp_client as _mcp
+    name = tool.namespaced_name
+    try:
+        source = registry.source_of(tool.server) if hasattr(
+            registry, "source_of") else ""
+    except Exception:
+        source = ""
+    if source == "built-in":
+        return True
+    srv = (getattr(registry, "servers", None) or {}).get(tool.server)
+    try:
+        key = _mcp.server_key(tool.server, srv)
+        state, digest = _mcp.pin_check(tool, key)
+    except Exception as exc:
+        if ("error", name) not in _mcp._PIN_NOTED:
+            _mcp._PIN_NOTED.add(("error", name))
+            _record_security_event("mcp_description_changed", name,
+                                   f"the pin could not be checked ({exc}); "
+                                   "withheld", blocked=True)
+        _mcp.PIN_WITHHELD.add(name)
+        return False
+    if state == "first":
+        mine = [t for t in all_tools if t.server == tool.server] or [tool]
+        _mcp.pin_server(key, tool.server, mine)
+        if ("pinned", key) not in _mcp._PIN_NOTED:
+            _mcp._PIN_NOTED.add(("pinned", key))
+            _record_security_event(
+                "mcp_pinned", f"mcp:{tool.server}",
+                f"{len(mine)} tool description(s) pinned on first use",
+                blocked=False)
+        _mcp.PIN_WITHHELD.discard(name)
+        return True
+    if state == "pinned":
+        _mcp.PIN_WITHHELD.discard(name)
+        return True
+    what = ("offers a new tool" if state == "new"
+            else "changed the description or schema of")
+    answer = _mcp._PIN_ANSWERS.get((key, tool.name, digest))
+    mode = str(getattr(perms, "mode", "") or "")
+    can_ask = (getattr(perms, "confirm_callback", None) is not None
+               and mode not in ("plan", "bypassPermissions"))
+    if answer is None and can_ask:
+        from .session_messages import _plain
+        text = _plain(str(tool.description or ""))[:1500]
+        props = sorted(((tool.schema or {}).get("properties") or {}).keys()) \
+            if isinstance(tool.schema, dict) else []
+        preview = (f"[MCP TOOL CHANGED] The MCP server {tool.server} {what} "
+                   f"{tool.name} since it was first seen. The model is shown "
+                   "the tool only if you accept it.\n\nDescription:\n"
+                   f"{text}\n\nParameters: {', '.join(props) or '(none)'}")
+        try:
+            answer = bool(_ask_confirm(perms, "mcp_description", {
+                "server": tool.server, "tool": tool.name, "change": state},
+                preview))
+        except Exception:
+            answer = False
+        _mcp._PIN_ANSWERS[(key, tool.name, digest)] = answer
+        if answer:
+            _mcp.pin_accept(key, tool.name, digest)
+            _record_security_event("mcp_description_accepted", name,
+                                   f"the user accepted: the server {what} it",
+                                   blocked=False)
+        else:
+            _mcp.pin_pending(key, tool, digest, state)
+            _record_security_event("mcp_description_changed", name,
+                                   f"the server {what} it; the user refused, "
+                                   "withheld", blocked=True)
+    if answer:
+        _mcp.PIN_WITHHELD.discard(name)
+        return True
+    if answer is None:
+        _mcp.pin_pending(key, tool, digest, state)
+        if ("changed", key, tool.name, digest) not in _mcp._PIN_NOTED:
+            _mcp._PIN_NOTED.add(("changed", key, tool.name, digest))
+            _record_security_event(
+                "mcp_description_changed", name,
+                f"the server {what} it since it was first seen; withheld "
+                "until the user accepts it (delfin-agent mcp-pins accept "
+                f"{tool.server} {tool.name})", blocked=True)
+    _mcp.PIN_WITHHELD.add(name)
+    return False
+
+
 def _mcp_tool_entry(tool) -> dict:
     """The tool-schema entry advertised for a discovered MCP tool. Its
     description is ``mcp_client.advertised_description``: fenced as data,
@@ -27032,16 +27322,16 @@ def _landlock_hide_paths(write_roots) -> list[str]:
     globs, the bash read scan, ``approval_guard``) protect the 0600,
     short-lived code file there. That happens only for a granted
     ``~/.delfin`` or a workspace holding ``$HOME``. The credential
-    locations keep their behaviour (hidden, at that cost)."""
+    locations keep their behaviour (hidden, at that cost), and so does the
+    account key store (``trust_store``): its key lives as long as the
+    account, unlike a code that lives while one request waits."""
     hides = _home_secret_paths()
     soft: set[str] = set()
     try:
-        from delfin.agent.sandbox import runtime_masked_dirs
-        soft.update(runtime_masked_dirs())
-    except Exception:
-        pass
-    try:
         from delfin.agent import approval_code as _ac
+        d = _ac.ensure_codes_dir()
+        if d is not None:
+            soft.add(str(d.resolve()))
         soft.add(str(_ac.home_codes_dir().resolve()))
     except Exception:
         pass
@@ -30056,6 +30346,9 @@ class OpenAIClient(_BaseClient):
                 # a user's own server is not crowded out by it.
                 if (_hidden_groups and _tool_group(_tool.namespaced_name)
                         in _hidden_groups):
+                    continue
+                if not _mcp_pin_admits(_tool, _registry, self._permissions,
+                                       _mcp_tools):
                     continue
                 _entry = _mcp_tool_entry(_tool)
                 try:

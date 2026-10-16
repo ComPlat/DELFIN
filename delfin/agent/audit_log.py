@@ -36,11 +36,28 @@ Where the head file did not match the log at the time of a write (the
 log was changed outside DELFIN), that record carries ``chain_break`` and
 a blocked ``audit_chain_broken`` event is recorded.
 
-The chain is unkeyed: it shows a change made by anything that does not
-recompute the hashes (an editor, a truncation, a command that rewrites
-lines), not one by a same-account process that rewrites the whole chain
-and head consistently -- the account is outside the boundary
-(docs/SECURITY_MODEL.md). The administrator's copy
+The chain is KEYED. A record written by a process that holds the account
+key carries ``mac`` as its last field: HMAC-SHA256, under
+``trust_store.derived_key("audit_log")``, of the line's bytes without
+that field (the line up to its final ``}``). And the trust store keeps an
+anchor per log (``audit-anchor-<hash of the path>.json``: the last line's
+hash and the log's size, signed), written under the same lock as the
+line. The anchor pins the active log's bytes; through ``prev`` it pins
+every line before the last, and through the first record's ``prev`` the
+rotated log it continues. So a same-account process without the key
+that rewrites the whole chain and the head file consistently is found
+(``mac`` problems, or the log not ending where the anchor says), and so
+is one that cuts the tail and puts an earlier head file back.
+
+Migration: records of a log written before the key existed carry
+``prev`` and no ``mac``; ``verify`` counts them as unkeyed. From the
+first keyed record on, a record without ``mac`` is a problem (written by
+a process without the key: one started inside an agent session, or with
+the trust store refused). Where verify runs without the key (inside an
+agent session) the hash chain is checked and the report says the
+signatures were not. A process with the key on the same account that
+reads the trust store directly is outside this boundary
+(docs/SECURITY_MODEL.md); the administrator's copy
 (``managed_policy.append_audit_line``) receives the same lines.
 
 The log is created 0600 in a 0700 directory and opened with
@@ -63,8 +80,10 @@ first day of a new week the active log is empty, and reporting that as
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
 import stat
 import threading
 from datetime import datetime, timezone
@@ -178,6 +197,61 @@ def _write_head(path: Path, last: str, size: int) -> None:
                       json.dumps({"last": last, "size": int(size)}) + "\n")
 
 
+#: The trust_store purpose of the record and anchor signatures.
+_PURPOSE = "audit_log"
+_MAC_TAIL = re.compile(rb', "mac": "([0-9a-f]{64})"\}$')
+
+
+def _anchor_name(path: Path) -> str:
+    try:
+        real = os.path.realpath(str(path))
+    except Exception:
+        real = str(path)
+    digest = hashlib.sha256(real.encode("utf-8", "surrogateescape"))
+    return f"audit-anchor-{digest.hexdigest()[:24]}.json"
+
+
+def _anchor_bytes(path: Path, last: str, size: int) -> bytes:
+    return "\0".join((os.path.realpath(str(path)), str(last),
+                       str(int(size)))).encode("utf-8", "surrogateescape")
+
+
+def _write_anchor(path: Path, last: str, size: int) -> bool:
+    """Record in the trust store where ``path`` ends now. Needs the key."""
+    from . import trust_store
+    tag = trust_store.mac(_PURPOSE, _anchor_bytes(path, last, size))
+    if not tag:
+        return False
+    return trust_store.write_record(_anchor_name(path), {
+        "path": os.path.realpath(str(path)), "last": last,
+        "size": int(size), "mac": tag})
+
+
+def _read_anchor(path: Path) -> Optional[dict]:
+    try:
+        from . import trust_store
+        return trust_store.read_record(_anchor_name(path))
+    except Exception:
+        return None
+
+
+def _sign_line(line: str, key: Optional[bytes]) -> str:
+    """``line`` (one JSON object) with ``mac`` appended as its last field,
+    or unchanged without a key."""
+    if key is None or not line.endswith("}"):
+        return line
+    tag = hmac.new(key, line.encode("utf-8"), hashlib.sha256).hexdigest()
+    return line[:-1] + f', "mac": "{tag}"}}'
+
+
+def _audit_key() -> Optional[bytes]:
+    try:
+        from . import trust_store
+        return trust_store.derived_key(_PURPOSE)
+    except Exception:
+        return None
+
+
 def _rotate_if_needed(path: Path, now: datetime) -> Optional[str]:
     """Move ``path`` aside when the active log spans across an ISO week.
 
@@ -249,6 +323,7 @@ def _append_chained(path: Path, enriched: dict, now: datetime) -> str:
             rec = dict(enriched)
             rec.pop("prev", None)
             rec.pop("chain_break", None)
+            rec.pop("mac", None)
             if head is not None:
                 expected = prev if last is not None else None
                 if head.get("last") != expected or head.get("size") != size:
@@ -256,7 +331,8 @@ def _append_chained(path: Path, enriched: dict, now: datetime) -> str:
                         "head_last": head.get("last"),
                         "head_size": head.get("size"), "found_size": size}
             rec["prev"] = prev
-            line = json.dumps(rec, ensure_ascii=False)
+            line = _sign_line(json.dumps(rec, ensure_ascii=False),
+                              _audit_key())
             data = line.encode("utf-8") + b"\n"
             if size and os.pread(fd, 1, size - 1) != b"\n":
                 data = b"\n" + data     # a torn line stays on its own line
@@ -265,6 +341,11 @@ def _append_chained(path: Path, enriched: dict, now: datetime) -> str:
                 view = view[os.write(fd, view):]
             _write_head(path, _line_hash(line.encode("utf-8")),
                         size + len(data))
+            try:
+                _write_anchor(path, _line_hash(line.encode("utf-8")),
+                              size + len(data))
+            except Exception:
+                pass
         finally:
             os.close(fd)
     finally:
@@ -373,7 +454,13 @@ def verify(log_path: Optional[Path] = None) -> dict:
     """
     path = Path(log_path or _default_log_path())
     rep: dict = {"path": str(path), "ok": True, "records": 0, "chained": 0,
-                 "legacy": 0, "problems": [], "notes": []}
+                 "legacy": 0, "keyed": 0, "unkeyed": 0, "problems": [],
+                 "notes": []}
+    try:
+        from . import trust_store
+        key = trust_store.derived_key(_PURPOSE, create=False)
+    except Exception:
+        key = None
 
     def problem(line: int, kind: str, detail: str) -> None:
         rep["problems"].append({"line": line, "kind": kind, "detail": detail})
@@ -396,6 +483,7 @@ def verify(log_path: Optional[Path] = None) -> dict:
         lines.pop()
     prev_hash: Optional[str] = None
     started = False
+    keyed_seen = False
     for i, raw in enumerate(lines, 1):
         try:
             rec = json.loads(raw.decode("utf-8"))
@@ -416,6 +504,27 @@ def verify(log_path: Optional[Path] = None) -> dict:
             continue
         started = True
         rep["chained"] += 1
+        if "mac" in rec:
+            keyed_seen = True
+            rep["keyed"] += 1
+            m = _MAC_TAIL.search(raw)
+            if m is None:
+                problem(i, "mac", "the signature is not the record's last "
+                        "field: the line was rewritten")
+            elif key is not None and not hmac.compare_digest(
+                    hmac.new(key, raw[:m.start()] + b"}",
+                             hashlib.sha256).hexdigest(),
+                    m.group(1).decode()):
+                problem(i, "mac", "the signature does not match: the record "
+                        "was changed by a process without the account key")
+        elif keyed_seen:
+            rep["unkeyed"] += 1
+            problem(i, "unkeyed", "a record without a signature after the "
+                    "signed chain started: written by a process without the "
+                    "account key (one started inside an agent session) or "
+                    "outside DELFIN")
+        else:
+            rep["unkeyed"] += 1
         got = str(rec.get("prev") or "")
         if prev_hash is not None:
             if got != prev_hash:
@@ -448,8 +557,36 @@ def verify(log_path: Optional[Path] = None) -> dict:
         problem(len(lines), "head", "the log does not end where the last "
                 f"write left it ({head.get('size')} bytes then, {len(data)} "
                 "now): lines were cut off, or written outside DELFIN")
+    anchor = _read_anchor(path)
+    if anchor is not None:
+        a_last, a_size = anchor.get("last"), anchor.get("size")
+        signed = (key is None or hmac.compare_digest(
+            hmac.new(key, _anchor_bytes(path, a_last, a_size or 0),
+                     hashlib.sha256).hexdigest(), str(anchor.get("mac") or "")))
+        if not signed:
+            problem(len(lines), "anchor", "the trust store's anchor for this "
+                    "log does not carry a valid signature")
+        elif a_last != prev_hash or a_size != len(data):
+            problem(len(lines), "anchor", "the log does not end where the "
+                    f"trust store's anchor says ({a_size} bytes then, "
+                    f"{len(data)} now): it was rewritten, cut or extended "
+                    "by a process without the account key")
+    elif rep["keyed"] and _is_active_log(path):
+        rep["notes"].append("the trust store holds no anchor for this log: "
+                            "a cut tail with an earlier head file put back "
+                            "is not shown")
+    if key is None and rep["keyed"]:
+        rep["notes"].append("the account key is not available here (inside "
+                            "an agent session, or the trust store is "
+                            "refused): the signatures were not checked")
     rep["ok"] = not rep["problems"]
     return rep
+
+
+def _is_active_log(path: Path) -> bool:
+    """Whether ``path`` is an active log (not a rotated week), the kind
+    that has an anchor."""
+    return not Path(path).name.startswith("audit-")
 
 
 def verify_all(directory: Optional[Path] = None) -> list[dict]:
@@ -470,7 +607,8 @@ def format_verify(reports: list[dict]) -> str:
     for rep in reports:
         state = "intact" if rep["ok"] else "NOT intact"
         out.append(f"{rep['path']}: {state} -- {rep['records']} records "
-                   f"({rep['chained']} chained, {rep['legacy']} legacy)")
+                   f"({rep['chained']} chained, {rep.get('keyed', 0)} signed, "
+                   f"{rep['legacy']} legacy)")
         for p in rep["problems"][:20]:
             out.append(f"  line {p['line']}: {p['kind']}: {p['detail']}")
         if len(rep["problems"]) > 20:

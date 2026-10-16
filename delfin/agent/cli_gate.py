@@ -269,6 +269,11 @@ def decide(token: str, event: dict) -> str | None:
             ac._record_security_event("approval_self_answer", "Bash",
                                       cmd[:120], blocked=True)
             return _approval_guard.refusal(_answers)
+        _operator = _approval_guard.operator_command(ac._prose_blanked(cmd))
+        if _operator:
+            ac._record_security_event("operator_action_refused", "Bash",
+                                      cmd[:120], blocked=True)
+            return _approval_guard.operator_refusal(_operator)
         err = _unjson(ex._gate_bash_read_paths(cmd, perms, cwd))
         targets: list = []
         if err is None:
