@@ -158,12 +158,15 @@ def test_an_upload_is_asked(proxy, web, tmp_path):
     assert len(yes2.asked) == 1 and "upload" in yes2.asked[0][2].lower()
 
 
-def test_a_small_post_to_an_allowed_host_passes_unattended(proxy, web, tmp_path):
-    """The model call of an unattended run: no question, no refusal."""
+def test_a_small_post_to_an_allowed_host_is_refused_unattended(proxy, web, tmp_path):
+    """A write to a known host with nobody to ask is an upload: refused,
+    naming the setting (test_an_unattended_upload_is_refused_unless_the_
+    host_is_named.py). The model call of an unattended run is the next
+    test: the endpoint the session registered still passes."""
     out = _via(proxy, _perms(tmp_path, mode="bypassPermissions"),
                f"http://allowed.test:{web.server_address[1]}/v1/chat",
                data=b'{"messages": []}')
-    assert out == "got 16", out
+    assert out.startswith("403") and "upload_domains" in out, out
 
 
 def test_the_endpoint_the_session_uses_is_allowed(proxy, web, tmp_path):

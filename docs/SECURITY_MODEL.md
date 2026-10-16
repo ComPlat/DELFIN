@@ -27,7 +27,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; DELFIN's own git reads of the workspace run no program the repository names (`safe_git`). |
-| Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; uploading workspace data is asked or, unattended, refused. |
+| Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 | Shared lessons and memory | The lessons later sessions are shown (`delfin/agent/pack/knowledge`, a repository's `.delfin/knowledge`) and the memory stores under `~/.delfin` are protected paths for the agent's write tools; a note the model writes into memory may not carry an instruction channel. |
 | What the model takes for an instruction | Text whose author is not the user -- files, command output, web pages, MCP results and tool descriptions, other sessions' messages, delegates' reports, recalled memory -- reaches the model inside a nonce'd fence that labels it as data. |
@@ -87,9 +87,13 @@ When no filesystem layer holds a shell command (none works on the host, or
 `bypassPermissions` session asks once, naming the consequence (no keeps
 `default`); with nobody to ask it starts in `default`, says so on stderr and
 records `isolation_missing`. In that lowered session a command off the
-auto-allow list that passed every rule is judged by the action classifier
-and refused on any answer but allow
-(`api_client._unisolated_fallback_verdict`). The banner, `/status` and the
+auto-allow list that passed every rule is refused and recorded as
+`unisolated_refused` (`api_client._unisolated_fallback_verdict`); no
+classifier verdict lets it run, because without a layer only a reading of
+its text would hold it. Reads, workspace writes, the test runner and the
+auto-allowed commands keep working. For multi-user installations the
+managed policy's `require_isolation` turns the same host into a refusal at
+start instead. The banner, `/status` and the
 turn status line show `unisolated` (`isolation_posture.isolation_status`).
 
 ### 2. The permission gate
@@ -275,7 +279,9 @@ Two guards complete the Linux mechanisms:
   At start-up a provider key exported in the shell environment is moved into
   the credential store (`process_guard.put_exported_keys_away`), and
   every agent child gets an environment without provider keys and secrets
-  (`api_client._scrubbed_bash_env`).
+  (`api_client._scrubbed_bash_env`). MCP servers and hooks get the same
+  environment plus only the variables their own entry names in `env`
+  (`api_client._configured_child_env`).
 
 The credential store is the operating system's keyring (macOS Keychain,
 Secret Service, Windows Credential Manager, through the optional `keyring`
@@ -311,8 +317,21 @@ per-session token: a port outside the allowed set is refused; a
 `web_fetch(domain:<host>)` permission rule denies, asks or allows next; a
 known host passes, and an
 upload to it above `agent.sandbox_network.upload_ask_bytes` (1 MiB by
-default) is asked or, with nobody to ask, passes and is recorded
-(`egress_upload`); an unknown host is asked when the session has an
+default) is asked when someone can be asked. With nobody to ask (`plan`,
+bypass, no approval channel) a write to a known host -- POST, PUT, PATCH
+or DELETE in plain HTTP, a body above that limit, or more than that many
+bytes sent inside a `CONNECT` tunnel -- is refused and recorded as a
+blocked `egress_upload_refused` event (it reaches the attention inbox),
+unless the host is named in `agent.sandbox_network.upload_domains` or is
+the model endpoint the session itself registered
+(`egress_proxy.note_endpoint`); those pass and are recorded
+(`egress_upload`). Reads (GET, a tunnel that sends less than the limit)
+pass. DELFIN's own push path (`api_client._run_github_push`: a plain
+`git push` to a GitHub remote, gated by the push checks) runs outside the
+sandbox and does not pass the proxy, and SSH remotes are direct routes, so
+neither is subject to this rule. Inside TLS the method is not visible: a write below the limit cannot
+be told from a read, so the limit bounds what one connection carries, not
+whether a small payload leaves (residual risks). An unknown host is asked when the session has an
 approval channel and is not in `plan` or bypass, and refused otherwise with
 a message naming the rule and setting that would let it through. Refusals
 answer 403 and are recorded. `agent.sandbox_network.mode` is `proxy`
@@ -347,6 +366,12 @@ security panel and `delfin-agent doctor` say so.
   provider's response reports beside the name DELFIN asked for
   (`turn_metrics.record_request`, `served_model`), so a routing alias that
   the endpoint repoints shows in the metrics and in a bug report.
+- **Sub-agents** get a copy of the session's permissions with the mode
+  clamped to the parent's and the role's tool list intersected into the
+  session tool list (`subagents._derive_perms`). Where that copy cannot be
+  built with the list, the sub-agent is not started
+  (`subagents.SubagentPermissionsError`); it never runs with the parent's
+  full tool surface.
 - The dashboard's approval of a CLI-backend `Bash` call runs through
   `sandbox.run_agent_command`: an allow-list, then bubblewrap or firejail,
   else (mode `allowlist`) Landlock with the network denied as far as the
@@ -532,7 +557,7 @@ its root (`DELFIN_BROWSER_FOLLOW_LINKS` = 1 allows it).
 On a host in the last row a `bypassPermissions` start is asked once when a
 person is present; unattended it starts in `default`
 (`isolation_posture.apply_at_start`), where a command off the auto-allow
-list is asked or, with nobody to ask, judged by the action classifier. Both
+list is asked or, with nobody to ask, refused (`unisolated_refused`). Both
 record `isolation_missing`. A locked session refuses its shell commands
 unless the person approves one command unconfined, and records the same
 kind. `delfin-agent capabilities` prints which
@@ -541,11 +566,13 @@ row applies.
 ## Where a decision is recorded
 
 Every refusal and every routed approval is recorded as a security event
-(`security_events`): an in-memory ring buffer for the dashboard's containment
-panel, and for blocked events also the durable attention inbox. The kinds
-most relevant to this model:
+(`security_events`): an in-memory ring buffer of 200 events for the
+dashboard's containment panel (events it pushes out are counted, and the
+panel says how many), and for blocked events also the durable attention
+inbox. The kinds most relevant to this model:
 
-- isolation: `isolation`, `isolation_missing`, `no_sandbox`, `no_sandbox_mcp`
+- isolation: `isolation`, `isolation_missing`, `no_sandbox`, `no_sandbox_mcp`,
+  `unisolated_refused`
 - the gate: `deny_pattern`, `secret_path`, `self_mod`, `outside_ws`,
   `denied_path_via_bash`, `git_config_program`, `script_dir_unknown`,
   `caged_unasked`, `knowledge_write`
@@ -554,15 +581,30 @@ most relevant to this model:
   `permission_rule_allow`
 - the managed policy: `managed_policy_deny`, `managed_policy_ask`
 - egress: `egress`, `egress_blocked`, `egress_asked`, `egress_upload`,
-  `network`, `network_missing`
+  `egress_upload_refused`, `network`, `network_missing`
 - approvals: `approval_self_answer`, `approval_from_outside`,
   `approval_code_refused`, `approval_timeout`
 - the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`,
   `classifier_held`, `classifier_down`, `classifier_up`
 - credentials: `key_exported`
+- the audit log: `audit_write_failed`, `audit_chain_broken`
 
 Code-modifying tool calls are also appended to the audit log (`audit_log`,
-`~/.delfin/audit.log`).
+`~/.delfin/audit.log`): 0600 in a 0700 directory, opened with `O_APPEND`
+and `O_NOFOLLOW` (a link or a foreign file in its place is not written),
+rotated weekly. It is a hash chain: every record carries a field prev, the
+SHA-256 of the line before it, and a head file (`audit.log.head`) holds
+the last line's hash and the log's size. `delfin-agent audit verify`
+(`audit_log.verify`) reports an edited, removed or inserted record, a cut
+tail and a torn line, for the active log and every rotated week; records
+from before the chain are counted as legacy. A write that fails records one
+blocked `audit_write_failed` event per process; a write that finds the log
+changed since the last one marks its record (field chain_break) and records
+`audit_chain_broken`. The chain is not keyed: a same-account process that
+rewrites the whole chain and its head consistently is not detected (see
+"Against whom"); the administrator's copy (managed policy `audit_log`) is
+the record such a process cannot rewrite where the administrator has made
+that path append-only for users.
 
 ## Residual risks
 
@@ -572,6 +614,11 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   a path or a program at run time (a variable, `base64 -d | sh`, an
   interpreter) can do what its text does not show. The same holds for
   approvals: the person approves the text.
+- **Small writes inside TLS.** The egress proxy sees a `CONNECT` tunnel's
+  byte count, not its requests. A write to a known host (for example an
+  authenticated API call to `api.github.com`) that sends less than
+  `agent.sandbox_network.upload_ask_bytes` cannot be told from a read and
+  passes; the limit applies per connection.
 - **The network of a partially isolated command.** On the "Linux, partial"
   row Landlock ABI 4 restricts TCP by port, not by address, and does not
   cover UDP; with an older ABI the command has the host's network. Only a
@@ -672,7 +719,8 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
    unisolated, or move to a host that offers one.
 2. Run unattended only with `--permission-mode bypassPermissions --unattended`
    on a host with isolation, and give it a budget (`--max-budget-usd`,
-   `--max-run-seconds`). For a run with no terminal that should still be able
+   `--max-run-seconds`); without one it stops at the unattended defaults
+   (`run_limits.UNATTENDED_DEFAULTS`, set in `agent.unattended_budget`). For a run with no terminal that should still be able
    to ask, use `--supervised` and answer from `delfin-agent approvals`.
 3. Grant the least: `--add-dir` for each directory it must write,
    `--read-dir` for what it only reads, `--allowed-tools` /
@@ -682,7 +730,9 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
    every mode; a "never allow …" line in `agent.classifier.user_rules`
    refuses a matching action without asking the model.
 5. Leave `agent.sandbox_network.mode` at `proxy` and add only the domains a
-   project needs to `agent.sandbox_network.allowed_domains`.
+   project needs to `agent.sandbox_network.allowed_domains`; name a host in
+   `agent.sandbox_network.upload_domains` only if an unattended run must
+   upload to it.
 6. Do not export provider keys in the shell; store them with
    `delfin-agent credentials` (in the OS keyring where one is usable). Keep
    the process guard and the process cage on.

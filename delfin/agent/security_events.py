@@ -90,6 +90,13 @@ _KINDS = {
     "network_missing": ("⚠", "Command network NOT (fully) held"),
     "egress_asked":   ("🌐", "Command network: destination asked"),
     "egress_upload":  ("📤", "Command upload to an allowed host"),
+    # A write to a known host with nobody to ask, refused because the
+    # host is not named in agent.sandbox_network.upload_domains.
+    "egress_upload_refused": ("📤", "Command upload refused (nobody to ask)"),
+    # The audit log (audit_log.py): a write that failed, and a log that
+    # was changed outside DELFIN between two writes.
+    "audit_write_failed": ("📒", "Audit log could not be written"),
+    "audit_chain_broken": ("📒", "Audit log changed outside DELFIN"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid
@@ -162,6 +169,8 @@ _KINDS = {
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    # Off the auto-allow list, no isolation layer, nobody to ask.
+    "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
 }
@@ -190,6 +199,10 @@ class SecurityEvent:
 _LOCK = threading.Lock()
 _EVENTS: Deque[SecurityEvent] = deque(maxlen=200)
 _SEQ = 0
+# Events pushed out of the full ring since the last clear(). Counted so a
+# flood of one kind cannot hide what came before it without the panel
+# saying how much is gone (the blocked ones also reached the inbox).
+_DROPPED = 0
 _ON_RECORD = None  # optional callback(SecurityEvent) for live UI refresh
 # (kind, tool) pairs already raised in this process — the dedup key.
 _ALERTED: set[tuple[str, str]] = set()
@@ -235,11 +248,13 @@ def _raise_alert(ev: SecurityEvent) -> None:
 
 def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
     """Record one containment event. Never raises."""
-    global _SEQ
+    global _SEQ, _DROPPED
     try:
         with _LOCK:
             _SEQ += 1
             ev = SecurityEvent(_SEQ, kind, tool, str(detail)[:300], blocked)
+            if len(_EVENTS) == _EVENTS.maxlen:
+                _DROPPED += 1
             _EVENTS.append(ev)
         cb = _ON_RECORD
         if cb is not None:
@@ -264,15 +279,21 @@ def recent(limit: int = 20) -> list[SecurityEvent]:
 
 
 def counts() -> dict:
+    """``total`` and ``blocked`` in the ring; ``dropped``: events the full
+    ring pushed out since the last ``clear``."""
     with _LOCK:
         evs = list(_EVENTS)
-    return {"total": len(evs), "blocked": sum(1 for e in evs if e.blocked)}
+        dropped = _DROPPED
+    return {"total": len(evs), "blocked": sum(1 for e in evs if e.blocked),
+            "dropped": dropped}
 
 
 def clear() -> None:
+    global _DROPPED
     with _LOCK:
         _EVENTS.clear()
         _ALERTED.clear()
+        _DROPPED = 0
 
 
 def known_kinds() -> frozenset:
@@ -302,7 +323,9 @@ def format_panel_html(limit: int = 12) -> str:
     head = (
         f"<div style='font-size:11px;color:#aaa;margin-bottom:3px;'>"
         f"🛡 Containment &nbsp; {n['blocked']} blocked / {n['total']} flagged"
-        f"</div>"
+        + (f" &nbsp; ({n['dropped']} older events dropped; blocked ones "
+           "are in the attention inbox)" if n.get("dropped") else "")
+        + "</div>"
     )
     return (
         "<div style='border-left:3px solid #d32f2f;padding:6px 10px;"

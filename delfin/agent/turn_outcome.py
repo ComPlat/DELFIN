@@ -108,6 +108,7 @@ _NOT_A_REFUSAL: frozenset[str] = frozenset({
     "approval_from_outside", "read_grant", "refusal_lifted", "auto_verify",
     "auto_verify_exhausted", "test_tamper", "read_only_shape",
     "outside_read_bypass", "classifier_error",
+    "audit_write_failed", "audit_chain_broken",
 })
 
 PERMISSION_REQUEST_KEYS: frozenset[str] = frozenset({

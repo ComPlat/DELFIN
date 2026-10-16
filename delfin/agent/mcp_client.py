@@ -26,7 +26,7 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
         "fs": {
           "command": "npx",
           "args": ["-y", "@modelcontextprotocol/server-filesystem@1.0.0", "/tmp"],
-          "env": {"FOO": "bar"},
+          "env": {"FOO": "bar", "GH_TOKEN": "${GH_TOKEN}"},
           "enabled": true,
           "roots": ["/data/project"],
           "read_roots": ["/opt/corpus"]
@@ -42,6 +42,13 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
 
 A server is treated as HTTP when ``type`` is ``http``/``sse``/
 ``streamable-http`` or a ``url`` is present; otherwise stdio.
+
+A stdio server starts with the environment every bash child gets
+(``api_client._configured_child_env``): no model provider key, no
+GitHub, cloud or other ``*_TOKEN``/``*_SECRET``/``*_API_KEY`` variable.
+``env`` puts back what the server needs, by name: an object sets values
+(``"${NAME}"`` takes the parent's NAME), a list of names passes those
+variables unchanged.
 
 The example names the package version (``@1.0.0``): ``npx -y <package>``
 without one fetches and runs the newest upload of that package at every
@@ -82,7 +89,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import queue
 import re
 import subprocess
@@ -297,7 +303,16 @@ def _extract_jsonrpc_from_sse(raw: str, rid: Any) -> dict:
     return best or {"error": {"message": "no JSON-RPC payload in SSE stream"}}
 
 
-# Credentials of the model providers the agent itself uses.
+def _env_spec(raw) -> dict:
+    """``env`` of a server entry as ``{name: value template}``
+    (``api_client.env_spec``: a list passes names, an object sets)."""
+    from .api_client import env_spec
+    return env_spec(raw)
+
+
+# Credentials of the model providers the agent itself uses. A server's
+# environment is built by api_client._configured_child_env, which removes
+# these and every other credential; kept for the callers that name them.
 _DELFIN_PROVIDER_KEYS = frozenset({
     "KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_API_KEY",
@@ -423,11 +438,12 @@ class MCPServer:
         with self._lock:
             if self.proc is not None and self.proc.poll() is None:
                 return
-            # The model providers' keys DELFIN runs on are no server's
-            # business; a server that needs one names it in its config.
-            env = {k: v for k, v in os.environ.items()
-                   if k not in _DELFIN_PROVIDER_KEYS}
-            env.update(self.env or {})
+            # The environment every bash child gets (no provider key, no
+            # GitHub/cloud token, no *_TOKEN/*_SECRET variable), plus what
+            # this server's own ``env`` names: a list passes those
+            # variables, an object sets values with ${NAME} from the parent.
+            from .api_client import _configured_child_env
+            env = _configured_child_env(self.env or {})
             argv = [self.command, *self.args]
             if self.isolation is not None:
                 # A declared containment either holds or the server does
@@ -1056,7 +1072,7 @@ def _server_from_config(name: str, cfg: dict,
         name=name,
         command=str(cfg.get("command", "")),
         args=list(cfg.get("args", []) or []),
-        env={k: str(v) for k, v in (cfg.get("env") or {}).items()},
+        env=_env_spec(cfg.get("env")),
         # Only stdio. An HTTP server runs somewhere DELFIN cannot build a
         # namespace around, so accepting roots there would be a promise
         # made by a field nobody enforces.
@@ -1407,7 +1423,7 @@ def effective_servers(workspace: Path | None) -> list[dict]:
             "name": name,
             "command": cfg.get("command", ""),
             "args": list(cfg.get("args") or []),
-            "env": dict(cfg.get("env") or {}),
+            "env": _env_spec(cfg.get("env")),
             "url": url,
             "enabled": bool(cfg.get("enabled", True)),
             "source": sources.get(name, ""),
