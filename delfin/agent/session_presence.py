@@ -90,6 +90,10 @@ def announce(key: str, *, session_id: str = "", title: str = "",
         "branch": repo["branch"],
         "host": socket.gethostname(),
         "pid": os.getpid(),
+        # The pid alone outlives the process: a crashed kernel's number
+        # handed to a new process read as an open session for the whole
+        # stale window. proc_identity tells one life of a pid from the next.
+        "proc_start": _process_start(os.getpid()),
     }
     if record["session_id"]:
         _remember_alias(key, record["session_id"])
@@ -226,6 +230,7 @@ def touch(key: str) -> bool:
             return False
         record["updated_at"] = now
         record["pid"] = os.getpid()
+        record["proc_start"] = _process_start(os.getpid())
         from .state_paths import write_text_atomic
         write_text_atomic(path, json.dumps(record))
         _last_touched[key] = now
@@ -235,6 +240,44 @@ def touch(key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+_own_start: dict[int, str] = {}
+
+
+def _process_start(pid: int) -> str:
+    """proc_identity's fingerprint of *pid*'s life, "" when unknown.
+
+    Cached per pid: announce runs on every idle poll, and off Linux the
+    answer costs a ``ps`` process. A pid's start time does not change.
+    """
+    if pid in _own_start:
+        return _own_start[pid]
+    try:
+        from . import proc_identity
+        value = proc_identity.process_start(pid)
+    except Exception:
+        value = ""
+    if value:
+        _own_start[pid] = value
+    return value
+
+
+def _same_life(record: dict) -> bool:
+    """False only when the record's pid now names a later process.
+
+    A record written before ``proc_start`` existed, or on a system that
+    does not report a start time, compares nothing and stays open.
+    """
+    written = str(record.get("proc_start") or "")
+    if not written:
+        return True
+    try:
+        from . import proc_identity
+        return proc_identity.alive(record.get("pid"), written,
+                                   str(record.get("host") or "")) is not False
+    except Exception:
+        return True
 
 
 def _alive(record: dict, now: float) -> bool:
@@ -250,6 +293,8 @@ def _alive(record: dict, now: float) -> bool:
             return False
         except Exception:
             pass          # someone else's process: alive
+        if not _same_life(record):
+            return False
     return True
 
 
