@@ -74,6 +74,13 @@ updates:
         update-types:
           - version-update:semver-minor
           - version-update:semver-patch
+      # Same for solid-js: @opentui/solid 0.6.4 peers solid-js 1.9.12 exactly
+      # and compiles its components with babel-preset-solid 1.9.12, so the
+      # runtime moves with @opentui/solid, not on its own.
+      - dependency-name: "solid-js"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
 
   - package-ecosystem: pip
     directory: "/"
