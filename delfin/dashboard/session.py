@@ -308,11 +308,13 @@ def resume_url(name: str = "", *, request_url: str = "",
                resume_path: str = "") -> str:
     """The address that comes back to this session, or "" if unknown.
 
-    Built from the request that started the kernel, so it carries the
-    host, the port and the server token the user already authenticated
-    with. That makes it exactly as sensitive as the address they are
-    looking at — it belongs in a terminal or a copy button, not in a
-    ticket.
+    Built from the request that started the kernel: its host and port,
+    and whatever else the query carried -- except the server token. The
+    browser that opened the dashboard holds the login cookie, so the link
+    works there without it; another browser gets the login page, which
+    takes the token and continues to this link. A token inside a URL is
+    kept by browser history and by every copy of the terminal it was
+    printed in (``delfin-agent where --token`` prints it on its own).
     """
     from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -325,10 +327,10 @@ def resume_url(name: str = "", *, request_url: str = "",
         parts = urlsplit(base)
         if not parts.netloc:
             return ""
-        # Keep whatever the current address carries -- the token above
-        # all -- and add the session on top, replacing any stale one.
+        # Keep whatever the current address carries except the token,
+        # and add the session on top, replacing any stale one.
         query = [(k, v) for k, v in parse_qsl(parts.query)
-                 if k != SESSION_QUERY_KEY]
+                 if k not in (SESSION_QUERY_KEY, "token")]
         query.append((SESSION_QUERY_KEY, who))
         return urlunsplit((
             parts.scheme or "http", parts.netloc, path,
