@@ -43,6 +43,8 @@ OPERATOR_TITLE = "operator (supervisor of this wave, not the user)"
 TEXT_MAX = 2000
 DEFAULT_IDLE_S = 900
 _CURSOR_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+# ``git commit`` as one segment of a command line: alone, or after && ; ||.
+_COMMIT_RE = re.compile(r"(?:^|&&|;|\|\|)\s*git\s+(?:-C\s+\S+\s+)?commit\b")
 
 
 # --------------------------------------------------------------------------
@@ -96,12 +98,51 @@ def _bounded(text: Any, limit: int = TEXT_MAX) -> str:
 # reads
 # --------------------------------------------------------------------------
 
+_OTHER_HOST_WINDOW_S = 6 * 3600
+
+
 def _open_sessions() -> list[dict]:
+    """Open sessions by their process, not by their heartbeat.
+
+    The presence heartbeat goes quiet while a session waits at an approval
+    or runs one long tool call; read by heartbeat, such a session was
+    reported as exited and opened again. On this host a session is open
+    while its process exists; on another host while its record is recent.
+    Reads only: the presence module's own listing also reaps old records.
+    """
+    import socket
     try:
         from . import session_presence
-        return list(session_presence.open_sessions())
+        files = sorted(Path(session_presence._DIR).glob("*.json"))
     except Exception:
         return []
+    host = socket.gethostname()
+    now = time.time()
+    out = []
+    for f in files:
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict) or not rec.get("key"):
+            continue
+        if rec.get("host") == host:
+            try:
+                pid = int(rec.get("pid") or 0)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0:
+                continue
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                continue
+            except OSError:
+                pass                     # another user's process: alive
+        elif now - float(rec.get("updated_at") or 0) > _OTHER_HOST_WINDOW_S:
+            continue
+        out.append(rec)
+    return out
 
 
 def pending_approvals() -> list[dict]:
@@ -121,11 +162,15 @@ def pending_approvals() -> list[dict]:
                 rows.setdefault(str(r["id"]), r)
     except Exception:
         pass
+    # A request names its session by id; report the name `ops` takes.
+    names = {str(s.get("session_id") or ""): str(s.get("key") or "")
+             for s in _open_sessions()} if rows else {}
     out = []
     for rid, r in rows.items():
+        sid = str(r.get("session_id") or "")
         out.append({
             "id": rid,
-            "session": str(r.get("session_key") or r.get("session_id") or ""),
+            "session": str(r.get("session_key") or names.get(sid) or sid),
             "session_id": str(r.get("session_id") or ""),
             "tool": str(r.get("tool") or ""),
             "summary": _bounded(r.get("command") or r.get("path")
@@ -293,11 +338,42 @@ def _read_new_lines(path: Path, pos: dict) -> list[str]:
     return data[:end].decode("utf-8", "replace").splitlines()
 
 
+def _receipts() -> dict:
+    try:
+        from . import session_messages
+        data = session_messages._receipts()
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _inbox_messages() -> dict:
+    """Messages still waiting in any inbox, by id (inboxes are capped)."""
+    out: dict = {}
+    try:
+        files = sorted(_inbox_dir().glob("*.jsonl"))
+    except OSError:
+        return out
+    for f in files:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        m = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(m, dict) and m.get("id"):
+                        m.setdefault("to", f.stem)
+                        out[str(m["id"])] = m
+        except OSError:
+            continue
+    return out
+
+
 def _first_run_positions(state: dict) -> None:
     """A new cursor starts at 'now': history is not replayed as events."""
     pos: dict = {}
-    for directory, pattern in ((_turn_metrics_dir(), "*.jsonl"),
-                               (_inbox_dir(), "*.jsonl")):
+    for directory, pattern in ((_turn_metrics_dir(), "*.jsonl"),):
         try:
             for p in directory.glob(pattern):
                 if p.name.endswith(".requests.jsonl"):
@@ -313,7 +389,10 @@ def _first_run_positions(state: dict) -> None:
     except Exception:
         state["audit_off"] = 0
     state["sessions"] = sorted(r.get("key", "") for r in _open_sessions())
-    state["approvals"] = sorted(a["id"] for a in pending_approvals())
+    state["approvals"] = {a["id"]: {"session": a["session"], "tool": a["tool"]}
+                          for a in pending_approvals()}
+    state["messages"] = sorted(set(_receipts()) | set(_inbox_messages()))
+    state["since"] = time.time()
     state["idle"] = []
     state["started"] = True
 
@@ -341,13 +420,18 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
     state["sessions"] = keys
 
     approvals = {a["id"]: a for a in pending_approvals()}
-    seen = set(state.get("approvals") or [])
+    seen = state.get("approvals") or {}
+    if isinstance(seen, list):
+        seen = {rid: {} for rid in seen}
     for rid, a in approvals.items():
         if rid not in seen:
             events.append({"kind": "approval_open", **a})
-    for rid in sorted(seen - set(approvals)):
-        events.append({"kind": "approval_closed", "id": rid})
-    state["approvals"] = sorted(approvals)
+    for rid in sorted(set(seen) - set(approvals)):
+        events.append({"kind": "approval_closed", "id": rid,
+                       "session": (seen.get(rid) or {}).get("session", ""),
+                       "tool": (seen.get(rid) or {}).get("tool", "")})
+    state["approvals"] = {rid: {"session": a["session"], "tool": a["tool"]}
+                          for rid, a in approvals.items()}
 
     try:
         files = sorted(_turn_metrics_dir().glob("*.jsonl"))
@@ -372,23 +456,27 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
                 "turn_ts": rec.get("ts"),
             })
 
-    try:
-        inboxes = sorted(_inbox_dir().glob("*.jsonl"))
-    except OSError:
-        inboxes = []
-    for p in inboxes:
-        for line in _read_new_lines(p, pos):
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                continue
-            events.append({
-                "kind": "message", "id": msg.get("id"),
-                "from": _bounded(msg.get("from") or "", 80),
-                "to": _bounded(msg.get("to") or p.stem, 80),
-                "text": _bounded(msg.get("text") or ""),
-                "sent_at": msg.get("sent_at"),
-            })
+    # Messages: those still waiting in an inbox, and those already taken
+    # (a receiver takes a message within seconds and its inbox line is gone;
+    # the receipt, written on taking, keeps from/to/sent_at but no text).
+    found = _inbox_messages()
+    for mid, r in _receipts().items():
+        if isinstance(r, dict) and mid not in found:
+            found[mid] = {"id": mid, **r}
+    seen_msgs = set(state.get("messages") or [])
+    since = float(state.get("since") or 0.0)
+    new = [m for mid, m in found.items()
+           if mid not in seen_msgs and float(m.get("sent_at") or 0) >= since]
+    for m in sorted(new, key=lambda m: float(m.get("sent_at") or 0)):
+        events.append({
+            "kind": "message", "id": m["id"],
+            "from": _bounded(m.get("from") or "", 80),
+            "to": _bounded(m.get("to") or "", 80),
+            "sent_at": m.get("sent_at"), "taken_at": m.get("taken_at"),
+            "text": _bounded(m.get("text") or ""),
+        })
+        seen_msgs.add(m["id"])
+    state["messages"] = sorted(m for m in seen_msgs if m in found)
 
     try:
         from . import audit_log
@@ -396,6 +484,15 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
             int(state.get("audit_off") or 0))
     except Exception:
         rows = []
+    # Work the turn records do not show yet: a tool step, a message taken.
+    busy = dict(state.get("busy") or {})
+    for row in rows:
+        if row.get("session_id"):
+            busy[str(row["session_id"])] = now
+    for m in found.values():
+        to, taken = str(m.get("to") or ""), m.get("taken_at")
+        if to and taken:
+            busy[to] = max(float(busy.get(to) or 0), float(taken))
     for row in rows:
         sid = str(row.get("session_id") or "")
         decision = str(row.get("decision") or "")
@@ -406,7 +503,7 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
                 "session_id": sid, "tool": row.get("tool"),
                 "decision": decision, "detail": _bounded(command, 300),
             })
-        elif (re.match(r"^\s*git\s+commit\b", command)
+        elif (_COMMIT_RE.search(command)
               and row.get("exit_code") == 0):
             cwd = str(row.get("cwd") or row.get("workspace") or "")
             events.append({
@@ -423,7 +520,8 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
     for r in open_rows:
         sid = str(r.get("session_id") or "")
         key = str(r.get("key") or "")
-        activity = _activity(sid)
+        activity = max(_activity(sid), float(busy.get(sid) or 0),
+                       float(busy.get(key) or 0))
         if (activity and now - activity >= idle_s
                 and key not in waiting and sid not in waiting):
             idle_now.add(key)
@@ -432,6 +530,9 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
                                "session_id": sid,
                                "idle_s": int(now - activity)})
     state["idle"] = sorted(idle_now)
+    live = {str(r.get("session_id") or "") for r in open_rows} | {
+        str(r.get("key") or "") for r in open_rows}
+    state["busy"] = {k: v for k, v in busy.items() if k in live}
 
     for ev in events:
         state["seq"] = int(state.get("seq") or 0) + 1

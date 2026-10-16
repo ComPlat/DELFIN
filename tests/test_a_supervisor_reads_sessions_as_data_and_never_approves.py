@@ -12,7 +12,6 @@ approval room and ``session_messages``.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import time
@@ -20,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from delfin.agent import (audit_log, file_confirm, ops_interface,
+from delfin.agent import (file_confirm, ops_interface,
                           session_messages, session_presence, session_store,
                           terminal_confirm, turn_metrics)
 
@@ -328,3 +327,85 @@ def test_the_ops_commands_are_exactly_these():
     assert names == {"status", "sessions", "session", "approvals", "events",
                      "wait", "send", "escalate", "pause"}
     assert not names & {"approve", "answer", "allow", "grant", "accept"}
+
+
+# --------------------------------------------------------------------------
+# shapes seen in the three-session acceptance run
+# --------------------------------------------------------------------------
+
+def test_a_commit_at_the_end_of_a_command_chain_is_reported(home):
+    h, ws, rooms = home
+    sid = "c" * 32
+    _open("probe-a", sid, ws)
+    state = {}
+    ops_interface.poll(state)
+    _audit(h, session_id=sid, cwd=str(ws), command=(
+        'git add util.py test_util.py && git commit -m "Add mean() with test"'))
+    _audit(h, session_id=sid, cwd=str(ws), command="echo git commit")
+    _audit(h, session_id=sid, cwd=str(ws), exit_code=1,
+           command="git status; git commit -m nothing")
+    commits = [e for e in ops_interface.poll(state) if e["kind"] == "commit"]
+    assert len(commits) == 1 and commits[0]["session"] == "probe-a"
+
+
+def test_a_message_taken_before_the_next_poll_is_still_reported(home):
+    h, ws, rooms = home
+    _open("probe-c", "d" * 32, ws)
+    state = {}
+    ops_interface.poll(state)
+    ops_interface.send("probe-c", "please add a docstring")
+    assert session_messages.take("probe-c")          # gone from the inbox
+    session_messages.send("operator", "done", from_key="probe-c")
+    msgs = [e for e in ops_interface.poll(state) if e["kind"] == "message"]
+    assert [(m["from"], m["to"]) for m in msgs] == [
+        ("operator", "probe-c"), ("probe-c", "operator")]
+    assert msgs[0]["taken_at"] and msgs[1]["text"] == "done"
+    assert [e for e in ops_interface.poll(state) if e["kind"] == "message"] == []
+
+
+def test_a_session_whose_heartbeat_pauses_is_not_reported_as_exited(home):
+    h, ws, rooms = home
+    _open("probe-b", "e" * 32, ws)
+    state = {}
+    ops_interface.poll(state)
+    rec_path = next((h / ".delfin" / "session_presence").glob("*.json"))
+    rec = json.loads(rec_path.read_text())
+    rec["updated_at"] = time.time() - 4 * 3600       # waits at a dialog
+    rec_path.write_text(json.dumps(rec))
+    assert _kinds(ops_interface.poll(state)) == []
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    rec["pid"] = gone.pid                            # the process has ended
+    rec_path.write_text(json.dumps(rec))
+    assert _kinds(ops_interface.poll(state)) == ["session_exited"]
+
+
+def test_a_closed_approval_names_its_session_and_tool(home):
+    h, ws, rooms = home
+    sid = "f" * 32
+    _open("probe-b", sid, ws)
+    state = {}
+    ops_interface.poll(state)
+    _request(rooms, "r9", sid, "rm notes.txt")
+    assert _kinds(ops_interface.poll(state)) == ["approval_open"]
+    (rooms / "r9.request.json").rename(rooms / "r9.answered.json")
+    closed = [e for e in ops_interface.poll(state) if e["kind"] == "approval_closed"]
+    assert closed and closed[0]["session"] == "probe-b" and closed[0]["tool"] == "bash"
+    # the cursor written by the earlier version (a plain id list) still loads
+    state["approvals"] = ["old"]
+    assert [e["id"] for e in ops_interface.poll(state)
+            if e["kind"] == "approval_closed"] == ["old"]
+
+
+def test_a_session_that_just_took_a_message_is_not_reported_idle(home):
+    h, ws, rooms = home
+    sid = "9" * 32
+    _open("probe-c", sid, ws)
+    _turn(h, sid, ts=time.time() - 3600)             # last turn an hour ago
+    state = {}
+    ops_interface.poll(state, idle_s=600)
+    ops_interface.send("probe-c", "next step")
+    session_messages.take("probe-c")                 # a new turn begins
+    assert "session_idle" not in _kinds(ops_interface.poll(state, idle_s=600))
+    _audit(h, session_id=sid, command="ls")          # and it works on
+    assert "session_idle" not in _kinds(ops_interface.poll(state, idle_s=600))
