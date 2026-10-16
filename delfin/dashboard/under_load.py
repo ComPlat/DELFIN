@@ -85,16 +85,19 @@ SETTLE_REACH = 3.0
 
 #: How far the energy must have fallen from a peak it climbed first, into the
 #: basin, before the ramp is allowed to say it has left a product behind, in
-#: kcal/mol.  Its whole job is to tell a real product from the numerical dip
-#: at the very first level: measured, a cyclohexane over-strained from its
-#: chair dipped 0.02 kcal below its start and is not a product, while a butane
-#: pushed gauche-to-anti sat 1.1 kcal below the barrier it crossed and is one.
-#: So the cut is between those two, well above the hundredth-of-a-kcal noise
-#: of a relaxed level and below the smallest barrier worth crossing.  A
-#: monotonic climb never arms this at all -- its floor is the start, with
-#: nothing above it -- so the number only ever separates a shallow product
-#: from none, never a barrier climb from a product.
-PAST_A_BARRIER = 0.8
+#: kcal/mol.  It separates a basin the walk crossed into from a dip in a
+#: structure that is only being bent: the cyclohexane over-strained from its
+#: chair in test_past_the_minimum_tells_a_product_from_a_deformation dips
+#: 0.02 kcal/mol at its first level and 0.30 at its fifth, and is not a
+#: product.  A butane pushed gauche to anti is: over 200 walks of
+#: test_a_push_stops_at_a_conformational_product_not_past_it on 4 CPUs
+#: (2026-10-16, conda-forge xtb 6.7.1, four threads, idle and under load) the
+#: anti level sat 0.526 to 2.71 kcal/mol below the highest level before it.
+#: The eight-level ramp samples the barrier wherever its levels land, so that
+#: drop is the barrier as sampled, not the barrier, and 0.8 -- set from one
+#: walk at 1.1 -- missed 4 of the 200.  A monotonic climb never arms this at
+#: all: it has no level below one before it.
+PAST_A_BARRIER = 0.4
 
 #: And how far back up out of that basin, in kcal/mol, before the ramp is over
 #: the product and only over-straining what is left.  Small, because past the
@@ -115,27 +118,34 @@ def past_the_minimum(energies: Sequence[float], *, fell: float,
     what "goes beyond the minimum" was about: a cyclohexane pushed to a
     lower conformer and then, level after level, over 190 kcal past it.
 
-    Armed only once the energy has come down into a basin *fell* below the
-    highest it climbed to first -- a barrier crossed, or, when the walk runs
-    downhill from the start, the start itself.  Without that a push climbing
-    its first barrier would read as leaving a basin it had never been in.
-    Then, once the energy has risen *rose* back above the floor of that basin,
-    the ramp is over the product, and the floor is where it should have
-    stopped.
+    *energies* are the levels in order.  The product is a level that is the
+    lowest of everything from it on (the walk has found nothing lower since),
+    with a level before it at least *fell* higher (a barrier crossed into its
+    basin), and the latest level at least *rose* above it (the ramp is out of
+    the basin and only straining what is left).  The first of these is
+    returned.
+
+    The floor is the lowest point after a barrier, not the lowest of the
+    walk.  Taken as the lowest of the walk, a product above the reactant --
+    a gauche-to-anti level settling 0.4 kcal/mol higher than the first level
+    -- was never found, because the floor was the reactant the walk had
+    already left (test_a_product_above_the_reactant_is_still_a_product).
+    The structure as handed over is not a level and is not passed in: it is
+    unrelaxed, and counted as a peak it made a walk that only relaxed and
+    then climbed look like one that had crossed something
+    (test_an_unrelaxed_start_is_not_a_barrier_the_walk_came_down).
     """
     values = [float(one) for one in energies]
-    if len(values) < 2:
-        return None
-    floor = min(values)
-    index = values.index(floor)
-    if index >= len(values) - 1:
-        return None                     # still at the bottom; nothing to leave
-    climbed_first = max(values[:index + 1]) - floor
-    if climbed_first < fell:
-        return None                     # never in a basin; a bond break stops it
-    if values[-1] - floor < rose:
-        return None                     # not yet clear of the product
-    return index
+    for index in range(1, len(values) - 1):
+        floor = values[index]
+        if floor > min(values[index:]):
+            continue                    # something later went lower
+        if max(values[:index]) - floor < fell:
+            continue                    # no barrier crossed into it
+        if values[-1] - floor < rose:
+            return None                 # not yet clear of the product
+        return index
+    return None
 
 
 def rigid_directions(coords: Any) -> np.ndarray:
@@ -512,18 +522,11 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
             # stops at the floor, and settles from there rather than from the
             # wreck at the far end of the ramp.
             if reached is None and gave is None and not whole:
-                # From the start, which is the zero every level is quoted
-                # against: a walk that runs downhill from it has the start as
-                # the high point it came down from, which is how
-                # past_the_minimum reads its first value. Without it a ramp
-                # whose sampled barrier sat below the start never armed
-                # (test_a_walk_that_runs_downhill_from_the_start_still_stops_
-                # at_the_product).
                 index = past_the_minimum(
-                    [0.0] + [one['energy'] for one in points],
+                    [one['energy'] for one in points],
                     fell=PAST_A_BARRIER, rose=OUT_OF_THE_BASIN)
-                if index is not None and index > 0:
-                    reached = points[index - 1]
+                if index is not None:
+                    reached = points[index]
                     break
         # And then the load comes off.
         #
