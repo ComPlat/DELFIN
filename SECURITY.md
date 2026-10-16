@@ -74,8 +74,11 @@ attestation, and the SBOM is attached to the GitHub release
 (`gh attestation verify`, see [docs/RELEASING.md](docs/RELEASING.md)).
 What DELFIN fetches at run time is pinned the same way: the Ketcher drawing
 editor is one build refused unless its SHA-256 matches and unpacked only
-inside its own directory, and the agent's default container image is named
-by digest. The full table of pins and the tests that hold them is in
+inside its own directory, the agent's default container image is named
+by digest, and what the tool installers download (micromamba, g-xTB,
+xtb4stda/sTDA, the std2 and OpenMPI sources, the CENSO helper scripts,
+ANMR) is held to a SHA-256 written in the installer, with CENSO and
+Genarris checked out at a commit. The full table of pins and the tests that hold them is in
 docs/RELEASING.md.
 
 ## Scope
