@@ -188,6 +188,13 @@ def run_entry(
     workspace = Path(str(entry.workspace)).expanduser()
     factory = engine_factory or _default_engine_factory
     engine = factory(str(workspace), settings)
+    # Nobody watches a scheduled run: the ceilings the settings leave at
+    # 0 get their unattended defaults (run_limits).
+    try:
+        from .run_limits import apply_unattended
+        apply_unattended(engine)
+    except Exception:
+        pass
 
     # Optional per-entry budget → the engine's per-turn runaway cost cap.
     # AgentEngine reads ``self._cost_hard_cap()`` at turn start; an

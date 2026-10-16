@@ -29035,6 +29035,19 @@ class OpenAIClient(_BaseClient):
         except Exception:
             return False
 
+    def _run_ceiling_reached(self, spent: float) -> str:
+        """The run ceiling (``run_budget_s`` / ``run_budget_usd``) the
+        engine says this turn has reached, or "". ``spent``: this turn's
+        estimated spend so far. A client without the probe, or a probe
+        that raises, reports none. Never raises."""
+        probe = getattr(self, "run_ceiling", None)
+        if probe is None:
+            return ""
+        try:
+            return str(probe(float(spent or 0.0)) or "")
+        except Exception:
+            return ""
+
     def _drain_turn_steering(self) -> list[str]:
         """Steering blocks that became true while this turn was running.
 
@@ -30162,6 +30175,26 @@ class OpenAIClient(_BaseClient):
                         cost_usd=_spent, cached_tokens=_total_cached,
                         stop_reason="cost_cap")
                     return
+            # The RUN's ceilings (wall clock, spend), between rounds: a
+            # one-turn unattended run never reaches the gate the engine
+            # applies before a turn. The work so far is kept, and the end
+            # of the turn saves the session as for any other stop.
+            _ceiling = self._run_ceiling_reached(
+                self._estimate_cost(_total_in, _total_out))
+            if _ceiling:
+                _setting = f"agent.{_ceiling}"
+                yield StreamEvent(type="notice", text=(
+                    f"\n🛑 Run budget reached ({_setting}): this turn stops "
+                    "here and the run starts no new work. The rounds done "
+                    "so far are kept and the session is saved — raise "
+                    f"{_setting} (or the matching flag) or start a new run "
+                    "to continue.\n"))
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=_total_in, output_tokens=_total_out,
+                    cost_usd=self._estimate_cost(_total_in, _total_out),
+                    cached_tokens=_total_cached, stop_reason=_ceiling)
+                return
             # Semantic context editing: once accumulated tool output over
             # this loop grows large, elide the OLDEST tool results (keep
             # the recent ones + all reasoning) so a long agentic turn

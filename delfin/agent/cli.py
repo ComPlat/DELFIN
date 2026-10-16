@@ -713,6 +713,13 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     from .isolation_posture import apply_at_start
     for _note in apply_at_start(engine, can_ask=sys.stdin.isatty()):
         print(_note, file=sys.stderr)
+    # A run nobody watches (--unattended, or no terminal on stdin) gets
+    # the ceilings its flags and settings did not set (run_limits).
+    from .run_limits import apply_unattended
+    for _note in apply_unattended(
+            engine, unattended=bool(getattr(args, "unattended", False))
+            or not sys.stdin.isatty()):
+        print(_note, file=sys.stderr)
     import time as _time
     _t0 = _time.monotonic()
     stream_json = (getattr(args, "output_format", "text") == "stream-json")
@@ -1924,6 +1931,11 @@ def _start_interactive_session(args: argparse.Namespace, report,
     # confirmed once here, else the session starts in default.
     from .isolation_posture import apply_at_start
     start_notes = tuple(apply_at_start(engine, can_ask=can_ask))
+    # --unattended: the default run ceilings. Not keyed on can_ask: the
+    # window's worker starts with can_ask=False and a person attaches.
+    from .run_limits import apply_unattended
+    start_notes += tuple(apply_unattended(
+        engine, unattended=bool(getattr(args, "unattended", False))))
     return InteractiveStart(engine, why, isolation_note, start_notes)
 
 
@@ -4581,12 +4593,15 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--max-budget-usd", type=float, default=0.0,
                       dest="max_budget_usd", metavar="USD",
                       help="Stop this session once measured spend reaches "
-                           "this much (0: use the configured budget)")
+                           "this much (0: use the configured budget; an "
+                           "unattended run without one: "
+                           "agent.unattended_budget, $25)")
     chat.add_argument("--max-run-seconds", type=float, default=0.0,
                       dest="max_run_seconds", metavar="SECONDS",
                       help="Wall-clock ceiling for this session — the "
                            "dimension that still holds on a model with no "
-                           "published rate")
+                           "published rate (an unattended run without one: "
+                           "agent.unattended_budget, 8 h)")
     # The consumer existed without the producer: ReplOptions.color has been
     # read as getattr(args, "color", "auto") since the first version, and no
     # parser ever declared the flag — so the one setting that decides

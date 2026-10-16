@@ -552,7 +552,8 @@ that path append-only for users.
    unisolated, or move to a host that offers one.
 2. Run unattended only with `--permission-mode bypassPermissions --unattended`
    on a host with isolation, and give it a budget (`--max-budget-usd`,
-   `--max-run-seconds`). For a run with no terminal that should still be able
+   `--max-run-seconds`); without one it stops at the unattended defaults
+   (`run_limits.UNATTENDED_DEFAULTS`, set in `agent.unattended_budget`). For a run with no terminal that should still be able
    to ask, use `--supervised` and answer from `delfin-agent approvals`.
 3. Grant the least: `--add-dir` for each directory it must write,
    `--read-dir` for what it only reads, `--allowed-tools` /

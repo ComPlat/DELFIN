@@ -3462,6 +3462,13 @@ class AgentEngine:
                 getattr(self, "_cost_cap_value", 0.0) or 0.0)
         except Exception:
             pass
+        # ...and the RUN's wall-clock and spend ceilings, for the same
+        # reason one level up: the gate above runs before a turn, and a
+        # one-turn unattended run is a single turn of many rounds.
+        try:
+            self.client.run_ceiling = self._run_ceiling_hit
+        except Exception:
+            pass
 
         # ...and where each request's timing goes (turn_metrics
         # record_request), under the same key as this turn's entry.
@@ -7471,6 +7478,35 @@ class AgentEngine:
             except Exception:
                 pass
         return usd, secs
+
+    def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
+        """The run ceiling a RUNNING turn has reached, or "".
+
+        Input: what the running turn has spent so far (the client's
+        estimate; ``cost_usd`` holds the finished turns). Output: the
+        stop reason the turn ends with -- ``run_budget_s`` once the wall
+        clock since ``_run_started_at`` reaches ``run_budget_s``,
+        ``run_budget_usd`` once finished plus running spend reaches
+        ``run_budget_usd`` -- else "". The turn ceiling is not checked
+        here: it counts finished turns, which do not change mid-turn.
+        Consulted by the client between tool rounds (``run_ceiling``);
+        the 110 % gate before a turn stays. Never raises.
+        """
+        try:
+            usd, secs = self._run_budget()
+            if secs > 0:
+                import time as _t
+                started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
+                if started > 0 and _t.time() - started >= secs:
+                    return "run_budget_s"
+            if usd > 0:
+                spent = (float(getattr(self, "cost_usd", 0.0) or 0.0)
+                         + max(0.0, float(spent_this_turn or 0.0)))
+                if spent >= usd:
+                    return "run_budget_usd"
+        except Exception:
+            return ""
+        return ""
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.
