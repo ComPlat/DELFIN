@@ -5815,6 +5815,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         far = _gfn.largest_shift(began, current)
         if far is None:
             return False
+        # The yardstick is the wish the wall refused the third time, written
+        # where that refusal is counted.  Taken here instead, from the first
+        # message after it, the message was also skipped -- so a hand that
+        # eased off on the very next move was not answered, and its own
+        # easing became the distance it then had to beat
+        # (test_a_hand_that_eases_off_right_after_the_third_refusal_is_answered).
         stuck = state.get('topology_stuck')
         if stuck is None:
             state['topology_stuck'] = far
@@ -6014,6 +6020,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # through untouched, no frame had its bonding changed, and
                     # the median atom moved 0.066 A.
                     current = _gfn.eased_apart(current)
+                    # The wish as _still_torn sees it, before the budget may
+                    # clamp it below: the bonding wall's yardstick is taken
+                    # from this one.
+                    asked_for = current
                     began = time.perf_counter()
                     # Once the budget is spent, stand still rather than shake.
                     #
@@ -7144,6 +7154,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # merely happening.
                         refused = int(state.get('topology_refused') or 0) + 1
                         state['topology_refused'] = refused
+                        if refused == 3:
+                            # How far this hand was when the wall gave up --
+                            # what _still_torn measures the next wish against.
+                            grab = state.get('gfn_topology_source')
+                            shift = (_gfn.largest_shift(grab, asked_for)
+                                     if grab and len(_gfn.atom_lines(grab))
+                                     == len(_gfn.atom_lines(asked_for))
+                                     else None)
+                            if shift is not None:
+                                state['topology_stuck'] = shift
                         if refused >= 3 and pull is None:
                             said = (f'{said} Three steps running -- the hand '
                                     f'is set to move the atom, which is '
