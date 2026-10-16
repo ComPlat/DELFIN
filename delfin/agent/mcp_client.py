@@ -425,11 +425,28 @@ def forget_pin_decisions() -> None:
         PIN_WITHHELD.clear()
 
 
+_PIN_CACHE: dict = {}
+
+
 def _pins_read() -> dict:
+    """The stored pins (a fresh copy). Parsed again only when the file's
+    size or mtime changed: the surface asks once per tool and request."""
     from . import trust_store
+    path = trust_store.store_dir() / PIN_RECORD
+    try:
+        st = os.stat(path)
+        stamp = (str(path), st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        stamp = None
+    cached = _PIN_CACHE.get("stamp")
+    if stamp is not None and cached == stamp:
+        return json.loads(_PIN_CACHE["text"])
     data = trust_store.read_record(PIN_RECORD) or {}
     servers = data.get("servers") if isinstance(data, dict) else None
-    return {"v": 1, "servers": servers if isinstance(servers, dict) else {}}
+    out = {"v": 1, "servers": servers if isinstance(servers, dict) else {}}
+    if stamp is not None:
+        _PIN_CACHE.update(stamp=stamp, text=json.dumps(out))
+    return out
 
 
 def _pins_update(change) -> bool:
