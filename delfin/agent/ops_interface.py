@@ -28,8 +28,9 @@ drops an event it was handed (``follow`` saves the unread rest of a batch
 with the cursor).
 
 Limits. Events are what one poll sees against the last: an approval that
-opened and closed between two polls, and a message its recipient took
-between two polls (``take`` unlinks the inbox), never appear. The
+opened and closed between two polls never appears, and a message its
+recipient took between two polls appears from its delivery receipt,
+without its text (``take`` unlinks the inbox; receipts keep no text). The
 actions refuse when the process carries the agent-session marker
 (``approval_guard.ENV_MARKER``); an agent shell that strips it can still
 send as the operator, which is the limit ``approval_guard`` names for
@@ -58,6 +59,16 @@ OPERATOR_TITLE = "operator (supervisor of this wave, not the user)"
 TEXT_MAX = 2000
 DEFAULT_IDLE_S = 900
 _CURSOR_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+#: ``git commit`` as one segment of a command line: alone, or after && ; ||.
+#: Matched on at most _COMMAND_MAX characters of the recorded command; the
+#: regex has no nested repetition, and nothing here runs the command.
+_COMMIT_RE = re.compile(r"(?:^|&&|;|\|\|)\s*git\s+(?:-C\s+\S+\s+)?commit\b")
+_COMMAND_MAX = 4000
+#: A record of another host counts as open while it is this recent: its
+#: process cannot be asked from here.
+_OTHER_HOST_WINDOW_S = 6 * 3600
+#: Bytes of the receipts sidecar read at most.
+_RECEIPTS_MAX = 8 << 20
 #: A session id as it names files (turn_metrics/<id>.jsonl): no separator,
 #: no "..". A presence record is written by a session; its id is not
 #: trusted to be a file name.
@@ -196,12 +207,69 @@ def _session_file(directory: Path, session_id: str, suffix: str
 # reads
 # --------------------------------------------------------------------------
 
+def _read_json_record(path: Path, limit: int = _READ_MAX) -> Any:
+    """The JSON value in *path*, read through _open_record, or None."""
+    fd = _open_record(path)
+    if fd is None:
+        return None
+    try:
+        return json.loads(_read_at(fd, 0, limit).decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return None
+    finally:
+        os.close(fd)
+
+
 def _open_sessions() -> list[dict]:
+    """Open sessions by their process, not by their heartbeat.
+
+    The presence heartbeat goes quiet while a session waits at an approval
+    or runs one long tool call; read by heartbeat, such a session was
+    reported as exited and opened again. On this host a session is open
+    while its process is -- the pid AND its start time
+    (``proc_identity.alive`` with the record's ``proc_start``), so a pid
+    the system handed to a later process is not a live session. On
+    another host, while its record is at most _OTHER_HOST_WINDOW_S old.
+    Reads only, through _open_record: the presence module's own listing
+    also reaps records.
+    """
+    import socket
     try:
         from . import session_presence
-        return list(session_presence.open_sessions())
+        files = sorted(Path(session_presence._DIR).glob("*.json"))
     except Exception:
         return []
+    try:
+        from . import proc_identity
+    except Exception:
+        proc_identity = None
+    host = socket.gethostname()
+    now = time.time()
+    out = []
+    for f in files:
+        rec = _read_json_record(f, 65536)
+        if not isinstance(rec, dict) or not rec.get("key"):
+            continue
+        if rec.get("host") == host:
+            pid = _int_or_none(rec.get("pid")) or 0
+            if pid <= 0:
+                continue
+            if proc_identity is not None:
+                if proc_identity.alive(pid, str(rec.get("proc_start") or ""),
+                                       host) is False:
+                    continue
+            else:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    continue
+                except OSError:
+                    pass                 # another user's process: alive
+        elif now - (_float_or_none(rec.get("updated_at")) or 0.0) \
+                > _OTHER_HOST_WINDOW_S:
+            continue
+        out.append(rec)
+    return out
 
 
 def pending_approvals() -> list[dict]:
@@ -221,12 +289,16 @@ def pending_approvals() -> list[dict]:
                 rows.setdefault(str(r["id"]), r)
     except Exception:
         pass
+    # A request names its session by id; report the name `ops` takes.
+    names = {str(s.get("session_id") or ""): str(s.get("key") or "")
+             for s in _open_sessions()} if rows else {}
     out = []
     for rid, r in rows.items():
+        sid = str(r.get("session_id") or "")
         out.append({
-            "id": rid,
-            "session": _bounded(r.get("session_key") or r.get("session_id")
-                                or "", 128),
+            "id": _bounded(rid, 128),
+            "session": _bounded(r.get("session_key") or names.get(sid)
+                                or sid, 128),
             "session_id": _bounded(r.get("session_id") or "", 128),
             "tool": _bounded(r.get("tool") or "", 80),
             "summary": _bounded(r.get("command") or r.get("path")
@@ -617,11 +689,53 @@ def _record_files() -> tuple[list[Path], list[Path]]:
     return _glob(_turn_metrics_dir()), _glob(_inbox_dir())
 
 
+def _receipts() -> dict:
+    """session_messages' delivery receipts (from, to, sent_at, taken_at;
+    never a text), read through _open_record and bounded."""
+    try:
+        from . import session_messages
+        data = _read_json_record(session_messages._receipts_path(),
+                                 _RECEIPTS_MAX)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _inbox_messages() -> dict:
+    """Messages still waiting in any inbox, by id.
+
+    Each inbox through _open_record, at most _READ_MAX bytes (an inbox
+    holds the messages its session has not taken; take() delivers at most
+    20 of them).
+    """
+    out: dict = {}
+    _turns, inboxes = _record_files()
+    for f in inboxes:
+        fd = _open_record(f)
+        if fd is None:
+            continue
+        try:
+            data = _read_at(fd, 0, _READ_MAX)
+        except OSError:
+            continue
+        finally:
+            os.close(fd)
+        for line in data.decode("utf-8", "replace").splitlines():
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(m, dict) and m.get("id"):
+                m.setdefault("to", f.stem)
+                out[str(m["id"])[:64]] = m
+    return out
+
+
 def _first_run_positions(state: dict) -> None:
     """A new cursor starts at 'now': history is not replayed as events."""
     pos: dict = {}
-    turns, inboxes = _record_files()
-    for p in turns + inboxes:
+    turns, _inboxes = _record_files()
+    for p in turns:
         fd = _open_record(p)
         if fd is None:
             continue
@@ -642,7 +756,11 @@ def _first_run_positions(state: dict) -> None:
         state["audit_off"] = 0
     state["sessions"] = sorted(str(r.get("key") or "")
                                for r in _open_sessions())
-    state["approvals"] = sorted(a["id"] for a in pending_approvals())
+    state["approvals"] = {a["id"]: {"session": a["session"],
+                                    "tool": a["tool"]}
+                          for a in pending_approvals()}
+    state["messages"] = sorted(set(_receipts()) | set(_inbox_messages()))
+    state["since"] = time.time()
     state["idle"] = []
     state["started"] = True
 
@@ -671,18 +789,26 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
     state["sessions"] = keys
 
     approvals = {a["id"]: a for a in pending_approvals()}
-    seen = set(state.get("approvals") or [])
+    seen = state.get("approvals") or {}
+    if isinstance(seen, list):           # a cursor of the first version
+        seen = {str(rid): {} for rid in seen}
+    if not isinstance(seen, dict):
+        seen = {}
     for rid, a in approvals.items():
         if rid not in seen:
             events.append({"kind": "approval_open", **a})
-    for rid in sorted(seen - set(approvals)):
-        events.append({"kind": "approval_closed", "id": rid})
-    state["approvals"] = sorted(approvals)
+    for rid in sorted(set(seen) - set(approvals)):
+        was = seen.get(rid) if isinstance(seen.get(rid), dict) else {}
+        events.append({"kind": "approval_closed", "id": _bounded(rid, 128),
+                       "session": _bounded(was.get("session") or "", 128),
+                       "tool": _bounded(was.get("tool") or "", 80)})
+    state["approvals"] = {rid: {"session": a["session"], "tool": a["tool"]}
+                          for rid, a in approvals.items()}
 
-    files, inboxes = _record_files()
+    files, _inboxes = _record_files()
     # Positions of files that are gone are dropped: a cursor kept for
-    # months otherwise names every inbox and turn record that ever was.
-    live = {str(p) for p in files + inboxes}
+    # months otherwise names every turn record that ever was.
+    live = {str(p) for p in files}
     for key in [k for k in pos if k not in live]:
         pos.pop(key, None)
     for p in files:
@@ -704,27 +830,38 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
                 "turn_ts": _float_or_none(rec.get("ts")),
             })
 
+    # Messages: those still waiting in an inbox, and those already taken
+    # (a receiver takes a message within seconds and its inbox line is
+    # gone; the receipt, written on taking, keeps from/to/sent_at but no
+    # text). Identified by message id, so a re-created inbox file is not
+    # read twice or skipped.
     # session_messages shows a session only the mail it sent (status, ls).
     # From inside an agent session, a message event says who wrote to
     # whom and keeps the text back.
     withhold = _inside_agent()
-    for p in inboxes:
-        for line in _read_new_lines(p, pos):
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(msg, dict):
-                continue
-            events.append({
-                "kind": "message", "id": _bounded(msg.get("id") or "", 64),
-                "from": _bounded(msg.get("from") or "", 80),
-                "to": _bounded(msg.get("to") or p.stem, 80),
-                "text": "" if withhold else _bounded(msg.get("text") or ""),
-                "sent_at": _float_or_none(msg.get("sent_at")),
-            })
-            if withhold:
-                events[-1]["text_withheld"] = True
+    found = _inbox_messages()
+    for mid, r in _receipts().items():
+        if isinstance(r, dict) and str(mid)[:64] not in found:
+            found[str(mid)[:64]] = {**r, "id": str(mid)[:64]}
+    seen_msgs = set(state.get("messages") or [])
+    since = _float_or_none(state.get("since")) or 0.0
+    new = [m for mid, m in found.items()
+           if mid not in seen_msgs
+           and (_float_or_none(m.get("sent_at")) or 0.0) >= since]
+    for m in sorted(new, key=lambda m: _float_or_none(m.get("sent_at"))
+                    or 0.0):
+        events.append({
+            "kind": "message", "id": _bounded(m["id"], 64),
+            "from": _bounded(m.get("from") or "", 80),
+            "to": _bounded(m.get("to") or "", 80),
+            "sent_at": _float_or_none(m.get("sent_at")),
+            "taken_at": _float_or_none(m.get("taken_at")),
+            "text": "" if withhold else _bounded(m.get("text") or ""),
+        })
+        if withhold:
+            events[-1]["text_withheld"] = True
+        seen_msgs.add(m["id"])
+    state["messages"] = sorted(m for m in seen_msgs if m in found)
 
     try:
         from . import audit_log
@@ -732,6 +869,17 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
             int(state.get("audit_off") or 0))
     except Exception:
         rows = []
+    # Work the turn records do not show yet: a tool step, a message taken.
+    busy = state.get("busy") if isinstance(state.get("busy"), dict) else {}
+    busy = {str(k)[:128]: _float_or_none(v) or 0.0 for k, v in busy.items()}
+    for row in rows:
+        if row.get("session_id"):
+            busy[str(row["session_id"])[:128]] = now
+    for m in found.values():
+        to = str(m.get("to") or "")[:128]
+        taken = _float_or_none(m.get("taken_at"))
+        if to and taken:
+            busy[to] = max(busy.get(to) or 0.0, min(taken, now))
     for row in rows:
         sid = str(row.get("session_id") or "")
         decision = str(row.get("decision") or "")
@@ -744,7 +892,7 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
                 "decision": _bounded(decision, 80),
                 "detail": _bounded(command, 300),
             })
-        elif (re.match(r"^\s*git\s+commit\b", command)
+        elif (_COMMIT_RE.search(command[:_COMMAND_MAX])
               and row.get("exit_code") == 0):
             cwd = str(row.get("cwd") or row.get("workspace") or "")
             events.append({
@@ -763,7 +911,8 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
     for r in open_rows:
         sid = str(r.get("session_id") or "")
         key = str(r.get("key") or "")
-        activity = _activity(sid)
+        activity = max(_activity(sid), busy.get(sid) or 0.0,
+                       busy.get(key) or 0.0)
         if (activity and now - activity >= idle_s
                 and key not in waiting and sid not in waiting):
             idle_now.add(key)
@@ -772,6 +921,9 @@ def poll(state: dict, *, idle_s: int = DEFAULT_IDLE_S) -> list[dict]:
                                "session_id": sid,
                                "idle_s": int(now - activity)})
     state["idle"] = sorted(idle_now)
+    live = {str(r.get("session_id") or "") for r in open_rows} | {
+        str(r.get("key") or "") for r in open_rows}
+    state["busy"] = {k: v for k, v in busy.items() if k in live}
 
     for ev in events:
         state["seq"] = int(state.get("seq") or 0) + 1

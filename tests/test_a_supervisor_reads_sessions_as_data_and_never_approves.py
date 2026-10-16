@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -452,21 +453,36 @@ def test_git_in_a_session_workspace_runs_no_program_it_configures(home):
 
 
 def test_a_file_replaced_under_the_same_inode_is_read_from_its_start(home):
-    """An inbox is unlinked by take() and created again by the next send;
-    the filesystem may hand the new file the old inode number."""
+    """A record file deleted and written again may get the old inode
+    number from the filesystem; its head tells it from the old one.
+    (Inbox messages are matched by id since 674e350b; this holds for the
+    turn records, read by position.)"""
     h, ws, _ = home
-    _open("wave-s27", "o" * 32, ws)
+    sid = "o" * 32
+    _open("wave-s27", sid, ws)
     state = _first()
-    session_messages.send("wave-s27", "first", from_key="x")
-    assert _kinds(ops_interface.poll(state)) == ["message"]
-    path = str(session_messages._inbox("wave-s27"))
-    session_messages.take("wave-s27")
-    session_messages.send("wave-s27", "second, which is longer than first",
-                          from_key="x")
-    state["pos"][path][0] = os.stat(path).st_ino      # the reuse
+    _turn(h, sid, tool_calls=1)
+    assert _kinds(ops_interface.poll(state)) == ["turn_ended"]
+    path = h / ".delfin" / "turn_metrics" / f"{sid}.jsonl"
+    path.unlink()
+    _turn(h, sid, tool_calls=2, model="a longer record than the first one")
+    state["pos"][str(path)][0] = os.stat(path).st_ino   # the reuse
     ev = ops_interface.poll(state)
-    assert [e.get("text") for e in ev if e["kind"] == "message"] == [
-        "second, which is longer than first"]
+    assert [e["tool_calls"] for e in ev if e["kind"] == "turn_ended"] == [2]
+
+
+def test_a_message_in_an_inbox_written_again_is_reported_once(home):
+    h, ws, _ = home
+    _open("wave-s27b", "o" * 31 + "p", ws)
+    state = _first()
+    session_messages.send("wave-s27b", "first", from_key="x")
+    session_messages.take("wave-s27b")
+    session_messages.send("wave-s27b", "second", from_key="x")
+    texts = [e.get("text") for e in ops_interface.poll(state)
+             if e["kind"] == "message"]
+    assert texts == ["", "second"]          # the taken one: receipt only
+    assert [e for e in ops_interface.poll(state)
+            if e["kind"] == "message"] == []
 
 
 def test_a_fifo_or_a_link_in_a_record_directory_is_not_read(home):
@@ -505,8 +521,9 @@ def test_a_file_of_another_account_is_not_read(home, monkeypatch):
     _turn(h, sid)
     monkeypatch.setattr(ops_interface, "_my_uid", lambda: os.getuid() + 1)
     assert "turn_ended" not in _kinds(ops_interface.poll(state))
-    row = ops_interface.sessions()[0]               # git stays out too
-    assert row["head"] == "" and row["dirty_files"] is None
+    assert ops_interface.sessions() == []           # presence records too
+    assert ops_interface._git(str(ws), "rev-parse", "HEAD") == ""
+    assert ops_interface._dirty_count(str(ws)) is None
 
 
 def test_the_cursor_is_private_and_written_without_following_a_link(home):
@@ -577,6 +594,7 @@ def test_events_print_as_ascii_json_lines_whatever_the_text(home, capsys):
     inbox.parent.mkdir(parents=True, exist_ok=True)
     with open(inbox, "a", encoding="utf-8") as fh:
         fh.write('{"id": "x1", "from": "a", "to": "wave-s32", '
+                 f'"sent_at": {time.time() + 1}, '
                  '"text": "lone \\ud800 surrogate \\u009b2J"}\n')
     from delfin.agent import cli
     args = cli.build_parser().parse_args(["ops", "events"])
@@ -634,3 +652,133 @@ def test_an_agent_session_reads_no_other_sessions_mail(home, monkeypatch):
     ev = [e for e in ops_interface.poll(state) if e["kind"] == "message"]
     assert len(ev) == 1 and ev[0]["to"] == "wave-s35"
     assert ev[0]["text"] == "" and ev[0]["text_withheld"] is True
+
+
+# --------------------------------------------------------------------------
+# shapes seen in the three-session acceptance run
+# --------------------------------------------------------------------------
+
+def test_a_commit_at_the_end_of_a_command_chain_is_reported(home):
+    h, ws, rooms = home
+    sid = "c" * 32
+    _open("probe-a", sid, ws)
+    state = {}
+    ops_interface.poll(state)
+    _audit(h, session_id=sid, cwd=str(ws), command=(
+        'git add util.py test_util.py && git commit -m "Add mean() with test"'))
+    _audit(h, session_id=sid, cwd=str(ws), command="echo git commit")
+    _audit(h, session_id=sid, cwd=str(ws), exit_code=1,
+           command="git status; git commit -m nothing")
+    commits = [e for e in ops_interface.poll(state) if e["kind"] == "commit"]
+    assert len(commits) == 1 and commits[0]["session"] == "probe-a"
+
+
+def test_a_message_taken_before_the_next_poll_is_still_reported(home):
+    h, ws, rooms = home
+    _open("probe-c", "d" * 32, ws)
+    state = {}
+    ops_interface.poll(state)
+    ops_interface.send("probe-c", "please add a docstring")
+    assert session_messages.take("probe-c")          # gone from the inbox
+    session_messages.send("operator", "done", from_key="probe-c")
+    msgs = [e for e in ops_interface.poll(state) if e["kind"] == "message"]
+    assert [(m["from"], m["to"]) for m in msgs] == [
+        ("operator", "probe-c"), ("probe-c", "operator")]
+    assert msgs[0]["taken_at"] and msgs[1]["text"] == "done"
+    assert [e for e in ops_interface.poll(state) if e["kind"] == "message"] == []
+
+
+def test_a_session_whose_heartbeat_pauses_is_not_reported_as_exited(home):
+    h, ws, rooms = home
+    _open("probe-b", "e" * 32, ws)
+    state = {}
+    ops_interface.poll(state)
+    rec_path = next((h / ".delfin" / "session_presence").glob("*.json"))
+    rec = json.loads(rec_path.read_text())
+    rec["updated_at"] = time.time() - 4 * 3600       # waits at a dialog
+    rec_path.write_text(json.dumps(rec))
+    assert _kinds(ops_interface.poll(state)) == []
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    rec["pid"] = gone.pid                            # the process has ended
+    rec_path.write_text(json.dumps(rec))
+    assert _kinds(ops_interface.poll(state)) == ["session_exited"]
+
+
+def test_a_closed_approval_names_its_session_and_tool(home):
+    h, ws, rooms = home
+    sid = "f" * 32
+    _open("probe-b", sid, ws)
+    state = {}
+    ops_interface.poll(state)
+    _request(rooms, "r9", sid, "rm notes.txt")
+    assert _kinds(ops_interface.poll(state)) == ["approval_open"]
+    (rooms / "r9.request.json").rename(rooms / "r9.answered.json")
+    closed = [e for e in ops_interface.poll(state) if e["kind"] == "approval_closed"]
+    assert closed and closed[0]["session"] == "probe-b" and closed[0]["tool"] == "bash"
+    # the cursor written by the earlier version (a plain id list) still loads
+    state["approvals"] = ["old"]
+    assert [e["id"] for e in ops_interface.poll(state)
+            if e["kind"] == "approval_closed"] == ["old"]
+
+
+def test_a_session_that_just_took_a_message_is_not_reported_idle(home):
+    h, ws, rooms = home
+    sid = "9" * 32
+    _open("probe-c", sid, ws)
+    _turn(h, sid, ts=time.time() - 3600)             # last turn an hour ago
+    state = {}
+    ops_interface.poll(state, idle_s=600)
+    ops_interface.send("probe-c", "next step")
+    session_messages.take("probe-c")                 # a new turn begins
+    assert "session_idle" not in _kinds(ops_interface.poll(state, idle_s=600))
+    _audit(h, session_id=sid, command="ls")          # and it works on
+    assert "session_idle" not in _kinds(ops_interface.poll(state, idle_s=600))
+
+
+def test_the_receipts_are_read_like_every_other_record(home):
+    """A FIFO or a link at the receipts sidecar neither blocks a poll nor
+    sends it elsewhere; a receipt with junk in it ends nothing."""
+    import threading
+    h, ws, _ = home
+    _open("probe-r", "8" * 32, ws)
+    state = _first()
+    receipts = session_messages._receipts_path()
+    receipts.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(receipts)
+    done = []
+    t = threading.Thread(target=lambda: done.append(ops_interface.poll(state)),
+                         daemon=True)
+    t.start()
+    t.join(10)
+    if t.is_alive():
+        os.close(os.open(receipts, os.O_WRONLY | os.O_NONBLOCK))
+        t.join(5)
+    assert done, "a poll blocked on a FIFO at the receipts sidecar"
+    receipts.unlink()
+    outside = h.parent / "outside-receipts.json"
+    outside.write_text(json.dumps({"m1": {"from": "a", "to": "probe-r",
+                                          "sent_at": time.time() + 5}}))
+    receipts.symlink_to(outside)
+    assert "message" not in _kinds(ops_interface.poll(state))
+    receipts.unlink()
+    receipts.write_text(json.dumps({"m2": {"from": "a", "to": "probe-r",
+                                           "sent_at": "x", "taken_at": "y"},
+                                    "m3": {"from": "b\x1b[2J", "to": "probe-r",
+                                           "sent_at": time.time() + 5,
+                                           "taken_at": "soon"}}))
+    ev = [e for e in ops_interface.poll(state) if e["kind"] == "message"]
+    assert [e["id"] for e in ev] == ["m3"]
+    assert "\x1b" not in ev[0]["from"] and ev[0]["taken_at"] is None
+
+
+def test_commit_detection_reads_a_bounded_command(home):
+    h, ws, _ = home
+    sid = "7" * 32
+    _open("probe-k", sid, ws)
+    state = _first()
+    _audit(h, session_id=sid, cwd=str(ws),
+           command="true " + "&& true " * 200000 + "&& git commit -m x")
+    t0 = time.monotonic()
+    assert "commit" not in _kinds(ops_interface.poll(state))
+    assert time.monotonic() - t0 < 5
