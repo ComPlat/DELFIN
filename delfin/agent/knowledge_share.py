@@ -75,6 +75,7 @@ from typing import Callable, Iterable, Optional
 
 from . import knowledge as kn
 from . import knowledge_private as kp
+from . import safe_git
 from . import repo_visibility as rv
 
 PAUSE_S = 2.0
@@ -463,9 +464,8 @@ def _project_names(les: kp.Lesson) -> list:
     root = kn.repo_root_of(ws)
     names = [root.name]
     try:
-        url = subprocess.run(["git", "-C", str(root), "remote", "get-url",
-                              "origin"], capture_output=True, text=True,
-                             timeout=5).stdout.strip()
+        url = safe_git.run(["remote", "get-url", "origin"], root,
+                           timeout=5).stdout.strip()
         if url:
             names.append(url.rstrip("/").rsplit("/", 1)[-1]
                          .removesuffix(".git"))
@@ -1028,9 +1028,8 @@ def start_admin(title: str, *, preview_text: str,
 # ---------------------------------------------------------------------------
 
 def _g(repo: Path, *args, env=None, input_text=None) -> str:
-    out = subprocess.run(["git", "-C", str(repo), *args],
-                         capture_output=True, text=True, env=env,
-                         input=input_text, timeout=60)
+    """*env*: variables added to safe_git's cleaned environment."""
+    out = safe_git.run(args, repo, env=env, input=input_text, timeout=60)
     if out.returncode != 0:
         raise ShareRefused(f"git {args[0]} failed: "
                            f"{(out.stderr or out.stdout).strip()[:300]}")
@@ -1086,7 +1085,7 @@ def prepare_branch(repo: Path | str, branch_hint: str, changes: dict,
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(text, encoding="utf-8")
             changes[f"{index_folder}/{kn.INDEX_FILE}"] = kn.render_index(mat)
-        env = dict(os.environ, GIT_INDEX_FILE=str(tmp / "index"))
+        env = {"GIT_INDEX_FILE": str(tmp / "index")}
         _g(repo, "read-tree", base, env=env)
         for rel, text in changes.items():
             if text is None:

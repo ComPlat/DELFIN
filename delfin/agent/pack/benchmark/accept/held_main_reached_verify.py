@@ -20,14 +20,15 @@ worktrees``, leaves a state these checks see.
 """
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 
 def _git(where: Path, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=str(where),
-                          capture_output=True, text=True)
+    # The checkouts are what the model left; safe_git runs no program
+    # their config names.
+    from delfin.agent import safe_git
+    proc = safe_git.run(args, where, timeout=60)
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 

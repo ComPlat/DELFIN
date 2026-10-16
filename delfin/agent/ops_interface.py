@@ -38,7 +38,7 @@ its own refusals -- such a message still reaches the session under the
 session-message header, below the user's authority. Every file read
 here is opened without following a link, non-blocking, and only when it
 is a regular file of this account; git runs only in a workspace of this
-account and never compares its working tree (``_GIT_SAFE``).
+account, through ``safe_git``, and never compares its working tree.
 """
 
 from __future__ import annotations
@@ -48,10 +48,11 @@ import json
 import os
 import re
 import stat
-import subprocess
 import time
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+from . import safe_git
 
 SCHEMA = "delfin.ops_event/1"
 OPERATOR_KEY = "operator"
@@ -360,14 +361,12 @@ def _last_turn(session_id: str) -> Optional[dict]:
 #: is writable by the session's commands, and this process runs outside
 #: every sandbox: ``git status`` ran the configured core.fsmonitor and
 #: clean filter (measured), and so did ``diff-index``/``diff-files``
-#: for an entry the index holds as racily clean. Only commands that
-#: never compare the working tree run here (rev-parse, log, ls-files
-#: without -m); the -c settings outrank the repository's own; no
-#: optional locks, so the supervisor never holds the session's
-#: index.lock; no GIT_* variable of this process redirects it.
-_GIT_SAFE = ("--no-pager", "--no-optional-locks",
-             "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-             "-c", "log.showSignature=false", "-c", "core.pager=cat")
+#: for an entry the index holds as racily clean. Two layers: only
+#: commands that never compare the working tree run here (rev-parse,
+#: log, ls-files without -m), and every one goes through ``safe_git``
+#: (fixed overrides, the repository's own program keys blanked, no
+#: optional locks so the supervisor never holds the session's
+#: index.lock, no GIT_* variable of this process redirecting it).
 
 
 def _workspace_ok(workspace: str) -> bool:
@@ -381,19 +380,11 @@ def _workspace_ok(workspace: str) -> bool:
         return False
 
 
-def _git_env() -> dict:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    return env
-
-
 def _git(workspace: str, *args: str) -> str:
     if not _workspace_ok(workspace):
         return ""
     try:
-        out = subprocess.run(["git", *_GIT_SAFE, "-C", workspace, *args],
-                             capture_output=True, text=True, timeout=10,
-                             env=_git_env(), stdin=subprocess.DEVNULL)
+        out = safe_git.run(args, workspace, timeout=10)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""
@@ -411,16 +402,14 @@ def _dirty_count(workspace: str) -> Optional[int]:
     Compared here from ``git ls-files --debug -z`` (which prints the
     index's stat data and compares nothing) rather than by git: every git
     command that compares the working tree may run the repository's clean
-    filter (see _GIT_SAFE). A file touched without a change counts, a
+    filter (see safe_git; this is the second layer). A file touched without a change counts, a
     change that kept size and mtime does not (git's racy case).
     """
     if not _workspace_ok(workspace):
         return None
     try:
-        out = subprocess.run(
-            ["git", *_GIT_SAFE, "-C", workspace, "ls-files", "--debug", "-z"],
-            capture_output=True, timeout=10, stdin=subprocess.DEVNULL,
-            env=_git_env())
+        out = safe_git.run(["ls-files", "--debug", "-z"], workspace,
+                           timeout=10, text=False)
     except Exception:
         return None
     if out.returncode != 0:

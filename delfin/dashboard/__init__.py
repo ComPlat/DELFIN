@@ -1115,17 +1115,11 @@ def _force_reload_delfin():
 
 
 def _run_git_capture(repo_dir, *args):
-    """Run read-only git in the given repo without taking optional index locks."""
-    env = os.environ.copy()
-    env.setdefault('GIT_OPTIONAL_LOCKS', '0')
-    return subprocess.run(
-        ['git', '-C', str(repo_dir), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-        env=env,
-    )
+    """Run read-only git in the given repo without taking optional index
+    locks, through safe_git (no program the repository names runs);
+    stderr is folded into stdout."""
+    from delfin.agent import safe_git
+    return safe_git.run(args, repo_dir, timeout=60, merge_stderr=True)
 
 
 def _git_dir(repo_dir):
@@ -1249,14 +1243,11 @@ def _git_output_mentions_index_lock(output):
 
 def _run_git_write(repo_dir, *args, retry_on_index_lock=True):
     """Run a repo-changing Git command with stale-index-lock recovery."""
+    from delfin.agent import safe_git
     _ensure_git_index_lock_clear(repo_dir, 'Git write')
-    result = subprocess.run(
-        ['git', '-C', str(repo_dir), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    # safe_git: no hook, filter or other program the checkout's own config
+    # names runs; the user's global credential helper still answers a pull.
+    result = safe_git.run(args, repo_dir, timeout=600, merge_stderr=True)
     if result.returncode == 0 or not retry_on_index_lock:
         return result
     if not _git_output_mentions_index_lock(result.stdout):

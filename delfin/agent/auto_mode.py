@@ -74,6 +74,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import auto_guard, loops
+from . import safe_git
 from .harness_rows import HarnessText
 
 __all__ = ["AutoController", "WorkItem", "DEFAULTS"]
@@ -141,7 +142,7 @@ class _Iteration:
 
 
 # ---------------------------------------------------------------------------
-# git, through subprocess, in the workspace only
+# git, through safe_git, in the workspace only
 # ---------------------------------------------------------------------------
 
 class _Git:
@@ -150,12 +151,7 @@ class _Git:
 
     def run(self, *args: str, timeout: float = 30,
             raw: bool = False) -> tuple[int, str]:
-        try:
-            r = subprocess.run(["git", "-C", str(self.ws), *args],
-                               capture_output=True, text=True, timeout=timeout,
-                               stdin=subprocess.DEVNULL)
-        except Exception as exc:
-            return 1, str(exc)
+        r = safe_git.run(args, self.ws, timeout=timeout)
         out = r.stdout if r.returncode == 0 else (r.stderr or r.stdout)
         return r.returncode, out if raw else out.strip()
 

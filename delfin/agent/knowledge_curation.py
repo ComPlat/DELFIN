@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-import subprocess
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -44,6 +43,7 @@ from typing import Callable, Optional
 
 from . import knowledge as kn
 from . import knowledge_share as ks
+from . import safe_git
 
 __all__ = ["lint", "dupes", "stats", "Plan", "start", "plan_merge",
            "plan_move", "plan_retire", "plan_rename", "plan_split",
@@ -112,11 +112,8 @@ _TICK_RE = re.compile(r"`([^`\n]{2,120})`")
 
 
 def _git_grep(repo: Path, pattern: str) -> Optional[bool]:
-    try:
-        out = subprocess.run(["git", "-C", str(repo), "grep", "-q", "-E",
-                              pattern], capture_output=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    out = safe_git.run(["grep", "-q", "-E", pattern], repo, timeout=30,
+                       text=False)
     if out.returncode in (0, 1):
         return out.returncode == 0
     return None
@@ -125,13 +122,9 @@ def _git_grep(repo: Path, pattern: str) -> Optional[bool]:
 def _tracked(repo: Path, ref: str) -> bool:
     """Whether some tracked file ends with ``ref`` (a partial path such as
     ``tools.py`` counts when one file is called that)."""
-    try:
-        out = subprocess.run(["git", "-C", str(repo), "ls-files", "--",
-                              f"*{ref}"], capture_output=True, text=True,
-                             timeout=30)
-        return bool(out.stdout.strip()) if out.returncode == 0 else True
-    except (OSError, subprocess.SubprocessError):
-        return True       # cannot tell: not reported as broken
+    out = safe_git.run(["ls-files", "--", f"*{ref}"], repo, timeout=30)
+    # A failure (no git, a timeout) cannot tell: not reported as broken.
+    return bool(out.stdout.strip()) if out.returncode == 0 else True
 
 
 def broken_refs(e: kn.Entry, repo_root: Path) -> list[BrokenRef]:

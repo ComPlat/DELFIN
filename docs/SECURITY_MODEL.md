@@ -26,7 +26,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Secrets | The model provider's key, stored credentials (the OS keyring, or `~/.delfin/credentials.json`), SSH, cloud and package-index credentials are not readable by the agent's commands and do not reach a transcript. |
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
-| Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; DELFIN's own git reads of the workspace run no program the repository names (`safe_git`). |
+| Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; git run by DELFIN's own code on the workspace (its reads, its own commits, the dashboard's Pull, Push and Undo) runs no program the repository names (`safe_git`). |
 | Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 | Shared lessons and memory | The lessons later sessions are shown (`delfin/agent/pack/knowledge`, a repository's `.delfin/knowledge`) and the memory stores under `~/.delfin` are protected paths for the agent's write tools; a note the model writes into memory may not carry an instruction channel. |
@@ -716,15 +716,27 @@ that path append-only for users.
   sandbox fails); on every host, `git_config_watch` compares `config` and
   the per-worktree config before and after each shell command and background job
   and undoes a new or changed program-naming entry, keeping other changes;
-  and DELFIN's own git reads of the workspace go through `safe_git`, which
+  and git run by DELFIN's own code goes through `safe_git`, which
   overrides every program-naming key the repository defines and runs git
   with no fsmonitor, hooks, pager, textconv or external diff. Remaining:
   on the Landlock row a hook or an `info/attributes` file can be written
   (Landlock cannot make a path read-only inside a writable root); the
   watch acts after the command, so a background job's entry exists until
   the job ends; and git run by the user in a terminal reads whatever the
-  config holds at that moment. Modules not yet on `safe_git` are listed in
-  `tests/test_delfins_own_git_reads_go_through_safe_git.py`.
+  config holds at that moment. DELFIN's git commands that do not go
+  through `safe_git` are listed with their reason in `ALLOWED` in
+  `tests/test_delfins_own_git_reads_go_through_safe_git.py`, which reads every module under `delfin/` and fails on a new git command
+  line outside `safe_git`: the agent's push to GitHub (`_run_github_push`,
+  hooks and fsmonitor off and its transport fixed on the command line, but
+  the checkout's other program keys are not blanked there), doctor's
+  `ls-remote` from an empty directory, the config watch's parse of a
+  temporary copy, and the benchmark setup scripts that build their own
+  fixture repository. A git command whose program name is a variable is not
+  seen by that guard. Cost in function: the dashboard's Pull and Push
+  answer to the user's global or system credential helper and ssh agent;
+  a hook, credential helper or ssh command set only in the checkout's own
+  config does not run for them. Cost of `safe_git`: one
+  `git config --list` per call (measured 3.4 ms plain, 7.2 ms through `safe_git` for `rev-parse HEAD`).
 - **Files reached through a symlink inside an allowed folder.** Any executor
   that walks a folder the gate admitted and opens what it finds can follow a
   link placed there to a file outside the roots, unless it checks each entry

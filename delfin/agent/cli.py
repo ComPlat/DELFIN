@@ -33,7 +33,6 @@ import argparse
 import datetime
 import json
 import os
-import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -2548,10 +2547,9 @@ def _cmd_bench_baseline(args, action: str) -> int:
         note = (getattr(args, "note", "") or "").strip()
         commit = ""
         try:
-            commit = subprocess.run(
-                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-                cwd=str(Path(__file__).resolve().parents[2]),
-            ).stdout.strip()
+            from . import safe_git
+            commit = safe_git.out(Path(__file__).resolve().parents[2],
+                                  "rev-parse", "HEAD").strip()
         except Exception:
             pass
         measured = datetime.date.fromtimestamp(

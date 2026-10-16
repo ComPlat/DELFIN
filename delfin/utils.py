@@ -76,21 +76,17 @@ def get_git_commit_info() -> Optional[str]:
         return env_commit
 
     try:
+        # The checkout may be a session's workspace: safe_git runs no
+        # program its config names (diff-index compares the work tree, so
+        # it would run a clean filter or fsmonitor).
+        from delfin.agent import safe_git
         delfin_dir = Path(__file__).parent.parent
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=delfin_dir,
-            capture_output=True,
-            text=True,
-            timeout=2
-        )
+        result = safe_git.run(["rev-parse", "--short", "HEAD"], delfin_dir,
+                              timeout=2)
         if result.returncode == 0:
             commit_hash = result.stdout.strip()
-            result = subprocess.run(
-                ["git", "diff-index", "--quiet", "HEAD", "--"],
-                cwd=delfin_dir,
-                timeout=2
-            )
+            result = safe_git.run(["diff-index", "--quiet", "HEAD", "--"],
+                                  delfin_dir, timeout=2)
             if result.returncode != 0:
                 commit_hash += "-dirty"
             return commit_hash

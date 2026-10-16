@@ -54,9 +54,10 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from pathlib import Path
 from typing import Iterable
+
+from . import safe_git
 
 #: Top-level definitions only: a method shares its name with the methods
 #: of other classes by design (``from_dict``, ``stream_message``).
@@ -120,10 +121,9 @@ def build_index(workspace: str | os.PathLike) -> list[tuple[str, str, int]]:
     root = Path(workspace)
     out: list[tuple[str, str, int]] = []
     try:
-        r = subprocess.run(
-            ["git", "-C", str(root), "grep", "-n", "-I", "-E", _DEF_GREP,
-             "--", *[f"*{e}" for e in _SOURCE_EXT]],
-            capture_output=True, text=True, timeout=20)
+        r = safe_git.run(
+            ["grep", "-n", "-I", "-E", _DEF_GREP,
+             "--", *[f"*{e}" for e in _SOURCE_EXT]], root, timeout=20)
         if r.returncode in (0, 1):
             for line in r.stdout.splitlines():
                 path, _, rest = line.partition(":")

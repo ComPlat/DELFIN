@@ -51,10 +51,11 @@ import json
 import os
 import re
 import socket
-import subprocess
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+from . import safe_git
 
 SCHEMA = "delfin.ops_status/1"
 
@@ -202,17 +203,9 @@ def _is_git(row: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 def _git(path: Path | str, *args: str, timeout: float = 10.0) -> Optional[str]:
-    """stdout of a READING git command, or None. Never takes a lock."""
-    env = dict(os.environ)
-    env["GIT_OPTIONAL_LOCKS"] = "0"
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        out = subprocess.run(
-            ["git", "--no-optional-locks", "-C", str(path), *args],
-            capture_output=True, text=True, timeout=timeout, env=env,
-            stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    """stdout of a READING git command, or None. Never takes a lock
+    (safe_git: --no-optional-locks, no prompt, no repository program)."""
+    out = safe_git.run(args, path, timeout=timeout)
     return out.stdout if out.returncode == 0 else None
 
 

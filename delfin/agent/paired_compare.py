@@ -232,11 +232,8 @@ def command_env(command: str, base: Mapping[str, str]) -> dict:
 
 
 def _git(path: str | os.PathLike, *args: str) -> str:
-    try:
-        r = subprocess.run(["git", "-C", str(path), *args],
-                           capture_output=True, text=True, timeout=20)
-    except Exception:
-        return ""
+    from . import safe_git
+    r = safe_git.run(args, path, timeout=20)
     return r.stdout.strip() if r.returncode == 0 else ""
 
 

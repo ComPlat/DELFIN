@@ -70,16 +70,13 @@ class Plan:
 
 
 def _read(repo, *args) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, check=False,
-                          env=_read_env())
+    from delfin.agent import safe_git
+    return safe_git.run(args, repo, timeout=60, merge_stderr=True)
 
 
-def _read_env() -> dict:
-    import os
-    env = os.environ.copy()
-    env.setdefault("GIT_OPTIONAL_LOCKS", "0")
-    return env
+def _write(repo, *args) -> subprocess.CompletedProcess:
+    from delfin.agent import safe_git
+    return safe_git.run(args, repo, timeout=120, merge_stderr=True)
 
 
 def plan(repo, run: Optional[Callable] = None) -> tuple[Optional[Plan], str]:
@@ -154,9 +151,7 @@ def execute(repo, p: Plan, *, read: Optional[Callable] = None,
     CompletedProcess with the output in ``stdout``. Returns ``(ok, text,
     details)``."""
     read = read or _read
-    write = write or (lambda r, *a: subprocess.run(
-        ["git", "-C", str(r), *a], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, check=False))
+    write = write or _write
     now = read(repo, "rev-parse", "HEAD").stdout.strip()
     if now != p.head:
         return False, "Not rolled back: the checkout moved since you were asked.", [
