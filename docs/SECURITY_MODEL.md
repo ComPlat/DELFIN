@@ -434,11 +434,13 @@ row applies.
 ## Where a decision is recorded
 
 Every refusal and every routed approval is recorded as a security event
-(`security_events`): an in-memory ring buffer for the dashboard's containment
-panel, and for blocked events also the durable attention inbox. The kinds
-most relevant to this model:
+(`security_events`): an in-memory ring buffer of 200 events for the
+dashboard's containment panel (events it pushes out are counted, and the
+panel says how many), and for blocked events also the durable attention
+inbox. The kinds most relevant to this model:
 
-- isolation: `isolation`, `isolation_missing`, `no_sandbox`, `no_sandbox_mcp`
+- isolation: `isolation`, `isolation_missing`, `no_sandbox`, `no_sandbox_mcp`,
+  `unisolated_refused`
 - the gate: `deny_pattern`, `secret_path`, `self_mod`, `outside_ws`,
   `denied_path_via_bash`, `git_config_program`, `script_dir_unknown`,
   `caged_unasked`
@@ -446,15 +448,30 @@ most relevant to this model:
   `permission_rule_allow`
 - the managed policy: `managed_policy_deny`, `managed_policy_ask`
 - egress: `egress`, `egress_blocked`, `egress_asked`, `egress_upload`,
-  `network`, `network_missing`
+  `egress_upload_refused`, `network`, `network_missing`
 - approvals: `approval_self_answer`, `approval_from_outside`,
   `approval_code_refused`, `approval_timeout`
 - the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`,
   `classifier_held`, `classifier_down`, `classifier_up`
 - credentials: `key_exported`
+- the audit log: `audit_write_failed`, `audit_chain_broken`
 
 Code-modifying tool calls are also appended to the audit log (`audit_log`,
-`~/.delfin/audit.log`).
+`~/.delfin/audit.log`): 0600 in a 0700 directory, opened with `O_APPEND`
+and `O_NOFOLLOW` (a link or a foreign file in its place is not written),
+rotated weekly. It is a hash chain: every record carries a field prev, the
+SHA-256 of the line before it, and a head file (`audit.log.head`) holds
+the last line's hash and the log's size. `delfin-agent audit verify`
+(`audit_log.verify`) reports an edited, removed or inserted record, a cut
+tail and a torn line, for the active log and every rotated week; records
+from before the chain are counted as legacy. A write that fails records one
+blocked `audit_write_failed` event per process; a write that finds the log
+changed since the last one marks its record (field chain_break) and records
+`audit_chain_broken`. The chain is not keyed: a same-account process that
+rewrites the whole chain and its head consistently is not detected (see
+"Against whom"); the administrator's copy (managed policy `audit_log`) is
+the record such a process cannot rewrite where the administrator has made
+that path append-only for users.
 
 ## Residual risks
 

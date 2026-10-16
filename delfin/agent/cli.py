@@ -3868,6 +3868,23 @@ def _doctor_repair(results: list) -> int:
     return 1 if failed else 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """``delfin-agent audit verify``: 0 when every log checked is intact,
+    1 when one is not, 2 without a subcommand. Reads only."""
+    from . import audit_log as _al
+    if getattr(args, "audit_action", "") != "verify":
+        print("usage: delfin-agent audit verify [--log PATH] [--json]",
+              file=sys.stderr)
+        return 2
+    log = str(getattr(args, "log", "") or "")
+    reports = [_al.verify(Path(log).expanduser())] if log else _al.verify_all()
+    if getattr(args, "json", False):
+        print(json.dumps(reports, indent=2))
+    else:
+        print(_al.format_verify(reports))
+    return 0 if all(r["ok"] for r in reports) else 1
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """One-surface prerequisite report: docs index, credentials,
     binaries, Python deps, MCP servers, scheduler, attention inbox,
@@ -5140,6 +5157,21 @@ def build_parser() -> argparse.ArgumentParser:
                              "step that fixes a WARN/FAIL; refuses when stdin "
                              "is not a terminal")
     doctor.set_defaults(func=cmd_doctor)
+
+    # audit verify -- the audit log's hash chain (audit_log.verify)
+    audit_p = sub.add_parser(
+        "audit", help="Check the audit log for edited, removed or cut-off "
+                      "records")
+    audit_sub = audit_p.add_subparsers(dest="audit_action")
+    audit_verify = audit_sub.add_parser(
+        "verify", help="Verify the hash chain of the audit log and its "
+                       "rotated weeks; exit 1 when one is not intact")
+    audit_verify.add_argument("--log", default="",
+                              help="One log file (default: ~/.delfin/"
+                                   "audit.log and every rotated week)")
+    audit_verify.add_argument("--json", action="store_true",
+                              help="Emit the reports as JSON")
+    audit_p.set_defaults(func=cmd_audit)
 
     # capabilities / gate explain -- the boundary, read before a session
     # starts. Both read only; see delfin/agent/boundaries.py.

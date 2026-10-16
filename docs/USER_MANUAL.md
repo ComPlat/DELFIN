@@ -2002,7 +2002,10 @@ delfin-agent sessions            # earlier sessions: id, age, model, task
 delfin-agent where               # which node the dashboard runs on, and how to get back in
 delfin-agent jobs                # watched cluster jobs
 delfin-agent ops status          # checkouts, dashboard servers, session locks, leftovers; changes nothing
+delfin-agent audit verify        # is the audit log intact (no edited, removed or cut-off record); exit 1 if not
 ```
+
+`audit verify` checks `~/.delfin/audit.log` and every rotated week (`--log PATH` for one file, `--json` for the reports). Each record carries the hash of the one before it and a head file holds the last one, so an edited, removed or inserted record, a cut tail and a torn line are named with their line number; records written before the chain existed are counted as legacy. If the log cannot be written at all (a full disk, a link in its place), the containment panel and the attention inbox say so once.
 
 `ops status` is the first thing to run when the dashboard or the agent behaves oddly around git or sessions (a branch switch that fails, a save that is refused, a git command that reports a lock). It lists:
 
