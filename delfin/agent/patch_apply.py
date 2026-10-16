@@ -26,10 +26,11 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from . import safe_git
 
 
 _FILE_HEADER_RE = re.compile(r"^(?:diff --git a/(\S+) b/(\S+)|"
@@ -43,31 +44,22 @@ def _git_available() -> bool:
 
 
 def _is_git_repo(path: Path) -> bool:
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            cwd=str(path), capture_output=True, text=True, timeout=5,
-        )
-        return out.returncode == 0
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return False
+    return safe_git.run(["rev-parse", "--git-dir"], path,
+                        timeout=5).returncode == 0
 
 
 def _git_apply(
     workspace: Path, diff_text: str, *, check_only: bool,
 ) -> dict[str, Any]:
     """Use `git apply` to validate + apply."""
-    args = ["git", "apply", "--whitespace=nowarn"]
+    args = ["apply", "--whitespace=nowarn"]
     if check_only:
         args.append("--check")
-    try:
-        proc = subprocess.run(
-            args, cwd=str(workspace),
-            input=diff_text, text=True,
-            capture_output=True, timeout=30,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError) as exc:
-        return {"status": "apply_failed", "error": str(exc), "backend": "git"}
+    proc = safe_git.run(args, workspace, input=diff_text, timeout=30)
+    if proc.returncode in (safe_git.MISSING, safe_git.TIMED_OUT,
+                           safe_git.NOT_STARTED):
+        return {"status": "apply_failed", "error": proc.stderr,
+                "backend": "git"}
     if proc.returncode != 0:
         return {
             "status": "check_failed" if check_only else "apply_failed",

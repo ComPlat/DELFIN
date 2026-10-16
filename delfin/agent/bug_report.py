@@ -119,10 +119,9 @@ def _git_head(repo_dir: str | None) -> str:
     if not repo_dir:
         return ""
     try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-        )
+        from . import safe_git
+        out = safe_git.run(["rev-parse", "--short", "HEAD"], repo_dir,
+                           timeout=5)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""

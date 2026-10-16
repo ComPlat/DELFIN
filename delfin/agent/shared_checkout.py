@@ -34,20 +34,14 @@ import subprocess
 from pathlib import Path
 from typing import Iterable, Optional
 
+from . import safe_git
+
 ENV = "DELFIN_SHARED_CHECKOUT"
 _SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
 
 
 def _git(cwd, *args: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env.setdefault("GIT_OPTIONAL_LOCKS", "0")
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        return subprocess.run(["git", "-C", str(cwd), *args],
-                              capture_output=True, text=True, timeout=15,
-                              env=env, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(args, 1, "", str(exc))
+    return safe_git.run(args, cwd, timeout=15)
 
 
 def _toplevel(path) -> Optional[Path]:

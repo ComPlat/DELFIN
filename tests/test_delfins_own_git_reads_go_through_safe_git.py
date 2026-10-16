@@ -47,7 +47,10 @@ ALLOWED = {
     "delfin/agent/doctor.py:_check_push":
         "ls-remote from an empty temporary directory with discovery stopped "
         "above it (no repository configuration applies) and in its own "
-        "session so ssh cannot prompt on the terminal",
+        "session so ssh cannot prompt on the terminal; and 'config --get "
+        "credential.helper', which reads configuration and runs nothing -- "
+        "through safe_git the override would hide the checkout's own "
+        "helper, the one this row reports",
     "delfin/agent/pack/benchmark/setup/a_checkout_whose_main_is_held.py:git":
         "benchmark setup: builds the fixture repository it creates, before "
         "any model command runs in it",

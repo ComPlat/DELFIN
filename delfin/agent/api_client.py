@@ -25,6 +25,7 @@ from typing import Any, Callable, Generator, Optional
 from . import german as _german
 from . import inline_payload as _inline_payload
 from . import pricing
+from . import safe_git
 from . import text_files as _text_files
 from . import edit_engine as _edit_engine
 from . import tool_args as _tool_args
@@ -2492,13 +2493,10 @@ def _uncommitted_note(workspace) -> str:
     A line, not a demand: it says what is there and stops. Never raises,
     and says nothing outside a git checkout.
     """
-    import subprocess as _sp
     if not workspace:
         return ""
     try:
-        out = _sp.run(["git", "status", "--porcelain"],
-                      cwd=str(workspace), capture_output=True,
-                      text=True, timeout=5)
+        out = safe_git.run(["status", "--porcelain"], workspace, timeout=5)
         if out.returncode != 0:
             return ""                     # not a checkout: nothing to say
         changed = [ln for ln in out.stdout.splitlines()
@@ -4318,16 +4316,6 @@ def _pr_merge_refusal(cmd: str, where: Any, keys: list,
     return None
 
 
-def _git_out(cwd: Any, *args: str) -> str:
-    """stdout of a read-only git command in ``cwd``; "" when it fails."""
-    try:
-        r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
-                           text=True, timeout=5)
-    except Exception:
-        return ""
-    return r.stdout.strip() if r.returncode == 0 else ""
-
-
 def _default_branches(cwd: Any) -> set[str]:
     """Branch names that count as the default branch for ``cwd``."""
     names = {"main", "master"}
@@ -5273,10 +5261,7 @@ def _own_scratch_target(perms: Any, target: str, cwd: Path, journal: dict,
             return False
         if not os.path.lexists(str(full)):
             return str(full) in made_here
-        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        tracked = subprocess.run(
-            ["git", "-C", str(ws), "ls-files", "--", str(full)],
-            capture_output=True, text=True, timeout=5, env=env)
+        tracked = safe_git.run(["ls-files", "--", str(full)], ws, timeout=5)
         if tracked.returncode == 0 and tracked.stdout.strip():
             return False
 
@@ -5396,11 +5381,8 @@ def _session_owned_source(perms: Any, resolved: Path) -> bool:
         from . import change_journal as _cj
         if _cj.sha256_file_bytes(Path(resolved)) != last.get("post_hash"):
             return False
-        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        blob = subprocess.run(
-            ["git", "-C", str(Path(resolved).parent), "show",
-             f"HEAD:./{Path(resolved).name}"],
-            capture_output=True, timeout=5, env=env)
+        blob = safe_git.run(["show", f"HEAD:./{Path(resolved).name}"],
+                            Path(resolved).parent, timeout=5, text=False)
         if blob.returncode != 0:
             return False
         return _cj.sha256_bytes(blob.stdout) == first.get("pre_hash")
@@ -5775,11 +5757,11 @@ _GITHUB_PUSH_SSH = ("ssh -o ControlMaster=no -o ControlPath=none "
 
 
 def _git_out(cwd, *args: str) -> Optional[str]:
+    """stdout of a read-only git command in ``cwd``; None when it fails.
+    (An earlier definition with a 5 s timeout returning "" sat further up
+    the module and was shadowed by this one at import.)"""
     try:
-        r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
-                           text=True, timeout=15,
-                           env={k: v for k, v in os.environ.items()
-                                if not k.startswith("GIT_")})
+        r = safe_git.run(args, cwd, timeout=15)
     except Exception:
         return None
     return r.stdout.strip() if r.returncode == 0 else None
@@ -5871,14 +5853,10 @@ def _checkout_configures_transport(run_cwd) -> bool:
     read. The user's global and system configuration are theirs and are
     not looked at."""
     for scope in ("--local", "--worktree"):
-        try:
-            r = subprocess.run(
-                ["git", "config", scope, "--name-only", "--get-regexp",
-                 _TRANSPORT_CONFIG_RE], cwd=str(run_cwd),
-                capture_output=True, text=True, timeout=15,
-                env={k: v for k, v in os.environ.items()
-                     if not k.startswith("GIT_")})
-        except Exception:
+        r = safe_git.run(["config", scope, "--name-only", "--get-regexp",
+                          _TRANSPORT_CONFIG_RE], run_cwd, timeout=15)
+        if r.returncode in (safe_git.TIMED_OUT, safe_git.NOT_STARTED,
+                            safe_git.MISSING, safe_git.REFUSED):
             return True
         if r.returncode == 0 and r.stdout.strip():
             return True
@@ -19409,18 +19387,13 @@ class _DocToolExecutor:
         answer is False, which means "scan it".
         """
         try:
-            import subprocess as _sp
-
             folder = str(path.parent)
-            tracked = _sp.run(
-                ["git", "-C", folder, "ls-files", "--error-unmatch", "--",
-                 str(path)],
-                capture_output=True, text=True, timeout=5)
+            tracked = safe_git.run(["ls-files", "--error-unmatch", "--",
+                                    str(path)], folder, timeout=5)
             if tracked.returncode != 0:
                 return False
-            dirty = _sp.run(
-                ["git", "-C", folder, "status", "--porcelain", "--", str(path)],
-                capture_output=True, text=True, timeout=5)
+            dirty = safe_git.run(["status", "--porcelain", "--", str(path)],
+                                 folder, timeout=5)
             if dirty.returncode != 0:
                 return False
             return not dirty.stdout.strip()
@@ -25224,19 +25197,14 @@ class _DocToolExecutor:
             return json.dumps({"error": refusal})
         # Reconstruct minimal info from `git -C wt_path status` + branch
         try:
-            head = subprocess.check_output(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(wt_path), text=True,
-            ).strip()
-            base = subprocess.check_output(
-                ["git", "merge-base", head, head],   # current HEAD as a stand-in
-                cwd=str(wt_path), text=True,
-            ).strip()
+            head = safe_git.check_output(
+                ["rev-parse", "--abbrev-ref", "HEAD"], wt_path).strip()
+            base = safe_git.check_output(
+                ["merge-base", head, head],   # current HEAD as a stand-in
+                wt_path).strip()
             # Find the source repo via `git worktree list`
-            source = subprocess.check_output(
-                ["git", "worktree", "list", "--porcelain"],
-                cwd=str(wt_path), text=True,
-            )
+            source = safe_git.check_output(
+                ["worktree", "list", "--porcelain"], wt_path)
         except subprocess.CalledProcessError as exc:
             return json.dumps({"error": f"git query failed: {exc}"})
         except FileNotFoundError:
@@ -25289,15 +25257,11 @@ class _DocToolExecutor:
         if refusal is not None:
             return json.dumps({"error": refusal})
         try:
-            head = subprocess.check_output(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(wt_path), text=True,
-            ).strip()
+            head = safe_git.check_output(
+                ["rev-parse", "--abbrev-ref", "HEAD"], wt_path).strip()
             # The source repo is the FIRST entry of `git worktree list`.
-            listing = subprocess.check_output(
-                ["git", "worktree", "list", "--porcelain"],
-                cwd=str(wt_path), text=True,
-            )
+            listing = safe_git.check_output(
+                ["worktree", "list", "--porcelain"], wt_path)
         except subprocess.CalledProcessError as exc:
             return json.dumps({"error": f"git query failed: {exc}"})
         except FileNotFoundError:
@@ -25320,14 +25284,10 @@ class _DocToolExecutor:
         base = base_arg
         if not base:
             try:
-                target_head = subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"],
-                    cwd=str(target), text=True,
-                ).strip()
-                base = subprocess.check_output(
-                    ["git", "merge-base", "HEAD", target_head],
-                    cwd=str(wt_path), text=True,
-                ).strip()
+                target_head = safe_git.check_output(
+                    ["rev-parse", "HEAD"], target).strip()
+                base = safe_git.check_output(
+                    ["merge-base", "HEAD", target_head], wt_path).strip()
             except (subprocess.CalledProcessError, FileNotFoundError):
                 base = "HEAD"  # fall back to dirty-only changes vs current HEAD
         info = _wt.WorktreeInfo(
@@ -26953,10 +26913,9 @@ def _git_metadata_roots(workspace) -> list[str]:
         return _GIT_ROOTS_CACHE[key]
     roots: list[str] = []
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute",
-             "--git-dir", "--git-common-dir"],
-            cwd=str(workspace), capture_output=True, text=True, timeout=5)
+        out = safe_git.run(["rev-parse", "--path-format=absolute",
+                            "--git-dir", "--git-common-dir"], workspace,
+                           timeout=5)
         if out.returncode == 0:
             for line in out.stdout.split("\n"):
                 line = line.strip()

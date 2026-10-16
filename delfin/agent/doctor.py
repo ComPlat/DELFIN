@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from . import safe_git
+
 PASS = "PASS"
 WARN = "WARN"
 FAIL = "FAIL"
@@ -428,13 +430,8 @@ def _check_git_tooling(ctx: dict) -> list[dict]:
         rows.append(_row("git installed", PASS, git))
         missing = []
         for field in ("user.name", "user.email"):
-            try:
-                done = subprocess.run(["git", "config", "--get", field],
-                                      capture_output=True, text=True,
-                                      timeout=10, cwd=cwd)
-                if done.returncode != 0 or not (done.stdout or "").strip():
-                    missing.append(field)
-            except (OSError, subprocess.SubprocessError):
+            done = safe_git.run(["config", "--get", field], cwd, timeout=10)
+            if done.returncode != 0 or not (done.stdout or "").strip():
                 missing.append(field)
         if missing:
             rows.append(_row(
@@ -499,18 +496,16 @@ def _remote_url(workspace: str, remote: str) -> str | None:
     against ``workspace`` because the probe runs elsewhere. None: the
     word is neither a configured remote nor a URL or path.
     """
-    try:
-        done = subprocess.run(["git", "remote", "get-url", "--push", remote],
-                              capture_output=True, text=True, timeout=10,
-                              cwd=workspace, stdin=subprocess.DEVNULL)
-        if done.returncode == 0 and done.stdout.strip():
-            remote = done.stdout.strip()
-        elif not any(c in remote for c in ":/\\") and remote != ".":
-            # A bare word that is not a configured remote: git would fail
-            # with "does not appear to be a git repository".
-            return None
-    except (OSError, subprocess.SubprocessError):
-        pass
+    done = safe_git.run(["remote", "get-url", "--push", remote], workspace,
+                        timeout=10)
+    if done.returncode == 0 and done.stdout.strip():
+        remote = done.stdout.strip()
+    elif (done.returncode not in (safe_git.MISSING, safe_git.TIMED_OUT,
+                                  safe_git.NOT_STARTED)
+          and not any(c in remote for c in ":/\\") and remote != "."):
+        # A bare word that is not a configured remote: git would fail
+        # with "does not appear to be a git repository".
+        return None
     if "://" in remote:
         return remote
     colon, slash = remote.find(":"), remote.find("/")

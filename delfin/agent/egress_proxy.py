@@ -55,7 +55,6 @@ import re
 import secrets
 import select
 import socket
-import subprocess
 import tempfile
 import threading
 import weakref
@@ -171,8 +170,8 @@ def git_remotes(workspace) -> list[str]:
     if key not in _GIT_REMOTES:
         out: list[str] = []
         try:
-            done = subprocess.run(["git", "-C", key, "remote", "-v"],
-                                  capture_output=True, text=True, timeout=5)
+            from . import safe_git
+            done = safe_git.run(["remote", "-v"], key, timeout=5)
             if done.returncode == 0:
                 for line in done.stdout.splitlines():
                     parts = line.split()

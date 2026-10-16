@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-import subprocess
 import threading
 import time as _time
 from pathlib import Path
@@ -9583,11 +9582,8 @@ class AgentEngine:
     def git_diff_stat(self) -> str:
         """Run ``git diff --stat`` in the repo and return the output."""
         try:
-            result = subprocess.run(
-                ["git", "diff", "--stat"],
-                cwd=str(self.repo_dir),
-                capture_output=True, text=True, timeout=10,
-            )
+            from . import safe_git
+            result = safe_git.run(["diff", "--stat"], self.repo_dir, timeout=10)
             return result.stdout.strip()
         except Exception:
             return ""

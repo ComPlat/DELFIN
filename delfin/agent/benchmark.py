@@ -26,7 +26,6 @@ import json
 import math
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import time
@@ -36,6 +35,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from . import pricing as _pricing
+from . import safe_git
 from . import verify_commands as _vc
 
 try:
@@ -2477,12 +2477,10 @@ def _git_head(package_dir: Path) -> dict[str, Any]:
     out: dict[str, Any] = {"head": "", "dirty": None}
     try:
         top = package_dir.parents[1]
-        r = subprocess.run(["git", "-C", str(top), "rev-parse", "HEAD"],
-                           capture_output=True, text=True, timeout=10)
+        r = safe_git.run(["rev-parse", "HEAD"], top, timeout=10)
         out["head"] = r.stdout.strip() if r.returncode == 0 else ""
-        r = subprocess.run(["git", "-C", str(top), "status", "--porcelain",
-                            "--untracked-files=no", "--", "delfin"],
-                           capture_output=True, text=True, timeout=20)
+        r = safe_git.run(["status", "--porcelain", "--untracked-files=no",
+                          "--", "delfin"], top, timeout=20)
         if r.returncode == 0:
             out["dirty"] = bool(r.stdout.strip())
     except Exception:
@@ -2587,8 +2585,7 @@ def run_provenance(*, model: str = "") -> dict[str, Any]:
         dirty_hash = ""
         try:
             import hashlib
-            d = subprocess.run(["git", "-C", top, "diff", "HEAD"],
-                               capture_output=True, text=True, timeout=20)
+            d = safe_git.run(["diff", "HEAD"], top, timeout=20)
             if d.returncode == 0 and d.stdout:
                 dirty_hash = hashlib.sha256(d.stdout.encode()).hexdigest()[:20]
         except Exception:
@@ -3186,17 +3183,9 @@ def find_profile_commits_between(
         new_iso = datetime.fromtimestamp(new_ts + 1.0).isoformat()
     except (OSError, ValueError, OverflowError):
         return []
-    try:
-        out = subprocess.run(
-            [
-                "git", "log", "--oneline",
-                f"--since={old_iso}", f"--until={new_iso}",
-                "--", profile_file,
-            ],
-            capture_output=True, text=True, timeout=timeout_s, cwd=cwd,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return []
+    out = safe_git.run(
+        ["log", "--oneline", f"--since={old_iso}", f"--until={new_iso}",
+         "--", profile_file], cwd, timeout=timeout_s)
     if out.returncode != 0:
         return []
     return [line.strip() for line in out.stdout.splitlines() if line.strip()]

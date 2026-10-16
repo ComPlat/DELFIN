@@ -86,6 +86,7 @@ from typing import Callable, Optional
 
 from delfin.agent import proc_identity
 from delfin.agent import process_budget
+from delfin.agent import safe_git
 from delfin.agent import untrusted
 
 
@@ -1862,8 +1863,7 @@ def _checkout_top(cwd: str) -> str:
         return _CHECKOUT_TOPS[cwd]
     top = ""
     try:
-        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-                           capture_output=True, text=True, timeout=5)
+        r = safe_git.run(["rev-parse", "--show-toplevel"], cwd, timeout=5)
         if r.returncode == 0:
             top = os.path.realpath(r.stdout.strip())
     except Exception:

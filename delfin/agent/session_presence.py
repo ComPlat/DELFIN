@@ -16,7 +16,6 @@ import json
 import os
 import re
 import socket
-import subprocess
 import time
 from pathlib import Path
 
@@ -34,8 +33,8 @@ _last_written: dict[str, tuple[str, float]] = {}
 
 def _git(workspace: str, *args: str) -> str:
     try:
-        out = subprocess.run(["git", "-C", workspace, *args],
-                             capture_output=True, text=True, timeout=5)
+        from . import safe_git
+        out = safe_git.run(args, workspace, timeout=5)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""
