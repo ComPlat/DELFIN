@@ -372,6 +372,10 @@ def test_the_configured_hosts_and_direct_endpoints(monkeypatch, tmp_path):
         "ssh://git@other.example.test:2222/team/repo.git"]})
     monkeypatch.setattr(EP, "slurm_controllers", lambda: ["10.0.0.1:6817"])
     monkeypatch.setattr(EP, "_resolve", lambda host, port: [f"{host}:{port}"])
+    # An SSH remote gets a direct route only for a host a setting names
+    # (tests/test_a_workspace_remote_does_not_widen_the_egress.py).
+    monkeypatch.setattr(EP, "_settings", lambda: {"allowed_domains": [
+        "ssh.example.test", "other.example.test"]})
     for var in [v for v in os.environ if v.upper().endswith("LICENSE_FILE")]:
         monkeypatch.delenv(var)
     monkeypatch.setenv("LM_LICENSE_FILE", "27000@lic.example.test:/opt/lic.dat")

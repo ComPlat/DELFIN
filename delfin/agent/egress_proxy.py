@@ -74,7 +74,6 @@ import re
 import secrets
 import select
 import socket
-import subprocess
 import tempfile
 import threading
 import weakref
@@ -194,15 +193,19 @@ _GIT_REMOTES: dict = {}
 
 
 def git_remotes(workspace) -> list[str]:
-    """The workspace repository's remote URLs (fetch and push). Cached."""
+    """The workspace repository's remote URLs (fetch and push). Cached per
+    process and workspace: the first network decision of a session takes
+    the snapshot, so a remote a command adds later widens nothing. Read
+    with ``safe_git`` (the repository is the workspace's; no program it
+    names runs)."""
     key = str(workspace or "")
     if not key:
         return []
     if key not in _GIT_REMOTES:
         out: list[str] = []
         try:
-            done = subprocess.run(["git", "-C", key, "remote", "-v"],
-                                  capture_output=True, text=True, timeout=5)
+            from . import safe_git
+            done = safe_git.run(["remote", "-v"], key, timeout=5)
             if done.returncode == 0:
                 for line in done.stdout.splitlines():
                     parts = line.split()
@@ -217,12 +220,21 @@ def git_remotes(workspace) -> list[str]:
 def configured_domains(workspace=None) -> list[str]:
     """Hosts the session is configured to use beyond the defaults: the
     ``allowed_domains`` setting, the model endpoints, the pip/conda indexes
-    and the workspace's HTTP(S) git remotes."""
+    and the workspace's HTTPS git remotes.
+
+    A remote is the workspace's to name (a cloned or unpacked repository
+    names any), so it widens only reads: its host passes the proxy as a
+    known host, where an upload is judged as for every known host (asked,
+    or with nobody to ask refused unless ``upload_domains`` names it). An
+    ``http://`` remote names no host here: a plain-HTTP POST to a known
+    host passes in an attended session, and a remote must not grant that.
+    A remote host reaches public addresses only (``_connect_public`` is
+    asked without the workspace)."""
     out = [str(d) for d in (_settings().get("allowed_domains") or [])]
     out += sorted(_ENDPOINT_HOSTS)
     out += [h for h in (_host_of(u) for u in _index_urls()) if h]
     out += [h for h in (_host_of(u) for u in git_remotes(workspace)
-                        if u.startswith(("http://", "https://"))) if h]
+                        if u.startswith("https://")) if h]
     return out
 
 
@@ -249,15 +261,40 @@ def direct_tcp_endpoints(workspace=None) -> list[str]:
 _DIRECT_TCP: dict = {}
 
 
+#: SSH remotes whose host no setting names, already said in this process.
+_SSH_REMOTE_NOTED: set = set()
+
+
+def _ssh_route_allowed(host: str, url: str) -> bool:
+    """Whether an SSH remote's host may get a direct TCP route: named by
+    the default allow-list or ``agent.sandbox_network.allowed_domains``,
+    which the workspace does not write. A direct route bypasses the proxy
+    (no upload limit, no question), so a host the repository alone names
+    gets none; that is recorded once."""
+    named = list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
+        _settings().get("allowed_domains"))
+    if domain_allowed(host, named):
+        return True
+    if host not in _SSH_REMOTE_NOTED:
+        _SSH_REMOTE_NOTED.add(host)
+        _note_event("network", f"the workspace's git remote {url[:80]} names "
+                    f"{host}, which no setting names: no direct TCP route "
+                    "for it (add it to agent.sandbox_network.allowed_domains "
+                    "to reach it over SSH from a command)", False)
+    return False
+
+
 def _direct_tcp_endpoints(workspace) -> list[str]:
     out = list(slurm_controllers())
     for url in git_remotes(workspace):
         m = re.match(r"^ssh://(?:[^@/]+@)?(\[[^\]]+\]|[^:/]+)(?::(\d+))?/", url)
         if m:
-            out += _resolve(m.group(1).strip("[]"), int(m.group(2) or 22))
+            host = m.group(1).strip("[]")
+            if _ssh_route_allowed(host, url):
+                out += _resolve(host, int(m.group(2) or 22))
             continue
         m = re.match(r"^(?:[^@/:]+@)?([A-Za-z0-9.\-]+):(?!//)", url)
-        if m and "://" not in url:
+        if m and "://" not in url and _ssh_route_allowed(m.group(1), url):
             out += _resolve(m.group(1), 22)
     for var, value in os.environ.items():
         if not var.upper().endswith("LICENSE_FILE"):
@@ -403,9 +440,10 @@ class EgressProxy:
     @staticmethod
     def _connect_public(host: str, port: int, timeout: float) -> socket.socket:
         """Public addresses only -- except for a host the user configured
-        (a model endpoint, an index, a remote, ``allowed_domains``), which
-        may be on the private network. Link-local and the cloud metadata
-        addresses never."""
+        (a model endpoint, an index, ``allowed_domains``), which may be on
+        the private network; a workspace's git remote is not asked here
+        (no workspace is passed), so it reaches public addresses only.
+        Link-local and the cloud metadata addresses never."""
         from .web_tools import _checked_create_connection
         if not domain_allowed(host, configured_domains()):
             return _checked_create_connection((host, port), timeout=timeout)
