@@ -75,9 +75,12 @@ class TestLsPreview:
         # inherited from the test runner's shell would mask the
         # get_terminal_size branch this case is about.
         monkeypatch.delenv("COLUMNS", raising=False)
-        monkeypatch.setattr("shutil.get_terminal_size",
-                            lambda: os.terminal_size((60, 24)))
-        rc, out = _ls(capsys)
+        # Only around the command: shutil is pytest's too, and its
+        # terminal writer (-v) calls get_terminal_size(fallback=...).
+        with monkeypatch.context() as narrow:
+            narrow.setattr("shutil.get_terminal_size",
+                           lambda fallback=(80, 24): os.terminal_size((60, 24)))
+            rc, out = _ls(capsys)
         assert "3004-kk" in out
         line = [l for l in out.splitlines() if "3004-kk" in l][0]
         assert len(line) <= 60, f"line is {len(line)} cols"
@@ -91,10 +94,11 @@ class TestLsPreview:
         _record(headless_room, "3005-ll",
                 command="echo " + "y" * 300)
         monkeypatch.delenv("COLUMNS", raising=False)
-        monkeypatch.setattr("shutil.get_terminal_size",
-                            lambda: (_f := None) or (_ for _ in ()).throw(
-                                OSError("no terminal")))
-        rc, out = _ls(capsys)
+        with monkeypatch.context() as narrow:
+            narrow.setattr("shutil.get_terminal_size",
+                           lambda fallback=(80, 24): (_ for _ in ()).throw(
+                               OSError("no terminal")))
+            rc, out = _ls(capsys)
         assert rc == 0
         line = [l for l in out.splitlines() if "3005-ll" in l][0]
         assert len(line) <= 120

@@ -218,6 +218,18 @@ DEFAULT_SETTINGS = {
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
         # overrides this at runtime). NEVER hard-code a site path here.
         "bug_archive_dir": "",
+        # Whether a written bug report is also copied to the shared remote
+        # archive (<transfer.remote_path>/AGENT_BUGS), where its maintainers
+        # read it. The report holds the session's transcript, so this is a
+        # consent of its own, separate from configuring the transfer:
+        #   "ask"    (default) -- only after a yes for that report (the
+        #            dashboard's Send under the named host, the [y/N] of
+        #            /bug and `delfin-agent bug report`); with nobody to ask
+        #            (--yes, unattended) the report stays local.
+        #   "never"  -- every report stays local.
+        #   "always" -- standing opt-in: copied without asking, also in
+        #            unattended runs. delfin/agent/bug_report.py.
+        "bug_upload": "ask",
         # Complexity-based model routing (provider-agnostic, opt-in).
         # enabled=False → exactly today's behaviour (user's model for all).
         # strong_model/cheap_model override the built-in per-provider tier

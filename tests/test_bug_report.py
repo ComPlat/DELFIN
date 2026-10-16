@@ -234,7 +234,7 @@ def test_push_runs_mkdir_then_rsync(tmp_path, monkeypatch):
     monkeypatch.setattr(br.subprocess, "run", fake_run)
     ok, where = br.push_report_to_remote(
         d, host="login.cluster", user="ka", remote_path="/home/grp/archive",
-        port=22,
+        port=22, consent=True,
     )
     assert ok is True
     assert where == f"/home/grp/archive/AGENT_BUGS/{d.name}"
@@ -329,7 +329,7 @@ def test_push_reports_rsync_failure(tmp_path, monkeypatch):
     seq = [_Mk(), _Fail()]
     monkeypatch.setattr(br.subprocess, "run", lambda *a, **k: seq.pop(0))
     ok, msg = br.push_report_to_remote(
-        d, host="h", user="u", remote_path="/r", port=22,
+        d, host="h", user="u", remote_path="/r", port=22, consent=True,
     )
     assert ok is False
     assert "rsync failed" in msg

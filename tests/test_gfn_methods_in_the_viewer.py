@@ -6817,18 +6817,25 @@ def test_a_stopped_run_never_writes_what_it_had_in_hand(editor, monkeypatch):
 
     def fake(xyz, method, **kw):
         on = kw.get("on_frames")
+        if on is None:
+            # The one-cycle topology perception (relax_steps, max_steps=1)
+            # that runs before the optimisation: a fraction of a second with
+            # real xtb. Walked out here, it took the 30 s below and the Stop
+            # landed on it instead of on the run under test.
+            return {"ok": True, "xyz": xyz, "energy": -1.0,
+                    "converged": True, "frames": [],
+                    "status": "converged in 1 cycles"}
         stop = kw.get("should_stop") or (lambda: False)
         for cut in (20, 40, 56):
-            if on:
-                on(path[:cut])
+            on(path[:cut])
         ran.append("walking")
         deadline = _time.time() + 30
         while _time.time() < deadline and not stop():
             _time.sleep(0.01)
+        ran.append("stopped" if stop() else "timed out")
         # Told to stop, with the rest of the path already computed.
-        if on:
-            on(path)
-            on(path)
+        on(path)
+        on(path)
         ran.append("done")
         return {"ok": True, "xyz": xyz, "energy": -1.0, "converged": False,
                 "frames": path, "status": "stopped"}
@@ -6849,6 +6856,8 @@ def test_a_stopped_run_never_writes_what_it_had_in_hand(editor, monkeypatch):
     while _time.time() < deadline and "done" not in ran:
         _time.sleep(0.01)
     assert "done" in ran
+    assert ran == ["walking", "stopped", "done"], (
+        f"the Stop did not reach the walking run: {ran}")
     _time.sleep(0.3)                                     # anything still queued
 
     payloads = [json.loads(text) for text in seen if text]

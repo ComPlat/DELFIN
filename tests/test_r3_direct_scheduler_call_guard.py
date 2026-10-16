@@ -26,6 +26,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import _package_ast
+
 # The scheduler commands whose throttling finding 1 is about.
 _COMMANDS = {"squeue", "sacct", "scontrol", "sbatch", "sinfo"}
 
@@ -85,6 +87,10 @@ def _scan_source(text: str) -> list[int]:
         tree = ast.parse(text)
     except SyntaxError:
         return []
+    return _scan_tree(tree)
+
+
+def _scan_tree(tree) -> list[int]:
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _directly_runs(node):
@@ -94,8 +100,8 @@ def _scan_source(text: str) -> list[int]:
 
 def _scan_file(path: Path) -> list[int]:
     try:
-        return _scan_source(path.read_text())
-    except OSError:
+        return _scan_tree(_package_ast.parse(path))
+    except (OSError, SyntaxError):
         return []
 
 

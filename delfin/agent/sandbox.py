@@ -45,6 +45,15 @@ from typing import Optional
 
 # First token of each pipeline segment must be in this set OR (for the few
 # commands with sub-command grammar) match an entry in ``_ALLOW_SUBCOMMAND``.
+# A tool with a sub-command list is never also in this set: _check_segment
+# read this set first, so ``pip`` here made ``pip install`` pass and the pip
+# list unread.
+#
+# The limit of this layer: it reads the first word, and an interpreter on
+# it runs anything. ``python -c``, a script file, ``awk 'BEGIN{system()}'``,
+# ``find -exec`` and ``sed e`` are not contained by it; the OS confinement
+# of the runner (bwrap, firejail, Landlock -- see ``confinement``) is what
+# limits them, and where there is none the dashboard says so.
 _ALLOW_FIRST_TOKEN = frozenset({
     # Read-only inspection
     "ls", "cat", "head", "tail", "less", "more", "wc", "grep", "egrep",
@@ -53,7 +62,7 @@ _ALLOW_FIRST_TOKEN = frozenset({
     "basename", "dirname", "realpath", "readlink", "sort", "uniq", "tr",
     "cut", "awk", "sed", "diff", "cmp", "tee", "xargs",
     # Python tooling
-    "python", "python3", "pytest", "pip", "ruff", "black", "mypy",
+    "python", "python3", "pytest", "ruff", "black", "mypy",
     "flake8", "isort",
     # DELFIN entry-points
     "delfin", "delfin-build", "delfin-voila", "delfin-json",
@@ -68,16 +77,33 @@ _ALLOW_FIRST_TOKEN = frozenset({
 
 # Per-binary subcommand allow-list. Used when the binary itself is
 # multi-purpose (e.g. ``git``, ``pip``) — we allow only read-only or harmless
-# subcommands here. Other subcommands fall through to deny.
+# subcommands here. Other subcommands fall through to deny. ``pip`` also
+# covers ``pip3``, ``pip3.N`` and ``<python> -m pip`` (``_check_argv``).
 _ALLOW_SUBCOMMAND = {
     "git": frozenset({
         "status", "log", "diff", "show", "branch", "remote", "rev-parse",
         "rev-list", "stash", "ls-files", "ls-tree", "blame", "describe",
         "tag", "shortlog", "fsck", "cat-file", "for-each-ref", "name-rev",
-        "config",  # config alone is allowed; --global is deny-substring'd below
+        "config",  # read forms only (_SUBCOMMAND_READ_ONLY)
     }),
     "pip": frozenset({"list", "show", "freeze", "check", "config"}),
 }
+
+#: Sub-commands on the lists above whose writing forms rewrite configuration
+#: that a later git or pip OUTSIDE the sandbox trusts: ``core.pager``,
+#: ``core.hooksPath``, ``core.fsmonitor`` and an alias run code, a remote URL
+#: receives the next push, ``global.index-url`` serves the next install.
+#: For these only the read forms pass (``_read_only_form``).
+_GIT_CONFIG_READ_FLAGS = frozenset({
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color",
+    "--get-colorbool", "--list", "-l"})
+_GIT_CONFIG_WRITE_WORDS = frozenset({
+    "--add", "--unset", "--unset-all", "--replace-all", "--rename-section",
+    "--remove-section", "--edit", "-e", "set", "unset", "edit",
+    "rename-section", "remove-section"})
+#: git config options whose value is the next word.
+_GIT_CONFIG_VALUE_OPTS = frozenset({
+    "-f", "--file", "--blob", "--type", "--default", "--comment"})
 
 # Always-deny substrings (case-insensitive). These win even if the
 # first-token check passes — designed to catch obvious destructive or
@@ -601,20 +627,140 @@ def _check_segment(seg: str) -> tuple[bool, str]:
     toks = shlex.split(seg, posix=True)
     if not toks:
         return False, "empty pipeline segment"
-    head = toks[0]
-    # Strip leading env-var assignments (e.g. ``FOO=1 python …``)
-    while head and "=" in head and head.split("=", 1)[0].isidentifier():
+    return _check_argv(toks)
+
+
+#: Allowed commands that run the command given as their arguments.
+_RUNS_ITS_ARGUMENTS = frozenset({"env", "nohup", "xargs"})
+#: xargs options whose value is the next word when the option ends the
+#: word (GNU: -a -d -E -I -L -n -P -s; BSD adds -J -R -S).
+_XARGS_VALUE_SHORT = frozenset("adEILnPsJRS")
+_XARGS_VALUE_LONG = frozenset({"--arg-file", "--delimiter", "--max-args",
+                               "--max-procs", "--max-chars",
+                               "--process-slot-var"})
+
+
+def _wrapped_command(base: str, args: list[str]) -> tuple[list[str], str]:
+    """The command *base* (env, nohup, xargs) runs, and a refusal reason.
+
+    Returns ``(argv, "")``; ``argv`` is empty when the wrapper runs no
+    command of its own (``env`` alone prints the environment) and
+    ``["echo"]`` for a bare ``xargs``. A word this parser cannot place is
+    taken as the command, so a misreading refuses rather than skips."""
+    i = 0
+    if base == "nohup":
+        if args[:1] == ["--"]:
+            i = 1
+        return args[i:], ""
+    if base == "env":
+        while i < len(args):
+            a = args[i]
+            if a.startswith("-S") or a.startswith("--split-string") \
+                    or (a.startswith("-") and not a.startswith("--")
+                        and "S" in a[1:]):
+                return [], ("env -S splits a string into a command line; "
+                            "write the command out")
+            if a == "--":
+                i += 1
+                break
+            if a in ("-u", "--unset", "-C", "--chdir"):
+                i += 2
+                continue
+            if a.startswith("-") or ("=" in a and not a.startswith("=")):
+                i += 1
+                continue
+            break
+        return args[i:], ""
+    # xargs
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if a.startswith("--"):
+            i += 2 if a in _XARGS_VALUE_LONG else 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            for j, ch in enumerate(a[1:], start=1):
+                if ch in _XARGS_VALUE_SHORT:
+                    if j == len(a) - 1:
+                        i += 1          # the value is the next word
+                    break
+                if ch in "eil":         # optional value, attached only
+                    break
+            i += 1
+            continue
+        break
+    return (args[i:] or ["echo"]), ""
+
+
+def _read_only_form(tool: str, sub: str, args: list[str]) -> bool:
+    """Whether ``<tool> <sub> <args>`` only reads (see
+    ``_GIT_CONFIG_READ_FLAGS``). Sub-commands without a writing form
+    are read-only by being on the list."""
+    if (tool, sub) == ("pip", "config"):
+        return bool(args) and args[0] in ("list", "get", "debug")
+    if (tool, sub) == ("git", "remote"):
+        rest = [a for a in args if a not in ("-v", "--verbose")]
+        return not rest or rest[0] in ("show", "get-url")
+    if (tool, sub) == ("git", "config"):
+        if any(a.split("=", 1)[0] in _GIT_CONFIG_WRITE_WORDS for a in args):
+            return False
+        if args and args[0] in ("get", "list"):
+            return True
+        if any(a.split("=", 1)[0] in _GIT_CONFIG_READ_FLAGS for a in args):
+            return True
+        positional, skip = [], False
+        for a in args:
+            if skip:
+                skip = False
+            elif a in _GIT_CONFIG_VALUE_OPTS:
+                skip = True
+            elif not a.startswith("-"):
+                positional.append(a)
+        return len(positional) == 1     # ``git config <name>`` reads it
+    return True
+
+
+def _check_argv(toks: list[str], depth: int = 0) -> tuple[bool, str]:
+    """Layer 1 for one segment's argv.
+
+    Order: a tool with a sub-command list is judged by that list (and by
+    ``_read_only_form``), whatever else names it -- ``pip``, ``pip3``,
+    ``pip3.N``, ``<python> -m pip`` and ``-m pip.<sub>``; a wrapper
+    (``_RUNS_ITS_ARGUMENTS``) is judged by the command it runs; then the
+    first-token set and the tree-walk rule."""
+    while toks and "=" in toks[0] and toks[0].split("=", 1)[0].isidentifier():
         toks = toks[1:]
-        if not toks:
-            return False, "command was just env-vars"
-        head = toks[0]
-    base = os.path.basename(head)
+    if not toks:
+        return False, "command was just env-vars"
+    base = os.path.basename(toks[0])
+    tool, sub_argv = base, toks[1:]
+    if _PIP_NAME_RE.fullmatch(base):
+        tool = "pip"
+    elif _PYTHON_NAME_RE.fullmatch(base):
+        module, margs = _python_module(toks[1:])
+        if module == "pip" or module.startswith("pip."):
+            tool, sub_argv = "pip", margs
+    if tool in _ALLOW_SUBCOMMAND:
+        sub = sub_argv[0] if sub_argv else ""
+        if sub not in _ALLOW_SUBCOMMAND[tool]:
+            return False, f"{tool} subcommand not in allow-list: {sub!r}"
+        if not _read_only_form(tool, sub, sub_argv[1:]):
+            return False, (f"{tool} {sub}: only its read forms are allowed "
+                           "(the written setting is used outside the sandbox)")
+        return True, "ok"
+    if base in _RUNS_ITS_ARGUMENTS:
+        inner, reason = _wrapped_command(base, toks[1:])
+        if reason:
+            return False, reason
+        if inner:
+            if depth >= 3:
+                return False, f"{base} nested too deep to read"
+            return _check_argv(inner, depth + 1)
+        return True, "ok"
     if base in _ALLOW_FIRST_TOKEN:
         return _check_tree_walk(toks)
-    if base in _ALLOW_SUBCOMMAND:
-        if len(toks) >= 2 and toks[1] in _ALLOW_SUBCOMMAND[base]:
-            return True, "ok"
-        return False, f"{base} subcommand not in allow-list"
     return False, f"first token not in allow-list: {base!r}"
 
 
@@ -665,31 +811,126 @@ def _bwrap_works() -> bool:
         return False
 
 
-def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str) -> list[str]:
+@dataclass(frozen=True)
+class Confinement:
+    """What the runner applies to a command in one mode on this host.
+
+    ``filesystem``: "bwrap", "firejail", "landlock" or "none".
+    ``network``: "off" (no connect leaves the command), "off-tcp" (TCP
+    connects refused by Landlock ABI 4, UDP not restricted), "on" (opened
+    by DELFIN_AGENT_SANDBOX_NETWORK=1) or "open" (not restricted although
+    the configuration asked for it, or a mode with no sandbox).
+    ``landlock_net``: the ``--net`` value handed to ``landlock_exec``; ""
+    when the command does not run under the Landlock helper.
+    ``notice``: one sentence when something is not in force; "" otherwise.
+    """
+    mode: str
+    filesystem: str
+    network: str
+    landlock_net: str
+    notice: str
+
+    @property
+    def network_restricted(self) -> bool:
+        return self.network in ("off", "off-tcp")
+
+    def label(self) -> str:
+        return f"mode={self.mode}, fs={self.filesystem}, net={self.network}"
+
+
+def confinement(cfg: SandboxConfig) -> Confinement:
+    """The confinement :func:`run_agent_command` applies for *cfg* here.
+
+    The one answer to "what holds this command": the runner builds its
+    argv from it (``_unsandboxed_argv``) and the dashboard prints it, so a
+    state is shown only where the runner applies it. Probes, in the order
+    of ``landlock_exec._run_guarded``: Landlock usable
+    (``api_client._landlock_functional``), seccomp user notification
+    (``socket_guard.available``: every connect judged, UDP included),
+    Landlock ABI >= 4 with the seccomp filter (TCP connects only).
+
+    Rejected: refusing every command where the network cannot be held.
+    The command was approved by the person at the screen, and the hosts
+    without bubblewrap are the ones where this mode is the only one; it
+    runs, and the state and the notice say what is missing.
+    Never raises; a failed probe counts as "not available".
+    """
+    mode = cfg.mode
+    if mode in ("bwrap", "firejail"):
+        return Confinement(mode, mode, "on" if cfg.allow_network else "off",
+                           "", "")
+    if mode != "allowlist":
+        return Confinement(mode, "none", "open", "", (
+            "sandbox off: no allow-list, no filesystem or network "
+            "confinement"))
+    try:
+        from .api_client import _landlock_functional
+        landlock = bool(_landlock_functional())
+    except Exception:
+        landlock = False
+    if not landlock:
+        return Confinement(mode, "none", "open", "", (
+            "no bubblewrap, firejail or Landlock on this host: the command "
+            "runs unconfined (allow-list and scrubbed environment only); "
+            "the filesystem and the network are NOT restricted"))
+    if cfg.allow_network:
+        return Confinement(mode, "landlock", "on", "open", "")
+    try:
+        from . import socket_guard as _sg
+        guard = bool(_sg.available())
+        filt = bool(_sg.filter_supported())
+    except Exception:
+        guard = filt = False
+    try:
+        from . import landlock_exec as _ll
+        abi = int(_ll.abi_version())
+    except Exception:
+        abi = 0
+    if guard:
+        return Confinement(mode, "landlock", "off", "none", "")
+    if abi >= 4 and filt:
+        return Confinement(mode, "landlock", "off-tcp", "none", (
+            "network partly restricted: TCP connects are refused (Landlock), "
+            "UDP is NOT restricted on this host (no seccomp user "
+            "notification)"))
+    return Confinement(mode, "landlock", "open", "open", (
+        "network NOT restricted on this host: no seccomp user notification "
+        "and no Landlock TCP rule (Linux 6.7+); the filesystem is confined "
+        "(Landlock)"))
+
+
+def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str, *,
+                      allow_network: bool = False) -> list[str]:
     """``bash -c cmd`` for the modes without bubblewrap or firejail.
 
     The allowlist mode ran commands with nothing around them: python, pip,
     awk and env are on the list, and every key was in the environment. Where
     the kernel has Landlock the command now runs under it (writes only in the
     repository and a private temp directory, credential folders unreadable),
-    as the agent's own shell does on such a host. "off" stays off."""
+    as the agent's own shell does on such a host. "off" stays off.
+
+    Filesystem and network are the ones :func:`confinement` names, so the
+    state the dashboard prints is the state applied. A restricted network
+    is passed with ``--strict 1``: should the helper find a layer missing
+    that the probe here reported, it refuses the command (exit 126)
+    instead of running it with the network open; unrestricted, ``--strict
+    0`` as before. Raises when the Landlock argv cannot be built: running
+    ``bash -c`` then would be a confinement the dashboard did not show."""
     base = ["bash", "-c", cmd]
-    if mode != "allowlist":
+    conf = confinement(SandboxConfig(mode, allow_network, 0))
+    if conf.filesystem != "landlock":
         return base
-    try:
-        from .api_client import (_landlock_hide_paths, _landlock_functional,
-                                 _private_tmp_dir)
-        from . import landlock_exec as _ll
-        if not _landlock_functional():
-            return base
-        repo = str(Path(repo_dir).resolve())
-        argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
-                "--write", repo]
-        for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
-            argv += ["--hide", h]
-        return argv + ["--tmpdir", _private_tmp_dir(), "--strict", "0", "--"] + base
-    except Exception:
-        return base
+    from .api_client import _landlock_hide_paths, _private_tmp_dir
+    from . import landlock_exec as _ll
+    repo = str(Path(repo_dir).resolve())
+    argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
+            "--write", repo]
+    for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
+        argv += ["--hide", h]
+    strict = "1" if conf.network_restricted else "0"
+    return argv + ["--tmpdir", _private_tmp_dir(),
+                   "--net", conf.landlock_net,
+                   "--strict", strict, "--"] + base
 
 
 # Home-relative directories that are tmpfs'd inside the sandbox so the agent
@@ -920,6 +1161,7 @@ def run_agent_command(
             )
 
     # Layer 2 — choose argv based on sandbox mode
+    conf = confinement(cfg)
     if cfg.mode == "bwrap":
         argv = _bwrap_argv(cmd, repo_dir, cfg.allow_network)
         shell = False
@@ -950,8 +1192,20 @@ def run_agent_command(
     else:
         # 'off' or 'allowlist' or 'auto-fell-back-to-allowlist'. Routed
         # through bash -c explicitly so the argv stays inspectable; the
-        # allowlist mode runs under Landlock where the kernel has it.
-        argv = _unsandboxed_argv(cmd, repo_dir, cfg.mode)
+        # allowlist mode runs under Landlock where the kernel has it, with
+        # the network confinement() names.
+        try:
+            argv = _unsandboxed_argv(cmd, repo_dir, cfg.mode,
+                                     allow_network=cfg.allow_network)
+        except Exception as exc:
+            reason = (f"the Landlock confinement could not be built ({exc}); "
+                      "the command was not run")
+            _audit({"ts": time.time(), "cwd": str(repo_dir), "mode": cfg.mode,
+                    "cmd": cmd, "blocked": True, "block_reason": reason,
+                    "elapsed_s": round(time.monotonic() - t0, 4)})
+            return RunResult(blocked=True, block_reason=reason, returncode=-1,
+                             stdout="", stderr="", mode=cfg.mode,
+                             elapsed_s=time.monotonic() - t0)
         shell = False
 
     try:
@@ -975,6 +1229,8 @@ def run_agent_command(
             "cmd": cmd,
             "blocked": False,
             "exit": proc.returncode,
+            "fs": conf.filesystem,
+            "net": conf.network,
             "stdout_bytes": len(proc.stdout),
             "stderr_bytes": len(proc.stderr),
             "elapsed_s": round(elapsed, 4),
@@ -987,6 +1243,7 @@ def run_agent_command(
             stderr=proc.stderr,
             mode=cfg.mode,
             elapsed_s=elapsed,
+            extra={"confinement": conf.label()},
         )
     except subprocess.TimeoutExpired as exc:
         elapsed = time.monotonic() - t0

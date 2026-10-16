@@ -100,3 +100,20 @@ class TestApprovalsAnswerCli:
         assert ns.approvals_action == "answer"
         assert ns.request_id == "1234-ab"
         assert ns.choice == "2"
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX accounts")
+def test_the_answer_records_the_account_not_the_user_variable(
+        headless_room, capsys, monkeypatch):
+    """The answer file records who answered. $USER is whatever the
+    answering process says it is; the record names the account."""
+    import pwd
+    me = pwd.getpwuid(os.getuid()).pw_name
+    monkeypatch.setenv("USER", "somebody-else")
+    monkeypatch.setenv("LOGNAME", "somebody-else")
+    _ask_record(headless_room, "2009-zz")
+    rc, _out, _err = _run_cli(capsys, "2009-zz", "1")
+    assert rc == 0
+    raw = (headless_room / "2009-zz.answer.json").read_text(encoding="utf-8")
+    assert "somebody-else" not in raw
+    assert json.loads(raw).get("by") == me

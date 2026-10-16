@@ -1358,3 +1358,57 @@ def test_the_sentence_the_user_is_shown_leads_somewhere(tmp_path):
         env={**child_env(tmp_path), 'PYTHONPATH': str(root)})
     assert done.returncode == 0, done.stderr
     assert 'replay' in done.stdout.lower(), done.stdout
+
+
+def test_a_viewer_report_says_when_its_redaction_failed(tmp_path,
+                                                        monkeypatch):
+    """The viewer report shares the agent report's fail-closed writer, so a
+    broken redactor leaves placeholders. The agent report then names the
+    replaced files in REDACTION_FAILED.txt; the viewer report must too, or
+    a maintainer finds an empty report.md with no reason."""
+    import delfin.agent.output_guard as og
+
+    def boom(*a, **kw):
+        raise RuntimeError('redactor exploded')
+
+    monkeypatch.setattr(og, '_redact', boom)
+    journal = ej.Journal(max_events=50, max_bytes=1024 * 1024)
+    where = ej.write_report(journal, description='password=hunter2-long-x',
+                            widgets={}, archive_dir=tmp_path / 'bugs')
+    note = where / 'REDACTION_FAILED.txt'
+    assert note.is_file()
+    said = note.read_text(encoding='utf-8')
+    assert 'report.json' in said and 'report.md' in said
+    assert 'hunter2' not in (where / 'report.md').read_text(encoding='utf-8')
+
+
+def test_the_viewer_names_no_host_when_uploads_are_off(tmp_path,
+                                                      monkeypatch):
+    """With agent.bug_upload 'never' nothing leaves the machine, so the line
+    above Send must not say 'then <host>' and the status after it must not
+    say 'Sending it to <host>' -- and nothing is handed to the transfer."""
+    pytest.importorskip('ipywidgets')
+    monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
+    monkeypatch.setattr('delfin.user_settings.load_settings',
+                        lambda *a, **k: {
+                            'transfer': {'host': 'login.cluster', 'user': 'ka',
+                                         'remote_path': '/home/grp/archive',
+                                         'port': 22},
+                            'agent': {'bug_upload': 'never'}})
+    sent = []
+    monkeypatch.setattr(ej, 'send_report',
+                        lambda *a, **k: sent.append(a) or (False, 'x'))
+    part, state, _box = _an_editor(tmp_path / 'never')
+    _command(part, 'gfngrab', '7,2')
+    ej.press(part.submit_bug_btn, True)
+    where = part.submit_bug_where.value
+    assert 'login.cluster' not in where
+    assert 'bug_upload' in where
+    ej.press(part.submit_bug_note, 'es zappelt')
+    part.submit_bug_send.click()
+    said = part.mol_status.value
+    assert 'Reported.' in said
+    assert 'Sending it to' not in said and 'login.cluster' not in said
+    assert 'stays on this machine' in said
+    time.sleep(0.2)
+    assert sent == []
