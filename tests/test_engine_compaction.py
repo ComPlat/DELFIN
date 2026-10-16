@@ -176,7 +176,7 @@ def test_prior_summary_survives_second_compaction():
         eng.messages.append({"role": "user", "content": f"step {i}: " + "work " * 18})
         eng.messages.append({"role": "assistant", "content": f"did {i}: " + "done " * 18})
     eng.messages.append({"role": "user",
-                         "content": "DEEP_CONSTRAINT: bug reports group-readable to qmchem_shared only"})
+                         "content": "DEEP_CONSTRAINT: bug reports group-readable to the maintainer group only"})
     for i in range(5, 8):
         eng.messages.append({"role": "user", "content": f"step {i}: " + "work " * 18})
         eng.messages.append({"role": "assistant", "content": f"did {i}: " + "done " * 18})

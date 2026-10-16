@@ -30,7 +30,7 @@ def test_write_grant_as_preference_is_refused(tmp_path):
 def test_absolute_path_grant_as_role_is_refused(tmp_path):
     m = user_model.UserModel(path=tmp_path / "um.json")
     m.update_from_user_message(
-        "my role is to work in /home/jerome/projects",
+        "my role is to work in /home/user/projects",
         source_role="user",
     )
     assert _stored_field(m) is None

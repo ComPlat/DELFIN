@@ -1,7 +1,7 @@
 """The internal 'solo' id must surface to the user as 'Code' everywhere — the
 mode was renamed (dropdown shows Dashboard + Code) but the badges leaked the
-old internal name (Jerome report 20260617-152728: 'noch paar Stellen mit Solo
-nicht Code')."""
+old internal name (field report 2026-06-17: a few places still
+said Solo instead of Code)."""
 
 from __future__ import annotations
 

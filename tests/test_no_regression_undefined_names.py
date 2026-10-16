@@ -1,7 +1,7 @@
 """Regression test that catches NameErrors, missing imports, and scope bugs
 introduced by refactoring.
 
-This is the safety net Tilman and Jan's bug reports made necessary. The
+This is the safety net two users' bug reports made necessary. The
 `cf78545` / `3ed6566` / `39b1919` refactorings all introduced latent
 NameErrors that existing tests did not catch because they didn't
 exercise the exact code path. This test shifts left: instead of waiting
@@ -121,7 +121,7 @@ def test_every_delfin_module_imports_cleanly():
       - missing import of a helper after a module split
       - module-level reference to a name not yet defined
 
-    Each of the five bugs from Tilman's and Jan's reports would fail
+    Each of the five bugs from those two reports would fail
     this test (except the inline-branch cores bug which needed a call
     to trigger).
     """

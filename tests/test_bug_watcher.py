@@ -106,7 +106,8 @@ def test_find_unsolved_skips_poison_after_max_attempts(tmp_path):
 
 def test_triage_writes_analysis_and_patch_without_moving(tmp_path):
     d = _make_report(tmp_path, "r1")
-    t = bw.triage_report(d, settings={}, engine_factory=_factory())
+    t = bw.triage_report(d, settings={}, engine_factory=_factory(),
+                         consent=True)
     # analysis + patch persisted in place
     assert (d / "triage.md").exists()
     assert (d / "fix_proposal.patch").exists()
@@ -121,7 +122,8 @@ def test_triage_writes_analysis_and_patch_without_moving(tmp_path):
 def test_triage_no_fix_block_means_no_patch(tmp_path):
     d = _make_report(tmp_path, "r1")
     t = bw.triage_report(d, settings={},
-                         engine_factory=_factory("ROOT CAUSE: x. no diff here."))
+                         engine_factory=_factory("ROOT CAUSE: x. no diff here."),
+                         consent=True)
     assert (d / "triage.md").exists()
     assert not (d / "fix_proposal.patch").exists()
     assert t.has_fix is False
@@ -130,7 +132,8 @@ def test_triage_no_fix_block_means_no_patch(tmp_path):
 def test_triage_propose_fix_off_still_analyses(tmp_path):
     d = _make_report(tmp_path, "r1")
     settings = {"agent": {"bug_watcher": {"propose_fix": False}}}
-    t = bw.triage_report(d, settings=settings, engine_factory=_factory())
+    t = bw.triage_report(d, settings=settings, engine_factory=_factory(),
+                         consent=True)
     assert (d / "triage.md").exists()
     # propose_fix off → the diff in the response is ignored, no patch file
     assert not (d / "fix_proposal.patch").exists()
@@ -159,7 +162,8 @@ def test_triage_analysis_failure_bumps_attempts_and_leaves_report(tmp_path):
                 raise RuntimeError("api down")
         return E()
 
-    t = bw.triage_report(d, settings={}, engine_factory=_raise)
+    t = bw.triage_report(d, settings={}, engine_factory=_raise,
+                         consent=True)
     assert t.error and "api down" in t.error
     assert not (d / "triage.md").exists()          # not triaged
     assert bw._attempts(d) == 1                     # attempt recorded
@@ -182,7 +186,7 @@ def test_run_once_triages_all_without_moving(tmp_path):
     _make_report(tmp_path, "r1")
     _make_report(tmp_path, "r2")
     results = bw.run_once(archive=tmp_path, settings={},
-                          engine_factory=_factory())
+                          engine_factory=_factory(), consent=True)
     assert len(results) == 2
     assert all(r.has_fix for r in results)
     # nothing moved; both now carry triage.md so a re-scan finds none

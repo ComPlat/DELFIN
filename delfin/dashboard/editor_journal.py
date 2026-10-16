@@ -163,6 +163,7 @@ from delfin.agent.bug_report import (
     _guarded_write,
     _make_group_readable,
     _report_dirname,
+    write_redaction_failed_note,
 )
 
 _FALLBACK_DIR = Path.home() / '.delfin' / 'viewer_bugs'
@@ -237,6 +238,25 @@ def resolve_archive_dir(settings=None):
     return _FALLBACK_DIR
 
 
+def upload_off(settings=None):
+    """The sentence to show when ``agent.bug_upload`` is ``never`` and a
+    transfer host is configured, else ''. The host is not named: under
+    ``never`` it is not a destination."""
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings()
+        except Exception:
+            settings = {}
+    config = (settings or {}).get('transfer') or {}
+    if not str(config.get('host') or '').strip():
+        return ''
+    from delfin.agent.bug_report import upload_policy
+    if upload_policy(settings) != 'never':
+        return ''
+    return 'agent.bug_upload is never, so reports are not sent'
+
+
 def remote_target(settings=None):
     """The transfer this dashboard is configured for, or ``None``.
 
@@ -262,6 +282,10 @@ def remote_target(settings=None):
             settings = load_settings()
         except Exception:
             settings = {}
+    # agent.bug_upload 'never': nothing leaves the machine, so there is no
+    # destination to name -- the caller says why (upload_off).
+    if upload_off(settings):
+        return None
     config = (settings or {}).get('transfer') or {}
     host = str(config.get('host') or '').strip()
     user = str(config.get('user') or '').strip()
@@ -315,14 +339,21 @@ def send_report(report_dir, *, settings=None, timeout=120, target=None):
     if target is None:
         target = remote_target(settings)
     if target is None:
+        off = upload_off(settings)
+        if off:
+            return False, off
         return False, ('no transfer host is configured -- set one in the '
                        'dashboard settings and it will go there too')
     from delfin.agent.bug_report import push_report_to_remote
+    # The viewer's Send is pressed under the destination remote_target()
+    # named, so the press is the consent for this report;
+    # agent.bug_upload 'never' still refuses inside.
     return push_report_to_remote(
         report_dir,
         host=target['host'], user=target['user'],
         remote_path=target['remote_path'], port=target['port'],
-        subdir=REMOTE_SUBDIR, timeout=timeout)
+        subdir=REMOTE_SUBDIR, timeout=timeout, consent=True,
+        settings=settings)
 
 
 def _weigh(fields):
@@ -887,12 +918,14 @@ def write_report(journal, *, description='', widgets=None, tab='',
             start_xyz if start_xyz.endswith('\n') else start_xyz + '\n',
             encoding='utf-8')
 
+    failures = []
     redacted = _guarded_write(
         report_dir / 'report.json',
-        json.dumps(meta, ensure_ascii=False, indent=2))
+        json.dumps(meta, ensure_ascii=False, indent=2), failures)
     redacted += _guarded_write(
         report_dir / 'report.md',
-        _render_markdown(meta, timeline, summary))
+        _render_markdown(meta, timeline, summary), failures)
+    write_redaction_failed_note(report_dir, failures)
     if redacted:
         try:
             (report_dir / 'REDACTIONS.txt').write_text(

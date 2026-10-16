@@ -87,6 +87,9 @@ def _rows(monkeypatch, *, returncode, stderr=""):
     def fake_run(argv, **kw):
         return subprocess.CompletedProcess(argv, returncode, "", stderr)
 
+    # The subprocess answer is what is under test, on every machine:
+    # with pymupdf (the optional [pdf] extra) absent the probe is skipped.
+    monkeypatch.setattr(D, "_installed", lambda module: True)
     monkeypatch.setattr(D.subprocess, "run", fake_run)
     return D._check_loader_path({})
 
@@ -132,6 +135,7 @@ def test_an_interpreter_that_cannot_be_asked_is_reported_not_assumed(
     def boom(*a, **k):
         raise OSError("no exec")
 
+    monkeypatch.setattr(D, "_installed", lambda module: True)
     monkeypatch.setattr(D.subprocess, "run", boom)
     rows = D._check_loader_path({})
     assert rows[0]["status"] != D.PASS
@@ -143,6 +147,7 @@ def test_a_timeout_does_not_escape(monkeypatch):
     def slow(*a, **k):
         raise subprocess.TimeoutExpired(cmd="python", timeout=120)
 
+    monkeypatch.setattr(D, "_installed", lambda module: True)
     monkeypatch.setattr(D.subprocess, "run", slow)
     rows = D._check_loader_path({})
     assert rows[0]["status"] != D.PASS
@@ -164,3 +169,22 @@ def test_the_doctor_never_raises_with_this_check(monkeypatch, tmp_path):
     monkeypatch.setattr(D.subprocess, "run", lambda *a, **k: (_ for _ in ())
                         .throw(OSError("nope")))
     assert D._check_loader_path({})
+
+
+def test_an_absent_optional_module_is_not_reported_as_a_loader_fault(
+        monkeypatch):
+    """pymupdf is the [pdf] extra. Without it the subprocess would fail
+    with ModuleNotFoundError and the row would blame LD_LIBRARY_PATH."""
+    def must_not_run(*a, **k):
+        raise AssertionError("the probe ran for a module that is not installed")
+
+    monkeypatch.setattr(D, "_installed", lambda module: False)
+    monkeypatch.setattr(D.subprocess, "run", must_not_run)
+    rows = D._check_loader_path({})
+    assert rows and all(r["status"] == D.PASS for r in rows)
+    assert "not installed" in rows[0]["detail"]
+
+
+def test_installed_reads_the_path_without_importing():
+    assert D._installed("sqlite3")
+    assert not D._installed("delfin_no_such_module_for_this_test")

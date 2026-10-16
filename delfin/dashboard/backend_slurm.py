@@ -450,7 +450,7 @@ class SlurmJobBackend(JobBackend):
         # "user env retrieval failed". A plain `--export=ALL` propagates the
         # full submission environment (including these variables) without
         # triggering that retrieval. Verified by an A/B test pinned to the
-        # same node (uc3n003): plain/ALL-only completed, ALL,VARS failed.
+        # same compute node: plain/ALL-only completed, ALL,VARS failed.
         cmd = [
             'sbatch',
             '--export=ALL',

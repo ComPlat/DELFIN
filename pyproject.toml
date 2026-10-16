@@ -9,7 +9,14 @@ description = "DELFIN is a modular computational chemistry platform that automat
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10,<3.13"
 authors = [{ name = "Maximilian Hartmann" }]
-license = {text = "LGPL-3.0-or-later"}
+# PEP 639: an SPDX expression and the files that carry the texts.
+# LGPL-3.0 is a set of additional permissions on top of GPL-3.0, and a
+# conveyed copy carries both texts (GPL-3.0 section 4, LGPL-3.0 section
+# 4(b)), so both land in the wheel's .dist-info/licenses/ and the sdist.
+license = "LGPL-3.0-or-later"
+# THIRD_PARTY_NOTICES.md carries the notices of the bundled 3Dmol.js and the
+# OpenTUI patches, and the licences of what the installers download.
+license-files = ["LICENSE", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md"]
 urls = { "Homepage" = "https://github.com/ComPlat/DELFIN", "Repository" = "https://github.com/ComPlat/DELFIN" }
 keywords = ["quantum-chemistry", "orca", "xtb", "redox", "spin-state", "workflow", "dashboard", "smiles"]
 classifiers = [
@@ -95,10 +102,9 @@ dependencies = [
     # construction needs it.
     "voila>=0.5,<0.6",
     "Pillow>=10,<13",
-    # Page rendering and in-document search for the file browser's PDF
-    # viewer. A dashboard feature, so it belongs with the other core
-    # dashboard dependencies rather than in an extra.
-    "pymupdf>=1.24,<2",
+    # PyMuPDF (the PDF viewer) is the [pdf] extra below, not a core
+    # dependency: it is AGPL-3.0, stronger copyleft than DELFIN's own
+    # licence.
     "mammoth>=1.6,<2",
     "openpyxl>=3.1,<4",
     "pexpect>=4.8,<5",
@@ -126,6 +132,20 @@ dependencies = [
 # The reference lock still pins its version for whoever can install it.
 pymol = [
     "pymol-open-source>=2.5,<4",
+]
+# Page rendering, in-document search and form-field geometry for the file
+# browser's PDF viewer (delfin/dashboard/pdf_view.py), page images for OCR
+# and chat previews (delfin/agent/office.py, tab_agent.py). PyMuPDF is
+# "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License". AGPL
+# section 13 adds a source offer to users of a modified version over a
+# network, and whether a dashboard served to other users (the multi-user
+# login deployment) is such a use is a legal question, not a packaging one.
+# An extra, so whoever installs it takes that on by choice.
+# Without it every import site degrades: the viewer says why it cannot show
+# the page, the OCR check names the missing renderer, a chat card shows no
+# preview, and PDF text, forms and merging keep working through pypdf.
+pdf = [
+    "pymupdf>=1.24,<2",
 ]
 # API keys in the operating system's credential store (macOS Keychain,
 # Secret Service, Windows Credential Manager) instead of the 0600 file
@@ -266,6 +286,9 @@ dev = [
     "pytest>=6.0",
     "pytest-timeout",
     "pytest-cov",
+    # The [pdf] extra, written out for the same reason, so the PDF tests
+    # run in CI (which installs dev) instead of skipping.
+    "pymupdf>=1.24,<2",
     "black",
     "flake8",
     "ruff",
@@ -307,11 +330,15 @@ include = ["delfin*"]
     # animations out of the wheel loses the viewer's loading animation with
     # no error anywhere.
     "logo/*.gif",
+    # The installer scripts and notes only. The programs and parameter
+    # files they fetch (xtb4stda, stda, xtb, crest, ...) are third-party
+    # software under their own licences and are downloaded from upstream
+    # by install_qm_tools.sh into qm_tools/bin and qm_tools/share, or
+    # ~/.delfin/qm_tools; qm_runtime searches both. Shipping them would
+    # convey LGPL object code without its licence text and Corresponding
+    # Source. scripts/check_distribution.py fails a build that does.
     "qm_tools/*.txt",
     "qm_tools/*.sh",
-    "qm_tools/bin/stda_v1.6.1",
-    "qm_tools/bin/xtb4stda",
-    "qm_tools/share/xtb4stda/*",
     "csp_tools/*.sh",
     "mlp_tools/*.sh",
     "analysis_tools/*.sh",
@@ -329,14 +356,22 @@ include = ["delfin*"]
 "delfin.manta" = ["*.md"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 
+# Whatever an installer left in the source tree stays out of the wheel even
+# when MANIFEST.in would let it in (MANIFEST.in prunes the same directories
+# for the sdist).
 [tool.setuptools.exclude-package-data]
 "delfin" = [
-    "qm_tools/bin/crest",
-    "qm_tools/bin/dftb+",
-    "qm_tools/bin/std2",
-    "qm_tools/bin/stda",
-    "qm_tools/bin/xtb",
+    "qm_tools/bin/*",
+    "qm_tools/share/*",
+    "qm_tools/share/*/*",
     "qm_tools/downloads/*",
+    "qm_tools/build/*",
+    "qm_tools/third_party/*",
+    "qm_tools/logs/*",
+    "csp_tools/bin/*",
+    "mlp_tools/bin/*",
+    "analysis_tools/bin/*",
+    "ai_tools/bin/*",
 ]
 
 [tool.black]

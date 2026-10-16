@@ -134,14 +134,14 @@ _INTENT: dict[str, tuple[str, ...]] = {
     ),
     "kit": (
         "permanently allow pytest",
-        "add /home/max/proj to the allowed directories",
+        "add /home/user/proj to the allowed directories",
         "the sandbox blocked my command again",
         "just allow the command from now on",
         "please remember the permission",
         "merk dir pytest immer erlauben",
         "Kannst du das dauerhaft erlauben?",
         "Kannst du dir die Freigabe merken?",
-        "Füge /home/max/proj den erlaubten Verzeichnissen hinzu",
+        "Füge /home/user/proj den erlaubten Verzeichnissen hinzu",
         "Die Berechtigung fehlt noch",
     ),
     "bash_bg": (

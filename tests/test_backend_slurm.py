@@ -453,7 +453,7 @@ def test_one_squeue_carries_why_a_job_waits_and_when_it_should_start():
     out = (
         "JOBID|PARTITION|NAME|USER|ST|TIME|NODES|TIME_LIMIT|CPUS|MIN_MEMORY|START_TIME|REASON|NODELIST(REASON)\n"
         "900|cpu,cpu_il|TADF 1|u|PD|0:00|1|2-00:00:00|40|240000M|2026-09-16T21:20:09|Priority|(Priority)\n"
-        "901|cpu|running|u|R|1:02:03|1|1-00:00:00|40|240000M|2026-09-14T08:00:00|None|uc3n024\n"
+        "901|cpu|running|u|R|1:02:03|1|1-00:00:00|40|240000M|2026-09-14T08:00:00|None|node024\n"
         "902|cpu|fresh|u|PD|0:00|1|1-00:00:00|40|240000M|N/A|None|(None)\n"
     )
     calls = []
@@ -471,7 +471,7 @@ def test_one_squeue_carries_why_a_job_waits_and_when_it_should_start():
     assert by_id["900"].name == "TADF 1"
     assert by_id["900"].extra["cpus"] == "40"
     assert by_id["900"].extra["time_limit"] == "2-00:00:00"
-    assert by_id["901"].extra["reason"] == "uc3n024"
+    assert by_id["901"].extra["reason"] == "node024"
     assert by_id["902"].extra["start_estimate"] == "", "N/A is no estimate"
     assert pending[0] == {
         "id": "900", "name": "TADF 1", "start": "2026-09-16T21:20:09",

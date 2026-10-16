@@ -7460,7 +7460,7 @@ def _is_delfin_workspace(workspace: Path | str | None) -> bool:
 
     Detection rule: either ``delfin/agent/__init__.py`` or
     ``delfin/__init__.py`` is present at the workspace root. Errs on
-    the side of "not DELFIN" — false negatives just mean Jerome's
+    the side of "not DELFIN" — false negatives just mean a user's
     private project gets a leaner tool surface, which is the goal.
     """
     if workspace is None:
@@ -28298,7 +28298,7 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 
 
 # A handful of API/stream failures are TRANSIENT — a shared-proxy hiccup, not a
-# bad request. On Jerome's long KIT runs (vLLM behind an Open-WebUI proxy) a
+# bad request. On long KIT runs in a field report (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
 _STREAM_RETRY_MAX = 3
 
