@@ -41,7 +41,8 @@
 #   --no-orca         do not look for ORCA
 #   --no-openmpi      do not set up OpenMPI
 #   --python PATH     a Python 3.10/3.11 to build the venv from
-#   --extras LIST     pip extras for DELFIN (default: agent,docs)
+#   --extras LIST     pip extras for DELFIN (default: agent,docs; add pdf for
+#                     the PDF viewer, PyMuPDF, AGPL-3.0)
 #   --dry-run         print what would be done and change nothing
 #   --list            print every tool that can be installed, by group
 #   --update          update instead of install (--only limits it)

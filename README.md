@@ -995,23 +995,31 @@ https://www.faccts.de/
 - Redistribution of ORCA is prohibited
 - Each user must obtain their own license
 - DELFIN does not include or distribute ORCA
-- ORCA is proprietary software owned by the Max Planck Institute for Coal Research
+- ORCA is proprietary software, developed at the Max-Planck-Institut für Kohlenforschung (Max Planck Institute for Coal Research) together with FACCTs GmbH (ORCA 6.1 manual, title page); its terms are those of the ORCA End User License Agreement
 - End users must comply with ORCA's terms of service and usage restrictions
 - DELFIN authors are not affiliated with or endorsed by the ORCA development team
 
 ## xTB Requirements
-***xTB is free for academic use under the GNU General Public License (GPLv3).***
-The code and license information are available here: https://github.com/grimme-lab/xtb
-- Commercial use may require different licensing terms
-- DELFIN does not include or distribute xTB
+***xTB is free software under the GNU Lesser General Public License, version 3 or later (LGPL-3.0-or-later).***
+The code and license are available here: https://github.com/grimme-lab/xtb (files `COPYING` and `COPYING.LESSER`)
+- The LGPL places no restriction on academic or commercial use; its conditions apply to modifying and redistributing xTB
+- DELFIN does not include or distribute xTB: it uses an xtb found on `PATH`, or `delfin/qm_tools/install_qm_tools.sh` installs one from conda-forge
 
 ## CREST Requirements
-***CREST is free for academic use under the GNU General Public License (GPLv3).***
-The code and license information are available here: https://github.com/crest-lab/crest
-- Commercial use may require different licensing terms
-- DELFIN does not include or distribute CREST
+***CREST is free software under the GNU Lesser General Public License, version 3 or later (LGPL-3.0-or-later).***
+The code and license are available here: https://github.com/crest-lab/crest (files `COPYING` and `COPYING.LESSER`)
+- The LGPL places no restriction on academic or commercial use; its conditions apply to modifying and redistributing CREST
+- DELFIN does not include or distribute CREST: it uses a crest found on `PATH`, or `install_qm_tools.sh` installs one from conda-forge
 
-**Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, or CREST. Users must comply with the individual license terms of each external software package.
+## Other programs the installers download
+`install_qm_tools.sh` and the terminal-window setup can also fetch xtb4stda and stda, std2, DFTB+ (LGPL-3.0-or-later), g-xTB (GPL-3.0), MOPAC (Apache-2.0) and Bun (MIT, with JavaScriptCore under LGPL-2.0) from their upstream. None of them is part of a DELFIN wheel or sdist. Their licences, and the notices of the code DELFIN does ship from other authors (3Dmol.js, the OpenTUI patches), are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Whoever redistributes a prepared installation that contains these programs (a container image, an environment archive, a cluster module) conveys them under their own licences.
+
+## Python dependencies with copyleft licences
+- **Open Babel** (`openbabel-wheel`, a core dependency) is licensed GPL-2.0-only. That does not restrict your own installation. It does mean that a bundle shipping DELFIN together with Open Babel (a container image, an environment archive, a cluster module) cannot meet both licences at once, so such a bundle should not be redistributed; let the target environment install Open Babel itself.
+- **PyMuPDF** is licensed AGPL-3.0 (or commercially by Artifex) and is therefore not installed by default. The file browser's PDF viewer, OCR page images and PDF previews in the chat need it: `pip install "delfin-complat[pdf]"`. Without it the viewer and the OCR check say that PyMuPDF is missing and a chat card shows the file without a preview; PDF text, forms and merging keep working through pypdf.
+- The full list, with the reasoning, is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) section 3.
+
+**Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, CREST or any other external program. Users must comply with the individual license terms of each external software package.
 
 ## Warranty and Liability
 DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim all warranties, express or implied, including but not limited to implied warranties of merchantability and fitness for a particular purpose. In no event shall the authors be liable for any damages arising from the use of this software.
@@ -1053,8 +1061,7 @@ If you use DELFIN in a scientific publication, please cite:
 
 This project is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
 
-You should have received a copy of the GNU Lesser General Public License along with this repository in the file [LICENSE](LICENSE).
-If not, see <https://www.gnu.org/licenses/>.
+The licence notice is in [LICENSE](LICENSE). The full text of the GNU Lesser General Public License version 3 is in [COPYING.LESSER](COPYING.LESSER); it supplements the GNU General Public License version 3, whose full text is in [COPYING](COPYING). Both files are also inside every wheel (`*.dist-info/licenses/`) and sdist. The texts are also published at <https://www.gnu.org/licenses/>.
 
 Non-binding citation request:
 If you use this software in research, please cite the associated paper (see [CITATION.cff](./CITATION.cff)).
