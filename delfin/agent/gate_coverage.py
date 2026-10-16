@@ -75,6 +75,7 @@ MODULE_SINKS: dict[str, dict[str, int]] = {
 XMOD_SINKS: dict[str, frozenset[str]] = {
     "_text_files": frozenset({"read_text_file", "write_text_file"}),
     "_nb": frozenset({"read_cells", "apply_edit"}),
+    "_cp": frozenset({"read_text"}),        # chat_plots.read_text(path, n)
 }
 
 #: ``subprocess.<name>(...)``: a sink when any argument is not a constant.

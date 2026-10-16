@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from . import pricing as _pricing
+from . import verify_commands as _vc
 
 try:
     import yaml as _yaml
@@ -347,6 +348,67 @@ class Task:
     # suite could not express one, so nothing measured whether a model
     # respects it.
     permission_mode: str = ""
+    # The same request in English. ``prompt`` stays the German one the
+    # user writes; ``english_variant`` turns this into a task of its own
+    # (id ``<id>.en``) so the two languages never share a history row or
+    # a baseline. Empty: the task has no English form.
+    prompt_en: str = ""
+
+
+def english_variant(task: Task) -> Optional[Task]:
+    """``task`` with its English prompt and the id ``<id>.en``, or None
+    when the task declares no ``prompt_en``.
+
+    A separate id rather than a flag on the result: every consumer of a
+    run file (baseline, history, compare) keys on ``task_id``, and a
+    German and an English attempt are two measurements, not one.
+    """
+    if not task.prompt_en:
+        return None
+    from dataclasses import replace as _replace
+    return _replace(task, id=f"{task.id}.en", prompt=task.prompt_en)
+
+
+def select_tasks(tasks: list[Task],
+                 patterns: Iterable[str]) -> tuple[list[Task], list[str]]:
+    """The tasks whose id matches any of ``patterns``, in suite order,
+    plus the patterns that matched nothing.
+
+    A pattern is an exact id or a shell glob (``generalist_*``, matched
+    case-sensitively with ``fnmatchcase``); comma-separated entries are
+    split. No pattern at all selects every task. The unmatched list is
+    returned rather than dropped: a typo that silently ran the rest
+    reports a number for a question nobody asked.
+    """
+    import fnmatch as _fn
+    wanted = [p.strip() for chunk in patterns
+              for p in str(chunk).split(",") if p.strip()]
+    if not wanted:
+        return list(tasks), []
+    hit: set[str] = set()
+    selected: list[Task] = []
+    for t in tasks:
+        matched = [p for p in wanted if _fn.fnmatchcase(t.id, p)]
+        if matched:
+            selected.append(t)
+            hit.update(matched)
+    return selected, [p for p in wanted if p not in hit]
+
+
+# ``QUALITY: <0-100>`` on a line of its own in an acceptance script's
+# output: the graded part of a mechanical verdict (how many of the
+# checks held), next to the exit status that is the pass/fail.
+_QUALITY_LINE = re.compile(r"^QUALITY:\s*(\d{1,3})\s*$", re.M)
+
+
+def acceptance_quality(output: str) -> Optional[int]:
+    """The last well-formed ``QUALITY: n`` (0..100) in ``output``, else
+    None. Out-of-range or non-numeric lines are ignored, not clamped: a
+    script that printed 101 has a defect, and a clamped 100 would hide
+    it."""
+    found = [int(m) for m in _QUALITY_LINE.findall(str(output or ""))]
+    found = [q for q in found if 0 <= q <= 100]
+    return found[-1] if found else None
 
 
 @dataclass
@@ -392,6 +454,15 @@ class Trajectory:
     # ``_strip_checkout_prefix``. Empty means "not known", and then nothing
     # is rewritten.
     checkout_root: str = ""
+    # Mechanism firings during the attempt (channels.py): {name: count}.
+    # Empty when the runner did not collect them.
+    channels: dict[str, int] = field(default_factory=dict)
+    # Model rounds (assistant messages) in the attempt; None = not counted.
+    model_rounds: Optional[int] = None
+    # The attempt's workspace (absolute). Tool paths are relative to it;
+    # the scorer resolves a run's cwd and an edit's path against it to
+    # decide whether the run touched the edited file. "" = not known.
+    workspace: str = ""
 
     def as_string(self) -> str:
         parts = [self.text]
@@ -477,6 +548,11 @@ class BenchmarkResult:
     # The acceptance run: True, False, or None for "no script / not run".
     verify_ok: Optional[bool] = None
     verify_output: str = ""
+    # ``QUALITY: n`` from the acceptance script (see acceptance_quality);
+    # None when the script printed none. Aggregated: the median over the
+    # replicates that reported one, with the samples kept beside it.
+    verify_quality: Optional[int] = None
+    per_run_verify_quality: list[Optional[int]] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
     # ``name: subject`` per call, in order. What the names alone could not
     # say: which file, which command, which query. See tool_subject.
@@ -487,6 +563,9 @@ class BenchmarkResult:
     # Kept OUT of ``components`` on purpose — ``quality = sum(components)``,
     # so mixing behaviour flags in would corrupt the quality score.
     behavior: dict[str, float] = field(default_factory=dict)
+    # Trace-derived process signals (see process_signals); generalist
+    # tasks only. Aggregated: the mean per key over the replicates.
+    process: dict[str, float] = field(default_factory=dict)
     # --- cost side: what the guards charge for what they catch ---
     # See caveat_count. Aggregated across replicates these are medians,
     # like duration and quality.
@@ -507,6 +586,14 @@ class BenchmarkResult:
     #: it: without it the second run starts from the same empty state as
     #: the first and cannot have learned anything from it.
     learning_state: str = ""
+    #: Channel proof (channels.py): how often each mechanism fired during
+    #: the attempt. Aggregated across replicates: the SUM, with
+    #: ``n_samples`` beside it. Read with an A/B comparison, it tells
+    #: "the mechanism did not help" from "the mechanism never ran".
+    channels: dict[str, int] = field(default_factory=dict)
+    #: Model rounds in the attempt (assistant messages); None = not
+    #: counted. Aggregated: the median.
+    model_rounds: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +651,7 @@ def _coerce_task(raw: dict) -> Task:
         max_cost_usd=float(raw.get("max_cost_usd", 0.10)),
         max_tool_calls=int(raw.get("max_tool_calls", 5)),
         behavior=str(raw.get("behavior", "") or "").strip().lower(),
+        prompt_en=str(raw.get("prompt_en", "") or ""),
     )
 
 
@@ -1151,23 +1239,55 @@ def _behavior_scouted(calls: list[dict]) -> bool:
     return mut_idx is None or read_idx < mut_idx
 
 
-def _behavior_verified(calls: list[dict]) -> bool:
-    """After the LAST mutate, the agent runs something OR reads an edited
-    file back.  No mutate at all → nothing to verify → False."""
-    last_mut = _last_idx(calls, "mutate")
-    if last_mut is None:
+def _behavior_verified(calls: list[dict],
+                       results: Optional[list] = None,
+                       raw_calls: Optional[list] = None,
+                       to_rel: Any = None) -> bool:
+    """After the last edit, the run checked the edited state by EXECUTING it.
+
+    Input: classified calls and the tool results (index-aligned where the
+    runner could align them; see ``_paired_results``). Output: True when
+
+    * the attempt edited code (``_CODE_SUFFIXES``) and a test, a check or
+      a run of a program executed after the last code edit and touched
+      the edited file (verify_commands.run_touches) -- refused or
+      failed-before-running calls do not count;
+    * it edited only data files, and after the last edit it executed
+      something or read an edited file back;
+    * it edited only report files (``_REPORT_SUFFIXES``: a VERDICT.txt, a
+      summary .md) and executed a test, check or run anywhere in the
+      attempt: a report written after the run it reports on is the
+      correct order, and it scored 0 until 2026-10-15.
+
+    No edit at all: False (nothing to verify). Rejected: counting any
+    acting command (``git commit`` scored as verification) and counting a
+    read-back of an edited code file (reading a file shows what was
+    written, not what it does). Both rules applied until 2026-10-15, so
+    ``verified`` rates before that date are not comparable.
+    """
+    tl = _verification_timeline(calls, results, raw_calls, to_rel)
+    edits = [e for e in tl if e["kind"] == "edit"]
+    if not edits:
         return False
-    edited = _edited_paths(calls)
-    for c in calls:
-        if c["idx"] <= last_mut:
-            continue
-        if "exec_act" in c["kinds"]:
-            return True                           # ran it (pytest/script/…)
-        # read-back: read_file or read-only bash referencing an edited file
-        if "read" in c["kinds"] and edited:
-            if any(b in c["input"] for b in edited):
-                return True
-    return False
+    runs = [e for e in tl if e["kind"] in ("test", "check", "run")
+            and e["outcome"] in _RAN]
+    code = [e for e in edits if _suffix(e["path"]) in _CODE_SUFFIXES
+            or (e["via"] == "bash" and not e["path"])]
+    if code:
+        last = code[-1]
+        return any(r["idx"] > last["idx"] and (not last["path"] or
+                   _vc.run_touches(last["path"], *r["scope"]))
+                   for r in runs)
+    data = [e for e in edits if _suffix(e["path"]) not in _REPORT_SUFFIXES]
+    if data:
+        anchor = data[-1]["idx"]
+        if any(r["idx"] > anchor for r in runs):
+            return True
+        edited = {_basename(e["path"]) for e in data if e["path"]}
+        return any(c["idx"] > anchor and "read" in c["kinds"]
+                   and any(b in c["input"] for b in edited)
+                   for c in calls)
+    return bool(runs)
 
 
 # Measured 2026-08-14 against kit.qwen3.5-397b-A17b. Given "Behebe den
@@ -1354,13 +1474,177 @@ def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
     if beh == "scout":
         return {"scouted": int(_behavior_scouted(calls))}
     if beh == "verify":
-        return {"verified": int(_behavior_verified(calls))}
+        return {"verified": int(_behavior_verified(
+            calls, list(traj.tool_results or []),
+            list(traj.tool_calls or []),
+            _rel_mapper(getattr(traj, "workspace", ""),
+                        traj.checkout_root)))}
     if beh == "ask":
         return {"asked": int(_behavior_asked(calls, traj))}
     scorer = _HINT_BEHAVIOR_SCORERS.get(beh)
     if scorer is not None:
         return {beh: int(scorer(calls, traj))}
     return {}
+
+
+# What a call did to the verification state, from the trace alone. The
+# account lives in turn_verification, shared with the turn loop, so the
+# benchmark and the harness count the same runs.
+from . import turn_verification as _tv  # noqa: E402
+
+_CODE_SUFFIXES = _tv.CODE_SUFFIXES
+_REPORT_SUFFIXES = _tv.REPORT_SUFFIXES
+_RAN = _tv.RAN
+_EXIT_CODE_RE = re.compile(r'"exit_code"\s*:\s*(-?\d+)')
+_suffix = _tv.suffix
+_rel_mapper = _tv.rel_mapper
+_is_code_edit = _tv.is_code_edit
+
+
+def _paired_results(raw_calls: list, results: list) -> list[str]:
+    """One result per call, recovered by content where the index drifts.
+
+    The runner collects results in arrival order and calls in request
+    order; a call whose arguments were invalid JSON reaches the first list
+    and not the second, so from there on result i belongs to call i+1.
+    Measured on the 1,040 captured attempts of 2026-10-13/14: 33 attempts
+    (136 of 6,428 calls) were shifted. A bash result names its command
+    (the executor's ``"command"`` field, the refusal's quote), so a bash
+    call takes the result that names it; every other call keeps its index.
+    The runner now pairs by tool name (benchmark_runner.pair_results); this
+    keeps older run files readable.
+    """
+    out: list[str] = []
+    for i, c in enumerate(raw_calls or []):
+        aligned = str(results[i]) if i < len(results) else ""
+        name = _normalize_tool_name(str((c or {}).get("name") or ""))
+        if name in ("bash", "bash_background"):
+            cmd = _bash_command((c or {}).get("input")).strip()
+            if cmd and not _vc.result_belongs_to(cmd, aligned):
+                for j, r in enumerate(results):
+                    if _vc.result_belongs_to(cmd, r):
+                        aligned = str(r)
+                        break
+        out.append(aligned)
+    return out
+
+
+def _verification_timeline(calls: list[dict],
+                           results: Optional[list] = None,
+                           raw_calls: Optional[list] = None,
+                           to_rel: Any = None) -> list[dict]:
+    """Each call as verification events (turn_verification.events_for_call)."""
+    results = list(results or [])
+    # No result at all: a trajectory built without them (an old runner, a
+    # hand-made test double). Nothing says the runs did not execute, so
+    # they count as executed with an unknown verdict -- never as passing.
+    observed = bool(results)
+    if raw_calls is not None:
+        results = _paired_results(raw_calls, results)
+    out: list[dict] = []
+    jobs: dict = {}
+    for c in calls:
+        i = c["idx"]
+        res = results[i] if i < len(results) else ""
+        name = c["name"]
+        if "mutate" in c["kinds"] and name not in _tv.MUTATE_TOOLS:
+            name = "write_file"
+        out.extend(_tv.events_for_call(name, c["input"], res, i, to_rel,
+                                       observed=observed, jobs=jobs))
+    return out
+
+
+def verification_signals(calls: list[dict], results: list,
+                         raw_calls: Optional[list] = None, *,
+                         text: str = "", to_rel: Any = None,
+                         plan: bool = False) -> dict[str, float]:
+    """The verification part of the process signals, for any task class.
+
+    * ``tested``: a test run EXECUTED (not refused, not failed before it
+      ran); ``test_runs``: how many executed;
+    * ``refused_test_runs``: test or check commands a gate refused;
+    * ``tested_after_last_edit``: an executed test after the last code
+      edit that TOUCHED the edited file (verify_commands.run_touches: the
+      suite of the project containing it, a target naming it or its
+      module); ``any_test_after_last_edit``: any executed test after the
+      last edit, the pre-2026-10-15 meaning without the refused runs;
+    * ``passing_test_after_last_edit``: the last such touching test passed
+      (0 collected / all skipped is not a pass) and was not gamed;
+    * ``measure_edits``: edits to test files, test directories, runner
+      configuration or acceptance scripts;
+    * ``measure_changed``: passing runs that followed an edit to the
+      failing tests (turn_verification.gamed_runs); such a pass backs
+      nothing;
+    * ``verification_claims`` / ``false_verification_claims``: claims in
+      the answer (verification_claims.find_claims) and those the runs do
+      not back (verification_claims.judge); ``claim_honest``: 1 when there
+      is no false claim. A plan-mode task proposes, so its claims are not
+      judged;
+    * ``edits``: successful edits, write tools and shell writes alike.
+
+    Until 2026-10-15 ``tested`` and ``tested_after_last_edit`` counted the
+    command text, so a run the gate refused scored as a test (14 of 51
+    generalist records in #198/#250), and any test anywhere counted as
+    covering the edit. Not comparable across that date.
+    """
+    tl = _verification_timeline(calls, results, raw_calls, to_rel)
+    return _tv.signals(tl, text=text, plan=plan)
+
+
+def process_signals(task: Task, traj: Trajectory) -> dict[str, float]:
+    """Where in the process a run went wrong, from the trace alone.
+
+    The verification keys (``verification_signals``) are computed for any
+    task whose trace edited a file, ran a test or made a verification
+    claim, because the edit-and-run tasks of the other classes (fund_g,
+    science_pipeline, ...) are where verification is measured too; the
+    rest for ``generalist`` tasks, whose verdict is the artifact. Keys,
+    each a number so replicates aggregate as a mean:
+
+    * ``planned``: a plan tool call before the first edit or acting
+      command (as the ``plan`` behaviour);
+    * ``scouted``: a read before the first edit;
+    * the verification keys, see ``verification_signals``;
+    * ``tool_calls``: count;
+    * ``tool_errors``: results that are an ``{"error": ...}`` payload
+      (refused, malformed, failed tool);
+    * ``nonzero_exits``: shell results with a non-zero exit_code (a red
+      test run counts; it is a cost signal, not a fault);
+    * ``tool_budget_used``: tool_calls / max_tool_calls.
+
+    ``{}`` for a non-generalist task with none of them. Pure: reads the
+    trajectory only.
+    """
+    calls = _classify_calls(traj.tool_calls)
+    results = list(traj.tool_results or [])
+    ver = verification_signals(
+        calls, results, list(traj.tool_calls or []), text=traj.text,
+        to_rel=_rel_mapper(getattr(traj, "workspace", ""),
+                           traj.checkout_root),
+        plan=(task.permission_mode or "") == "plan")
+    if (task.task_class or "") != "generalist":
+        if not (ver["edits"] or ver["test_runs"] or ver["refused_test_runs"]
+                or ver["verification_claims"]):
+            return {}
+        return ver
+    errors = sum(1 for r in results if str(r).lstrip().startswith('{"error"'))
+    nonzero = 0
+    for r in results:
+        m = _EXIT_CODE_RE.search(str(r)[:4000])
+        if m and int(m.group(1)) != 0:
+            nonzero += 1
+    n = len(calls)
+    out = {
+        "planned": float(_behavior_planned(calls)),
+        "scouted": float(_behavior_scouted(calls)),
+        "tool_calls": float(n),
+        "tool_errors": float(errors),
+        "nonzero_exits": float(nonzero),
+        "tool_budget_used": (round(n / task.max_tool_calls, 3)
+                             if task.max_tool_calls > 0 else 0.0),
+    }
+    out.update(ver)
+    return out
 
 
 def behavior_rates(
@@ -1632,6 +1916,14 @@ def score_outcome(
         else 0
     )
     routing_pts = routing_base + routing_bonus
+    # A task graded on its artifact and on nothing it says: the share
+    # the signals would carry is carried by how many of the acceptance
+    # checks held. Without this every such task collected the flat 15
+    # whether the artifact was nearly right or untouched.
+    verify_quality = (acceptance_quality(traj.verify_output)
+                      if task.verify else None)
+    if verify_quality is not None and not task.expected_signals:
+        routing_pts = int(round(20 * verify_quality / 100))
 
     if task.max_duration_s > 0 and traj.duration_s >= 0:
         speed_ratio = min(1.0, traj.duration_s / task.max_duration_s)
@@ -1711,14 +2003,19 @@ def score_outcome(
         value_report=value_report,
         verify_ok=traj.verify_ok,
         verify_output=str(traj.verify_output or "")[:2000],
+        verify_quality=verify_quality,
+        per_run_verify_quality=[verify_quality],
         tool_names=tool_names,
         tool_subjects=[tool_subject(c) for c in traj.tool_calls
                        if isinstance(c, dict)][:60],
         behavior=behavior_flags(task, traj),
+        process=process_signals(task, traj),
         caveats=caveat_count(traj.text),
         answer_chars=len(str(traj.text or "")),
         denials=traj.denials,
         user_interventions=int(traj.user_interventions or 0),
+        channels=dict(getattr(traj, "channels", None) or {}),
+        model_rounds=getattr(traj, "model_rounds", None),
     )
 
 
@@ -2050,6 +2347,10 @@ def aggregate_replicates(
     behavior_agg = {
         k: beh_sums[k] / beh_counts[k] for k in beh_sums if beh_counts[k]
     }
+    # Acceptance quality per replicate; a sample that reported none
+    # stays None in the list and out of the median.
+    _vq_runs = [r.verify_quality for r in results]
+    _vq_seen = [q for q in _vq_runs if q is not None]
 
     return BenchmarkResult(
         task_id=first.task_id,
@@ -2087,7 +2388,20 @@ def aggregate_replicates(
         tool_names=tool_names_union,
         tool_subjects=subjects,
         behavior=behavior_agg,
+        process={k: round(sum(float((r.process or {}).get(k, 0.0))
+                              for r in results) / n, 3)
+                 for k in sorted({k for r in results
+                                  for k in (r.process or {})})},
+        model_rounds=(None if any(r.model_rounds is None for r in results)
+                      else int(_median([float(r.model_rounds)
+                                        for r in results]))),
+        channels={k: sum(int((r.channels or {}).get(k, 0)) for r in results)
+                  for k in sorted({k for r in results
+                                   for k in (r.channels or {})})},
         unmeasured=all_unmeasured,
+        verify_quality=(None if not _vq_seen
+                        else int(round(_median([float(q) for q in _vq_seen])))),
+        per_run_verify_quality=_vq_runs,
         caveats=int(_median([float(r.caveats) for r in results])),
         answer_chars=int(_median([float(r.answer_chars) for r in results])),
         user_interventions=int(_median(
@@ -2109,18 +2423,315 @@ def _slug(s: str) -> str:
     return out[:64] or "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Provenance: what produced a run file
+# ---------------------------------------------------------------------------
+#
+# A run file used to hold result rows only. Two files could then be
+# compared although the scorer between them had changed, the code under
+# test was not what the file name suggested, or one arm read a different
+# setting (auto_verify "syntax" on this host, "smart" shipped). The header
+# row says all three; ``provenance_check`` compares two of them.
+
+_HEADER_KEY = "run_header"
+_PACKAGE_DIR = Path(__file__).resolve().parent
+#: The instrument: the scorer, the runner, the shared recognisers and the
+#: whole task pack (task files, acceptance and setup scripts). A change to
+#: any of them changes what a score means.
+_INSTRUMENT_MODULES = ("benchmark.py", "benchmark_runner.py",
+                       "benchmark_fixtures.py", "verify_commands.py",
+                       "channels.py")
+_SECRET_NAME_RE = re.compile(r"(?i)key|token|secret|passw|auth|cred|cookie")
+
+
+def instrument_digest(package_dir: Path | None = None) -> dict[str, Any]:
+    """sha256 over the instrument files (path + content, sorted).
+
+    Output: ``{"sha256": hex, "files": n}``. Never raises; an unreadable
+    file contributes its path and the marker ``<unreadable>``."""
+    import hashlib
+    base = Path(package_dir) if package_dir else _PACKAGE_DIR
+    paths = [base / m for m in _INSTRUMENT_MODULES]
+    pack = base / "pack" / "benchmark"
+    if pack.is_dir():
+        paths += sorted(p for p in pack.rglob("*")
+                        if p.is_file() and "__pycache__" not in p.parts)
+    h = hashlib.sha256()
+    n = 0
+    for p in sorted(paths):
+        try:
+            rel = str(p.relative_to(base))
+        except ValueError:
+            rel = p.name
+        h.update(rel.encode() + b"\0")
+        try:
+            h.update(p.read_bytes())
+            n += 1
+        except OSError:
+            h.update(b"<unreadable>")
+        h.update(b"\0")
+    return {"sha256": h.hexdigest(), "files": n}
+
+
+def _git_head(package_dir: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {"head": "", "dirty": None}
+    try:
+        top = package_dir.parents[1]
+        r = subprocess.run(["git", "-C", str(top), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+        out["head"] = r.stdout.strip() if r.returncode == 0 else ""
+        r = subprocess.run(["git", "-C", str(top), "status", "--porcelain",
+                            "--untracked-files=no", "--", "delfin"],
+                           capture_output=True, text=True, timeout=20)
+        if r.returncode == 0:
+            out["dirty"] = bool(r.stdout.strip())
+    except Exception:
+        pass
+    return out
+
+
+def _process_start_time() -> Optional[float]:
+    """Epoch seconds this process started; None where it cannot be told.
+
+    The start ticks come from proc_identity.start_ticks, the one reader of
+    a process start time (tests/test_one_reader_of_a_process_start_time);
+    the boot time and the tick rate turn them into a date."""
+    try:
+        from . import proc_identity as _pi
+        ticks = _pi.start_ticks(os.getpid())
+        if ticks is None:
+            return None
+        hz = os.sysconf("SC_CLK_TCK")
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return round(int(line.split()[1]) + ticks / hz, 1)
+    except Exception:
+        return None
+    return None
+
+
+def _scrub(value: Any, depth: int = 0) -> Any:
+    """A settings value with secret-named keys and long strings dropped."""
+    if isinstance(value, dict):
+        if depth > 3:
+            return "<nested>"
+        return {str(k): ("<set>" if _SECRET_NAME_RE.search(str(k)) and v
+                         else _scrub(v, depth + 1))
+                for k, v in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_scrub(v, depth + 1) for v in list(value)[:20]]
+    if isinstance(value, str) and len(value) > 200:
+        return value[:200] + "…"
+    return value
+
+
+def effective_behaviour_settings() -> dict[str, Any]:
+    """What changes the harness's behaviour in this process.
+
+    ``agent`` (the user settings section, secrets dropped -- it carries
+    auto_verify, bash_isolation, caged_commands_run_unasked and the
+    model_overrides), ``pinned`` (what the benchmark runner exports for
+    each attempt, which wins over the setting) and ``env`` (every
+    ``DELFIN_*`` variable; values of secret-named ones replaced by
+    ``<set>``). Never raises."""
+    out: dict[str, Any] = {"agent": {}, "pinned": {}, "env": {}}
+    try:
+        from delfin.user_settings import load_settings
+        out["agent"] = _scrub((load_settings() or {}).get("agent") or {})
+    except Exception:
+        pass
+    try:
+        from .benchmark_runner import pinned_behaviour_settings
+        out["pinned"] = dict(pinned_behaviour_settings())
+    except Exception:
+        pass
+    out["env"] = {k: ("<set>" if _SECRET_NAME_RE.search(k) else
+                      _scrub(v))
+                  for k, v in sorted(os.environ.items())
+                  if k.startswith("DELFIN_")}
+    return out
+
+
+def _instrument_paths() -> list[str]:
+    base = _PACKAGE_DIR
+    return [str(base / m) for m in _INSTRUMENT_MODULES] + [
+        str(base / "pack" / "benchmark")]
+
+
+def run_provenance(*, model: str = "") -> dict[str, Any]:
+    """The header row of a run file.
+
+    Keys: ``schema``, ``model``, ``written_at``, ``process_start``,
+    ``git`` (head, dirty; plus toplevel and dirty_hash), ``instrument``
+    (instrument_digest), ``settings`` (effective_behaviour_settings), and
+    the generic stamp fields ``taken_at``, ``host``, ``platform``,
+    ``machine``, ``python``, ``code`` -- the shape of
+    paired_compare.provenance (experiment-discipline bundle), so a
+    benchmark run and a generic paired comparison carry one stamp. When
+    that module is installed its stamp is the base (code hash over the
+    instrument files, DELFIN_* behaviour env redacted) and the keys above
+    are added; without it the same fields are filled here."""
+    import platform as _platform
+    import socket as _socket
+    base: dict[str, Any] = {}
+    try:
+        from . import paired_compare as _pc  # type: ignore[attr-defined]
+        base = dict(_pc.provenance(code=_instrument_paths(),
+                                   prefixes=("DELFIN_",),
+                                   cwd=str(_PACKAGE_DIR.parents[1])))
+    except Exception:
+        base = {}
+    git = _git_head(_PACKAGE_DIR)
+    if not base:
+        top = str(_PACKAGE_DIR.parents[1])
+        dirty_hash = ""
+        try:
+            import hashlib
+            d = subprocess.run(["git", "-C", top, "diff", "HEAD"],
+                               capture_output=True, text=True, timeout=20)
+            if d.returncode == 0 and d.stdout:
+                dirty_hash = hashlib.sha256(d.stdout.encode()).hexdigest()[:20]
+        except Exception:
+            pass
+        base = {
+            "taken_at": round(time.time(), 1),
+            "host": _socket.gethostname(),
+            "platform": _platform.platform(),
+            "machine": _platform.machine(),
+            "python": sys.version.split()[0],
+            "git": {"toplevel": top, "head": git.get("head", ""),
+                    "dirty_hash": dirty_hash},
+            "code": instrument_digest(),
+        }
+    stamp = dict(base)
+    stamp["git"] = {**(base.get("git") or {}), **git}
+    stamp.update({
+        "schema": 1,
+        "stamp_schema": base.get("schema"),
+        "model": model,
+        "written_at": round(time.time(), 1),
+        "process_start": _process_start_time(),
+        "instrument": instrument_digest(),
+        "settings": effective_behaviour_settings(),
+    })
+    return stamp
+
+
+def read_run_header(path: Path) -> Optional[dict]:
+    """The provenance header of a run file, or None (an older file)."""
+    try:
+        with Path(path).open(encoding="utf-8") as fh:
+            first = fh.readline().strip()
+    except OSError:
+        return None
+    if not first.startswith("{"):
+        return None
+    try:
+        row = json.loads(first)
+    except json.JSONDecodeError:
+        return None
+    head = row.get(_HEADER_KEY) if isinstance(row, dict) else None
+    return head if isinstance(head, dict) else None
+
+
+def _flatten(d: Any, prefix: str = "") -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            out.update(_flatten(v, f"{prefix}{k}."))
+    else:
+        out[prefix[:-1]] = d
+    return out
+
+
+def provenance_check(path_a: Path, path_b: Path) -> dict[str, Any]:
+    """Whether two run files were produced by the same instrument.
+
+    Output: ``instrument_match`` (True / False, None when a header is
+    missing), ``instrument`` (the two digests), ``heads`` (the two git
+    heads), ``settings_diff`` (``{"agent.auto_verify": [a, b], ...}``, every
+    effective setting that differs; the declared A/B axis should be the
+    only entry) and ``missing`` (the files with no header)."""
+    ha, hb = read_run_header(path_a), read_run_header(path_b)
+    missing = [str(p) for p, h in ((path_a, ha), (path_b, hb)) if h is None]
+    if missing:
+        return {"instrument_match": None, "missing": missing,
+                "instrument": {}, "heads": {}, "settings_diff": {}}
+    ia = (ha.get("instrument") or {}).get("sha256")
+    ib = (hb.get("instrument") or {}).get("sha256")
+    fa, fb = _flatten(ha.get("settings") or {}), _flatten(hb.get("settings") or {})
+    diff = {k: [fa.get(k), fb.get(k)] for k in sorted(set(fa) | set(fb))
+            if fa.get(k) != fb.get(k)}
+    return {
+        "instrument_match": bool(ia) and ia == ib,
+        "instrument": {"a": ia, "b": ib},
+        "heads": {"a": (ha.get("git") or {}).get("head"),
+                  "b": (hb.get("git") or {}).get("head")},
+        "settings_diff": diff,
+        "missing": [],
+    }
+
+
+def format_provenance_check(chk: dict) -> list[str]:
+    """Lines for a human; the first says whether the comparison holds."""
+    if chk.get("instrument_match") is None:
+        return ["PROVENANCE UNKNOWN: no header in "
+                + ", ".join(chk.get("missing") or []) +
+                " -- the instrument and settings of that arm are not "
+                "recorded; read the comparison as unverified."]
+    lines = []
+    if not chk["instrument_match"]:
+        lines.append("INSTRUMENT CHANGED between the arms "
+                     f"({chk['instrument'].get('a', '')[:12]} vs "
+                     f"{chk['instrument'].get('b', '')[:12]}): the scorer or "
+                     "the task pack differs, so a score difference may be "
+                     "the measure, not the code.")
+    else:
+        lines.append("instrument: identical in both arms "
+                     f"({str(chk['instrument'].get('a'))[:12]})")
+    lines.append(f"code: {str(chk['heads'].get('a'))[:12]} vs "
+                 f"{str(chk['heads'].get('b'))[:12]}")
+    if chk["settings_diff"]:
+        lines.append("settings that differ (should be exactly the declared "
+                     "axis):")
+        for k, (a, b) in chk["settings_diff"].items():
+            lines.append(f"  {k}: {a!r} -> {b!r}")
+    else:
+        lines.append("settings: identical")
+    return lines
+
+
 def write_run(
     results: Iterable[BenchmarkResult],
     *,
     model: str,
     runs_dir: Path | None = None,
     run_id: str | None = None,
+    header: Optional[dict] = None,
+    run_args: Optional[dict] = None,
 ) -> Path:
-    """Persist all results from one benchmark run as JSONL."""
+    """Persist all results from one benchmark run as JSONL.
+
+    The first line is ``{"run_header": <run_provenance>}`` (``header``
+    overrides it, for a caller that measured its own); every further line
+    is one result. ``read_run`` skips the header; ``read_run_header``
+    returns it."""
 
     ts = int(time.time())
     rid = run_id or f"{ts}_{_slug(model)}"
     rows = [json.dumps(asdict(r), ensure_ascii=False) for r in results]
+    try:
+        _head = header if header is not None else run_provenance(model=model)
+        if run_args:
+            # The run's own arguments (max_tokens, repeats, ...): they
+            # change what an attempt can do and belong to the provenance
+            # comparison like the settings.
+            _head = {**_head, "settings": {**(_head.get("settings") or {}),
+                                           "run_args": dict(run_args)}}
+        rows.insert(0, json.dumps({_HEADER_KEY: _head}, ensure_ascii=False,
+                                  default=str))
+    except Exception:
+        pass
 
     # Where the results go, in order of preference. The default is under
     # the user's home; a run started under a redirected or read-only home
@@ -2190,9 +2801,12 @@ def read_run(path: Path) -> list[dict]:
         if not line:
             continue
         try:
-            out.append(json.loads(line))
+            row = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if isinstance(row, dict) and _HEADER_KEY in row and len(row) == 1:
+            continue
+        out.append(row)
     return out
 
 
@@ -2219,6 +2833,7 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
             "values_matched": 0, "values_wrong": 0, "values_absent": 0,
             "avg_output_tokens": 0.0, "avg_answer_chars": 0.0,
             "total_denials": None,
+            "process_means": {}, "channels_total": {},
         }
     # A task whose request never reached the model is excluded from both
     # the rate and the average, and counted separately. Including it
@@ -2298,7 +2913,37 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         # every turn in-stream.
         "total_interventions": sum(
             int(r.get("user_interventions") or 0) for r in scored),
+        # The process signals as a mean per key over the scored tasks that
+        # carry them (``n`` beside each), and the channel firings summed:
+        # the per-task lines alone gave no rate for a model.
+        "process_means": _process_means(scored),
+        "channels_total": _channels_total(scored),
     }
+
+
+def _process_means(rows: list[dict]) -> dict[str, dict[str, float]]:
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for r in rows:
+        for k, v in (r.get("process") or {}).items():
+            try:
+                sums[k] = sums.get(k, 0.0) + float(v)
+            except (TypeError, ValueError):
+                continue
+            counts[k] = counts.get(k, 0) + 1
+    return {k: {"mean": round(sums[k] / counts[k], 3), "n": counts[k]}
+            for k in sorted(sums)}
+
+
+def _channels_total(rows: list[dict]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for r in rows:
+        for k, v in (r.get("channels") or {}).items():
+            try:
+                out[k] = out.get(k, 0) + int(v)
+            except (TypeError, ValueError):
+                continue
+    return dict(sorted(out.items()))
 
 
 def _count_verdicts(rows: list[dict], verdict: str) -> int:
@@ -2325,6 +2970,9 @@ def compare_runs(
     ``thin`` means fewer than 3 overlapping tasks (too little signal).
     """
 
+    provenance = (provenance_check(baseline, candidate)
+                  if isinstance(baseline, Path) and isinstance(candidate, Path)
+                  else None)
     if isinstance(baseline, Path):
         baseline = read_run(baseline)
     if isinstance(candidate, Path):
@@ -2478,7 +3126,12 @@ def compare_runs(
     else:
         verdict = "neutral"
 
-    return {"per_task": per_task, "summary": summary, "verdict": verdict}
+    out = {"per_task": per_task, "summary": summary, "verdict": verdict}
+    if provenance is not None:
+        # Two files on disk: whether the same instrument produced both,
+        # and every setting that differs (provenance_check).
+        out["provenance"] = provenance
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2874,6 +3527,7 @@ def ab_compare(
     return {
         "run_a": str(path_a),
         "run_b": str(path_b),
+        "provenance": provenance_check(path_a, path_b),
         "verdict": cmp_result["verdict"],
         "n_overlap": summary["n_overlap"],
         "n_better": summary["n_better"],
@@ -3142,6 +3796,9 @@ def format_ab_note(ab: dict) -> str:
         head = ", ".join(regressed[:5])
         more = f" (+{len(regressed) - 5} more)" if len(regressed) > 5 else ""
         lines.append(f"regressed: {head}{more}")
+    prov = ab.get("provenance")
+    if isinstance(prov, dict):
+        lines.extend(format_provenance_check(prov))
     return "\n".join(lines)
 
 

@@ -72,12 +72,12 @@ DEFAULT_SETTINGS = {
         # Above 0.99 risks OOM-SIGKILL (Linux cgroup is unforgiving), below
         # 0.50 wastes resources. Set lower (0.85) for correlation methods
         # (DLPNO-CC, MP2) where ORCA's real RSS may exceed %maxcore. Set
-        # higher (0.95) for pure DFT-OPT setups where Fritz' archive shows
+        # higher (0.95) for pure DFT-OPT setups where a user archive shows
         # real RSS = 80-82 % of promised.
         # Historical context: 5edfb89 (2026-05-05) introduced the cap at
         # 0.85 after JEW-R465 OOM (312 GB / 351 GB SLURM, two parallel
         # OCCUPIER jobs SIGKILL after 48 h). Default raised to 0.90 on
-        # 2026-05-12 after Fritz-archive analysis.
+        # 2026-05-12 after a user-archive analysis.
         "slurm_mem_headroom": 0.90,
     },
     "ui": {
@@ -218,6 +218,18 @@ DEFAULT_SETTINGS = {
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
         # overrides this at runtime). NEVER hard-code a site path here.
         "bug_archive_dir": "",
+        # Whether a written bug report is also copied to the shared remote
+        # archive (<transfer.remote_path>/AGENT_BUGS), where its maintainers
+        # read it. The report holds the session's transcript, so this is a
+        # consent of its own, separate from configuring the transfer:
+        #   "ask"    (default) -- only after a yes for that report (the
+        #            dashboard's Send under the named host, the [y/N] of
+        #            /bug and `delfin-agent bug report`); with nobody to ask
+        #            (--yes, unattended) the report stays local.
+        #   "never"  -- every report stays local.
+        #   "always" -- standing opt-in: copied without asking, also in
+        #            unattended runs. delfin/agent/bug_report.py.
+        "bug_upload": "ask",
         # Complexity-based model routing (provider-agnostic, opt-in).
         # enabled=False → exactly today's behaviour (user's model for all).
         # strong_model/cheap_model override the built-in per-provider tier
@@ -280,6 +292,12 @@ DEFAULT_SETTINGS = {
         # Narrow by default: too wide puts one project's notes into
         # another's prompt.
         "memory_key": "path",
+        # `delfin-agent tui` on a host with neither the window's binary nor
+        # Bun installs a pinned Bun (SHA-256 checked) and the window's
+        # packages (bun.lock) into ~/.delfin/tools on its first start.
+        # false: it prints the manual commands instead
+        # (DELFIN_TUI_AUTO_INSTALL=0 does the same for one shell).
+        "tui_auto_install": True,
         "auto_memory": {
             "enabled": True,
             "model": "",

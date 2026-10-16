@@ -276,6 +276,7 @@ def _json_line(obj: dict) -> None:
 
 
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
+                 memory_context: str = "",
                  emit: Any = None,
                  on_tool_result: Any = None,
                  on_permission_denied: Any = None) -> dict[str, Any]:
@@ -305,6 +306,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     ``on_permission_denied`` (optional) receives ``(tool_name)`` each
     time the backend refused a call -- same forward-only pattern, so
     the benchmark can count interventions without a key of its own.
+
+    ``memory_context`` (optional) goes to the engine's system prompt;
+    passed only when non-empty, for the same fixed-signature doubles.
+    ``cmd_run`` fills it from ``turn_context``; the scheduler and the
+    benchmark call this directly and send none.
 
     The gate's own decisions are collected by a ``turn_outcome``
     observer for the length of the call: they become
@@ -431,6 +437,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         kwargs["on_wait"] = _on_wait
     if on_tool_result is not None:
         kwargs["on_tool_result"] = _forward_tool_result
+    if memory_context:
+        kwargs["memory_context"] = memory_context
     # The same probe once more: the backend's refusals are wanted for the
     # result even when no caller asked for them, but only an engine that
     # takes the keyword may be handed it.
@@ -533,11 +541,125 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
             "model", str(getattr(getattr(engine, "client", None), "model", "")
                          or ""))
         estate.setdefault("provider", str(getattr(engine, "provider", "") or ""))
+        # The save guard compares this record with the stored one: a new
+        # record explains a shorter history. The dashboard passes it; this
+        # saver (terminal, -p/run, scheduler) did not, and restore_state
+        # reads it back so a resumed session compares against its own.
+        estate.setdefault("last_compaction_info",
+                          getattr(engine, "last_compaction_info", None))
         _ss.save_session(chat_messages=_display_messages(engine),
                          workspace=str(repo_root), **estate)
     except Exception as exc:
         print(f"WARN: session save failed: {exc}", file=sys.stderr)
     return sid
+
+
+def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
+                 t0: float | None, run_stage=None) -> None:
+    """The session-end stages, one list for ``run``, ``chat -p`` and the
+    interactive session.
+
+    Input: the engine, the saved session id, the workspace, the task the
+    user gave (the -p prompt; the first typed prompt of a terminal
+    session, "" when none was typed), whether the session ended on an
+    error, and its monotonic start. Output: none; each stage is
+    best-effort and a failing one is said on stderr.
+
+    Stages, in order: session report, skill learning, indexing, cycle
+    outcome (outcome history + provider profile), episodic memory, eval
+    loop. Without a task -- a terminal session left before its first
+    prompt -- the cycle outcome and the episode are skipped: there is no
+    turn to judge, and a PASS for nothing would enter the history the
+    briefing quotes. The terminal used to run the first three only.
+
+    ``run_stage(name, fn)``, when given, runs each stage instead of a
+    plain call (the terminal's attended leave: ``repl._LeaveStages``, a
+    budget per stage and Ctrl+C to skip). None runs them inline, as for
+    ``run``, ``chat -p`` and the scheduler.
+    """
+    verdict = "FAIL" if failed else "PASS"
+
+    def _session_end_stage(name: str, fn) -> None:
+        """One best-effort session-end stage, said when it fails.
+
+        Best-effort stays right — a report write must never break the
+        answer's exit code — but a stage that fails on EVERY scheduled
+        unattended run vanished silently here: the run printed its
+        answer and the failure was indistinguishable from a stage that
+        did its job. The warning is the same shape as the save-failure
+        line above.
+        """
+        def _guarded() -> None:
+            try:
+                fn()
+            except Exception as exc:
+                print(f"WARN: session-end stage {name} failed: {exc}",
+                      file=sys.stderr)
+
+        if run_stage is None:
+            _guarded()
+        else:
+            run_stage(name, _guarded)
+
+    # Session report: best-effort Markdown write; never breaks exit.
+    def _report_stage(sid_, engine_):
+        from .session_report import write_session_report
+        write_session_report(sid_ or getattr(engine_, "session_id", ""))
+
+    def _learn_stage(engine_, sid_):
+        from .session_end import learn_at_session_end
+        learn_at_session_end(
+            _display_messages(engine_),
+            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
+
+    def _index_stage(sid_):
+        from .session_end import index_at_session_end
+        index_at_session_end(str(sid_ or ""))
+
+    def _episode_stage(engine_, sid_, repo_):
+        from .episodes import build_episode_from_state, save_episode
+        fields = build_episode_from_state(engine_.export_state(), [])
+        save_episode(
+            sid_,
+            repo_root=repo_,
+            verdict=verdict,
+            **fields,
+        )
+
+    def _eval_stage():
+        from .eval_loop import maybe_run_scheduled
+        maybe_run_scheduled()
+
+    _session_end_stage("report", lambda: _report_stage(sid, engine))
+    # Shared session-end stage: skill learning, same hook as the CLI
+    # chat and the dashboard. Best-effort; never breaks the run.
+    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
+    # Session-end stage (Paket 5): the ended session becomes searchable.
+    _session_end_stage("indexing", lambda: _index_stage(sid))
+
+    # Learning signal: record the outcome so provider profiles learn from
+    # CLI/headless usage too — previously only dashboard cycles fed the
+    # profile, so KIT/CLI sessions contributed nothing.
+    if task:
+        _session_end_stage(
+            "cycle outcome",
+            lambda: engine.record_cycle_outcome(
+                verdict,
+                task,
+                error_type=("cli_error" if failed else None),
+                start_time=t0,
+            ))
+    # Episodic memory: persist one compact per-session record so a future
+    # session can recall similar past work (best-effort, LLM-free) —
+    # without this the saved session state is write-only.
+    if task:
+        _session_end_stage(
+            "episodic memory",
+            lambda: _episode_stage(engine, sid, repo))
+    # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
+    _session_end_stage(
+        "eval loop",
+        lambda: _eval_stage())
 
 
 def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
@@ -630,83 +752,32 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         _emit = {"emit": _render_event}
     else:
         _emit = {"emit": _json_line} if stream_json else {}
-    out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
+    # What the terminal and the dashboard send with a turn besides the
+    # text: the project instruction files and the per-turn hints. One
+    # helper for the three surfaces (turn_context).
+    from . import turn_context
+    _memory = turn_context.memory_context(engine, prompt)
+    if _memory:
+        _emit = {**_emit, "memory_context": _memory}
+    # Over the context budget, the turn starts from a small fresh block,
+    # as it does in the terminal (repl.run_turn) and the dashboard: the
+    # same helper, under the budget a no-op. A restored session (--session,
+    # --continue, --resume) is the case it exists for. Applied after the
+    # hint, in run_turn's order.
+    from .repl import prepare_fresh_turn
+    prompt_sent = prepare_fresh_turn(
+        engine, turn_context.user_message(prompt), workspace=repo)
+    # 0 is "the role decides" (the engine's max_tokens_for_role), the value
+    # chat declares as its default and run --max-tokens 0 asks for. It used
+    # to be replaced by 4096 here, so chat -p ran at an eighth of the
+    # terminal's solo budget. run keeps 4096 through its parser default.
+    out = _run_once(engine, prompt_sent,
+                    max_tokens=int(getattr(args, "max_tokens", 0) or 0),
                     **_emit)
     sid = _save_session(engine, repo)
 
-    def _session_end_stage(name: str, fn) -> None:
-        """One best-effort session-end stage, said when it fails.
-
-        Best-effort stays right — a report write must never break the
-        answer's exit code — but a stage that fails on EVERY scheduled
-        unattended run vanished silently here: the run printed its
-        answer and the failure was indistinguishable from a stage that
-        did its job. The warning is the same shape as the save-failure
-        line above.
-        """
-        try:
-            fn()
-        except Exception as exc:
-            print(f"WARN: session-end stage {name} failed: {exc}",
-                  file=sys.stderr)
-
-    # Session report: best-effort Markdown write; never breaks exit.
-    def _report_stage(sid_, engine_):
-        from .session_report import write_session_report
-        write_session_report(sid_ or getattr(engine_, "session_id", ""))
-
-    def _learn_stage(engine_, sid_):
-        from .session_end import learn_at_session_end
-        learn_at_session_end(
-            _display_messages(engine_),
-            session_id=str(sid_ or getattr(engine_, "session_id", "") or ""))
-
-    def _index_stage(sid_):
-        from .session_end import index_at_session_end
-        index_at_session_end(str(sid_ or ""))
-
-    def _episode_stage(engine_, sid_, repo_, out_):
-        from .episodes import build_episode_from_state, save_episode
-        fields = build_episode_from_state(engine_.export_state(), [])
-        save_episode(
-            sid_,
-            repo_root=repo_,
-            verdict="FAIL" if out_["error"] else "PASS",
-            **fields,
-        )
-
-    def _eval_stage():
-        from .eval_loop import maybe_run_scheduled
-        maybe_run_scheduled()
-
-    _session_end_stage("report", lambda: _report_stage(sid, engine))
-    # Shared session-end stage: skill learning, same hook as the CLI
-    # chat and the dashboard. Best-effort; never breaks the run.
-    _session_end_stage("skill learning", lambda: _learn_stage(engine, sid))
-    # Session-end stage (Paket 5): the ended session becomes searchable.
-    _session_end_stage("indexing", lambda: _index_stage(sid))
-
-    # Learning signal: record the outcome so provider profiles learn from
-    # CLI/headless usage too — previously only dashboard cycles fed the
-    # profile, so KIT/CLI sessions contributed nothing.
-    _session_end_stage(
-        "cycle outcome",
-        lambda: engine.record_cycle_outcome(
-            "FAIL" if out["error"] else "PASS",
-            prompt,
-            error_type=("cli_error" if out["error"] else None),
-            start_time=_t0,
-        ))
-    # Episodic memory: persist one compact per-session record so a future
-    # session can recall similar past work (best-effort, LLM-free) —
-    # without this the saved session state is write-only.
-    _session_end_stage(
-        "episodic memory",
-        lambda: _episode_stage(engine, sid, repo, out))
-    # Close the eval loop opportunistically (opt-in, LLM-free, max 1/day).
-    _session_end_stage(
-        "eval loop",
-        lambda: _eval_stage())
+    _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),
+                 t0=_t0)
 
     from .repl import TURN_KEYS
     if stream_json:
@@ -779,6 +850,24 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     """
     import json
 
+    # The user's own settings file first (``agent.permission_mode``, what
+    # the dashboard's control and a hand edit write): a kit file's
+    # ``default_mode`` -- one a permissions tool call persisted, or a
+    # checked-out repository's -- does not override what the user set
+    # there. Read raw, like the kit files: load_settings() fills in a
+    # value nobody chose. A value that is no mode (an old profile name)
+    # is no setting.
+    try:
+        from delfin.user_settings import get_settings_path
+        from .launch_guard import _VALID_MODES
+        own = get_settings_path()
+        if own.exists():
+            agent_block = json.loads(own.read_text()).get("agent") or {}
+            declared = agent_block.get("permission_mode")
+            if isinstance(declared, str) and declared in _VALID_MODES:
+                return declared, _tilde(own)
+    except Exception:
+        pass
     try:
         from . import kit_settings
         candidates = [kit_settings.USER_SETTINGS_PATH,
@@ -891,8 +980,18 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
 
     if sid and getattr(args, "fork_session", False):
         try:
-            forked = _ss.fork_session(sid)
-            sid = str((forked or {}).get("session_id", "") or sid)
+            # The copy's id (session_store.fork_session returns it, not a
+            # record: reading it as a dict raised, the warning below said
+            # "fork failed", and every --fork-session resumed the original).
+            # An id of its own: the store's default has one-second steps,
+            # and two copies of one session in a second would share a file.
+            import uuid
+            forked = _ss.fork_session(sid, new_id=uuid.uuid4().hex)
+            if isinstance(forked, dict):
+                forked = forked.get("session_id")
+            if not forked:
+                raise ValueError(f"session {sid} could not be read")
+            sid = str(forked)
             print(f"Forked to {sid}; the original is untouched.",
                   file=sys.stderr)
         except Exception as exc:
@@ -1504,6 +1603,9 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         rules = permission_rules.load(where)
         for line in permission_rules.error_lines(rules):
             notes.append(f"permissions {line}")
+        scope = permission_rules.scope_notice(rules)
+        if scope:
+            notes.append(f"permissions {scope}")
         from .api_client import unknown_tool_names
         named = [r.value for r in rules.deny + rules.ask + rules.allow
                  if r.kind == "tool"]
@@ -1697,6 +1799,156 @@ def _cmd_chat_one_shot(args: argparse.Namespace, report, workspace: Path,
     return cmd_run(args, prepare=_prepare)
 
 
+class InteractiveStartRefused(Exception):
+    """An interactive session that does not start, and why.
+
+    ``message`` is the text for the person ("" when the step that refused
+    has said it already), ``code`` the exit status ``cmd_chat`` returns
+    (2 refused, 3 the engine could not be built), ``detail`` the
+    underlying exception's text where there is one.
+    """
+
+    def __init__(self, message: str, code: int = 2, detail: str = ""):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.detail = detail
+
+
+class InteractiveStart:
+    """What ``_start_interactive_session`` built: the engine, the reason
+    for its starting mode, the isolation flag line and the start notes
+    (isolation_posture.apply_at_start)."""
+
+    def __init__(self, engine, why: str, isolation_note: str,
+                 start_notes: tuple):
+        self.engine = engine
+        self.why = why
+        self.isolation_note = isolation_note
+        self.start_notes = start_notes
+
+    def banner(self, args: argparse.Namespace, report, workspace: Path) -> str:
+        return _startup_banner(self.engine, report, workspace, self.why,
+                               self.isolation_note,
+                               tuple(_bounding_notices(args, self.engine))
+                               + self.start_notes)
+
+
+def _start_interactive_session(args: argparse.Namespace, report,
+                               workspace: Path, *,
+                               can_ask: bool) -> InteractiveStart:
+    """The set-up of an attended, interactive session, after the launch
+    directory was inspected and its questions answered.
+
+    Callers: ``cmd_chat`` (``can_ask`` = stdin is a terminal) and the agent
+    service's worker (``service.worker.open_real_session``, ``can_ask``
+    False: nobody can answer a yes/no before the window attaches). One
+    function, so a step added here reaches both entry paths.
+
+    Steps, in order: the managed policy's start decision (a mode named on
+    the command line that the policy disallows, or a required isolation
+    layer the host lacks, refuses the start); chdir to ``workspace``; the
+    launch grants; the isolation flags; the engine; the session open
+    (resume / continue / fork / claim); the starting posture
+    (launch_guard.resolve_posture, then managed_policy.coerce_mode); the
+    isolation start check (isolation_posture.apply_at_start).
+
+    Output: an ``InteractiveStart``. Raises ``InteractiveStartRefused``;
+    the working directory is then the one before the call. On success the
+    process stays in ``workspace``; the caller moves it back.
+    """
+    from . import launch_guard
+
+    # The administrator's managed policy, before anything is built: a mode
+    # the person named on the command line that the policy disallows, or a
+    # required isolation layer this host lacks, ends an attended start here
+    # with the reason. A mode from a settings file falls back instead.
+    try:
+        from . import managed_policy as _mp
+        _flag_mode = str(getattr(args, "permission_mode", "") or "")
+        _, _managed_note, _managed_refuse = _mp.launch_decision(
+            _flag_mode or "default", explicit=bool(_flag_mode),
+            attended=True)
+    except Exception:
+        _managed_note, _managed_refuse = "", False
+    if _managed_refuse:
+        raise InteractiveStartRefused(_managed_note, 2)
+
+    _cwd_before = os.getcwd()
+    os.chdir(workspace)
+    try:
+        _apply_launch_grants(args, report)
+        isolation_note = _apply_isolation_flags(args)
+        try:
+            engine = _build_engine(args)
+        except Exception as exc:
+            raise InteractiveStartRefused(f"ERROR: engine init failed: {exc}",
+                                          3, detail=str(exc)) from exc
+        if not _open_session(engine, args, workspace):
+            raise InteractiveStartRefused("", 2)
+    except BaseException:
+        try:
+            os.chdir(_cwd_before)
+        except Exception:
+            pass
+        raise
+
+    persisted, persisted_from = _persisted_default_mode(workspace)
+    posture, why = launch_guard.resolve_posture(
+        flag_mode=getattr(args, "permission_mode", "") or "",
+        persisted_mode=persisted,
+        unattended_opt_in=bool(getattr(args, "unattended", False)),
+        settings_path=persisted_from or "~/.delfin/settings.json",
+    )
+    try:
+        from . import managed_policy as _mp
+        _managed_posture = _mp.coerce_mode(posture)
+        if _managed_posture != posture:
+            why = (f"{why}; {posture} disallowed by the managed policy, "
+                   f"so {_managed_posture}")
+            posture = _managed_posture
+    except Exception:
+        pass
+    try:
+        # The starting rule, not a switch: no turn is running to be told.
+        try:
+            engine.set_kit_permission_mode(posture, announce=False)
+        except TypeError:
+            # An engine without the keyword still gets the posture; only
+            # the note is lost. Swallowing the TypeError below would leave
+            # the session in the mode it was built with.
+            engine.set_kit_permission_mode(posture)
+    except Exception:
+        pass          # a backend with no gate has no posture to set
+    # The same start check as cmd_run: bypass without isolation is
+    # confirmed once here, else the session starts in default.
+    from .isolation_posture import apply_at_start
+    start_notes = tuple(apply_at_start(engine, can_ask=can_ask))
+    return InteractiveStart(engine, why, isolation_note, start_notes)
+
+
+def _finish_interactive_session(engine, agent, workspace: Path, *,
+                                title: str, t0: float | None,
+                                learn: bool = True, run_stage=None) -> str:
+    """The end of an interactive session: save it, then ``_end_session``'s
+    stages (report, skill learning, indexing, cycle outcome, episode, eval
+    loop). The task is the first prompt typed in this process, the verdict
+    the last turn's. ``learn`` False saves only (a scripted session of the
+    agent service's tests). Callers: ``cmd_chat`` and the agent service's
+    worker. Returns the saved session id ("" when the save failed)."""
+    sid = _save_session(engine, workspace, title=title)
+    if not learn:
+        return sid or ""
+    _last = getattr(agent, "_last_turn_result", None)
+    _end_session(
+        engine, sid or str(getattr(engine, "session_id", "") or ""),
+        workspace,
+        task=str(getattr(agent, "first_task", "") or ""),
+        failed=bool(getattr(_last, "error", "")),
+        t0=t0, run_stage=run_stage)
+    return sid or ""
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     """The ``delfin-agent`` front door: a session in the current directory.
 
@@ -1753,22 +2005,6 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
         return 2
 
-    # The administrator's managed policy, before anything is built: a mode
-    # the person named on the command line that the policy disallows, or a
-    # required isolation layer this host lacks, ends an attended start here
-    # with the reason. A mode from a settings file falls back instead.
-    try:
-        from . import managed_policy as _mp
-        _flag_mode = str(getattr(args, "permission_mode", "") or "")
-        _, _managed_note, _managed_refuse = _mp.launch_decision(
-            _flag_mode or "default", explicit=bool(_flag_mode),
-            attended=True)
-    except Exception:
-        _managed_note, _managed_refuse = "", False
-    if _managed_refuse:
-        print(_managed_note, file=sys.stderr)
-        return 2
-
     # An interactive session is a conversation, not a document. The flag
     # is accepted on this subcommand because the one-shot half lives here
     # too; taking it silently and then emitting text is the shape of a
@@ -1785,50 +2021,14 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # read a different file, and that is only harmless until it is called
     # from somewhere else.
     _cwd_before = os.getcwd()
-    os.chdir(workspace)
-    _apply_launch_grants(args, report)
-    isolation_note = _apply_isolation_flags(args)
     try:
-        engine = _build_engine(args)
-    except Exception as exc:
-        print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
-        os.chdir(_cwd_before)
-        return 3
-    if not _open_session(engine, args, workspace):
-        os.chdir(_cwd_before)
-        return 2
-
-    persisted, persisted_from = _persisted_default_mode(workspace)
-    posture, why = launch_guard.resolve_posture(
-        flag_mode=getattr(args, "permission_mode", "") or "",
-        persisted_mode=persisted,
-        unattended_opt_in=bool(getattr(args, "unattended", False)),
-        settings_path=persisted_from or "~/.delfin/settings.json",
-    )
-    try:
-        from . import managed_policy as _mp
-        _managed_posture = _mp.coerce_mode(posture)
-        if _managed_posture != posture:
-            why = (f"{why}; {posture} disallowed by the managed policy, "
-                   f"so {_managed_posture}")
-            posture = _managed_posture
-    except Exception:
-        pass
-    try:
-        # The starting rule, not a switch: no turn is running to be told.
-        try:
-            engine.set_kit_permission_mode(posture, announce=False)
-        except TypeError:
-            # An engine without the keyword still gets the posture; only
-            # the note is lost. Swallowing the TypeError below would leave
-            # the session in the mode it was built with.
-            engine.set_kit_permission_mode(posture)
-    except Exception:
-        pass          # a backend with no gate has no posture to set
-    # The same start check as cmd_run: bypass without isolation is
-    # confirmed once here, else the session starts in default.
-    from .isolation_posture import apply_at_start
-    start_notes = tuple(apply_at_start(engine, can_ask=sys.stdin.isatty()))
+        start = _start_interactive_session(args, report, workspace,
+                                           can_ask=sys.stdin.isatty())
+    except InteractiveStartRefused as refused:
+        if refused.message:
+            print(refused.message, file=sys.stderr)
+        return refused.code
+    engine = start.engine
 
     from .repl import ReplOptions, TerminalAgent
     from .terminal_confirm import TerminalConfirmBroker
@@ -1883,46 +2083,31 @@ def cmd_chat(args: argparse.Namespace) -> int:
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
         session_name=getattr(args, "session_name", "") or "",
-        banner=(_startup_banner(engine, report, workspace, why,
-                                isolation_note,
-                                tuple(_bounding_notices(args, engine))
-                                + start_notes)
+        banner=(start.banner(args, report, workspace)
                 + (f"\n\n{notices}" if notices else "")),
     ))
-    try:
-        return agent.run(positional)
-    finally:
-        _save_session(engine, workspace,
-                      title=getattr(args, "session_name", "") or "")
-        # Session report: best-effort Markdown write; never breaks exit.
+    import time as _time
+    from . import repl_keys as _rk
+    _t0 = _time.monotonic()
+    # Held from the loop's start until the session is saved: every way out
+    # is bounded by the leave deadline, and a repeated SIGHUP, SIGTERM or
+    # SIGINT does not end the process in the middle of the save.
+    with agent.leave_held():
         try:
-            from .session_report import write_session_report
-            write_session_report(getattr(engine, "session_id", "") or "")
-        except Exception:
-            pass
-        # Shared session-end stage: skill learning (the same call the
-        # dashboard's session end uses). The CLI chat previously never
-        # distilled NOR learned; this is the single shared hook. Its own
-        # failure never breaks the exit.
-        try:
-            from .session_end import learn_at_session_end
-            learn_at_session_end(
-                _display_messages(engine),
-                session_id=str(getattr(engine, "session_id", "") or ""))
-        except Exception:
-            pass
-        # Session-end stage (Paket 5): the ended session becomes
-        # searchable. Own try/except, same rule as the learning stage.
-        try:
-            from .session_end import index_at_session_end
-            index_at_session_end(
-                str(getattr(engine, "session_id", "") or ""))
-        except Exception:
-            pass
-        try:
-            os.chdir(_cwd_before)
-        except Exception:
-            pass
+            return agent.run(positional)
+        except _rk.TerminalLeft as left:
+            # A signal before the loop's own try took it.
+            agent.begin_leaving(left.code, terminal_gone=True)
+            return left.code
+        finally:
+            _finish_interactive_session(
+                engine, agent, workspace,
+                title=getattr(args, "session_name", "") or "", t0=_t0,
+                run_stage=agent.leave_stages())
+            try:
+                os.chdir(_cwd_before)
+            except Exception:
+                pass
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -2008,7 +2193,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
             )
             try:
                 n_records = sum(
-                    1 for line in f.open(encoding="utf-8") if line.strip()
+                    1 for line in f.open(encoding="utf-8")
+                    if line.strip() and not line.startswith('{"run_header"')
                 )
             except OSError:
                 n_records = 0
@@ -2037,6 +2223,23 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         cmp = _bm.compare_runs(baseline, candidate)
+        # Whether one instrument produced both files. A changed scorer or
+        # task pack makes the score difference partly the measure's, so
+        # the comparison is refused unless asked for explicitly; a file
+        # without a header (written before 2026-10-15) is said, not
+        # refused. The settings that differ are always printed: they
+        # should be exactly the axis the A/B declares.
+        _prov = cmp.get("provenance") or {}
+        if not args.json:
+            for _line in _bm.format_provenance_check(_prov):
+                print(_line)
+        if _prov.get("instrument_match") is False and not getattr(
+                args, "allow_instrument_change", False):
+            print("ERROR: comparison refused -- the instrument differs "
+                  "between the arms. Re-run one arm, or pass "
+                  "--allow-instrument-change to compare anyway.",
+                  file=sys.stderr)
+            return 4
         if args.json:
             print(json.dumps(cmp, indent=2, ensure_ascii=False))
             return 0
@@ -2090,27 +2293,39 @@ def cmd_bench(args: argparse.Namespace) -> int:
     _asked = getattr(args, "task", None) or []
     if isinstance(_asked, str):          # a caller that set the field itself
         _asked = [_asked]
-    wanted = {t.strip() for chunk in _asked
-              for t in str(chunk).split(",") if t.strip()}
-    if wanted:
-        tasks = [t for t in tasks if t.id in wanted]
+    # Exact ids and shell globs (quote them: --task 'generalist_*').
+    tasks, missing = _bm.select_tasks(tasks, _asked)
+    if not tasks:
+        print(f"ERROR: no task matched {sorted(missing)}", file=sys.stderr)
+        return 1
+    # A name that matched nothing is a typo or a renamed task, and
+    # running the rest without saying so hands back a number for a
+    # different question than the one that was asked.
+    if missing:
+        print(f"WARNING: {len(missing)} requested task(s) do not exist "
+              f"and were skipped: {', '.join(sorted(missing))}",
+              file=sys.stderr)
+    if (getattr(args, "lang", "de") or "de") == "en":
+        _en = [_bm.english_variant(t) for t in tasks]
+        _no_en = [t.id for t, e in zip(tasks, _en) if e is None]
+        tasks = [e for e in _en if e is not None]
+        if _no_en:
+            print(f"WARNING: {len(_no_en)} task(s) have no English prompt "
+                  f"and were skipped: {', '.join(_no_en)}", file=sys.stderr)
         if not tasks:
-            print(f"ERROR: no task matched {sorted(wanted)}", file=sys.stderr)
+            print("ERROR: none of the selected tasks has an English prompt",
+                  file=sys.stderr)
             return 1
-        # A name that matched nothing is a typo or a renamed task, and
-        # running the rest without saying so hands back a number for a
-        # different question than the one that was asked.
-        missing = sorted(wanted - {t.id for t in tasks})
-        if missing:
-            print(f"WARNING: {len(missing)} requested task(s) do not exist "
-                  f"and were skipped: {', '.join(missing)}", file=sys.stderr)
 
     model = (getattr(args, "model", "") or "").strip()
     if not model:
         print("ERROR: --model is required for `bench run`",
               file=sys.stderr)
         return 2
-    max_tokens = int(getattr(args, "max_tokens", 1024) or 1024)
+    # 0 = the role's own output limit, as in a session (engine
+    # _ROLE_MAX_TOKENS; solo 32768). 1024 cut every write_file longer than
+    # about four kilobytes into invalid JSON in the benchmark only.
+    max_tokens = int(getattr(args, "max_tokens", 0) or 0)
     backend = getattr(args, "backend", "") or "api"
     provider = getattr(args, "provider", "") or ""
     repeats = max(1, int(getattr(args, "repeats", 1) or 1))
@@ -2127,6 +2342,20 @@ def cmd_bench(args: argparse.Namespace) -> int:
               f"{result.duration_s:>5.1f}s  ${result.cost_usd:.4f}  "
               f"tool={result.tool_calls}{extra}",
               flush=True)
+        _proc = getattr(result, "process", None) or {}
+        if _proc:
+            # Where the run went, not only whether it arrived: the
+            # generalist tasks' trace signals (means over replicates).
+            _vq = getattr(result, "verify_quality", None)
+            print("        process: "
+                  + (f"accept-q={_vq} " if _vq is not None else "")
+                  + " ".join(f"{k}={_proc[k]:g}" for k in (
+                      "planned", "scouted", "tested_after_last_edit",
+                      "passing_test_after_last_edit", "test_runs",
+                      "refused_test_runs", "edits", "measure_edits",
+                      "measure_changed", "tool_errors", "nonzero_exits",
+                      "tool_budget_used") if k in _proc),
+                  flush=True)
         if result.violated_signals or result.missing_signals or result.error:
             for v in result.violated_signals:
                 print(f"        violated: {v}", flush=True)
@@ -2184,8 +2413,21 @@ def cmd_bench(args: argparse.Namespace) -> int:
         # output read as a crash rather than as a queue.
         print(f"\nbenchmark not started: {exc}", file=sys.stderr)
         return 3
-    path = _bm.write_run(results, model=model)
+    path = _bm.write_run(results, model=model, run_args={
+        "max_tokens": max_tokens, "repeats": repeats, "backend": backend,
+        "provider": provider})
     s = _bm.summarise_run(results)
+    _pm = s.get("process_means") or {}
+    if _pm:
+        # Rates per model, not only per task line.
+        print("process (mean over tasks): " + "  ".join(
+            f"{k}={v['mean']:g} (n={v['n']})" for k, v in _pm.items()
+            if k in ("tested_after_last_edit",
+                     "passing_test_after_last_edit", "refused_test_runs",
+                     "measure_edits", "measure_changed", "edits")))
+    if s.get("channels_total"):
+        print("channels fired: " + "  ".join(
+            f"{k}={v}" for k, v in s["channels_total"].items()))
     print(f"\n{s['n_pass']}/{s['n_tasks']} passed "
           f"({s['pass_rate']:.0%})   "
           f"avg-quality {s['avg_quality']:.1f}   "
@@ -2490,6 +2732,14 @@ def _print_behavior_rates(_bm, records) -> None:
             print(f"  {flag:<9} {r['rate']:>4.0%}  (n={r['n']})")
 
 
+def cmd_knowledge(args: argparse.Namespace) -> int:
+    """``delfin-agent knowledge ...``: the /knowledge command. A write is
+    confirmed with a code shown and read on /dev/tty, never on stdout."""
+    from .knowledge_commands import run_cli
+    words = list(getattr(args, "words", None) or ["list"])
+    return run_cli(words)
+
+
 def _cmd_bug_report(args: argparse.Namespace) -> int:
     """``bug report``: file a report for a session that already ended.
 
@@ -2501,7 +2751,9 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
     Without --yes the description and a y/N confirmation are read from
     the terminal after a preview of what goes in. With no terminal and no
     --yes nothing is written: a pipe cannot see the preview it would be
-    agreeing to.
+    agreeing to. The copy to the remote archive follows
+    ``agent.bug_upload`` (``bug_filing.upload``): asked separately without
+    --yes, never made under --yes unless the setting is ``always``.
     """
     from . import bug_filing
     from .bug_report import resolve_archive_dir
@@ -2550,7 +2802,11 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
         print(f"ERROR: bug report failed: {exc}", file=sys.stderr)
         return 1
     print(f"bug report written: {report_dir}")
-    remote = bug_filing.push_if_configured(report_dir)
+    # --yes answers the questions about writing, not the one about
+    # sending: with it nobody is asked, so the copy to the remote archive
+    # happens only under agent.bug_upload: always.
+    remote = bug_filing.upload(report_dir,
+                               ask=None if assume_yes else input)
     if remote:
         print(remote)
     return 0
@@ -2597,10 +2853,14 @@ def cmd_bug(args: argparse.Namespace) -> int:
         if not targets:
             print(f"No reports to triage in {archive}")
             return 0
+        print(_bw.send_line())
+        consent = _bw.ask_consent(len(targets))
         for d in targets:
             print(f"→ analysing {d.name} …", flush=True)
-            t = _bw.triage_report(d)
-            if t.error:
+            t = _bw.triage_report(d, consent=consent)
+            if t.withheld:
+                print(f"  [WITHHELD] ({t.withheld_reason})")
+            elif t.error:
                 print(f"  [ERROR] {t.error}")
             else:
                 print(f"  [OK] {t.summary[:200].strip()}")
@@ -2641,11 +2901,22 @@ def cmd_bug(args: argparse.Namespace) -> int:
 
         if getattr(args, "once", False):
             print(f"Triaging {archive} once …", flush=True)
-            results = _bw.run_once(archive=archive, settings=settings)
+            print(_bw.send_line(settings))
+            consent = _bw.ask_consent(
+                len(_bw.find_unsolved(archive, settings=settings)), settings)
+            results = _bw.run_once(archive=archive, settings=settings,
+                                   consent=consent)
+            # One line per report from fixed fields only; the analysis
+            # itself is in triage.md (bug triage prints its first line).
             for t in results:
-                tag = "ERROR" if t.error else "OK"
-                print(f"  [{tag}] {t.report_name}: "
-                      f"{(t.error or t.summary)[:150].strip()}")
+                if t.withheld:
+                    tag, detail = "WITHHELD", f"({t.withheld_reason})"
+                elif t.error:
+                    tag, detail = "ERROR", t.error[:150]
+                else:
+                    tag = "OK"
+                    detail = f"triage → {Path(t.report_path) / 'triage.md'}"
+                print(f"  [{tag}] {t.report_name}: {detail}")
             print(f"Done — {len(results)} report(s) triaged.")
             return 0
 
@@ -2663,6 +2934,7 @@ def cmd_bug(args: argparse.Namespace) -> int:
         try:
             print(f"bug_watcher started (interval {cfg['interval_s']}s, "
                   f"archive={archive}).")
+            print(_bw.send_line(settings))
             return _bw.run_loop(settings=settings)
         finally:
             _bw.release_pid_lock()
@@ -2835,7 +3107,9 @@ def cmd_skills(args: argparse.Namespace) -> int:
             print("safety findings: none")
         return 0
 
-    who = os.environ.get("USER", "")
+    # Recorded as who accepted: the account, not $USER (os_account).
+    from .os_account import name as _account
+    who = _account()
 
     if action == "accept":
         try:
@@ -2982,7 +3256,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         # resolves against the question's own options; anything that is
         # not a choice question is refused here, not guessed at.
         from . import approval_answers as _ans
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         try:
             picks = _ans.answer(args.request_id, args.choice, by=who,
                                 code=code)
@@ -2994,7 +3269,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     if action in ("approve", "deny"):
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         # A refusal may say what to do instead, and the model reads it in
         # the same turn -- instead of guessing the same thing spelled
         # differently, which is one more dialog for the person here.
@@ -3958,6 +4234,70 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_provenance(args: argparse.Namespace) -> int:
+    """Print the provenance stamp of one arm as JSON (paired_compare).
+    Reads code, git and an environment; writes nothing."""
+    from . import paired_compare as _pc
+    pid = None
+    if args.pid:
+        try:
+            pid = int(args.pid)
+        except ValueError:
+            print(f"--pid must be a number, got {args.pid!r}", file=sys.stderr)
+            return 2
+    stamp = _pc.provenance(code=list(args.code or ()), command=args.command,
+                           pid=pid, prefixes=list(args.prefix or ()),
+                           cwd=args.cwd)
+    if args.save:
+        try:
+            path = _pc.save_stamp(args.save, stamp)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"saved stamp {args.save!r}: {path}", file=sys.stderr)
+    print(json.dumps(stamp, indent=1, sort_keys=True))
+    return 0
+
+
+def cmd_compare_arms(args: argparse.Namespace) -> int:
+    """Judge two arm result files as a paired comparison
+    (paired_compare.compare). Exit 0 when a comparison stands and a
+    person should look, 3 when it was refused or blocked, 2 on bad
+    input. Reads only."""
+    from . import paired_compare as _pc
+
+    _stamp = _pc.load_stamp
+
+    defaults = {}
+    for item in args.default or ():
+        name, sep, value = item.partition("=")
+        if not sep or not name:
+            print(f"--default takes VAR=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        defaults[name] = value
+    try:
+        a = _pc.load_records(args.arm_a)
+        b = _pc.load_records(args.arm_b)
+        stamp_a, stamp_b = _stamp(args.stamp_a), _stamp(args.stamp_b)
+        rerun = _pc.load_records(args.rerun_a) if args.rerun_a else None
+    except (OSError, ValueError) as exc:
+        print(f"cannot read an input: {exc}", file=sys.stderr)
+        return 2
+    verdict = _pc.compare(
+        a, b, stamp_a=stamp_a, stamp_b=stamp_b, axis=list(args.axis or ()),
+        key=args.key, ok=args.ok, defects=list(args.defect or ()),
+        quality=args.quality, lower_is_better=args.lower_is_better,
+        min_n=args.min_n, probe=args.probe, sample=args.sample,
+        defaults=defaults,
+        allow_shared_switches=True if args.allow_shared_switches else None,
+        rerun_a=rerun, prereg=args.prereg)
+    if args.json:
+        print(json.dumps(verdict, indent=1, default=str))
+    else:
+        print(_pc.format_report(verdict))
+    return _pc.exit_code(verdict)
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -4295,8 +4635,13 @@ def build_parser() -> argparse.ArgumentParser:
     bench_run.add_argument("--task", default=[], action="append",
                            help=("Task IDs (default: all). Comma-separated, "
                                  "and the flag may be repeated — both forms "
-                                 "accumulate"))
-    bench_run.add_argument("--max-tokens", type=int, default=1024,
+                                 "accumulate. Shell globs select a family: "
+                                 "--task 'generalist_*'"))
+    bench_run.add_argument("--lang", default="de", choices=["de", "en"],
+                           help=("Prompt language. en runs each selected "
+                                 "task's prompt_en under the id <id>.en and "
+                                 "skips tasks without one (default: de)"))
+    bench_run.add_argument("--max-tokens", type=int, default=0,
                            dest="max_tokens")
     bench_run.add_argument(
         "--repeats", type=int, default=1,
@@ -4366,6 +4711,11 @@ def build_parser() -> argparse.ArgumentParser:
     bench_cmp.add_argument("--markdown", action="store_true",
                            help="Emit a markdown report (PR-body ready, "
                                 "annotates profile commits between runs)")
+    bench_cmp.add_argument(
+        "--allow-instrument-change", action="store_true",
+        dest="allow_instrument_change",
+        help=("Compare two run files whose headers show a different "
+              "scorer or task pack (refused otherwise)"))
 
     bench_gate = bench_sub.add_parser(
         "gate",
@@ -4569,6 +4919,20 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Which project's store (default: this "
                                "directory)")
     mem.set_defaults(func=cmd_memory, memory_action="tidy")
+
+    # knowledge -- the global knowledge folder: views for everyone,
+    # curation for the knowledge admin (code dialog on /dev/tty only)
+    kno = sub.add_parser(
+        "knowledge",
+        help="Global knowledge: lint, index, dupes, stats; admin curation "
+             "(merge, move, retire, rename, accept, reject) as local branches")
+    kno.add_argument("words", nargs=argparse.REMAINDER,
+                     help="lint | index | dupes | stats | list | search <w> | "
+                          "queue | accept <q> | reject <q> <reason> | merge "
+                          "<keep> <drop> | move <entry> <topic> | retire "
+                          "<entry> <reason> | rename <entry> <new> | topic "
+                          "add <slug> <text>")
+    kno.set_defaults(func=cmd_knowledge)
 
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
@@ -4829,6 +5193,79 @@ def build_parser() -> argparse.ArgumentParser:
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
 
+    # provenance / compare-arms -- a paired comparison of two runs that
+    # refuses skewed pairs and null tests (paired_compare.py). Read only.
+    prov = sub.add_parser(
+        "provenance",
+        help="Print the stamp of one experiment arm: code hash, git head "
+             "and diff, platform, behaviour environment (reads only)")
+    prov.add_argument("--code", action="append", default=[],
+                      help="A file or directory of the instrument (repeat)")
+    prov.add_argument("--command", default="",
+                      help="The arm's command line; its VAR=value, env and "
+                           "export assignments are applied to this shell's "
+                           "environment")
+    prov.add_argument("--pid", default="",
+                      help="A runner already running: read its environment, "
+                           "start time and directory")
+    prov.add_argument("--prefix", action="append", default=[],
+                      help="A further behaviour-variable prefix (repeat); "
+                           "the checkout's own NAME_ is always taken")
+    prov.add_argument("--cwd", default="",
+                      help="Directory whose git checkout is stamped "
+                           "(default: here, or the runner's)")
+    prov.add_argument("--save", default="",
+                      help="Also keep the stamp, once, under this name in "
+                           "~/.delfin/provenance (compare-arms takes the name)")
+    prov.set_defaults(func=cmd_provenance)
+
+    cmp_p = sub.add_parser(
+        "compare-arms",
+        help="Judge two arm result files as one paired comparison: same "
+             "population, one instrument, declared axis, never-worse cases "
+             "(reads only; exit 3 when refused or blocked)")
+    cmp_p.add_argument("arm_a", help="Arm A results (JSONL or JSON list)")
+    cmp_p.add_argument("arm_b", help="Arm B results (JSONL or JSON list)")
+    cmp_p.add_argument("--stamp-a", default="",
+                       help="Arm A stamp: a saved name or a JSON file")
+    cmp_p.add_argument("--stamp-b", default="",
+                       help="Arm B stamp: a saved name or a JSON file")
+    cmp_p.add_argument("--axis", action="append", default=[],
+                       help="What differs on purpose: an env variable, "
+                            "'code' or 'platform' (repeat)")
+    cmp_p.add_argument("--default", action="append", default=[],
+                       help="VAR=VALUE: the code's default of an axis "
+                            "variable, so an unset arm resolves")
+    cmp_p.add_argument("--key", default="", help="Item id field")
+    cmp_p.add_argument("--ok", default="", help="Per-item success field")
+    cmp_p.add_argument("--defect", action="append", default=[],
+                       help="Per-item defect count/flag field (repeat)")
+    cmp_p.add_argument("--quality", default="",
+                       help="Per-item quality value (higher is better)")
+    cmp_p.add_argument("--lower-is-better", action="store_true",
+                       help="With --quality: lower values are better")
+    cmp_p.add_argument("--min-n", type=int, default=100,
+                       help="Paired items below which nothing is concluded "
+                            "automatically (default 100)")
+    cmp_p.add_argument("--probe", type=int, default=24,
+                       help="Leading items whose identity flags a null test "
+                            "(default 24)")
+    cmp_p.add_argument("--sample", type=int, default=100,
+                       help="Size of the stratified sample to look at "
+                            "(default 100)")
+    cmp_p.add_argument("--rerun-a", default="",
+                       help="A second run of arm A: differing items are "
+                            "nondeterminism and block")
+    cmp_p.add_argument("--prereg", default="",
+                       help="The pre-registration file; reported whether it "
+                            "predates the first stamp")
+    cmp_p.add_argument("--allow-shared-switches", action="store_true",
+                       help="Accept behaviour variables set identically in "
+                            "both arms")
+    cmp_p.add_argument("--json", action="store_true",
+                       help="Print the verdict as JSON")
+    cmp_p.set_defaults(func=cmd_compare_arms)
+
     # watch — every step every session takes, as it takes it, and above
     # all the ones the gate refused.
     watch_p = sub.add_parser(
@@ -4910,6 +5347,37 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Report daemon, setting and watched count "
                                  "(default)")
 
+    # ops status -- checkouts, dashboard servers, sessions and leftovers in
+    # one read-only view (delfin/agent/ops_status.py). Every flag reads:
+    # the bash auto-allow entry for this command depends on that, and
+    # tests/test_ops_status_reads_the_machinery.py pins the flag set.
+    def _cmd_ops(args):
+        from delfin.agent import ops_status
+        return ops_status.main(json_out=bool(args.json),
+                               repo=str(args.repo or ""))
+
+    ops_p = sub.add_parser(
+        "ops",
+        help="DELFIN's own machinery: `ops status` lists checkouts and "
+             "worktrees, dashboard servers, sessions and leftovers with a "
+             "safe next step per problem (read-only)",
+    )
+    ops_sub = ops_p.add_subparsers(dest="ops_action", required=True)
+    ops_status_p = ops_sub.add_parser(
+        "status",
+        help="Read-only overview: checkouts (branch / detached / held by), "
+             "dashboard servers of yours, session locks, stale locks and "
+             "worktrees; one 'problem → next step' line each; changes nothing",
+    )
+    ops_status_p.add_argument("--json", action="store_true",
+                              help="Print the status as JSON "
+                                   "(schema delfin.ops_status/1)")
+    ops_status_p.add_argument("--repo", default="",
+                              help="A checkout of the repository to inspect "
+                                   "(default: the current directory, else "
+                                   "the checkout DELFIN runs from)")
+    ops_status_p.set_defaults(func=_cmd_ops)
+
     # T6: run a session's tests on a SLURM compute node from a node-local
     # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported
     # on use so an import error there cannot break every other command.
@@ -4931,6 +5399,73 @@ def build_parser() -> argparse.ArgumentParser:
     t6.add_argument("--run-dir", default=".",
                     help="Dir to write the job and collect logs")
     t6.set_defaults(func=_cmd_test_on_slurm)
+
+    # The terminal UI and the service its sessions live in. The handlers
+    # live in delfin/agent/service/cli_service.py, imported on use like
+    # test-on-slurm's.
+    def _cmd_tui(args):
+        from delfin.agent.service.cli_service import cmd_tui
+        return cmd_tui(args)
+
+    def _cmd_service(args):
+        from delfin.agent.service.cli_service import cmd_service
+        return cmd_service(args)
+
+    tui = sub.add_parser(
+        "tui",
+        help="The terminal UI: one window over all your sessions, which keep "
+             "running when it closes (sessions live in `delfin-agent service`)",
+    )
+    tui.add_argument("--cwd", default="", help="Workspace of the first session")
+    tui.add_argument("-n", "--name", dest="session_name", default="",
+                     help="Name of the first session")
+    tui.add_argument("--model", default="")
+    tui.add_argument("--provider", default="")
+    tui.add_argument("--effort", default="")
+    tui.add_argument("--permission-mode", default="",
+                     choices=["", "plan", "default", "acceptEdits"])
+    tui.add_argument("--session", "--resume", dest="session", default="",
+                     help="Resume this saved session")
+    tui.add_argument("--continue", dest="continue_session", action="store_true",
+                     help="Resume the latest session in the workspace")
+    tui.add_argument("--add-dir", dest="add_dirs", action="append", default=[])
+    tui.add_argument("--read-dir", dest="read_dirs", action="append", default=[])
+    tui.add_argument("--isolate", action="store_true")
+    tui.add_argument("--no-isolate", action="store_true")
+    tui.add_argument("-v", "--verbose", action="store_true",
+                     help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--inline", action="store_true",
+                     help="Draw under the shell's last line, the conversation in the "
+                          "terminal's own scrollback, instead of taking the whole terminal")
+    tui.add_argument("--setup", action="store_true",
+                     help="Set the window up (a pinned Bun and its packages, checked) and "
+                          "exit; done by itself on the first start unless "
+                          "DELFIN_TUI_AUTO_INSTALL=0 or agent.tui_auto_install=false")
+    # Scripted sessions, no model: for working on the window and its tests.
+    tui.add_argument("--fake", action="store_true", help=argparse.SUPPRESS)
+    tui.set_defaults(func=_cmd_tui)
+
+    svc = sub.add_parser(
+        "service",
+        help="The agent service behind `delfin-agent tui`: status (its sessions), "
+             "end a session, stop, restart, logs",
+    )
+    svc.add_argument("action", nargs="?", default="status",
+                     choices=["status", "end", "stop", "restart", "logs"])
+    svc.add_argument("target", nargs="?", default="",
+                     help="end: the session's id, or a unique prefix of it")
+    svc.add_argument("--all-idle", dest="all_idle", action="store_true",
+                     help="end: every idle session (none that works or waits for you)")
+    svc.add_argument("--after-turn", dest="after_turn", action="store_true",
+                     help="end: let a running turn finish first (without it, the turn "
+                          "is stopped at its next safe point, as ctrl+x twice does)")
+    svc.add_argument("--yes", "-y", action="store_true",
+                     help="end: without asking (for scripts)")
+    svc.add_argument("--json", action="store_true",
+                     help="status: as JSON, for scripts")
+    svc.add_argument("--lines", type=int, default=40,
+                     help="Lines of the log to show (logs)")
+    svc.set_defaults(func=_cmd_service)
 
     return p
 

@@ -3,7 +3,7 @@
 The FoB input writer found its stage by changing the process's working
 directory -- one directory for all threads -- under a lock the stages'
 frequency jobs do not take when they change it themselves.  In a dry run of
-an archived job of Jerome's the frequency jobs of ox_step_1 and red_step_1
+an archived job of one user the frequency jobs of ox_step_1 and red_step_1
 started in the same second as FoB 5 of red_step_3: its input landed in the
 job's own folder, and the stage kept the old one.  The writer now reads and
 writes the stage's files by path.

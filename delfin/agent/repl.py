@@ -14,11 +14,13 @@ nothing about how it was reached.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import queue
 import signal
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -44,6 +46,14 @@ _JOIN_ABANDON_S = 1.0
 # That work runs on storage that may be the very thing that went wrong, and
 # waiting on it is how a session outlives its terminal.
 _LEAVE_DEADLINE_S = 10.0
+#: Total for the session-end stages of an attended leave (ctrl+d, /exit,
+#: the second idle ctrl+c); setting ``agent.leave_stage_budget_s``.
+_LEAVE_STAGE_BUDGET_S = 300.0
+#: A session-end stage without a timeout of its own (report, indexing,
+#: cycle outcome, episode, eval loop: file and index work, no model).
+_STAGE_DEFAULT_S = 60.0
+#: How long a stage runs before the line saying what is being finished.
+_STAGE_SAY_AFTER_S = 1.0
 _STATUS_TICK_S = 0.25
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -106,7 +116,9 @@ class Transcript:
         # stderr about stdout is how `delfin-agent -p "..." > answer.txt`
         # in a terminal would end up writing escape codes into the file.
         self._answer_theme = rr.theme_for(self.out, color)
-        self._markdown = rr.MarkdownStream(self._answer_theme)
+        # A table is laid out against the width at the moment it is drawn.
+        self._markdown = rr.MarkdownStream(
+            self._answer_theme, width=lambda: self.width)
         # stdout and stderr normally name the same terminal.  Remember
         # that fact explicitly: while an answer is streaming the turn UI
         # is painted on stderr, then the next answer delta continues on
@@ -169,6 +181,19 @@ class Transcript:
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
 
+    def _release_held_answer(self) -> None:
+        """Write a table the markdown stream is still holding.
+
+        Called before anything else reaches the screen: a held table ends
+        the model's text, and a tool line written first would stand above
+        the table it came after."""
+        held = self._markdown.release()
+        if held:
+            self._clear_transient()
+            self.out.write(held)
+            self._flush(self.out)
+            self._track_screen_answer(held)
+
     def _err_is_tty(self) -> bool:
         try:
             return bool(self.err.isatty())
@@ -203,6 +228,7 @@ class Transcript:
         """
         if not line:
             return
+        self._release_held_answer()
         if not self._err_is_tty():
             if not self._transient_said:
                 self._transient_said = True
@@ -235,6 +261,7 @@ class Transcript:
         if not line:
             return
         self._clear_transient()
+        self._release_held_answer()
         if self._break_pending:
             self.err.write("\n")
             self._break_pending = False
@@ -603,6 +630,53 @@ def _resolve_fresh_budget(context_budget, engine) -> int:
     return int(context_budget or 0)
 
 
+#: The compaction kinds that leave a summary of the compacted messages in
+#: the history. ``summary_unavailable`` (nothing could be summarised) and the
+#: trim-only kinds do not, and count as a compaction that did not happen.
+_SUMMARY_KINDS = ("summary", "deterministic_digest")
+
+
+def _compact_to_fit(engine, budget: int) -> bool:
+    """Try a forced compaction before a fresh start; True when it fits.
+
+    Input: an engine whose current context is over ``budget``. Output: True
+    when ``engine._compact_history(force=True)`` produced a summary and the
+    context is then at or under ``budget``; False when the engine has no
+    compaction, it raised, it summarised nothing, or the result is still
+    over (the kept recent messages alone can exceed a small window).
+
+    Semantics: a switch to a model with a smaller window put the history
+    over the budget, and the fresh start archived it wholesale -- the next
+    turn knew only the working-state block and the open tasks. A
+    compaction keeps a summary of the task in context and archives the
+    compacted messages the same way, so it is tried first; the fresh start
+    stays the fallback. A compaction that ran and does not fit is kept: the
+    fresh start then cuts the compacted history, whose older part is
+    already in the archive.
+
+    Cost: one summariser call (max_tokens 1500, input capped at 60k chars by
+    ``_llm_summarize_old_messages``), only on a turn whose context is over
+    the fresh-start budget; extractive and free on the CLI backend. Rejected:
+    compacting at the model switch itself -- the switch has no worker
+    thread of its own, and the first turn after it is where the window is
+    checked on both surfaces anyway.
+    """
+    compact = getattr(engine, "_compact_history", None)
+    if not callable(compact):
+        return False
+    before = getattr(engine, "last_compaction_info", None)
+    try:
+        compact(force=True)
+    except Exception:
+        return False
+    info = getattr(engine, "last_compaction_info", None)
+    if info is before or not isinstance(info, dict):
+        return False
+    if info.get("kind") not in _SUMMARY_KINDS:
+        return False
+    return _context_tokens(engine) <= budget
+
+
 def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
                        task_state=None, context_budget=None) -> str:
     """The message to send for this turn, starting fresh when over budget.
@@ -615,6 +689,9 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     try:
         budget = _resolve_fresh_budget(context_budget, engine)
         if budget <= 0:
+            return prompt
+        if (_context_tokens(engine) > budget
+                and _compact_to_fit(engine, budget)):
             return prompt
         block = ""
         try:
@@ -639,7 +716,7 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
 
 
 def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
-             max_tokens: int = 0, memory_context: str = "",
+             max_tokens: int = 0, memory_context: str | None = None,
              context_budget=None, task_state=None,
              working_state_block: str = "") -> TurnResult:
     """One turn, with every callback turned into a RenderItem.
@@ -657,6 +734,11 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     message, and fuses the block with the prompt this turn must answer, so
     the current user message is never lost. Under the budget (or with a 0
     budget) it arms nothing and the caller keeps the full history.
+
+    ``memory_context`` None (the default) takes what every surface sends
+    with a turn: the project instruction files and the per-turn hints of
+    ``turn_context``, the same call ``cli.cmd_run`` and the dashboard
+    make. A string is sent as given.
 
     ``sink`` is called from whatever thread ``stream_response`` runs on.
     It must not touch the terminal; in the REPL it is a queue put, and the
@@ -752,9 +834,14 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         _emit(RenderItem("denied", name=name))
 
     in_before, out_before = _usage(engine)
+    from . import turn_context
+    if memory_context is None:
+        memory_context = turn_context.memory_context(engine, prompt)
+    prompt = turn_context.user_message(prompt)
     user_message = prompt
     budget = _resolve_fresh_budget(context_budget, engine)
-    if budget > 0:
+    if budget > 0 and (_context_tokens(engine) <= budget
+                       or not _compact_to_fit(engine, budget)):
         try:
             fresh = fresh_context_for_turn(
                 engine, task_state, token_budget=budget,
@@ -923,8 +1010,12 @@ class ReplOptions:
     #: Above this CURRENT-context token budget (per ``_estimate_context_tokens``)
     #: the terminal starts the next turn from a small fresh context (engine
     #: ``start_fresh`` one-shot) instead of re-sending the whole history.
-    #: 0 disables the restart hook (default).
-    context_budget: int = 0
+    #: None (default) resolves it as the dashboard and ``cmd_run`` do:
+    #: the engine's ``context_budget``, else min(900k, the model's window)
+    #: (``_resolve_fresh_budget``). 0 disables the restart hook. The
+    #: default was 0, so the terminal was the one surface that never
+    #: started fresh.
+    context_budget: int | None = None
 
 
 def _is_a_note(text: str) -> bool:
@@ -1057,6 +1148,127 @@ def shell_escape_result(engine, command: str) -> dict:
     return run
 
 
+def _leave_stage_budget_s() -> float:
+    """``agent.leave_stage_budget_s``, else ``_LEAVE_STAGE_BUDGET_S``."""
+    try:
+        from delfin.user_settings import load_settings
+        cfg = (load_settings() or {}).get("agent") or {}
+        value = float(cfg.get("leave_stage_budget_s", _LEAVE_STAGE_BUDGET_S))
+    except Exception:
+        return _LEAVE_STAGE_BUDGET_S
+    return value if value >= 0 else _LEAVE_STAGE_BUDGET_S
+
+
+def _stage_budget_s(name: str) -> float:
+    """A stage's own limit, from the timeout its work already has.
+
+    Skill learning drafts with one model call, whose request timeout is
+    ``api_client._request_timeout_s()`` (600 s, DELFIN_REQUEST_TIMEOUT_S);
+    the stage gets that plus 30 s. The other stages call no model and
+    had no timeout; each gets ``_STAGE_DEFAULT_S``. Both are capped by
+    what is left of the total budget.
+    """
+    if name == "skill learning":
+        try:
+            from .api_client import _request_timeout_s
+            return float(_request_timeout_s()) + 30.0
+        except Exception:
+            return _LEAVE_STAGE_BUDGET_S
+    return _STAGE_DEFAULT_S
+
+
+class _LeaveStages:
+    """``run_stage(name, fn)`` for ``cli._end_session`` on an attended leave.
+
+    Input: a stage's name and its best-effort callable (it never raises).
+    Each stage runs on a daemon thread while the main thread waits in
+    0.1 s steps, so a signal handler can act between them. Per stage:
+    ``_stage_budget_s(name)``, capped by what is left of the total
+    (``agent.leave_stage_budget_s``, default 300 s). A stage still running
+    after ``_STAGE_SAY_AFTER_S`` is named on stderr with its limit and
+    "Ctrl+C skips what is left". At its limit it is left unfinished (said)
+    and the next stage starts. Ctrl+C, SIGHUP or SIGTERM sets
+    ``skipped_by``: the stage under way and every later one are skipped
+    (said once), and the short leave deadline is armed for the rest of
+    the process. With the terminal gone, or no holder, stages run inline
+    under the deadline already armed, as before.
+
+    Rejected: one deadline for the whole leave. Skill learning makes a
+    model call whose request timeout is 600 s; the 10 s deadline cut it,
+    and the eval loop after it, on almost every attended leave on a slow
+    endpoint. Also rejected: stopping at the first stage that runs out of
+    time. The later stages (indexing, outcome, episode) call no model and
+    would be lost to one that did.
+    """
+
+    def __init__(self, agent: "TerminalAgent", out=None) -> None:
+        self.agent = agent
+        self.out = out
+        self.skipped_by: int | None = None
+        self._budgeted: bool | None = None
+        self._t0 = 0.0
+        self._total = _LEAVE_STAGE_BUDGET_S
+        self._said_skip = False
+
+    def _say(self, text: str) -> None:
+        stream = self.out or sys.stderr
+        try:
+            stream.write(text + "\n")
+            stream.flush()
+        except Exception:
+            pass                    # a terminal that hung up takes no line
+
+    def _skip(self, name: str) -> None:
+        if not self._said_skip:
+            self._said_skip = True
+            self._say(f"Skipped the rest of the session end, from {name} on. "
+                      "The session is saved.")
+        self.agent._stages_skipped()
+
+    def __call__(self, name: str, fn) -> None:
+        if self._budgeted is None:
+            self._budgeted = self.agent._stages_begin(self)
+            self._t0 = time.monotonic()
+            self._total = _leave_stage_budget_s()
+        if not self._budgeted:
+            fn()
+            return
+        if self.skipped_by is not None:
+            self._skip(name)
+            return
+        left = self._total - (time.monotonic() - self._t0)
+        budget = min(left, _stage_budget_s(name))
+        if budget <= 0:
+            self._say(f"{name}: no time left of the "
+                      f"{self._total:.0f} s session-end budget; not run.")
+            return
+        done = threading.Event()
+
+        def _run() -> None:
+            try:
+                fn()
+            finally:
+                done.set()
+
+        threading.Thread(target=_run, name=f"session end: {name}",
+                         daemon=True).start()
+        start = time.monotonic()
+        said = False
+        while not done.wait(0.1):
+            if self.skipped_by is not None:
+                self._skip(name)
+                return
+            ran = time.monotonic() - start
+            if not said and ran >= _STAGE_SAY_AFTER_S:
+                said = True
+                self._say(f"Finishing the session: {name} (up to "
+                          f"{budget:.0f} s). Ctrl+C skips what is left.")
+            if ran >= budget:
+                self._say(f"{name} did not finish within {budget:.0f} s; "
+                          "left unfinished.")
+                return
+
+
 class TerminalAgent:
     """Reads, runs one turn, renders it, repeats.
 
@@ -1089,6 +1301,16 @@ class TerminalAgent:
                  broker=None):
         self.engine = engine
         self.broker = broker
+        # The broker marks its waits on the CURRENT engine's activity
+        # state; read per request, since /model rebuilds the engine.
+        if broker is not None and getattr(broker, "activity", 0) is None:
+            try:
+                broker.activity = lambda: getattr(self.engine, "activity",
+                                                  None)
+            except Exception:
+                pass
+        # The phase whose slow line was already said (activity seq).
+        self._slow_said_seq = -1
         self.opts = opts or ReplOptions()
         try:
             # The name `delfin-agent pause <session>` reaches this engine by.
@@ -1111,6 +1333,15 @@ class TerminalAgent:
         self._idle_interrupts = 0
         self._prev_sigint = None
         self._prev_sigwinch = None
+        # The leave (see begin_leaving): started, its deadline armed, and
+        # whether the caller holds the signals until its save is done.
+        self._leaving = False
+        self._leave_armed = False
+        self._leave_held = False
+        self._leave_gone = False         # armed because the terminal went
+        self._leave_timer = None
+        self._leave_code = 0
+        self._stages = None              # the session-end stages under way
         # How much history was already on disk when this session started.
         self._hist_base = 0
         # Set by the resize handler, acted on by the loop. A signal handler
@@ -1149,6 +1380,10 @@ class TerminalAgent:
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
+        # The first prompt the user gave this process (not a wake, not a
+        # continuation): the task the session end records an outcome and
+        # an episode for (cli._end_session). "" until one is sent.
+        self.first_task = ""
         self._quit = False
 
     # -- input -----------------------------------------------------------
@@ -1191,6 +1426,8 @@ class TerminalAgent:
         do the writing. Getting that wrong produces interleaved output once
         every few interrupts, which is the worst kind of bug to reproduce.
         """
+        if self._leaving:
+            return              # the leave is under way and has a deadline
         if not self._turn_active.is_set():
             raise KeyboardInterrupt
         self._interrupts += 1
@@ -1261,6 +1498,8 @@ class TerminalAgent:
             return ""
 
     def turn(self, prompt: str) -> TurnResult:
+        if not self.first_task and not isinstance(prompt, HarnessText):
+            self.first_task = str(prompt)
         # The fresh-start decision lives in run_turn (the public turn path),
         # which both the interactive and the headless route share: it judges
         # the CURRENT context, ARCHIVES the history it drops, arms the
@@ -1333,6 +1572,7 @@ class TerminalAgent:
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
+        self._report_lessons()
         result = result_box[0] if result_box \
             else TurnResult(error="turn produced nothing")
         # A turn that ended on a question or a denial leaves its note for
@@ -1414,6 +1654,10 @@ class TerminalAgent:
                     except Exception:
                         pass
                 try:
+                    self._say_slow_phase()
+                except Exception:
+                    pass
+                try:
                     item = self._q.get(
                         timeout=0.0 if raw.active else _PUMP_TICK_S)
                 except queue.Empty:
@@ -1430,6 +1674,12 @@ class TerminalAgent:
                     # this flag, so the next prompt says what the turn
                     # stopped on even when its own words do not.
                     self._denied_in_turn = True
+                if (item.kind == "wait" and raw.active and self._can_redraw()
+                        and self._activity_snapshot() is not None):
+                    # The status row already says it, with a clock that
+                    # ticks every repaint; the first-byte tick's own row
+                    # above it counted in tenths of the deadline.
+                    continue
                 self._count_streamed(item)
                 self._render_around_bottom(item)
 
@@ -1465,6 +1715,16 @@ class TerminalAgent:
         if event.kind == rk.SUBMIT:
             text = event.text.strip()
             self._clear_input_line()
+            # A question open: its answer, never the bypass offer's.
+            if self.broker is not None and getattr(self, "_bypass_offer", None):
+                pending = getattr(self.broker, "pending", None)
+                try:
+                    if callable(pending) and pending():
+                        self._bypass_offer = None
+                except Exception:
+                    self._bypass_offer = None
+            if self._answer_bypass_offer(text):
+                return
             # A choice question that arrived while this line was being
             # typed takes the line as its answer; it is then not queued.
             if text and self.broker is not None:
@@ -1543,6 +1803,7 @@ class TerminalAgent:
             delivered = False
         self._recall_later(text)
         if delivered:
+            self._auto_note_user(steer=True)
             self.transcript.chrome(self.transcript.theme.cyan(
                 "→ sent into the running turn"))
             return
@@ -1564,17 +1825,16 @@ class TerminalAgent:
             return ""
 
     def _cycle_mode(self) -> None:
-        """Shift+Tab, one step along the ladder — never onto bypass.
+        """Shift+Tab, one step along the ladder (posture_cycle): default,
+        acceptEdits, plan, bypassPermissions.
 
-        Reaching unattended execution must stay a thing someone types on
-        purpose, not a thing a key lands on while a turn is running.
+        Bypass is stepped over where the managed policy disallows it or no
+        filesystem layer holds each command. The first step onto it in a
+        session switches nothing: it is offered, and only a ``y`` line
+        (``_answer_bypass_offer``) switches. shift+tab with the offer open
+        moves on past bypass.
         """
-        order = ["plan", "default", "acceptEdits"]
-        try:
-            from . import managed_policy as _mp
-            order = [m for m in order if _mp.mode_refusal(m) is None] or order
-        except Exception:
-            pass
+        from . import posture_cycle as _pc
         try:
             current = str(getattr(self.engine.kit_permissions, "mode", "")
                           or "default")
@@ -1582,18 +1842,62 @@ class TerminalAgent:
             self.transcript.chrome(self.transcript.theme.dim(
                 "this backend carries no permission gate"))
             return
-        try:
-            nxt = order[(order.index(current) + 1) % len(order)]
-        except ValueError:
-            nxt = "default"
-        try:
-            self.engine.set_kit_permission_mode(nxt)
-        except Exception as exc:
+        offer = getattr(self, "_bypass_offer", None)
+        self._bypass_offer = None
+        nxt, ask = _pc.step(self.engine, _pc.BYPASS if offer else current,
+                            confirmed=bool(getattr(self, "_bypass_confirmed", False)))
+        if ask:
+            import time as _time
+            self._bypass_offer = (current, _time.monotonic())
             self.transcript.chrome(self.transcript.theme.red(
-                f"could not switch mode: {exc}"))
+                f"⏵⏵ {_pc.OFFER}: type y and enter to switch; any other "
+                f"line stays in {current}"))
             return
+        if nxt == _pc.BYPASS:
+            why = _pc.enter_bypass(self.engine, via="REPL shift+tab")
+            if why:
+                self.transcript.chrome(self.transcript.theme.red(
+                    f"not switched: {why}"))
+                return
+        else:
+            try:
+                self.engine.set_kit_permission_mode(nxt)
+            except Exception as exc:
+                self.transcript.chrome(self.transcript.theme.red(
+                    f"could not switch mode: {exc}"))
+                return
         self.transcript.chrome(self.transcript.theme.cyan(
             f"approval → {nxt}"))
+
+    def _answer_bypass_offer(self, text: str) -> bool:
+        """A line typed while bypass is offered. True when the line was
+        the answer (and is not to be sent): ``y`` after the pause
+        (posture_cycle._DELIBERATE_S), which switches; a ``y`` sooner is
+        taken and switches nothing. Any other line leaves the posture
+        where it was and goes on as typed (False)."""
+        from . import posture_cycle as _pc
+        offer = getattr(self, "_bypass_offer", None)
+        if not offer:
+            return False
+        self._bypass_offer = None
+        was, at = offer
+        if str(text or "").strip().lower() not in ("y", "yes"):
+            self.transcript.chrome(self.transcript.theme.dim(f"still {was}"))
+            return False
+        import time as _time
+        if _time.monotonic() - at < _pc._DELIBERATE_S:
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"too soon to be an answer: still {was} (shift+tab offers it again)"))
+            return True
+        why = _pc.enter_bypass(self.engine, via="REPL shift+tab, confirmed with y")
+        if why:
+            self.transcript.chrome(self.transcript.theme.red(
+                f"not switched: {why}"))
+            return True
+        self._bypass_confirmed = True
+        self.transcript.chrome(self.transcript.theme.red(
+            "approval → bypassPermissions"))
+        return True
 
     def _expand_last_result(self) -> None:
         if not self._last_result_text:
@@ -1648,7 +1952,110 @@ class TerminalAgent:
             engine=self.engine, workspace=self.opts.cwd,
             session_id=str(getattr(self.engine, "session_id", "") or ""),
             # getattr: an agent built without __init__ (tests) has neither.
-            ask=getattr(self, "_read_line", None), say=self._say_chrome)
+            ask=getattr(self, "_read_line", None), say=self._say_chrome,
+            auto=self._auto_controller())
+
+    # -- auto mode ---------------------------------------------------------
+    def _auto_controller(self):
+        """This session's auto_mode.AutoController, made on first use; None
+        when it cannot be made. The queue probe is the user-first rule: a
+        line waiting in ``queued`` refuses the iteration's next tool call."""
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            try:
+                from . import auto_mode
+                engine = getattr(self, "engine", None)
+                ctl = auto_mode.AutoController(
+                    getattr(getattr(self, "opts", None), "cwd", None)
+                    or Path.cwd(),
+                    session_id=str(getattr(engine, "session_id", "") or ""))
+            except Exception:
+                return None
+            self._auto = ctl
+        if not getattr(ctl, "_probe_of", None) is self:
+            try:
+                ctl.user_waiting = lambda: bool(getattr(self, "queued", None))
+                ctl._probe_of = self
+            except Exception:
+                pass
+        return ctl
+
+    def _say_auto(self, ctl) -> None:
+        """Print what the controller has to say, as chrome. Never raises."""
+        try:
+            for note in ctl.pop_notices():
+                for line in str(note).splitlines():
+                    self.transcript.chrome(self.transcript.theme.dim(
+                        "◆ " + line))
+        except Exception:
+            pass
+
+    def _auto_note_user(self, *, steer: bool = False) -> None:
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            return
+        try:
+            ctl.note_user_input(getattr(self, "engine", None), steer=steer)
+        except Exception:
+            pass
+
+    def _auto_after_turn(self, result) -> None:
+        """An auto turn ended: judge it; any other turn: note its end."""
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            return
+        try:
+            if ctl.iteration is not None:
+                ctl.finish_iteration(self.engine,
+                                     getattr(result, "text", "") or "",
+                                     getattr(result, "error", "") or "")
+            else:
+                ctl.note_turn_end()
+        except Exception:
+            pass
+        self._say_auto(ctl)
+
+    def _auto_wake(self, typed: str, woke: str) -> str:
+        """The idle prompt's turn when auto mode is on: the controller's
+        next iteration (wrapping a job wake into it), else the plain wake.
+        A message from another session's operator is a person: it pauses
+        auto mode and is delivered as it always was."""
+        import time as _time
+
+        ctl = self.__dict__.get("_auto")
+        kind = self.__dict__.pop("_wake_kind", "")
+        if ctl is None or not getattr(ctl, "enabled", False):
+            return woke
+        if woke and kind == "mail":
+            self._auto_note_user()
+            return woke
+        now = _time.monotonic()
+        if not woke and now - self.__dict__.get("_auto_last_look", -1e9) \
+                < self._WAKE_EVERY_S:
+            return ""
+        self._auto_last_look = now
+        try:
+            self._auto_controller()
+            prompt = ctl.next_prompt(self.engine, typed=typed,
+                                     wake=str(woke or ""),
+                                     pause_key=self._presence_key())
+        except Exception:
+            prompt = ""
+        self._say_auto(ctl)
+        return prompt or woke
+
+    def _posture_hint(self) -> str:
+        """The posture for the hint row, and auto mode's line when it is on."""
+        posture = self._posture_now()
+        ctl = self.__dict__.get("_auto")
+        line = ""
+        try:
+            line = ctl.status_line() if ctl is not None else ""
+        except Exception:
+            line = ""
+        if not line:
+            return posture
+        return f"{posture} · {line}" if posture else line
 
     def _say_chrome(self, text: str) -> None:
         """Print a handler's mid-command text as chrome, line by line."""
@@ -1824,6 +2231,12 @@ class TerminalAgent:
         from . import terminal_confirm as tc
 
         self._clear_bottom()
+        # The status row is down while a dialog waits, so the dialog says
+        # what the turn is doing: nothing, until this is answered.
+        self.transcript.chrome(self.transcript.theme.dim(
+            "⏸ waiting for your "
+            + ("answer" if req.kind == tc.ASK else "approval")
+            + " — the turn is paused until you answer"))
         if req.kind == tc.ASK:
             self._answer_question(req, raw)
             return
@@ -2188,7 +2601,7 @@ class TerminalAgent:
             at = len(raw) if cursor is None else int(cursor)
             at = max(0, min(at, len(raw)))
             view = rb.render_box(
-                raw, at, width, _box_hint(self._posture_now()))
+                raw, at, width, _box_hint(self._posture_hint()))
             box_rows = list(view.rows)
             if view.hint_row is not None:
                 box_rows[view.hint_row] = self.transcript.theme.dim(
@@ -2334,6 +2747,32 @@ class TerminalAgent:
         self._input_cursor = 0
         self._clear_bottom()
 
+    def _activity_snapshot(self):
+        """The engine's activity snapshot, or None without one."""
+        from . import activity as _act
+        target = _act.resolve_attr(getattr(self, "engine", None))
+        if target is None:
+            return None
+        try:
+            return target.snapshot()
+        except Exception:
+            return None
+
+    def _say_slow_phase(self) -> None:
+        """One transcript line when the current phase is past its
+        threshold: what is slow, and how to stop it here. Once per phase
+        (keyed on the activity's seq), never once per repaint."""
+        snap = self._activity_snapshot()
+        if snap is None or not snap.active \
+                or snap.seq == self.__dict__.get("_slow_said_seq", -1):
+            return
+        from . import activity as _act
+        hint = _act.slow_hint(snap, "terminal")
+        if not hint:
+            return
+        self._slow_said_seq = snap.seq
+        self._render_around_bottom(RenderItem("notice", text=hint))
+
     def _status_line(self) -> str:
         """Elapsed, model, posture, what this turn has cost so far.
 
@@ -2372,7 +2811,19 @@ class TerminalAgent:
                     or "?")
         mode = permission_mode(self.engine) or str(status.get("mode", "") or "")
 
-        bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
+        # The phase first, from the engine's own state (activity.py): what
+        # the turn waits on, with that phase's clock, then the turn's.
+        # Without an activity state (a double, a foreign engine) the row
+        # keeps its old head: the turn's seconds and the model.
+        snap = self._activity_snapshot()
+        if snap is not None and snap.active:
+            from . import activity as _act
+            bits = [f"{_SPINNER[self._spin]} {_act.line(snap)}",
+                    f"turn {elapsed:.0f}s"]
+            if snap.phase not in (_act.MODEL_WAIT, _act.STREAMING):
+                bits.append(model)
+        else:
+            bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
         if mode:
             bits.append(mode)
             # Said only when a command is not held by a layer; an
@@ -2603,6 +3054,18 @@ class TerminalAgent:
             return chosen
         return text
 
+    def _report_lessons(self) -> None:
+        """One line per lesson the agent proposed in this turn, once each:
+        the person decides whether to share it (/share), the agent never
+        does. Never raises."""
+        try:
+            from .knowledge_commands import end_of_turn_hints
+            lines = end_of_turn_hints()
+        except Exception:
+            return
+        for line in lines:
+            self.transcript.chrome(self.transcript.theme.dim(line))
+
     def _report_tasks(self) -> None:
         """Open work, when the agent left some and the user wants to see it."""
         if not self._show_tasks:
@@ -2713,6 +3176,7 @@ class TerminalAgent:
     def run(self, first_prompt: str = "") -> int:
         from . import repl_keys as rk
 
+        self._leaving = False
         self._install_sigint()
         self._load_history()
         self._install_completer()
@@ -2762,11 +3226,13 @@ class TerminalAgent:
                             woke = bool(from_wake)
                             pending = text.strip()
                     except EOFError:
+                        self.begin_leaving(0)
                         self.transcript.chrome("")
                         return 0
                     except KeyboardInterrupt:
                         self._idle_interrupts += 1
                         if self._idle_interrupts >= 2:
+                            self.begin_leaving(130)
                             self.transcript.chrome("")
                             return 130
                         self.transcript.chrome(
@@ -2783,6 +3249,7 @@ class TerminalAgent:
                 pending = self._expand_next_step(pending)
                 pending = self._handle_line(pending)
                 if self._quit:
+                    self.begin_leaving(0)
                     return 0
                 if not pending:
                     continue
@@ -2794,11 +3261,15 @@ class TerminalAgent:
                         self.engine.note_person_message()
                     except Exception:
                         pass
+                    # ...and comes before auto mode, which pauses.
+                    self._auto_note_user()
                 woke = False
                 pending_prompt = pending          # visible past the try
+                last = None
                 try:
-                    self.turn(pending)
+                    last = self.turn(pending)
                 except KeyboardInterrupt:
+                    self.begin_leaving(130)
                     self.transcript.chrome("")
                     return 130
                 # The turn finished: the conversation goes on disk now,
@@ -2838,8 +3309,9 @@ class TerminalAgent:
                     # same hatch applies -- leave with 130 instead of
                     # raising out of run() past every handler.
                     try:
-                        self.turn(HarnessText(continuation))
+                        last = self.turn(HarnessText(continuation))
                     except KeyboardInterrupt:
+                        self.begin_leaving(130)
                         self.transcript.chrome("")
                         return 130
                     self._checkpoint_session()
@@ -2849,17 +3321,29 @@ class TerminalAgent:
                             self._continue_after_endpoint_failure())
                     if not continuation:
                         continuation = self._continue_after_announcement()
+                # Judged after its follow-ups: an iteration is the turn and
+                # every continuation the harness added to it.
+                self._auto_after_turn(last)
                 pending = ""
         except rk.TerminalLeft as left:
             # Whatever the session was doing -- at the prompt, in a turn,
             # in a dialog -- the terminal is gone and so is the session.
             # Returning (rather than dying) is what saves it for a resume.
             # The deadline comes first: everything after it can hang.
-            self._arm_leave_deadline(left.code)
+            self.begin_leaving(left.code, terminal_gone=True)
             self._stop_for_leaving()
             self._end_what_it_started()
             return left.code
         finally:
+            # Every way out, an exception included, is a leave from here
+            # on: a repeated signal no longer unwinds the cleanup below.
+            self.begin_leaving(1)
+            _ctl = self.__dict__.get("_auto")
+            if _ctl is not None and getattr(_ctl, "enabled", False):
+                try:
+                    _ctl.stop("the session ended")
+                except Exception:
+                    pass
             try:
                 self._teardown_screen()
             except OSError:
@@ -2900,10 +3384,132 @@ class TerminalAgent:
                 pass
 
     def _on_leave_signal(self, signum, _frame) -> None:
-        """Same rule as the other handlers: never print, only unwind."""
+        """Same rule as the other handlers: never print, only unwind.
+
+        Once the leave has begun, a repeat is ignored: raised again, it
+        would unwind the cleanup or the save that the first one started,
+        and the leave already ends by its deadline.
+        """
+        if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
+            return
         from . import repl_keys as rk
         raise rk.TerminalLeft(signal.Signals(signum).name.lower(),
                               128 + int(signum))
+
+    def _on_held_sigint(self, signum, frame) -> None:
+        """SIGINT outside run() while the leave is held: KeyboardInterrupt
+        as by default; once the leave has begun, ignored during the save
+        and a skip of what is left during the session-end stages."""
+        if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
+            return
+        raise KeyboardInterrupt
+
+    def begin_leaving(self, code: int, *, terminal_gone: bool = False) -> None:
+        """The session is leaving with exit *code*; idempotent.
+
+        From here SIGHUP, SIGTERM and SIGINT are ignored by this agent's
+        handlers. The leave deadline (``_LEAVE_DEADLINE_S``, then
+        ``os._exit(code)``) is armed once: always when the terminal is
+        gone (hangup, SIGHUP, SIGTERM), and for every other way out --
+        ctrl+d at the prompt, /exit, the second idle ctrl+c -- while the
+        caller holds the leave (``leave_held``). Without a holder a
+        returning run() arms nothing: an in-process caller (the service
+        worker, a test) is not ended by a timer it did not ask for.
+        """
+        self._leaving = True
+        if self._leave_armed or not (terminal_gone or self._leave_held):
+            return
+        self._leave_armed = True
+        self._leave_gone = terminal_gone
+        self._leave_code = int(code)
+        self._arm_leave_deadline(code)
+
+    def leave_stages(self) -> "_LeaveStages":
+        """The runner ``cli._end_session`` hands each session-end stage to
+        (``run_stage``); see ``_LeaveStages``."""
+        return _LeaveStages(self)
+
+    def _stages_begin(self, runner: "_LeaveStages") -> bool:
+        """The save is done and the session-end stages start. True when
+        they run under their own budget: an attended leave, held. Its short
+        deadline, which bounded the cleanup and the save, is cancelled.
+        False when the terminal is gone (or nothing holds the leave): the
+        stages run inline under whatever deadline is armed, as before."""
+        if self._leave_gone or not self._leave_held:
+            return False
+        timer = self._leave_timer
+        if timer is not None:
+            timer.cancel()
+            self._leave_timer = None
+        self._leave_armed = False
+        self._stages = runner
+        return True
+
+    def _stages_skipped(self) -> None:
+        """Ctrl+C, SIGHUP or SIGTERM during the stages: what is left is
+        skipped and the process ends within the short deadline, kept armed
+        past ``leave_held`` (the session is saved by now)."""
+        if self._leave_armed:
+            return
+        self._leave_armed = True
+        self._leave_gone = True
+        self._arm_leave_deadline(self._leave_code)
+
+    @contextlib.contextmanager
+    def leave_held(self):
+        """For the owner of the process that saves the session after run().
+
+        Input: none. Inside the block, SIGHUP and SIGTERM take the REPL's
+        leave handler and SIGINT ``_on_held_sigint``, so run()'s restore
+        returns to them instead of to the defaults; every way out of run()
+        arms the leave deadline. Once the leave has begun, a repeated
+        signal is ignored until the block ends, so the save after run()
+        is ended only by the deadline or by SIGKILL. On exit the previous
+        handlers are back. A deadline armed because the terminal went
+        stays armed (as before), and bounds the session-end stages too.
+        One armed by ctrl+d, /exit or ctrl+c bounds the cleanup and the
+        save; the stages after it run under their own budget
+        (``_LeaveStages``), and whatever is still armed at the end of the
+        block is cancelled, so it never outlives the leave in a process
+        that goes on (``main()`` called in-process: os._exit(0) there
+        would end a test run with exit status 0).
+
+        Rejected: restoring the defaults at the end of run(), as before.
+        A second SIGHUP or SIGTERM then ended the process by the default
+        action in the middle of ``_finish_interactive_session``'s save,
+        and a SIGINT raised KeyboardInterrupt there (exit 130).
+        """
+        held: dict = {}
+        for name, handler in (("SIGHUP", self._on_leave_signal),
+                              ("SIGTERM", self._on_leave_signal),
+                              ("SIGINT", self._on_held_sigint)):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                held[sig] = signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+        self._leave_held = True
+        try:
+            yield self
+        finally:
+            self._leave_held = False
+            self._stages = None
+            timer = self._leave_timer
+            if self._leave_armed and not self._leave_gone and timer:
+                timer.cancel()
+                self._leave_timer = None
+                self._leave_armed = False
+            for sig, prev in held.items():
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, OSError, TypeError):
+                    pass
 
     def _restore_leave_signals(self) -> None:
         for sig, prev in (getattr(self, "_prev_leave", None) or {}).items():
@@ -2956,6 +3562,7 @@ class TerminalAgent:
         timer = threading.Timer(_LEAVE_DEADLINE_S, os._exit, args=(code,))
         timer.daemon = True
         timer.start()
+        self._leave_timer = timer
 
     def _install_sigwinch(self) -> None:
         """Notice the window changing size.
@@ -3532,6 +4139,16 @@ class TerminalAgent:
             return True
 
     def _wake_text(self, typed: str) -> str:
+        """The idle prompt's next turn nobody typed, or "": the plain wake
+        (:meth:`_wake_text_plain`), or auto mode's next iteration when it
+        is on (:meth:`_auto_wake`)."""
+        woke = self._wake_text_plain(typed)
+        if self.__dict__.get("_auto") is None:
+            self.__dict__.pop("_wake_kind", None)
+            return woke
+        return self._auto_wake(typed, woke)
+
+    def _wake_text_plain(self, typed: str) -> str:
         """The message a job that finished hands an idle prompt, or "".
 
         Nothing in the terminal used to wake an agent. A background job
@@ -3577,6 +4194,7 @@ class TerminalAgent:
         self._announce_presence()       # the poll doubles as the heartbeat
         mail = self._operator_messages(typed)
         if mail:
+            self._wake_kind = "mail"
             return HarnessText(mail)
         try:
             from . import job_wake
@@ -3617,6 +4235,8 @@ class TerminalAgent:
             # question nobody answered). Consumed on read.
             _note = self.__dict__.pop("_blocked_note", "")
             prompt = job_wake.wake_prompt(done)
+            if prompt:
+                self._wake_kind = "job"
             if _note:
                 prompt = (prompt + "\n\n" + _note) if prompt else _note
             return HarnessText(prompt) if prompt else ""
@@ -3758,7 +4378,7 @@ class TerminalAgent:
             return rb.viewport(
                 rb.render_box(decoder.buffer, decoder.cursor,
                                 self.transcript.width,
-                                _box_hint(self._posture_now()),
+                                _box_hint(self._posture_hint()),
                                 status=self._bg_status_selected(selected)),
                 _BOX_MAX_CONTENT_ROWS)
 
@@ -4121,6 +4741,8 @@ class TerminalAgent:
                         self.transcript.refresh_width()
                     continue
                 _clear_box(decoder)
+                if self._answer_bypass_offer(submit_text):
+                    continue
                 return submit_text
 
         with rk.RawMode(self._stdin) as raw:

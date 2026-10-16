@@ -17,7 +17,10 @@ import json
 import os
 import re
 import shutil
+import unicodedata
 from dataclasses import dataclass
+
+from . import markdown_table as _md_table
 
 __all__ = [
     "Theme", "theme_for", "strip_control", "truncate_middle",
@@ -832,14 +835,21 @@ class MarkdownStream:
     here runs when colour is off, so ``delfin-agent -p '…' > answer.txt``
     keeps producing exactly the bytes the model produced.
 
-    Handled: fenced code blocks, ATX headings, bullet markers, ``**bold**``
-    and ``` `code` ```. Not handled, deliberately: tables, links, nested
-    emphasis, block quotes — each needs either lookahead or a width the
-    stream does not have.
+    Handled: fenced code blocks, ATX headings, bullet markers, ``**bold**``,
+    ``` `code` ``` and pipe tables. Not handled, deliberately: links,
+    nested emphasis, block quotes.
+
+    A table is the one construct that is held back: from a line starting
+    with ``|`` until the first line that does not, then drawn at once in
+    aligned columns (``draw_table``). The rows of a table cannot be laid
+    out before the widest cell is known, and the hold is bounded by the
+    table itself. Lines that turn out not to be a table, and tables wider
+    than the terminal, are written as the model wrote them.
     """
 
     __slots__ = ("theme", "_at_line_start", "_in_fence", "_pending",
-                 "_bold_open", "_code_open", "_line_styled")
+                 "_bold_open", "_code_open", "_line_styled",
+                 "_width", "_tables", "_table", "_table_cur")
 
     #: A marker is only recognised whole. Holding at most this many
     #: characters back is what lets a fence split across deltas still be
@@ -847,7 +857,11 @@ class MarkdownStream:
     #: from the screen, which is the cost side of the same mechanism.
     _MAX_HOLD = 3
 
-    def __init__(self, theme: Theme | None = None) -> None:
+    def __init__(self, theme: Theme | None = None, *, width=None,
+                 tables: bool = True) -> None:
+        """*width*: columns available to a table -- an int, a callable
+        asked when a table is drawn (the terminal may have been resized),
+        or None for the terminal's width at that moment."""
         self.theme = theme or Theme()
         self._at_line_start = True
         self._in_fence = False
@@ -855,6 +869,10 @@ class MarkdownStream:
         self._bold_open = False
         self._code_open = False
         self._line_styled = False
+        self._width = width
+        self._tables = tables
+        self._table: list[str] | None = None
+        self._table_cur = ""
 
     # -- public ----------------------------------------------------------
 
@@ -881,7 +899,10 @@ class MarkdownStream:
         if not self.theme.enabled:
             tail, self._pending = self._pending, ""
             return tail
-        out = [self._pending]
+        out = []
+        if self._table is not None:
+            out.append(self._close_table())
+        out.append(self._pending)
         self._pending = ""
         if self._line_styled or self._bold_open or self._code_open \
                 or self._in_fence:
@@ -890,11 +911,37 @@ class MarkdownStream:
         self._line_styled = self._in_fence = False
         return "".join(out)
 
+    def release(self) -> str:
+        """A table still held back, drawn now; "" when none is held.
+
+        For the caller about to write something else to the same screen
+        (a tool line, the wait tick): the table ended the model's text, and
+        nothing that came after it may appear above it. Unlike ``flush``
+        this leaves the rest of the stream state alone.
+        """
+        if self._table is None or not self.theme.enabled:
+            return ""
+        return self._close_table()
+
     # -- one decision ----------------------------------------------------
 
     def _step(self, out: list[str]) -> bool:
         """Emit what can be decided now. False when more input is needed."""
         buf = self._pending
+
+        if self._table is not None:
+            if not self._table_cur and buf[0] != "|":
+                out.append(self._close_table())   # the block has ended
+            else:
+                nl = buf.find("\n")
+                if nl < 0:
+                    self._table_cur += buf
+                    self._pending = ""
+                    return True
+                self._table.append(self._table_cur + buf[:nl])
+                self._table_cur = ""
+                self._pending = buf[nl + 1:]
+                return True
 
         if self._at_line_start:
             decided = self._line_opening(out)
@@ -962,6 +1009,11 @@ class MarkdownStream:
             self._at_line_start = False
             return False
 
+        if buf[0] == "|" and self._tables:
+            self._table = []
+            self._table_cur = ""
+            return True
+
         if buf[0] == "#":
             hashes = len(buf) - len(buf.lstrip("#"))
             if hashes >= len(buf) and "\n" not in buf:
@@ -986,3 +1038,114 @@ class MarkdownStream:
 
         self._at_line_start = False
         return False
+
+    # -- tables -----------------------------------------------------------
+
+    def _table_width(self) -> int:
+        w = self._width
+        if callable(w):
+            try:
+                w = w()
+            except Exception:
+                w = None
+        return int(w) if w else terminal_width()
+
+    def _close_table(self) -> str:
+        """The held block, drawn as a table or written as it came."""
+        complete = not self._table_cur
+        lines = list(self._table or [])
+        if self._table_cur:
+            lines.append(self._table_cur)
+        self._table, self._table_cur = None, ""
+        tail = "\n" if complete else ""
+        drawn = draw_table(lines, self._table_width())
+        if drawn is not None:
+            return drawn + tail
+        plain = MarkdownStream(self.theme, width=self._width, tables=False)
+        return plain.feed("\n".join(lines) + tail) + plain.flush()
+
+
+def display_width(text: str) -> int:
+    """Terminal columns *text* occupies: wide characters (most emoji, CJK)
+    take two, combining and format characters none."""
+    n = 0
+    for ch in text:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in (
+                "Mn", "Me", "Cf"):
+            continue
+        n += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return n
+
+
+_CELL_MARKUP = re.compile(r"`([^`]+)`|\*\*(.+?)\*\*|\\\|")
+
+
+def _cell(text: str) -> tuple[str, int]:
+    """A cell's styled form and its visible width: code spans cyan, strong
+    bold, ``\\|`` a plain pipe; the markers themselves are not printed."""
+    out, visible, pos = [], [], 0
+    for m in _CELL_MARKUP.finditer(text):
+        out.append(text[pos:m.start()])
+        visible.append(text[pos:m.start()])
+        if m.group(1) is not None:
+            out.append(_SGR_CYAN + m.group(1) + _SGR_RESET)
+            visible.append(m.group(1))
+        elif m.group(2) is not None:
+            out.append(_SGR_BOLD + m.group(2) + _SGR_RESET)
+            visible.append(m.group(2))
+        else:
+            out.append("|")
+            visible.append("|")
+        pos = m.end()
+    out.append(text[pos:])
+    visible.append(text[pos:])
+    return "".join(out), display_width("".join(visible))
+
+
+def draw_table(lines: list[str], width: int) -> str | None:
+    """A pipe table as aligned columns, or None.
+
+    Input: the table's source lines (header, alignment row, body) and the
+    columns available. Output: the rows separated by ``│`` with a ``─┼─``
+    rule under a bold header, no trailing newline. None when the lines are
+    not a table, or when the table would be wider than *width* -- wrapping
+    cells inside a stream that cannot repaint would make an unreadable
+    grid, and the source of a table is still a table to read.
+    """
+    if len(lines) < 2:
+        return None
+    aligns = _md_table.alignment(lines[0], lines[1])
+    if aligns is None:
+        return None
+    header = _md_table.split_row(lines[0])
+    rows = [_md_table.split_row(ln) for ln in lines[2:]]
+    header, rows, aligns = _md_table.normalise(header, rows, aligns)
+    grid = [[_cell(c) for c in header]] + [[_cell(c) for c in r]
+                                            for r in rows]
+    ncols = len(header)
+    widths = [max(row[c][1] for row in grid) for c in range(ncols)]
+    total = 1 + sum(widths) + 3 * (ncols - 1)
+    if total > width:
+        return None
+
+    def pad(cell: tuple[str, int], col: int) -> str:
+        text, w = cell
+        gap = widths[col] - w
+        if aligns[col] == "r":
+            return " " * gap + text
+        if aligns[col] == "c":
+            return " " * (gap // 2) + text + " " * (gap - gap // 2)
+        return text + " " * gap
+
+    sep = f"{_SGR_DIM}│{_SGR_RESET}"
+    out = []
+    for k, row in enumerate(grid):
+        cells = [pad(cell, c) for c, cell in enumerate(row)]
+        if k == 0:
+            cells = [_SGR_BOLD + c + _SGR_RESET for c in cells]
+        out.append(" " + f" {sep} ".join(cells))
+        if k == 0:
+            rule = "┼".join("─" * (w + 2) for w in widths[:-1])
+            rule = (rule + "┼" if ncols > 1 else "") + "─" * (widths[-1] + 1)
+            out.append(_SGR_DIM + rule + _SGR_RESET)
+    return "\n".join(out)

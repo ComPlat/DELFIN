@@ -185,6 +185,26 @@ def test_the_month_total_is_asked_for_as_a_value():
     assert figure.judge("Im März 2026: 23.716,25 €.") == "wrong"
 
 
+def _office_workspace() -> str:
+    """The office workspace with its workbooks built, resolved from this
+    file. The .xlsx files are gitignored and written by
+    ``ensure_office_fixtures``; a test that only found them when an earlier
+    test in the same process had built them passed or failed by its place
+    in the run (seen when the suite was split into shards)."""
+    from pathlib import Path
+
+    from delfin.agent.benchmark_fixtures import ensure_office_fixtures
+
+    root = Path(__file__).resolve().parents[1]
+    ws = root / "tests" / "fixtures" / "office_workspace"
+    if not (ws / "Buchungen_2026.xlsx").exists():
+        _written, reason = ensure_office_fixtures(root)
+        if reason or not (ws / "Buchungen_2026.xlsx").exists():
+            pytest.skip("the .xlsx fixtures could not be built: "
+                        f"{reason or 'unknown'}")
+    return str(ws)
+
+
 def test_the_figure_comes_from_the_tool_not_from_hand_arithmetic():
     """Same discipline as before: the rubric's number is what the tool
     returns, re-derived here rather than trusted."""
@@ -193,9 +213,7 @@ def test_the_figure_comes_from_the_tool_not_from_hand_arithmetic():
     from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
     from delfin.agent.benchmark import load_tasks
 
-    workspace = Path("tests/fixtures/office_workspace")
-    if not (workspace / "Buchungen_2026.xlsx").exists():
-        pytest.skip("the workbook fixture is not built in this checkout")
+    workspace = Path(_office_workspace())
     perms = KitToolPermissions(workspace=str(workspace))
     perms.mode = "acceptEdits"
     perms.task_session_id = "figure-judge"

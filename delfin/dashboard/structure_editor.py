@@ -3460,12 +3460,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         held = _journal_mod.how_much_is_held(journal.summary())
         here = _under_home(_journal_mod.resolve_archive_dir())
         target = _journal_mod.remote_target()
+        off = _journal_mod.upload_off() if target is None else ''
         goes = f'→ <code>{html.escape(here)}</code>'
         if target is None:
-            goes += ', and no further -- no transfer host is configured'
+            why = off or 'no transfer host is configured'
+            goes += f', and no further -- {html.escape(why)}'
             submit_bug_send.tooltip = (
-                'Write the report. It stays on this machine: no transfer '
-                'host is configured.')
+                f'Write the report. It stays on this machine: {why}.')
         else:
             goes += (', then <code>'
                      + html.escape(target['shown']) + '</code>')
@@ -3573,9 +3574,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         target = _journal_mod.remote_target()
         if target is None:
+            off = _journal_mod.upload_off()
+            why = (off[0].upper() + off[1:]) if off else (
+                'No transfer host is configured')
             _set_mol_status(
                 f'Reported. {did}',
-                'No transfer host is configured, so it stays on this '
+                f'{why}, so it stays on this '
                 'machine. It can be played back into a viewer to see the '
                 'same thing happen again.' + went + again + empty + wordless)
         else:
@@ -5815,6 +5819,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         far = _gfn.largest_shift(began, current)
         if far is None:
             return False
+        # The yardstick is the wish the wall refused the third time, written
+        # where that refusal is counted.  Taken here instead, from the first
+        # message after it, the message was also skipped -- so a hand that
+        # eased off on the very next move was not answered, and its own
+        # easing became the distance it then had to beat
+        # (test_a_hand_that_eases_off_right_after_the_third_refusal_is_answered).
         stuck = state.get('topology_stuck')
         if stuck is None:
             state['topology_stuck'] = far
@@ -6015,6 +6025,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the median atom moved 0.066 A.
                     current = _gfn.eased_apart(current)
                     began = time.perf_counter()
+                    # As _still_torn sees it, before any budget clamp: the
+                    # bonding wall's yardstick is taken from this wish.
+                    asked_for = current
                     # Once the budget is spent, stand still rather than shake.
                     #
                     # The wall acts and then undoes: the step runs, the price
@@ -7144,6 +7157,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # merely happening.
                         refused = int(state.get('topology_refused') or 0) + 1
                         state['topology_refused'] = refused
+                        if refused == 3:
+                            # How far this hand was when the wall gave up --
+                            # what _still_torn measures the next wish against.
+                            grab = state.get('gfn_topology_source')
+                            shift = (_gfn.largest_shift(grab, asked_for)
+                                     if grab and len(_gfn.atom_lines(grab))
+                                     == len(_gfn.atom_lines(asked_for))
+                                     else None)
+                            if shift is not None:
+                                state['topology_stuck'] = shift
                         if refused >= 3 and pull is None:
                             said = (f'{said} Three steps running -- the hand '
                                     f'is set to move the atom, which is '

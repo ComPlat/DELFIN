@@ -17,8 +17,8 @@ problem. Report it privately through GitHub's
 ["Report a vulnerability"](https://github.com/ComPlat/DELFIN/security/advisories/new)
 form (repository → *Security* → *Advisories* → *Report a vulnerability*). It
 opens a private security advisory that only the maintainers and you can see,
-and the fix can be prepared in a private fork attached to it. This is the one
-channel for security reports.
+and the fix can be prepared in a private fork attached to it. This is the
+one channel for security reports.
 
 ### What to include
 
@@ -56,6 +56,14 @@ Please give us the chance to fix the problem before it is made public. We
 will agree a disclosure date with you; if a fix takes longer than expected we
 will tell you why and propose a new date rather than go silent. Reporters are
 credited in the advisory unless they ask not to be.
+
+## How changes reach main
+
+Every change reaches `main` through a pull request that passes the required
+checks on a branch containing the current `main`, and is approved by a code
+owner. The checks bind administrators too; the one way around them is a
+documented, logged emergency procedure. Both are described in
+[docs/MAIN_PROTECTION.md](docs/MAIN_PROTECTION.md).
 
 ## Scope
 

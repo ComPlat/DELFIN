@@ -43,8 +43,23 @@ Semantics, in the order they are applied by the gate (api_client):
   path rule covers a path only when the path itself matches the glob.
 * Allow never reaches a hard refusal: the gate consults it only at the
   places where it would otherwise ask (see ``api_client._rule_answers``).
-* A project file may add deny and ask rules; its allow list is ignored and
-  reported. A repository must not grant itself permissions.
+* A project file may add deny and ask rules; its allow list (and any
+  ``repos``/``global_allow``) is ignored and reported. A repository must
+  not grant itself permissions.
+* Scope. The user's file may hold ``"repos": {"<key>": {"allow": [...],
+  "ask": [...], "deny": [...]}}``: an entry's rules apply only in the
+  workspace whose repository it names. A key is the ``agent.git_roles``
+  key (``github.com/owner/repo`` or a remote URL, compared with
+  ``git_role.repo_key`` of the workspace: origin's push URL, else the
+  only remote's, else the top-level path), or an absolute path / ``~``
+  path glob matched against the checkout's top level and the workspace.
+  The top-level ``deny``/``ask`` apply everywhere. The top-level
+  ``allow`` applies everywhere too while ``global_allow`` is unset, with
+  a start notice naming each rule (``scope_notice``); ``true`` keeps it
+  without the notice, ``false`` (or a value that is not a bool) turns it
+  off. Rejected: turning an unscoped allow off outright (a working setup
+  would start asking with nothing said), and scoping it to the first
+  repository it answered in (state the user never wrote).
 * A rule that cannot be parsed grants nothing. A broken deny or ask rule
   is an error in ``RuleSet.errors``, shown at startup and by
   ``/permissions``.
@@ -72,6 +87,8 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 LISTS = ("deny", "ask", "allow")
+#: Keys of the user's block that scope the allow list (not lists).
+SCOPE_KEYS = ("repos", "global_allow")
 PROJECT_RELPATH = Path(".delfin") / "settings.json"
 
 _KIND_ALIASES = {
@@ -112,6 +129,9 @@ class Rule:
     source: str = ""
     #: True for a rule of the administrator's managed policy.
     managed: bool = False
+    #: The ``permissions.repos`` key a user rule was written under, as
+    #: written; "" for a rule of the top-level lists.
+    scope: str = ""
 
 
 @dataclass
@@ -129,6 +149,20 @@ class RuleSet:
     only_allow: tuple = ()
     #: The ``managed_policy.Policy`` merged in, or None.
     policy: Any = None
+    #: The workspace's repository key (``git_role.repo_key``: normalised
+    #: remote URL, else top-level path); "" outside a git checkout or
+    #: when it cannot be told.
+    repo_key: str = ""
+    #: The resolved top-level path of the checkout ("" outside one).
+    repo_path: str = ""
+    #: ``permissions.global_allow`` as written: None (unset: the global
+    #: allow list applies, with a start notice), True, or False.
+    global_allow: Any = None
+    #: Global allow rules not in force because ``global_allow`` is off.
+    allow_off: tuple = ()
+    #: User rules of ``permissions.repos`` entries that do not match this
+    #: workspace, for the ``/permissions`` view.
+    other_repos: tuple = ()
 
     def is_empty(self) -> bool:
         return not (self.deny or self.ask or self.allow)
@@ -247,12 +281,20 @@ def _read_block(path: Optional[Path], errors: list) -> dict:
 
 
 def _parse_lists(block: dict, source: str, *, project: bool,
-                 errors: list) -> dict:
+                 errors: list, scope: str = "") -> dict:
     out = {k: [] for k in LISTS}
     for key, entries in block.items():
+        if key in SCOPE_KEYS and not scope:
+            if project:
+                errors.append((source, key, "",
+                               "ignored: a project file cannot grant "
+                               "permissions, only add deny and ask rules"))
+            continue
         if key not in LISTS:
             errors.append((source, str(key), "",
-                           f"unknown list {key!r} (deny, ask, allow)"))
+                           f"unknown list {key!r} (deny, ask, allow"
+                           + ("" if project or scope else
+                              "; repos, global_allow") + ")"))
             continue
         if entries is None:
             continue
@@ -270,8 +312,137 @@ def _parse_lists(block: dict, source: str, *, project: bool,
                 errors.append((source, key, str(entry), rule))
                 continue
             out[key].append(Rule(rule.text, rule.kind, rule.value,
-                                 rule.wildcard, key, source))
+                                 rule.wildcard, key, source, scope=scope))
     return out
+
+
+# ---------------------------------------------------------------------------
+# The repository a workspace belongs to (permissions.repos)
+# ---------------------------------------------------------------------------
+
+_REPO_CACHE: dict = {}
+
+
+def _git_marker(start: Path) -> tuple:
+    """A stamp of the nearest ``.git`` at or above ``start`` (for a
+    directory its inode and ``config``'s stamp; for a worktree's ``.git``
+    file its own); () outside a checkout. A remote changed in that config
+    or a new ``git init`` changes it; a remote changed in a linked
+    worktree's common config is seen on the next process start."""
+    for d in (start, *start.parents):
+        marker = d / ".git"
+        try:
+            st = marker.stat()
+        except OSError:
+            continue
+        if marker.is_dir():
+            # Not the directory's mtime: every git command touches it, and
+            # the remote lives in config.
+            return (str(marker), st.st_ino) + _stamp(marker / "config")
+        return (str(marker), st.st_mtime_ns, st.st_ino)
+    return ()
+
+
+def repo_identity(workspace: Any) -> tuple:
+    """(repo key, top-level path, resolved workspace) for ``workspace``.
+
+    The key is ``git_role.repo_key`` -- the key ``agent.git_roles`` uses:
+    origin's (else the only remote's) push URL normalised, else the
+    top-level path. ("", "", ws) outside a checkout or when git cannot
+    tell. Cached per workspace and ``.git`` stamp: the git subprocesses
+    run once per checkout and process, not per gated call."""
+    if workspace is None:
+        return ("", "", "")
+    try:
+        ws = Path(workspace).expanduser().resolve()
+    except Exception:
+        return ("", "", "")
+    marker = _git_marker(ws)
+    if not marker:
+        return ("", "", str(ws))
+    key = (str(ws), marker)
+    with _CACHE_LOCK:
+        hit = _REPO_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        from . import git_role
+        top = git_role.toplevel(ws) or ""
+        rkey = (git_role.repo_key(ws) or "") if top else ""
+    except Exception:
+        top, rkey = "", ""
+    out = (rkey, top, str(ws))
+    with _CACHE_LOCK:
+        if len(_REPO_CACHE) > 64:
+            _REPO_CACHE.clear()
+        _REPO_CACHE[key] = out
+    return out
+
+
+def repo_entry_matches(entry: str, identity: tuple) -> "bool | None":
+    """True when the ``permissions.repos`` key ``entry`` names the
+    repository of ``identity`` (``repo_identity``); None when ``entry`` is
+    not a key.
+
+    A key starting with ``/`` or ``~`` is a path: with ``*``/``?`` a glob
+    over the top-level path or the workspace, otherwise that path and
+    everything below it -- the checkout's location, whatever its remote.
+    Any other key is a repository key as ``agent.git_roles`` takes it
+    (``github.com/owner/repo`` or a remote URL) and must equal the
+    workspace's ``repo_key``."""
+    text = str(entry or "").strip()
+    rkey, top, ws = identity
+    if text.startswith(("/", "~")):
+        pattern = os.path.expanduser(text)
+        if not pattern.startswith("/"):
+            return None
+        wild = any(ch in pattern for ch in "*?")
+        return any(path_matches(pattern, p, None, subtree=not wild)
+                   for p in (top, ws) if p)
+    try:
+        from . import git_role
+        nk = git_role.entry_key(text)
+    except Exception:
+        nk = None
+    if not nk:
+        return None
+    return bool(rkey) and nk == rkey
+
+
+def _repo_lists(block: dict, source: str, identity: tuple,
+                errors: list) -> tuple:
+    """(lists matching this workspace, rules of the other entries) from
+    the user's ``permissions.repos``."""
+    here = {k: [] for k in LISTS}
+    other: list = []
+    repos = block.get("repos")
+    if repos is None:
+        return here, other
+    if not isinstance(repos, dict):
+        errors.append((source, "repos", "",
+                       "'repos' is not an object; no rule from it is in force"))
+        return here, other
+    for entry, sub in repos.items():
+        where = f"{source} repos[{entry}]"
+        match = repo_entry_matches(entry, identity)
+        if match is None:
+            errors.append((where, "repos", "",
+                           "not a repository key (github.com/owner/repo, a "
+                           "remote URL, or an absolute path or path glob)"))
+            continue
+        if not isinstance(sub, dict):
+            errors.append((where, "repos", "",
+                           "an entry is {\"allow\": [...], \"ask\": [...], "
+                           "\"deny\": [...]}; no rule from it is in force"))
+            continue
+        got = _parse_lists(sub, source, project=False, errors=errors,
+                           scope=str(entry))
+        for k in LISTS:
+            if match:
+                here[k].extend(got[k])
+            else:
+                other.extend(got[k])
+    return here, other
 
 
 def _managed_policy():
@@ -304,7 +475,10 @@ def load(workspace: Any = None) -> RuleSet:
     rs = RuleSet(tuple(pol.deny) + local.deny, tuple(pol.ask) + local.ask,
                  local.allow, list(local.errors), local.user_path,
                  local.project_path,
-                 tuple(pol.only_allow), pol)
+                 tuple(pol.only_allow), pol,
+                 repo_key=local.repo_key, repo_path=local.repo_path,
+                 global_allow=local.global_allow, allow_off=local.allow_off,
+                 other_repos=local.other_repos)
     with _CACHE_LOCK:
         if len(_CACHE) > 64:
             _CACHE.clear()
@@ -320,22 +494,47 @@ def _load_local(workspace: Any = None) -> RuleSet:
     except Exception:
         upath = None
     ppath = project_settings_path(workspace) if workspace is not None else None
-    key = (_stamp(upath), _stamp(ppath))
+    identity = repo_identity(workspace)
+    key = (_stamp(upath), _stamp(ppath), identity)
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
     if hit is not None:
         return hit
     errors: list = []
     lists = {k: [] for k in LISTS}
+    gallow, allow_off, other = None, [], []
     for path, project in ((upath, False), (ppath, True)):
         block = _read_block(path, errors)
-        if block:
-            got = _parse_lists(block, str(path), project=project, errors=errors)
+        if not block:
+            continue
+        got = _parse_lists(block, str(path), project=project, errors=errors)
+        if project:
             for k in LISTS:
                 lists[k].extend(got[k])
+            continue
+        gallow = block.get("global_allow")
+        if gallow is not None and not isinstance(gallow, bool):
+            errors.append((str(path), "global_allow", repr(gallow),
+                           "is neither true nor false; the global allow "
+                           "list is off until it is"))
+            gallow = False
+        here, other = _repo_lists(block, str(path), identity, errors)
+        # The repository's own rules after the global deny/ask (every
+        # deny before any ask either way) and before the global allows,
+        # so the scoped rule is the one reported.
+        lists["deny"].extend(got["deny"] + here["deny"])
+        lists["ask"].extend(got["ask"] + here["ask"])
+        lists["allow"].extend(here["allow"])
+        if gallow is False:
+            allow_off = got["allow"]
+        else:
+            lists["allow"].extend(got["allow"])
     rs = RuleSet(tuple(lists["deny"]), tuple(lists["ask"]),
                  tuple(lists["allow"]), errors,
-                 str(upath or ""), str(ppath or ""))
+                 str(upath or ""), str(ppath or ""),
+                 repo_key=identity[0], repo_path=identity[1],
+                 global_allow=gallow, allow_off=tuple(allow_off),
+                 other_repos=tuple(other))
     with _CACHE_LOCK:
         if len(_CACHE) > 64:
             _CACHE.clear()
@@ -881,27 +1080,76 @@ def rule_origin(rs: RuleSet, rule: Rule) -> str:
     return "project" if rule.source == rs.project_path else "user"
 
 
+EVERY_REPOSITORY = "every repository"
+
+
+def rule_scope(rs: RuleSet, rule: Rule) -> str:
+    """Where a rule applies: its ``permissions.repos`` key, "this project"
+    for a project file's rule, else "every repository"."""
+    if rule.scope:
+        return rule.scope
+    if not rule.managed and rule.source and rule.source == rs.project_path:
+        return "this project"
+    return EVERY_REPOSITORY
+
+
+def _repo_line(rs: RuleSet) -> str:
+    if rs.repo_key:
+        where = f"repository {rs.repo_key}"
+        if rs.repo_path and rs.repo_path != rs.repo_key:
+            where += f" at {rs.repo_path}"
+        return where
+    return "repository: none (not a git checkout; only path keys can match)"
+
+
+def scope_notice(rs: RuleSet) -> Optional[str]:
+    """The start notice for global allow rules, or None.
+
+    Shown while ``permissions.global_allow`` is unset and the user's
+    top-level ``allow`` list holds a rule: those rules answer in every
+    repository. ``true`` keeps them without the notice, ``false`` turns
+    them off; ``permissions.repos`` scopes a rule to one repository."""
+    if rs.global_allow is not None:
+        return None
+    glob = [r.text for r in rs.allow
+            if not r.managed and not r.scope
+            and rule_scope(rs, r) == EVERY_REPOSITORY]
+    if not glob:
+        return None
+    key = rs.repo_key or "github.com/owner/repo"
+    return ("allow rules in " + (rs.user_path or "~/.delfin_settings.json")
+            + f" apply in {EVERY_REPOSITORY}: " + ", ".join(glob)
+            + f". Scope them with permissions.repos {{\"{key}\": "
+            "{\"allow\": [...]}}, or set permissions.global_allow to true "
+            "(keep, no notice) or false (off).")
+
+
 def rule_records(rs: RuleSet) -> list:
-    """Every rule in force as ``{list, rule, origin, source}``, in the
-    order the gate evaluates them; ``only_allow`` entries carry
-    ``list: "only_allow"``. For the boundary report."""
+    """Every rule in force as ``{list, rule, origin, source, scope}``, in
+    the order the gate evaluates them; ``only_allow`` entries carry
+    ``list: "only_allow"``. ``scope`` is ``rule_scope``. For the boundary
+    report."""
     out = []
     for which in LISTS:
         for r in getattr(rs, which):
             out.append({"list": which, "rule": r.text,
-                        "origin": rule_origin(rs, r), "source": r.source})
+                        "origin": rule_origin(rs, r), "source": r.source,
+                        "scope": rule_scope(rs, r)})
     for group in rs.only_allow:
         for r in group:
             out.append({"list": "only_allow", "rule": r.text,
-                        "origin": "managed", "source": r.source})
+                        "origin": "managed", "source": r.source,
+                        "scope": EVERY_REPOSITORY})
     return out
 
 
 def describe(rs: RuleSet) -> str:
     """The read-only view ``/permissions`` prints: the managed policy's
-    rules and the user's and the project's, each with its source."""
+    rules and the user's and the project's, each with its source, and
+    for every allow the repository it applies in."""
     lines = [f"permission rules (edit {rs.user_path or '~/.delfin_settings.json'}"
-             ", key \"permissions\"; the agent cannot write it)"]
+             ", key \"permissions\"; the agent cannot write it)",
+             "this workspace: " + _repo_line(rs)]
     if rs.project_path:
         lines.append(f"project rules: {rs.project_path} (deny and ask only)")
     pol = rs.policy
@@ -915,7 +1163,21 @@ def describe(rs: RuleSet) -> str:
         for r in rules:
             origin = rule_origin(rs, r)
             tag = f"managed {r.source}" if origin == "managed" else origin
+            if r.scope:
+                tag += f", repository {r.scope}"
+            elif which == "allow" and origin == "user":
+                tag += f", {EVERY_REPOSITORY}"
             lines.append(f"    {r.text}  [{tag}]")
+    if rs.allow_off:
+        lines.append("  allow not in force (global_allow is false): "
+                     + ", ".join(r.text for r in rs.allow_off))
+    if rs.other_repos:
+        lines.append("  rules for other repositories (not this repository):")
+        lines.extend(f"    {r.list} {r.text}  [repository {r.scope}]"
+                     for r in rs.other_repos)
+    notice = scope_notice(rs)
+    if notice:
+        lines.append(f"  note: {notice}")
     for group in rs.only_allow:
         src = group[0].source if group else "managed policy"
         lines.append("  only_allow (an allow outside it grants nothing): "

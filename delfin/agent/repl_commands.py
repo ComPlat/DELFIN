@@ -229,11 +229,47 @@ def _model(ctx, args: str) -> CommandResult:
     switch = getattr(client, "switch_model", None)
     if not callable(switch):
         return CommandResult(output="this backend cannot switch model")
+    refusal, note = _model_check(client, name)
+    if refusal:
+        return CommandResult(output=refusal)
     try:
         switch(name)
     except Exception as exc:
         return CommandResult(output=f"could not switch: {exc}")
-    return CommandResult(output=f"model → {name}")
+    return CommandResult(output=f"model → {name}{note}")
+
+
+def _model_check(client, name: str) -> tuple[str, str]:
+    """(refusal, note) for a switch to ``name``.
+
+    An OpenAI-compatible endpoint (KIT, OpenAI, vLLM) is asked which chat
+    models it serves (``/v1/models``, recorded for an hour by
+    model_capabilities); a name it does not list is refused with the
+    nearest ones. Taking it used to cost the next turn: the request 404s
+    after the prompt and the tools were sent. A listing that cannot be
+    read refuses nothing -- a new model may simply not be cached yet --
+    and the note says the name was not checked. A client without a base
+    URL (the CLI backends, the Anthropic API) checks its own names.
+    """
+    base = str(getattr(client, "_base_url", "") or "")
+    if not base:
+        return "", ""
+    try:
+        from . import model_capabilities as mc
+        served = mc.kit_models_served(base, str(getattr(client, "_api_key", "") or ""),
+                                      fetch=True)
+    except Exception:
+        served = set()
+    if not served:
+        return "", " (not checked: the model list could not be read)"
+    if name in served:
+        return "", ""
+    import difflib
+    near = difflib.get_close_matches(name, sorted(served), n=3, cutoff=0.6)
+    hint = f" Nearest: {', '.join(near)}." if near else ""
+    return (f"unknown model '{name}': the endpoint does not serve it, "
+            f"so the model stays {getattr(client, 'model', '?')}.{hint} "
+            "/model lists the ones it serves."), ""
 
 
 def _mode_cmd(ctx, args: str) -> CommandResult:
@@ -279,9 +315,10 @@ def _permissions(ctx, args: str) -> CommandResult:
         return CommandResult(output=f"not switched: {refusal}")
     if name == "bypassPermissions":
         return CommandResult(output=(
-            "not from here. Unattended execution is reachable only by "
-            "starting with --permission-mode bypassPermissions --unattended, "
-            "so it stays something typed on purpose."))
+            "not from here. bypassPermissions is reached with Shift+Tab "
+            "(where the policy allows it and isolation holds each command; "
+            "the first time it asks for y), or by starting with "
+            "--permission-mode bypassPermissions --unattended."))
     try:
         ctx.engine.set_kit_permission_mode(name)
     except Exception as exc:
@@ -480,9 +517,9 @@ def _trust(ctx, args: str) -> CommandResult:
 
     Trusting a digest nobody has read is not consent, so the bare command
     only ever SHOWS. The grant still goes through hooks_editor /
-    mcp_editor, the two thin wrappers an existing test enumerates as the
-    only call sites of `workspace_trust.trust_workspace`; this command
-    types the user's decision into them and adds no third one. Naming a
+    mcp_editor / skills, the thin wrappers an existing test enumerates as
+    the only call sites of `workspace_trust.trust_workspace`; this
+    command types the user's decision into them and adds no other. Naming a
     remedy the terminal cannot reach was the older failure: the text said
     "the hooks / MCP editors" and nothing here could open either.
     """
@@ -492,8 +529,8 @@ def _trust(ctx, args: str) -> CommandResult:
         return _trust_change(ctx, action, kind)
     if action:
         return CommandResult(output=(
-            "usage: /trust  |  /trust grant hooks|mcp  |  "
-            "/trust revoke hooks|mcp"))
+            "usage: /trust  |  /trust grant hooks|mcp|skills  |  "
+            "/trust revoke hooks|mcp|skills"))
     try:
         from . import workspace_trust
         notices = workspace_trust.pending_notices(ctx.workspace)
@@ -502,7 +539,7 @@ def _trust(ctx, args: str) -> CommandResult:
         body = "\n".join(f"  {n}" for n in notices)
         return CommandResult(output=(
             f"{body}\n"
-            "  /trust grant hooks | /trust grant mcp — only you can, and "
+            "  /trust grant hooks | mcp | skills — only you can, and "
             "only for what is listed above."))
     except Exception as exc:
         return CommandResult(output=f"trust state unavailable ({exc})")
@@ -519,8 +556,10 @@ def _trust_change(ctx, action: str, kind: str) -> CommandResult:
             from . import hooks_editor as editor
         elif kind == "mcp":
             from . import mcp_editor as editor
+        elif kind == "skills":
+            from . import skills as editor
         else:
-            return CommandResult(output="/trust grant|revoke hooks|mcp")
+            return CommandResult(output="/trust grant|revoke hooks|mcp|skills")
     except Exception as exc:
         return CommandResult(output=f"{kind} trust is unavailable here ({exc})")
     try:
@@ -575,6 +614,9 @@ def _tools(ctx, args: str) -> CommandResult:
     /tools is a hand-kept table that has to be edited whenever a tool is
     added; a second copy here would drift the same way.
     """
+    words = args.split()
+    if words and words[0].lower() in ("enable", "groups"):
+        return _tool_groups(ctx, words)
     try:
         from . import api_client as ac
         role = ""
@@ -598,6 +640,10 @@ def _tools(ctx, args: str) -> CommandResult:
                 session_denied=frozenset(
                     getattr(perms, "session_denied_tools", None) or ()),
             ))
+        toolsets = getattr(perms, "toolsets", None)
+        if toolsets is not None:
+            from .toolsets import drop_hidden
+            tools = drop_hidden(tools, toolsets.hidden_groups(role=role))
     except Exception as exc:
         return CommandResult(output=f"tool catalogue unavailable ({exc})")
     query = args.strip().lower()
@@ -614,6 +660,31 @@ def _tools(ctx, args: str) -> CommandResult:
             f"no tool matches {query!r}" if query else "no tools advertised"))
     head = f"{len(rows)} tool(s)" + (f" matching {query!r}" if query else "")
     return CommandResult(output="\n".join([head, *rows]))
+
+
+def _tool_groups(ctx, words: list[str]) -> CommandResult:
+    """``/tools groups`` lists the optional groups; ``/tools enable G``
+    offers group G from the next turn on (never withdrawn again)."""
+    from .toolsets import GROUPS
+    perms = getattr(getattr(ctx, "engine", None), "kit_permissions", None)
+    toolsets = getattr(perms, "toolsets", None)
+    if toolsets is None:
+        return CommandResult(output=(
+            "this backend offers every tool group; nothing to enable"))
+    if words[0].lower() == "enable":
+        group = words[1].lower() if len(words) > 1 else ""
+        if group not in GROUPS:
+            return CommandResult(output=(
+                "usage: /tools enable " + "|".join(GROUPS)))
+        changed = toolsets.enable(group)
+        return CommandResult(output=(
+            f"{group} tools enabled; they are offered from the next turn on"
+            if changed else f"{group} tools are already offered"))
+    decided = toolsets.decided()
+    rows = [f"  {g:<10} " + (f"offered ({decided[g]})" if g in decided
+                             else f"not loaded -- /tools enable {g}")
+            for g in GROUPS]
+    return CommandResult(output="\n".join(["tool groups", *rows]))
 
 
 def _usage(ctx, _args: str) -> CommandResult:
@@ -1718,12 +1789,14 @@ def _bug(ctx, args: str) -> CommandResult:
     produces in the archive ``resolve_archive_dir`` names
     ($DELFIN_BUG_ARCHIVE > agent.bug_archive_dir > ~/.delfin/agent_bugs),
     surface ``terminal``, then a copy to the transfer target when one is
-    configured.
+    configured and ``agent.bug_upload`` allows it (``bug_filing.upload``).
 
-    Two questions, both defaulting to no: the description, then y/N after
-    a preview of what goes in (counts and size, not content). An empty
-    description, any answer but y/yes, Ctrl+C or end of input writes
-    nothing. A context without ``ask`` cannot confirm and refuses.
+    Questions, each defaulting to no: the description, then y/N after a
+    preview of what goes in (counts and size, not content, and where a
+    remote copy would go). An empty description, any answer but y/yes,
+    Ctrl+C or end of input writes nothing. Under ``agent.bug_upload: ask``
+    a third y/N names the remote archive; a no keeps the written report
+    local. A context without ``ask`` cannot confirm and refuses.
     """
     from . import bug_filing
     from .bug_report import resolve_archive_dir
@@ -1756,10 +1829,43 @@ def _bug(ctx, args: str) -> CommandResult:
     lines = [f"bug report written: {report_dir}"]
     if (report_dir / "REDACTIONS.txt").is_file():
         lines.append("credential-shaped values were redacted (REDACTIONS.txt)")
-    remote = bug_filing.push_if_configured(report_dir)
+    if (report_dir / "REDACTION_FAILED.txt").is_file():
+        lines.append("redaction failed for some files; they were replaced "
+                     "by placeholders (REDACTION_FAILED.txt)")
+    remote = bug_filing.upload(report_dir, ask=ctx.ask)
     if remote:
         lines.append(remote)
     return CommandResult(output="\n".join(lines))
+
+
+def _loop(ctx, args: str) -> CommandResult:
+    from . import loop_commands
+    text, prompt = loop_commands.loop_command(
+        args, getattr(ctx, "auto", None), ctx.engine, ctx.workspace,
+        ask=ctx.ask, say=ctx.say)
+    return CommandResult(output=text, prompt=prompt)
+
+
+def _auto(ctx, args: str) -> CommandResult:
+    from . import loop_commands
+    return CommandResult(output=loop_commands.auto_command(
+        args, getattr(ctx, "auto", None), ctx.engine))
+
+
+def _layered(name: str) -> Callable[[Any, str], CommandResult]:
+    """A knowledge command (``knowledge_commands.handle``): the layered
+    memory view, the share dialog, the person's lessons, the swarm
+    harvest and the curation tools. The dialog's code is read through
+    ``ctx.ask`` -- the person's next line -- and shown through ``ctx.say``;
+    nothing goes to the model."""
+    def handler(ctx, args: str) -> CommandResult:
+        from . import knowledge_commands
+        perms = getattr(getattr(ctx, "engine", None), "kit_permissions",
+                        None)
+        return CommandResult(output=knowledge_commands.handle(
+            name, args, workspace=ctx.workspace, ask=ctx.ask, say=ctx.say,
+            perms=perms))
+    return handler
 
 
 def _clear(ctx, _args: str) -> CommandResult:
@@ -1883,7 +1989,9 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/mcp", "setup", "Configured MCP servers", _mcp),
         ReplCommand("/trust", "setup", "What this folder offers and withholds",
                     _trust, True),
-        ReplCommand("/tools", "setup", "Tools the model is offered",
+        ReplCommand("/tools", "setup",
+                    "Tools the model is offered; /tools groups, "
+                    "/tools enable chemistry|office",
                     _tools, True),
         ReplCommand("/hooks", "setup", "Hooks registered for this workspace",
                     _hooks),
@@ -1900,6 +2008,21 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/forget", "history", "Delete one memory by name",
                     _forget, True),
         ReplCommand("/plans", "history", "Saved plans", _plans, True),
+        ReplCommand("/memory", "history", "Every memory layer: private, "
+                    "swarm, project, global", _layered("memory"), True),
+        ReplCommand("/lessons", "history", "Your lessons: show, edit, delete",
+                    _layered("lessons"), True),
+        ReplCommand("/share", "history", "Share a lesson after a "
+                    "confirmation only you can answer", _layered("share"),
+                    True),
+        ReplCommand("/unshare", "history", "Withdraw your share: from the "
+                    "review queue, or a merged entry as a removal branch",
+                    _layered("unshare"), True),
+        ReplCommand("/swarm", "history", "Findings of a swarm run: harvest, "
+                    "propose", _layered("swarm"), True),
+        ReplCommand("/knowledge", "history", "Global knowledge: list, lint, "
+                    "stats; curation for the admin", _layered("knowledge"),
+                    True),
         ReplCommand("/undo-file", "changes", "Restore files from the undo "
                     "journal", _undo_file, True),
         ReplCommand("/pending", "changes", "Diffs waiting for approval",
@@ -1919,6 +2042,12 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/attention", "workspace",
                     "The attention inbox; `clear [kind]` empties it",
                     _attention, True),
+        ReplCommand("/loop", "workspace",
+                    "Loops: list | show | confirm | run | stop | new | log",
+                    _loop, True),
+        ReplCommand("/auto", "workspace",
+                    "Auto mode: on | off | needs — work on without input",
+                    _auto, True),
     ]
 }
 
@@ -1949,6 +2078,9 @@ class ReplContext:
     # where such a handler refuses instead of acting unconfirmed.
     ask: Callable[[str], str] | None = None
     say: Callable[[str], None] | None = None
+    # The session's auto_mode.AutoController; None on a surface without
+    # one, where /loop and /auto say so.
+    auto: Any = None
 
 
 def dispatch(text: str, ctx: ReplContext) -> CommandResult:

@@ -1,7 +1,7 @@
 """Regression guard: SARC-family bases must not be attached to light
 coordination-sphere atoms.
 
-Context: Jan's Ru-complex CO2-coordination runs (e.g.
+Context: a user's Ru-complex CO2-coordination runs (e.g.
 RSS_paper_35_2 / RSS_paper_33_2) crashed with::
 
     There are no main basis functions on atom number 0 (C)

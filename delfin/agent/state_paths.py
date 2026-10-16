@@ -566,6 +566,53 @@ def reset_maintenance_flag() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Runtime state that belongs to a workspace but must not live in it
+# ---------------------------------------------------------------------------
+
+def workspace_state_root() -> Path:
+    """Root of the per-workspace runtime state: ``~/.delfin/workspace_state``.
+
+    Resolved per call, so a redirected home (USER_STATE_RESOLVERS) moves it.
+    """
+    return Path.home() / ".delfin" / "workspace_state"
+
+
+def workspace_state_dir(workspace: Any) -> Path:
+    """The state directory of one workspace, outside that workspace.
+
+    Input: a workspace path (str or Path). Output:
+    ``workspace_state_root() / "<name>-<sha256(path)[:16]>"``. An absolute
+    path is resolved first, so a link and its target share one directory;
+    a relative one is hashed as given and never resolved against the
+    process CWD -- a mock standing in for a workspace renders as a
+    relative ``MagicMock/...`` string, and resolving that against the CWD
+    is how state files came to sit in the repository checkout.
+
+    Semantics: keyed by PATH, not by repository. Two worktrees of one
+    repository are two directories with separate jobs; the repository-
+    keyed memory slug (memory_store._project_slug in repo mode) would
+    merge them, and a worktree teardown asks which jobs run in IT.
+
+    Rejected: ``.git/info/exclude`` for ``.delfin/`` -- hides the file
+    from git but still writes into the user's repository, and hides a
+    ``.delfin/settings.json`` the user may want to commit; keeping the
+    state in the workspace -- a cloned repository could ship it, and the
+    agent may write it.
+    """
+    raw = Path(str(workspace)).expanduser()
+    if raw.is_absolute():
+        try:
+            raw = raw.resolve()
+        except (OSError, RuntimeError, ValueError):
+            pass
+    import hashlib
+    import re as _re
+    key = hashlib.sha256(str(raw).encode("utf-8", "surrogateescape"))
+    name = _re.sub(r"[^A-Za-z0-9._-]", "_", raw.name)[:40] or "root"
+    return workspace_state_root() / f"{name}-{key.hexdigest()[:16]}"
+
+
+# ---------------------------------------------------------------------------
 # A run that is nobody's
 # ---------------------------------------------------------------------------
 #
@@ -706,6 +753,10 @@ USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
 #: and land under ``projects/<slug>/<leaf>``; the rest take no argument.
 USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
+    # Per-workspace runtime state kept OUT of the workspace (the background
+    # job registry and its lock). A run's job records must not reach the
+    # registry a real session re-attaches from.
+    ("delfin.agent.state_paths", "workspace_state_root", "workspace_state"),
     # Which directories the user has trusted to run commands. A run that
     # granted trust must never grant it in the real store: the entry would
     # outlive the run and let a later, real session honour a workspace's
@@ -730,6 +781,14 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # and the launcher's atexit hook then deleted it on the way out --
     # leaving a dashboard that was still serving with no way back to it.
     ("delfin.agent.where", "record_path", "dashboard_here.json"),
+    # The header's branch list (pins and hidden entries), the log of
+    # deleted branches and worktrees with their undo commands, and the
+    # records of running branch previews. A run that pinned a fixture
+    # branch or logged a fixture deletion must not leave it in the
+    # user's list or undo log.
+    ("delfin.dashboard.branch_list", "_prefs_path", "branch_list.json"),
+    ("delfin.dashboard.branch_cleanup", "_log_path", "branch_cleanup.jsonl"),
+    ("delfin.dashboard.branch_preview", "_registry_dir", "branch_previews"),
     # Questions a headless session asks, and the answers a supervisor
     # writes beside them. A run that approved something must not leave
     # the answer in the real directory, where the next session polling
@@ -745,6 +804,9 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # resolves it: a test or a benchmark attempt that hands a skill over
     # would otherwise add uses to the record the user reads in the panel.
     ("delfin.agent.skill_usage", "_usage_dir", "skills/_usage"),
+    # Saved experiment stamps are written once and never replaced: a test
+    # that saved one would take that name in the real store for good.
+    ("delfin.agent.paired_compare", "stamp_dir", "provenance"),
     # Skill proposals, patches included: a run that proposes one must not
     # leave it in the queue the user accepts from.
     ("delfin.agent.skill_proposals", "_proposals_dir", "skills/_proposals"),

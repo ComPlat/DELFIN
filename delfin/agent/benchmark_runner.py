@@ -96,6 +96,57 @@ def extract_actions(text: str) -> list[str]:
     return out
 
 
+def _bare(name: str) -> str:
+    name = str(name or "")
+    return name.split("__")[-1] if name.startswith("mcp__") else name
+
+
+def pair_results(calls: list, named: list) -> list[str]:
+    """One result per call, paired by tool name in arrival order.
+
+    Input: the calls in request order (``{"name", "input"}``) and the
+    results as ``(tool name, output)`` in arrival order. Output: a list as
+    long as ``calls``; entry i is call i's result, "" when none arrived.
+
+    Index pairing was wrong in both directions, measured on the 1,040
+    captured attempts of 2026-10-13/14: a call whose arguments were invalid
+    JSON produced a result and, after the model's retry, a second one,
+    while the call list held one entry -- so every later result sat one
+    place too early and the last ones were cut off by the slice to
+    ``len(calls)``; and the engine reports no result for an empty output,
+    which shifts the other way. Pairing by name keeps every result with a
+    call of its own tool. Where a tool has more results than calls, the
+    surplus is the retry of an invalid-JSON call: that error is dropped and
+    the call takes the result that followed it. Rejected: pairing by
+    position, and pairing by content (only bash echoes its command).
+    """
+    by_name: dict[str, list[str]] = {}
+    for name, out in named or []:
+        by_name.setdefault(_bare(name), []).append(str(out or ""))
+    wanted: dict[str, int] = {}
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        wanted[n] = wanted.get(n, 0) + 1
+    for n, outs in by_name.items():
+        surplus = len(outs) - wanted.get(n, 0)
+        i = 0
+        while surplus > 0 and i < len(outs) - 1:
+            if "invalid JSON in arguments" in outs[i][:200]:
+                del outs[i]
+                surplus -= 1
+            else:
+                i += 1
+    taken: dict[str, int] = {}
+    paired: list[str] = []
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        k = taken.get(n, 0)
+        outs = by_name.get(n) or []
+        paired.append(outs[k] if k < len(outs) else "")
+        taken[n] = k + 1
+    return paired
+
+
 def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
                        checkout_root: str = "") -> Trajectory:
     """Convert ``_run_once``'s return dict into a Trajectory.
@@ -122,6 +173,10 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
         error=str(raw.get("error") or ""),
         checkout_root=str(checkout_root or ""),
         user_interventions=int(raw.get("user_interventions") or 0),
+        channels={str(k): int(v) for k, v in
+                  (raw.get("channels") or {}).items()},
+        model_rounds=(int(raw["model_rounds"])
+                      if raw.get("model_rounds") is not None else None),
     )
 
 
@@ -191,10 +246,12 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
     the mode cannot tell them apart — both run as ``solo``. So the key is
     the task CLASS, which is what actually decides where a task belongs.
 
-    Measured over the four packaged task files: office 11, behaviour 12,
-    generic_project 8. Those 31 are every task that writes; the other 48
-    read and are left alone deliberately — see the note in #111 on why
-    moving their root is a separate problem.
+    The per-class task counts are pinned in
+    tests/test_every_task_that_writes_writes_where_it_belongs.py (the
+    figures once written here went stale at 8 while the class held 17).
+    The classes without a workspace read only and are left alone
+    deliberately — see the note in #111 on why moving their root is a
+    separate problem.
 
     ``None`` when the class writes nothing or the directory is absent: a
     missing fixture must not silently redirect a run somewhere else.
@@ -207,6 +264,12 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
         rel = "behavior_workspace"
     elif cls == "generic_project":
         rel = "user_project_workspace"
+    elif cls == "generalist":
+        # Everyday software work on a repository that is not DELFIN: each
+        # task's setup builds its own git repository (Python or Node) in
+        # a subdirectory, and the acceptance script runs that
+        # repository's tests on what the attempt left behind.
+        rel = "generalist_workspace"
     elif cls.startswith("science"):
         # The everyday work: read real output, compute something from it,
         # write the script that does it. Its own fixture rather than the
@@ -405,6 +468,9 @@ _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     # build, and their setup refuses an existing chem/ tree. Without
     # restore, repeat 2 collides with repeat 1's fixture.
     Path("tests") / "fixtures" / "chemistry_workspace",
+    # Generalist tasks build a nested git repository per attempt and are
+    # graded on what is left in it; every setup refuses an existing one.
+    Path("tests") / "fixtures" / "generalist_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
@@ -929,10 +995,13 @@ def _run_task_once(
     t0 = clock()
     verify_ok: "Optional[bool]" = None
     verify_output = ""
+    _ws_seen = ""
     try:
-        with _PristineWorkspace(learning_home=learning_home):
+        with _toolchain_on_path(task.task_class), \
+                _PristineWorkspace(learning_home=learning_home):
             _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
                                 task_class=task.task_class)
+            _ws_seen = str(Path(_ws).resolve()) if _ws else ""
             _seed_fixture_memories(Path(os.getcwd()), _ws)
             _seed_fixture_hooks(Path(os.getcwd()), _ws)
             if task.setup:
@@ -959,10 +1028,10 @@ def _run_task_once(
             # double whose run_once takes no such kwarg keeps working:
             # results stay empty, hint flags read 0, the run itself is
             # unaffected.
-            _results: list[str] = []
+            _results: list[tuple[str, str]] = []
 
             def _collect_result(name: str, output: str) -> None:
-                _results.append(output)
+                _results.append((str(name or ""), output))
 
             # Interventions: each permission denial is the harness
             # steering the run; counted in-stream, forwarded only when
@@ -973,7 +1042,9 @@ def _run_task_once(
             def _collect_denial(name: str) -> None:
                 _denied.append(name)
 
-            with _fixture_calc_dirs(_ws):
+            from . import channels as _channels
+            _channels.reset()
+            with _fixture_calc_dirs(_ws), _pinned_behaviour():
                 try:
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens,
@@ -985,9 +1056,18 @@ def _run_task_once(
                     # interventions read 0 -- the docstrings say so.
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens)
-            raw["tool_results"] = _results[:len(raw.get("tool_calls")
-                                                 or [])]
+            raw["tool_results"] = pair_results(raw.get("tool_calls") or [],
+                                               _results)
             raw["user_interventions"] = len(_denied)
+            # Which mechanisms this attempt reached (channels.py).
+            raw["channels"] = _channels.snapshot()
+            # Model rounds: one assistant message per round.
+            try:
+                raw["model_rounds"] = sum(
+                    1 for m in (getattr(engine, "messages", None) or [])
+                    if isinstance(m, dict) and m.get("role") == "assistant")
+            except Exception:
+                pass
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
             # here. A check that ran afterwards would find the fixture.
@@ -1010,6 +1090,7 @@ def _run_task_once(
         checkout_root=str(Path(os.getcwd()).resolve()),
     )
     traj.denials = _denials_during(engine, since_ts=_iso(t0))
+    traj.workspace = _ws_seen
     traj.verify_ok = verify_ok
     traj.verify_output = verify_output
     return score_outcome(
@@ -1203,7 +1284,92 @@ def run_acceptance(
     except Exception as exc:
         return None, f"acceptance script could not run: {exc}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if (proc.returncode == TOOLCHAIN_EXIT
+            and "toolchain unavailable" in out):
+        # The host cannot run the check (no cargo, go, or a Node that
+        # runs TypeScript): not run, the same stance as a missing script.
+        return None, out
     return proc.returncode == 0, out
+
+
+# Exit status a setup or acceptance script uses for "this host lacks the
+# toolchain the task needs", printed with ``toolchain unavailable:``.
+TOOLCHAIN_EXIT = 3
+TOOLCHAIN_ENV = "DELFIN_TOOLCHAIN_BIN"
+_DEFAULT_TOOLCHAIN_BIN = Path("~/micromamba/envs/delfin-toolchains/bin")
+
+
+def toolchain_bin() -> Optional[Path]:
+    """Where node, cargo and go for the generalist tasks live, or None.
+
+    ``$DELFIN_TOOLCHAIN_BIN`` when set, else
+    ``~/micromamba/envs/delfin-toolchains/bin``; only an existing
+    directory counts. Resolved before an attempt's scratch home is
+    entered, so ``~`` is the operator's home."""
+    raw = os.environ.get(TOOLCHAIN_ENV) or str(
+        _DEFAULT_TOOLCHAIN_BIN.expanduser())
+    p = Path(raw).expanduser()
+    return p if p.is_dir() else None
+
+
+@contextlib.contextmanager
+def _toolchain_on_path(task_class: str):
+    """For a generalist attempt: the toolchain directory first on PATH
+    and exported as DELFIN_TOOLCHAIN_BIN, for the setup, the agent's own
+    shell commands and the acceptance script alike; both put back
+    afterwards. Other classes and hosts without the directory: no-op."""
+    tc = toolchain_bin() if (task_class or "") == "generalist" else None
+    if tc is None:
+        yield
+        return
+    saved = {k: os.environ.get(k) for k in ("PATH", TOOLCHAIN_ENV)}
+    os.environ["PATH"] = str(tc) + os.pathsep + (saved["PATH"] or "")
+    os.environ[TOOLCHAIN_ENV] = str(tc)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+#: Settings that change what the harness does during a turn, pinned for a
+#: benchmark attempt to the shipped default unless the operator set the
+#: variable for the whole run (an arm that measures another value). The
+#: attempt otherwise read the user's ~/.delfin_settings.json: on this
+#: host ``auto_verify`` is "syntax" there, so the suite measured a
+#: py_compile-only turn end that no default installation has, and no run
+#: file said so (diagnosis 2026-10-15).
+PINNED_BEHAVIOUR_ENV: dict[str, str] = {
+    "DELFIN_AUTO_VERIFY": "smart",
+    # The shipped default of agent.verify_nudge
+    # (api_client._VERIFY_NUDGE_DEFAULT); an arm of the three-arm
+    # measurement exports its own value.
+    "DELFIN_VERIFY_NUDGE": "off",
+}
+
+
+def pinned_behaviour_settings() -> dict[str, str]:
+    """The values an attempt runs with: the operator's export, else the pin."""
+    return {k: (os.environ.get(k) or v)
+            for k, v in PINNED_BEHAVIOUR_ENV.items()}
+
+
+@contextlib.contextmanager
+def _pinned_behaviour():
+    """Export ``pinned_behaviour_settings()`` for one attempt; restore after."""
+    saved = {k: os.environ.get(k) for k in PINNED_BEHAVIOUR_ENV}
+    os.environ.update(pinned_behaviour_settings())
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def run_task(
@@ -1214,7 +1380,7 @@ def run_task(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     run_once: Callable[..., dict] | None = None,
     clock: Callable[[], float] | None = None,
@@ -1395,7 +1561,7 @@ def run_suite(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
@@ -1434,7 +1600,7 @@ def _run_suite_locked(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,

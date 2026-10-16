@@ -68,3 +68,8 @@ def test_palette_skill_filter_does_not_reference_missing_attrs():
     code_only = "\n".join(code_lines)
     assert "skill.title" not in code_only, "palette still uses skill.title"
     assert "skill.slash_command" not in code_only, "palette still uses skill.slash_command"
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")
