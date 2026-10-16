@@ -547,6 +547,13 @@ def write_template(workspace: Path | str, name: str, *, goal: str = "",
     linked ``.delfin`` or ``.delfin/loops``). Both are places the agent
     can write; before, ``exists()`` (False for a dangling link) and
     ``write_text`` (which follows one) created the link's target.
+
+    Mode: exactly 0o600, set with ``fchmod`` on the open descriptor, so
+    the umask neither widens nor narrows it. Nothing reads the file as
+    another account: confirmation lives in each account's own ledger and
+    git records no read bits. Rejected: 0o644 (world readable under umask
+    0 and 022) and the ``os.open`` mode argument alone (0o400 under umask
+    0o277).
     """
     if not _NAME_RE.match(name or ""):
         raise ValueError(f"{name!r} is not a loop name (lower case letters, "
@@ -565,10 +572,12 @@ def write_template(workspace: Path | str, name: str, *, goal: str = "",
     flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
              | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
     try:
-        fd = os.open(str(path), flags, 0o644)
+        fd = os.open(str(path), flags, 0o600)
     except FileExistsError:
         raise FileExistsError(str(path)) from None
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fh.fileno(), 0o600)
         fh.write(text)
     return path
 

@@ -5,7 +5,12 @@ name: TUI
 # protocol types in step with the Python definition, the live checks in
 # tmux, and the window as one executable per platform.
 #
-# Informational beside CI, on changes to what it covers and on demand.
+# `window and service` is a required check on main (docs/MAIN_PROTECTION.md),
+# so it must report on every pull request: a `paths:` filter on
+# pull_request would leave a pull request outside those paths waiting for
+# it indefinitely. The workflow starts on every pull request and the
+# `changes` job decides whether the window tests apply; a job skipped by its
+# `if:` counts as passed. On main it still starts only for what it covers.
 on:
   push:
     branches: [main, tui-rewrite]
@@ -18,14 +23,6 @@ on:
       - "tests/tui_service.py"
       - ".github/workflows/tui.yml"
   pull_request:
-    paths:
-      - "tui/**"
-      - "delfin/agent/service/**"
-      - "tests/test_a_tui_*.py"
-      - "tests/test_the_tui_*.py"
-      - "tests/test_the_agent_service_*.py"
-      - "tests/tui_service.py"
-      - ".github/workflows/tui.yml"
   workflow_dispatch:
 
 concurrency:
@@ -36,8 +33,47 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: what the change covers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      covered: ${{ steps.diff.outputs.covered }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Files against the base
+        id: diff
+        # A pull request is checked out as its merge commit, whose first
+        # parent is the base. The patterns are the push filter above. If
+        # the diff cannot be read the tests run: a failure here must never
+        # turn into a skipped required check.
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          covered=true
+          if [ "$EVENT" = pull_request ] && files=$(git diff --name-only HEAD^1 HEAD); then
+            covered=false
+            while IFS= read -r f; do
+              case "$f" in
+                tui/*|delfin/agent/service/*|tests/test_a_tui_*.py|tests/test_the_tui_*.py) covered=true ;;
+                tests/test_the_agent_service_*.py|tests/tui_service.py|.github/workflows/tui.yml) covered=true ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "covered=$covered"
+          echo "covered=$covered" >> "$GITHUB_OUTPUT"
+
   test:
     name: window and service
+    needs: changes
+    # Skipped only on a definite "not covered". Without !cancelled() a failed
+    # `changes` job would skip this one too, and a skipped required check
+    # passes; so a failure there runs the tests instead.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.covered == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
