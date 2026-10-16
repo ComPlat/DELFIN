@@ -13,11 +13,11 @@
   "dependencies": {
     "@opentui/core": "0.6.4",
     "@opentui/solid": "0.6.4",
-    "solid-js": "1.9.12",
-    "web-tree-sitter": "0.25.10"
+    "solid-js": "1.9.17",
+    "web-tree-sitter": "0.27.1"
   },
   "devDependencies": {
-    "@types/bun": "1.3.14",
+    "@types/bun": "1.4.2",
     "@xterm/headless": "6.0.0",
     "typescript": "5.9.3"
   },
