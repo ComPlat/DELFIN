@@ -38,6 +38,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 pytest.importorskip("jupyter_server")
 pytest.importorskip("tornado")
 
@@ -107,7 +109,10 @@ def servers(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    env = {k: v for k, v in os.environ.items()
+    # child_env: no provider credential reaches the servers, and their own
+    # ~/.delfin sinks resolve outside the real home; HOME is then set to
+    # the same private home the test process uses.
+    env = {k: v for k, v in child_env(tmp_path).items()
            if not k.startswith(("VSCODE_", "JPY_", "JUPYTER_"))
            and k not in ("BROWSER", "PYTHONPATH")}
     env.update({"HOME": str(home), "PYTHONPATH": str(ROOT),
