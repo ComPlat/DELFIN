@@ -100,7 +100,17 @@ dependencies = [
     # under that name, so pip still looks for it on the index. PyMOL renders
     # report pictures (ESP, dipole and orbital PNGs); nothing in the
     # construction needs it.
-    "voila>=0.5,<0.6",
+    # voila serves the dashboard over HTTP through jupyter-server and
+    # tornado, which it requires with floors from 2022. The floors here are
+    # the first releases that fix every advisory known on 2026-10-16
+    # (GHSA ids in tests/test_the_dashboard_server_requires_patched_releases.py):
+    # voila 0.5.6 (local file inclusion), jupyter-server 2.20.0 (stored XSS
+    # in the nbconvert handlers; 2.18.0 path traversal, CORS, open redirect),
+    # tornado 6.5.9 (StaticFileHandler following symlinks out of its root,
+    # request-size limits).
+    "voila>=0.5.6,<0.6",
+    "jupyter-server>=2.20.0,<3",
+    "tornado>=6.5.9,<7",
     "Pillow>=10,<13",
     # PyMuPDF (the PDF viewer) is the [pdf] extra below, not a core
     # dependency: it is AGPL-3.0, stronger copyleft than DELFIN's own
