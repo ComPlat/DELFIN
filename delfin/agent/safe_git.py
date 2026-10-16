@@ -31,6 +31,17 @@ with the user's rights and outside every sandbox layer.
 
 Never raises: a failure is a ``CompletedProcess`` with a non-zero return
 code and the reason in ``stderr``, the shape every caller already handles.
+Codes DELFIN sets itself are outside git's own range of answers: 124 the
+command did not finish in time (``TIMED_OUT``), 126 it could not be started
+(``NOT_STARTED``), 127 git is not installed (``MISSING``), 128 the
+repository's configuration could not be neutralised (``Refused``, or its
+listing did not finish). git itself answers 1 for "no match" and "not an
+ancestor", so a timeout reported as 1 would read as an answer.
+
+``check_output`` has the contract of ``subprocess.check_output`` (raises
+``CalledProcessError``; ``FileNotFoundError`` when git is missing) for the
+callers written against it. ``merge_stderr`` folds stderr into stdout in
+the order git wrote them, as ``stderr=subprocess.STDOUT`` does.
 
 Rejected: reimplementing ``status`` from the index stat data (measured
 equivalent to ``status`` with the overrides above, at the cost of a second
@@ -98,13 +109,29 @@ _SUBMODULE_AWARE = frozenset({"status", "diff"})
 
 _DEFAULT_TIMEOUT_S = 30.0
 
+TIMED_OUT = 124
+NOT_STARTED = 126
+MISSING = 127
+REFUSED = 128
+
+#: Inherited variables that are kept: where the user's own configuration
+#: lives and who commits. None of them points git at another repository,
+#: index or work tree, and none names a program git runs on the
+#: repository's behalf.
+_KEPT_ENV = frozenset({
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+})
+
 
 class Refused(Exception):
     """The repository names a program in a way an override cannot reach."""
 
 
 def _env(extra: Optional[dict] = None) -> dict:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("GIT_") or k in _KEPT_ENV}
     env.update({
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_OPTIONAL_LOCKS": "0",
@@ -125,16 +152,23 @@ def _base(cwd: str) -> list[str]:
     return argv
 
 
-def repository_program_overrides(cwd: str, *, timeout: float = 10.0) -> list[str]:
+def repository_program_overrides(cwd: str, *, timeout: float = 10.0,
+                                 env: Optional[dict] = None) -> list[str]:
     """``key=`` overrides for every program-naming key the repository at
     *cwd* defines in its own (local or worktree) configuration, includes
-    followed. Raises ``Refused`` for a key the command line cannot name."""
+    followed. Raises ``Refused`` for a key the command line cannot name,
+    and when the listing does not finish: the overrides are then unknown.
+    *env* is the caller's extra environment, so the listing reads the
+    configuration the command itself will read."""
     try:
         proc = subprocess.run(
             _base(cwd) + ["config", "--null", "--list", "--show-scope",
                           "--includes"],
-            capture_output=True, timeout=timeout, env=_env(), check=False)
-    except (OSError, subprocess.TimeoutExpired):
+            capture_output=True, timeout=timeout, env=_env(env), check=False)
+    except subprocess.TimeoutExpired:
+        raise Refused("the repository's configuration could not be read "
+                      f"within {timeout:g} s; git was not run") from None
+    except OSError:
         return []
     if proc.returncode != 0:
         return []
@@ -168,11 +202,12 @@ def repository_program_overrides(cwd: str, *, timeout: float = 10.0) -> list[str
     return out
 
 
-def argv_for(args: Sequence[str], cwd: str, *, timeout: float = 10.0) -> list[str]:
+def argv_for(args: Sequence[str], cwd: str, *, timeout: float = 10.0,
+             env: Optional[dict] = None) -> list[str]:
     """The full command line ``run`` executes. Raises ``Refused``."""
     args = [str(a) for a in args]
     argv = _base(cwd)
-    for kv in repository_program_overrides(cwd, timeout=timeout):
+    for kv in repository_program_overrides(cwd, timeout=timeout, env=env):
         argv += ["-c", kv]
     if not args:
         return argv
@@ -185,24 +220,45 @@ def argv_for(args: Sequence[str], cwd: str, *, timeout: float = 10.0) -> list[st
 
 
 def run(args: Sequence[str], cwd, *, timeout: float = _DEFAULT_TIMEOUT_S,
-        text: bool = True, input=None, env: Optional[dict] = None
-        ) -> subprocess.CompletedProcess:
-    """Run ``git <args>`` in *cwd* as described in the module docstring."""
-    try:
-        argv = argv_for(args, str(cwd), timeout=min(timeout, 10.0))
-    except Refused as exc:
-        return subprocess.CompletedProcess(list(args), 128, "" if text else b"",
-                                           str(exc) if text else str(exc).encode())
-    try:
-        return subprocess.run(argv, capture_output=True, text=text, input=input,
-                              timeout=timeout, env=_env(env), check=False)
-    except FileNotFoundError as exc:
-        msg = f"git is not installed: {exc}"
-        return subprocess.CompletedProcess(argv, 127, "" if text else b"",
+        text: bool = True, input=None, env: Optional[dict] = None,
+        merge_stderr: bool = False) -> subprocess.CompletedProcess:
+    """Run ``git <args>`` in *cwd* as described in the module docstring.
+    *env* adds to (or overrides in) the cleaned environment, e.g.
+    ``GIT_INDEX_FILE`` for a private index."""
+    def failed(argv, code, msg):
+        return subprocess.CompletedProcess(argv, code, "" if text else b"",
                                            msg if text else msg.encode())
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(argv, 1, "" if text else b"",
-                                           str(exc) if text else str(exc).encode())
+    try:
+        argv = argv_for(args, str(cwd), timeout=min(timeout, 10.0), env=env)
+    except Refused as exc:
+        return failed(list(args), REFUSED, str(exc))
+    streams = ({"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
+               if merge_stderr else {"capture_output": True})
+    try:
+        return subprocess.run(argv, text=text, input=input, timeout=timeout,
+                              env=_env(env), check=False, **streams)
+    except FileNotFoundError as exc:
+        return failed(argv, MISSING, f"git is not installed: {exc}")
+    except subprocess.TimeoutExpired:
+        return failed(argv, TIMED_OUT,
+                      f"git {' '.join(map(str, args[:1]))} did not finish "
+                      f"within {timeout:g} s")
+    except OSError as exc:
+        return failed(argv, NOT_STARTED, str(exc))
+
+
+def check_output(args: Sequence[str], cwd, *,
+                 timeout: float = _DEFAULT_TIMEOUT_S, text: bool = True):
+    """stdout of ``run``; raises like ``subprocess.check_output``:
+    ``FileNotFoundError`` when git is missing, ``CalledProcessError`` for
+    any other non-zero code (a timeout included)."""
+    r = run(args, cwd, timeout=timeout, text=text)
+    if r.returncode == MISSING:
+        raise FileNotFoundError(r.stderr)
+    if r.returncode != 0:
+        raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout,
+                                            r.stderr)
+    return r.stdout
 
 
 def out(cwd, *args: str, timeout: float = _DEFAULT_TIMEOUT_S) -> str:
