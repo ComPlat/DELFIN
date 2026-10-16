@@ -3655,6 +3655,16 @@ _CORE_CEILING = 16
 #: See tests/test_xtb_runs_without_competing_blas_threads.py.
 _OPENBLAS_THREADS = '1'
 
+#: And xtb's OpenMP threads sleep at a barrier instead of spinning.  An
+#: interactive run shares its CPUs with the kernel, the browser and whatever
+#: else is on a login node; spinning threads then wait for each other on CPUs
+#: something else holds.  Measured 2026-10-16, Climb.step() on 16 atoms, 4
+#: CPUs: idle 18 ms default, 16 ms here; with four busy processes on the same
+#: CPUs 280 ms default, 22 ms here.  With CPUs to spare relax_steps measured
+#: the same (glycine 68/68 ms, eicosane 270/270 ms); one case lost, 16 threads
+#: on 8 CPUs, 319 against 368 ms.
+_OMP_WAIT_POLICY = 'PASSIVE'
+
 
 def interactive_cores(atoms: Optional[int] = None) -> int:
     """Cores for one interactive run, never more than the machine has.
@@ -3809,7 +3819,8 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
         command += _solvents.xtb_flags(solvation_model, solvent)
         environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
                            MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G',
-                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS)
+                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS,
+                           OMP_WAIT_POLICY=_OMP_WAIT_POLICY)
         own = parameter_home(binary)
         if own:
             environment['XTBPATH'] = own
@@ -4122,7 +4133,8 @@ def optimize_with_gfn(
         # not fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
                            MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G',
-                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS)
+                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS,
+                           OMP_WAIT_POLICY=_OMP_WAIT_POLICY)
         # And the parameters that belong to this binary, not whatever is lying
         # around. xtb reads a `param_gfn2-xtb.txt` from XTBPATH or from the
         # home directory *instead of* the parameters compiled into it, and a

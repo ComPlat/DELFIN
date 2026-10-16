@@ -691,8 +691,10 @@ class _CommandLine:
         room = dict(os.environ)
         room['OMP_NUM_THREADS'] = str(self.cores)
         room['MKL_NUM_THREADS'] = str(self.cores)
-        # One BLAS thread: see gfn_optimize._OPENBLAS_THREADS.
+        # One BLAS thread, and OpenMP threads that sleep at a barrier: see
+        # gfn_optimize._OPENBLAS_THREADS and _OMP_WAIT_POLICY.
         room['OPENBLAS_NUM_THREADS'] = _gfn._OPENBLAS_THREADS
+        room['OMP_WAIT_POLICY'] = _gfn._OMP_WAIT_POLICY
         # No clock.  A gradient is one xtb call and normally a fraction of a
         # second, but under g-xTB it is a process with an ORCA start-up in
         # front of it, and on a large system two minutes is a limit that stops
@@ -1763,6 +1765,7 @@ class Climb:
             room = dict(os.environ)
             room['OMP_NUM_THREADS'] = room['MKL_NUM_THREADS'] = str(self.cores)
             room['OPENBLAS_NUM_THREADS'] = _gfn._OPENBLAS_THREADS
+            room['OMP_WAIT_POLICY'] = _gfn._OMP_WAIT_POLICY
             subprocess.run(
                 [binary, 'in.xyz', *flag, '--hess', '--chrg',
                  str(self.charge), '--uhf', str(self.uhf)]
