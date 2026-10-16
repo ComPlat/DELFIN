@@ -62,7 +62,7 @@ def test_task_ticker_renders_tasks(fresh_workspace):
 
 def test_task_ticker_long_backlog_is_scrollable(fresh_workspace):
     """A long task list must render inside a bounded, scrollable container
-    (side scrollbar) rather than a giant wall of rows (Jerome 2026-06-13)."""
+    (side scrollbar) rather than a giant wall of rows (field report 2026-06-13)."""
     store = get_store(fresh_workspace)
     for i in range(25):
         store.create(f"task {i}", "")

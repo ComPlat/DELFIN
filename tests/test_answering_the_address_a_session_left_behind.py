@@ -96,9 +96,9 @@ def test_a_request_names_its_session_or_it_does_not(url, want):
 
 def test_the_render_url_carries_the_name(tmp_path):
     nb = R.stage_resume_notebook(tmp_path)
-    url = R.resume_render_url(tmp_path, nb, "uc3n990-ab12")
+    url = R.resume_render_url(tmp_path, nb, "login01-ab12")
     assert url.startswith("/voila/render/")
-    assert f"{R.SESSION_QUERY_KEY}=uc3n990-ab12" in url
+    assert f"{R.SESSION_QUERY_KEY}=login01-ab12" in url
 
 
 def test_a_name_that_needs_quoting_survives(tmp_path):

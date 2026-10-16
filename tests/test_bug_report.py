@@ -8,6 +8,7 @@ run configuration the maintainer needs is captured.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -46,10 +47,10 @@ def test_fallback_is_per_user_local(monkeypatch):
 
 
 def test_no_site_path_baked_into_source():
-    # The cluster path the user mentioned must never be in the code.
+    # No site path (a real /home/<account>) may be baked into the code.
     src = (br.__file__)
     text = open(src, encoding="utf-8").read()
-    assert "/home/qmchem_all" not in text
+    assert not re.search(r"/home/(?!<)[A-Za-z0-9_.-]+", text)
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +94,7 @@ def test_metadata_captured(tmp_path):
 
 
 def test_md_shows_friendly_mode_name_json_keeps_raw(tmp_path):
-    """Jerome's report (20260625-150316): the internal id 'solo' leaked into the
+    """A field report (2026-06-25): the internal id 'solo' leaked into the
     bug report. The human report.md must show the user-facing mode name 'Code';
     report.json keeps the raw 'solo' for maintainer reproduction/tooling."""
     d = _write(tmp_path, mode="solo")
@@ -336,8 +337,8 @@ def test_push_reports_rsync_failure(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # A filed report must be readable by the archive's maintainer group, even when
-# setgid inheritance fails (observed 2026-06-25: files came out group
-# qmchem_all instead of qmchem_shared, so the maintainer could not read them).
+# setgid inheritance fails (observed 2026-06-25: files came out in the
+# writer's group, not the maintainer's, so the maintainer could not read them).
 # ---------------------------------------------------------------------------
 
 import os as _os

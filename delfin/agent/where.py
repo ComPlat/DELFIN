@@ -14,9 +14,9 @@ host, the pid and the branch of every open session). The dashboard
 itself left none — this adds it, and reads both back:
 
     $ delfin-agent where
-    dashboard  uc3n991  port 8867  tmux 'delfin'  started 20:46  (running)
-      come back with:  ssh uc3n991 && tmux attach -t delfin
-    session    uc3n991  'uc3n991-79b8'  branch session/33c1925d  seen 12s ago
+    dashboard  login02  port 8867  tmux 'delfin'  started 20:46  (running)
+      come back with:  ssh login02 && tmux attach -t delfin
+    session    login02  'login02-79b8'  branch session/33c1925d  seen 12s ago
 
 Read-only except for the one record the launcher writes about itself.
 """

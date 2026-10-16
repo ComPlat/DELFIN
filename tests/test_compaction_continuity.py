@@ -152,7 +152,7 @@ def test_full_compaction_archives_old_messages(monkeypatch, tmp_path, tmp_archiv
 
 
 def test_many_short_messages_do_not_compact_at_low_usage(monkeypatch, tmp_path, tmp_archive):
-    """Regression — Jerome 2026-06-13: compaction fired at ~15% window full.
+    """Regression — field report 2026-06-13: compaction fired at ~15% window full.
 
     A long-but-light conversation (well past the 12-message floor, but nowhere
     near the token budget) must NOT trigger full compaction. The live working

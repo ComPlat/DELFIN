@@ -264,7 +264,7 @@ def test_recalc_smart_recalc_initial_share_isolated_path(workdir):
 
 
 # =============================================================================
-# Realistic CONTROL.txt scenarios from /home/qmchem_all/archive
+# Realistic CONTROL.txt scenarios from the shared calculation archive
 # =============================================================================
 #
 # These parameterised tests pin the end-to-end contract for each known user's
@@ -278,9 +278,9 @@ def test_recalc_smart_recalc_initial_share_isolated_path(workdir):
 #      starting — the original deadlock symptom that drove this whole chain.
 #
 # Each scenario corresponds to a real archive directory:
-#   Fritz   /home/qmchem_all/archive/Fritz/*                 (single ESD-S0)
-#   Jerome  /home/qmchem_all/archive/Jerome/complexes_200_400 (Occupier classic)
-#   Max     /home/qmchem_all/Archiv/Max/*                    (large-PAL TZVP)
+#   user A  archive/<user_a>/*                    (single ESD-S0)
+#   user B  archive/<user_b>/complexes_200_400    (Occupier classic)
+#   user C  archive/<user_c>/*                    (large-PAL TZVP)
 # =============================================================================
 
 import pytest as _pytest
@@ -306,46 +306,46 @@ def fresh_global_manager(monkeypatch):
 _SCENARIOS = [
     # name, slurm_mem_mb, control_dict, expected_derate
     pytest.param(
-        "fritz_esd_tzvp",
+        "user_a_esd_tzvp",
         108_000,  # BwUni dev_single 12-core node, ~105.5 GB
         {"PAL": 12, "maxcore": 9000, "pal_jobs": 2,
          "calc_initial": "no", "ESD_modul": "yes",
          "main_basisset": "def2-TZVP"},
         True,  # 12*9000 = 108000 > 91800 cap → derate to 7650
-        id="fritz_esd_tzvp_derate",
+        id="user_a_esd_tzvp_derate",
     ),
     pytest.param(
-        "fritz_esd_svp_safe",
+        "user_a_esd_svp_safe",
         108_000,
         {"PAL": 12, "maxcore": 4000, "pal_jobs": 2,
          "calc_initial": "no", "ESD_modul": "yes",
          "main_basisset": "def2-SVP"},
         False,  # 12*4000 = 48000 ≤ 91800 → no derate
-        id="fritz_esd_svp_no_derate",
+        id="user_a_esd_svp_no_derate",
     ),
     pytest.param(
-        "jerome_occupier_classic",
+        "user_b_occupier_classic",
         260_000,  # BwUni dev_multiple-style 40-core node
         {"PAL": 40, "maxcore": 6000, "pal_jobs": 4,
          "calc_initial": "yes", "ESD_modul": "no",
          "main_basisset": "def2-SVP"},
         True,  # 40*6000 = 240000 > 221000 cap → derate
-        id="jerome_occupier_classic_derate",
+        id="user_b_occupier_classic_derate",
     ),
     pytest.param(
-        "max_archive_pal60",
+        "user_c_archive_pal60",
         360_000,  # large compute node ~360 GB
         {"PAL": 60, "maxcore": 3800, "pal_jobs": 6},
         False,  # 60*3800 = 228000 ≤ 306000 cap → no derate
-        id="max_pal60_no_derate",
+        id="user_c_pal60_no_derate",
     ),
     pytest.param(
-        "jew_r465_oom_scenario",
+        "r465_oom_scenario",
         360_000,
         {"PAL": 60, "maxcore": 6000, "pal_jobs": 4,
          "calc_initial": "yes", "ESD_modul": "yes"},
         True,  # 60*6000 = 360000 > 306000 cap → derate to 5100
-        id="jew_r465_derate_protects_OOM",
+        id="r465_derate_protects_OOM",
     ),
 ]
 
@@ -431,8 +431,8 @@ def test_all_three_modes_produce_visible_out_file(name, mode, workdir):
     )
 
 
-def test_jerome_style_parallel_jobs_each_get_own_out(workdir):
-    """Jerome's Occupier setup runs many ORCA jobs in parallel (pal_jobs=4).
+def test_occupier_style_parallel_jobs_each_get_own_out(workdir):
+    """The Occupier setup of user B runs many ORCA jobs in parallel (pal_jobs=4).
     Each job must get its own visible .out file in parent_dir — no cross-job
     overwrite, no race on the .out file. The d853789 fix preserves this:
     each job has its own unique output_path (S0.out, oxidation.out,

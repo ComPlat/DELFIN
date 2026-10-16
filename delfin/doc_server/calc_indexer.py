@@ -673,7 +673,7 @@ def _scan_calc_dir(
 
     Each immediate subdirectory that contains CONTROL.txt, DELFIN_Data.json,
     or .inp files is treated as a calculation.  Also recurses one level for
-    archive structures like ``archive/Fritz/calc_name/``.
+    archive structures like ``archive/<user>/calc_name/``.
 
     Directories still holding subdirectories at the depth limit are appended
     to *truncated* — a calculation deeper than the limit is silently outside

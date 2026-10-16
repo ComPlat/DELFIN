@@ -92,7 +92,7 @@ def test_the_caveat_reaches_the_reader_in_their_own_language():
      "with the formula that is stored in the file, which is the one that "
      "should be used here.", "English asked, English given"),
     (FIELD_QUESTION, "171232.01 au", "the answer is a number"),
-    (FIELD_QUESTION, "/pfs/data6/home/ka/calc/TADFs-Jeneesh_3/ESD/S1.out",
+    (FIELD_QUESTION, "/pfs/data6/home/ka/calc/TADFs-set_3/ESD/S1.out",
      "the answer is a path"),
     (FIELD_QUESTION, "```python\nfor x in items:\n    print(x)\n```",
      "the answer is code"),
