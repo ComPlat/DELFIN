@@ -180,6 +180,19 @@ analysis = [
     "nglview",
     "plotly",
 ]
+# ORCA's own Python interface, OPI (github.com/faccts/opi; on PyPI as
+# orca-pi -- "opi" finds nothing). An extra, not core, measured 2026-09-25
+# and again 2026-10-15 on 2.0.0: it requires numpy>=2.2.6,<3 and
+# rdkit>=2025.3.2,<2026, and the core runs CI on numpy 1.26 and admits
+# rdkit 2026.x on purpose, so a hard requirement would move the chemistry
+# stack. Two limits it brings: it reads ORCA >= 6.1.1 only (6.0.1 and
+# 6.1.0 outputs are refused), and orca_2json from 6.1.1 writes a 6.0.1
+# property file's JSON WITHOUT its energies and without a word, so
+# get_final_energy() returns None for an energy that exists. DELFIN's
+# text parser stays the reader of record; OPI is the structured witness.
+orca = [
+    "orca-pi>=2,<3",
+]
 ai-foundation = [
     "transformers",
     "torch",

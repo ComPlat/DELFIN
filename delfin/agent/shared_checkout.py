@@ -10,8 +10,8 @@ names in ``DELFIN_SHARED_CHECKOUT``. Everyone works from main there: a
 ``git switch`` / ``git checkout <branch>`` in it moves every person and
 agent session on it at once, and a session that stays open keeps running
 the modules it imported before the move. Testing a branch is a preview
-(the dashboard header's Test branch: its own worktree and server); work on
-a branch happens in a worktree (``enter_worktree``).
+(the dashboard header's ⎇ menu and ▶ Test: its own worktree and server);
+work on a branch happens in a worktree (``enter_worktree``).
 
 A *branch move* is a git invocation (``git [-C dir] ...``, after ``cd dir``
 in the same command line) of ``switch`` (any form but ``--help``), or of
@@ -173,6 +173,6 @@ def refusal(command: str, cwd, *, shared: Optional[Iterable] = None) -> str:
             "`gh pr create --head <user>/<topic>`; to run or test an existing "
             "branch, enter_worktree(base_ref=\"<branch>\"); to only create "
             "one, `git branch <name> origin/main` (no switch). For the user "
-            "to try a branch in the dashboard: the header's Test branch "
-            "button opens it in its own worktree and server.")
+            "to try a branch in the dashboard: pick it in the header's ⎇ "
+            "menu; ▶ Test opens it in its own worktree and server.")
     return ""

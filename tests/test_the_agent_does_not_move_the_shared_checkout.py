@@ -5,10 +5,11 @@ one the dashboard names in ``DELFIN_SHARED_CHECKOUT`` (here a repository
 made in ``tmp_path``) or the one DELFIN's code is imported from. Output: a
 refusal for every branch move there (``git switch``, ``git checkout
 <branch>``, ``-b``, ``--detach``, ``-``, through ``-C`` or after ``cd``)
-that names the routes that work (enter_worktree, Test branch); nothing for
-file restores, other git commands, other repositories, or a worktree of
-the same repository. The permission gate refuses it in every mode, before
-the auto-allow list (which allows a plain ``git switch``) is consulted.
+that names the routes that work (enter_worktree, the header's ▶ Test);
+nothing for file restores, other git commands, other repositories, or a
+worktree of the same repository. The permission gate refuses it in every
+mode, before the auto-allow list (which allows a plain ``git switch``) is
+consulted.
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ def shared(tmp_path):
 def test_branch_moves_in_the_shared_checkout_are_refused(shared, cmd):
     out = SC.refusal(cmd, shared, shared=[shared])
     assert out.startswith("blocked:"), cmd
-    assert "enter_worktree" in out and "Test branch" in out
+    assert "enter_worktree" in out and "▶ Test" in out
 
 
 @pytest.mark.parametrize("cmd", [

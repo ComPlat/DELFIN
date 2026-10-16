@@ -19,7 +19,7 @@ default branch.
 3. `git fetch origin`. In DELFIN's own checkout (it stays on main):
    `git branch <name> <start>` without switching, then work in
    `enter_worktree(base_ref="<name>")`; the user tries it with the
-   dashboard header's Test branch. Elsewhere: `git switch -c <name> <start>`. The
+   dashboard's ⎇ menu and ▶ Test. Elsewhere: `git switch -c <name> <start>`. The
    start is the `from` branch (its `origin/` version when it exists there),
    else the default branch from `git symbolic-ref --short refs/remotes/origin/HEAD`.
    If the name exists already, say so and ask whether to use it.

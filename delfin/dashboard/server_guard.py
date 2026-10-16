@@ -38,5 +38,17 @@ def _load_jupyter_server_extension(serverapp) -> None:
             "[delfin] secure browser-close handling was not installed: %s", exc)
 
 
+    # Previews served through this server's own port: the one port VS Code
+    # forwards, or the Windows launcher tunnels, reaches them too.
+    try:
+        from delfin.dashboard import preview_proxy
+        if preview_proxy.register(serverapp) is None:
+            serverapp.log.warning(
+                "[delfin] the preview proxy could not be installed; previews "
+                "are linked by their own port")
+    except Exception as exc:
+        serverapp.log.warning("[delfin] the preview proxy was not installed: %s", exc)
+
+
 # Older jupyter_server spelling.
 load_jupyter_server_extension = _load_jupyter_server_extension

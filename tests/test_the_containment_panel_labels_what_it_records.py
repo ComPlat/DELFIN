@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import _package_ast
 from delfin.agent import security_events
 
 
@@ -29,7 +30,7 @@ def _recorded_kinds() -> set[str]:
     agent = Path(__file__).resolve().parents[1] / "delfin" / "agent"
     kinds: set[str] = set()
     for src in sorted(agent.rglob("*.py")):
-        kinds |= _kinds_in(ast.parse(src.read_text(encoding="utf-8")))
+        kinds |= _kinds_in(_package_ast.parse(src))
     return kinds
 
 

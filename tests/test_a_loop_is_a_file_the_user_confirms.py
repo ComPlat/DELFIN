@@ -223,3 +223,23 @@ def test_a_template_is_not_written_through_a_linked_folder(ws, tmp_path):
     with pytest.raises(ValueError):
         loops.write_template(ws, "weekly-report", goal="x")
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "fchmod"),
+                    reason="POSIX file modes")
+@pytest.mark.parametrize("umask", [0o000, 0o022, 0o077, 0o277],
+                         ids=["000", "022", "077", "277"])
+def test_a_template_is_readable_by_its_owner_only(ws, umask):
+    """The loop file is the user's own workspace file; nothing reads it
+    as another account (confirmation is per account, in its own ledger,
+    and git records no read bits). Its mode is 0o600 under any umask: the
+    mode argument of os.open alone gives 0o644 minus the umask, world
+    readable under umask 0 and 022, and 0o400 under 0o277."""
+    import os
+    old = os.umask(umask)
+    try:
+        path = loops.write_template(ws, f"mode-{umask:o}", goal="x")
+    finally:
+        os.umask(old)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert loops.load(f"mode-{umask:o}", ws).errors == []

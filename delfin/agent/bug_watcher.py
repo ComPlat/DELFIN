@@ -75,6 +75,10 @@ class Triage:
     error: str = ""
     #: True when the content was not sent (send_refusal); not triaged.
     withheld: bool = False
+    #: Why it was withheld: one of the fixed sentences of send_refusal.
+    #: The CLI prints this, never ``summary``, on a withheld report:
+    #: ``summary`` holds the model's analysis on the other paths.
+    withheld_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +193,63 @@ def ask_consent(n: int, settings: dict | None = None, *, ask=None) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
+#: A provider or model name as printed: the characters names use, a
+#: length cap, and no 24-character alphanumeric run (the body of an API
+#: key; model names break theirs with - . / or :).
+_NAME_SHAPE = re.compile(r"[A-Za-z0-9._:/@+-]{1,80}")
+_KEY_RUN = re.compile(r"[A-Za-z0-9]{24,}")
+_NAME_NOT_SHOWN = "(name not shown)"
+
+
+def _scrubber_leaves(text: str) -> bool:
+    """True when the secret scrubber (exact values DELFIN holds, then key
+    shapes) would return ``text`` unchanged. Fails closed. Only the
+    verdict is used, so a printed value is always the original text or a
+    fixed sentence, never the scrubber's output."""
+    try:
+        from .output_guard import scrub_secrets
+        return scrub_secrets(text) == text
+    except Exception:
+        return False
+
+
+def _shown_name(value: str) -> str:
+    """``value`` when it is shaped like a provider or model name, ``""``
+    when empty, otherwise :data:`_NAME_NOT_SHOWN`. A key pasted into a
+    name field is thereby never printed or put into the consent question.
+    """
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if (_NAME_SHAPE.fullmatch(value) and not _KEY_RUN.search(value)
+            and _scrubber_leaves(value)):
+        return value
+    return _NAME_NOT_SHOWN
+
+
+def printable_error(text: str) -> str:
+    """An error line safe to print or send to a webhook: ``text`` when the
+    secret scrubber leaves it unchanged, otherwise its leading exception
+    type and a fixed sentence. Rejected: printing ``scrub_secrets(text)``,
+    which keeps the rest of the message but computes the printed value
+    from the credential values the scrubber holds (its exact-value pass);
+    that is the flow py/clear-text-logging-sensitive-data reports."""
+    text = str(text or "")
+    if _scrubber_leaves(text):
+        return text
+    kind = text.split(":", 1)[0].strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,79}", kind):
+        kind = "error"
+    return (f"{kind}: (message not shown: it contains text shaped like a "
+            "credential)")
+
+
 def destination(settings: dict | None = None) -> str:
-    """The provider/model an analysis would send to, for a question."""
+    """The provider/model an analysis would send to, for a question.
+
+    Only the two name fields are read, and each is printed only when
+    shaped like a name (:func:`_shown_name`); the settings object and any
+    other field never reach the text."""
     cfg = watcher_settings(settings)
     if settings is None:
         try:
@@ -201,7 +260,8 @@ def destination(settings: dict | None = None) -> str:
     agent_cfg = (settings or {}).get("agent") or {}
     model = cfg["model"] or str(agent_cfg.get("model", "") or "")
     provider = cfg["provider"] or str(agent_cfg.get("provider", "") or "")
-    return " / ".join(x for x in (provider, model) if x) or "the default model"
+    shown = (_shown_name(provider), _shown_name(model))
+    return " / ".join(x for x in shown if x) or "the default model"
 
 
 def resolve_watch_archive(settings: dict | None = None) -> Path:
@@ -471,11 +531,12 @@ def triage_report(
         )
     except SendWithheld as exc:   # no consent: untouched, still pending
         t.withheld = True
+        t.withheld_reason = str(exc)
         t.summary = f"({exc})"
         return t
     except Exception as exc:  # hard failure — leave for retry, bump attempts
         n = _bump_attempts(report_dir)
-        t.error = f"{type(exc).__name__}: {exc}"[:300]
+        t.error = printable_error(f"{type(exc).__name__}: {exc}"[:300])
         t.summary = f"(analysis failed, attempt {n}/{cfg['max_attempts']})"
         return t
 

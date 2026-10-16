@@ -786,6 +786,66 @@ def test_past_the_minimum_tells_a_product_from_a_deformation():
     assert pm([0, 1, 0.9, 2, 1.9, 3.5]) is None
 
 
+def test_a_walk_that_runs_downhill_from_the_start_still_stops_at_the_product(
+        monkeypatch):
+    """The start counts as the high point a walk came down from.
+
+    Input: walk_under_load on a butane with the engine and the per-level
+    relaxation replaced, so the levels settle at the energies one real run
+    gave (kcal/mol against the unloaded start, 2026-10-16, GFN2, four xtb
+    threads): -0.590, -0.385, -0.144, -0.920, -0.396, 1.683, 5.458, 14.682.
+    Output: the walk stops at the floor (level 4 of 8, -0.920) and says so in
+    ``reached``.
+
+    past_the_minimum arms only after the energy has fallen PAST_A_BARRIER
+    (0.8 kcal/mol) below the highest point before the floor, and its own
+    contract -- and test_past_the_minimum_tells_a_product_from_a_deformation
+    -- counts the start as that point when the walk runs downhill from it.
+    The walk handed it the levels without the start: the highest level
+    before the floor was -0.144, 0.776 below nothing, so the detector never
+    armed and the ramp ran on to +14.7 kcal/mol past the product. With four
+    xtb threads the level energies scatter by about a kcal run to run, and
+    test_a_push_stops_at_a_conformational_product_not_past_it failed 1 of 10
+    idle and 3 of 23 under load this way; with one thread (no scatter) the
+    same level came out at -0.037 and it passed.
+    """
+    from delfin.dashboard import climb as _climb
+
+    levels = iter([-0.590297, -0.385281, -0.144176, -0.920086, -0.39622,
+                   1.682914, 5.458062, 14.681581])
+    kcal = _climb.HARTREE_IN_KCAL
+
+    class _Engine:
+        def __call__(self, bohr):
+            return 0.0, np.zeros_like(np.asarray(bohr, dtype=float))
+
+    class _FakeLoaded:
+        def __init__(self, symbols, numbers, angstrom, *rest):
+            self.bohr = np.asarray(angstrom, dtype=float) / _climb.BOHR
+            self.engine = _Engine()
+
+        def close(self):
+            pass
+
+    def _settles(loaded, bohr, forces, **_kw):
+        # After the levels, the release settle: the floor again.
+        return {'ok': True, 'bohr': np.asarray(bohr, dtype=float),
+                'energy': next(levels, -0.920086) / kcal, 'gradients': 1}
+
+    monkeypatch.setattr(load, '_Loaded', _FakeLoaded)
+    monkeypatch.setattr(load, 'relax_under_load', _settles)
+    butane = ("4\nbutane\nC 0 0 0\nC 1.5 0 0\nC 2.0 1.4 0\n"
+              "C 3.5 1.4 0.3\n")
+    got = load.walk_under_load(
+        butane, [{'atom': 0, 'vector': (0.0, 0.0, -6.0)},
+                 {'atom': 3, 'vector': (0.0, 0.0, 6.0)}],
+        'gfn2', steps=8, force_from=3.0, force_to=90.0)
+
+    assert got['reached'] is not None, 'the ramp ran past the product minimum'
+    assert got['reached']['energy'] == pytest.approx(-0.920086, abs=1e-4)
+    assert len(got['points']) < 8, [p['energy'] for p in got['points']]
+
+
 @_needs_xtb
 def test_a_push_stops_at_a_conformational_product_not_past_it():
     """A reaction that leaves the bonding alone -- a butane pushed from gauche

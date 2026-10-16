@@ -233,3 +233,34 @@ def test_nothing_is_deleted_when_the_undo_log_cannot_be_written(repo):
     assert report.deleted == []
     assert "undo log" in report.skipped[0][1]
     assert _git(repo, "rev-parse", "--verify", "merged-one")
+
+
+def test_unmerged_branches_are_offered_only_when_asked_for(repo, tmp_path):
+    """The route to delete a branch with commits of its own: Clean up with
+    ``include_unmerged``; the row says how many commits are not in
+    origin/main, and deletion still needs the second confirmation."""
+    wt = tmp_path / "wt-held"
+    _git(repo, "branch", "held-unmerged", "unmerged")
+    _git(repo, "worktree", "add", "-q", str(wt), "held-unmerged")
+    (wt / "work.txt").write_text("in progress\n")
+    cands, _ = BC.candidates(repo, gh=None)
+    assert "unmerged" not in _ids(cands)
+    cands, _ = BC.candidates(repo, gh=None, include_unmerged=True)
+    un = next(c for c in cands if c.name == "unmerged")
+    assert un.unmerged == 1 and "not in" in un.reason
+    assert "held-unmerged" not in _ids(cands)       # held: never offered
+    assert "main" not in _ids(cands)
+    report = BC.delete(repo, [un])
+    assert report.deleted == [] and "second confirmation" in report.skipped[0][1]
+
+
+def test_delete_refusals_answers_for_many_names_at_once(repo, tmp_path):
+    wt = tmp_path / "wt-held"
+    _git(repo, "worktree", "add", "-q", str(wt), "squashed")
+    why = BC.delete_refusals(repo, ["main", "merged-one", "squashed",
+                                    "unmerged", "origin/main", "no-such"])
+    assert why["merged-one"] == "" and why["unmerged"] == ""
+    assert why["main"] and why["squashed"] and why["origin/main"]
+    assert why["no-such"]
+    _git(repo, "checkout", "-q", "merged-one")
+    assert BC.delete_refusals(repo, ["merged-one"])["merged-one"]
