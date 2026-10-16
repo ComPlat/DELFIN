@@ -62,6 +62,25 @@ updates:
           - version-update:semver-major
       # Patched and natively rebuilt at a pinned version; see the header.
       - dependency-name: "@opentui/*"
+      # Moves with @opentui/core, never on its own. @opentui/core 0.6.4 peers
+      # web-tree-sitter 0.25.10 exactly: its parser.worker.js carries that
+      # release's JavaScript inline and loads only the runtime wasm from the
+      # installed package, as web-tree-sitter/tree-sitter.wasm. 0.27 renamed
+      # that file to web-tree-sitter.wasm, so the worker fails to start and
+      # markdown is shown unhighlighted (#289: 11 window tests failed). Any
+      # other version pairs the inlined JavaScript with a different build's
+      # wasm, so patch updates are excluded as well as minor ones.
+      - dependency-name: "web-tree-sitter"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
+      # Same for solid-js: @opentui/solid 0.6.4 peers solid-js 1.9.12 exactly
+      # and compiles its components with babel-preset-solid 1.9.12, so the
+      # runtime moves with @opentui/solid, not on its own.
+      - dependency-name: "solid-js"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
 
   - package-ecosystem: pip
     directory: "/"
