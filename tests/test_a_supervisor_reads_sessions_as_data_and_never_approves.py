@@ -14,13 +14,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from delfin.agent import (audit_log, file_confirm, ops_interface,
+from delfin.agent import (file_confirm, ops_interface,
                           session_messages, session_presence, session_store,
                           terminal_confirm, turn_metrics)
 
@@ -241,6 +240,7 @@ def test_a_message_from_the_operator_is_never_the_user(home):
 
 def test_a_secret_in_a_message_does_not_travel(home):
     h, ws, _ = home
+    _open("wave-s18", "y" * 32, ws)
     token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
     msg = ops_interface.send("wave-s18", f"use {token} to push")
     assert token not in json.dumps(msg)
@@ -441,8 +441,9 @@ def test_git_in_a_session_workspace_runs_no_program_it_configures(home):
                         f"sh -c 'touch {marker_clean}; cat'"], check=True)
     subprocess.run(g + ["config", "core.fsmonitor",
                         f"sh -c 'touch {marker_fs}; exit 1'"], check=True)
-    (ws / "f.txt").write_text("b\n")
     _open("wave-s26", "n" * 32, ws)
+    assert ops_interface.sessions()[0]["dirty_files"] == 0
+    (ws / "f.txt").write_text("bb\n")
     rows = ops_interface.sessions()
     assert rows and rows[0]["dirty_files"] == 1
     assert rows[0]["head"]
@@ -504,6 +505,8 @@ def test_a_file_of_another_account_is_not_read(home, monkeypatch):
     _turn(h, sid)
     monkeypatch.setattr(ops_interface, "_my_uid", lambda: os.getuid() + 1)
     assert "turn_ended" not in _kinds(ops_interface.poll(state))
+    row = ops_interface.sessions()[0]               # git stays out too
+    assert row["head"] == "" and row["dirty_files"] is None
 
 
 def test_the_cursor_is_private_and_written_without_following_a_link(home):

@@ -5387,8 +5387,7 @@ def build_parser() -> argparse.ArgumentParser:
         act = args.ops_action
 
         def _out(obj):
-            print(json.dumps(obj, ensure_ascii=False, default=str),
-                  flush=True)
+            print(_oi.dumps(obj), flush=True)
 
         try:
             if act == "sessions":
@@ -5409,8 +5408,10 @@ def build_parser() -> argparse.ArgumentParser:
                 return 0
             if act == "events":
                 if not args.follow:
+                    # Printed first, saved second: a reader that dies
+                    # while printing reads the batch again.
                     state = _oi.load_cursor(args.cursor)
-                    for ev in _oi.poll(state, idle_s=args.idle_s):
+                    for ev in _oi.next_events(state, idle_s=args.idle_s):
                         _out(ev)
                     _oi.save_cursor(state, args.cursor)
                     return 0
@@ -5430,7 +5431,12 @@ def build_parser() -> argparse.ArgumentParser:
             if act == "send":
                 text = args.text
                 if args.file:
-                    text = Path(args.file).read_text(encoding="utf-8")
+                    # Bounded: the inbox keeps 4000 characters, and a
+                    # read of /dev/zero or a FIFO must not take the
+                    # supervisor's memory or hang it.
+                    with open(args.file, "rb") as fh:
+                        text = fh.read(_oi.FILE_MAX).decode("utf-8",
+                                                            "replace")
                 _out(_oi.send(args.name, text or ""))
                 return 0
             if act == "escalate":
@@ -5440,7 +5446,7 @@ def build_parser() -> argparse.ArgumentParser:
             if act == "pause":
                 _out(_oi.pause(args.name, args.reason))
                 return 0
-        except _oi.OpsRefused as exc:
+        except (_oi.OpsRefused, ValueError, OSError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
         except KeyboardInterrupt:
