@@ -322,6 +322,7 @@ def install(serverapp: Any) -> list[str]:
     failed: list[str] = []
     log = getattr(serverapp, "log", None)
     for name, step in (
+        ("headers", lambda: install_headers(serverapp.web_app)),
         ("files route", lambda: install_files_route(serverapp.web_app, log)),
     ):
         try:
