@@ -316,7 +316,10 @@ unless the host is named in `agent.sandbox_network.upload_domains` or is
 the model endpoint the session itself registered
 (`egress_proxy.note_endpoint`); those pass and are recorded
 (`egress_upload`). Reads (GET, a tunnel that sends less than the limit)
-pass. Inside TLS the method is not visible: a write below the limit cannot
+pass. DELFIN's own push path (`api_client._run_github_push`: a plain
+`git push` to a GitHub remote, gated by the push checks) runs outside the
+sandbox and does not pass the proxy, and SSH remotes are direct routes, so
+neither is subject to this rule. Inside TLS the method is not visible: a write below the limit cannot
 be told from a read, so the limit bounds what one connection carries, not
 whether a small payload leaves (residual risks). An unknown host is asked when the session has an
 approval channel and is not in `plan` or bypass, and refused otherwise with

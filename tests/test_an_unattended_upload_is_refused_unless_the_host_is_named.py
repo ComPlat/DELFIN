@@ -175,22 +175,82 @@ def test_a_tunnel_to_a_known_host_carries_a_read_unattended(proxy, web, tmp_path
 
 
 def test_a_tunnel_to_a_known_host_is_cut_past_the_upload_limit_unattended(
-        proxy, web, tmp_path):
-    port = web.server_address[1]
-    s = _tunnel(proxy, ES.perms_in(tmp_path, mode="bypassPermissions"),
-                "allowed.test", port)
-    body = b"x" * (2 * 1024 * 1024)
+        tmp_path, monkeypatch):
+    """Counted at a raw sink: the test web server's handler reports a POST
+    even when the connection ended inside its body, so it cannot tell a
+    cut upload from a whole one."""
+    import threading
+    got = {"n": 0}
+    sink = socket.socket()
+    sink.bind(("127.0.0.1", 0))
+    sink.listen(1)
+    port = sink.getsockname()[1]
+
+    def drain():
+        conn, _ = sink.accept()
+        conn.settimeout(10)
+        try:
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    return
+                got["n"] += len(chunk)
+        except OSError:
+            return
+        finally:
+            conn.close()
+
+    t = threading.Thread(target=drain, daemon=True)
+    t.start()
+    limit = 256 * 1024
+    p = EP.EgressProxy(
+        allowed_domains=["allowed.test"], allowed_ports=[port],
+        connector=lambda h, prt, to: socket.create_connection(("127.0.0.1", prt),
+                                                              timeout=to),
+        upload_ask_bytes=limit, upload_domains=())
+    monkeypatch.setattr(EP, "_ENDPOINT_HOSTS", set())
     try:
-        s.sendall(b"POST /up HTTP/1.0\r\nHost: allowed.test\r\n"
-                  + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
-        reply = s.recv(4096)
-    except OSError:
-        reply = b""
-    s.close()
-    assert not reply.startswith(b"HTTP/1.0 200"), reply
-    assert _posts(web) == []
+        s = _tunnel(p, ES.perms_in(tmp_path, mode="bypassPermissions"),
+                    "allowed.test", port)
+        body = b"x" * (2 * 1024 * 1024)
+        try:
+            s.sendall(body)
+        except OSError:
+            pass
+        s.close()
+        t.join(10)
+    finally:
+        p.close()
+        sink.close()
+    assert 0 < got["n"] < limit + 2 * 65536, got
     assert "egress_upload_refused" in _kinds()
 
 
 def test_the_new_event_kind_has_a_label():
     assert "egress_upload_refused" in SE.known_kinds()
+
+
+def test_delfins_own_push_path_does_not_pass_the_proxy(monkeypatch, tmp_path):
+    """The upload rule binds what goes through the proxy. A plain push to
+    a GitHub remote is run by DELFIN itself (``_run_github_push``),
+    outside the sandbox, with no proxy in its environment -- gated by the
+    push checks, not by upload_domains."""
+    import subprocess
+    from delfin.agent import api_client as A
+
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["env"] = list(argv), dict(kw.get("env") or {})
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(A.subprocess, "run", fake_run)
+    plan = {"argv": ["git", "-c", "core.hooksPath=/dev/null", "push", "origin",
+                     "feature"], "merge_stderr": False, "filter": "",
+            "lines": 0, "url": "https://github.com/o/r.git", "via": "gh"}
+    A._run_github_push(plan, tmp_path, A._scrubbed_bash_env(), 30)
+    assert seen["argv"][0] == "git"
+    proxied = {k: v for k, v in seen["env"].items()
+               if k.lower() in ("http_proxy", "https_proxy")
+               and "delfin:" in v}
+    assert proxied == {}
