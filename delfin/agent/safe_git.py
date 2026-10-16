@@ -26,8 +26,9 @@ with the user's rights and outside every sandbox layer.
   ``blame``/``grep`` ``--no-textconv``; ``status``/``diff`` ignore submodules (a submodule is
   another repository with its own configuration);
 - ``--no-optional-locks``: a read never takes the session's index lock;
-- the environment carries no inherited ``GIT_*`` variable, no terminal
-  prompt and no optional locks.
+- the environment carries no inherited ``GIT_*`` variable that points git
+  elsewhere or names a program, no terminal prompt and no optional locks;
+  stdin is ``/dev/null`` unless the caller hands git its input.
 
 Never raises: a failure is a ``CompletedProcess`` with a non-zero return
 code and the reason in ``stderr``, the shape every caller already handles.
@@ -164,7 +165,8 @@ def repository_program_overrides(cwd: str, *, timeout: float = 10.0,
         proc = subprocess.run(
             _base(cwd) + ["config", "--null", "--list", "--show-scope",
                           "--includes"],
-            capture_output=True, timeout=timeout, env=_env(env), check=False)
+            capture_output=True, timeout=timeout, env=_env(env), check=False,
+            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         raise Refused("the repository's configuration could not be read "
                       f"within {timeout:g} s; git was not run") from None
@@ -234,6 +236,8 @@ def run(args: Sequence[str], cwd, *, timeout: float = _DEFAULT_TIMEOUT_S,
         return failed(list(args), REFUSED, str(exc))
     streams = ({"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
                if merge_stderr else {"capture_output": True})
+    if input is None:
+        streams["stdin"] = subprocess.DEVNULL
     try:
         return subprocess.run(argv, text=text, input=input, timeout=timeout,
                               env=_env(env), check=False, **streams)
