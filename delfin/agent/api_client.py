@@ -23974,6 +23974,11 @@ class _DocToolExecutor:
             self._detach_at_held_branch(
                 cmd, proc, payload, run_cwd, perms, env, timeout,
                 caged_unasked)
+        if caged_unasked and proc.returncode != 0:
+            _cage_note = _caged_refusal_note(
+                (proc.stderr or "") + "\n" + (proc.stdout or ""), perms)
+            if _cage_note:
+                payload["cage_note"] = _cage_note
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
         if _ssh_note:
             payload["hint"] = _ssh_note
@@ -28624,6 +28629,96 @@ def _caged_readonly_paths(perms) -> list[str]:
     return out
 
 
+def _mount_pins(paths, mount_roots) -> tuple[list[str], list[str]]:
+    """The directories to bind onto themselves so that a read-only bind of
+    each of ``paths`` holds as a path, not only as the inode it covers.
+
+    Input: the paths a bubblewrap argv binds read-only, and the paths that
+    are mount points in that namespace (the write roots, the extra write
+    directories and the git metadata roots). Output: ``(pins, unpinned)``.
+    ``pins`` lists, shallow first and once each, every directory strictly
+    between a path and the deepest mount root that holds it; bound onto
+    itself (``--bind-try d d``) each is a mount point, which rename(2) and
+    rmdir(2) refuse with EBUSY. Without it a read-only file two levels
+    deep is replaced by renaming its parent away and recreating the path
+    (measured: ``mv .delfin x; mkdir .delfin`` gave a writable
+    ``.delfin/settings.json``). ``unpinned`` lists the paths whose chain
+    holds something that is not a plain directory (a symlink, a vanished
+    entry): a caller keeps those carved out of the Landlock write grant.
+    A path under no mount root is in neither list -- nothing beneath a
+    read-only mount is writable there. Real paths. Never raises.
+
+    Cost: a rename between a pinned directory and its parent crosses a
+    mount and answers EXDEV (``mv`` copies instead); removing a pinned
+    directory answers EBUSY. Only directories on the way to a protected
+    path are pinned.
+
+    Rejected: carving each path out of the Landlock write grant (what was
+    done): Landlock only grants, so the write root and every directory on
+    the way were granted entry by entry and could take no new entry --
+    no file could be created at the top of a git workspace.
+    """
+    pins: list[str] = []
+    unpinned: list[str] = []
+    try:
+        roots = sorted({os.path.realpath(str(r)) for r in mount_roots if r},
+                       key=len, reverse=True)
+    except Exception:
+        roots = []
+    seen: set[str] = set()
+    for p in paths:
+        try:
+            rp = os.path.realpath(str(p))
+            enclosing = next((r for r in roots if rp != r and
+                              rp.startswith(r.rstrip("/") + "/")), None)
+            if enclosing is None:
+                continue
+            chain: list[str] = []
+            d = os.path.dirname(rp)
+            while d != enclosing:
+                if os.path.islink(d) or not os.path.isdir(d):
+                    raise OSError(d)
+                chain.append(d)
+                d = os.path.dirname(d)
+        except Exception:
+            unpinned.append(str(p))
+            continue
+        for c in reversed(chain):
+            if c not in seen:
+                seen.add(c)
+                pins.append(c)
+    return pins, unpinned
+
+
+def _caged_refusal_note(text: str, perms) -> str:
+    """One line for a command run unasked by the cage that failed on a
+    write the cage refuses: EROFS from a read-only bind, EACCES from
+    Landlock. Input: the command's stderr and stdout. Output: the note, or
+    "" when neither error appears. Names up to six read-only paths
+    relative to the workspace. Never raises."""
+    try:
+        erofs = "Read-only file system" in text
+        eacces = "Permission denied" in text
+        if not (erofs or eacces):
+            return ""
+        ws = os.path.realpath(str(getattr(perms, "workspace", ".") or "."))
+        names = []
+        for p in _caged_readonly_paths(perms)[:6]:
+            names.append(os.path.relpath(p, ws)
+                         if p.startswith(ws.rstrip("/") + "/") else p)
+        return (
+            "cage: this command ran without a question, so "
+            + (", ".join(names) + " are read-only for it and it "
+               if names else "it ")
+            + "writes only beneath the workspace roots and reads only those "
+            "roots and the toolchain; a Read-only file system or Permission "
+            "denied on such a path comes from the cage, not the program. "
+            "write_file / edit_file change a protected file with the usual "
+            "confirmation.")
+    except Exception:
+        return ""
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
@@ -28834,15 +28929,47 @@ def _bash_isolation_argv(
     # from the start but is created on first write -- and a plain --bind of
     # it made bwrap refuse to start, so EVERY shell command of the session
     # failed with "Can't find source path …/.delfin/handover" (2026-10-09).
-    for r in roots + [str(Path(p).resolve()) for p in extra_write]:
-        args += ["--bind-try", r, r]
     git_roots = _git_metadata_roots(getattr(perms, "workspace", "."))
+    _write_binds = roots + [str(Path(p).resolve()) for p in extra_write]
+    # What is bound read-only inside a writable root: the caged overlay and
+    # the answer rooms. Each directory on the way to one of them is bound
+    # onto itself (_mount_pins), so the read-only path cannot be replaced
+    # by renaming a parent. bwrap binds from the host view and recursively,
+    # so a later bind of an ancestor would hide an earlier one beneath it:
+    # the writable binds go shallow first.
+    _caged_ro = _caged_readonly_paths(perms) if caged_unasked else []
+    _rooms: list[str] = []
+    try:
+        from . import approval_guard as _approval_guard
+        _bound = [Path(r) for r in roots]
+        for room in _approval_guard.answer_rooms():
+            if any(room == b or b in room.parents for b in _bound):
+                _rooms.append(str(room))
+    except Exception:
+        _rooms = []
+    _pins, _unpinned = _mount_pins(_caged_ro + _rooms,
+                                   _write_binds + list(git_roots))
+    # The git metadata roots are writable binds too (--bind: they exist,
+    # rev-parse named them); a pin beneath one (a worktree's
+    # .git/worktrees) must come after it.
+    _ordered: list[tuple[str, str]] = []
+    _named: set[str] = set()
+    _git_binds = []
     for r in git_roots:
         try:
             if os.path.isdir(r):
-                args += ["--bind", r, r]
+                _git_binds.append(r)
         except OSError:
             continue
+    for r, flag in ([(r, "--bind-try") for r in _write_binds]
+                    + [(r, "--bind") for r in _git_binds]
+                    + [(r, "--bind-try") for r in _pins]):
+        if r not in _named:
+            _named.add(r)
+            _ordered.append((r, flag))
+    _ordered.sort(key=lambda e: e[0].rstrip("/").count("/"))
+    for r, flag in _ordered:
+        args += [flag, r, r]
     # A git hook the command plants would run on the user's next git
     # command: existing hooks stay readable, new ones cannot be written.
     # The same holds for what tells git which programs to run -- the
@@ -28858,20 +28985,14 @@ def _bash_isolation_argv(
         # Nobody saw this command. The files whose write is asked about in
         # every mode (git metadata, CI and workspace configuration, the
         # agent's own source and settings, calc) are read-only for it.
-        for p in _caged_readonly_paths(perms):
+        for p in _caged_ro:
             args += ["--ro-bind-try", p, p]
     # Where approvals are answered stays read-only inside a writable root
     # (a granted ~/.delfin): a command that builds the answer path at run
     # time is held by the mount, not by reading its text. A room outside
     # every root is read-only already through the "/" bind.
-    try:
-        from . import approval_guard as _approval_guard
-        _bound = [Path(r) for r in roots]
-        for room in _approval_guard.answer_rooms():
-            if any(room == b or b in room.parents for b in _bound):
-                args += ["--ro-bind-try", str(room), str(room)]
-    except Exception:
-        pass
+    for room in _rooms:
+        args += ["--ro-bind-try", room, room]
     # The approval-code directory is not readable at all, and masked after
     # every bind so a granted ~/.delfin cannot re-expose it.
     try:
@@ -28932,8 +29053,14 @@ def _bash_isolation_argv(
                             for r in roots)):
                         continue
                     fs_part += ["--hide", h]
-                for p in _caged_readonly_paths(perms):
-                    fs_part += ["--read-only", p]
+                # The overlay is held by the read-only binds above and the
+                # pins on the way to them, not by a Landlock carve-out: a
+                # carve-out grants its write root entry by entry, and the
+                # root then takes no new file. Only a path whose chain
+                # could not be pinned stays carved out.
+                for p in _unpinned:
+                    if p in _caged_ro:
+                        fs_part += ["--read-only", p]
                 for p in _caged_read_paths(perms):
                     fs_part += ["--read", p]
             else:

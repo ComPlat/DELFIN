@@ -191,7 +191,15 @@ and the text names no network client, git, package manager, job scheduler,
 signal, privilege change, deletion or file authoring. Such a command runs
 unasked (`caged_unasked`) with its reads confined by Landlock to the roots,
 the system directories and the toolchain prefixes, the agent's own files and
-the git metadata read-only, and no direct TCP route. `plan`,
+the git metadata read-only, and no direct TCP route. The read-only paths
+(`api_client._caged_readonly_paths`) are bubblewrap read-only binds; each
+directory on the way from a root to one of them is bound onto itself
+(`api_client._mount_pins`), so it cannot be renamed away and the path
+recreated (cost: a rename across such a directory answers EXDEV, removing
+it EBUSY). Landlock carves out of its write grant only a path whose chain
+cannot be pinned, so the roots themselves take new files. A command that
+fails with a read-only or permission error gets a `cage_note` naming the
+read-only paths. `plan`,
 `diff_approval` and `bypassPermissions` are unchanged by it;
 `agent.caged_commands_run_unasked` = `false` turns it off.
 

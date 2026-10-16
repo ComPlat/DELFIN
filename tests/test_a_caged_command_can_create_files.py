@@ -221,3 +221,63 @@ def test_the_home_memory_stores_hold_and_their_parents_stay_usable(
     out = _run(perms, repo / "notes.py")
     assert "NOTES-OK" in out.get("stdout", ""), out
     assert (base / "projects" / "p1" / "notes.txt").read_text() == "k"
+
+
+def test_the_pins_are_the_directories_on_the_way(tmp_path):
+    ws = tmp_path / "ws"
+    (ws / "a" / "b").mkdir(parents=True)
+    (ws / "a" / "b" / "f").write_text("x")
+    (ws / "top").write_text("x")
+    (ws / ".git").mkdir()
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    (real / "g").write_text("x")
+    (ws / "link").symlink_to(real, target_is_directory=True)
+    pins, unpinned = A._mount_pins(
+        [str(ws / "a" / "b" / "f"), str(ws / "top"), str(ws / ".git"),
+         str(tmp_path / "outside"), str(ws / "link" / "g")],
+        [str(ws)])
+    assert pins == [str(ws / "a"), str(ws / "a" / "b")]
+    assert unpinned == []          # outside and the link's target: no root
+    # A chain through something that is not a plain directory is not
+    # pinned; its caller keeps the Landlock carve-out for it.
+    pins, unpinned = A._mount_pins([str(ws / "gone" / "f")], [str(ws)])
+    assert pins == [] and unpinned == [str(ws / "gone" / "f")]
+
+
+def test_an_unpinnable_path_keeps_the_landlock_carve_out(repo, monkeypatch):
+    monkeypatch.setattr(A, "_bash_isolation_decision",
+                        lambda perms, mode=None: ("bwrap", "auto"))
+    monkeypatch.setattr(A, "_landlock_functional", lambda: True)
+    monkeypatch.setattr(A, "_BWRAP_RUNTIME_FAILURE", None)
+    gone = str(repo / "vanished" / "settings.json")
+    real_ro = A._caged_readonly_paths
+    monkeypatch.setattr(A, "_caged_readonly_paths",
+                        lambda perms: real_ro(perms) + [gone])
+    argv = A._bash_isolation_argv("true", repo, _perms(repo),
+                                  caged_unasked=True)
+    ro = [argv[i + 1] for i, a in enumerate(argv) if a == "--read-only"]
+    assert ro == [gone]
+    pinned = [argv[i + 1] for i, a in enumerate(argv)
+              if a in ("--bind-try", "--bind")]
+    for d in (".delfin", "delfin", "delfin/agent"):
+        assert str((repo / d).resolve()) in pinned
+    # Shallow first, the git metadata binds included: bwrap binds from the
+    # host view and recursively, so a later ancestor bind would hide a pin.
+    depth = [p.rstrip("/").count("/") for p in pinned]
+    assert depth == sorted(depth)
+
+
+@requires_a_working_sandbox
+def test_a_refused_write_says_it_is_the_cage(repo, landlock_host):
+    (repo / "touch.py").write_text(
+        "p = '.githu' + 'b/ci.yml'\nopen(p, 'a').write('x')\n")
+    out = _run(_perms(repo), repo / "touch.py")
+    assert out.get("exit_code") != 0
+    assert "Read-only file system" in out.get("stderr", "")
+    note = out.get("cage_note", "")
+    assert note.startswith("cage: ") and ".github" in note, out
+    # A command that fails for its own reasons gets no such line.
+    (repo / "fail.py").write_text("raise SystemExit(3)\n")
+    out = _run(_perms(repo), repo / "fail.py")
+    assert out.get("exit_code") == 3 and "cage_note" not in out
