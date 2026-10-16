@@ -166,14 +166,14 @@ def test_both_roots_are_registered_and_both_are_shown():
 _RESUME_PATH = "/voila/render/delfin_voila_runtime/delfin_resume.ipynb"
 
 
-def test_the_resume_url_keeps_host_port_and_token():
+def test_the_resume_url_keeps_host_and_port_but_not_the_token():
     url = S.resume_url(
         "login01-ab12",
         request_url=("http://login01:8866/voila/render/"
                      "delfin_voila_runtime/delfin_dashboard.ipynb?token=abc"),
         resume_path=_RESUME_PATH)
     assert url == ("http://login01:8866" + _RESUME_PATH
-                   + "?token=abc&session=login01-ab12")
+                   + "?session=login01-ab12")
 
 
 def test_the_resume_url_is_not_the_dashboard_url():

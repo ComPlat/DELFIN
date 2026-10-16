@@ -67,6 +67,9 @@ def test_the_server_guard_installs_the_xsrf_safe_close_bridge(monkeypatch):
     from delfin.dashboard import preview_proxy
     monkeypatch.setattr(preview_proxy, "register",
                         lambda server: calls.append(("proxy", server)) or "/p")
+    from delfin.dashboard import web_security
+    monkeypatch.setattr(web_security, "install",
+                        lambda server: calls.append(("web", server)) or [])
 
     class _Log:
         def warning(self, *args):
@@ -79,6 +82,7 @@ def test_the_server_guard_installs_the_xsrf_safe_close_bridge(monkeypatch):
     server_guard._load_jupyter_server_extension(server)
     assert calls == [
         ("protect", "dashboard server"),
+        ("web", server),
         ("bridge", None),
         ("route", server),
         ("proxy", server),

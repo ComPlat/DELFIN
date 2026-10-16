@@ -6,6 +6,7 @@ This module is version-controlled and wired into the dashboard tab bar via
 """
 
 import io
+import html as _html
 import json
 import re
 import base64
@@ -975,7 +976,7 @@ def _space_views_gallery_html(output_dir):
             description = 'Pairwise property relationship plot to spot trends and outliers.'
         blocks.append(
             '<div style="margin:0 0 18px 0;">'
-            f'<div style="font-weight:600; margin:0 0 6px 0;">{label}</div>'
+            f'<div style="font-weight:600; margin:0 0 6px 0;">{_html.escape(str(label))}</div>'
             f'<div style="color:#555; margin:0 0 8px 0;">{description}</div>'
             f'<img src="data:image/png;base64,{payload}" '
             'style="max-width:100%; border:1px solid #ddd; display:block;">'
@@ -1729,7 +1730,7 @@ def create_tab(ctx):
                         output_widget.value = _space_views_gallery_html(out_dir)
                     except Exception as e:
                         output_widget.value = (
-                            f'<div style="color:#d32f2f;">Space plot error: {e}</div>'
+                            f'<div style="color:#d32f2f;">Space plot error: {_html.escape(str(e))}</div>'
                         )
 
                 t = threading.Thread(
