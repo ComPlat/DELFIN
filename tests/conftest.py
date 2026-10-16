@@ -1256,6 +1256,22 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
 
     monkeypatch.setattr(_approval_code, "codes_dir", _codes_dir)
 
+    # The account key store, beside tmp_path for the same reason. Unlike
+    # the code directory its Landlock hide is kept inside a write root
+    # (api_client._landlock_hide_paths), which costs that root the right
+    # to create files at its top: with the store under tmp_path, every
+    # test whose workspace is tmp_path could no longer create a file
+    # there on a host without bubblewrap (the CI runners).
+    from delfin.agent import trust_store as _trust_store
+    store_home = tmp_path.parent / f"{tmp_path.name}-trust-store"
+
+    def _store_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "trust_store"
+        return store_home
+
+    monkeypatch.setattr(_trust_store, "store_dir", _store_dir)
+
 
 # ---------------------------------------------------------------------------
 # The sandbox-escape gate

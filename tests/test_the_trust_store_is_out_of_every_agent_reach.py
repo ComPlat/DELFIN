@@ -186,3 +186,12 @@ def test_the_store_is_a_redirected_user_state_resolver():
     from delfin.agent import state_paths
     assert ("delfin.agent.trust_store", "store_dir", "trust_store") in \
         state_paths.USER_STATE_RESOLVERS
+
+
+def test_the_suite_keeps_the_store_out_of_the_tests_workspace(tmp_path):
+    """The suite's store lies beside tmp_path, as ~/.delfin lies beside a
+    workspace: inside a write root its Landlock hide would refuse every
+    new file at that root's top (tests/conftest.py)."""
+    from delfin.agent import trust_store as T
+    store = T.store_dir().resolve()
+    assert tmp_path.resolve() not in store.parents, store
