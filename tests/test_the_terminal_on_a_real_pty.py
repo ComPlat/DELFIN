@@ -192,13 +192,15 @@ def test_a_result_cut_for_display_says_so_and_shows_its_head(chat):
 def test_a_mistyped_command_names_the_nearest_and_sends_nothing(chat):
     session = chat()
     session.send("/hlep\r", 1.5)
+    session.wait_until(lambda s: "unknown command /hlep" in s.text())
     assert session.wait_for("idle", 15) == "idle"
     text = session.text()
     assert "/help" in text and "unknown command /hlep" in text, (
         "\n".join(session.visible()))
     assert _requests(session) == [], "the typo went to the model"
     session.send("\x1b[A", 0.6)
-    assert session.visible()[-3].startswith("> /hlep"), (
+    assert session.wait_until(
+        lambda s: s.visible()[-3].startswith("> /hlep")), (
         "↑ did not bring the line back:\n" + "\n".join(session.visible()[-4:]))
 
 

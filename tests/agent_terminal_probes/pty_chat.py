@@ -193,6 +193,21 @@ class Chat:
                 return state
         return state
 
+    def wait_until(self, check, timeout: float = 15.0) -> bool:
+        """Pump until ``check(self)`` holds; False after *timeout* seconds.
+
+        For a redraw that has no state of its own (a recalled line, a
+        notice): a fixed settle after the keystroke passes on an idle
+        machine and reads the frame before the redraw on a loaded one.
+        """
+        end = time.monotonic() + timeout
+        while True:
+            if check(self):
+                return True
+            if time.monotonic() >= end or not self.child.isalive():
+                return bool(check(self))
+            self.pump(0.2)
+
     def turn(self, text: str, timeout: float = 30.0) -> str:
         """Type *text*, press Enter, wait until the turn has ended."""
         self.send(text, 0.2)
