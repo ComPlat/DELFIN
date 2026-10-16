@@ -3646,6 +3646,16 @@ _CORE_LADDER = ((30, 4), (60, 8))
 _CORE_CEILING = 16
 
 
+#: OpenBLAS threads for every xtb this module starts.  OMP_NUM_THREADS sets
+#: xtb's own team; a conda-forge xtb is linked against OpenBLAS, which left
+#: alone starts one more thread per CPU it may use and competes with that team
+#: for the same CPUs.  Measured 2026-10-16, conda-forge xtb 6.7.1, GFN2, twenty
+#: cycles: glycine on 4 CPUs 323 ms unset, 34 ms at 1; ibuprofen on 8 CPUs
+#: 9277 ms unset, 269 ms at 1; with CPUs to spare no difference (66 / 68 ms).
+#: See tests/test_xtb_runs_without_competing_blas_threads.py.
+_OPENBLAS_THREADS = '1'
+
+
 def interactive_cores(atoms: Optional[int] = None) -> int:
     """Cores for one interactive run, never more than the machine has.
 
@@ -3798,7 +3808,8 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
                    '-P', str(cores)]
         command += _solvents.xtb_flags(solvation_model, solvent)
         environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
-                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G')
+                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G',
+                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS)
         own = parameter_home(binary)
         if own:
             environment['XTBPATH'] = own
@@ -4110,7 +4121,8 @@ def optimize_with_gfn(
         # A few cores, and a scratch directory of its own: two of these must
         # not fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
-                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G')
+                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G',
+                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS)
         # And the parameters that belong to this binary, not whatever is lying
         # around. xtb reads a `param_gfn2-xtb.txt` from XTBPATH or from the
         # home directory *instead of* the parameters compiled into it, and a
