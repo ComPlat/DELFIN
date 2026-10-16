@@ -2011,6 +2011,24 @@ delfin-agent ops status          # checkouts, dashboard servers, session locks, 
 
 Every problem ends in one line `problem → safe next step`, for example `main is held by <path>; this dashboard (pid N) runs detached at the same commit → to take the name here: git -C <path> checkout --detach, then git -C <here> switch main`. The command only prints; the steps are yours to run. `--json` prints the same as JSON (schema `delfin.ops_status/1`), `--repo <checkout>` inspects another repository. The agent may run it without asking in every mode that runs shell commands (plan mode runs none); a `--repo` outside its workspace still needs the usual read permission. Inside a sandbox that has its own process namespace, the process list is limited to that sandbox, and the output says so.
 
+#### Supervising running sessions as data
+
+For a person or a script that watches several sessions at once (for example a wave of supervised agent sessions), `delfin-agent ops` gives events and state as JSON lines instead of terminal screens:
+
+```bash
+delfin-agent ops sessions                   # open sessions on this host: branch, HEAD, idle seconds, open approvals, inbox
+delfin-agent ops session <name>             # one of them
+delfin-agent ops approvals                  # what any session waits on
+delfin-agent ops events --follow            # sessions opened/exited/idle, turns ended, approvals open/closed,
+                                            # messages, refused steps, commits
+delfin-agent ops wait --until kind=approval_open --timeout 3600
+delfin-agent ops send <name> --text "..."   # a message, shown to the session as from the operator, never as you
+delfin-agent ops escalate <approval-id>     # put a waiting approval in front of you; it stays open
+delfin-agent ops pause <name> --reason "..."
+```
+
+There is no `ops approve`: an approval is answered by a person, at the session or with `delfin-agent approvals`. A message from `ops send` does not count as something you typed and lifts no refusal. The actions refuse to run from inside an agent session. `events` and `wait` keep a cursor per reader (`--cursor NAME`, under `~/.delfin/ops_cursors/`): a new cursor starts at "now", and a reader that restarts with the same cursor neither repeats nor drops an event.
+
 `stop-all --check` reads open dashboard sessions, kept sessions, schedules and PID files from the **shared home**, so they are visible from any login node; **agent processes** it can only see on the machine you run it on. Run it on every login node you have used.
 
 Without `--check` the same command is the emergency stop: it ends every agent of yours, and it **disables every schedule**. That is permanent — a disabled schedule is not resumed, it has to be created again.

@@ -5357,6 +5357,131 @@ def build_parser() -> argparse.ArgumentParser:
                                    "the checkout DELFIN runs from)")
     ops_status_p.set_defaults(func=_cmd_ops)
 
+    # The supervisor's side of running sessions, as data
+    # (delfin/agent/ops_interface.py): events and state to read; a message,
+    # an escalation to the person and a pause as the only actions. There is
+    # no approve: a person answers approvals (#202, #207).
+    def _cmd_ops_interface(args):
+        from delfin.agent import ops_interface as _oi
+        act = args.ops_action
+
+        def _out(obj):
+            print(json.dumps(obj, ensure_ascii=False, default=str),
+                  flush=True)
+
+        try:
+            if act == "sessions":
+                for row in _oi.sessions():
+                    _out(row)
+                return 0
+            if act == "session":
+                row = _oi.session(args.name)
+                if row is None:
+                    print(f"ERROR: no open session {args.name!r}",
+                          file=sys.stderr)
+                    return 2
+                _out(row)
+                return 0
+            if act == "approvals":
+                for row in _oi.pending_approvals():
+                    _out(row)
+                return 0
+            if act == "events":
+                if not args.follow:
+                    state = _oi.load_cursor(args.cursor)
+                    for ev in _oi.poll(state, idle_s=args.idle_s):
+                        _out(ev)
+                    _oi.save_cursor(state, args.cursor)
+                    return 0
+                for ev in _oi.follow(args.cursor, idle_s=args.idle_s,
+                                     interval=args.interval,
+                                     seconds=args.seconds):
+                    _out(ev)
+                return 0
+            if act == "wait":
+                ev = _oi.wait(args.until, cursor=args.cursor,
+                              timeout=args.timeout, idle_s=args.idle_s,
+                              interval=args.interval)
+                if ev is None:
+                    return 3
+                _out(ev)
+                return 0
+            if act == "send":
+                text = args.text
+                if args.file:
+                    text = Path(args.file).read_text(encoding="utf-8")
+                _out(_oi.send(args.name, text or ""))
+                return 0
+            if act == "escalate":
+                _out({"attention_id": _oi.escalate(args.request_id,
+                                                   args.note or "")})
+                return 0
+            if act == "pause":
+                _out(_oi.pause(args.name, args.reason))
+                return 0
+        except _oi.OpsRefused as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            return 0
+        return 2
+
+    for _name, _help in (
+            ("sessions", "Open sessions on this host as JSON lines (read-only)"),
+            ("approvals", "Approvals any session waits on, as JSON lines "
+                          "(read-only; answering is the person's)"),
+    ):
+        ops_sub.add_parser(_name, help=_help).set_defaults(
+            func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("session", help="One open session as JSON "
+                                             "(read-only)")
+    _p.add_argument("name", help="The -n name or the head of the id")
+    _p.set_defaults(func=_cmd_ops_interface)
+    for _name, _help in (
+            ("events", "Events since the cursor as JSON lines: sessions "
+                       "opened/exited/idle, turns ended, approvals "
+                       "open/closed, messages, refused steps, commits"),
+            ("wait", "Block until one event matches --until; exit 3 on "
+                     "timeout"),
+    ):
+        _p = ops_sub.add_parser(_name, help=_help)
+        _p.add_argument("--cursor", default="default",
+                        help="Name of the reader's cursor (one per reader)")
+        _p.add_argument("--idle-s", type=int, default=900,
+                        help="A session with no activity for this long is "
+                             "reported idle once")
+        _p.add_argument("--interval", type=float, default=5.0)
+        if _name == "events":
+            _p.add_argument("--follow", action="store_true",
+                            help="Keep printing new events")
+            _p.add_argument("--seconds", type=float, default=0.0,
+                            help="With --follow: stop after this long")
+        else:
+            _p.add_argument("--until", required=True,
+                            help="kind=approval_open,session=s11 or "
+                                 "idle_s>=1800; every term must hold")
+            _p.add_argument("--timeout", type=float, default=0.0)
+        _p.set_defaults(func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("send", help="Leave a message in a session's "
+                                          "inbox, as the operator (never as "
+                                          "the user)")
+    _p.add_argument("name")
+    _g = _p.add_mutually_exclusive_group(required=True)
+    _g.add_argument("--text")
+    _g.add_argument("--file")
+    _p.set_defaults(func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("escalate", help="Put a waiting approval in "
+                                              "front of the person; it stays "
+                                              "open")
+    _p.add_argument("request_id")
+    _p.add_argument("--note", default="")
+    _p.set_defaults(func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("pause", help="Pause a session at its next safe "
+                                           "point")
+    _p.add_argument("name")
+    _p.add_argument("--reason", required=True)
+    _p.set_defaults(func=_cmd_ops_interface)
+
     # T6: run a session's tests on a SLURM compute node from a node-local
     # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported
     # on use so an import error there cannot break every other command.
