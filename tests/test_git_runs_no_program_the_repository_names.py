@@ -179,3 +179,21 @@ def test_a_timeout_is_told_apart_from_git_s_own_failure(repo, monkeypatch):
     res = SG.run(["merge-base", "--is-ancestor", "HEAD", "HEAD"], r)
     assert res.returncode == SG.TIMED_OUT
     assert res.returncode not in (0, 1)
+
+
+def test_git_reads_no_input_it_was_not_handed(repo, monkeypatch):
+    """Without ``input`` git's stdin is /dev/null, not the terminal or
+    pipe DELFIN itself was started with."""
+    r, _ = repo
+    real = subprocess.run
+    seen = []
+
+    def spy(argv, *a, **kw):
+        if "--show-scope" not in argv:
+            seen.append(kw.get("stdin"))
+        return real(argv, *a, **kw)
+
+    monkeypatch.setattr(SG.subprocess, "run", spy)
+    SG.run(["rev-parse", "HEAD"], r)
+    SG.run(["hash-object", "--stdin"], r, input="x\n")
+    assert seen == [subprocess.DEVNULL, None]
