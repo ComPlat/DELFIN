@@ -24,7 +24,20 @@ What it requires:
 - the licence and notice files in :data:`REQUIRED_LICENCE_FILES`, in the wheel's
   ``*.dist-info/licenses/`` and in the sdist's root directory;
 - ``License-Expression: LGPL-3.0-or-later`` and one ``License-File`` line per
-  required file in the wheel's METADATA and the sdist's PKG-INFO (PEP 639).
+  required file in the wheel's METADATA and the sdist's PKG-INFO (PEP 639);
+- with ``--release``: exactly one wheel and one sdist among the paths, the
+  set release.yml publishes (``dist/*``). A missing half, a second wheel or
+  a stray file is a finding. Without the flag any number of archives is
+  checked, as packaging.yml does with the sdist-built and the direct wheel.
+
+Usage: ``python scripts/check_distribution.py [--release] DIST...``; the
+release workflow runs ``--release dist/*``, packaging.yml names its
+archives. This is the one distribution checker. release.yml used a second
+one (``.github/ci/check_dists.py``); of its rules, the one-wheel-one-sdist
+set is ``--release`` here, and its installer paths matched anywhere in a
+member name, which ``_INSTALLER_OUTPUT`` now does too (``qm_tools/bin/``
+with or without the ``delfin/`` before it). Its ELF, Mach-O and PE header
+check was already here (``native_kind``).
 
 Rejected alternatives: ``unzip -l | grep qm_tools/bin`` (sees one path and
 no binary placed anywhere else); ``check-wheel-contents`` (a further
@@ -51,9 +64,10 @@ REQUIRED_LICENCE_FILES: tuple[str, ...] = (
 )
 
 #: Directories the installers write into (see delfin/qm_tools/install_qm_tools.sh
-#: and the csp/mlp/analysis/ai installers).
+#: and the csp/mlp/analysis/ai installers), below ``delfin/`` or anywhere
+#: else in the archive: a copy outside the package is still a copy.
 _INSTALLER_OUTPUT = re.compile(
-    r"(^|/)delfin/(qm|csp|mlp|analysis|ai)_tools/"
+    r"(^|/)(qm|csp|mlp|analysis|ai)_tools/"
     r"(bin|share|downloads|build|third_party|logs|\.mamba_env|\.build)(/|$)"
 )
 
@@ -187,6 +201,26 @@ def _sdist(path: Path) -> tuple[list[Member], list[str]]:
     return stripped, findings
 
 
+def release_set_findings(paths: list[Path]) -> list[str]:
+    """``--release``: the paths must be exactly one wheel and one sdist.
+
+    A file that is neither is a finding too: ``dist/*`` holding anything
+    else means the directory was not the fresh build output that is
+    about to be published."""
+    wheels = [p.name for p in paths if p.name.endswith(".whl")]
+    sdists = [p.name for p in paths if p.name.endswith((".tar.gz", ".tgz"))]
+    other = [p.name for p in paths
+             if not p.name.endswith((".whl", ".tar.gz", ".tgz"))]
+    out = []
+    if len(wheels) != 1 or len(sdists) != 1:
+        out.append(f"release set: expected one wheel and one sdist, got "
+                   f"{len(wheels)} wheel(s) {wheels} and {len(sdists)} "
+                   f"sdist(s) {sdists}")
+    if other:
+        out.append(f"release set: not a wheel or an sdist: {other}")
+    return out
+
+
 def check(path: Path) -> list[str]:
     """Every finding for one archive; an empty list means it passes."""
     if path.name.endswith(".whl"):
@@ -200,9 +234,15 @@ def check(path: Path) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("--release", action="store_true",
+                        help="require exactly one wheel and one sdist")
     parser.add_argument("dists", nargs="+", type=Path)
     args = parser.parse_args(argv)
     total = 0
+    if args.release:
+        for line in release_set_findings(args.dists):
+            total += 1
+            print(line)
     for dist in args.dists:
         if not dist.is_file():
             print(f"{dist}: not a file", file=sys.stderr)
