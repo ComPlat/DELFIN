@@ -54,15 +54,8 @@ class MoveResult:
 
 
 def _git(repo, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env.setdefault("GIT_OPTIONAL_LOCKS", "0")
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *args], capture_output=True, text=True,
-            timeout=timeout, env=env, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(args, 1, "", str(exc))
+    from . import safe_git
+    return safe_git.run(args, repo, timeout=timeout)
 
 
 def _out(repo, *args: str) -> str:
