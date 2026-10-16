@@ -14,7 +14,7 @@
     "@opentui/core": "0.6.4",
     "@opentui/solid": "0.6.4",
     "solid-js": "1.9.17",
-    "web-tree-sitter": "0.27.1"
+    "web-tree-sitter": "0.25.10"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",
