@@ -42,6 +42,17 @@ PRINTS_THE_LOGIN = [
     "gh auth git-credential get",
     "git credential fill",
     "git credential-store get",
+    # gh's own options can precede the subcommand, and the subcommand's
+    # hostname works there too (`gh --hostname h auth token` prints it).
+    "gh --hostname github.com auth token",
+    # `gh config get [-h host] oauth_token` prints the stored login.
+    "gh config get -h github.com oauth_token",
+    "gh config get oauth_token",
+    # A combined shell flag (`-lc`, `-ec`) carries the body just as `-c`.
+    "bash -lc 'gh auth token'",
+    "bash -ec 'gh auth token'",
+    # `eval`/`xargs` build the command from what follows.
+    "eval gh auth token",
 ]
 
 WRITES_THROUGH_THE_API = [
@@ -55,6 +66,11 @@ WRITES_THROUGH_THE_API = [
     "gh api repos/o/r/collaborators/x -F permission=admin",
     "gh api graphql -f query='mutation { mergePullRequest }'",
     "ls && gh api -X PUT repos/o/r/pulls/7/merge",
+    # gh's own option before the subcommand, a combined shell flag, and
+    # xargs building the call -- each reaches the same write.
+    "gh --hostname github.com api -X PUT repos/o/r/pulls/7/merge",
+    "bash -lc 'gh api -X DELETE repos/o/r'",
+    "echo x | xargs gh api -X PUT repos/o/r/pulls/7/merge",
 ]
 
 UNTOUCHED = [
@@ -68,6 +84,14 @@ UNTOUCHED = [
     'echo "gh api -X PUT is refused"',
     "git config --get user.name",
     "git log --oneline -3",
+    # `gh config get` of a non-secret key, and `config list`, stay allowed:
+    # only the oauth_token key prints the login.
+    "gh config get editor",
+    "gh config list -h github.com",
+    # A subcommand that merely has `auth`/`api` among its words is not one
+    # of these refusals (the rule reads the subcommand, not any token).
+    "gh search issues auth token",
+    "gh pr create --title auth --body token",
 ]
 
 
@@ -175,6 +199,18 @@ def test_the_existing_git_parser_is_the_one_in_use():
         == "credential"
     assert A._prints_a_credential("git -C /x credential fill") == \
         "git credential"
+
+
+def test_gh_subcommand_is_read_past_its_own_leading_options():
+    """gh's own options (and the value they carry) are stepped over to
+    reach the subcommand, so an option before `auth`/`api` does not hide
+    it."""
+    assert A._gh_subcommand_args(["gh", "--hostname", "h", "auth", "token"]) \
+        == ["auth", "token"]
+    assert A._gh_subcommand_args(["gh", "--hostname=h", "api", "-X", "PUT"]) \
+        == ["api", "-X", "PUT"]
+    assert A._gh_subcommand_args(["gh", "api"]) == ["api"]
+    assert A._gh_subcommand_args(["gh"]) == []
 
 
 def test_both_refusals_are_never_handed_to_the_user_as_a_command():

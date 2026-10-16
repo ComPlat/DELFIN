@@ -4378,7 +4378,7 @@ def _push_targets(cmd: str, cwd: Any) -> set[str]:
 # A command a shell is handed as a string: `sh -c 'git push'`, `bash -c "..."`,
 # `eval "..."`. The body is a command line of its own; `grep 'git push'` is not.
 _SHELL_BODY_RE = re.compile(
-    r"(?:\b(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-c\s+|\beval\s+)"
+    r"(?:\b(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-[A-Za-z]*c\s+|\beval\s+)"
     r"(['\"])(.*?)\1", re.DOTALL)
 
 
@@ -5629,8 +5629,17 @@ def _is_gh_pr_merge(cmd: str) -> bool:
 # false positive costs a refusal, never a write.
 
 _GH_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;\n|&()`]")
+# `xargs`/`eval` build the command from what follows, so the program the
+# gate must read sits after them exactly as after `env`/`timeout`. Reading
+# through them is generous (xargs also appends stdin), which for a deny rule
+# costs a refusal, never a write.
 _COMMAND_WRAPPERS = frozenset({"sudo", "command", "exec", "env", "nohup",
-                               "time", "nice", "stdbuf", "timeout"})
+                               "time", "nice", "stdbuf", "timeout",
+                               "xargs", "eval"})
+# gh's own options can precede the subcommand (`gh --hostname h auth token`
+# prints the login, `gh --hostname h api -X PUT` writes); these carry a
+# value, so the value is stepped over too when reaching the subcommand.
+_GH_OPTS_WITH_VALUE = frozenset({"--hostname", "--repo", "-R"})
 
 
 def _command_words(cmd: str) -> list:
@@ -5653,18 +5662,40 @@ def _command_words(cmd: str) -> list:
     return out
 
 
+def _gh_subcommand_args(w: list) -> list:
+    """The words of a ``gh`` call from its subcommand on, with gh's own
+    leading options (and the value an option carries) stepped over. ``w``
+    is a ``_command_words`` entry whose program is ``gh``; returns ``[]``
+    when there is no subcommand."""
+    i = 1
+    n = len(w)
+    while i < n and w[i].startswith("-"):
+        opt = w[i]
+        i += 1
+        if "=" not in opt and opt in _GH_OPTS_WITH_VALUE:
+            i += 1          # the option, and the value it carries
+    return w[i:]
+
+
 def _prints_a_credential(cmd: str) -> str:
     """The command in *cmd* that prints the GitHub login, or ""."""
     for w in _command_words(cmd):
-        if w[0] == "gh" and len(w) > 2 and w[1] == "auth":
-            if w[2] in ("token", "git-credential"):
-                return f"gh auth {w[2]}"
-            if w[2] == "status" and any(
-                    a == "--show-token" or a.startswith("--show-token=")
-                    or (a.startswith("-") and not a.startswith("--")
-                        and a[1:].isalpha() and "t" in a[1:])
-                    for a in w[3:]):
-                return "gh auth status --show-token"
+        if w[0] == "gh":
+            sub = _gh_subcommand_args(w)
+            if len(sub) > 1 and sub[0] == "auth":
+                if sub[1] in ("token", "git-credential"):
+                    return f"gh auth {sub[1]}"
+                if sub[1] == "status" and any(
+                        a == "--show-token" or a.startswith("--show-token=")
+                        or (a.startswith("-") and not a.startswith("--")
+                            and a[1:].isalpha() and "t" in a[1:])
+                        for a in sub[2:]):
+                    return "gh auth status --show-token"
+            # `gh config get [-h host] oauth_token` prints the stored
+            # login just as `gh auth token` does (measured 2026-10-16).
+            if (len(sub) > 2 and sub[0] == "config" and sub[1] == "get"
+                    and "oauth_token" in sub[2:]):
+                return "gh config get oauth_token"
         if w[0] == "git":
             sub = _git_subcommand(w[1:])
             if sub == "credential" or sub.startswith("credential-"):
@@ -5682,9 +5713,12 @@ def _gh_api_write(cmd: str) -> str:
     telling them apart would mean reading the query text.
     """
     for w in _command_words(cmd):
-        if w[0] != "gh" or len(w) < 2 or w[1] != "api":
+        if w[0] != "gh":
             continue
-        args = w[2:]
+        sub = _gh_subcommand_args(w)
+        if len(sub) < 1 or sub[0] != "api":
+            continue
+        args = sub[1:]
         method, body = "", False
         i = 0
         while i < len(args):
