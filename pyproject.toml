@@ -315,7 +315,7 @@ dev = [
     # and a test of "any text" should not change verdict with the tool.
     # 6.168.3 is the newest that still supports Python 3.10 (6.169 needs
     # 3.11) and was more than two weeks old on 2026-10-16.
-    "hypothesis==6.168.3",
+    "hypothesis==6.168.5",
     # The [pdf] extra, written out for the same reason, so the PDF tests
     # run in CI (which installs dev) instead of skipping.
     "pymupdf>=1.24,<2",
