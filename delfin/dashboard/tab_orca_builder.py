@@ -1111,11 +1111,6 @@ def create_tab(ctx):
     _VIEWER_JS_TMPL = (
         '<div id="__DIV__" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
         '<script>\n'
-        'if(typeof $3Dmol==="undefined"){\n'
-        '  var _s=document.createElement("script");\n'
-        '  _s.src="https://3Dmol.org/build/3Dmol-min.js";\n'
-        '  document.head.appendChild(_s);\n'
-        '}\n'
         '(function(){\n'
         '  var tries=0;\n'
         '  function init(){\n'
@@ -1441,11 +1436,6 @@ def create_tab(ctx):
         return (
             '<div id="' + div_id + '" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
             '<script>\n'
-            'if(typeof $3Dmol==="undefined"){\n'
-            '  var _s=document.createElement("script");\n'
-            '  _s.src="https://3Dmol.org/build/3Dmol-min.js";\n'
-            '  document.head.appendChild(_s);\n'
-            '}\n'
             '(function(){\n'
             '  var tries=0;\n'
             '  function init(){\n'

@@ -557,8 +557,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         _pixel_ratio = float(get_viewer_profile().get('pixel_ratio') or 2.0)
     except Exception:
         _pixel_ratio = 2.0
+    # Without the bundle no viewer can draw (there is no network fallback),
+    # so a broken installation says so in the browser console.
     _calc_init = '\n'.join([
-        vendored_3dmol_js(),
+        vendored_3dmol_js() or (
+            'console.error("DELFIN: the bundled 3Dmol '
+            '(delfin/dashboard/static/3Dmol-min.js) is missing from this '
+            'installation; molecule viewers cannot draw.");'),
         f'window.__delfinViewerPixelRatio = {_pixel_ratio};',
         RIGHT_MOUSE_TRANSLATE_PATCH_JS,
         *ctx.init_js_parts,

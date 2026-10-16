@@ -2576,12 +2576,12 @@ def _assistant_turn_is_wordless(msg: dict) -> bool:
 # The diagram renderer. Pinned to an exact version and to the bytes of that
 # version: an unpinned CDN script is a supply-chain surface, and the browser
 # refuses a script whose hash does not match rather than running it.
-_MERMAID_VERSION = "11.17.2"
-_MERMAID_URL = (
-    "https://cdn.jsdelivr.net/npm/mermaid@" + _MERMAID_VERSION
-    + "/dist/mermaid.min.js")
-_MERMAID_SRI = (
-    "sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2")
+# The URL lives in pinned_cdn, which the page CSP is built from.
+from delfin.dashboard import pinned_cdn as _pinned_cdn  # noqa: E402
+
+_MERMAID_VERSION = _pinned_cdn.MERMAID_VERSION
+_MERMAID_URL = _pinned_cdn.MERMAID_JS.url
+_MERMAID_SRI = _pinned_cdn.MERMAID_JS.sri
 _VENDORED_MERMAID_CACHE = None
 
 
