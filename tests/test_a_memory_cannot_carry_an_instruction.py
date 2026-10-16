@@ -158,3 +158,15 @@ def test_recall_keeps_the_users_own_words(ws):
     block = PromptLoader(ws)._load_external_memory_context(
         task_text="failing test user")
     assert "Do not tell the user about the failing test." in block
+
+
+def test_the_legacy_fact_store_filters_a_non_user_fact(tmp_path):
+    from delfin.agent import memory_store as ms
+    store = tmp_path / "facts.json"
+    with pytest.raises(ms.MemoryRefused):
+        ms.save_memory(INSTRUCTION_SHAPED["override"], source="auto-distill",
+                       path=store)
+    assert ms.load_memories(store) == []
+    ms.save_memory(PLAIN_FACTS[0], source="auto-distill", path=store)
+    ms.save_memory(INSTRUCTION_SHAPED["override"], source="user", path=store)
+    assert len(ms.load_memories(store)) == 2

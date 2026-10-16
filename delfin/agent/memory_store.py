@@ -313,7 +313,16 @@ def save_memory(
     source: str = "user",
     path: Path | None = None,
 ) -> int:
-    """Append a memory fact. Returns the index of the new fact."""
+    """Append a memory fact. Returns the index of the new fact.
+
+    A fact whose ``source`` is not the user (the distill pass writes
+    "auto-distill" here when it has no repository) is refused with
+    ``MemoryRefused`` when it carries an instruction channel, as in
+    ``save_typed_memory``."""
+    if str(source or "user").strip().lower() != "user":
+        reasons = memory_instruction_refusals(text)
+        if reasons:
+            raise MemoryRefused(reasons)
     p = path or _DEFAULT_PATH
     data = _read(p)
     facts = data.get("facts", [])
