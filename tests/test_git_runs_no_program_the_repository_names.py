@@ -141,3 +141,41 @@ def test_a_failure_is_a_result_not_an_exception(tmp_path):
     assert res.returncode != 0
     assert SG.out(tmp_path / "missing", "status") == ""
     assert SG.is_repository(tmp_path / "missing") is False
+
+
+def test_a_configuration_listing_that_times_out_runs_nothing(repo, monkeypatch):
+    """The overrides come from listing the repository's configuration. When
+    that listing does not answer in time the overrides are unknown, and the
+    command is not run without them."""
+    r, _ = repo
+    real = subprocess.run
+    ran = []
+
+    def fake(argv, *a, **kw):
+        if "--show-scope" in argv:
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0))
+        ran.append(argv)
+        return real(argv, *a, **kw)
+
+    monkeypatch.setattr(SG.subprocess, "run", fake)
+    res = SG.run(["status", "--porcelain"], r)
+    assert ran == []
+    assert res.returncode == 128 and "configuration" in res.stderr
+
+
+def test_a_timeout_is_told_apart_from_git_s_own_failure(repo, monkeypatch):
+    """git answers 1 for 'no match' (grep) and 'not an ancestor'
+    (merge-base --is-ancestor); a command that did not finish must not
+    read as either."""
+    r, _ = repo
+    real = subprocess.run
+
+    def fake(argv, *a, **kw):
+        if "--show-scope" in argv:
+            return real(argv, *a, **kw)
+        raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0))
+
+    monkeypatch.setattr(SG.subprocess, "run", fake)
+    res = SG.run(["merge-base", "--is-ancestor", "HEAD", "HEAD"], r)
+    assert res.returncode == SG.TIMED_OUT
+    assert res.returncode not in (0, 1)
