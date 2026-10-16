@@ -1653,9 +1653,19 @@ def test_xtbs_own_hessian_carries_the_shapes_as_well_as_the_numbers():
         # against one of them a number between nought and one.
         overlaps = got['shape'].T @ got['shape']
         assert np.abs(overlaps - np.eye(overlaps.shape[0])).max() < 1e-8
-        # And the frequencies are the same object the older accessor returns.
+        # And the frequencies are the ones the older accessor returns. It runs
+        # xtb --hess a second time, so this compares two independent runs,
+        # and the bound is set by their reproducibility. Measured 2026-10-15
+        # on this structure, 20 pairs each under pytest: the conda-forge build
+        # (6.7.1 gfortran_ha02e54d_5) gave identical numbers 20/20; the
+        # release binary (xtb-6.7.1-linux-x86_64) differed on 6/20 pairs, each
+        # time by 1.055e-6 cm-1 on mode 1 (119.3 cm-1, relative 8.8e-9). The
+        # former bound, 1e-9 cm-1, failed that binary 7 of 10 runs. 1e-4 is
+        # about 100 times the measured spread and 1000 times below the
+        # 0.11 cm-1 by which the printout and the hessian file are said to
+        # agree above.
         assert np.abs(np.asarray(walk.frequencies_from_xtb())
-                      - got['cm']).max() < 1e-9
+                      - got['cm']).max() < 1e-4
     finally:
         walk.close()
 
