@@ -6020,11 +6020,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # through untouched, no frame had its bonding changed, and
                     # the median atom moved 0.066 A.
                     current = _gfn.eased_apart(current)
-                    # The wish as _still_torn sees it, before the budget may
-                    # clamp it below: the bonding wall's yardstick is taken
-                    # from this one.
-                    asked_for = current
                     began = time.perf_counter()
+                    # As _still_torn sees it, before any budget clamp: the
+                    # bonding wall's yardstick is taken from this wish.
+                    asked_for = current
                     # Once the budget is spent, stand still rather than shake.
                     #
                     # The wall acts and then undoes: the step runs, the price
