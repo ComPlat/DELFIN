@@ -79,9 +79,13 @@ jobs:
         # is published. --no-isolation: the build backend is the pinned
         # setuptools/wheel installed here, not whatever an isolated build
         # environment would fetch from PyPI at release time.
+        # --require-hashes: pip, build, setuptools, wheel and their closure
+        # are installed only as the bytes PyPI published when
+        # .github/ci/release-requirements.txt was written (its header says
+        # how to regenerate it); a substituted file of the same version
+        # stops the build.
         run: |
-          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
-          pip install -c .github/ci/constraints-ci.txt build setuptools wheel
+          python -m pip install --require-hashes -r .github/ci/release-requirements.txt
           python -m build --no-isolation --sdist --wheel --outdir dist/
           ls -l dist/
 

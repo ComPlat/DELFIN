@@ -13,9 +13,10 @@ name: Packaging
 # installer's paths first and builds twice: sdist -> wheel (what PyPI gets)
 # and a wheel straight from the tree (what `pip wheel .` gives).
 #
-# Network: PyPI for the pinned build tools only. Every tool here is
-# installed with .github/ci/constraints-ci.txt, like in the other
-# workflows, and the actions are pinned to commit SHAs. The build itself
+# Network: PyPI for the pinned build tools only. The build tools are
+# installed by hash from .github/ci/release-requirements.txt, as in
+# release.yml; the other tools with .github/ci/constraints-ci.txt, like in
+# the other workflows; the actions are pinned to commit SHAs. The build itself
 # runs with --no-isolation against those pins, and SOURCE_DATE_EPOCH is
 # the commit time, so one commit always builds from the same toolchain.
 #
@@ -53,9 +54,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install the pinned build tools
+        # The same hashed file release.yml builds with, so a pull request
+        # builds with the toolchain a release would.
         run: |
-          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
-          pip install -c .github/ci/constraints-ci.txt build setuptools wheel
+          python -m pip install --require-hashes -r .github/ci/release-requirements.txt
 
       - name: Plant installer output where a release machine would have it
         run: |
