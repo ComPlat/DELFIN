@@ -414,6 +414,24 @@ def _merge_user_rows(older: dict, newer: dict) -> dict:
     return merged
 
 
+def _added_lines(old: str, new: str) -> str:
+    """The lines ``new`` adds to ``old`` when it only adds; "" otherwise.
+
+    A role prompt that gains a lazy module keeps every line it had, so
+    the module's lines are the whole update; a section that also lost or
+    rewrote a line is sent whole by the caller."""
+    import difflib
+    a, b = old.splitlines(), new.splitlines()
+    added: list[str] = []
+    for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(
+            None, a, b, autojunk=False).get_opcodes():
+        if tag == "insert":
+            added.extend(b[j1:j2])
+        elif tag != "equal":
+            return ""
+    return "\n".join(added).strip("\n")
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -509,6 +527,11 @@ class AgentEngine:
             _ws = getattr(self.kit_permissions, "workspace", None)
             self.loader.workspace_root = Path(_ws) if _ws else Path(self.repo_dir)
             self.loader.is_delfin_workspace = self._is_delfin_workspace
+            # A getter, not the object: the permissions can be replaced
+            # after construction, and the prompt must follow the ones the
+            # tool list is filtered by.
+            self.loader.toolsets = lambda: getattr(
+                self.kit_permissions, "toolsets", None)
         except Exception:
             self.loader.workspace_root = None
         # Inject-once gating of stable prompt sections is only sound on the
@@ -2000,12 +2023,17 @@ class AgentEngine:
         try:
             perms = self.kit_permissions
             sid = str(getattr(perms, "task_session_id", "") or "") if perms else ""
+            # The folder the questions were parked with (api_client parks
+            # them with perms.workspace): an answer about one project is
+            # not for a session working in another. Unscoped, the next
+            # session anywhere took it -- told to "act on them now".
+            ws = str(getattr(perms, "workspace", "") or "") if perms else ""
         except Exception:
-            sid = ""
+            sid, ws = "", ""
         lines: list[str] = []
         try:
             from delfin.agent.attention import drain_resolved
-            for ev in drain_resolved(sid) or []:
+            for ev in drain_resolved(sid, workspace=ws or None) or []:
                 ans = ev.get("answer")
                 ans_txt = ", ".join(map(str, ans)) if isinstance(ans, list) \
                     else str(ans or "").strip()
@@ -2205,6 +2233,56 @@ class AgentEngine:
             "correction is about something else, do what the user asked "
             "and leave the skill alone.")
 
+    def _note_repo_errors(self, user_message: str) -> None:
+        """Set this turn's pointer to the git-errors skill, or clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_repo_errors_block`` returns for this turn. Empty unless
+        the message names one of the skill's error texts or asks about
+        checkouts, worktrees, the dashboard's branch or ports, or a pull
+        request (``repo_error_hints.user_hint``), and empty in a session
+        that reads no skills. Cost: about 60 tokens in the turn's tail,
+        only in a turn that matched.
+        """
+        self._repo_errors_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .repo_error_hints import user_hint
+            self._repo_errors_hint = user_hint(user_message or "")
+        except Exception:
+            self._repo_errors_hint = ""
+
+    def _build_repo_errors_block(self) -> str:
+        """This turn's pointer to the git-errors skill (may be empty)."""
+        return str(getattr(self, "_repo_errors_hint", "") or "")
+
+    def _note_experiment_task(self, user_message: str) -> None:
+        """Set this turn's pointer to the experiment-discipline skill, or
+        clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_experiment_block`` returns for this turn. Empty unless the
+        message asks for, or acts on, a measured comparison
+        (``experiment_hints.user_hint``), and empty in a session that
+        reads no skills. Cost: 71 tokens in the turn's tail, only in a
+        turn that matched.
+        """
+        self._experiment_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .experiment_hints import user_hint
+            self._experiment_hint = user_hint(user_message or "")
+        except Exception:
+            self._experiment_hint = ""
+
+    def _build_experiment_block(self) -> str:
+        """This turn's pointer to the experiment-discipline skill."""
+        return str(getattr(self, "_experiment_hint", "") or "")
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -2360,6 +2438,8 @@ class AgentEngine:
         pairs.append(("answered", self._build_answered_attention_block()))
         pairs.append(("skill_correction",
                       self._build_skill_correction_block()))
+        pairs.append(("repo_errors", self._build_repo_errors_block()))
+        pairs.append(("experiment", self._build_experiment_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2592,7 +2672,9 @@ class AgentEngine:
         # tail as a private key so every later request repeats the bytes
         # the endpoint already holds.
         volatile = extra_blocks + ([dashboard_state] if dashboard_state else [])
-        if volatile and not self._attach_turn_tail("\n\n".join(volatile)):
+        _last = self.messages[-1] if self.messages else None
+        _has_turn = isinstance(_last, dict) and _last.get("role") == "user"
+        if volatile and not _has_turn:
             # A prompt built with no user message to carry the tail (a
             # build outside a turn): the system prompt is the only place.
             live_state = "\n\n".join(
@@ -2603,7 +2685,40 @@ class AgentEngine:
             _perm_mode = getattr(self.kit_permissions, "mode", "") or ""
         except Exception:
             _perm_mode = ""
+        if _has_turn:
+            # The same rule for the prompt's own per-turn sections: the
+            # system prompt keeps the bytes it had on the session's first
+            # turn, and what changed since rides in this turn's tail.
+            try:
+                sections = self.loader.compose_sections(
+                    **self._prompt_build_args(
+                        role, memory_context, task_text, live_state,
+                        _perm_mode))
+                prompt, updates = self._held_system_prompt(
+                    role, sections,
+                    can_update="_steer" not in _last)
+                # Updates first: the permission classifier cuts a user
+                # row at "[System prompt update", so nothing after it in
+                # the tail is ever read as the user's own words.
+                tail = updates + volatile
+                if tail:
+                    text = "\n\n".join(tail)
+                    self._attach_turn_tail(text)
+                    if updates:
+                        self._held_prompt["carriers"].append(text)
+                return prompt
+            except Exception:
+                if volatile:
+                    self._attach_turn_tail("\n\n".join(volatile))
         return self.loader.build_system_prompt(
+            **self._prompt_build_args(
+                role, memory_context, task_text, live_state, _perm_mode))
+
+    def _prompt_build_args(self, role: str, memory_context: str,
+                           task_text: str, live_state: str,
+                           permission_mode: str) -> dict:
+        """The keyword arguments of one system-prompt build."""
+        return dict(
             role_id=role,
             mode_id=self.mode,
             mode_description=self.mode_description,
@@ -2618,7 +2733,7 @@ class AgentEngine:
             model=getattr(self, "model", "") or "",
             # Plan is a permission profile now (not a mode): inject the plan
             # addendum whenever the active permission profile is "plan".
-            permission_mode=_perm_mode,
+            permission_mode=permission_mode,
             # One authority for the question. The critical anchor claims
             # to override any conflicting prior instruction, so a fixed
             # language there outranks the session pin — and a live GLM
@@ -2628,6 +2743,81 @@ class AgentEngine:
             # before its first turn and would otherwise match itself.
             session_id=str(getattr(self, "session_id", "") or ""),
         )
+
+    def _held_system_prompt(self, role: str, sections: list,
+                            *, can_update: bool) -> tuple[str, list[str]]:
+        """The system prompt to send, and the updates for this turn's tail.
+
+        Input: the role and the freshly composed prompt sections.
+        Output: ``(prompt, updates)``. The prompt is the one built on the
+        session's first turn (held per role); ``updates`` holds, for every
+        section whose text differs from what the model was last given, the
+        section again under a one-line label (a section that grew, such as
+        the role prompt gaining a module, sends only its added lines), and
+        a one-line withdrawal for a section that is gone.
+
+        Semantics: the endpoint caches the longest common prefix of system
+        prompt and messages, so any byte that moves in the system prompt
+        makes the whole history behind it cold. The archived sessions show
+        193 system-prompt changes, 107 followed by a cold request (about
+        140 minutes of GLM time to first token); the moving sections were
+        the briefing (outcome history), memory, past sessions, session
+        environment (git status, commits), the task-selected playbook,
+        decomposition and repo map, and the plan addendum.
+
+        The held prompt is rebuilt whole when the role changes, or when a
+        message that carried an update has lost its tail or left the
+        history (a trim or compaction rewrote the prefix, so the cache is
+        cold anyway and the updates would otherwise be lost).
+        ``can_update`` is False when the turn's message already has its
+        tail: nothing is recorded as delivered then, so the change goes
+        out on the next turn.
+
+        Rejected: rebuilding on a permission-mode switch (one cold start
+        per switch for a section the tail carries as well); sending every
+        per-turn section on every turn (the tails stay in the history, so
+        that would add the whole memory and environment blocks per turn).
+        """
+        cur: dict[str, str] = {}
+        for s in sections:
+            cur[s.name] = (cur[s.name] + "\n\n" + s.content
+                           if s.name in cur else s.content)
+        held = getattr(self, "_held_prompt", None)
+        # A carrier is the tail text that delivered an update; it is intact
+        # while some user message still holds that tail (compared by text:
+        # a history handed back as copies is the same history).
+        tails = {str(m.get("_steer")) for m in self.messages
+                 if isinstance(m, dict) and m.get("_steer")}
+        intact = held is not None and held.get("role") == role and all(
+            c in tails for c in held.get("carriers", ()))
+        if not intact:
+            prompt = "\n\n".join(s.content for s in sections)
+            self._held_prompt = {"role": role, "prompt": prompt,
+                                 "sections": dict(cur), "carriers": []}
+            return prompt, []
+        if not can_update:
+            return held["prompt"], []
+        given = held["sections"]
+        updates: list[str] = []
+        for name, text in cur.items():
+            old = given.get(name)
+            if old == text:
+                continue
+            added = _added_lines(old, text) if old else ""
+            if added:
+                updates.append(
+                    f"[System prompt update: section '{name}', added]\n{added}")
+            else:
+                updates.append(
+                    f"[System prompt update: section '{name}', replaces the "
+                    f"version above]\n{text}")
+        for name in given:
+            if name not in cur:
+                updates.append(
+                    f"[System prompt update: section '{name}' no longer "
+                    f"applies; disregard it]")
+        held["sections"] = dict(cur)
+        return held["prompt"], updates
 
     def _remind_of_waiting_approvals(self) -> None:
         """Tell the turn about an approval that expired while nobody was there.
@@ -2832,6 +3022,21 @@ class AgentEngine:
             # Per turn: does what was just typed correct a skill the turn
             # before it used? Judged here, where a real turn begins.
             self._note_skill_correction(user_message or "")
+            # Per turn: does the message name a repository error or ask
+            # about DELFIN's checkouts? Then the turn points at git-errors.
+            self._note_repo_errors(user_message or "")
+            # Per turn: does the message measure, compare or land a
+            # change? Then the turn points at experiment-discipline.
+            self._note_experiment_task(user_message or "")
+            # Per turn: what this turn's changes do to the measure and to
+            # the object (edit_signals), judged against this message.
+            self._turn_request = str(user_message or "")
+            self._exists_first_turn = {"noted": False, "index": None}
+            try:
+                from . import edit_signals as _es
+                _es.reset_turn(self._edit_signal_key())
+            except Exception:
+                pass
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -3100,6 +3305,13 @@ class AgentEngine:
             perms = getattr(self.client, "kit_permissions", None)
             if perms is not None:
                 perms.should_stop = lambda: bool(self._stop_requested)
+                # And whether the user has typed something the running
+                # turn has not read yet: a long foreground run is ended
+                # for it (USER_INTERRUPT_AFTER_S), so a message sent during
+                # a 30-minute suite is answered now, not after it.
+                if callable(getattr(self.client, "_user_steer_waiting", None)):
+                    perms.user_message_waiting = (
+                        lambda: bool(self.client._user_steer_waiting()))
         except Exception:
             pass
 
@@ -3209,6 +3421,11 @@ class AgentEngine:
         self._turn_start_cost = self.cost_usd
         self._cost_cap_hit = False
         self._cost_cap_value = self._cost_hard_cap()   # read once per turn
+        # The live phase both indicators read (activity.py). Begun here,
+        # immediately before the try whose finally ends it, so no exit
+        # path leaves a surface showing a turn that is over.
+        _activity = self.activity
+        _activity.begin_turn(str(getattr(self.client, "model", "") or ""))
         try:
             # Pass no_tools only to a client that accepts it. Adding a
             # parameter must not break a caller built against the older
@@ -3289,6 +3506,7 @@ class AgentEngine:
                 if event.type == "text_delta" and event.text:
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    _activity.output()
                     chunks.append(event.text)
                     if on_token:
                         on_token(event.text)
@@ -3348,6 +3566,7 @@ class AgentEngine:
                     # the question the health report actually asks.
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    _activity.output()
                     _thinking_chars += len(event.text)
                     if on_thinking:
                         on_thinking(event.text)
@@ -3382,6 +3601,12 @@ class AgentEngine:
                     # Trace: stash this call until its result arrives.
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    # Before on_tool_use, so a surface that repaints from
+                    # that callback already reads the running call. On the
+                    # OpenAI-compatible path the call executes after this
+                    # event; on the CLI backend it already ran, and the
+                    # phase is then a moment long.
+                    _activity.tool_start(event.tool_name, event.tool_input)
                     _turn_tool_calls += 1
                     _chunks_at_last_tool = len(chunks)
                     _turn_tool_names.append(event.tool_name)
@@ -3416,11 +3641,16 @@ class AgentEngine:
                 elif event.type == "tool_result":
                     # A tool ran: the dead-turn count starts over.
                     self._stall_progress()
+                    _activity.tool_end(event.tool_name)
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
                     # Commit the held command only if it actually ran.
                     self._commit_exec_command(
                         event.tool_name, event.tool_output or "")
+                    # A function this write added that exists elsewhere.
+                    self._note_new_definitions()
+                    # A write into the checkout a running job uses.
+                    self._note_running_job_writes()
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -3731,6 +3961,11 @@ class AgentEngine:
             # that left it set would make the engine refuse work forever.
             with self._turn_gate:
                 self._turn_in_flight = False
+            try:
+                _activity.end_turn(error=_turn_error,
+                                   stopped=bool(self._stop_requested))
+            except Exception:
+                pass
             # Stop hooks — fire after the stream finishes (success or
             # exception). Failures are silenced so a misconfigured hook
             # never bubbles up.
@@ -4380,6 +4615,160 @@ class AgentEngine:
     _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
                                re.IGNORECASE)
 
+    def _edit_signal_key(self) -> str:
+        """The key edit_signals files this session's changes under: the
+        permissions' task session id, which the write path also reads."""
+        perms = getattr(self, "kit_permissions", None)
+        return str(getattr(perms, "task_session_id", "") or "")
+
+    def _note_check_run(self, tool_name: str, tool_input: Any,
+                        tool_output: str) -> None:
+        """Hand a test run, red or green, to edit_signals. A run_tests
+        result is JSON; its summary is rendered as runner text. Never
+        raises."""
+        try:
+            from . import edit_signals as _es
+            from . import verify_guard as _vg
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            out = tool_output or ""
+            if isinstance(tool_input, str) and tool_input.lstrip().startswith("{"):
+                try:
+                    tool_input = json.loads(tool_input)
+                except ValueError:
+                    pass
+            if name == "run_tests":
+                data = json.loads(out) if out.lstrip().startswith("{") else {}
+                summary = (data or {}).get("summary") or {}
+                out = (f"{int(summary.get('passed', 0) or 0)} passed, "
+                       f"{int(summary.get('failed', 0) or 0)} failed")
+                cmd = "pytest " + str((tool_input or {}).get("target", "")
+                                      if isinstance(tool_input, dict) else "")
+            else:
+                cmd = _vg.extract_exec_command(tool_name, tool_input)
+                cmd = cmd.split(" ", 1)[1] if " " in cmd else ""
+            if cmd:
+                _es.note_command(self._edit_signal_key(), cmd, out)
+                # A CI run read through gh: a failing check is a red check
+                # the turn may set out to make pass.
+                if (self._GH_CHECKS_RE.search(cmd)
+                        and self._GH_FAILED_RE.search(out)):
+                    _es.note_red_check(self._edit_signal_key())
+        except Exception:
+            pass
+
+    _GH_CHECKS_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:view|watch|list))\b")
+    _GH_FAILED_RE = re.compile(r"\bfail(?:ure|ed|ing)?\b|\bX\s", re.IGNORECASE)
+
+    def _note_running_job_writes(self) -> None:
+        """Hand the write gate's running-job notes to the run-note rail
+        (bash_jobs.take_in_use_notes; one per job). Never raises."""
+        try:
+            from . import bash_jobs as _bj
+            for text in _bj.take_in_use_notes():
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _note_new_definitions(self) -> None:
+        """Say it mid-turn when a write defined a function whose name, or
+        nearly its name, is already defined in another file
+        (exists_first). Once per turn, at most five names judged, test
+        files skipped; the definition index is built once per turn.
+        Advises; a second definition can be deliberate. Never raises."""
+        try:
+            from . import edit_signals as _es
+            defs = _es.take_new_defs(self._edit_signal_key())
+            state = getattr(self, "_exists_first_turn", None)
+            if state is None:
+                state = self._exists_first_turn = {"noted": False,
+                                                   "index": None}
+            if not defs or state.get("noted"):
+                return
+            defs = [(p, n) for p, n in defs if _es.role(p) != "test"][:5]
+            if not defs:
+                return
+            from . import exists_first as _xf
+            if not _xf.enabled():
+                return
+            perms = getattr(self, "kit_permissions", None)
+            ws = str(getattr(perms, "workspace", "") or "")
+            if not ws:
+                return
+            if state.get("index") is None:
+                state["index"] = _xf.build_index(ws)
+            text = _xf.note(defs, state["index"], workspace=ws)
+            if text:
+                state["noted"] = True
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _append_comparison_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Mark a comparative figure ("12 % faster", "from 6/10 to 9/10")
+        that no paired comparison of this session backs
+        (comparison_claims). Caveat, not correction: a retry could only
+        restate the figure. Never raises."""
+        try:
+            from . import comparison_claims as _cc
+            claims = _cc.scan(source if source is not None else text,
+                              getattr(self, "_exec_commands_session", None))
+            caveat = _cc.caveat(claims)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
+    def _append_edit_signal_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Name, in the answer, a check changed to make it pass and a
+        failure silenced rather than removed (edit_signals.turn_caveat).
+
+        Caveat, not correction: the change may be right, and only the
+        model can say why the old check was wrong or why the workaround
+        is the right fix there; a retry would rewrite the sentence, not
+        the change. It enters the transcript, so the next turn sees it."""
+        try:
+            from . import edit_signals as _es
+            request = str(getattr(self, "_turn_request", "") or "")
+            caveat = _es.turn_caveat(
+                self._edit_signal_key(), request,
+                source if source is not None else text)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
         """Record a held command, but only if its result shows it ran.
 
@@ -4407,6 +4796,8 @@ class AgentEngine:
                     break
             else:
                 return
+            # Red runs too: what the turn set out to make pass.
+            self._note_check_run(name, tool_input, tool_output)
             out = (tool_output or "").strip()
             if out.lstrip().startswith('{"error"'):
                 return
@@ -4439,12 +4830,83 @@ class AgentEngine:
             cmd = _vg.extract_exec_command(tool_name, tool_input)
             if not cmd:
                 return
+            self._note_repeated_sequence(tool_name, tool_input)
             ledger = self._exec_commands_session
             if cmd in ledger:
                 return
             ledger.append(cmd)
             if len(ledger) > 200:
                 del ledger[:len(ledger) - 200]
+        except Exception:
+            pass
+
+    #: Segments that only look around; a sequence of them is no check.
+    _LOOK_SEGMENT_RE = re.compile(
+        r"^\s*(?:cd|ls|pwd|echo|cat|head|tail|wc|true|printf|clear|sleep|"
+        r"sed\s+-n|grep|rg|find|git\s+(?:status|log|diff|show|branch|"
+        r"rev-parse))\b")
+
+    @classmethod
+    def repeated_sequence_key(cls, command: str) -> str:
+        """The key a multi-step command is counted under, or "".
+
+        Its segments (split at ``&&``, ``||``, ``;``, ``|`` outside
+        quotes) without the ones that only look around; fewer than two
+        left is no sequence. Quoted strings, hex ids and numbers are
+        normalised away: the repetitions that matter are the same check
+        with another number, commit or inline script, not the same text."""
+        try:
+            from .api_client import _split_shell_segments
+            segs = [" ".join(x.split()) for x in _split_shell_segments(command)
+                    if not cls._LOOK_SEGMENT_RE.match(x)]
+        except Exception:
+            return ""
+        if len(segs) < 2:
+            return ""
+        key = " && ".join(segs)
+        key = re.sub(r"'[^']*'|\"[^\"]*\"", "Q", key)
+        key = re.sub(r"\b[0-9a-f]{7,40}\b", "H", key)
+        return re.sub(r"\d+", "N", key)
+
+    def _note_repeated_sequence(self, tool_name: str, tool_input: Any) -> None:
+        """The third run of one multi-step shell command in a session gets
+        one run note: a check repeated by hand belongs in a script or a
+        hook. Counted only for commands that ran; said once per sequence.
+
+        Measured on 94 archived sessions (read only): 5 notes in 3
+        sessions, each on a command a script would carry -- an environment
+        plus interpreter incantation run with three inline scripts, and two
+        hand-built push commands repeated. Rejected: counting identical
+        text only (the field repetitions were the same check with another
+        number or inline script); a hook written by the harness (hooks run commands,
+        and only the user installs one). Never raises."""
+        try:
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            if name not in ("bash", "bash_background"):
+                return
+            data = tool_input
+            if isinstance(data, str) and data.lstrip().startswith("{"):
+                data = json.loads(data)
+            cmd = (str(data.get("command") or "") if isinstance(data, dict)
+                   else str(data or ""))
+            key = self.repeated_sequence_key(cmd)
+            if not key:
+                return
+            counts = getattr(self, "_repeated_sequences", None)
+            if counts is None:
+                counts = self._repeated_sequences = {}
+            if key not in counts and len(counts) >= 300:
+                return
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] != 3:
+                return
+            shown = " ".join(cmd.split())[:100]
+            self.client.push_run_note(
+                "[repeat] This multi-step command has now run three times "
+                f"in this session: `{shown}`. A check repeated by hand "
+                "belongs in a script in the repository (or a hook the user "
+                "installs in .delfin/settings.json): write it once and call "
+                "it.")
         except Exception:
             pass
 
@@ -4685,6 +5147,8 @@ class AgentEngine:
         out = self._append_functional_caveat(text, functional, on_token)
         out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
         out = self._append_truncated_count_caveat(out, on_token, source=source)
+        out = self._append_edit_signal_caveat(out, on_token, source=source)
+        out = self._append_comparison_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
         return out
@@ -5445,12 +5909,21 @@ class AgentEngine:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
                 row = {k: v for k, v in m.items()
                        if not str(k).startswith("_")}
-                if m.get(HARNESS_KEY) is True:
+                # Any mark, not only the key: a HarnessText content loses
+                # its type when the tail is appended below, and with it the
+                # only sign that the harness, not the user, wrote the row.
+                if is_harness_row(m):
                     row = HarnessRow(row)
                 tail = m.get("_steer")
                 if tail:
                     row["content"] = self._with_turn_tail(
                         row.get("content"), str(tail))
+                    # The text type is a mark too, and the one that
+                    # survives a consumer copying the row into a plain
+                    # dict (the client's tool-loop request list does).
+                    if (isinstance(row, HarnessRow)
+                            and isinstance(row["content"], str)):
+                        row["content"] = HarnessText(row["content"])
                 out.append(row)
             else:
                 out.append(m)
@@ -6560,6 +7033,28 @@ class AgentEngine:
                     self._summarize_output_for_handoff(content),
                 )
                 return
+
+    @property
+    def activity(self):
+        """What the running turn is doing now (``activity.Activity``).
+
+        Written by ``stream_response`` at each stream event and by the
+        surface that asks the person; read by the terminal status row and
+        the dashboard working line from their own timers. Created on first
+        use so an engine built without ``__init__`` (test doubles) has one.
+        """
+        got = self.__dict__.get("_activity")
+        if got is None:
+            from .activity import Activity
+            got = self.__dict__.setdefault("_activity", Activity())
+        return got
+
+    @property
+    def turn_in_flight(self) -> bool:
+        """True while a turn holds this engine's one-turn gate. Read by
+        the mode cycles (mode_cycle.next_in_cycle), which pass over plan
+        while a turn runs."""
+        return bool(getattr(self, "_turn_in_flight", False))
 
     def request_stop(self) -> None:
         """Request the current streaming response to stop.
@@ -7684,6 +8179,12 @@ class AgentEngine:
         # from outside afterwards; the headless path did not, so a headless
         # resume filtered tasks on a throwaway id and saw zero open tasks.
         self._sync_task_session()
+        # The compaction record the session was saved with. The save guard
+        # treats a record that differs from the stored one as the
+        # explanation for a shorter history, so a resumed engine holding
+        # None against a stored record would let any shorter save pass.
+        _lci = data.get("last_compaction_info")
+        self.last_compaction_info = dict(_lci) if isinstance(_lci, dict) else None
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")

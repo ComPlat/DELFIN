@@ -151,6 +151,11 @@ _INHERIT_MEMORY_MAX_CHARS = 1500
 _INHERIT_MEMORY_TYPES = ("feedback", "user")
 
 
+#: The share of a delegate's system prompt the repository lessons may take
+#: (knowledge.load_block); the parent's own prompt carries its own.
+_INHERIT_KNOWLEDGE_MAX_CHARS = 800
+
+
 def _inherited_context(workspace, prompt: str) -> str:
     """Project rules + standing memories for a child's system prompt.
 
@@ -211,6 +216,15 @@ def _inherited_context(workspace, prompt: str) -> str:
             if lines:
                 parts.append("## Standing memory (inherited)\n"
                              + "\n".join(lines))
+    except Exception:
+        pass
+    try:
+        from .knowledge import load_block
+        lessons = load_block(task_text=prompt or "", workspace=workspace,
+                             max_chars=_INHERIT_KNOWLEDGE_MAX_CHARS)
+        if lessons:
+            parts.append("## Shared lessons (repository knowledge, data)\n"
+                         + lessons)
     except Exception:
         pass
     if not parts:
@@ -1505,9 +1519,11 @@ def mark_delegate_text(text: str) -> str:
         return text or ""
     try:
         from .api_client import _wrap_untrusted
+        from .untrusted import decision_hint
     except Exception:
         return body
-    return _wrap_untrusted(body)
+    hint = decision_hint(body)
+    return (f"[{hint}]\n" if hint else "") + _wrap_untrusted(body)
 
 
 @dataclass
@@ -2772,6 +2788,18 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
     # depth cap is hit (anti-recursion). Falls back gracefully if the perms
     # type predates the field.
     depth = int(getattr(parent_perms, "subagent_depth", 0)) + 1
+    # The subagents of one session share one swarm store: the parent's run
+    # id, or one named after its session at the first delegation. The
+    # clone below copies it to the child.
+    try:
+        from .swarm_memory import ENV_RUN, current_run_id
+        if not current_run_id(parent_perms) and not os.environ.get(ENV_RUN):
+            sid = str(getattr(parent_perms, "task_session_id", "") or "")
+            parent_perms.swarm_run_id = "s-" + (
+                "".join(c for c in sid if c.isalnum() or c in "-_")[:40]
+                or __import__("uuid").uuid4().hex[:12])
+    except Exception:
+        pass
     # Computed before the replace attempts so both of them can apply it: a
     # fallback that quietly dropped the narrowing would hand the child the
     # parent's full tool surface, which is the one direction this must never

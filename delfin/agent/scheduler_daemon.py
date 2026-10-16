@@ -341,8 +341,11 @@ def run_watchpost_entry(entry: ScheduleEntry) -> dict:
     if alerts:
         try:
             from .attention import emit_attention
+            # A security alert: "watchpost_alert" is no kind the inbox
+            # takes -- emit_attention refused it, and the refusal was
+            # swallowed below, so no watchpost alert ever arrived.
             emit_attention(
-                "watchpost_alert", title="watchpost: new alert",
+                "security_alert", title="watchpost: new alert",
                 detail="; ".join(f"{a.check}: {a.what}" for a in alerts)[:400],
                 workspace=str(entry.workspace or home))
         except Exception:

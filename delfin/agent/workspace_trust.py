@@ -77,6 +77,7 @@ from typing import Any, Callable
 
 KIND_HOOKS = "hooks"
 KIND_MCP_SERVERS = "mcp_servers"
+KIND_SKILLS = "skills"
 
 _STORE_VERSION = 1
 
@@ -122,6 +123,11 @@ class Kind:
     # nothing and is still a statement. Defaults to ``count``, which is right
     # wherever a kind has no way to say "do not".
     declares: Callable[[Any], int] | None = None
+    # For a kind that is a DIRECTORY rather than one JSON file: given the
+    # absolute path and the workspace root, return the extracted part
+    # (JSON-serialisable; it is what the digest covers). Replaces
+    # ``extract(_read_json(path))`` for that kind.
+    read: Callable[[Path, Path], Any] | None = None
 
 
 def _extract_hooks(raw: dict) -> Any:
@@ -196,6 +202,30 @@ def get_kind(name: str) -> Kind:
             ) from None
 
 
+def _read_skills(path: Path, root: Path) -> Any:
+    """``[[relative path, sha256 of content], ...]`` of every skill file in
+    ``<ws>/.delfin/skills`` the loader would read, sorted. A file that
+    resolves outside the workspace is left out: the loader refuses it
+    too, so it is neither trusted nor read."""
+    from .skills import is_user_skill_dir, skill_files_in
+    if is_user_skill_dir(path):
+        # The user's own directory (workspace == home): offers nothing.
+        return []
+    out: list[list[str]] = []
+    for f in skill_files_in(path, root):
+        try:
+            data = f.read_bytes()
+        except OSError:
+            continue
+        out.append([f.relative_to(root).as_posix(),
+                    hashlib.sha256(data).hexdigest()])
+    return sorted(out)
+
+
+def _count_skills(extracted: Any) -> int:
+    return len(extracted) if isinstance(extracted, list) else 0
+
+
 register_kind(Kind(
     name=KIND_HOOKS,
     relative_paths=(".delfin/settings.json", ".delfin/settings.local.json"),
@@ -212,6 +242,19 @@ register_kind(Kind(
     extract=_extract_servers,
     count=_count_servers,
     declares=_declared_servers,
+))
+# Skill playbooks. They execute nothing themselves, but a skill body is
+# put into the model's context as the procedure to follow when the user
+# (or the model) invokes it -- so a cloned repository's skill is the
+# repository's instructions under a name the user trusts.
+register_kind(Kind(
+    name=KIND_SKILLS,
+    relative_paths=(".delfin/skills",),
+    noun="skill",
+    grant_command="/trust grant skills",
+    extract=lambda raw: None,
+    count=_count_skills,
+    read=_read_skills,
 ))
 
 
@@ -350,6 +393,16 @@ def _escapes_workspace(path: Path, root: Path) -> bool:
         return True
 
 
+def _extracted(kind: Kind, path: Path, root: Path) -> Any:
+    """The part of one offer the decision and the digest are about."""
+    if kind.read is not None:
+        try:
+            return kind.read(path, root)
+        except Exception:
+            return None
+    return kind.extract(_read_json(path))
+
+
 def offers(kind_name: str, workspace: Path | str | None) -> list[Offer]:
     """Every file of *kind_name* that exists in *workspace*.
 
@@ -364,7 +417,10 @@ def offers(kind_name: str, workspace: Path | str | None) -> list[Offer]:
     for rel in kind.relative_paths:
         path = root / rel
         try:
-            if not path.is_file():
+            if kind.read is not None:
+                if not path.is_dir():
+                    continue
+            elif not path.is_file():
                 continue
         except OSError:
             continue
@@ -372,7 +428,7 @@ def offers(kind_name: str, workspace: Path | str | None) -> list[Offer]:
             out.append(Offer(kind=kind_name, path=path, relative=rel,
                              count=0, escapes=True))
             continue
-        extracted = kind.extract(_read_json(path))
+        extracted = _extracted(kind, path, root)
         out.append(Offer(kind=kind_name, path=path, relative=rel,
                          count=kind.count(extracted),
                          declares=(kind.declares or kind.count)(extracted)))
@@ -390,9 +446,10 @@ def digest(kind_name: str, workspace: Path | str | None) -> str:
     if not items:
         return ""
     kind = get_kind(kind_name)
+    root = _canonical(workspace)
     h = hashlib.sha256()
     for offer in items:
-        extracted = kind.extract(_read_json(offer.path))
+        extracted = _extracted(kind, offer.path, root or offer.path)
         try:
             canon = json.dumps(extracted, sort_keys=True,
                                ensure_ascii=False, separators=(",", ":"))
@@ -606,16 +663,21 @@ def workspace_paths(kind_name: str,
 
 
 def pending_notices(workspace: Path | str | None, *,
-                    short: bool = False) -> list[str]:
+                    short: bool = False,
+                    skip: tuple[str, ...] = ()) -> list[str]:
     """Every kind's notice for *workspace*, for a caller that shows all.
 
     ``short`` returns the one-clause form instead. A screen the user
     opened on purpose has room for the whole explanation; a line carried
     in every prompt does not, and the actionable half -- what to type --
-    is what has to survive either way.
+    is what has to survive either way. ``skip`` names kinds a caller has
+    switched off for the session (``--bare`` skips skills): they are not
+    gated at all, so nothing is announced for them.
     """
     out: list[str] = []
     for kind in kinds():
+        if kind.name in skip:
+            continue
         decision = gate(kind.name, workspace)
         note = (decision.short_notice or decision.notice) if short \
             else decision.notice
@@ -769,6 +831,7 @@ __all__ = [
     "ACTOR_USER",
     "KIND_HOOKS",
     "KIND_MCP_SERVERS",
+    "KIND_SKILLS",
     "Decision",
     "Kind",
     "Offer",

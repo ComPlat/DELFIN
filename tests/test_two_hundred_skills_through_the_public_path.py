@@ -155,3 +155,10 @@ def test_a_failing_listing_is_logged_not_swallowed(tmp_path, monkeypatch,
     assert any("skill listing not advertised" in r.getMessage()
                and "listing broke" in r.getMessage()
                for r in caplog.records)
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

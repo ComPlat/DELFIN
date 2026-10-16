@@ -190,6 +190,21 @@ def _assigned_attributes(node: ast.AST) -> set[str]:
 # "does a resumed session need this?" to be answered here, in one line,
 # instead of being answered by silence three releases later.
 _NOT_CARRIED = {
+    # The git-errors steering block of the current turn: rebuilt from each
+    # user message, nothing a resumed session needs.
+    "_repo_errors_hint",
+    # The experiment-discipline steering block of the current turn, the
+    # same kind of per-message pointer.
+    "_experiment_hint",
+    # The message that opened the current turn, read by the turn-end
+    # edit_signals caveat; a resumed session has no turn behind it.
+    "_turn_request",
+    # Per turn: whether the exists-first note was said, and the definition
+    # index it was judged against; rebuilt by the next turn that needs it.
+    "_exists_first_turn",
+    # Counts of multi-step shell commands for the third-repetition note; a
+    # resumed session counts from zero, which says less, not more.
+    "_repeated_sequences",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
     # Per turn: the history a fresh start cut in THIS turn, given back only
@@ -321,6 +336,12 @@ _NOT_CARRIED = {
     # resumed run that stops on its ceiling says nothing at all.
     "_budget_attention_levels",
     "_prompt_session_serial",
+    # The system prompt held since the session's first turn, with the
+    # section texts already given and the messages that carried updates.
+    # A resumed process starts with a cold cache anyway, so it rebuilds
+    # the prompt whole on its first turn; carrying it would hold message
+    # references that do not survive serialisation.
+    "_held_prompt",
 }
 
 

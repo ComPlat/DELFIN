@@ -104,3 +104,8 @@ def test_a_workspace_does_not_change_that(home, monkeypatch, tmp_path):
     _propose(home)
     names = [s.name for s in discover_skills(tmp_path)]
     assert "proposed-skill" not in names
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

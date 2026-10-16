@@ -1145,6 +1145,7 @@ def diagnose_finding(
     finding.summary = text[:400]
     # Save as a loadable session so the user can continue the conversation.
     try:
+        from delfin.agent.harness_rows import HARNESS_KEY
         from delfin.agent.session_store import save_session
         sid = f"monitor-{finding.job_id}-{int(finding.ts)}"
         save_session(
@@ -1155,6 +1156,15 @@ def diagnose_finding(
                 {"role": "assistant", "content": text,
                  "role_label": "Job-Monitor"},
             ],
+            # What a resumed engine reads: without it the session came
+            # back with nothing of the diagnosis -- the model had no
+            # context, a window showed no conversation. The prompt is the
+            # monitor's, not the user's words.
+            engine_messages=[
+                {"role": "user", "content": prompt, HARNESS_KEY: True},
+                {"role": "assistant", "content": text},
+            ],
+            workspace=str(finding.folder or ""),
             title=f"🚨 Job {finding.job_id} failed — "
                   f"{(finding.signatures or [finding.state])[0]}",
         )

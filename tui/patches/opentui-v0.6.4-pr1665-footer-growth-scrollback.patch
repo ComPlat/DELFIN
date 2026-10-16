@@ -1,0 +1,37 @@
+diff --git a/packages/native/src/renderer.zig b/packages/native/src/renderer.zig
+index 69b7119..d26128a 100644
+--- a/packages/native/src/renderer.zig
++++ b/packages/native/src/renderer.zig
+@@ -1321,7 +1321,17 @@ pub const CliRenderer = struct {
+                 if (transition.source_top_line < transition.target_top_line) {
+                     writer.print("\x1b[{d}T", .{transition.scroll_lines}) catch {};
+                 } else if (transition.source_top_line > transition.target_top_line) {
+-                    writer.print("\x1b[{d}S", .{transition.scroll_lines}) catch {};
++                    // The footer is pinned to the bottom of the screen,
++                    // so a line feed on the last row of the full-screen scroll region 
++                    // pushes the top history row into scrollback explicitly.
++                    const last_row = transition.target_top_line + transition.target_height - 1;
++                    writer.writeAll("\x1b7") catch {};
++                    ansi.ANSI.moveToOutput(writer, 1, last_row) catch {};
++                    var line_feeds: u32 = 0;
++                    while (line_feeds < transition.scroll_lines) : (line_feeds += 1) {
++                        writer.writeAll("\n") catch {};
++                    }
++                    writer.writeAll("\x1b8") catch {};
+                 }
+             },
+             .clear_stale_rows => {
+diff --git a/packages/native/src/tests/renderer_test.zig b/packages/native/src/tests/renderer_test.zig
+index ef5f398..4dfb381 100644
+--- a/packages/native/src/tests/renderer_test.zig
++++ b/packages/native/src/tests/renderer_test.zig
+@@ -3439,7 +3439,8 @@ test "renderer - repaintSplitFooter viewport scroll uses explicit split scroll d
+     _ = cli_renderer.repaintSplitFooter(2, true);
+ 
+     const output = test_cli_renderer.lastOutput();
+-    try std.testing.expect(std.mem.find(u8, output, "\x1b[2S") != null);
++    try std.testing.expect(std.mem.find(u8, output, "\x1b7\x1b[10;1H\n\n\x1b8") != null);
++    try std.testing.expect(std.mem.find(u8, output, "\x1b[2S") == null);
+     try std.testing.expect(std.mem.find(u8, output, "\x1b[4S") == null);
+     try std.testing.expectEqual(@as(u32, 2), cli_renderer.getSplitOutputOffset(2));
+ }

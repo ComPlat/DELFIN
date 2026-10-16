@@ -41,9 +41,14 @@ BYPASS = ("--permission-mode", "bypassPermissions", "--unattended")
 def chat(tmp_path):
     opened: list[Chat] = []
 
-    def _open(*, args=DEFAULT, cols=100, rows=30) -> Chat:
-        session = Chat(tmp_path / f"s{len(opened)}", cols=cols, rows=rows,
-                       args=tuple(args))
+    def _open(*, args=DEFAULT, cols=100, rows=30, agent_settings=None) -> Chat:
+        root = tmp_path / f"s{len(opened)}"
+        if agent_settings:
+            # The child's own settings file, in the HOME Chat gives it.
+            (root / "home").mkdir(parents=True, exist_ok=True)
+            (root / "home" / ".delfin_settings.json").write_text(
+                json.dumps({"agent": dict(agent_settings)}))
+        session = Chat(root, cols=cols, rows=rows, args=tuple(args))
         opened.append(session)
         assert session.wait_for("idle", 60) == "idle", (
             "no prompt within 60 s:\n" + "\n".join(session.visible()))
@@ -88,7 +93,12 @@ def test_a_credential_in_a_command_is_on_no_row_of_the_screen(chat):
 
 @pytest.mark.parametrize("cols", [100, 60])
 def test_every_approval_key_and_what_always_saves_is_on_screen(chat, cols):
-    session = chat(cols=cols)
+    # The caged rule off for this child: where bubblewrap holds, `sleep 0`
+    # is admitted unasked (#212), and the dialog this test reads existed
+    # only on hosts without the cage. A command that is always asked
+    # (`rm`) offers no "commands like this" pattern, so it cannot stand in.
+    session = chat(cols=cols,
+                   agent_settings={"caged_commands_run_unasked": False})
     session.send("do-bash sleep 0\r", 0.5)
     assert session.wait_for("approval", 30) == "approval", (
         "\n".join(session.visible()))
