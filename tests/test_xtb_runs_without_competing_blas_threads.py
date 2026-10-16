@@ -98,3 +98,47 @@ def test_the_climb_gives_blas_one_thread(recording_xtb):
         line.close()
     got = _recorded(recording_xtb)
     assert len(got) >= 2 and set(got) == {"1"}, got
+
+
+def test_a_walk_under_load_minimises_on_one_blas_thread():
+    """The parent's own BLAS pools are held to one thread while it drives xtb.
+
+    Input: relax_under_load with an engine that records, at every call, the
+    largest thread count of any BLAS pool loaded in this process
+    (threadpoolctl: numpy's and scipy's OpenBLAS).
+    Output: every recorded count is 1.
+
+    relax_under_load alternates scipy's L-BFGS-B with one xtb process per
+    gradient. Left at their defaults, numpy's and scipy's OpenBLAS pools have
+    one thread per available CPU, and after each call those threads go on
+    spinning while the next xtb runs on the same CPUs. Measured 2026-10-16,
+    test_pulling_on_a_structure.py::
+    test_a_push_stops_at_a_conformational_product_not_past_it on 4 CPUs,
+    conda-forge xtb with OPENBLAS_NUM_THREADS=1 already in its environment:
+    141 s; with both parent pools held to one thread, 21 s (1292 gradients,
+    117 ms and 14 ms each); with CPUs to spare, 23 s either way.
+    """
+    pytest.importorskip("threadpoolctl")
+    import numpy as np
+    from threadpoolctl import threadpool_info
+
+    from delfin.dashboard import under_load
+
+    seen = []
+
+    class _Engine:
+        def __call__(self, bohr):
+            pools = [one["num_threads"] for one in threadpool_info()
+                     if one.get("user_api") == "blas"]
+            seen.append(max(pools) if pools else 1)
+            flat = np.asarray(bohr, dtype=float).ravel()
+            return 0.5 * float(flat @ flat), flat.reshape(-1, 3)
+
+    class _Loaded:
+        engine = _Engine()
+
+    start = np.full((3, 3), 0.3)
+    got = under_load.relax_under_load(_Loaded(), start, np.zeros((3, 3)),
+                                      steps=5)
+    assert got["ok"], got["status"]
+    assert seen and set(seen) == {1}, seen
