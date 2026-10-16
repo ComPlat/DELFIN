@@ -6321,10 +6321,9 @@ def create_tab(ctx):
             return
         _git_base_cache.update(at=now, where=where)
         try:
-            import subprocess as _sp
-            out = _sp.run(["git", "-C", where, "branch", "-r",
-                           "--format=%(refname:short)"],
-                          capture_output=True, text=True, timeout=5)
+            from delfin.agent import safe_git as _safe_git
+            out = _safe_git.run(["branch", "-r", "--format=%(refname:short)"],
+                                where, timeout=5)
             names = [n for n in out.stdout.split()
                      if n and not n.endswith("/HEAD")]
         except Exception:
@@ -14846,14 +14845,13 @@ def create_tab(ctx):
             )
             return True
 
-        # /git commands
+        # /git commands (safe_git: no program the checkout names runs)
         _repo_dir = str(ctx.repo_dir or ".")
+        from delfin.agent import safe_git as _safe_git
         if cmd == "/git status":
             try:
-                r = _sp.run(
-                    ["git", "status", "--short"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["status", "--short"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "Working tree clean."
                 _append_system_message(f"git status:\n{output}")
             except Exception as e:
@@ -14862,16 +14860,12 @@ def create_tab(ctx):
 
         if cmd == "/git diff":
             try:
-                r = _sp.run(
-                    ["git", "diff", "--stat"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["diff", "--stat"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "No unstaged changes."
                 # Also check staged
-                r2 = _sp.run(
-                    ["git", "diff", "--cached", "--stat"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r2 = _safe_git.run(
+                    ["diff", "--cached", "--stat"], _repo_dir, timeout=10)
                 staged = r2.stdout.strip()
                 full = output
                 if staged:
@@ -14883,10 +14877,8 @@ def create_tab(ctx):
 
         if cmd == "/git log":
             try:
-                r = _sp.run(
-                    ["git", "log", "--oneline", "-15"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["log", "--oneline", "-15"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "No commits."
                 _append_system_message(f"git log (last 15):\n{output}")
             except Exception as e:
@@ -14895,10 +14887,8 @@ def create_tab(ctx):
 
         if cmd == "/git branch":
             try:
-                r = _sp.run(
-                    ["git", "branch", "-a", "--no-color"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["branch", "-a", "--no-color"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "No branches."
                 _append_system_message(f"git branch:\n{output}")
             except Exception as e:
@@ -17335,21 +17325,15 @@ def create_tab(ctx):
         commits: list[str] = []
         branch_name = ""
         try:
-            import subprocess as _sp
-            _r = _sp.run(
-                ["git", "log", "-3", "--oneline"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
-                capture_output=True, text=True, timeout=2,
-            )
+            from delfin.agent import safe_git as _safe_git
+            _r = _safe_git.run(["log", "-3", "--oneline"],
+                               str(ctx.repo_dir or Path.cwd()), timeout=2)
             if _r.returncode == 0:
                 commits = [
                     line for line in _r.stdout.splitlines() if line.strip()
                 ]
-            _b = _sp.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
-                capture_output=True, text=True, timeout=2,
-            )
+            _b = _safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"],
+                               str(ctx.repo_dir or Path.cwd()), timeout=2)
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
             if branch_name == "HEAD":
@@ -17402,21 +17386,15 @@ def create_tab(ctx):
         except Exception:
             _git_cwd = str(ctx.repo_dir or Path.cwd())
         try:
-            import subprocess as _sp
-            _r = _sp.run(
-                ["git", "log", "-3", "--oneline"],
-                cwd=_git_cwd,
-                capture_output=True, text=True, timeout=2,
-            )
+            from delfin.agent import safe_git as _safe_git
+            _r = _safe_git.run(["log", "-3", "--oneline"],
+                               _git_cwd, timeout=2)
             if _r.returncode == 0:
                 commits = [
                     line for line in _r.stdout.splitlines() if line.strip()
                 ]
-            _b = _sp.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=_git_cwd,
-                capture_output=True, text=True, timeout=2,
-            )
+            _b = _safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"],
+                               _git_cwd, timeout=2)
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
             if branch_name == "HEAD":
@@ -22179,18 +22157,15 @@ def create_tab(ctx):
 
     def _on_push(button):
         """Show confirmation for git push."""
-        import subprocess as _sp
 
         # Show current branch and unpushed commits
         try:
-            branch = _sp.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
-            ).stdout.strip()
-            unpushed = _sp.run(
-                ["git", "log", "--oneline", "@{upstream}..HEAD"],
-                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
-            ).stdout.strip()
+            from delfin.agent import safe_git as _safe_git
+            _where = str(ctx.repo_dir or ".")
+            branch = _safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"],
+                                   _where).stdout.strip()
+            unpushed = _safe_git.run(["log", "--oneline", "@{upstream}..HEAD"],
+                                     _where).stdout.strip()
             if not unpushed:
                 push_status_html.value = (
                     '<span style="color:#757575;">No unpushed commits.</span>'
@@ -22212,17 +22187,18 @@ def create_tab(ctx):
 
     def _on_push_confirm(button):
         """Execute the push after user confirmation."""
-        import subprocess as _sp
 
         push_confirm_btn.layout.display = "none"
         push_cancel_btn.layout.display = "none"
         push_btn.layout.display = "inline-flex"
         try:
-            result = _sp.run(
-                ["git", "push"],
-                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
-                timeout=30,
-            )
+            # The user's push, on a click. Through safe_git: the user's
+            # global credential helper and ssh agent answer it; a hook,
+            # credential helper or ssh command the checkout's own config
+            # names does not run.
+            from delfin.agent import safe_git as _safe_git
+            result = _safe_git.run(["push"], str(ctx.repo_dir or "."),
+                                   timeout=30)
             if result.returncode == 0:
                 output = result.stdout.strip() or result.stderr.strip()
                 push_status_html.value = (
@@ -22265,7 +22241,6 @@ def create_tab(ctx):
         """
         if not state["recent_edits"]:
             return
-        import subprocess as _sp
         from pathlib import Path as _Path
         last = state["recent_edits"].pop()
         fpath = _Path(last["file"]).expanduser().resolve()
@@ -22312,11 +22287,9 @@ def create_tab(ctx):
                 return
 
             # File under git: check if tracked or fresh.
-            ls = _sp.run(
-                ["git", "ls-files", "--error-unmatch", str(fpath)],
-                capture_output=True, text=True,
-                cwd=str(repo_root), timeout=5,
-            )
+            from delfin.agent import safe_git as _safe_git
+            ls = _safe_git.run(["ls-files", "--error-unmatch", str(fpath)],
+                               repo_root, timeout=5)
             tracked = ls.returncode == 0
 
             if not tracked and last.get("tool") in ("Write", "write_file"):
@@ -22326,11 +22299,8 @@ def create_tab(ctx):
                     f"\u21a9 Removed new file: {short}"
                 )
             elif tracked:
-                result = _sp.run(
-                    ["git", "checkout", "--", str(fpath)],
-                    capture_output=True, text=True,
-                    cwd=str(repo_root), timeout=10,
-                )
+                result = _safe_git.run(["checkout", "--", str(fpath)],
+                                       repo_root, timeout=10)
                 if result.returncode == 0:
                     _append_system_message(f"\u21a9 Reverted: {short}")
                 else:

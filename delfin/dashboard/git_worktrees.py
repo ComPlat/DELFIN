@@ -9,7 +9,6 @@ power-user actions and the user should drive them via ``git worktree``.
 from __future__ import annotations
 
 import html as _html
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,13 +26,8 @@ class WorktreeEntry:
 
 def _run_git(repo: Path, *args: str, timeout: float = 3.0) -> str:
     """Run a git command and return stdout (empty string on failure)."""
-    try:
-        out = subprocess.run(
-            ["git", *args], cwd=str(repo),
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return ""
+    from delfin.agent import safe_git
+    out = safe_git.run(args, repo, timeout=timeout)
     if out.returncode != 0:
         return ""
     return out.stdout
