@@ -31432,6 +31432,9 @@ class OpenAIClient(_BaseClient):
                     context_result = (_truncate_table_result(_redacted, _cap_here)
                                       or _smart_truncate(
                                           _redacted, cap=_cap_here, label="tool_result"))
+                    # The cut is judged on the result itself, before the
+                    # fence adds its lines.
+                    _cut_len = len(context_result)
                     if _fence_this:
                         context_result = _fence_output_tool_result(
                             fn_name, context_result)
@@ -31468,7 +31471,7 @@ class OpenAIClient(_BaseClient):
                         # is why nobody would notice, and written verbatim
                         # to a group-readable file that gets shipped.
                         tool_output=_ui_preview,
-                        output_truncated=(len(context_result) != len(_redacted)
+                        output_truncated=(_cut_len != len(_redacted)
                                           or _tool_cut),
                         output_chars=len(_redacted),
                         output_notes=_result_notes,
