@@ -1,7 +1,8 @@
 # DELFIN agent security model
 
 This document describes the threat model of the DELFIN agent (`delfin-agent`,
-the dashboard's agent tab and the scheduled runs) as the code on `main`
+the dashboard's agent tab and the scheduled runs), and of the dashboard's
+web server (section "The dashboard server"), as the code on `main`
 implements it: what is protected, against whom, which layer provides which
 guarantee on which host, and what is not covered. Reporting a vulnerability
 is described in [SECURITY.md](../SECURITY.md).
@@ -411,6 +412,86 @@ the start banner and `/permissions` name each file, its trust and what it
 enforces. Its refusals are recorded as `managed_policy_deny` and
 `managed_policy_ask`.
 
+## The dashboard server
+
+`delfin-voila` runs the dashboard as the Voila extension of a jupyter-server,
+bound to `127.0.0.1` unless `--ip` says otherwise (a non-loopback bind is
+refused without `--allow-remote-bind`). The protections below are installed into
+that server by the `delfin.dashboard.server_guard` extension
+(`delfin/dashboard/web_security.py`); each one that cannot be installed is
+named in the server log.
+
+**Authentication.** Every route that serves user data or runs code requires
+the server token or the login cookie it sets: the rendered dashboard, the
+kernel API and websocket, Jupyter's `/files/` and the Voila file route
+`/voila/files/`. Voila registers that route with a plain tornado static
+handler that checks nothing; the extension replaces it with an
+authenticated handler (Jupyter's own file handler, with its XSRF and
+same-host Referer check), or, if that cannot be built, with one that
+refuses every request. The token is at least 32 characters and reaches the
+server through its environment, not its command line. Served without
+the token, as jupyter-server requires for its login page: the package's own
+static assets (`/static/`, `/voila/static/`, `/voila/templates/`,
+`/voila/labextensions/`) and the drawing editor's bundle, published from
+`~/.delfin/served` (a public open-source build, nothing else).
+
+**What `/voila/files/` serves.** Files below the server root whose real path
+(links resolved) stays inside the real root, with no path component that
+starts with `.` except the editor's launch copy `.delfin/ketcher`, and whose
+name matches the allow-list: images, PDFs and that launch copy. Outside
+DELFIN's own directories only raster images and PDFs are sent as
+themselves; anything else, also under a widened allow-list, is sent as
+`text/plain` with `Content-Disposition: attachment` and a `sandbox` CSP, so
+an HTML or SVG file from a calculation or an upload never runs as a page on
+the dashboard's origin. The root is the launch directory when it is below
+the home directory and not the home directory itself, otherwise a private
+cache directory; `DELFIN_VOILA_ROOT_DIR` overrides it only with an existing
+directory that is not `/`, `/home`, `/tmp` or the home directory
+(`DELFIN_VOILA_ALLOW_BROAD_ROOT` = 1 allows those); a refused value is
+reported and the default is used.
+
+**Headers.** Every response carries `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: same-origin`, a
+`Permissions-Policy` that denies camera, microphone and geolocation, and a
+Content-Security-Policy of at least `object-src 'none'; base-uri 'self';
+form-action 'self'; frame-ancestors 'self'` (API responses add
+`default-src 'none'`, file downloads `sandbox`). The page CSP has no
+`script-src`: the page runs inline scripts and `eval` through widget
+outputs and loads 3Dmol, xterm and mermaid from cdn.jsdelivr.net and
+3Dmol.org, so a script policy would have to allow inline code and those
+hosts. `same-origin` rather than `no-referrer` because Jupyter accepts a
+cookie-authenticated file request without an XSRF token only when the
+Referer names the same host.
+
+**Session.** The login cookie is HttpOnly and `SameSite=Lax`, and is valid
+for `DELFIN_DASHBOARD_LOGIN_DAYS` days (default 7, at most 30), checked on
+every request; the XSRF cookie is `SameSite=Lax` too. The address the
+launcher prints on a private terminal carries the token once, for the first
+login; a link back into a kept session (the session strip, `delfin-agent where`)
+does not: the browser that logged in has the cookie, any other one gets the
+login page, which takes the token (printed alone by `delfin-agent where`
+with `--token`) and continues to the same link. A kept session's kernel has no maximum age:
+ending it would end the run it was kept for.
+
+**Output encoding.** Text from outside DELFIN (file names, file contents,
+exception messages, the output of cluster commands, job records) is
+HTML-escaped where it is put into dashboard markup, and written into an
+inline `<script>` only with `<`, `>` and `&` as JavaScript escapes (also
+for what py3Dmol embeds). SVG files shown in the agent chat are shown as
+images, links in a converted Word document are kept only for http, https,
+mailto and fragment targets. `tests/test_dashboard_html_escapes_external_text.py`
+holds the dashboard to this for the values that are always external.
+
+**Uploads.** One uploaded file is at most `DELFIN_UPLOAD_MAX_BYTES` (default
+2 GiB); a ZIP unpacks to at most `DELFIN_ZIP_MAX_UNPACKED_BYTES` (default
+8 GiB, counted on the bytes written) and `DELFIN_ZIP_MAX_ENTRIES` files
+(default 20 000); an archive over a limit leaves nothing unpacked. Entries
+with absolute paths, drive letters or `..` are refused, every destination
+must resolve inside the browser's root, and files are created without
+following a link that already sits at the destination. The Calculations
+browser does not enter a folder, or open a file, whose real path is outside
+its root (`DELFIN_BROWSER_FOLLOW_LINKS` = 1 allows it).
+
 ## What each layer guarantees on which host
 
 "Isolated command" below means a shell command under `agent.bash_isolation`
@@ -553,6 +634,13 @@ that path append-only for users.
   from the shell deny patterns is stopped only where the cage blocks the
   keychain, and its output is still redacted. A keyring call that times
   out is abandoned, not cancelled.
+- **The dashboard page runs inline script.** Its CSP restricts plugins,
+  framing, `<base>` and form targets but not script sources, so markup that
+  escapes the output encoding would run. The output-encoding test covers
+  the values that are always external; an interpolation it does not
+  recognise as external is reviewed by hand. The login cookie has no idle
+  timeout, only the absolute lifetime, and logging out is closing the
+  server.
 - **Kernel and sandbox bugs.** Bubblewrap, Landlock, seccomp and Seatbelt
   are only as strong as their implementations. DELFIN does not defend against
   a kernel exploit.

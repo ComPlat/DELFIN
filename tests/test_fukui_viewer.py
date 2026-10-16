@@ -58,8 +58,8 @@ def test_atom_labels_js_decimals_respected():
 
 def test_atom_labels_js_passthrough_strings():
     js = mv.fukui_atom_labels_js(_XYZ, ['1', '2', '3', '4'])
-    assert "viewer.addLabel('1'" in js
-    assert "viewer.addLabel('4'" in js
+    assert 'viewer.addLabel("1"' in js
+    assert 'viewer.addLabel("4"' in js
 
 
 def test_atom_labels_js_empty_values_returns_empty_string():

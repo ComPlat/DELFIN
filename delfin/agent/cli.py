@@ -4056,7 +4056,7 @@ def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
 
-    flags = [flag for flag in ("--attach", "--ssh-config", "--write")
+    flags = [flag for flag in ("--token", "--attach", "--ssh-config", "--write")
              if getattr(args, flag[2:].replace("-", "_"), False)]
     if flags:
         return _where.main(flags)
@@ -5355,6 +5355,9 @@ def build_parser() -> argparse.ArgumentParser:
                               "(ssh + port forward when it runs elsewhere)")
     where_p.add_argument("--ssh-config", action="store_true",
                          help="Print a ready ssh config entry for it")
+    where_p.add_argument("--token", action="store_true",
+                         help="Print the dashboard's login token and nothing "
+                              "else (for the login page; links carry none)")
     where_p.add_argument("--write", action="store_true",
                          help="With --ssh-config: append the entry instead "
                               "of printing (never overwrites)")
