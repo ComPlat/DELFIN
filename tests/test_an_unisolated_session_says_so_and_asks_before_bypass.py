@@ -486,6 +486,9 @@ def _interactive(monkeypatch, tmp_path, argv, answer):
         def begin_leaving(self, code, *, terminal_gone=False):
             pass
 
+        def leave_stages(self):
+            return None         # session-end stages inline
+
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(launch_guard, "inspect_launch_dir",
                         lambda *a, **k: _Report())

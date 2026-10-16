@@ -555,7 +555,7 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
 
 
 def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
-                 t0: float | None) -> None:
+                 t0: float | None, run_stage=None) -> None:
     """The session-end stages, one list for ``run``, ``chat -p`` and the
     interactive session.
 
@@ -571,6 +571,11 @@ def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
     prompt -- the cycle outcome and the episode are skipped: there is no
     turn to judge, and a PASS for nothing would enter the history the
     briefing quotes. The terminal used to run the first three only.
+
+    ``run_stage(name, fn)``, when given, runs each stage instead of a
+    plain call (the terminal's attended leave: ``repl._LeaveStages``, a
+    budget per stage and Ctrl+C to skip). None runs them inline, as for
+    ``run``, ``chat -p`` and the scheduler.
     """
     verdict = "FAIL" if failed else "PASS"
 
@@ -584,11 +589,17 @@ def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
         did its job. The warning is the same shape as the save-failure
         line above.
         """
-        try:
-            fn()
-        except Exception as exc:
-            print(f"WARN: session-end stage {name} failed: {exc}",
-                  file=sys.stderr)
+        def _guarded() -> None:
+            try:
+                fn()
+            except Exception as exc:
+                print(f"WARN: session-end stage {name} failed: {exc}",
+                      file=sys.stderr)
+
+        if run_stage is None:
+            _guarded()
+        else:
+            run_stage(name, _guarded)
 
     # Session report: best-effort Markdown write; never breaks exit.
     def _report_stage(sid_, engine_):
@@ -1918,7 +1929,7 @@ def _start_interactive_session(args: argparse.Namespace, report,
 
 def _finish_interactive_session(engine, agent, workspace: Path, *,
                                 title: str, t0: float | None,
-                                learn: bool = True) -> str:
+                                learn: bool = True, run_stage=None) -> str:
     """The end of an interactive session: save it, then ``_end_session``'s
     stages (report, skill learning, indexing, cycle outcome, episode, eval
     loop). The task is the first prompt typed in this process, the verdict
@@ -1934,7 +1945,7 @@ def _finish_interactive_session(engine, agent, workspace: Path, *,
         workspace,
         task=str(getattr(agent, "first_task", "") or ""),
         failed=bool(getattr(_last, "error", "")),
-        t0=t0)
+        t0=t0, run_stage=run_stage)
     return sid or ""
 
 
@@ -2091,7 +2102,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
         finally:
             _finish_interactive_session(
                 engine, agent, workspace,
-                title=getattr(args, "session_name", "") or "", t0=_t0)
+                title=getattr(args, "session_name", "") or "", t0=_t0,
+                run_stage=agent.leave_stages())
             try:
                 os.chdir(_cwd_before)
             except Exception:

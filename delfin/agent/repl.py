@@ -20,6 +20,7 @@ import queue
 import signal
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -45,6 +46,14 @@ _JOIN_ABANDON_S = 1.0
 # That work runs on storage that may be the very thing that went wrong, and
 # waiting on it is how a session outlives its terminal.
 _LEAVE_DEADLINE_S = 10.0
+#: Total for the session-end stages of an attended leave (ctrl+d, /exit,
+#: the second idle ctrl+c); setting ``agent.leave_stage_budget_s``.
+_LEAVE_STAGE_BUDGET_S = 300.0
+#: A session-end stage without a timeout of its own (report, indexing,
+#: cycle outcome, episode, eval loop: file and index work, no model).
+_STAGE_DEFAULT_S = 60.0
+#: How long a stage runs before the line saying what is being finished.
+_STAGE_SAY_AFTER_S = 1.0
 _STATUS_TICK_S = 0.25
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -1139,6 +1148,127 @@ def shell_escape_result(engine, command: str) -> dict:
     return run
 
 
+def _leave_stage_budget_s() -> float:
+    """``agent.leave_stage_budget_s``, else ``_LEAVE_STAGE_BUDGET_S``."""
+    try:
+        from delfin.user_settings import load_settings
+        cfg = (load_settings() or {}).get("agent") or {}
+        value = float(cfg.get("leave_stage_budget_s", _LEAVE_STAGE_BUDGET_S))
+    except Exception:
+        return _LEAVE_STAGE_BUDGET_S
+    return value if value >= 0 else _LEAVE_STAGE_BUDGET_S
+
+
+def _stage_budget_s(name: str) -> float:
+    """A stage's own limit, from the timeout its work already has.
+
+    Skill learning drafts with one model call, whose request timeout is
+    ``api_client._request_timeout_s()`` (600 s, DELFIN_REQUEST_TIMEOUT_S);
+    the stage gets that plus 30 s. The other stages call no model and
+    had no timeout; each gets ``_STAGE_DEFAULT_S``. Both are capped by
+    what is left of the total budget.
+    """
+    if name == "skill learning":
+        try:
+            from .api_client import _request_timeout_s
+            return float(_request_timeout_s()) + 30.0
+        except Exception:
+            return _LEAVE_STAGE_BUDGET_S
+    return _STAGE_DEFAULT_S
+
+
+class _LeaveStages:
+    """``run_stage(name, fn)`` for ``cli._end_session`` on an attended leave.
+
+    Input: a stage's name and its best-effort callable (it never raises).
+    Each stage runs on a daemon thread while the main thread waits in
+    0.1 s steps, so a signal handler can act between them. Per stage:
+    ``_stage_budget_s(name)``, capped by what is left of the total
+    (``agent.leave_stage_budget_s``, default 300 s). A stage still running
+    after ``_STAGE_SAY_AFTER_S`` is named on stderr with its limit and
+    "Ctrl+C skips what is left". At its limit it is left unfinished (said)
+    and the next stage starts. Ctrl+C, SIGHUP or SIGTERM sets
+    ``skipped_by``: the stage under way and every later one are skipped
+    (said once), and the short leave deadline is armed for the rest of
+    the process. With the terminal gone, or no holder, stages run inline
+    under the deadline already armed, as before.
+
+    Rejected: one deadline for the whole leave. Skill learning makes a
+    model call whose request timeout is 600 s; the 10 s deadline cut it,
+    and the eval loop after it, on almost every attended leave on a slow
+    endpoint. Also rejected: stopping at the first stage that runs out of
+    time. The later stages (indexing, outcome, episode) call no model and
+    would be lost to one that did.
+    """
+
+    def __init__(self, agent: "TerminalAgent", out=None) -> None:
+        self.agent = agent
+        self.out = out
+        self.skipped_by: int | None = None
+        self._budgeted: bool | None = None
+        self._t0 = 0.0
+        self._total = _LEAVE_STAGE_BUDGET_S
+        self._said_skip = False
+
+    def _say(self, text: str) -> None:
+        stream = self.out or sys.stderr
+        try:
+            stream.write(text + "\n")
+            stream.flush()
+        except Exception:
+            pass                    # a terminal that hung up takes no line
+
+    def _skip(self, name: str) -> None:
+        if not self._said_skip:
+            self._said_skip = True
+            self._say(f"Skipped the rest of the session end, from {name} on. "
+                      "The session is saved.")
+        self.agent._stages_skipped()
+
+    def __call__(self, name: str, fn) -> None:
+        if self._budgeted is None:
+            self._budgeted = self.agent._stages_begin(self)
+            self._t0 = time.monotonic()
+            self._total = _leave_stage_budget_s()
+        if not self._budgeted:
+            fn()
+            return
+        if self.skipped_by is not None:
+            self._skip(name)
+            return
+        left = self._total - (time.monotonic() - self._t0)
+        budget = min(left, _stage_budget_s(name))
+        if budget <= 0:
+            self._say(f"{name}: no time left of the "
+                      f"{self._total:.0f} s session-end budget; not run.")
+            return
+        done = threading.Event()
+
+        def _run() -> None:
+            try:
+                fn()
+            finally:
+                done.set()
+
+        threading.Thread(target=_run, name=f"session end: {name}",
+                         daemon=True).start()
+        start = time.monotonic()
+        said = False
+        while not done.wait(0.1):
+            if self.skipped_by is not None:
+                self._skip(name)
+                return
+            ran = time.monotonic() - start
+            if not said and ran >= _STAGE_SAY_AFTER_S:
+                said = True
+                self._say(f"Finishing the session: {name} (up to "
+                          f"{budget:.0f} s). Ctrl+C skips what is left.")
+            if ran >= budget:
+                self._say(f"{name} did not finish within {budget:.0f} s; "
+                          "left unfinished.")
+                return
+
+
 class TerminalAgent:
     """Reads, runs one turn, renders it, repeats.
 
@@ -1210,6 +1340,8 @@ class TerminalAgent:
         self._leave_held = False
         self._leave_gone = False         # armed because the terminal went
         self._leave_timer = None
+        self._leave_code = 0
+        self._stages = None              # the session-end stages under way
         # How much history was already on disk when this session started.
         self._hist_base = 0
         # Set by the resize handler, acted on by the loop. A signal handler
@@ -3259,6 +3391,8 @@ class TerminalAgent:
         and the leave already ends by its deadline.
         """
         if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
             return
         from . import repl_keys as rk
         raise rk.TerminalLeft(signal.Signals(signum).name.lower(),
@@ -3266,8 +3400,11 @@ class TerminalAgent:
 
     def _on_held_sigint(self, signum, frame) -> None:
         """SIGINT outside run() while the leave is held: KeyboardInterrupt
-        as by default, ignored once the leave has begun."""
+        as by default; once the leave has begun, ignored during the save
+        and a skip of what is left during the session-end stages."""
         if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
             return
         raise KeyboardInterrupt
 
@@ -3288,7 +3425,39 @@ class TerminalAgent:
             return
         self._leave_armed = True
         self._leave_gone = terminal_gone
+        self._leave_code = int(code)
         self._arm_leave_deadline(code)
+
+    def leave_stages(self) -> "_LeaveStages":
+        """The runner ``cli._end_session`` hands each session-end stage to
+        (``run_stage``); see ``_LeaveStages``."""
+        return _LeaveStages(self)
+
+    def _stages_begin(self, runner: "_LeaveStages") -> bool:
+        """The save is done and the session-end stages start. True when
+        they run under their own budget: an attended leave, held. Its short
+        deadline, which bounded the cleanup and the save, is cancelled.
+        False when the terminal is gone (or nothing holds the leave): the
+        stages run inline under whatever deadline is armed, as before."""
+        if self._leave_gone or not self._leave_held:
+            return False
+        timer = self._leave_timer
+        if timer is not None:
+            timer.cancel()
+            self._leave_timer = None
+        self._leave_armed = False
+        self._stages = runner
+        return True
+
+    def _stages_skipped(self) -> None:
+        """Ctrl+C, SIGHUP or SIGTERM during the stages: what is left is
+        skipped and the process ends within the short deadline, kept armed
+        past ``leave_held`` (the session is saved by now)."""
+        if self._leave_armed:
+            return
+        self._leave_armed = True
+        self._leave_gone = True
+        self._arm_leave_deadline(self._leave_code)
 
     @contextlib.contextmanager
     def leave_held(self):
@@ -3301,11 +3470,13 @@ class TerminalAgent:
         signal is ignored until the block ends, so the save after run()
         is ended only by the deadline or by SIGKILL. On exit the previous
         handlers are back. A deadline armed because the terminal went
-        stays armed (as before); one armed by ctrl+d, /exit or ctrl+c is
-        cancelled once the block has finished, so it bounds the cleanup,
-        the save and the session-end stages, and never outlives them in a
-        process that goes on (``main()`` called in-process: os._exit(0)
-        there would end a test run with exit status 0).
+        stays armed (as before), and bounds the session-end stages too.
+        One armed by ctrl+d, /exit or ctrl+c bounds the cleanup and the
+        save; the stages after it run under their own budget
+        (``_LeaveStages``), and whatever is still armed at the end of the
+        block is cancelled, so it never outlives the leave in a process
+        that goes on (``main()`` called in-process: os._exit(0) there
+        would end a test run with exit status 0).
 
         Rejected: restoring the defaults at the end of run(), as before.
         A second SIGHUP or SIGTERM then ended the process by the default
@@ -3328,6 +3499,7 @@ class TerminalAgent:
             yield self
         finally:
             self._leave_held = False
+            self._stages = None
             timer = self._leave_timer
             if self._leave_armed and not self._leave_gone and timer:
                 timer.cancel()
