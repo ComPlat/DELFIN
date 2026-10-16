@@ -356,3 +356,32 @@ def test_a_page_csp_forbids_plugins_foreign_base_and_foreign_forms(server):
     for directive in ("object-src 'none'", "base-uri 'self'",
                       "form-action 'self'", "frame-ancestors 'self'"):
         assert directive in csp, csp
+
+
+# -- the login cookie ------------------------------------------------------------
+
+def _cookie(headers: dict, prefix: str) -> str:
+    raw = headers.get("set-cookie", "")
+    assert raw.startswith(prefix), raw
+    return raw
+
+
+def test_the_login_cookie_is_same_site_and_lives_a_week_at_most(server):
+    from email.utils import parsedate_to_datetime
+
+    _, headers, _ = _get(server["port"], f"/api/status?token={TOKEN}")
+    cookie = _cookie(headers, "username-")
+    attributes = [part.strip().lower() for part in cookie.split(";")]
+    assert "httponly" in attributes
+    assert "samesite=lax" in attributes or "samesite=strict" in attributes
+    expires = next(part.split("=", 1)[1] for part in cookie.split(";")
+                   if part.strip().lower().startswith("expires="))
+    left = parsedate_to_datetime(expires).timestamp() - time.time()
+    assert 0 < left <= 7 * 86400 + 3600, left
+
+
+def test_the_xsrf_cookie_is_same_site(server):
+    _, headers, _ = _get(server["port"], "/login")
+    cookie = _cookie(headers, "_xsrf=")
+    attributes = [part.strip().lower() for part in cookie.split(";")]
+    assert "samesite=lax" in attributes or "samesite=strict" in attributes
