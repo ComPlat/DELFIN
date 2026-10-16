@@ -806,6 +806,37 @@ def _isolate_shared_ledgers():
 _XTB_STUB_DIR = Path(__file__).resolve().parent / "stubs"
 
 
+#: Process-wide as well as per test (the fixture below): a worker thread a
+#: test started can outlive it, and a per-test monkeypatch is undone at
+#: teardown. Measured 2026-10-15, test_gfn_methods_in_the_viewer.py alone
+#: with no xtb reachable and the per-test setting only: structure-editor
+#: worker threads of one test reached ensure_binary while the next test
+#: was in setup, and wrote xtb 6.7.1 into delfin/qm_tools/.mamba_env of the
+#: checkout 5 s into the run (test_the_switch_holds_between_tests_as_well).
+os.environ["DELFIN_AUTO_INSTALL_QM_TOOLS"] = "0"
+
+
+@pytest.fixture(autouse=True)
+def _no_test_installs_a_tool(monkeypatch):
+    """DELFIN_AUTO_INSTALL_QM_TOOLS=0 for every test.
+
+    Input: none. Output: ensure_binary (gfn_optimize) and
+    qm_health.ensure_tool refuse with "Automatic installation is switched
+    off" instead of running install_qm_tools.sh.
+
+    The default is on, and a test that reached optimize_with_gfn with no
+    usable xtb started a conda install into the tool root: the checkout's
+    delfin/qm_tools on CI, the user's ~/.delfin/qm_tools elsewhere. Every
+    later test in the process then resolved that real xtb before the
+    stand-in, so tests that read xtb's results passed only after the
+    download and failed when run alone or in another CI shard (PR #278).
+    A test that needs a real xtb asks for ``real_xtb`` and skips without
+    one; tests of the install path delete the variable and replace
+    ``install_xtb`` themselves.
+    """
+    monkeypatch.setenv("DELFIN_AUTO_INSTALL_QM_TOOLS", "0")
+
+
 @pytest.fixture
 def xtb_on_path(monkeypatch):
     """Supply xtb for a test instead of skipping the test.

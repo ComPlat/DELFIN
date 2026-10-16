@@ -16,6 +16,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # analyze (python) and analyze (actions) are required checks; a merge
+  # queue waits for them on its gh-readonly-queue/main/* ref, and the
+  # CodeQL action analyses and uploads for that ref like for a push.
+  merge_group:
   schedule:
     # Weekly, so a query added upstream reaches this code without waiting for
     # somebody to push.
@@ -46,16 +50,34 @@ jobs:
         # adds is held to the same line. A workflow runs with a token against
         # this repository, so an injected expression in a run: block reaches
         # further than most of the Python does.
-        language: [python, actions]
+        #
+        # "javascript-typescript" is the terminal window (tui/src, TypeScript
+        # that ships in the sdist and the wheel and runs with the user's
+        # rights); "csharp" is the Windows launcher
+        # (tools/windows-launcher/*.cs). Both were listed by the code-scanning
+        # API as present and unscanned. Their checks, `analyze
+        # (javascript-typescript)` and `analyze (csharp)`, are not required:
+        # findings land in the Security tab, as for the other two, and a
+        # check is worth requiring once a few runs show it finishes reliably.
+        language: [python, actions, javascript-typescript, csharp]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Initialise CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: ${{ matrix.language }}
+          # No build for any of the four. Python, actions and
+          # JavaScript/TypeScript are analysed from source and have no other
+          # mode; for C#, `none` extracts the two launcher sources without
+          # compiling them, so the job needs no .NET/Windows toolchain
+          # (Build-Starter.ps1 compiles them with the Windows csc). The cost
+          # is precision: without a build some types are resolved by name,
+          # which can miss or blur a data flow through them; autobuild
+          # would have nothing to build (no .csproj or .sln).
+          build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
           # security-extended adds the queries that are worth a look but too
           # noisy to gate on. Nothing here gates, so the wider net costs only
@@ -63,6 +85,6 @@ jobs:
           queries: security-extended
 
       - name: Analyse
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           category: "/language:${{ matrix.language }}"

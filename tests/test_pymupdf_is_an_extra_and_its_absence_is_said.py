@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -130,7 +131,10 @@ def test_the_workflow_runs_the_check_on_a_plain_install():
     text = (REPO / ".github" / "workflows" / "packaging.yml").read_text()
     job = text[text.index("  dependency-licences:"):]
     assert "pip install .\n" in job, "the check must see the core set, no extras"
-    assert "pip-licenses==" in job
+    # pip-licenses at an exact version, through the CI constraints file.
+    assert "pip install -c .github/ci/constraints-ci.txt pip-licenses" in job
+    pins = (REPO / ".github" / "ci" / "constraints-ci.txt").read_text()
+    assert re.search(r"^pip-licenses==\d", pins, re.M)
     assert "scripts/check_dependency_licences.py" in job
 
 
