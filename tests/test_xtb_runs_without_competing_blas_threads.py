@@ -56,13 +56,15 @@ def recording_xtb(tmp_path, monkeypatch):
         "#!/bin/sh\n"
         'case "$*" in *--version*) echo "xtb version 6.7.1 (recorder)"; '
         "exit 0;; esac\n"
-        f'echo "${{OPENBLAS_NUM_THREADS-unset}}" >> "{marks}"\n'
+        f'echo "${{OPENBLAS_NUM_THREADS-unset}},${{OMP_WAIT_POLICY-unset}}"'
+        f' >> "{marks}"\n'
         "exit 1\n", encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin")
     monkeypatch.setenv("DELFIN_QM_TOOLS_ROOT", str(tmp_path / "no-tools"))
     monkeypatch.delenv("XTBHOME", raising=False)
     monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
+    monkeypatch.delenv("OMP_WAIT_POLICY", raising=False)
     gfn._XTB_JUDGED.clear()
     clear_resolver_cache()
     assert gfn.find_xtb() == str(script)
@@ -71,8 +73,12 @@ def recording_xtb(tmp_path, monkeypatch):
     clear_resolver_cache()
 
 
-def _recorded(marks):
-    return marks.read_text(encoding="utf-8").split() if marks.exists() else []
+def _recorded(marks, field=0):
+    """One field per xtb start: 0 is OPENBLAS_NUM_THREADS, 1 OMP_WAIT_POLICY."""
+    if not marks.exists():
+        return []
+    return [line.split(",")[field]
+            for line in marks.read_text(encoding="utf-8").split()]
 
 
 def test_an_optimisation_gives_blas_one_thread(recording_xtb):
@@ -99,6 +105,39 @@ def test_the_climb_gives_blas_one_thread(recording_xtb):
     got = _recorded(recording_xtb)
     assert len(got) >= 2 and set(got) == {"1"}, got
 
+
+
+def test_xtbs_openmp_threads_sleep_rather_than_spin_while_waiting(
+        recording_xtb):
+    """OMP_WAIT_POLICY=PASSIVE on the same xtb runs.
+
+    Input and output as above, for the second variable. xtb's OpenMP
+    threads busy-wait at every barrier by default; on CPUs something else
+    also wants, that turns a step into a queue. Measured 2026-10-16, the
+    climb test's 16-atom estimate, median of eight Climb.step() calls, 4
+    CPUs: idle 18 ms default, 16 ms PASSIVE; with four busy processes on
+    the same CPUs 280 ms default, 22 ms PASSIVE. relax_steps (20 GFN2
+    cycles) with CPUs to spare: glycine 68/68 ms, ibuprofen 220/219 ms,
+    eicosane 270/270 ms. The one case that lost: eicosane asking for 16
+    threads on 8 CPUs, 319 ms default against 368 ms PASSIVE.
+    """
+    from delfin.dashboard import climb
+    from delfin.dashboard import gfn_optimize as gfn
+
+    gfn.optimize_with_gfn(_XYZ, "gfn2", max_steps=1, timeout=30)
+    walk = climb.Climb(_XYZ, "gfn2")
+    try:
+        walk.modes_from_xtb()
+    finally:
+        walk.close()
+    line = climb._CommandLine([8, 1, 1], walk.bohr, "gfn2", 0, 0, None, 4)
+    try:
+        with pytest.raises(Exception):
+            line(walk.bohr)
+    finally:
+        line.close()
+    got = _recorded(recording_xtb, field=1)
+    assert len(got) >= 3 and set(got) == {"PASSIVE"}, got
 
 def test_a_walk_under_load_minimises_on_one_blas_thread():
     """The parent's own BLAS pools are held to one thread while it drives xtb.
