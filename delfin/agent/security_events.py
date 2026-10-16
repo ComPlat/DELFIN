@@ -131,6 +131,9 @@ _KINDS = {
     "pr_merge_unpinned": ("🚫", "Merge not pinned to a green PR head"),
     "gh_credential_print": ("🔑", "GitHub login printed by a command"),
     "gh_api_write": ("🚫", "GitHub write through the raw API"),
+    # A gh alias or extension that would carry the login past those two.
+    "gh_alias_refused": ("🚫", "gh alias that hides a guarded command"),
+    "gh_extension_refused": ("🚫", "gh extension install refused"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
     # The user's permission rules (permission_rules.py).
     "permission_rule_deny": ("⛔", "Refused by a permission rule"),

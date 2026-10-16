@@ -52,6 +52,8 @@ _CONTENT_KINDS: frozenset = frozenset({
     "data_egress",            # the user's content leaving the machine
     "gh_credential_print",    # the account's GitHub login, printed
     "gh_api_write",           # a GitHub write past the push/PR/merge checks
+    "gh_alias_refused",       # an alias that would hide one of those two
+    "gh_extension_refused",   # a program gh runs with the login
     # These two read as consent -- both refusals say a human would make
     # them fine -- and are deliberately NOT handed over. A push names a
     # branch on the project's own remote and is bounded by that. A

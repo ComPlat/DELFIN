@@ -5739,6 +5739,168 @@ def _gh_api_write(cmd: str) -> str:
     return ""
 
 
+# -- a gh alias or extension: the same login, out of the command's text ------
+#
+# The two rules above read the command text. An alias moves that text out
+# of it: after `gh alias set t 'auth token'` the call is `gh t`, and gh
+# appends the call's own arguments to a plain alias, so an alias for
+# `api`, `auth` or `config` turns `gh a -X PUT ...` or `gh s --show-token`
+# into the refused command. A shell alias (`--shell`, or `!` first) runs
+# its body through sh, with the call's arguments as $1... An extension is
+# a program gh runs with the login, which no rule reads. So the body is
+# judged where the alias is defined, and an extension is not installed.
+
+#: Plain-alias expansions that hide a guarded subcommand group.
+_GH_ALIAS_HIDDEN_GROUPS = frozenset({"auth", "api", "config", "alias",
+                                     "extension", "extensions", "ext"})
+_GH_ALIAS_RUNTIME_RE = re.compile(r"[$`]")
+_SHELL_OPERATORS = frozenset({";", "&&", "||", "|", "&", "(", ")", "|&",
+                              ";;", "&>", ">&"})
+
+
+def _simple_commands_quoted(cmd: str) -> list:
+    """Each simple command of *cmd* (and of the shell bodies it hands on)
+    as words, quotes kept together: ``gh alias set x 'a | b'`` keeps
+    ``a | b`` as one word, which ``_command_words`` (split on operators
+    first) does not. Leading assignments and wrappers dropped, as there."""
+    out = []
+    for line in _with_shell_bodies(cmd or "").split("\n"):
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            tokens = list(lex)
+        except ValueError:
+            tokens = line.split()
+        current: list = []
+        for tok in tokens + [";"]:
+            if tok in _SHELL_OPERATORS or set(tok) <= set(";&|()"):
+                words = current
+                while words and (words[0] in _COMMAND_WRAPPERS
+                                 or words[0].startswith("-")
+                                 or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=",
+                                             words[0])
+                                 or re.match(r"^\d+(?:\.\d+)?[smhd]?$",
+                                             words[0])):
+                    words = words[1:]
+                if words:
+                    out.append([os.path.basename(words[0])] + words[1:])
+                current = []
+            else:
+                current.append(tok)
+    return out
+
+
+def _gh_alias_body_problem(expansion: str, shell: bool) -> str:
+    """Why an alias with this expansion would carry the login past the
+    gate, or "". ``shell``: a --shell alias (a leading ``!`` makes one
+    too)."""
+    body = str(expansion or "")
+    if body.startswith("!"):
+        shell, body = True, body[1:]
+    if body.strip() in ("", "-"):
+        return "its body is read from stdin, which this check cannot see"
+    if shell:
+        if _GH_ALIAS_RUNTIME_RE.search(body):
+            return ("it is a shell alias that builds its command at run "
+                    "time ($ or backticks), which this check cannot read")
+        why = _prints_a_credential(body)
+        if why:
+            return f"its body `{why}` prints the account's GitHub login"
+        why = _gh_api_write(body)
+        if why:
+            return f"its body `{why}` writes to GitHub through the raw API"
+        nested = _gh_alias_or_extension(body, None)
+        return nested[1] if nested else ""
+    try:
+        words = shlex.split(body)
+    except ValueError:
+        return "its body cannot be read as gh arguments"
+    if words and words[0] in _GH_ALIAS_HIDDEN_GROUPS:
+        return (f"it stands for `gh {words[0]}`, and gh appends the "
+                "call's own arguments to it, so `gh <alias> ...` would run "
+                f"a `gh {words[0]}` command this check never sees")
+    why = _prints_a_credential("gh " + body) or _gh_api_write("gh " + body)
+    return f"its body `{why}` is refused on its own" if why else ""
+
+
+def _gh_alias_import_entries(source: str, cwd) -> Optional[dict]:
+    """The aliases a ``gh alias import`` file defines, or None when the
+    file cannot be read here (stdin, missing, too large, not YAML)."""
+    if not source or source == "-":
+        return None
+    try:
+        path = Path(os.path.expanduser(source))
+        if not path.is_absolute():
+            path = Path(cwd or ".") / path
+        with open(path, "rb") as fh:
+            raw = fh.read(65537)
+        if len(raw) > 65536:
+            return None
+        import yaml
+        data = yaml.safe_load(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(k): ("" if v is None else str(v)) for k, v in data.items()}
+
+
+def _gh_alias_or_extension(cmd: str, cwd) -> Optional[tuple]:
+    """``(kind, refusal)`` for a gh alias or extension in *cmd* that would
+    carry the account's GitHub login past the rules above, else None.
+
+    Input: a shell command (prose blanked by the caller) and the directory
+    an import file is read from. Kinds: ``gh_alias_refused`` (``gh alias
+    set`` or ``gh alias import`` with a body judged by
+    ``_gh_alias_body_problem``, or a body that cannot be read here) and
+    ``gh_extension_refused`` (``gh extension install|upgrade``)."""
+    for w in _simple_commands_quoted(cmd):
+        if w[0] != "gh":
+            continue
+        sub = _gh_subcommand_args(w)
+        if len(sub) < 2:
+            continue
+        group, verb, rest = sub[0], sub[1], sub[2:]
+        if group in ("extension", "extensions", "ext") and verb in (
+                "install", "upgrade"):
+            return ("gh_extension_refused", (
+                f"blocked: `gh {group} {verb}` installs a program that gh "
+                "runs with the account's GitHub login, and none of the "
+                "checks here reads it. Ask the user to install the "
+                "extension themselves if it is needed."))
+        if group != "alias" or verb not in ("set", "import"):
+            continue
+        if verb == "set":
+            shell = any(a in ("--shell", "-s") for a in rest)
+            positional = [a for a in rest if not a.startswith("-") or a == "-"]
+            name = positional[0] if positional else ""
+            expansion = positional[1] if len(positional) > 1 else "-"
+            why = _gh_alias_body_problem(expansion, shell)
+            entries = {name: why} if why else {}
+        else:
+            positional = [a for a in rest if not a.startswith("-") or a == "-"]
+            got = _gh_alias_import_entries(
+                positional[0] if positional else "-", cwd)
+            if got is None:
+                entries = {"(import)": "its aliases are read from stdin or "
+                           "from a file this check cannot read"}
+            else:
+                entries = {}
+                for name, expansion in got.items():
+                    why = _gh_alias_body_problem(expansion, False)
+                    if why:
+                        entries[name] = why
+        if entries:
+            name, why = next(iter(entries.items()))
+            return ("gh_alias_refused", (
+                f"blocked: the gh alias {name} is refused: {why}. An alias "
+                "would let the account's GitHub login past the checks that "
+                "guard it (no printing it, no raw API writes). Define "
+                "aliases for other subcommands, or ask the user to add "
+                "this one themselves."))
+    return None
+
+
 # -- a push to GitHub, the one way out of the process cage ---------------------
 #
 # SSH is closed inside the cage (keys, agent and control sockets are masked,
@@ -21310,6 +21472,12 @@ class _DocToolExecutor:
                         "and the gh subcommands use the login themselves, "
                         "and the push path hands it to git without showing "
                         "it. Tell the user what you wanted to do with it.")
+            _alias = _gh_alias_or_extension(
+                cmd, getattr(perms, "workspace", None))
+            if _alias:
+                _record_security_event(_alias[0], "bash", cmd[:80],
+                                       blocked=True)
+                return _alias[1]
             _api_write = _gh_api_write(cmd)
             if _api_write:
                 _record_security_event("gh_api_write", "bash", cmd[:80],
