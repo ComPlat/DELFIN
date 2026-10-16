@@ -8,15 +8,25 @@ name: Release
 #                 files and metadata present (scripts/check_distribution.py
 #                 --release, the checker packaging.yml runs on every pull
 #                 request). No token beyond contents: read.
+#   sbom          a CycloneDX 1.6 JSON SBOM of what `pip install` of the
+#                 built wheel puts into an empty Python 3.11 environment
+#                 (cyclonedx-py environment, installed by hash from
+#                 .github/ci/sbom-requirements.txt). A job of its own: the
+#                 dependency install runs code from PyPI, and the build job,
+#                 whose dist/ is what is published, runs none.
 #   provenance    a SLSA build-provenance attestation per file
-#                 (actions/attest-build-provenance), signed through Sigstore
-#                 with this workflow's OIDC identity and stored in the
-#                 repository: `gh attestation verify <file> -R ComPlat/DELFIN`.
-#                 Runs no project code.
+#                 (actions/attest-build-provenance) and an SBOM attestation
+#                 per file (actions/attest with sbom-path), signed through
+#                 Sigstore with this workflow's OIDC identity and stored in
+#                 the repository: `gh attestation verify <file> -R
+#                 ComPlat/DELFIN` (add `--predicate-type
+#                 https://cyclonedx.org/bom` for the SBOM). Runs no project
+#                 code.
 #   pypi          PyPI Trusted Publishing (OIDC, no stored token) in the
 #                 `pypi` environment; the publish action also uploads PEP 740
 #                 attestations, which PyPI shows per file.
-#   github        the same files plus SHA256SUMS.txt on the tag's release.
+#   github        the same files, the SBOM and SHA256SUMS.txt on the tag's
+#                 release.
 #
 # Only `provenance` and `pypi` can request an OIDC token (id-token: write);
 # each job names its own permissions and the workflow grants nothing.
@@ -100,9 +110,65 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  sbom:
+    name: SBOM (CycloneDX)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        # pyproject.toml names the root component; the hashed file pins the
+        # generator.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Fetch the distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      - name: Install the SBOM generator by hash
+        run: python -m pip install --require-hashes -r .github/ci/sbom-requirements.txt
+
+      - name: Install the wheel as a user would
+        # An environment without pip or setuptools of its own (--without-pip,
+        # installed into from outside with --python), so the SBOM lists what
+        # the wheel brings and not the installer. Dependencies resolve from
+        # PyPI as for `pip install delfin-complat`.
+        run: |
+          python -m venv --without-pip "$RUNNER_TEMP/released"
+          python -m pip --python "$RUNNER_TEMP/released/bin/python" install dist/*.whl
+
+      - name: Write the SBOM
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          mkdir -p sbom
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          cyclonedx-py environment --pyproject pyproject.toml --mc-type library \
+            --output-reproducible --of JSON \
+            -o "sbom/delfin_complat-$version.cdx.json" "$RUNNER_TEMP/released/bin/python"
+          python -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["specVersion"], len(d.get("components", [])), "components")' sbom/*.cdx.json
+
+      - name: Keep the SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: sbom/
+          if-no-files-found: error
+          retention-days: 30
+
   provenance:
     name: provenance
-    needs: build
+    needs: [build, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -122,6 +188,28 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "dist/*"
+
+      - name: Fetch the SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom
+          path: sbom
+
+      - name: Name the SBOM
+        id: sbom
+        run: |
+          shopt -s nullglob
+          files=(sbom/*.cdx.json)
+          [ "${#files[@]}" -eq 1 ]
+          echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the SBOM
+        # actions/attest rather than actions/attest-sbom: the latter is a
+        # deprecated wrapper around this action.
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: "dist/*"
+          sbom-path: ${{ steps.sbom.outputs.path }}
 
   pypi:
     name: publish to PyPI
@@ -169,6 +257,12 @@ jobs:
           name: dist
           path: dist
 
+      - name: Fetch the SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom
+          path: sbom
+
       - name: Create the release or add the files to it
         # Never --clobber: a file already on the release is not replaced,
         # the job fails and says so.
@@ -178,9 +272,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           (cd dist && sha256sum -- * > ../SHA256SUMS.txt)
+          (cd sbom && sha256sum -- * >> ../SHA256SUMS.txt)
           cat SHA256SUMS.txt
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" dist/* SHA256SUMS.txt
+            gh release upload "$TAG" dist/* sbom/* SHA256SUMS.txt
           else
-            gh release create "$TAG" dist/* SHA256SUMS.txt --verify-tag --notes-from-tag --title "$TAG"
+            gh release create "$TAG" dist/* sbom/* SHA256SUMS.txt --verify-tag --notes-from-tag --title "$TAG"
           fi
