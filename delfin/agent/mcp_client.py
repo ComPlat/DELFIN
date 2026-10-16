@@ -87,8 +87,10 @@ a server nobody configured rather than a broken install.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
+import os
 import queue
 import re
 import subprocess
@@ -361,6 +363,202 @@ def advertised_description(tool: "MCPTool") -> tuple[str, list[str]]:
     from .project_memory import _fence_nonce
     return (untrusted.wrap_as("tool_description", f"mcp:{tool.server}", raw,
                               nonce=_fence_nonce(raw)), [])
+
+
+# -- descriptions pinned on first use -----------------------------------------
+#
+# A server's tool descriptions and schemas are text its author wrote, read
+# by the model in every request; a server that changes them after the user
+# started trusting it (an unversioned package, a remote endpoint) changes
+# what the model is told without anything the user sees. Each tool is
+# pinned by a hash of its description and input schema the first time its
+# server is seen (trust on first use); a later change, or a new tool on a
+# server already pinned, is withheld until the user accepts it.
+
+#: The trust_store record that holds the pins.
+PIN_RECORD = "mcp_pins.json"
+_PIN_LOCK = threading.Lock()
+#: (server key, tool, digest) -> the user's answer in this process.
+_PIN_ANSWERS: dict = {}
+#: Pins kept in memory where the store cannot be written (a process
+#: inside an agent session): changes are still found within the process.
+_PIN_MEMORY: dict = {}
+#: Events recorded once per process: ("pinned", key) / ("changed", ...).
+_PIN_NOTED: set = set()
+#: Namespaced tools this process withholds by their pin; the MCP gate
+#: (api_client._DocToolExecutor._gate_mcp_tool) refuses calls to them.
+PIN_WITHHELD: set = set()
+
+
+def tool_digest(tool: "MCPTool") -> str:
+    """SHA-256 of the tool's description and input schema as sorted JSON:
+    the two texts of the tool the model reads."""
+    body = json.dumps({"description": str(getattr(tool, "description", "")
+                                          or ""),
+                       "schema": getattr(tool, "schema", None) or {}},
+                      sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(body.encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def server_key(name: str, server: "Optional[MCPServer]" = None) -> str:
+    """The pin store's key for a server: its name and how it is launched
+    (command and arguments, or URL), so a different launch under the same
+    name is a different server, pinned on its own first use. The
+    environment is left out (it may carry credentials)."""
+    if server is None:
+        launch: Any = ""
+    elif getattr(server, "transport", "stdio") == "http":
+        launch = ["http", str(getattr(server, "url", "") or "")]
+    else:
+        launch = ["stdio", str(getattr(server, "command", "") or ""),
+                  [str(a) for a in (getattr(server, "args", None) or [])]]
+    digest = hashlib.sha256(json.dumps(launch).encode("utf-8")).hexdigest()
+    return f"{name}#{digest[:12]}"
+
+
+def forget_pin_decisions() -> None:
+    """Drop this process's answers and in-memory pins (a new process)."""
+    with _PIN_LOCK:
+        _PIN_ANSWERS.clear()
+        _PIN_MEMORY.clear()
+        _PIN_NOTED.clear()
+        PIN_WITHHELD.clear()
+
+
+def _pins_read() -> dict:
+    from . import trust_store
+    data = trust_store.read_record(PIN_RECORD) or {}
+    servers = data.get("servers") if isinstance(data, dict) else None
+    return {"v": 1, "servers": servers if isinstance(servers, dict) else {}}
+
+
+def _pins_update(change) -> bool:
+    """Read, ``change(data)``, write, under a lock across processes. False
+    when the store cannot be written (the change then lives in memory)."""
+    from . import trust_store
+    d = trust_store.ensure_store_dir()
+    with _PIN_LOCK:
+        lock_fd = None
+        try:
+            if d is not None:
+                try:
+                    import fcntl
+                    lock_fd = os.open(str(d / ".mcp_pins.lock"),
+                                      os.O_RDWR | os.O_CREAT, 0o600)
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                except (ImportError, OSError):
+                    pass
+            data = _pins_read()
+            for key, entry in _PIN_MEMORY.items():
+                data["servers"].setdefault(key, entry)
+            change(data)
+            if trust_store.write_record(PIN_RECORD, data):
+                _PIN_MEMORY.clear()
+                return True
+            _PIN_MEMORY.update(data["servers"])
+            return False
+        finally:
+            if lock_fd is not None:
+                os.close(lock_fd)
+
+
+def _pins_now() -> dict:
+    data = _pins_read()["servers"]
+    with _PIN_LOCK:
+        for key, entry in _PIN_MEMORY.items():
+            data.setdefault(key, entry)
+    return data
+
+
+def pin_check(tool: "MCPTool", key: str) -> tuple:
+    """``(state, digest)`` for ``tool`` of the server stored as ``key``.
+
+    States: "pinned" (hash as first seen, or as last accepted), "first"
+    (the server was never seen: every tool of it is pinned now),
+    "changed" (description or schema differ from the pin), "new" (a tool
+    the pinned server did not have)."""
+    digest = tool_digest(tool)
+    entry = _pins_now().get(key)
+    if not isinstance(entry, dict):
+        return "first", digest
+    pinned = (entry.get("tools") or {}).get(tool.name)
+    if pinned is None:
+        return "new", digest
+    return ("pinned" if pinned == digest else "changed"), digest
+
+
+def pin_server(key: str, name: str, tools: list) -> None:
+    """Pin every tool of a server seen for the first time."""
+    def change(data):
+        entry = data["servers"].get(key)
+        if isinstance(entry, dict):
+            return          # another process pinned it first
+        data["servers"][key] = {
+            "name": name, "first_seen": time.time(),
+            "tools": {t.name: tool_digest(t) for t in tools},
+            "pending": {}}
+    _pins_update(change)
+
+
+def pin_accept(key: str, tool_name: str, digest: str) -> bool:
+    """Make ``digest`` the pin of ``tool_name``; drop its pending entry."""
+    def change(data):
+        entry = data["servers"].setdefault(
+            key, {"name": key.split("#", 1)[0], "first_seen": time.time(),
+                  "tools": {}, "pending": {}})
+        entry.setdefault("tools", {})[tool_name] = digest
+        (entry.get("pending") or {}).pop(tool_name, None)
+    return _pins_update(change)
+
+
+def pin_pending(key: str, tool: "MCPTool", digest: str, state: str) -> None:
+    """Record a change the user has not accepted, for ``mcp-pins``."""
+    excerpt = " ".join(str(tool.description or "").split())[:300]
+
+    def change(data):
+        entry = data["servers"].get(key)
+        if not isinstance(entry, dict):
+            return
+        pending = entry.setdefault("pending", {})
+        if (pending.get(tool.name) or {}).get("digest") == digest:
+            return
+        pending[tool.name] = {"digest": digest, "state": state,
+                              "seen": time.time(), "description": excerpt}
+    _pins_update(change)
+
+
+def pins_overview() -> list:
+    """One row per pinned server: name, key, tool count, pending changes."""
+    rows = []
+    for key, entry in sorted(_pins_now().items()):
+        if not isinstance(entry, dict):
+            continue
+        rows.append({"key": key, "name": str(entry.get("name") or ""),
+                     "tools": sorted((entry.get("tools") or {}).keys()),
+                     "pending": dict(entry.get("pending") or {})})
+    return rows
+
+
+def accept_pending(server: str, tool: str = "") -> list:
+    """Accept the pending changes of every server named (or keyed)
+    ``server``, for ``tool`` only when given. Output: the accepted
+    ``server/tool`` names."""
+    accepted: list = []
+
+    def change(data):
+        for key, entry in data["servers"].items():
+            if not isinstance(entry, dict) or server not in (
+                    key, entry.get("name")):
+                continue
+            pending = entry.get("pending") or {}
+            for name in list(pending):
+                if tool and name != tool:
+                    continue
+                entry.setdefault("tools", {})[name] = pending[name]["digest"]
+                pending.pop(name)
+                accepted.append(f"{entry.get('name')}/{name}")
+    _pins_update(change)
+    return accepted
 
 
 @dataclass

@@ -22026,6 +22026,14 @@ class _DocToolExecutor:
         if perms is None:
             _record_security_event("no_sandbox_mcp", name, "", blocked=True)
             return _no_sandbox_refusal(name)
+        from . import mcp_client as _mcp_pins
+        if name in _mcp_pins.PIN_WITHHELD:
+            server = name[len("mcp__"):].split("__", 1)[0]
+            return (f"'{name}' is withheld: its MCP server changed the tool's "
+                    "description or schema since it was first seen (or added "
+                    "the tool), and the user has not accepted the change. The "
+                    "user accepts it with `delfin-agent mcp-pins accept "
+                    f"{server}`; do not reach the same server another way.")
         base = name.rsplit("__", 1)[-1]
 
         # (0) Per-role execution allow-list. MCP tools are dispatched without
@@ -26984,6 +26992,108 @@ class _DocToolExecutor:
 _MCP_WITHHELD_REPORTED: set[str] = set()
 
 
+def _mcp_pin_admits(tool, registry, perms, all_tools=()) -> bool:
+    """Whether ``tool`` may be advertised, by its pin (mcp_client).
+
+    Input: a discovered tool, the registry it came from (for the server's
+    source and launch), the session's permissions, and every tool of the
+    pass (a server seen for the first time is pinned whole). Output: True
+    to advertise. A server whose entry is DELFIN's own ("built-in") is not
+    pinned. A first sight pins and admits (``mcp_pinned``, once per server
+    and process). A changed description or schema, or a new tool on a
+    pinned server, is admitted only when the user accepts it: asked once
+    per change and process where someone can be asked (not in plan or
+    bypass), answered ``mcp_description_accepted`` or refused
+    ``mcp_description_changed``; with nobody to ask it is withheld, kept as
+    pending for ``delfin-agent mcp-pins accept``, and recorded blocked once.
+
+    Rejected: showing the changed text fenced and asking afterwards (the
+    model has read it by then); refusing the whole server (one changed tool
+    would cost every other one). Cost: one SHA-256 of description and
+    schema per tool and request, one store read per request."""
+    from . import mcp_client as _mcp
+    name = tool.namespaced_name
+    try:
+        source = registry.source_of(tool.server) if hasattr(
+            registry, "source_of") else ""
+    except Exception:
+        source = ""
+    if source == "built-in":
+        return True
+    srv = (getattr(registry, "servers", None) or {}).get(tool.server)
+    try:
+        key = _mcp.server_key(tool.server, srv)
+        state, digest = _mcp.pin_check(tool, key)
+    except Exception as exc:
+        if ("error", name) not in _mcp._PIN_NOTED:
+            _mcp._PIN_NOTED.add(("error", name))
+            _record_security_event("mcp_description_changed", name,
+                                   f"the pin could not be checked ({exc}); "
+                                   "withheld", blocked=True)
+        _mcp.PIN_WITHHELD.add(name)
+        return False
+    if state == "first":
+        mine = [t for t in all_tools if t.server == tool.server] or [tool]
+        _mcp.pin_server(key, tool.server, mine)
+        if ("pinned", key) not in _mcp._PIN_NOTED:
+            _mcp._PIN_NOTED.add(("pinned", key))
+            _record_security_event(
+                "mcp_pinned", f"mcp:{tool.server}",
+                f"{len(mine)} tool description(s) pinned on first use",
+                blocked=False)
+        _mcp.PIN_WITHHELD.discard(name)
+        return True
+    if state == "pinned":
+        _mcp.PIN_WITHHELD.discard(name)
+        return True
+    what = ("offers a new tool" if state == "new"
+            else "changed the description or schema of")
+    answer = _mcp._PIN_ANSWERS.get((key, tool.name, digest))
+    mode = str(getattr(perms, "mode", "") or "")
+    can_ask = (getattr(perms, "confirm_callback", None) is not None
+               and mode not in ("plan", "bypassPermissions"))
+    if answer is None and can_ask:
+        from .session_messages import _plain
+        text = _plain(str(tool.description or ""))[:1500]
+        props = sorted(((tool.schema or {}).get("properties") or {}).keys()) \
+            if isinstance(tool.schema, dict) else []
+        preview = (f"[MCP TOOL CHANGED] The MCP server {tool.server} {what} "
+                   f"{tool.name} since it was first seen. The model is shown "
+                   "the tool only if you accept it.\n\nDescription:\n"
+                   f"{text}\n\nParameters: {', '.join(props) or '(none)'}")
+        try:
+            answer = bool(_ask_confirm(perms, "mcp_description", {
+                "server": tool.server, "tool": tool.name, "change": state},
+                preview))
+        except Exception:
+            answer = False
+        _mcp._PIN_ANSWERS[(key, tool.name, digest)] = answer
+        if answer:
+            _mcp.pin_accept(key, tool.name, digest)
+            _record_security_event("mcp_description_accepted", name,
+                                   f"the user accepted: the server {what} it",
+                                   blocked=False)
+        else:
+            _mcp.pin_pending(key, tool, digest, state)
+            _record_security_event("mcp_description_changed", name,
+                                   f"the server {what} it; the user refused, "
+                                   "withheld", blocked=True)
+    if answer:
+        _mcp.PIN_WITHHELD.discard(name)
+        return True
+    if answer is None:
+        _mcp.pin_pending(key, tool, digest, state)
+        if ("changed", key, tool.name, digest) not in _mcp._PIN_NOTED:
+            _mcp._PIN_NOTED.add(("changed", key, tool.name, digest))
+            _record_security_event(
+                "mcp_description_changed", name,
+                f"the server {what} it since it was first seen; withheld "
+                "until the user accepts it (delfin-agent mcp-pins accept "
+                f"{tool.server} {tool.name})", blocked=True)
+    _mcp.PIN_WITHHELD.add(name)
+    return False
+
+
 def _mcp_tool_entry(tool) -> dict:
     """The tool-schema entry advertised for a discovered MCP tool. Its
     description is ``mcp_client.advertised_description``: fenced as data,
@@ -30277,6 +30387,9 @@ class OpenAIClient(_BaseClient):
                 # a user's own server is not crowded out by it.
                 if (_hidden_groups and _tool_group(_tool.namespaced_name)
                         in _hidden_groups):
+                    continue
+                if not _mcp_pin_admits(_tool, _registry, self._permissions,
+                                       _mcp_tools):
                     continue
                 _entry = _mcp_tool_entry(_tool)
                 try:

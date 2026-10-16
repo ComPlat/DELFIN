@@ -923,9 +923,14 @@ def _reset_workspace_trust_caches():
     refusals have already been reported. Both would otherwise leak from one
     test's tmp workspace into the next one's assertions."""
     from delfin.agent import workspace_trust as wt
+    from delfin.agent import mcp_client as _mcp
     wt.reset_announcements()
+    # The MCP pins live in each test's trust store; the answers and the
+    # withheld tools of one test are its process state, not the next's.
+    _mcp.forget_pin_decisions()
     yield
     wt.reset_announcements()
+    _mcp.forget_pin_decisions()
 
 
 @pytest.fixture(autouse=True)

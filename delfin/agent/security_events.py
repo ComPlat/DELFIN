@@ -49,6 +49,11 @@ _KINDS = {
     "memory_refused": ("🧠", "Instruction-shaped memory refused"),
     "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
     "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
+    # Descriptions pinned on first use (mcp_client.pin_check): a first
+    # sight, a change the user accepted, and a change withheld.
+    "mcp_pinned": ("🔌", "MCP tool descriptions pinned on first use"),
+    "mcp_description_accepted": ("🔌", "Changed MCP tool accepted by the user"),
+    "mcp_description_changed": ("🔌", "Changed MCP tool withheld"),
     "calc_edit":      ("🧪", "Stored-calculation edit"),
     "read_only_write": ("📕", "Write into a read-only location"),
     "out_of_write_scope": ("📐", "Write outside the repo's write scope"),

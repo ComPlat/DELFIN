@@ -3665,6 +3665,38 @@ def cmd_pause(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp_pins(args: argparse.Namespace) -> int:
+    """The MCP tool descriptions pinned on first use, and the changes
+    waiting for the person (mcp_client). ``accept`` is the person's:
+    refused inside an agent session."""
+    from . import mcp_client as _mcp
+    if getattr(args, "pins_action", "") == "accept":
+        if _refuse_pause_inside_agent("delfin-agent mcp-pins accept"):
+            return 2
+        done = _mcp.accept_pending(args.server, args.tool or "")
+        if not done:
+            print(f"nothing waits for {args.server}"
+                  + (f"/{args.tool}" if args.tool else ""))
+            return 1
+        for name in done:
+            print(f"accepted {name}: the next session shows it to the model")
+        return 0
+    from .session_messages import _plain
+    rows = _mcp.pins_overview()
+    if not rows:
+        print("no MCP server pinned yet")
+        return 0
+    for row in rows:
+        print(f"{_plain(row['name'])}  ({len(row['tools'])} tools pinned)")
+        for tool, info in sorted(row["pending"].items()):
+            state = "new tool" if info.get("state") == "new" else "changed"
+            print(f"  {state}: {_plain(tool)} -- "
+                  f"{_plain(info.get('description') or '')[:200]}")
+            print(f"    accept with: delfin-agent mcp-pins accept "
+                  f"{_plain(row['name'])} {_plain(tool)}")
+    return 0
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     """Lift a pause set by ``delfin-agent pause``. Refused inside an agent
     session."""
@@ -5186,6 +5218,19 @@ def build_parser() -> argparse.ArgumentParser:
     resume_p = sub.add_parser("resume", help="Resume a paused session")
     resume_p.add_argument("session", help="The session's -n name")
     resume_p.set_defaults(func=cmd_resume)
+
+    pins_p = sub.add_parser(
+        "mcp-pins",
+        help="MCP tool descriptions pinned on first use, and changes that "
+             "wait for you (accept SERVER [TOOL])")
+    pins_sub = pins_p.add_subparsers(dest="pins_action")
+    pins_sub.add_parser("list", help="Pinned servers and waiting changes")
+    accept_p = pins_sub.add_parser(
+        "accept", help="Accept a changed or new tool of a server")
+    accept_p.add_argument("server", help="The server's name")
+    accept_p.add_argument("tool", nargs="?", default="",
+                          help="One tool (default: every waiting one)")
+    pins_p.set_defaults(func=cmd_mcp_pins)
 
     # doctor — aggregate prerequisite health report
     doctor = sub.add_parser(

@@ -294,6 +294,11 @@ def _acting_subcommand(args: list, xargs: bool) -> str:
         return ""
     if rest[0] in _TOP_ACTS and (len(rest) > 1 or xargs):
         return f"delfin-agent {rest[0]}"
+    # Accepting a changed MCP tool description is the person's decision.
+    if rest[0] == "mcp-pins" and (
+            (len(rest) > 1 and rest[1] == "accept") or (len(rest) == 1
+                                                        and xargs)):
+        return "delfin-agent mcp-pins accept"
     return ""
 
 
