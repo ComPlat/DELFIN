@@ -15743,8 +15743,24 @@ class _DocToolExecutor:
             pass
 
     def _shell_snapshot(self, perms: "KitToolPermissions"):
-        """The writable roots before a shell command (shell_changes).
-        None when it cannot be taken. Never raises."""
+        """The writable roots before a shell command (shell_changes), with
+        the git config watch (git_config_watch) attached as ``git_watch``.
+        None when neither can be taken. Never raises."""
+        try:
+            from . import git_config_watch as _gcw
+            gsnap = _gcw.take(getattr(perms, "workspace", "."))
+        except Exception:
+            gsnap = None
+        snap = self._shell_snapshot_files(perms)
+        if snap is None:
+            return _GitWatchOnly(gsnap) if gsnap is not None else None
+        try:
+            snap.git_watch = gsnap
+        except Exception:
+            pass
+        return snap
+
+    def _shell_snapshot_files(self, perms: "KitToolPermissions"):
         try:
             from . import change_journal as _cj
             from . import shell_changes as _sc
@@ -15763,6 +15779,21 @@ class _DocToolExecutor:
             return None
 
     def _journal_shell_changes(
+        self, tool: str, snap, perms: "KitToolPermissions",
+    ) -> list[str]:
+        """The git config watch first (a program entry the command added to
+        the repository's config is undone), then the file journal."""
+        notes: list[str] = []
+        try:
+            from . import git_config_watch as _gcw
+            notes = _gcw.check(getattr(snap, "git_watch", None))
+        except Exception:
+            notes = []
+        if snap is None or isinstance(snap, _GitWatchOnly):
+            return notes
+        return notes + self._journal_shell_file_changes(tool, snap, perms)
+
+    def _journal_shell_file_changes(
         self, tool: str, snap, perms: "KitToolPermissions",
     ) -> list[str]:
         """Journal what a shell command changed under the roots, one
@@ -26736,6 +26767,14 @@ _GIT_ROOTS_CACHE: dict = {}
 #: hooks run programs, and config, config.worktree and info/ (attributes)
 #: name the programs git runs (filters, fsmonitor, pager, textconv, ...).
 _GIT_READ_ONLY_IN_THE_SANDBOX = ("hooks", "config", "config.worktree", "info")
+
+
+class _GitWatchOnly:
+    """A shell snapshot that holds only the git config watch (the file
+    snapshot could not be taken)."""
+
+    def __init__(self, git_watch):
+        self.git_watch = git_watch
 
 
 def _git_metadata_roots(workspace) -> list[str]:
