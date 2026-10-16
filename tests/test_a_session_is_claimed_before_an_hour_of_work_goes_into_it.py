@@ -317,7 +317,8 @@ def test_the_first_changed_file_keeps_its_first_letter(monkeypatch, tmp_path):
                          "?? notes.txt\n")
         return _Proc("")
 
-    monkeypatch.setattr("subprocess.run", _run)
+    monkeypatch.setattr(lg.safe_git, "run",
+                        lambda args, cwd, **kw: _run(["git", *args], **kw))
     info = lg._git_info(tmp_path)
     assert info.dirty == ("delfin/agent/cli.py", "delfin/agent/repl.py",
                           "notes.txt")
@@ -338,5 +339,6 @@ def test_a_renamed_file_is_named_by_where_it_ended_up(monkeypatch, tmp_path):
             return _Proc("R  old_name.py -> new_name.py\n")
         return _Proc("")
 
-    monkeypatch.setattr("subprocess.run", _run)
+    monkeypatch.setattr(lg.safe_git, "run",
+                        lambda args, cwd, **kw: _run(["git", *args], **kw))
     assert lg._git_info(tmp_path).dirty == ("new_name.py",)

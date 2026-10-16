@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
 
+from . import safe_git
+
 
 class WorktreeError(RuntimeError):
     pass
@@ -87,13 +89,9 @@ def _held_message(path: Path | str, jobs: list) -> str:
 
 
 def _run_git(repo: Path, *args: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", *args], cwd=str(repo),
-            capture_output=True, text=True, timeout=30,
-        )
-    except FileNotFoundError as exc:
-        raise WorktreeError("git is not installed") from exc
+    result = safe_git.run(args, repo, timeout=30)
+    if result.returncode == 127:
+        raise WorktreeError("git is not installed")
     if result.returncode != 0:
         raise WorktreeError(
             f"git {' '.join(args)} failed: {result.stderr.strip()}"
@@ -103,12 +101,9 @@ def _run_git(repo: Path, *args: str) -> str:
 
 def _is_git_repo(path: Path) -> bool:
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--git-dir"], cwd=str(path),
-            capture_output=True, text=True, timeout=10,
-        )
-        return out.returncode == 0
-    except (FileNotFoundError, subprocess.SubprocessError):
+        return safe_git.run(["rev-parse", "--git-dir"], path,
+                            timeout=10).returncode == 0
+    except Exception:
         return False
 
 
@@ -174,9 +169,10 @@ def _default_parent(repo: Path) -> Path:
 def _inside_a_work_tree(path: Path) -> bool:
     """True when *path* lies inside some git checkout. Fails safe (True)."""
     try:
-        out = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=5)
+        out = safe_git.run(["rev-parse", "--is-inside-work-tree"], path,
+                           timeout=5)
+        if out.returncode == 127:
+            return True
         return out.returncode == 0 and out.stdout.strip() == "true"
     except Exception:
         return True
@@ -314,17 +310,13 @@ def _changed_files(wt: Path, base_ref: str) -> list:
 
 def _git_apply(repo: Path, patch: str, *, check: bool) -> tuple[bool, str]:
     """Run `git apply` reading the patch from stdin. Returns (ok, stderr)."""
-    args = ["git", "apply", "--whitespace=nowarn"]
+    args = ["apply", "--whitespace=nowarn"]
     if check:
         args.append("--check")
     args.append("-")
-    try:
-        proc = subprocess.run(
-            args, cwd=str(repo), input=patch,
-            capture_output=True, text=True, timeout=60,
-        )
-    except FileNotFoundError as exc:
-        raise WorktreeError("git is not installed") from exc
+    proc = safe_git.run(args, repo, input=patch, timeout=60)
+    if proc.returncode == 127:
+        raise WorktreeError("git is not installed")
     return proc.returncode == 0, proc.stderr.strip()
 
 

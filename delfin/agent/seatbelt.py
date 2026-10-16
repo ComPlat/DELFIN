@@ -76,8 +76,8 @@ def profile(*, write_roots: Iterable[str] = (), hide: Iterable[str] = (),
                      ' (regex #"^/dev/fd/"))')
         denied = _real(write_deny)
         if denied:
-            # After the allow, so it wins: git hooks stay readable, a new
-            # one cannot be written.
+            # After the allow, so it wins: git hooks, config and info/ stay
+            # readable; they cannot be written or created.
             lines.append("(deny file-write* " +
                          " ".join(f"(subpath {_q(d)})" for d in denied) + ")")
     hidden = _real(hide)
