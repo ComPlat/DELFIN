@@ -87,6 +87,9 @@ _KINDS = {
     "network_missing": ("⚠", "Command network NOT (fully) held"),
     "egress_asked":   ("🌐", "Command network: destination asked"),
     "egress_upload":  ("📤", "Command upload to an allowed host"),
+    # A write to a known host with nobody to ask, refused because the
+    # host is not named in agent.sandbox_network.upload_domains.
+    "egress_upload_refused": ("📤", "Command upload refused (nobody to ask)"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid

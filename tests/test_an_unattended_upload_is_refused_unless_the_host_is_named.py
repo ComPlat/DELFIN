@@ -95,8 +95,12 @@ def test_a_read_from_a_known_host_still_passes_unattended(proxy, web, tmp_path):
     assert "egress_upload_refused" not in _kinds()
 
 
-def test_a_host_named_for_uploads_receives_them_unattended(proxy, web, tmp_path):
+def test_a_host_named_for_uploads_receives_them_unattended(
+        proxy, web, tmp_path, monkeypatch):
     port = web.server_address[1]
+    # Named when the proxy started, and still named in the file.
+    monkeypatch.setattr(EP, "_settings", lambda: {
+        "mode": "proxy", "upload_domains": ["allowed.test"]})
     proxy.upload_domains = ("allowed.test",)
     out = _via(proxy, ES.perms_in(tmp_path, mode="bypassPermissions"),
                f"http://allowed.test:{port}/up", data=b"x" * (2 * 1024 * 1024))
@@ -115,6 +119,12 @@ def test_the_setting_names_hosts_for_uploads(monkeypatch, web):
         assert p.upload_allowed("up.example.test")
         assert p.upload_allowed("api.lab.test")
         assert not p.upload_allowed("api.github.com")
+        # Removed from the file: refused at once. Added later: only at the
+        # next start, so a command that edits the file gains nothing now.
+        monkeypatch.setattr(EP, "_settings", lambda: {
+            "mode": "proxy", "upload_domains": ["*.lab.test", "late.test"]})
+        assert not p.upload_allowed("up.example.test")
+        assert not p.upload_allowed("late.test")
     finally:
         p.close()
 

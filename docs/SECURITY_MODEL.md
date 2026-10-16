@@ -26,7 +26,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked. |
-| Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; uploading workspace data is asked or, unattended, refused. |
+| Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 
 ## Against whom
@@ -301,8 +301,18 @@ per-session token: a port outside the allowed set is refused; a
 `web_fetch(domain:<host>)` permission rule denies, asks or allows next; a
 known host passes, and an
 upload to it above `agent.sandbox_network.upload_ask_bytes` (1 MiB by
-default) is asked or, with nobody to ask, passes and is recorded
-(`egress_upload`); an unknown host is asked when the session has an
+default) is asked when someone can be asked. With nobody to ask (`plan`,
+bypass, no approval channel) a write to a known host -- POST, PUT, PATCH
+or DELETE in plain HTTP, a body above that limit, or more than that many
+bytes sent inside a `CONNECT` tunnel -- is refused and recorded as a
+blocked `egress_upload_refused` event (it reaches the attention inbox),
+unless the host is named in `agent.sandbox_network.upload_domains` or is
+the model endpoint the session itself registered
+(`egress_proxy.note_endpoint`); those pass and are recorded
+(`egress_upload`). Reads (GET, a tunnel that sends less than the limit)
+pass. Inside TLS the method is not visible: a write below the limit cannot
+be told from a read, so the limit bounds what one connection carries, not
+whether a small payload leaves (residual risks). An unknown host is asked when the session has an
 approval channel and is not in `plan` or bypass, and refused otherwise with
 a message naming the rule and setting that would let it through. Refusals
 answer 403 and are recorded. `agent.sandbox_network.mode` is `proxy`
@@ -442,6 +452,11 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
   a path or a program at run time (a variable, `base64 -d | sh`, an
   interpreter) can do what its text does not show. The same holds for
   approvals: the person approves the text.
+- **Small writes inside TLS.** The egress proxy sees a `CONNECT` tunnel's
+  byte count, not its requests. A write to a known host (for example an
+  authenticated API call to `api.github.com`) that sends less than
+  `agent.sandbox_network.upload_ask_bytes` cannot be told from a read and
+  passes; the limit applies per connection.
 - **The network of a partially isolated command.** On the "Linux, partial"
   row Landlock ABI 4 restricts TCP by port, not by address, and does not
   cover UDP; with an older ABI the command has the host's network. Only a
@@ -518,7 +533,9 @@ Code-modifying tool calls are also appended to the audit log (`audit_log`,
    every mode; a "never allow …" line in `agent.classifier.user_rules`
    refuses a matching action without asking the model.
 5. Leave `agent.sandbox_network.mode` at `proxy` and add only the domains a
-   project needs to `agent.sandbox_network.allowed_domains`.
+   project needs to `agent.sandbox_network.allowed_domains`; name a host in
+   `agent.sandbox_network.upload_domains` only if an unattended run must
+   upload to it.
 6. Do not export provider keys in the shell; store them with
    `delfin-agent credentials` (in the OS keyring where one is usable). Keep
    the process guard and the process cage on.
