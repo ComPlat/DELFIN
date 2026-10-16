@@ -167,3 +167,13 @@ def test_the_served_model_is_bounded_text(tmp_path, monkeypatch):
     (entry,) = tm.read_requests("bounded")
     assert "\n" not in entry["served_model"] and "\x1b" not in entry["served_model"]
     assert len(entry["served_model"]) <= 120
+
+
+def test_a_report_shows_which_model_answered(tmp_path, monkeypatch):
+    monkeypatch.setattr(tm, "_DIR", tmp_path / "turn_metrics")
+    tm.record_request("shown", model="kit.deepseek-v4-flash", ttft_ms=900,
+                      served_model="deepseek-v4-flash-2026-09-01")
+    tm.record_request("shown", model="same", ttft_ms=900, served_model="same")
+    _, first, second = tm.format_requests(tm.read_requests("shown")).splitlines()
+    assert "served=deepseek-v4-flash-2026-09-01" in first
+    assert "served=" not in second

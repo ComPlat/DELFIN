@@ -1,6 +1,6 @@
 # Dependency updates.
 #
-# Three ecosystems, deliberately treated differently:
+# Four ecosystems, deliberately treated differently:
 #
 #   github-actions — the workflows are the merge gate, and a compromised or
 #     abandoned action runs with whatever the workflow grants it. Every
@@ -10,6 +10,13 @@
 #     safe to take, so they arrive individually -- after a week's cooldown, so
 #     a release that is retracted or found compromised within days of
 #     publication never reaches the gate.
+#
+#   docker (.github/ci/agent-container/) — the default image of the agent's
+#     container backend, python:3.11-slim by digest. Dependabot reads the
+#     digest from that Dockerfile (nothing builds it); the pull request it
+#     opens stays red until delfin/agent/container_exec.py carries the same
+#     digest (tests/test_what_the_agent_runs_on_is_named_exactly.py), so a
+#     person moves the image the agent runs commands in. Same cooldown.
 #
 #   bun (tui/) — the terminal window's dependencies, read from tui/bun.lock.
 #     Grouped weekly like pip, majors left out. @opentui/* is excluded: the
@@ -35,6 +42,17 @@ updates:
       default-days: 7
     commit-message:
       prefix: "ci"
+    labels:
+      - dependencies
+
+  - package-ecosystem: docker
+    directory: "/.github/ci/agent-container"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "deps(container)"
     labels:
       - dependencies
 

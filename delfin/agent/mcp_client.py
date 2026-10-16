@@ -25,7 +25,7 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
       "servers": {
         "fs": {
           "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+          "args": ["-y", "@modelcontextprotocol/server-filesystem@1.0.0", "/tmp"],
           "env": {"FOO": "bar"},
           "enabled": true,
           "roots": ["/data/project"],
@@ -42,6 +42,10 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
 
 A server is treated as HTTP when ``type`` is ``http``/``sse``/
 ``streamable-http`` or a ``url`` is present; otherwise stdio.
+
+The example names the package version (``@1.0.0``): ``npx -y <package>``
+without one fetches and runs the newest upload of that package at every
+start, so what the agent talks to changes without any change here.
 
 ``roots`` / ``read_roots`` on a stdio entry launch that server inside a
 namespace holding only those paths — the one containment that works for a

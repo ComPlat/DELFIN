@@ -12977,6 +12977,15 @@ def _resolve_max_tool_rounds(model: str = "", caps=None) -> int:
     return 500
 
 
+def _served_model_of(obj) -> str:
+    """The ``model`` an OpenAI-compatible response or chunk reports, or ''.
+
+    Read with getattr and accepted only as a string: a stub, a proxy that
+    leaves the field out, or a non-string value all give ''."""
+    value = getattr(obj, "model", "")
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _absorb_non_streaming(resp):
     """Pull a non-streaming completion apart into the streaming shape.
 
@@ -30307,6 +30316,9 @@ class OpenAIClient(_BaseClient):
             _round_out = 0
             _round_cached = 0
             _round_ttft: Optional[float] = None
+            # The model id the response reports, recorded beside the name
+            # asked for (turn_metrics served_model).
+            _round_served = ""
 
             finish_reason = None
             _round_t0 = time.monotonic()
@@ -30360,6 +30372,8 @@ class OpenAIClient(_BaseClient):
                     break
                 try:
                     for chunk in stream:
+                        if not _round_served:
+                            _round_served = _served_model_of(chunk)
                         if chunk.usage:
                             _total_in += chunk.usage.prompt_tokens or 0
                             _round_in += chunk.usage.prompt_tokens or 0
@@ -30488,6 +30502,7 @@ class OpenAIClient(_BaseClient):
                 nk["stream"] = False
                 nk.pop("stream_options", None)
                 resp = self.client.chat.completions.create(**nk)
+                _round_served = _served_model_of(resp) or _round_served
                 _c, _calls, _fin, (_ti, _to, _tc_cached) = \
                     _absorb_non_streaming(resp)
                 _total_in += _ti
@@ -30540,6 +30555,7 @@ class OpenAIClient(_BaseClient):
                 except Exception:
                     _resp = None
                 if _resp is not None:
+                    _round_served = _served_model_of(_resp) or _round_served
                     _c, _calls, _fin, (_ti, _to, _cch) = \
                         _absorb_non_streaming(_resp)
                     _total_in += _ti
@@ -30574,6 +30590,7 @@ class OpenAIClient(_BaseClient):
                               else None)
                     _tm_req.record_request(
                         _metrics_session, model=self.model,
+                        served_model=_round_served,
                         ttft_ms=(int((_first - _round_t0) * 1000)
                                  if _first is not None else None),
                         total_ms=int((_round_end - _round_t0) * 1000),
