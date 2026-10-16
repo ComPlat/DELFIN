@@ -341,6 +341,12 @@ security panel and `delfin-agent doctor` say so.
   (`mcp_isolation`; `agent.mcp_isolation` = `builtin` does this for DELFIN's
   own servers). A server that declares neither runs uncontained, and the
   banner, `/mcp` and `delfin-agent doctor` say so.
+- **Sub-agents** get a copy of the session's permissions with the mode
+  clamped to the parent's and the role's tool list intersected into the
+  session tool list (`subagents._derive_perms`). Where that copy cannot be
+  built with the list, the sub-agent is not started
+  (`subagents.SubagentPermissionsError`); it never runs with the parent's
+  full tool surface.
 - The dashboard's approval of a CLI-backend `Bash` call runs through
   `sandbox.run_agent_command`: an allow-list, then bubblewrap or firejail,
   else (mode `allowlist`) Landlock with the network denied as far as the
