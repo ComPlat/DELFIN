@@ -248,6 +248,24 @@ class _Loaded:
                 pass
 
 
+def _one_blas_thread():
+    """This process's BLAS pools at one thread for the duration, if possible.
+
+    threadpoolctl (a scikit-learn requirement) limits numpy's and scipy's
+    OpenBLAS at run time; without it nothing changes. Measured 2026-10-16 on
+    4 CPUs, a push walk of 1292 xtb gradients: 141 s with the pools at their
+    default of one thread per CPU, 21 s at one; with CPUs to spare 23 s either
+    way (tests/test_xtb_runs_without_competing_blas_threads.py).
+    """
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        import contextlib
+
+        return contextlib.nullcontext()
+    return threadpool_limits(limits=1, user_api='blas')
+
+
 def relax_under_load(loaded: _Loaded, bohr: Any, forces: Any, *,
                      steps: int = 200, reach: Optional[float] = None,
                      should_stop: Optional[Callable[[], bool]] = None,
@@ -310,18 +328,26 @@ def relax_under_load(loaded: _Loaded, bohr: Any, forces: Any, *,
     # that is going well and catches only the ones that are not.
     far = (MOST_A_LEVEL_MOVES if reach is None else float(reach)) / _climb.BOHR
     edges = [(float(v) - far, float(v) + far) for v in start]
-    answer = minimize(biased, start, jac=True, method='L-BFGS-B',
-                      bounds=edges,
-                      options={'maxiter': int(steps), 'gtol': 1e-5,
-                               'ftol': 1e-12})
-    settled = np.asarray(answer.x, dtype=float).reshape(-1, 3)
-    try:
-        # The plain energy of what it settled at, which is what is reported.
-        # Asked again rather than taken from the last biased call: the
-        # minimiser's last evaluation is not always the point it returns.
-        energy, _gradient = loaded.engine(settled)
-        spent['calls'] += 1
-    except Exception:
+    # One BLAS thread for this process while it drives xtb: the vectors here
+    # are 3N long, and OpenBLAS's idle threads spin on the CPUs the next xtb
+    # needs (_one_blas_thread).
+    with _one_blas_thread():
+        answer = minimize(biased, start, jac=True, method='L-BFGS-B',
+                          bounds=edges,
+                          options={'maxiter': int(steps), 'gtol': 1e-5,
+                                   'ftol': 1e-12})
+        settled = np.asarray(answer.x, dtype=float).reshape(-1, 3)
+        try:
+            # The plain energy of what it settled at, which is what is
+            # reported. Asked again rather than taken from the last biased
+            # call: the minimiser's last evaluation is not always the point
+            # it returns.
+            energy, _gradient = loaded.engine(settled)
+            spent['calls'] += 1
+            answered = True
+        except Exception:
+            answered = False
+    if not answered:
         return {'ok': False, 'bohr': settled, 'energy': None,
                 'gradients': spent['calls'], 'stopped': spent['stopped'],
                 'refused': spent['refused'],
