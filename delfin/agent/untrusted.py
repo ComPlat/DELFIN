@@ -326,3 +326,106 @@ def flags(text: str) -> list[str]:
                 found.append(f"{kind}: {m.group(0).strip()}")
                 break  # one entry per kind
     return found
+
+
+# ---------------------------------------------------------------------------
+# instruction shapes: text that tries to act as an instruction channel
+# ---------------------------------------------------------------------------
+
+# Narrower than ``flags`` on purpose. A stored note, or a tool description,
+# is normally written in the imperative ("always run the suite serially",
+# "use --repeats 3") and talks about git push, rm, sandboxes and approval
+# dialogs as subjects. What it may not carry is a channel the model reads
+# as authority: a role marker, a fence of this family, tool-call syntax, an
+# override of earlier instructions, a standing consent that skips the user,
+# or concealment from the user. Each kind is an allow-list of worded shapes.
+_SHAPE_KINDS: tuple[tuple[str, tuple[re.Pattern, ...]], ...] = (
+    ("role-marker", (
+        re.compile(r"(?im)^\s*(?:#{1,6}\s*)?(?:system|assistant|developer)"
+                   r"(?:\s+(?:prompt|message|note))?\s*:"),
+        re.compile(r"<\|(?:im_start|im_end|system|assistant|user|endoftext"
+                   r"|eot_id|start_header_id|end_header_id)\|?>", re.I),
+        re.compile(r"\[/?INST\]|<</?SYS>>"),
+        re.compile(r"</?(?:system|assistant|developer)(?:[_-]prompt)?\s*>",
+                   re.I),
+    )),
+    ("fence-break", (
+        re.compile(r"\[\s*(?:END\s+)?UNTRUSTED\s+EXTERNAL\s+CONTENT", re.I),
+        re.compile(r"\[System prompt update", re.I),
+    )),
+    ("tool-call", (
+        re.compile(r"</?tool_call\b|<\|tool_call|<function=|</?function_calls"
+                   r"\b|<invoke\b|</?tool_use\b", re.I),
+        re.compile(r"\"tool_calls\"\s*:", re.I),
+        re.compile(r"\{\s*\"(?:name|tool)\"\s*:\s*\"[^\"]{1,80}\"\s*,\s*"
+                   r"\"(?:arguments|parameters|input)\"\s*:", re.I),
+    )),
+    ("override", (
+        re.compile(r"\b(?:ignore|disregard|forget|override)\s+(?:all\s+|any\s+"
+                   r"|the\s+|your\s+)?(?:previous|prior|earlier|above|other)"
+                   r"\s+(?:instructions?|rules|guidelines|prompts?)\b", re.I),
+        re.compile(r"\b(?:ignore|disregard)\s+(?:the|your)\s+(?:system|harness)"
+                   r"\s+prompt\b", re.I),
+        re.compile(r"\byou\s+are\s+now\s+(?:a|an|the|in|no\s+longer)\b", re.I),
+        re.compile(r"\b(?:new|updated|real|actual)\s+(?:system\s+)?"
+                   r"instructions?\s*:", re.I),
+    )),
+    ("consent-skip", (
+        re.compile(r"\b(?:run|execute|push|merge|commit|delete|remove|write"
+                   r"|install|send|upload|approve|accept|do\s+(?:it|this|so))"
+                   r"\b[^.\n]{0,60}\bwithout\s+(?:first\s+)?(?:asking|ask"
+                   r"|confirm\w*|approv\w*|(?:the\s+)?user'?s?\s+(?:consent"
+                   r"|approval|confirmation|permission)|permission)\b", re.I),
+        re.compile(r"\b(?:never|do\s+not|don'?t|no\s+need\s+to)\s+ask\s+"
+                   r"(?:the\s+user\s+)?(?:for\s+)?(?:permission|confirmation"
+                   r"|approval|before)\b", re.I),
+        re.compile(r"\b(?:always|auto-?)\s*(?:approve|allow|accept)\s+"
+                   r"(?:every|all|any)\b", re.I),
+        re.compile(r"\bthe\s+user\s+(?:has\s+)?(?:pre-?)?(?:approved|authori[sz]"
+                   r"ed|allowed|permitted)\s+(?:all|every|any)\b", re.I),
+    )),
+    ("concealment", (
+        re.compile(r"\b(?:do\s+not|don'?t|never)\s+(?:tell|inform|mention\s+"
+                   r"(?:it|this)\s+to|show|notify|reveal\s+(?:it|this)\s+to)"
+                   r"\s+(?:the\s+)?user\b", re.I),
+        re.compile(r"\bwithout\s+(?:telling|informing|notifying)\s+(?:the\s+)?"
+                   r"user\b", re.I),
+        re.compile(r"\b(?:hide|conceal)\s+(?:it|this|that|them)\s+from\s+"
+                   r"(?:the\s+)?user\b", re.I),
+    )),
+)
+
+
+_CODE_SPAN_RE = re.compile(r"`[^`\n]{1,200}`")
+
+
+def instruction_shapes(text: str) -> list[str]:
+    """One ``"<kind>: <matched phrase>"`` per kind of instruction channel
+    ``text`` carries (role marker, fence break, tool-call syntax, override,
+    consent skip, concealment), at most one per kind; [] for plain text.
+
+    The prose kinds are also matched on the folded text
+    (``skill_safety._folded``: NFKC, zero-width characters removed, Latin
+    look-alikes mapped back, markdown emphasis dropped), so a shape spelt
+    with look-alike letters or zero-width joiners is still seen. Never
+    raises."""
+    t = str(text or "")
+    try:
+        from .skill_safety import _folded
+        folded = _folded(t)
+    except Exception:
+        folded = t
+    # Tool-call syntax inside an inline code span is the subject of a
+    # sentence ("the sanitiser strips the `<tool_call>` tags"); it calls
+    # nothing when read. Every other kind is matched in code spans too.
+    t_nocode = _CODE_SPAN_RE.sub(" ", t)
+    f_nocode = _CODE_SPAN_RE.sub(" ", folded)
+    found: list[str] = []
+    for kind, patterns in _SHAPE_KINDS:
+        a, b = (t_nocode, f_nocode) if kind == "tool-call" else (t, folded)
+        for pat in patterns:
+            m = pat.search(a) or (pat.search(b) if b != a else None)
+            if m:
+                found.append(f"{kind}: {m.group(0).strip()[:80]}")
+                break
+    return found

@@ -1089,6 +1089,45 @@ def _delfin_global_memory_dir() -> Path:
 _MEMORY_WRITE_LOCK = Path.home() / ".delfin" / "memory_writes"
 
 
+class MemoryRefused(ValueError):
+    """A model-written memory carries an instruction channel.
+
+    ``reasons`` lists ``untrusted.instruction_shapes`` findings, one per
+    kind ("override: ignore all previous instructions")."""
+
+    def __init__(self, reasons: list[str]):
+        super().__init__("; ".join(reasons))
+        self.reasons = list(reasons)
+
+
+#: Frontmatter keys of a note's provenance (``save_typed_memory``'s
+#: ``provenance``): the tool that wrote it, the session, and the tools whose
+#: fenced output the turn had read before the write ("nothing" when none).
+PROVENANCE_FIELDS = ("written_by", "session", "read_before")
+
+
+def memory_instruction_refusals(text: str) -> list[str]:
+    """The reasons a model-written note may not be stored: the
+    ``untrusted.instruction_shapes`` of its text, [] when it may.
+
+    A memory is recalled into every later session of its project (the
+    user-wide store into every project), so a note is the one route by
+    which a sentence read once -- in a fetched page, a file, a tool
+    result -- could speak with standing authority later. Plain imperatives
+    and facts about commands stay storable; measured on 915 paragraphs of
+    a working memory store and the shared lessons, the shapes matched 0
+    (docs/: 1 of 1351, a manual sentence saying to run a step "without
+    asking")."""
+    from .untrusted import instruction_shapes
+    return instruction_shapes(text)
+
+
+def _one_line_value(value: object, cap: int = 200) -> str:
+    """A frontmatter value: one line, no control characters, capped."""
+    out = " ".join(str(value or "").split())
+    return "".join(c for c in out if c.isprintable())[:cap]
+
+
 def save_typed_memory(text: str, **kwargs):
     """Save a memory with every other writer held off while it happens.
 
@@ -1108,6 +1147,15 @@ def save_typed_memory(text: str, **kwargs):
     text = _without_secrets(text)
     if kwargs.get("title"):
         kwargs["title"] = _without_secrets(kwargs["title"])
+    # A note the model wrote may not carry an instruction channel. Checked
+    # here, in front of every agent-sourced writer (the remember tool, the
+    # distill pass), so a write path added later is covered too. The
+    # user's own words are not filtered: they are the instruction.
+    if _normalise_source(kwargs.get("source")) == SOURCE_AGENT:
+        reasons = memory_instruction_refusals(
+            text + "\n" + str(kwargs.get("title") or ""))
+        if reasons:
+            raise MemoryRefused(reasons)
     try:
         from .bash_jobs import cross_process_lock
     except Exception:
@@ -1268,8 +1316,13 @@ def _save_typed_memory_unlocked(
     domain: str | None = None,
     source: str = SOURCE_USER,
     allow_scope_prefix: bool = False,
+    provenance: dict[str, str] | None = None,
 ) -> tuple[Path, str, str]:
     """Persist a typed memory in the .delfin project-memory layout.
+
+    ``provenance`` (keys of ``PROVENANCE_FIELDS``) is written into the
+    frontmatter as one-line values and replaces the previous provenance
+    on a merge: the merged body is the incoming writer's.
 
     Writes:
     - ``~/.delfin/projects/<slug>/memory/<type>_<kebab-slug>.md`` with
@@ -1420,6 +1473,9 @@ def _save_typed_memory_unlocked(
         except OSError:
             old_meta = {}
         extras = dict(old_meta)
+        for key in PROVENANCE_FIELDS:
+            extras.pop(key, None)
+        extras.update(_provenance_extras(provenance))
         if old_body != body:
             superseded = " ".join(old_body.split())[:160]
             # Fresh text ⇒ fresh health signal: re-anchor the new body and
@@ -1479,7 +1535,8 @@ def _save_typed_memory_unlocked(
         updated_at=now, use_count=1, memory_type=memory_type, body=body,
         domain=resolved_domain, source=source,
         learned_at=_head_ref(repo_root),
-        extras={"anchors": anchors_json} if anchors_json else None,
+        extras={**({"anchors": anchors_json} if anchors_json else {}),
+                **_provenance_extras(provenance)} or None,
     )
     _atomic_write(fpath, front)
 
@@ -1492,6 +1549,15 @@ def _save_typed_memory_unlocked(
         header=index_header,
     )
     return fpath, slug, memory_type
+
+
+def _provenance_extras(provenance: dict[str, str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key in PROVENANCE_FIELDS:
+        value = _one_line_value((provenance or {}).get(key, ""))
+        if value:
+            out[key] = value
+    return out
 
 
 _PROJECT_INDEX_HEADER = "# DELFIN Project Memory"

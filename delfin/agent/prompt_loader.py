@@ -214,6 +214,12 @@ def _memory_entry_header(title: str, rel: str, raw: str) -> str:
     written = _stamp("created_at")
     if written:
         parts.append(written)
+    # Where a model's note was learned: the tools whose fenced output the
+    # turn had read before remember() wrote it (memory_store
+    # PROVENANCE_FIELDS). Stable per file, so the prompt prefix is too.
+    read_before = " ".join(str(meta.get("read_before", "")).split())[:120]
+    if source == "agent" and read_before and read_before != "nothing":
+        parts.append(f"after reading {read_before}")
     # No "last recalled <date>". It moved every day a note was recalled,
     # and the prompt head is cached as a prefix: the first byte that
     # differs from yesterday makes everything after it cold. Measured
@@ -231,13 +237,31 @@ def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
     stored body in place, so without surfacing it the fact that a memory
     used to say something else is only visible on disk.
     """
-    chunk = f"{_memory_entry_header(title, rel, raw)}\n{_memory_body_only(raw)}"
+    body = _memory_body_only(raw)
     try:
         from .memory_store import _parse_frontmatter
         meta, _ = _parse_frontmatter(raw)
         superseded = (meta.get("superseded") or "").strip()
     except Exception:
-        superseded = ""
+        meta, superseded = {}, ""
+    # A model's note that carries an instruction channel is not replayed:
+    # written before the write filter existed, past it, or edited by hand.
+    # The user's own words are shown as written. Same test as the write
+    # path (memory_store.memory_instruction_refusals).
+    try:
+        from .memory_store import (
+            _normalise_source, memory_instruction_refusals)
+        if _normalise_source(meta.get("source")) == "agent":
+            reasons = memory_instruction_refusals(
+                body + "\n" + superseded)
+            if reasons:
+                kinds = ", ".join(r.split(":", 1)[0] for r in reasons)
+                body = (f"[withheld at recall: the note carries text shaped "
+                        f"as an instruction ({kinds}); /memories shows it]")
+                superseded = ""
+    except Exception:
+        pass
+    chunk = f"{_memory_entry_header(title, rel, raw)}\n{body}"
     if superseded:
         chunk += f"\n[this replaced an earlier wording: {superseded}]"
     return chunk
