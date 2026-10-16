@@ -422,6 +422,50 @@ required_openmpi() {
   printf '%s.%s.%s\n' "${digits:0:1}" "${digits:1:1}" "${digits:2}"
 }
 
+sha256_of() {
+  # The digest alone on stdout; status 1 when no tool can compute one.
+  if have sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  elif have shasum; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif have python3; then
+    python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  else
+    return 1
+  fi
+}
+
+# The SHA-256 open-mpi.org publishes for openmpi-<version>.tar.gz, read
+# 2026-10-16 from www.open-mpi.org/software/ompi/v4.1/ and /v5.0/; the
+# tarballs of 4.1.1, 4.1.6, 4.1.8 and 5.0.8 were downloaded and agree.
+# A release not listed needs OPENMPI_SHA256, the digest from that page.
+openmpi_sha256() {
+  case "$1" in
+    4.1.0) printf '%s\n' 228467c3dd15339d9b26cf26a291af3ee7c770699c5e8a1b3ad786f9ae78140a ;;
+    4.1.1) printf '%s\n' d80b9219e80ea1f8bcfe5ad921bd9014285c4948c5965f4156a3831e60776444 ;;
+    4.1.2) printf '%s\n' a400719b04375cd704d2ed063a50e42d268497a3dfede342986ab7a8d7e8dcf0 ;;
+    4.1.3) printf '%s\n' 9c0fd1f78fc90ca9b69ae4ab704687d5544220005ccd7678bf58cc13135e67e0 ;;
+    4.1.4) printf '%s\n' e166dbe876e13a50c2882e11193fecbc4362e89e6e7b6deeb69bf095c0f4fc4c ;;
+    4.1.5) printf '%s\n' c018b127619d2a2a30c1931f316fc8a245926d0f5b4ebed4711f9695e7f70925 ;;
+    4.1.6) printf '%s\n' 44da277b8cdc234e71c62473305a09d63f4dcca292ca40335aab7c4bf0e6a566 ;;
+    4.1.7) printf '%s\n' 3956daf86e8b570e31155d92ed4b2b1699bc36455ae24a0d98ca376d3e8b4e9d ;;
+    4.1.8) printf '%s\n' fb41086bbed9300baa2f3d7572491facfe5257412fa524ec5a396aa9101d5c62 ;;
+    5.0.0) printf '%s\n' 4bf81fc86f562b372c40d44a09372ba1fa9b780d50d09a46ed0c4c7f09250b71 ;;
+    5.0.1) printf '%s\n' 15805510d599558aed2ef43770e8a4683b9a6b361d0a91f107cb7c377cfe2bfb ;;
+    5.0.2) printf '%s\n' 095ab1cddb0fa0f9e7fc211a1d33185c6727c5237d0ee55f80a7e4311e5d279c ;;
+    5.0.3) printf '%s\n' 3e12160dd1d6f5cd8897bbab63a05fb9223a1e20a1726db23607aac25dc1aa19 ;;
+    5.0.4) printf '%s\n' 182763628c6cfbd732f83125cc1acf001eb445af45e5a406e65923f90a69f697 ;;
+    5.0.5) printf '%s\n' 5cbefa0780b84f4126743c40cdd6a334b2f0574cd7fd95050fb1ac0ddbb7f0b8 ;;
+    5.0.6) printf '%s\n' 1d6dd41f6b53c00db23b40e56733d16a996fa743957ef8add8e117feffd92689 ;;
+    5.0.7) printf '%s\n' 67435fdb2560f897882e69fead171d38e7f44a6dfe1d3c90506f549a943050b8 ;;
+    5.0.8) printf '%s\n' f891ddf2dab3b604f2521d0569615bc1c07a1ac86a295ac543e059aecb303621 ;;
+    5.0.9) printf '%s\n' be35ac3aae68609dedf56a3c6480cb1b0af9ae40b98cc83ef27bc859084a9aa8 ;;
+    5.0.10) printf '%s\n' 5692cc80554a7117c99eaa725d35100edd8bbf73423a5e265ff867979192df7d ;;
+    5.0.11) printf '%s\n' 77a402c64c22f1bd8a504f76fd411df23e36e168eedce6c9bcd12c8c0cd0619a ;;
+    *) return 1 ;;
+  esac
+}
+
 # A prefix whose ompi_info starts: its libraries load. mpirun --version alone
 # answers even when a library it needs at run time is gone.
 openmpi_works() {
@@ -433,12 +477,17 @@ mpirun_version() {
 }
 
 build_openmpi() {
-  local want="$1" target="$PREFIX/openmpi-$1" build="$PREFIX/.build" url
+  local want="$1" target="$PREFIX/openmpi-$1" build="$PREFIX/.build" url digest got
   url="${OPENMPI_URL:-https://download.open-mpi.org/release/open-mpi/v${want%.*}/openmpi-$want.tar.gz}"
   if [ "$DRY_RUN" = 1 ]; then
     log "would build OpenMPI $want into $target"
     OMPI_FOUND="$target"
     return 0
+  fi
+  digest="${OPENMPI_SHA256:-}"
+  if [ -z "$digest" ] && ! digest="$(openmpi_sha256 "$want")"; then
+    warn "no SHA-256 is pinned for OpenMPI $want, so its source is not downloaded; set OPENMPI_SHA256 to the digest www.open-mpi.org publishes for openmpi-$want.tar.gz, or OPENMPI_PREFIX to an existing $want build"
+    return 1
   fi
   if ! have gcc && ! have cc; then
     warn "no C compiler on PATH, so OpenMPI $want cannot be built; set OPENMPI_PREFIX to an existing $want build"
@@ -454,6 +503,18 @@ build_openmpi() {
     fi
     mv "$build/openmpi-$want.tar.gz.partial" "$build/openmpi-$want.tar.gz"
   fi
+  # Checked every time, a tarball kept from an earlier run included.
+  if ! got="$(sha256_of "$build/openmpi-$want.tar.gz")"; then
+    rm -f "$build/openmpi-$want.tar.gz"
+    warn "no sha256sum, shasum or python3 to check the OpenMPI $want source; it is not built"
+    return 1
+  fi
+  if [ "$got" != "$digest" ]; then
+    rm -f "$build/openmpi-$want.tar.gz"
+    warn "checksum mismatch for openmpi-$want.tar.gz from $url: expected $digest, got $got; the file was removed and nothing was built"
+    return 1
+  fi
+  log "checksum verified: openmpi-$want.tar.gz"
   rm -rf "$build/openmpi-$want"
   tar -xzf "$build/openmpi-$want.tar.gz" -C "$build" || { warn "cannot unpack $build/openmpi-$want.tar.gz"; return 1; }
   if ! ( cd "$build/openmpi-$want" \

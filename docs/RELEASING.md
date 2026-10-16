@@ -101,6 +101,13 @@ and the other three jobs still run.
 | Bun | version + SHA-256 | by hand | `tui/scripts/install-bun.sh` |
 | TUI packages | `tui/bun.lock` (sha512 per entry) | Dependabot `bun` (minor/patch, not `@opentui/*`) | `bun install --frozen-lockfile` |
 | xtb4stda, stda, their parameter files | tag v1.0 / its commit + SHA-256 per file | by hand | `fetch_verified` in `delfin/qm_tools/install_qm_tools.sh` |
+| g-xTB release binary | tag v2.0.1 + SHA-256 per asset (`gxtb_sha256` in `install_qm_tools.sh`) | by hand: the release's `.sha256` files, compared with GitHub's asset digests | `fetch_verified`; `tests/test_every_installer_download_is_pinned.py` |
+| std2 source | commit + SHA-256 of the GitHub archive (`STD2_SHA256`) | by hand | `fetch_verified` |
+| OpenMPI source built by `install_delfin.sh` | SHA-256 per release 4.1.0-4.1.8, 5.0.0-5.0.11 (`openmpi_sha256`), as www.open-mpi.org publishes them; another release only with `OPENMPI_SHA256` | by hand | `build_openmpi` checks every tarball, a kept one included; `tests/test_every_installer_download_is_pinned.py` |
+| CENSO (`install_analysis_tools.sh`) | commit of v3.0.8 (Python >= 3.12) and of v2.1.4 (`CENSO_V3_REF`, `CENSO_V2_REF`); pip checks out the commit | by hand | same test |
+| CENSO helper scripts c2anmr, nmrplot | SHA-256 per script and commit (`censo_helper_sha256`) | by hand | `fetch_verified` in `install_analysis_tools.sh` |
+| ANMR binary | ENSO release v.2.0.2 + SHA-256 (`ENSO_ANMR_SHA256`) | by hand | `fetch_verified` in `install_analysis_tools.sh` |
+| Genarris source | commit (`GENARRIS_REF`); the checkout is compared with it, submodules follow the commit | by hand | same test |
 | Ketcher drawing editor (fetched on first use, served by the dashboard) | version 3.18.0 + size + SHA-256 in `delfin/dashboard/ketcher.py` | by hand | `tests/test_the_editor_download_is_pinned_and_unpacked_inside.py`; `install()` refuses a mismatch and any archive member outside its directory |
 | agent container image (`agent.bash_isolation = "container"`) | `python@sha256:` digest in `delfin/agent/container_exec.py` | Dependabot `docker` on `.github/ci/agent-container/Dockerfile`, 7-day cooldown; the PR stays red until the constant matches | `tests/test_what_the_agent_runs_on_is_named_exactly.py` |
 | Python dependencies | ranges in `pyproject.toml`; voila, jupyter-server and tornado floored at the releases that fix their known advisories | Dependabot `pip` (grouped) | `dependency-review.yml` on PRs; `audit.yml` nightly |
@@ -110,9 +117,24 @@ advisory accepted on purpose goes in `.github/ci/audit-ignore.txt` with its
 reason. CodeQL analyses Python, the workflows, the TypeScript window
 (`tui/src`) and the C# launcher.
 
-Not yet pinned: the conda-forge packages the toolchains job installs
-(versions float; conda checks each package's digest against the
-channel's repodata).
+Not pinned, with the reason:
+
+- conda-forge packages (the toolchains job; xtb, CREST, DFTB+ and the
+  others the installers put into a managed environment): versions float
+  except where an installer names a build (xtb 6.7.1); conda checks each
+  package's digest against the channel's repodata, fetched over TLS.
+- Python packages the installers add with pip by name (PyPI, and the
+  PyTorch CPU index for the MLP tools): resolved by pip over TLS from the
+  index; hash-pinning them would need one lock per platform, accelerator
+  and Python version.
+- The DELFIN checkout `install_delfin.sh` clones: it is the code being
+  installed, and `--update` follows it on purpose.
+- Multiwfn: never downloaded; the installer prints where to get it.
+
+`tests/test_every_installer_download_is_pinned.py` refuses a branch head
+(`refs/heads/`) or a `latest` release in any `delfin/**/install_*.sh`, and
+`tests/test_micromamba_is_fetched_as_one_pinned_release.py` refuses a
+download piped into tar or a shell.
 
 ## Releases already on PyPI
 
