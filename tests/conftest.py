@@ -80,8 +80,10 @@ _GENERATED_ROOTS = (
 # Build noise: byte-code caches and tool caches created by running at all,
 # plus the worktrees parallel agents check out under `.claude`, which are
 # separate working copies with their own runs going on in them.
+# Not ".hypothesis": the property-based tests' cache goes to a directory of
+# the session's own (pytest_configure), so one in the checkout is a leak.
 _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
-                   ".ruff_cache", ".hypothesis",
+                   ".ruff_cache",
                    ".claude", ".venv", "node_modules",
                    # The gate/coordination directory the operator and the
                    # swarm workers write their controls, control runs and
@@ -1402,6 +1404,49 @@ _SLOW_TEST_FILES = frozenset({
 })
 
 
+_HYPOTHESIS_STORE: dict[str, str | None] = {}
+
+
+def _hypothesis_store_outside_the_checkout() -> None:
+    """Point hypothesis's storage at a directory of this session.
+
+    hypothesis writes ``<cwd>/.hypothesis`` (the unicode table it caches
+    for text strategies, the constants it collects from the code under
+    test) even with ``database=None``: one run of the parser property
+    tests from the checkout root left ``.hypothesis/`` beside
+    pyproject.toml. The variable reaches every process a test starts; the
+    directory is created only when hypothesis writes, and removed at the
+    end of the session.
+
+    Rejected: a ``settings`` profile -- it sets the example database, not
+    the storage directory the unicode table and constants go to.
+    """
+    import os
+    import tempfile
+    where = os.path.join(tempfile.gettempdir(), f"delfin-hypothesis-{os.getpid()}")
+    _HYPOTHESIS_STORE["dir"] = where
+    _HYPOTHESIS_STORE["was"] = os.environ.get("HYPOTHESIS_STORAGE_DIRECTORY")
+    os.environ["HYPOTHESIS_STORAGE_DIRECTORY"] = where
+    try:  # already imported by its pytest plugin; the location is read once
+        from hypothesis.configuration import set_hypothesis_home_dir
+    except ImportError:
+        return
+    set_hypothesis_home_dir(where)
+
+
+def _hypothesis_store_removed() -> None:
+    import os
+    import shutil
+    where = _HYPOTHESIS_STORE.pop("dir", None)
+    was = _HYPOTHESIS_STORE.pop("was", None)
+    if was is None:
+        os.environ.pop("HYPOTHESIS_STORAGE_DIRECTORY", None)
+    else:
+        os.environ["HYPOTHESIS_STORAGE_DIRECTORY"] = was
+    if where:
+        shutil.rmtree(where, ignore_errors=True)
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -1411,12 +1456,14 @@ def pytest_configure(config):
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    _hypothesis_store_outside_the_checkout()
 
 
 def pytest_unconfigure(config):
     import os
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
+    _hypothesis_store_removed()
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
