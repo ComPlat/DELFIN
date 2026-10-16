@@ -616,3 +616,18 @@ def test_a_presence_record_of_a_reused_pid_is_not_an_open_session(home):
     rec["proc_start"] = "1"                         # an earlier life
     rec_path.write_text(json.dumps(rec))
     assert [r["name"] for r in ops_interface.sessions()] == []
+
+
+def test_an_agent_session_reads_no_other_sessions_mail(home, monkeypatch):
+    """session_messages shows a session only the mail it sent; read
+    through ops from inside an agent session, the events name who wrote
+    to whom and keep the text back."""
+    h, ws, _ = home
+    _open("wave-s35", "z" * 32, ws)
+    state = _first()
+    session_messages.send("wave-s35", "private note", from_key="operator")
+    from delfin.agent import approval_guard
+    monkeypatch.setenv(approval_guard.ENV_MARKER, "nacht-s35")
+    ev = [e for e in ops_interface.poll(state) if e["kind"] == "message"]
+    assert len(ev) == 1 and ev[0]["to"] == "wave-s35"
+    assert ev[0]["text"] == "" and ev[0]["text_withheld"] is True
