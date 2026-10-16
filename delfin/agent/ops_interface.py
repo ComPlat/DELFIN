@@ -128,17 +128,37 @@ def _inbox_dir() -> Path:
         return _home() / "session_inbox"
 
 
+#: What a field shows when its text holds something shaped like a
+#: credential.
+NOT_SHOWN = "(not shown: it contains text shaped like a credential)"
+#: Characters of a field the credential verdict reads at most.
+_VERDICT_MAX = 65536
+
+
+def _clean(text: Any) -> bool:
+    """The secret scrubber's verdict on *text*: True when it would leave
+    it unchanged (bug_watcher._scrubber_leaves, which fails closed)."""
+    from .bug_watcher import _scrubber_leaves
+    return _scrubber_leaves(text)
+
+
 def _bounded(text: Any, limit: int = TEXT_MAX) -> str:
-    """A field value for output: a string, secrets scrubbed, terminal
-    control removed, length capped."""
-    s = str(text if text is not None else "")[:limit * 4]
-    try:
-        from .output_guard import scrub_secrets
-        s = scrub_secrets(s)
-    except Exception:
-        pass
+    """A field value for output: the text itself without terminal control,
+    capped, or NOT_SHOWN when it holds anything credential-shaped.
+
+    Only the scrubber's verdict is used, on the text before and after the
+    cap (a cut can leave a key's head that no longer looks like one). The
+    value is never the scrubber's output, which is computed from the
+    credential values the scrubber holds: that is the flow
+    py/clear-text-logging-sensitive-data and -storage- report from every
+    print and file write of it.
+    """
     from .session_messages import _plain
-    return _plain(s)[:limit]
+    raw = _plain(str(text if text is not None else "")[:_VERDICT_MAX])
+    if not _clean(raw):
+        return NOT_SHOWN
+    shown = raw[:limit]
+    return shown if _clean(shown) else NOT_SHOWN
 
 
 def dumps(obj: Any) -> str:
@@ -1097,9 +1117,15 @@ def send(name: str, text: str) -> dict:
     if not session_messages.deliverable(name):
         raise OpsRefused(f"no session is known as {name!r} "
                          "(delfin-agent ops sessions lists them)")
-    return session_messages.send(name, str(text or ""),
-                                 from_key=OPERATOR_KEY,
-                                 from_title=OPERATOR_TITLE)
+    message = session_messages.send(name, str(text or ""),
+                                    from_key=OPERATOR_KEY,
+                                    from_title=OPERATOR_TITLE)
+    # What the caller sees: the receipt fields, never the stored text (it
+    # is the scrubber's output). The id is session_messages' uuid4 hex.
+    mid = str(message.get("id") or "")
+    return {"id": mid if re.fullmatch(r"[0-9a-f]{32}", mid) else "",
+            "to": name,
+            "sent_at": _float_or_none(message.get("sent_at"))}
 
 
 def _workspace_of(approval: dict) -> str:
@@ -1151,5 +1177,10 @@ def pause(name: str, reason: str) -> dict:
     name = str(name or "").strip()
     if not name:
         raise OpsRefused("pause needs a session name")
+    reason = str(reason or "operator")
+    if not _clean(reason[:_VERDICT_MAX]):
+        raise OpsRefused("the reason contains text shaped like a credential;"
+                         " say why without it")
     from . import session_pause
-    return session_pause.pause(name, _bounded(reason or "operator", 200))
+    # session_pause removes terminal control and caps it (REASON_MAX).
+    return session_pause.pause(name, reason)
