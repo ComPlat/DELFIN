@@ -127,8 +127,8 @@ def wrap_reference(source: str, text: str, *, nonce: str | None = None) -> str:
 #:   briefing. They are meant to inform the work, so "quote/summarise
 #:   only" would forbid their one use; they still carry no authority.
 #: * ``output`` -- what a file, a command or a search returned. Read on
-#:   every tool round, so the sentence is short: 83 characters of header
-#:   and 58 of closer per fenced result.
+#:   every tool round, so the sentence is short: 162-171 characters per
+#:   fenced result, header, closer and newlines together.
 #: * ``message`` -- the text of another session's message, under the
 #:   sender header ``session_messages.render`` writes.
 #: * ``tool_description`` -- the description an MCP server gives a tool,
@@ -163,6 +163,12 @@ def is_fenced(text: str) -> bool:
     """True when ``text`` opens with a fence of this marker family (the
     caller then does not fence it a second time)."""
     return bool(_OPEN_RE.match((text or "").lstrip()))
+
+
+def contains_fence(text: str) -> bool:
+    """True when a fence of this marker family opens anywhere in ``text``
+    (a hint line may precede it, as on a delegate's report)."""
+    return bool(_OPEN_RE.search(text or ""))
 
 
 # ---------------------------------------------------------------------------

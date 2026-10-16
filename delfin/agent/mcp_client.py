@@ -312,6 +312,38 @@ class MCPTool:
         return f"{_NAMESPACE_PREFIX}{self.server}__{self.name}"
 
 
+def advertised_description(tool: "MCPTool") -> tuple[str, list[str]]:
+    """The description the model is shown for ``tool``, and why it was
+    withheld ([] when it was not).
+
+    Input: a discovered tool; its description is text the server's author
+    wrote, read by the model in the tool schema of every request. Output:
+    the description inside an ``untrusted`` "tool_description" fence
+    (``src: mcp:<server>``) with a content-keyed nonce
+    (``project_memory._fence_nonce``: the schema sits in the cached
+    prefix, so the bytes must not change between requests); or, when the
+    text carries an ``untrusted.instruction_shapes`` finding, a one-line
+    notice naming the tool and the kinds, and the findings. The tool stays
+    on the surface either way: its calls pass the MCP gate like any other.
+
+    Rejected: refusing the tool (a server with one odd sentence would lose
+    every tool); pinning descriptions by hash and asking on a change (a
+    store and a dialog per server -- the fence and the shape check are the
+    part that holds on every host). Cost: 186 characters plus the server
+    name per tool, paid from the MCP schema budget."""
+    raw = str(getattr(tool, "description", "") or "").strip() or tool.name
+    from . import untrusted
+    found = untrusted.instruction_shapes(raw)
+    if found:
+        kinds = ", ".join(f.split(":", 1)[0] for f in found)
+        return (f"(The description of {tool.name} from MCP server "
+                f"{tool.server} was withheld: it carries text shaped as an "
+                f"instruction ({kinds}).)", found)
+    from .project_memory import _fence_nonce
+    return (untrusted.wrap_as("tool_description", f"mcp:{tool.server}", raw,
+                              nonce=_fence_nonce(raw)), [])
+
+
 @dataclass
 class MCPResource:
     server: str
