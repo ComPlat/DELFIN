@@ -23,14 +23,15 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Asset | The promise |
 |-------|-------------|
 | The operator's files outside the workspace roots | A command or file tool writes only inside the workspace and the directories granted with `--add-dir`; it reads outside only where `--read-dir` or an approval allows it. |
-| Secrets | The model provider's key, stored credentials (the OS keyring, or `~/.delfin/credentials.json`), SSH, cloud and package-index credentials are not readable by the agent's commands and do not reach a transcript. |
+| Secrets | The model provider's key, stored credentials (the OS keyring, or `~/.delfin/credentials.json`), the account key in `~/.delfin/trust_store`, SSH, cloud and package-index credentials are not readable by the agent's commands and do not reach a transcript. |
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; DELFIN's own git reads of the workspace run no program the repository names (`safe_git`). |
 | Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 | Shared lessons and memory | The lessons later sessions are shown (`delfin/agent/pack/knowledge`, a repository's `.delfin/knowledge`) and the memory stores under `~/.delfin` are protected paths for the agent's write tools; a note the model writes into memory may not carry an instruction channel. |
-| What the model takes for an instruction | Text whose author is not the user -- files, command output, web pages, MCP results and tool descriptions, other sessions' messages, delegates' reports, recalled memory -- reaches the model inside a nonce'd fence that labels it as data. |
+| What the model takes for an instruction | Text whose author is not the user -- files, command output, web pages, MCP results and tool descriptions, other sessions' messages, delegates' reports, recalled memory -- reaches the model inside a nonce'd fence that labels it as data. An MCP tool description that changed since it was first seen is not shown until the user accepts it; another session's message names its sender only when its signature checks. |
+| Records of what happened | The audit log is a hash chain signed with the account key and anchored in the trust store, so a rewrite by a process without the key is found; the operator's actions (`ops send`, `escalate`, `pause`, `delfin-agent pause`) are not available to an agent session. |
 
 ## Against whom
 
@@ -50,7 +51,11 @@ interpreter, a symlink or an encoding can make differ from its *act*.
   what the account can. DELFIN draws its boundary around the commands *it*
   starts; it cannot keep the account from itself. The approval channel is the
   clearest case: the answer checks establish that an answer came from this
-  account, not that it came from a person (see residual risks).
+  account, not that it came from a person (see residual risks). What
+  such a process can do without the account key in the trust store --
+  write a line into another session's inbox, rewrite the audit log --
+  is found by the signatures described under "Where a decision is
+  recorded"; one that reads the key is outside this boundary.
 - *Root, or a compromised account.* Anyone with root, or with the user's
   credentials, is outside every boundary described here.
 - *The model provider.* Everything the model is shown is sent to the
@@ -149,6 +154,23 @@ call, before it runs. It applies, among others:
   which the path deny globs, `approval_guard` and every cage hide from the
   agent. A wrong answer is moved aside and recorded
   (`approval_code_refused`); the third expires the request;
+- the operator's actions (`approval_guard.operator_command`): `delfin-agent
+  ops send|escalate|pause`, `delfin-agent pause|resume` and
+  `delfin-agent mcp-pins accept`, read as the shell runs them (wrappers,
+  `env`, `xargs`, `sh -c` bodies, `python -m delfin.agent.cli`, a program
+  held in a variable, the Python functions), are refused in every mode
+  (`operator_action_refused`), in the native gate and the CLI backend's
+  hook; the commands themselves refuse when the process carries the
+  agent-session marker (`approval_guard.ENV_MARKER`);
+- the GitHub login: a command that prints it (`gh auth token`, `gh auth
+  status --show-token`, `git credential fill`) or writes through the raw API
+  (`gh api` with a write method, a request body or GraphQL) is refused in
+  every mode (`gh_credential_print`, `gh_api_write`); so is a `gh alias set`
+  or `gh alias import` whose body would do either, whose plain expansion
+  starts with `auth`, `api` or `config` (gh appends the call's arguments to
+  it), whose shell body builds its command at run time, or whose body
+  cannot be read (`gh_alias_refused`, `api_client._gh_alias_or_extension`),
+  and `gh extension install|upgrade` (`gh_extension_refused`);
 - the egress scan: a shell command that sends data out is asked, and refused
   under `bypassPermissions`; network tools are asked outside bypass;
 - the script content scan (`api_client._scan_bash_script_payloads`): a
@@ -306,11 +328,23 @@ command reaches the network only through it (`api_client._sandbox_network_args`)
 `egress_proxy.DEFAULT_ALLOWED_DOMAINS` (PyPI, conda, GitHub) plus
 `agent.sandbox_network.allowed_domains` and the hosts the configuration
 already names (the model endpoint, the package index hosts, the workspace's
-HTTP(S) git remotes), on ports 80 and 443 or
+HTTPS git remotes), on ports 80 and 443 or
 `agent.sandbox_network.allowed_ports`. Direct TCP is opened only for
-protocols that are not HTTP: the SLURM controller, SSH git remotes and
+protocols that are not HTTP: the SLURM controller, SSH git remotes on a
+host the default list or `agent.sandbox_network.allowed_domains` names, and
 license servers. A command the gate let run unasked inside the cage gets no
 direct TCP route at all.
+
+A git remote is the workspace's to name (a cloned or unpacked repository
+names any), so it widens the egress for reads only
+(`egress_proxy.configured_domains`): an HTTPS remote's host is known, where
+an upload is judged as for every known host below; an `http://` remote
+names no host (a plain-HTTP write to a known host passes in an attended
+session); a remote host reaches public addresses only; and an SSH remote
+on any other host than those named gets no direct route, which bypasses
+the proxy, and is recorded once (`egress_proxy._ssh_route_allowed`). The
+remotes are read through `safe_git` and snapshotted at the session's
+first network decision.
 
 The proxy (`egress_proxy.EgressProxy`) decides per session, through a
 per-session token: a port outside the allowed set is refused; a
@@ -362,6 +396,17 @@ security panel and `delfin-agent doctor` say so.
   banner, `/mcp` and `delfin-agent doctor` say so. The documented examples
   name the package version: `npx -y` without one runs the newest upload
   of the package at every start.
+- **MCP tool descriptions are pinned on first use** (`mcp_client.pin_check`):
+  the first time a server (its name and launch: command and arguments, or
+  URL) is seen, the SHA-256 of each tool's description and input schema is
+  kept in the trust store (`mcp_pinned`). A changed description or schema,
+  or a new tool on a pinned server, is withheld from the surface and its
+  calls are refused (`api_client._mcp_pin_admits`) until the user accepts
+  it: an attended session asks once per change and process, showing the
+  new text (`mcp_description_accepted`, or `mcp_description_changed` when
+  refused); with nobody to ask it is withheld and recorded blocked
+  (`mcp_description_changed`), and `delfin-agent mcp-pins accept` accepts it
+  from the person's shell. DELFIN's built-in servers are not pinned.
 - **The model behind a name.** Each request line records the model id the
   provider's response reports beside the name DELFIN asked for
   (`turn_metrics.record_request`, `served_model`), so a routing alias that
@@ -444,7 +489,7 @@ bytes do not change between turns.
 | `web_fetch`, `web_search`, MCP tool results, MCP resources and prompts, `session_search` hits | data (`api_client._wrap_untrusted`) |
 | `read_file`, `grep_file`, `notebook_read`, `read_document`, `bash`, `bash_output` output | "tool output" (`api_client._FENCED_OUTPUT_TOOLS`); not the harness's own error envelopes and refusals |
 | A delegate's report | data, with a decision hint in front (`subagents.mark_delegate_text`) |
-| Another session's message | the harness's sender header, then the text in a "message" fence (`session_messages.render`) |
+| Another session's message | the harness's sender header, then the text in a "message" fence (`session_messages.render`); the header names the sending session only when the message's signature checks |
 | MCP tool descriptions | "tool description" (`mcp_client.advertised_description`); one that carries an instruction shape is withheld and recorded |
 | AGENTS.md and the repository's instruction files | reference (`project_memory.fence_project_text`) |
 | Shared lessons, swarm findings | data (`knowledge`, `swarm_memory`) |
@@ -576,7 +621,11 @@ inbox. The kinds most relevant to this model:
 - the gate: `deny_pattern`, `secret_path`, `self_mod`, `outside_ws`,
   `denied_path_via_bash`, `git_config_program`, `script_dir_unknown`,
   `caged_unasked`, `knowledge_write`
-- the context: `memory_refused`, `mcp_description_withheld`
+- the context: `memory_refused`, `mcp_description_withheld`, `mcp_pinned`,
+  `mcp_description_changed`, `mcp_description_accepted`
+- the operator and the GitHub login: `operator_action_refused`,
+  `gh_credential_print`, `gh_api_write`, `gh_alias_refused`,
+  `gh_extension_refused`
 - permission rules: `permission_rule_deny`, `permission_rule_ask`,
   `permission_rule_allow`
 - the managed policy: `managed_policy_deny`, `managed_policy_ask`
@@ -586,7 +635,7 @@ inbox. The kinds most relevant to this model:
   `approval_code_refused`, `approval_timeout`
 - the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`,
   `classifier_held`, `classifier_down`, `classifier_up`
-- credentials: `key_exported`
+- credentials: `key_exported`, `trust_store_refused`
 - the audit log: `audit_write_failed`, `audit_chain_broken`
 
 Code-modifying tool calls are also appended to the audit log (`audit_log`,
@@ -600,11 +649,37 @@ tail and a torn line, for the active log and every rotated week; records
 from before the chain are counted as legacy. A write that fails records one
 blocked `audit_write_failed` event per process; a write that finds the log
 changed since the last one marks its record (field chain_break) and records
-`audit_chain_broken`. The chain is not keyed: a same-account process that
-rewrites the whole chain and its head consistently is not detected (see
-"Against whom"); the administrator's copy (managed policy `audit_log`) is
-the record such a process cannot rewrite where the administrator has made
-that path append-only for users.
+`audit_chain_broken`.
+
+The chain is keyed. A record written by a process that holds the account
+key ends with a field mac: HMAC-SHA256 under the audit key
+(`trust_store.derived_key`) of the line without it. Under the same lock the
+trust store receives an anchor for the log (its last line's hash and size,
+signed; `audit_log._write_anchor`). The anchor pins the active log's bytes,
+each prev pins the line before it, and the first record's prev pins the
+rotated week it continues, so a same-account process without the key that
+rewrites the whole chain and its head, strips the signatures, or cuts the
+tail and puts an earlier head file back is reported (kinds mac, unkeyed,
+anchor). Migration: records of a log from before the key carry prev and
+no mac and are counted unkeyed; after the first signed record an unsigned
+one is a problem (written by a process without the key, such as one
+started inside an agent session). Where verify runs without the key it
+checks the hash chain and says the signatures were not checked. Measured:
+an append costs about 0.3 ms more (the anchor is one more atomic write);
+verify reads 2000 records in about 12 ms. The administrator's copy
+(managed policy `audit_log`) remains the record a process with the key
+cannot rewrite, where the administrator has made that path append-only.
+
+The account key (`trust_store.account_key`) is 32 random bytes in
+`~/.delfin/trust_store/account.key` (0600 in a 0700 directory), created
+once; each use has its own key derived from it (session messages, the
+audit log). The store is a protected location on every agent route: the
+path deny globs by its name, the CLI backend's deny rules, a bubblewrap
+tmpfs after the binds, a Seatbelt hide and a Landlock hide (kept inside a
+granted write root too). A process with the agent-session marker gets no
+key and writes no record there; a key file that is a link, readable by
+others or of the wrong size is refused (`trust_store_refused`) and its
+users fall back to the unkeyed form, which they report as unverified.
 
 ## Residual risks
 
@@ -700,12 +775,26 @@ that path append-only for users.
   it. What the model then does passes every layer above. The instruction
   check on memory and on MCP tool descriptions matches worded shapes and
   is best-effort; a paraphrase outside them is stored, fenced as a note.
-  MCP descriptions are not pinned: a server that changes a description is
-  shown the new one, fenced or withheld.
-- **Session messages on one account.** A message's sender is the session
-  that wrote the inbox file; a process of the same account can write one
-  under another session's name. The text is fenced and the decision hint
-  applies, but the sender is not authenticated.
+  MCP descriptions are pinned on first use: what a server says the first
+  time it is seen is trusted as it is (fenced, shape-checked), and a
+  change of the server's launch line in the configuration pins it anew.
+- **Session messages on one account.** A message names its sender only
+  when its HMAC under the account's session-message key checks
+  (`session_messages.verified`); any other is shown as from an unverified
+  sender, with no session name. The signature proves that a DELFIN process
+  of this account holding the key wrote it, unchanged since, and such a
+  process names itself; it does not tell those processes apart. A process
+  of the account outside every cage that reads the key file can sign (see
+  "Against whom"); where no isolation holds, the read gates are what keeps
+  an agent's command from the file.
+- **The operator's command lines.** The refusal reads the command text: a
+  command that builds the program words at run time and also strips the
+  agent-session marker is not recognised; where a cage holds the command,
+  `~/.delfin` is read-only for it.
+- **Remote hosts carry data in a read.** A GET to a known host -- an HTTPS
+  git remote included -- can carry data in its URL and passes unasked; the
+  upload rules see a body and a tunnel's byte count, not what a URL
+  encodes.
 - **Shell writes into the memory stores.** The write tools ask; a shell
   command reaches a granted `~/.delfin` store only through the bash gate
   and, where isolation holds, the cage's read-only binds.
