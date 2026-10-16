@@ -559,12 +559,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         _pixel_ratio = 2.0
     # Without the bundle no viewer can draw (there is no network fallback),
     # so a broken installation says so in the browser console.
+    from delfin.dashboard.login_session import keepalive_js as _keepalive_js
     _calc_init = '\n'.join([
         vendored_3dmol_js() or (
             'console.error("DELFIN: the bundled 3Dmol '
             '(delfin/dashboard/static/3Dmol-min.js) is missing from this '
             'installation; molecule viewers cannot draw.");'),
         f'window.__delfinViewerPixelRatio = {_pixel_ratio};',
+        # User input keeps the login alive (login_session.keepalive_js).
+        _keepalive_js(),
         RIGHT_MOUSE_TRANSLATE_PATCH_JS,
         *ctx.init_js_parts,
     ])
@@ -951,9 +954,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         _closing_beacon = None
 
+    # Logging out ends the login on the server (login_session); the
+    # control is the last thing in the bar.
+    from delfin.dashboard import login_session as _login_session
+    _logout = widgets.HTML(_login_session.logout_control_html())
+
     # The right-hand group: what the dashboard is doing and holding.
     _status_group = widgets.HBox(
-        [busy_indicator, ctx.agent_status_html, home_usage_label, _session_strip])
+        [busy_indicator, ctx.agent_status_html, home_usage_label, _session_strip,
+         _logout])
     _status_group.add_class('delfin-group')
     _spacer = widgets.HBox([], layout=widgets.Layout(flex='1 1 auto'))
     _bar = widgets.HBox(

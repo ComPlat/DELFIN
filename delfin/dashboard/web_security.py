@@ -396,6 +396,30 @@ def install_no_typesetting_route(web_app: Any) -> None:
                                   NoTypesetting)])
 
 
+def install_session_route(web_app: Any) -> None:
+    """Serve ``login_session.ALIVE_ROUTE``: 204 for a live login.
+
+    Authenticating the request is the whole point: the identity provider
+    records it as use of the session (``identity.DelfinIdentityProvider``).
+    """
+    from jupyter_server.base.handlers import JupyterHandler
+    from jupyter_server.utils import url_path_join
+    from tornado import web
+
+    from delfin.dashboard.login_session import ALIVE_ROUTE
+
+    class SessionAlive(JupyterHandler):
+        @web.authenticated
+        def get(self):
+            self.set_header("Cache-Control", "no-store")
+            self.set_status(204)
+            self.finish()
+
+    base = web_app.settings.get("base_url", "/")
+    web_app.add_handlers(".*$", [(url_path_join(base, ALIVE_ROUTE),
+                                  SessionAlive)])
+
+
 def install(serverapp: Any) -> list[str]:
     """Install every part; return the names of the parts that failed."""
     failed: list[str] = []
@@ -405,6 +429,7 @@ def install(serverapp: Any) -> list[str]:
         ("cookies", lambda: install_cookie_policy(serverapp)),
         ("typesetting stand-in",
          lambda: install_no_typesetting_route(serverapp.web_app)),
+        ("session route", lambda: install_session_route(serverapp.web_app)),
         ("files route", lambda: install_files_route(serverapp.web_app, log)),
     ):
         try:

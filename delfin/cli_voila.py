@@ -1064,12 +1064,27 @@ def main(argv=None):
 
     from delfin.dashboard.web_security import NO_TYPESETTING_ROUTE
 
+    # Server-side login sessions (logout, idle timeout) and refused logins
+    # as security events: delfin.dashboard.identity. If it does not import
+    # with this jupyter-server, the server starts with jupyter-server's own
+    # provider and the terminal says what is missing.
+    _identity_args = []
+    try:
+        from delfin.dashboard import identity as _identity
+        _identity_args = [
+            "--ServerApp.identity_provider_class=" + _identity.CLASS_PATH]
+    except Exception as _identity_exc:  # noqa: BLE001
+        print("Warning: dashboard logins have no logout or idle timeout on "
+              f"this server ({_identity_exc}); they end only after "
+              "DELFIN_DASHBOARD_LOGIN_DAYS.", file=sys.stderr)
+
     cmd = [
         sys.executable,
         "-m",
         "jupyter",
         "server",
         f"--ServerApp.jpserver_extensions={_extensions}",
+        *_identity_args,
         *(["--ServerApp.kernel_manager_class="
            + kernel_manager_class] if kernel_manager_class else []),
         # A kernel whose last window closed is ended by the server after

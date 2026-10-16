@@ -127,6 +127,18 @@ def test_the_store_does_not_grow_without_bound(tmp_path):
     assert len(store) <= login_session.MAX_SESSIONS
 
 
+def test_one_off_logins_do_not_push_out_a_browser_that_is_logged_in(tmp_path):
+    clock = Clock()
+    store = _store(tmp_path, clock)
+    browser = store.open()
+    clock.now += 10
+    assert store.touch(browser)
+    for _ in range(login_session.MAX_SESSIONS * 2):   # a script, no cookie jar
+        clock.now += 1
+        store.open()
+    assert store.touch(browser)
+
+
 def test_the_idle_timeout_is_bounded(monkeypatch):
     monkeypatch.delenv(login_session.IDLE_ENV, raising=False)
     assert login_session.idle_seconds() == 12 * 3600
@@ -323,9 +335,9 @@ def test_a_restart_keeps_a_login_and_keeps_a_logout(server):
 
 def test_the_session_store_on_the_host_is_owner_only(server):
     _login(server["port"])
-    stores = list((server["base"] / "runtime").rglob(
-        login_session.STORE_PREFIX + "*"))
-    assert stores, sorted(p.name for p in (server["base"] / "runtime").rglob("*"))
+    # jupyter-server's runtime directory, below the child's HOME.
+    stores = list(server["base"].rglob(login_session.STORE_PREFIX + "*"))
+    assert stores, sorted(str(p) for p in server["base"].rglob("*runtime*"))
     for path in stores:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
         assert os.stat(path).st_uid == os.getuid()
