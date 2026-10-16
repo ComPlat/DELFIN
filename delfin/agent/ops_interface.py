@@ -79,7 +79,6 @@ _QUEUE_MAX = 10000
 #: Message files read by `send --file`, at most (the inbox keeps 4000
 #: characters of a message).
 FILE_MAX = 64 * 1024
-_C1_RE = re.compile("[\u0080-\u009f]")
 
 
 # --------------------------------------------------------------------------
@@ -127,12 +126,8 @@ def _bounded(text: Any, limit: int = TEXT_MAX) -> str:
         s = scrub_secrets(s)
     except Exception:
         pass
-    try:
-        from .repl_render import strip_control
-        s = strip_control(s)
-    except Exception:
-        pass
-    return _C1_RE.sub("", s)[:limit]
+    from .session_messages import _plain
+    return _plain(s)[:limit]
 
 
 def dumps(obj: Any) -> str:
