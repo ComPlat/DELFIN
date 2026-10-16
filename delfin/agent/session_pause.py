@@ -27,6 +27,20 @@ import time
 from pathlib import Path
 
 _DIR = Path.home() / ".delfin" / "session_pause"
+#: Characters of a reason kept. A reason is a note for whoever lists the
+#: pauses; the engine does not read it.
+REASON_MAX = 200
+
+
+def _reason(text) -> str:
+    """*text* as a stored reason: terminal control removed (it is printed
+    by ``delfin-agent pause`` and ``ops pause``), capped at REASON_MAX."""
+    try:
+        from .session_messages import _plain
+        s = _plain(text)
+    except Exception:
+        s = "".join(c for c in str(text or "") if c.isprintable())
+    return s[:REASON_MAX]
 
 
 def _path(key: str) -> Path:
@@ -68,7 +82,7 @@ def pause(key: str, reason: str = "") -> dict:
     """
     path = _path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = {"key": str(key), "reason": str(reason or ""),
+    record = {"key": str(key), "reason": _reason(reason),
               "paused_at": time.time()}
     blob = (json.dumps(record) + "\n").encode("utf-8")
     from .bash_jobs import cross_process_lock

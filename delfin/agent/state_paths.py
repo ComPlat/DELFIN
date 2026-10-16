@@ -776,6 +776,7 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # self-description, and a run that drove the Send button would write
     # its fixture sentences into it.
     ("delfin.agent.user_model", "_default_path", "user_model.json"),
+    ("delfin.agent.ops_interface", "_cursor_dir", "ops_cursors"),
     # The note that says which node the dashboard runs on, and with which
     # token. A run that drove the launcher overwrote it with its own pid,
     # and the launcher's atexit hook then deleted it on the way out --

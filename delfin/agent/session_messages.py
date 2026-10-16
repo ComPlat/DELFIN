@@ -155,6 +155,7 @@ def send(to_key: str, text: str, *, from_key: str = "",
         from_title = scrub_secrets(str(from_title or ""))
     except Exception:
         pass
+    text, from_title = _plain(text), _plain(from_title)
     message = {
         "to": str(to_key), "from": str(from_key or ""),
         "from_title": str(from_title or "")[:80],
@@ -170,6 +171,28 @@ def send(to_key: str, text: str, *, from_key: str = "",
     # cross-process lock adds a lease that holds across login nodes.
     with cross_process_lock(path):
         return _append(path, line, message, to_key)
+
+
+_C1_RE = re.compile("[\u0080-\u009f]")
+
+
+def _plain(text) -> str:
+    """*text* without terminal control: escape sequences, C0 controls
+    other than tab and newline, and the C1 range (U+009B is a CSI on a
+    terminal that reads 8-bit controls).
+
+    The receiver prints a message's text in its terminal (the wake line)
+    and puts it into a prompt; an OSC 52 in it wrote the clipboard of
+    whoever watched that terminal, a carriage return overwrote the line
+    it arrived on.
+    """
+    s = str(text or "")
+    try:
+        from .repl_render import strip_control
+        s = strip_control(s)
+    except Exception:
+        s = "".join(c for c in s if c in "\n\t" or c.isprintable())
+    return _C1_RE.sub("", s)
 
 
 def _append(path, line: bytes, message: dict, to_key: str) -> dict:
