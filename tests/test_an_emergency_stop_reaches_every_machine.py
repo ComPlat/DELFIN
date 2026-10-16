@@ -201,8 +201,12 @@ def test_a_daemon_or_a_terminal_agent_is_found_by_its_command_line(stop_file, mo
 def test_a_process_that_ends_on_its_own_is_not_signalled(stop_file, monkeypatch):
     mark = f"delfin-test-daemon-{uuid.uuid4().hex}"
     monkeypatch.setattr(S, "_COMMAND_MARKERS", (mark,))
+    # Long enough to be found: the stop writes its record and disables the
+    # schedules before it looks for processes, which took over 0.5 s on a
+    # loaded CI runner (the process was gone, found_here == []). Short
+    # enough to end on its own well inside settle_s.
     quick = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(0.5)", mark],
+        [sys.executable, "-c", "import time; time.sleep(3)", mark],
         env=_child_env())
     try:
         summary = S.request("test", settle_s=10, grace_s=5)
