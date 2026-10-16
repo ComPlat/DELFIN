@@ -374,13 +374,29 @@ def _header_root_segment() -> str:
 
     src = inspect.getsource(d.create_dashboard)
     tree = ast.parse(src)
+    # name -> source of what is assigned to it; the header is assembled
+    # from named groups (the bar, its status group), so a name used in
+    # the header root is followed to what it holds.
+    assigned: dict = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_header_root"
-            for t in node.targets
-        ):
-            return ast.get_source_segment(src, node.value) or ""
-    raise AssertionError("create_dashboard no longer builds a _header_root")
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    assigned.setdefault(t.id, []).append(
+                        ast.get_source_segment(src, node.value) or "")
+    if "_header_root" not in assigned:
+        raise AssertionError("create_dashboard no longer builds a _header_root")
+    seen, out, todo = set(), [], ["_header_root"]
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in assigned:
+            continue
+        seen.add(name)
+        for seg in assigned[name]:
+            out.append(seg)
+            todo.extend(n.id for n in ast.walk(ast.parse(seg or "None"))
+                        if isinstance(n, ast.Name) and n.id.startswith("_"))
+    return "\n".join(out)
 
 
 def test_the_control_that_keeps_a_session_is_on_the_page():

@@ -2,12 +2,12 @@
 
 Input: the header's branch controls (``branch_panel.BranchPanel``) on a
 checkout made here, with the preview start/stop replaced by stand-ins that
-record what they were asked. Output, by clicking the widgets: Test branch
-asks for a preview of the selected ref and the running previews are listed
-as links that open a new tab; Close preview stops it; Manage list adds,
-creates from main, hides, shows again and deletes (a second confirmation
-for unmerged commits); Clean up lists, asks, deletes and shows the undo
-commands. The checkout's branch, head and stash stay as they were. In a
+record what they were asked. Output, by clicking the widgets: Test asks
+for a preview of the selected ref and each running preview is a chip with
+a link that opens a new tab; its close action stops it; the branch menu
+adds, creates from main, hides and shows again; a branch with unmerged
+commits is deleted from Clean up after a second confirmation; Clean up
+lists, asks, deletes and puts the undo commands in its message. The checkout's branch, head and stash stay as they were. In a
 preview the banner names the branch, the commit and where the code comes
 from, and warns when that is not the preview worktree.
 
@@ -94,87 +94,93 @@ class _Fake:
         BP._save(p)
         return True, f"Preview of {ref}", p
 
-    def stop(self, s, **_kw):
+    def close(self, s, **_kw):
         self.stopped.append(s)
         BP._record_path(s).unlink()
-        return True, f"Stopped {s}", False
+        return BP.CloseResult(True, "closed", f"Closed {s}.")
 
 
 def _panel(repo):
     fake = _Fake(repo)
-    panel = BranchPanel(repo, gh=None, start=fake.start, stop=fake.stop,
+    panel = BranchPanel(repo, gh=None, start=fake.start, close=fake.close,
                         synchronous=True)
     panel.refresh()
     return panel, fake
 
 
 def _values(panel):
-    return [v for _l, v in panel.dropdown.options]
+    return panel.shown_refs()
 
 
 def test_the_list_hides_merged_and_filters(repo):
     panel, _ = _panel(repo)
+    panel.open_menu()
     assert _values(panel) == ["main", "feat"]
-    panel.filter.value = "fe"
+    panel.search.value = "fe"
     assert _values(panel) == ["main", "feat"]
-    panel.filter.value = "zzz"
+    panel.search.value = "zzz"
     assert _values(panel) == ["main"]
 
 
 def test_test_branch_opens_a_preview_link_and_close_stops_it(repo):
     before = _state(repo)
     panel, fake = _panel(repo)
-    panel.dropdown.value = "feat"
+    panel.select("feat")
     panel.test_btn.click()
     assert fake.started == ["feat"]
-    assert len(panel.previews_box.children) == 1
-    link = panel.previews_box.children[0].children[0].value
-    assert 'target="_blank"' in link and "45678" in link and "tok-abc" in link
+    chip = panel.chip_widgets("feat")
+    assert chip is not None and len(panel.chips.children) == 1
+    link = chip.link.value
+    assert 'target="_blank"' in link and "45678" in link
     assert "location.hostname" in link             # the page's own host
-    close = panel.previews_box.children[0].children[1]
-    close.click()
+    chip.close.click()
     assert fake.stopped == ["feat"]
-    assert panel.previews_box.children == ()
+    assert panel.chips.children == ()
     assert _state(repo) == before
 
 
-def test_manage_add_new_hide_show_again(repo):
+def test_add_new_hide_show_again(repo):
     before = _state(repo)
     panel, _ = _panel(repo)
-    panel.add_text.value = "merged-one"
-    panel.add_btn.click()
+    panel.open_menu()
+    panel.view.value = "Merged"
+    panel.row_widgets("merged-one").pin.click()      # add to the list
+    panel.view.value = "Mine"
     assert "merged-one" in _values(panel)
     panel.new_text.value = "max/idea"
     panel.new_btn.click()
-    assert panel.dropdown.value == "max/idea"
-    assert "Test branch" in panel.status.value
+    assert panel.value == "max/idea"
+    assert [a for a, _ in panel.toasts.latest()["actions"]] == ["▶ Test"]
     assert _state(repo) == before                  # no switch, files kept
-    panel.dropdown.value = "feat"
-    panel.hide_btn.click()
+    panel.open_menu()
+    panel.row_widgets("feat").hide.click()
     assert "feat" not in _values(panel)
-    assert [v for _l, v in panel.hidden_dd.options] == ["feat"]
-    panel.hidden_dd.value = "feat"
-    panel.unhide_btn.click()
+    assert BL.hidden_entries(repo) == ["feat"]
+    panel.view.value = "Hidden"
+    panel.row_widgets("feat").show.click()
+    panel.view.value = "Mine"
     assert "feat" in _values(panel)
 
 
-def test_delete_from_the_list_asks_twice_for_unmerged_commits(repo):
+def test_delete_with_unmerged_commits_asks_twice(repo):
+    """The route for a branch with commits of its own is Clean up with
+    "Also branches with their own commits"; the menu offers none."""
     panel, _ = _panel(repo)
-    panel.dropdown.value = "feat"
-    panel.delete_btn.click()
-    yes = panel.confirm_box.children[1]
-    yes.click()                                    # first confirmation
+    panel.open_menu()
+    assert panel.row_widgets("feat").delete is None
+    panel.more_btn.value = True
+    panel.cleanup_btn.value = True
+    panel.include_unmerged.value = True
+    for c, cb in zip(panel._cands, panel._checks):
+        cb.value = c.name == "feat"
+    panel.cleanup_delete_btn.click()
+    panel.cleanup_confirm.children[1].click()      # first confirmation
     assert _git(repo, "rev-parse", "--verify", "feat")
-    assert "not in origin/main" in panel.confirm_box.children[0].value
-    panel.confirm_box.children[1].click()          # second confirmation
+    assert "not in main" in panel.cleanup_confirm.children[0].value
+    panel.cleanup_confirm.children[1].click()      # second confirmation
     assert _git(repo, "rev-parse", "--verify", "--quiet", "feat",
                 check=False) == ""
-    assert "Undo:" in panel.status.value
-    # main cannot be deleted from here
-    panel.dropdown.value = "main"
-    panel.delete_btn.click()
-    assert panel.confirm_box.children == ()
-    assert "cannot be deleted" in panel.status.value
+    assert "git -C" in panel.toasts.latest()["details"]
 
 
 def test_clean_up_lists_asks_deletes_and_shows_the_undo(repo):
@@ -184,11 +190,12 @@ def test_clean_up_lists_asks_deletes_and_shows_the_undo(repo):
     assert any("merged-one" in x for x in labels)
     assert not any(" feat " in x for x in labels)
     panel.cleanup_delete_btn.click()
-    assert "Delete 1 local branch" in panel.cleanup_confirm.children[0].value
+    assert "Delete 1 branch" in panel.cleanup_confirm.children[0].value
     panel.cleanup_confirm.children[1].click()
-    assert "Deleted 1" in panel.cleanup_result.value
-    assert "git -C" in panel.cleanup_result.value
-    assert str(BC._log_path()) in panel.cleanup_result.value
+    msg = panel.toasts.latest()
+    assert msg["text"].startswith("Deleted 1")
+    assert "git -C" in msg["details"]
+    assert str(BC._log_path()) in msg["details"]
     assert _git(repo, "rev-parse", "--verify", "--quiet", "merged-one",
                 check=False) == ""
 
@@ -212,7 +219,7 @@ def test_the_dashboard_no_longer_switches_or_stashes_the_shared_checkout():
     assert not re.search(r"_run_git_\w+\([^)]*'stash'", src)
     assert not re.search(r"_run_git_write\([^)]*'switch'", src)
     assert "'pull', '--ff-only', 'origin', 'main'" in src
-    assert "BranchPanel(" in src and "banner_html()" in src
+    assert "BranchPanel(" in src and "preview_bar(" in src
 
 
 def test_compute_branch_options_follows_the_new_rule(repo):
@@ -230,11 +237,11 @@ def test_clean_up_does_not_preselect_a_branch_the_user_pinned(repo):
     panel.new_btn.click()
     panel.cleanup_btn.value = True
     boxes = {cb.description.split(" ")[1]: cb for cb in panel._checks
-             if cb.description.startswith("branch ")}
+             if cb.description.startswith("Branch ")}
     assert boxes["max/fresh"].value is False
     assert "pinned" in boxes["max/fresh"].description
     assert boxes["merged-one"].value is True
     panel.cleanup_delete_btn.click()
     panel.cleanup_confirm.children[1].click()
-    assert "Deleted 1." in panel.cleanup_result.value
+    assert panel.toasts.latest()["text"] == "Deleted 1."
     assert _git(repo, "rev-parse", "--verify", "max/fresh")

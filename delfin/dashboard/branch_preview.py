@@ -70,6 +70,10 @@ PREVIEW_ENV_BRANCH = "DELFIN_PREVIEW_BRANCH"
 PREVIEW_ENV_SHA = "DELFIN_PREVIEW_SHA"
 PREVIEW_ENV_WORKTREE = "DELFIN_PREVIEW_WORKTREE"
 SHARED_CHECKOUT_ENV = "DELFIN_SHARED_CHECKOUT"
+#: Set by ``preview_proxy`` in the main dashboard server (its base URL);
+#: kernels inherit it, so the dashboard knows previews are served through
+#: its own port. Starts with DELFIN_PREVIEW_, so a preview does not inherit it.
+PROXY_ENV = "DELFIN_PREVIEW_PROXY"
 PREVIEW_DIR_NAME = "delfin-preview"
 RUNTIME_DIR = "delfin_voila_runtime"
 NOTEBOOK = "delfin_dashboard.ipynb"
@@ -115,6 +119,7 @@ class Preview:
     delfin_file: str
     log: str
     attached: bool = False
+    base_url: str = ""      # "<base>/delfin-preview/<slug>/" when proxied
 
     def url(self, host: str = "localhost", scheme: str = "http") -> str:
         return f"{scheme}://{host}:{self.port}{self.url_path}?token={self.token}"
@@ -279,6 +284,35 @@ def preview_env(base_env: dict, worktree, target: Target,
     if shared_checkout:
         env[SHARED_CHECKOUT_ENV] = str(shared_checkout)
     return env
+
+
+def proxy_env(env: dict, s: str) -> dict:
+    """*env* plus a ``JUPYTER_CONFIG_PATH`` entry whose
+    ``jupyter_server_config.json`` sets ``ServerApp.base_url`` to the proxy
+    prefix, when the running dashboard proxies previews (``PROXY_ENV``).
+    A config file rather than a launcher flag, so a branch whose launcher
+    predates the proxy is served under the prefix too. Unchanged otherwise."""
+    base = os.environ.get(PROXY_ENV)
+    if not base:
+        return dict(env)
+    from delfin.dashboard.preview_proxy import base_prefix
+    from delfin.agent.state_paths import ensure_dir, write_text_atomic
+    cfg = _registry_dir() / f"{s}.jupyter"
+    ensure_dir(cfg)
+    write_text_atomic(cfg / "jupyter_server_config.json", json.dumps(
+        {"ServerApp": {"base_url": base_prefix(base, s)}}, indent=1))
+    out = dict(env)
+    rest = out.get("JUPYTER_CONFIG_PATH", "")
+    out["JUPYTER_CONFIG_PATH"] = str(cfg) + (os.pathsep + rest if rest else "")
+    return out
+
+
+def proxy_href(p: "Preview") -> str:
+    """The preview's address as a path on the dashboard's own origin, or ""
+    when it is not served through this dashboard's proxy."""
+    if p.base_url and os.environ.get(PROXY_ENV) and p.url_path.startswith(p.base_url):
+        return p.url_path
+    return ""
 
 
 def verify_import(python: str, env: dict, worktree) -> tuple[bool, str, str]:
@@ -453,8 +487,8 @@ def _url_path(worktree: Path) -> str:
         return f"/voila/render/{RUNTIME_DIR}/{NOTEBOOK}"
 
 
-def _served_url_path(port: int, token: str) -> str:
-    """The address ``/`` redirects to (the server's default_url), or "".
+def _served_url_path(port: int, token: str, base: str = "/") -> str:
+    """The address *base* redirects to (the server's default_url), or "".
 
     Asked rather than computed: where the launcher puts the notebook
     depends on what it finds (a notebook on the search path is staged
@@ -464,7 +498,7 @@ def _served_url_path(port: int, token: str) -> str:
     from urllib.parse import quote, urlsplit
     try:
         conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
-        conn.request("GET", "/?token=" + quote(token, safe=""))
+        conn.request("GET", (base or "/") + "?token=" + quote(token, safe=""))
         resp = conn.getresponse()
         location = resp.getheader("Location") or ""
         conn.close()
@@ -500,6 +534,11 @@ def start(repo, ref: str, *, python: Optional[str] = None,
     head = BL._out(path, "rev-parse", "HEAD") or target.sha
     target = Target(ref=target.ref, sha=head, branch=target.branch, kind=target.kind)
     env = preview_env(base_env, path, target, shared_checkout or str(main_worktree(repo)))
+    env = proxy_env(env, s)
+    base_url = ""
+    if os.environ.get(PROXY_ENV):
+        from delfin.dashboard.preview_proxy import base_prefix
+        base_url = base_prefix(os.environ[PROXY_ENV], s)
     ok, delfin_file, msg = verify_import(python, env, path)
     if not ok:
         return False, msg, None
@@ -558,12 +597,13 @@ def start(repo, ref: str, *, python: Optional[str] = None,
         slug=s, ref=target.ref, sha=target.sha, branch=target.branch,
         repo=str(main_worktree(repo)), worktree=str(path), port=port,
         token=token,
-        url_path=_served_url_path(port, token) or _url_path(Path(path)),
+        url_path=(_served_url_path(port, token, base_url or "/")
+                  or (base_url.rstrip("/") if base_url else "") + _url_path(Path(path))),
         pid=proc.pid,
         proc_start=proc_identity.process_start(proc.pid),
         ticks=proc_identity.start_ticks(proc.pid),
         host=socket.gethostname(), started_at=time.time(),
-        delfin_file=delfin_file, log=str(log), attached=attached)
+        delfin_file=delfin_file, log=str(log), attached=attached, base_url=base_url)
     _save(preview)
     return True, (f"Preview of {target.ref} @ {target.sha[:8]} on port {port}; "
                   f"{msg}"), preview
@@ -626,53 +666,196 @@ def _kill_group(pgid: int, grace_s: float = 20.0) -> None:
         time.sleep(0.2)
 
 
-def stop(s: str, *, worktree: str = "if-clean") -> tuple[bool, str, bool]:
-    """Stop preview *s*. ``worktree``: ``if-clean`` (remove when clean, else
-    ask), ``keep``, or ``discard`` (remove after the user confirmed; the head
-    commit is logged). Returns ``(ok, message, needs_confirm)``."""
-    p = load(s)
+#: Upper bound for one step of a close (checking the server, the worktree
+#: use, ``git status``, ``git worktree remove``). Measured need on a local
+#: disk is well under a second; a home on a parallel filesystem can take
+#: seconds, and a hung mount forever.
+STEP_TIMEOUT_S = 30.0
+
+
+@dataclass
+class CloseResult:
+    """The final state of a close. ``text`` is for the person (no port,
+    token, pid or path); ``details`` holds those and, when a step failed,
+    the commands that finish the job by hand."""
+    ok: bool
+    state: str          # closed | kept | ask | failed
+    text: str
+    details: str = ""
+    ask: bool = False
+
+
+def _bounded(fn, timeout: float, what: str):
+    """``fn()`` in a daemon thread; TimeoutError after *timeout* seconds.
+
+    The thread is left behind on a timeout (a hung syscall cannot be
+    interrupted from here); the caller reports and moves on."""
+    import threading
+    box: dict = {}
+
+    def _run():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:      # handed to the caller below
+            box["error"] = exc
+    t = threading.Thread(target=_run, daemon=True, name=f"preview-close:{what}")
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"{what} did not finish within {int(timeout)} s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def manual_commands(p: Preview, *, server: bool = True,
+                    worktree: bool = True) -> list[str]:
+    """The shell commands that do what a failed close did not."""
+    import shlex
+    q = shlex.quote
+    cmds = []
+    if server and p.pid > 1:
+        cmds.append(f"kill -TERM -- -{int(p.pid)}    # the preview server's process group")
+    if worktree:
+        cmds.append(f"git -C {q(str(p.repo))} worktree remove {q(str(p.worktree))}")
+    cmds.append(f"rm -f {q(str(_record_path(p.slug)))} {q(str(_pending_path(p.slug)))}")
+    return cmds
+
+
+def _details(p: Preview, *lines: str, server=False, worktree=True) -> str:
+    body = [x for x in lines if x]
+    body.append(f"worktree: {p.worktree}; port {p.port}; process group {p.pid}")
+    body.append("To finish by hand:")
+    body.extend("  " + c for c in manual_commands(p, server=server, worktree=worktree))
+    return "\n".join(body)
+
+
+#: How long a close waits for the processes of a server it just stopped
+#: (its kernels end after it) to leave the worktree.
+SETTLE_S = 15.0
+
+
+def close(s: str, *, worktree: str = "if-clean", progress=None,
+          step_timeout: float = STEP_TIMEOUT_S, settle_s: float = SETTLE_S) -> CloseResult:
+    """Close preview *s*: stop its server, then release its worktree.
+
+    ``worktree``: ``if-clean`` (remove when clean, else ask), ``keep``, or
+    ``discard`` (remove after the person confirmed; the head commit is
+    logged). Every step is bounded by *step_timeout* and every failure ends
+    in ``state="failed"`` (or ``kept``) with the commands that finish the
+    job; nothing raises. A record whose server is gone skips the stop."""
+    say = progress or (lambda _m: None)
+    try:
+        p = load(s)
+    except Exception as exc:
+        return CloseResult(False, "failed", f"Couldn't read the preview's record: {exc}.",
+                           f"record: {_record_path(s)}")
     if p is None:
-        return False, f"No preview named {s}.", False
-    _reap(p.pid)
-    if _alive(p) or _group_alive(p.pid):
-        _kill_group(p.pid)
+        return CloseResult(False, "failed", "This preview is no longer listed.",
+                           f"record: {_record_path(s)}")
+    if p.host != socket.gethostname():
+        return CloseResult(False, "failed", (
+            f"This preview runs on {p.host}; close it from the dashboard there."),
+            _details(p, server=True, worktree=True))
+    say("Stopping the preview server …")
+    try:
+        up = _bounded(lambda: _alive(p) or _group_alive(p.pid), step_timeout,
+                      "checking the server")
+        if up:
+            grace = max(1.0, min(20.0, step_timeout / 2))
+            _bounded(lambda: _kill_group(p.pid, grace_s=grace),
+                     step_timeout + grace + 6, "stopping the server")
+            if _group_alive(p.pid):
+                raise RuntimeError("the server did not stop")
+    except Exception as exc:
+        return CloseResult(False, "failed", f"Couldn't stop the preview: {exc}.",
+                           _details(p, str(exc), server=True))
     try:
         from delfin.agent import lifeline
-        lifeline.end_children((p.pid, p.ticks))
+        _bounded(lambda: lifeline.end_children((p.pid, p.ticks)), step_timeout,
+                 "ending the preview's agents")
     except Exception:
         pass
     try:
         _record_path(s).unlink()
-    except OSError:
+    except FileNotFoundError:
         pass
-    msg = f"Stopped the preview of {p.ref} (port {p.port})."
-    return _release_worktree(p, msg, worktree)
+    except OSError as exc:
+        return CloseResult(False, "failed", f"Stopped, but the record could not be removed: {exc}.",
+                           _details(p, str(exc), worktree=False))
+    return _release(p, worktree, say, step_timeout, settle_s=settle_s)
 
 
-def _release_worktree(p: Preview, msg: str, mode: str) -> tuple[bool, str, bool]:
+def _release(p: Preview, mode: str, say, step_timeout: float,
+             settle_s: float = 0.0) -> CloseResult:
     path = Path(p.worktree)
     repo = p.repo
-    if mode == "keep" or not path.exists():
-        return True, msg + (f" The worktree stays at {path}." if path.exists() else ""), False
+    try:
+        exists = _bounded(path.exists, step_timeout, "looking at the worktree")
+    except Exception as exc:
+        return CloseResult(False, "failed", f"Stopped. Couldn't check its worktree: {exc}.",
+                           _details(p, str(exc)))
+    if mode == "keep" or not exists:
+        _drop_pending(p.slug)
+        return CloseResult(True, "closed", "Closed." + (
+            " Its worktree is kept." if exists else ""),
+            f"worktree: {path}" if exists else "")
     if not is_preview_worktree(repo, path):
-        return True, msg + f" {path} is not a preview worktree; left as it is.", False
-    from delfin.dashboard.worktree_use import in_use
-    busy = in_use([str(path)]).get(str(path))
+        return CloseResult(True, "kept", "Closed. Its folder is not a preview worktree, so it stays.",
+                           f"worktree: {path}")
+    say("Checking the worktree …")
+    deadline = time.monotonic() + max(0.0, settle_s)
+    while True:
+        try:
+            from delfin.dashboard import worktree_use
+            busy = _bounded(lambda: worktree_use.in_use([str(path)]).get(str(path)),
+                            step_timeout, "checking which programs use the worktree")
+        except Exception as exc:
+            return CloseResult(True, "kept", (
+                f"Closed. Its worktree is kept: checking it failed ({exc})."),
+                _details(p, str(exc)))
+        if not busy or time.monotonic() >= deadline:
+            break
+        time.sleep(1.0)
     if busy:
-        return True, (msg + f" The worktree {path} is kept: {busy}. Close "
-                      "preview again once that has ended."), False
-    dirty = changes(path)
+        try:
+            _save_pending(p)
+        except Exception:
+            pass
+        return CloseResult(True, "kept", (
+            "Closed. Its folder is kept because a program is still using it."),
+            _details(p, busy))
+    try:
+        dirty = _bounded(lambda: changes(path), step_timeout, "git status")
+    except Exception as exc:
+        return CloseResult(True, "kept", (
+            f"Closed. Its worktree is kept: checking it for changes failed ({exc})."),
+            _details(p, str(exc)))
     if dirty and mode != "discard":
-        # the record is gone; keep enough to finish the question later
-        _save_pending(p)
-        return True, (msg + f" The worktree {path} has changes:\n{dirty}\n"
-                      "Remove it anyway, or keep it?"), True
-    head = BL._out(path, "rev-parse", "HEAD")
-    branch = BL._out(path, "branch", "--show-current")
-    r = BL._git(repo, "worktree", "remove", *(["--force"] if dirty else []), str(path))
+        try:
+            _save_pending(p)
+        except Exception:
+            pass
+        return CloseResult(True, "ask", (
+            "Closed. Its worktree has changes — remove it anyway, or keep it?"),
+            f"{path}:\n{dirty}", ask=True)
+    say("Removing the worktree …")
+    try:
+        head = _bounded(lambda: BL._out(path, "rev-parse", "HEAD"), step_timeout,
+                        "git rev-parse")
+        branch = _bounded(lambda: BL._out(path, "branch", "--show-current"),
+                          step_timeout, "git branch")
+        r = _bounded(lambda: BL._git(repo, "worktree", "remove",
+                                     *(["--force"] if dirty else []), str(path),
+                                     timeout=step_timeout),
+                     step_timeout + 5, "git worktree remove")
+    except Exception as exc:
+        return CloseResult(False, "failed", f"Stopped, but couldn't remove its worktree: {exc}.",
+                           _details(p, str(exc)))
     if r.returncode != 0:
-        return False, msg + " Removing the worktree failed: " + (
-            r.stderr or r.stdout).strip(), False
+        why = (r.stderr or r.stdout).strip() or "git worktree remove failed"
+        return CloseResult(False, "failed", "Stopped, but couldn't remove its worktree.",
+                           _details(p, why))
     _drop_pending(p.slug)
     from delfin.dashboard import branch_cleanup as BC
     import shlex
@@ -682,7 +865,24 @@ def _release_worktree(p: Preview, msg: str, mode: str) -> tuple[bool, str, bool]
              "name": str(path), "path": str(path), "branch": branch,
              "sha": head, "reason": "preview closed"
              + (" (changes discarded)" if dirty else ""), "undo": undo})
-    return True, msg + f" Removed the worktree {path}. Undo: {undo}", False
+    return CloseResult(True, "closed", "Closed." + (
+        " Its changes were discarded." if dirty else ""),
+        f"Removed {path}. Undo: {undo}")
+
+
+def _release_worktree(p: Preview, msg: str, mode: str) -> tuple[bool, str, bool]:
+    """:func:`_release` as ``(ok, message, needs_confirm)``."""
+    r = _release(p, mode, lambda _m: None, STEP_TIMEOUT_S)
+    text = (msg + " " if msg else "") + r.text
+    return r.ok, text + ("\n" + r.details if r.details else ""), r.ask
+
+
+def stop(s: str, *, worktree: str = "if-clean") -> tuple[bool, str, bool]:
+    """:func:`close` as ``(ok, message, needs_confirm)``; the message
+    carries the details too (the command line prints it)."""
+    r = close(s, worktree=worktree)
+    msg = r.text + ("\n" + r.details if r.details else "")
+    return r.ok, msg, r.ask
 
 
 def _pending_path(s: str) -> Path:
@@ -701,20 +901,44 @@ def _drop_pending(s: str) -> None:
         pass
 
 
-def finish_close(s: str, *, discard: bool) -> tuple[bool, str]:
-    """The answer to the question :func:`stop` asked."""
+def finish_close(s: str, *, discard: bool,
+                 step_timeout: float = STEP_TIMEOUT_S) -> tuple[bool, str]:
+    """The answer to the question :func:`close` asked."""
+    r = finish_close_result(s, discard=discard, step_timeout=step_timeout)
+    return r.ok, r.text + ("\n" + r.details if r.details else "")
+
+
+def finish_close_result(s: str, *, discard: bool,
+                        step_timeout: float = STEP_TIMEOUT_S) -> CloseResult:
     try:
         p = Preview(**json.loads(_pending_path(s).read_text(encoding="utf-8")))
     except (OSError, ValueError, TypeError):
-        return False, f"No preview {s} is waiting for that answer."
+        return CloseResult(False, "failed", "Nothing is waiting for that answer.")
     if not discard:
         _drop_pending(s)
-        return True, f"The worktree stays at {p.worktree}."
-    ok, msg, _ask = _release_worktree(p, "", "discard")
-    return ok, msg.strip()
+        return CloseResult(True, "closed", "Closed. Its worktree is kept.",
+                           f"worktree: {p.worktree}")
+    return _release(p, "discard", lambda _m: None, step_timeout)
 
 
-# -- inside a preview --------------------------------------------------------
+def pending_closes(repo=None) -> list[Preview]:
+    """Closed previews whose worktree question is still open."""
+    out: list[Preview] = []
+    try:
+        files = sorted(_registry_dir().glob("*.closing.json"))
+    except OSError:
+        return out
+    key = BL.repo_key(repo) if repo else ""
+    for f in files:
+        try:
+            p = Preview(**json.loads(f.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            continue
+        if key and BL.repo_key(p.repo) != key:
+            continue
+        out.append(p)
+    return out
+
 
 def in_preview(env=None) -> bool:
     env = os.environ if env is None else env
