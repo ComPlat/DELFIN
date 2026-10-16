@@ -76,3 +76,18 @@ Dependency of stk. The 0.0.5 distribution carries no licence metadata and no
 licence file; the upstream repository github.com/lukasturcani/vabene is MIT
 (GitHub licence API), copyright 2020 Lukas Turcani.
 """
+
+[[package]]
+name = "periodictable"
+licence = "Public Domain"
+spdx = "LicenseRef-Public-Domain AND BSD-3-Clause"
+reviewed = "2026-10-16"
+reason = """
+periodictable 2.1.0 (core dependency since the energy-profile change,
+57fdf1f8). METADATA: "Periodictable is in the public domain", classifier
+License :: Public Domain. dist-info/licenses/LICENSE.txt adds that code in
+individual files carries its own licence; the one such file,
+periodictable/cromerman.py (Columbia University, DANSE), is under a BSD
+3-clause text. Both permit use and redistribution; nothing reaches DELFIN's
+own licence.
+"""
