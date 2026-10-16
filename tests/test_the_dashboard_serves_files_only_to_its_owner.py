@@ -22,7 +22,6 @@ Properties asserted:
 from __future__ import annotations
 
 import http.client
-import os
 import socket
 import subprocess
 import sys
@@ -30,7 +29,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from conftest import child_env
 
 TOKEN = "files-route-test-token-0123456789abcdef0123"
@@ -233,3 +231,100 @@ def test_a_project_directory_override_is_taken(monkeypatch, tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     assert _root_for(monkeypatch, tmp_path, str(project)) == project.resolve()
+
+
+# -- the handler itself, with the allow-list widened ----------------------------
+#
+# The server above refuses HTML/SVG at the allow-list already. The handler's
+# own rule -- user data that is not an image or a PDF goes out as a sandboxed
+# text/plain attachment -- is what still holds when a config widens the
+# allow-list, so it is driven here directly with ``.*``. Authentication is
+# covered by the live server; this subclass skips only Jupyter's request
+# preparation and the auth decorators.
+
+def test_the_handler_sends_user_html_as_a_sandboxed_download(tmp_path):
+    import asyncio
+
+    from tornado import web
+    from tornado.httpclient import AsyncHTTPClient
+    from tornado.httpserver import HTTPServer
+    from tornado.netutil import bind_sockets
+
+    from delfin.dashboard import web_security
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "page.html").write_text("<p>sample</p>", encoding="utf-8")
+    (root / "pic.svg").write_text("<svg/>", encoding="utf-8")
+    (root / "pic.png").write_bytes(PNG)
+    (root / "doc.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+    editor = root / ".delfin" / "ketcher"
+    editor.mkdir(parents=True)
+    (editor / "main.js").write_text("void 0;", encoding="utf-8")
+
+    base = web_security.handler_class()
+
+    class Unauthenticated(base):
+        async def prepare(self):
+            return None
+
+        def get(self, path, include_body=True):
+            return web.StaticFileHandler.get(self, path, include_body)
+
+    async def scenario():
+        app = web.Application(
+            [(r"/voila/files/(.*)", Unauthenticated,
+              {"path": str(root), "allowlist": [".*"], "denylist": []})],
+            base_url="/", headers=dict(web_security.SECURITY_HEADERS))
+        sockets = bind_sockets(0, "127.0.0.1")
+        port = sockets[0].getsockname()[1]
+        server = HTTPServer(app)
+        server.add_sockets(sockets)
+        client = AsyncHTTPClient()
+        out = {}
+        try:
+            for name in ("page.html", "pic.svg", "pic.png", "doc.pdf",
+                         ".delfin/ketcher/main.js"):
+                response = await client.fetch(
+                    f"http://127.0.0.1:{port}/voila/files/{name}",
+                    raise_error=False)
+                out[name] = response
+        finally:
+            server.stop()
+        return out
+
+    got = asyncio.run(scenario())
+    for name in ("page.html", "pic.svg"):
+        response = got[name]
+        assert response.code == 200, (name, response.code)
+        assert response.headers["Content-Type"].startswith("text/plain")
+        assert response.headers["Content-Disposition"].startswith("attachment")
+        assert "sandbox" in response.headers["Content-Security-Policy"]
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert got["pic.png"].headers["Content-Type"] == "image/png"
+    assert "Content-Disposition" not in got["pic.png"].headers
+    assert got["doc.pdf"].headers["Content-Type"] == "application/pdf"
+    assert "sandbox" not in got["doc.pdf"].headers["Content-Security-Policy"]
+    script = got[".delfin/ketcher/main.js"]
+    assert script.code == 200
+    assert "javascript" in script.headers["Content-Type"]
+    assert "Content-Disposition" not in script.headers
+
+
+def test_a_failed_handler_build_leaves_the_route_refusing(monkeypatch):
+    from tornado import web
+    from voila.static_file_handler import AllowListFileHandler
+
+    from delfin.dashboard import web_security
+
+    app = web.Application([(r"/voila/files/(.*)", AllowListFileHandler,
+                            {"path": "/nonexistent", "allowlist": [".*"]})])
+
+    def broken():
+        raise ImportError("handler unavailable")
+
+    monkeypatch.setattr(web_security, "handler_class", broken)
+    assert web_security.install_files_route(app) == 1
+    targets = [rule.target for rule in web_security._rules(app.wildcard_router)]
+    assert AllowListFileHandler not in targets
+    assert any(t.__name__ == "RefuseFiles" for t in targets if isinstance(t, type))
