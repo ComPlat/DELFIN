@@ -295,7 +295,9 @@ def vendored_3dmol_js():
 
     Running this once at start-up satisfies *both* guards: the library is
     already defined, and ``$3Dmolpromise`` is an already-resolved promise, so
-    neither loader fetches anything.
+    neither loader fetches anything. The hand-written viewers no longer have
+    a network fallback at all (an unpinned 3Dmol.org build without SRI): they
+    wait for this bundle, and the page CSP refuses any other 3Dmol source.
     """
     global _VENDORED_3DMOL_CACHE
     if _VENDORED_3DMOL_CACHE is not None:
@@ -7192,11 +7194,14 @@ def build_fukui_viewer_html(
     }} catch(e) {{}}
 
     function ensureLoaded(cb) {{
-        if (typeof $3Dmol !== 'undefined') {{ cb(); return; }}
-        var s = document.createElement('script');
-        s.src = 'https://3Dmol.org/build/3Dmol-min.js';
-        s.onload = cb;
-        document.head.appendChild(s);
+        // The bundled 3Dmol is defined by the dashboard's start-up script
+        // (vendored_3dmol_js); wait for it instead of fetching a copy from
+        // another origin, which the page CSP refuses.
+        var tries = 0;
+        (function wait() {{
+            if (typeof $3Dmol !== 'undefined') {{ cb(); return; }}
+            if (++tries < 200) setTimeout(wait, 50);
+        }})();
     }}
     ensureLoaded(function() {{
         var el = document.getElementById('{viewer_id}');

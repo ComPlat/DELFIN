@@ -51,8 +51,10 @@ def test_the_launcher_names_a_bundle_and_not_the_loader():
     # Nothing at all, not a working MathJax: window.MathJax is undefined in
     # this dashboard today and no output is typeset, so a real bundle would
     # start typesetting where there is a network -- a change in what is shown.
-    assert 'data:text/javascript,//' in source
-    assert source.count('data:text/javascript,//') == 1
+    # The nothing is an empty script on the dashboard's own origin, so the
+    # page CSP needs no data: in script-src.
+    assert '"mathjax_url": NO_TYPESETTING_ROUTE' in source
+    assert 'data:text/javascript' not in source
 
 
 def test_it_is_set_where_this_deployment_reads_it():
@@ -67,12 +69,17 @@ def test_it_is_set_where_this_deployment_reads_it():
 
 
 def test_the_setting_is_valid_json_tornado_can_read():
+    from delfin.dashboard import web_security
+
     source = open(cli_voila.__file__, encoding='utf-8').read()
-    found = re.search(r"--ServerApp\.tornado_settings=(\{.*?\})'",
-                      _dewrapped(source), re.S)
-    assert found, 'the argument should be one JSON object'
-    payload = json.loads(found.group(1))
+    assert ('"--ServerApp.tornado_settings="\n'
+            '        + json.dumps({"mathjax_url": NO_TYPESETTING_ROUTE})'
+            in source)
+    payload = json.loads(json.dumps(
+        {"mathjax_url": web_security.NO_TYPESETTING_ROUTE}))
     assert set(payload) == {'mathjax_url'}
-    # The trailing // is load-bearing: Voila appends ?config=... to whatever
-    # it is given, and the comment swallows it.
-    assert payload['mathjax_url'] == 'data:text/javascript,//'
+    # Voila appends ?config=... to whatever it is given; the route is a
+    # path, so that is a query string the route ignores (the server-level
+    # check: test_the_dashboard_serves_files_only_to_its_owner).
+    assert payload['mathjax_url'].startswith('/')
+    assert payload['mathjax_url'].endswith('.js')
