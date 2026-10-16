@@ -92,7 +92,7 @@ def test_an_auto_allowed_command_still_runs(monkeypatch, tmp_path):
 def test_the_start_notice_says_other_commands_are_refused(monkeypatch, tmp_path):
     _perms, notes, _asked = _unattended(monkeypatch, tmp_path)
     text = " ".join(notes)
-    assert "NOT isolated" in text and "refused" in text, text
+    assert "NOT isolated" in text and "refused" in text.lower(), text
     assert "classifier" not in text, text
 
 

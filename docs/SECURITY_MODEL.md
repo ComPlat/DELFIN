@@ -84,9 +84,13 @@ When no filesystem layer holds a shell command (none works on the host, or
 `bypassPermissions` session asks once, naming the consequence (no keeps
 `default`); with nobody to ask it starts in `default`, says so on stderr and
 records `isolation_missing`. In that lowered session a command off the
-auto-allow list that passed every rule is judged by the action classifier
-and refused on any answer but allow
-(`api_client._unisolated_fallback_verdict`). The banner, `/status` and the
+auto-allow list that passed every rule is refused and recorded as
+`unisolated_refused` (`api_client._unisolated_fallback_verdict`); no
+classifier verdict lets it run, because without a layer only a reading of
+its text would hold it. Reads, workspace writes, the test runner and the
+auto-allowed commands keep working. For multi-user installations the
+managed policy's `require_isolation` turns the same host into a refusal at
+start instead. The banner, `/status` and the
 turn status line show `unisolated` (`isolation_posture.isolation_status`).
 
 ### 2. The permission gate
@@ -421,7 +425,7 @@ enforces. Its refusals are recorded as `managed_policy_deny` and
 On a host in the last row a `bypassPermissions` start is asked once when a
 person is present; unattended it starts in `default`
 (`isolation_posture.apply_at_start`), where a command off the auto-allow
-list is asked or, with nobody to ask, judged by the action classifier. Both
+list is asked or, with nobody to ask, refused (`unisolated_refused`). Both
 record `isolation_missing`. A locked session refuses its shell commands
 unless the person approves one command unconfined, and records the same
 kind. `delfin-agent capabilities` prints which

@@ -162,6 +162,8 @@ _KINDS = {
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    # Off the auto-allow list, no isolation layer, nobody to ask.
+    "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
 }

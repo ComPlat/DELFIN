@@ -20542,68 +20542,33 @@ class _DocToolExecutor:
     @staticmethod
     def _unisolated_fallback_verdict(perms, name: str, args: dict
                                      ) -> Optional[str]:
-        """None when the action classifier allows ``args['command']``,
-        else the refusal the model reads.
+        """The refusal the model reads for a command off the auto-allow
+        list in a session whose bypass start was lowered to default (no
+        layer isolates it) and that has nobody to ask.
 
-        Reached only for a command off the auto-allow list in a session
-        whose bypass start was lowered to default (no layer isolates it)
-        and that has nobody to ask, after every hard tier. Judged as in
-        scope "all" through ``action_classifier.judge`` with
-        ``default_on_error="refuse"``; anything but allow -- doubt, refuse,
-        no runner, the classifier switched off, an error, no verdict within
-        ``_CLASSIFIER_TIMEOUT_S`` -- is a refusal naming what still works.
-        Rejected: ``_classifier_second_opinion``, which lets the rule
-        result stand when the classifier fails; here the rule result is a
-        refusal."""
+        Reached after every hard tier. Without a layer, what stops a
+        command is a reading of its text, and here nobody reads it: the
+        command is refused, whatever an action classifier would say, and
+        recorded (``unisolated_refused``, blocked: it reaches the
+        attention inbox). The refusal names what still works.
+
+        Rejected: letting the action classifier allow it (it did until
+        2026-10; a model's verdict on a command text is the same reading
+        a command that builds its words at run time walks past, and the
+        classifier only ever adds friction everywhere else). Rejected:
+        stopping the run -- reads, workspace writes, the test runner and
+        the auto-allowed commands keep a long unattended run useful.
+        """
         cmd = str((args or {}).get("command") or "")
-        works = (" What still works with nobody to ask: read_file, "
-                 "write_file, edit_file, list_files and grep in the "
-                 "workspace, run_tests, and the auto-allowed commands.")
-        head = (f"blocked: '{cmd[:120]}' is not on the auto-allow list, and "
-                "this session runs without isolation in default mode with "
-                "nobody to ask")
-        runner = getattr(perms, "classifier_runner", None)
-        cfg = _classifier_settings() if runner is not None else None
-        if runner is None or cfg is None:
-            _record_security_event("classifier_error", "bash",
-                                   f"{cmd[:80]}: no classifier")
-            return head + ", and no action classifier is available." + works
-        box: dict = {}
-
-        def _work() -> None:
-            try:
-                from . import action_classifier as _ac
-                task, earlier = _classifier_context_users(
-                    _classifier_user_texts(
-                        getattr(perms, "classifier_messages", None)))
-                box["v"] = _ac.judge(
-                    _classifier_action(name, args),
-                    {"task": task, "recent_user": earlier,
-                     "recent_calls": []},
-                    model=cfg["model"], runner=runner, rules=cfg["rules"],
-                    default_on_error="refuse")
-            except BaseException as exc:          # noqa: BLE001
-                box["exc"] = exc
-
-        worker = threading.Thread(target=_work, daemon=True,
-                                  name="fallback-classifier")
-        worker.start()
-        worker.join(_CLASSIFIER_TIMEOUT_S)
-        verdict = box.get("v")
-        if verdict is not None and verdict.decision == "allow":
-            _record_security_event("classifier_allow", "bash", cmd[:80],
-                                   blocked=False)
-            return None
-        if verdict is not None:
-            reason = " ".join(str(verdict.reason or "").split())[:300]
-            why = f"the action classifier did not allow it ({verdict.decision}: {reason})"
-        elif "exc" in box:
-            why = f"the action classifier failed ({type(box['exc']).__name__})"
-        else:
-            why = "the action classifier gave no verdict in time"
-        _record_security_event("classifier_refuse", "bash",
-                               f"{cmd[:80]}: {why[:120]}")
-        return head + "; " + why + "." + works
+        _record_security_event("unisolated_refused", "bash", cmd[:80])
+        return (f"blocked: '{cmd[:120]}' is not on the auto-allow list, and "
+                "this session runs without isolation (no bubblewrap, "
+                "Landlock or Seatbelt holds a command here) with nobody to "
+                "ask, so only auto-allowed commands run. What still works: "
+                "read_file, write_file, edit_file, list_files and grep in "
+                "the workspace, run_tests, and the auto-allowed commands. "
+                "Do not retry it in another form; say in your answer what "
+                "is left for a person to run.")
 
     @staticmethod
     def _own_written_file(path: "Path | None", perms) -> "Path | None":
@@ -21506,9 +21471,9 @@ class _DocToolExecutor:
                     + self._said_why(perms)
                 )
             # A bypass start lowered to default for want of isolation, with
-            # nobody to ask: every hard tier above has passed, and the
-            # action classifier decides instead of the outright refusal
-            # below, so a long unattended run keeps working.
+            # nobody to ask: every hard tier above has passed; the command
+            # is refused with the reason and what still works, and the
+            # refusal is recorded where an unattended run's owner looks.
             if getattr(perms, "unisolated_fallback", False):
                 return self._unisolated_fallback_verdict(perms, name, args)
             # default / acceptEdits without a UI callback (head-less / CLI):

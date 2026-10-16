@@ -1598,7 +1598,7 @@ Whether a command is held by a filesystem layer (bubblewrap, Landlock or Seatbel
 
 | Start mode | Attended | Nobody to ask (`-p` from a script, a pipe) |
 |------------|----------|---------------------------------------------|
-| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is judged by the action classifier and runs only when it allows |
+| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is refused (reads, workspace writes, the test runner and the auto-allowed commands still run) |
 | `acceptEdits` | starts, with a notice | starts, with a notice |
 | `default`, `plan` | unchanged | unchanged |
 

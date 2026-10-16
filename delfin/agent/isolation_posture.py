@@ -15,11 +15,11 @@ text; a command that assembles its words at run time is not read. So:
   asks once (one dialog per process) and keeps bypass on yes. Unattended,
   or on no, it starts in ``default`` with a notice and the permissions
   marked ``unisolated_fallback``: the run continues, and a command outside
-  the auto-allow list is asked, or with nobody to ask judged by the action
-  classifier and refused unless it allows
-  (``api_client._unisolated_fallback_verdict``). The dashboard asks in its
-  approval panel on a thread (``background=True``) and runs in default
-  until the answer.
+  the auto-allow list is asked, or with nobody to ask refused
+  (``api_client._unisolated_fallback_verdict``; no classifier verdict lets
+  it through, since without a layer nothing but a reading of its text
+  would hold it). The dashboard asks in its approval panel on a thread
+  (``background=True``) and runs in default until the answer.
 * ``acceptEdits`` starts as asked, with the notice: file writes stay inside
   the workspace through the path gates, and commands are still asked.
 * ``default`` and ``plan`` start as asked: every command is asked anyway.
@@ -235,11 +235,13 @@ def apply_at_start(engine, *, can_ask: bool,
     _lower(perms)
     _record(f"bypassPermissions without isolation {why}; started in "
             f"{_FALLBACK_MODE} ({status.reason})", blocked=True)
+    tail = ("any other command is REFUSED, because nobody can be asked"
+            if not can_ask else "any other command is asked")
     return [head + f"; bypassPermissions {why}, so this session runs in "
-                   f"{_FALLBACK_MODE}: reads, workspace writes and the "
-                   "auto-allowed commands go through; any other command is "
-                   "asked, or with nobody to ask judged by the action "
-                   "classifier and refused unless it allows"]
+                   f"{_FALLBACK_MODE}: reads, workspace writes, the test "
+                   f"runner and the auto-allowed commands go through; {tail}"
+                   " (use a host with bubblewrap, Landlock or Seatbelt for "
+                   "an unattended run that runs commands)"]
 
 
 def _lower(perms) -> None:
