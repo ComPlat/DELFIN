@@ -35,6 +35,14 @@ from delfin.agent import engine as E
 from delfin.agent import run_limits as RL
 
 
+@pytest.fixture(autouse=True)
+def _no_batch_job(monkeypatch):
+    """Inside a SLURM/PBS/LSF job no wall-clock default is added; these
+    tests describe a run outside one, on every machine."""
+    for var in ("SLURM_JOB_ID", "PBS_JOBID", "LSB_JOBID"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @contextlib.contextmanager
 def _settings(agent):
     with patch("delfin.user_settings.load_settings",
@@ -43,12 +51,15 @@ def _settings(agent):
 
 
 class _Client:
-    model = "kit.qwen3.5-397b-A17b"
+    # A published rate: the USD default applies only where spend is
+    # measured (test_a_long_unattended_run_meets_its_ceiling_visibly.py).
+    model = "gpt-5.4"
 
 
 def _engine():
     eng = E.AgentEngine.__new__(E.AgentEngine)     # no client, no network
     eng.client = _Client()
+    eng.provider = "openai"
     return eng
 
 

@@ -509,6 +509,7 @@ class AutoController:
         self._run = self._new_run(self._auto_spec(), engine, False)
         self.log_path = self._log_path("auto")
         self.last_turn_end = self.clock()
+        note = (note + " " + self._widen(engine, self._run.spec)).strip()
         return (f"auto mode on (posture {self.posture}): after "
                 f"{_short(self.settings['idle_seconds'])} without input the "
                 "next item of work in scope starts by itself. Pushes, pull "
@@ -552,12 +553,23 @@ class AutoController:
         self.stop_report = ""
         self.log_path = self._log_path(spec.name)
         self.last_turn_end = self.clock() - float(self.settings["loop_gap_seconds"])
+        note = (note + " " + self._widen(engine, spec)).strip()
         base = ""
         if run.last_metric is not None:
             base = f" Baseline metric {run.last_metric:g}."
         return (f"loop {spec.name} started on branch "
                 f"{self.git.branch() or '(no git)'}: {spec.summary()}.{base} "
                 f"/loop stop ends it; typing anything pauses it. {note}").strip()
+
+    @staticmethod
+    def _widen(engine, spec: loops.LoopSpec) -> str:
+        """The session's defaulted unattended ceilings, widened to this
+        run's own budget (run_limits.widen_for); the sentence, or ""."""
+        try:
+            from .run_limits import widen_for
+            return widen_for(engine, spec.wall_seconds, spec.max_iterations)
+        except Exception:
+            return ""
 
     def disable(self, reason: str = "turned off") -> str:
         if not self.enabled and self.loop is None:
@@ -777,7 +789,14 @@ class AutoController:
             return f"budget spent: time ({_short(spec.wall_seconds)})"
         if used >= spec.max_tokens:
             return f"budget spent: tokens ({used} of {spec.max_tokens})"
-        return ""
+        # The session's own ceilings (run_limits): reached, they would
+        # refuse every further turn, so the run stops here and says how
+        # to go on instead of polling a session that cannot answer.
+        try:
+            from .run_limits import ceiling_reason
+            return ceiling_reason(engine)
+        except Exception:
+            return ""
 
     def _posture_stop(self, engine) -> str:
         perms = self._perms(engine)

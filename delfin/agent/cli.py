@@ -191,6 +191,12 @@ def _apply_run_budget(engine, args: argparse.Namespace) -> None:
         engine.run_budget_usd = usd
     if secs > 0:
         engine.run_budget_s = secs
+    try:
+        turns = int(getattr(args, "max_run_turns", 0) or 0)
+    except (TypeError, ValueError):
+        turns = 0
+    if turns > 0:
+        engine.run_budget_turns = turns
 
     # `--max-turns` bounds the tool ROUNDS inside one turn, which is a
     # different dimension from the two above: a session can be cheap and
@@ -4602,6 +4608,11 @@ def build_parser() -> argparse.ArgumentParser:
                            "dimension that still holds on a model with no "
                            "published rate (an unattended run without one: "
                            "agent.unattended_budget, 8 h)")
+    chat.add_argument("--max-run-turns", type=int, default=0,
+                      dest="max_run_turns", metavar="N",
+                      help="Turn ceiling for this session (0: the "
+                           "configured one; an unattended run without one: "
+                           "agent.unattended_budget, 200)")
     # The consumer existed without the producer: ReplOptions.color has been
     # read as getattr(args, "color", "auto") since the first version, and no
     # parser ever declared the flag — so the one setting that decides

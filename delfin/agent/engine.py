@@ -3245,11 +3245,17 @@ class AgentEngine:
         try:
             _bfrac, _, _bdim = self._run_budget_detail()
             if _bfrac >= 1.1:
+                try:
+                    from .run_limits import resume_hint as _rh
+                    _resume = " To continue: " + _rh(
+                        self, _bdim or "agent.run_budget_usd") + "."
+                except Exception:
+                    _resume = ""
                 _msg = (
                     "🛑 Run budget exhausted (>110%). No further turns will "
                     "run in this session. State is saved — raise "
                     f"{_bdim or 'agent.run_budget_usd'} or start a new run "
-                    "to continue.")
+                    "to continue." + _resume)
                 self._emit_budget_attention(
                     "hard_stop",
                     "Run stopped: budget ceiling reached",
@@ -7492,21 +7498,35 @@ class AgentEngine:
         Consulted by the client between tool rounds (``run_ceiling``);
         the 110 % gate before a turn stays. Never raises.
         """
+        hit = ""
         try:
             usd, secs = self._run_budget()
             if secs > 0:
                 import time as _t
                 started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
                 if started > 0 and _t.time() - started >= secs:
-                    return "run_budget_s"
-            if usd > 0:
+                    hit = "run_budget_s"
+            if not hit and usd > 0:
                 spent = (float(getattr(self, "cost_usd", 0.0) or 0.0)
                          + max(0.0, float(spent_this_turn or 0.0)))
                 if spent >= usd:
-                    return "run_budget_usd"
+                    hit = "run_budget_usd"
         except Exception:
             return ""
-        return ""
+        if hit:
+            # Once per run (the level dedups): the turn's own notice goes
+            # to the stream, this one to whoever is not watching it.
+            try:
+                from .run_limits import resume_hint
+                self._emit_budget_attention(
+                    "ceiling", "Run stopped: budget ceiling reached",
+                    f"agent.{hit} was reached inside a turn; the turn "
+                    "stopped between two tool rounds, its work is kept and "
+                    "the session is saved. To continue: "
+                    + resume_hint(self, hit))
+            except Exception:
+                pass
+        return hit
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.
