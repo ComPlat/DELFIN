@@ -272,10 +272,14 @@ DEFAULT_SETTINGS = {
         # Cloud metadata addresses are refused in every mode, attended
         # commands included. allowed_domains ADDS to the built-in list
         # (PyPI, conda, GitHub); "*.example.org" covers subdomains.
+        # upload_domains: hosts that may receive an upload (a write
+        # request, or more than upload_ask_bytes) when nobody can be
+        # asked; every other known host gets reads only in that case.
         "sandbox_network": {
             "mode": "proxy",
             "allowed_domains": [],
             "allowed_ports": [80, 443],
+            "upload_domains": [],
         },
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The

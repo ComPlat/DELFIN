@@ -85,6 +85,12 @@ EXPLAINED = {
         "follow); an outside path and a symlink to outside are refused",
     ("_execute_run_tests", "_git_metadata_roots", "safe_git.run"):
         "git rev-parse in perms.workspace",
+    ("_execute_run_tests", "_caged_readonly_paths", "glob"):
+        "lists ~/.delfin/projects/*/memory (a harness-chosen directory) to "
+        "bind those stores read-only into the cage, only when a writable "
+        "root holds them; nothing is read or returned "
+        "(tests/test_shared_knowledge_and_memory_writes_are_asked_in_"
+        "every_mode.py)",
     ("_execute_grep_file", "_looks_binary", "open"): _GREP_WALK,
     ("_execute_grep_file", "_looks_binary", "read"): _GREP_WALK,
     ("_execute_grep_file", "_execute_grep_file", "open"): _GREP_WALK,

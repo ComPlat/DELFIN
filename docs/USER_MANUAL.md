@@ -1500,7 +1500,7 @@ The strongest layer: `bash`, `bash_background` and `run_tests` run each command 
 }
 ```
 
-`runtime` is `auto` (the first of Apptainer, Singularity, Podman, Docker that is installed and has the image), or one of them by name; a named runtime is never swapped for another. `image` empty means `docker.io/library/python:3.11-slim` for Podman and Docker, and `~/.local/share/delfin/containers/python_3.11-slim.sif` for Apptainer. Any image works that has `/bin/bash`; put the tools your commands need into it (a module system or a conda environment of the host is not visible inside unless it lies in a session directory).
+`runtime` is `auto` (the first of Apptainer, Singularity, Podman, Docker that is installed and has the image), or one of them by name; a named runtime is never swapped for another. `image` empty means `docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce` (python:3.11-slim pinned by the digest of its image index; a copy pulled by tag is not used) for Podman and Docker, and `~/.local/share/delfin/containers/python_3.11-slim.sif` for Apptainer. Any image works that has `/bin/bash`; put the tools your commands need into it (a module system or a conda environment of the host is not visible inside unless it lies in a session directory).
 
 Inside the container the writable workspace roots (and the git metadata of a worktree) are mounted read-write, read-only and confirm-write roots, git hooks and the approvals directory read-only, credential directories inside a mounted root are covered, and nothing else of your home exists. The command runs as your uid, without capabilities, with no-new-privileges, on a read-only root filesystem, without network. Only `agent.sandbox_network.mode = "open"` gives it the runtime's normal network; the egress proxy is not reachable from inside a container, so `proxy` means no network here. The permission gate still reads every command first.
 
@@ -1511,7 +1511,7 @@ If no runtime is installed or the image is missing, commands fall back to bubble
 <!-- recipe: not-runnable — pulls a container image from a registry; needs Apptainer on an HPC login node -->
 ```bash
 mkdir -p ~/.local/share/delfin/containers
-apptainer pull ~/.local/share/delfin/containers/python_3.11-slim.sif docker://python:3.11-slim
+apptainer pull ~/.local/share/delfin/containers/python_3.11-slim.sif docker://docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 ```
 
 Requires Apptainer 1.1 or SingularityCE 3.8 or newer (`--no-mount hostfs,bind-paths`, so the site's default bind paths are not mounted). An image with your own software: `apptainer build my.sif my.def`, then set `"image": "/path/to/my.sif"`.
@@ -1520,7 +1520,7 @@ Requires Apptainer 1.1 or SingularityCE 3.8 or newer (`--no-mount hostfs,bind-pa
 
 <!-- recipe: not-runnable — pulls a container image from a registry; needs Podman or Docker -->
 ```bash
-podman pull docker.io/library/python:3.11-slim     # or: docker pull python:3.11-slim
+podman pull docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce     # or: docker pull docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 ```
 
 Podman maps your uid into the container (`--userns=keep-id`), so files written in the workspace belong to you. Docker runs with `--user <uid>:<gid>`; with rootless Docker the files can end up owned by a subordinate uid, so prefer Podman there.
@@ -1532,7 +1532,7 @@ Limits: a command's network cannot go through the egress proxy (no network, or o
 - Always reachable: PyPI, conda channels, GitHub, and whatever the session is configured to use (its model endpoint, the workspace's git remotes, the pip/conda indexes from the environment and config files, `agent.sandbox_network.allowed_domains`). SSH git remotes, the SLURM controller and license servers named in `*_LICENSE_FILE` are reached directly.
 - Permission rules: `web_fetch(domain:…)` rules deny, ask or allow first.
 - Unknown domains: you are asked when the session has an approval dialog and is not in plan or bypass mode. Otherwise the request is refused, and the message names the domain and the rule that would allow it.
-- Uploads: a request body above `agent.sandbox_network.upload_ask_bytes` (default 1 MiB), or any POST/PUT to an unknown host, is asked. With nobody to ask, an upload to a known host passes and is recorded.
+- Uploads: a request body above `agent.sandbox_network.upload_ask_bytes` (default 1 MiB), or any POST/PUT to an unknown host, is asked. With nobody to ask (plan, bypass, a run without an approval channel), a write to a known host -- POST, PUT, PATCH or DELETE over plain HTTP, a body above the limit, or more than that many bytes sent through an HTTPS tunnel -- is refused, and the refusal names the setting; downloads keep working. Name a host in `agent.sandbox_network.upload_domains` to let it receive uploads unattended; the session's own model endpoint is always allowed. A plain `git push` to a GitHub remote is not affected: DELFIN runs it itself, outside the sandbox and the proxy, behind its own push checks (a push nobody asked for is refused). Pushes over SSH reach the remote directly and are not affected either. Affected are uploads a command makes through the proxy: `curl`/`gh api` writes, a package upload, and a `git push` over HTTPS that DELFIN's push path does not take (a non-GitHub host, a force or delete refspec, other flags) -- for those, name the host. A host added to the list while a session runs takes effect at the next start.
 
 `agent.sandbox_network.mode` is `"proxy"` (default), `"none"` or `"open"`. A session reads it at start and cannot loosen it while it runs. Where the host has none of the three layers, the startup banner, the security panel and `delfin-agent doctor` ("command network") say so.
 
@@ -1598,7 +1598,7 @@ Whether a command is held by a filesystem layer (bubblewrap, Landlock or Seatbel
 
 | Start mode | Attended | Nobody to ask (`-p` from a script, a pipe) |
 |------------|----------|---------------------------------------------|
-| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is judged by the action classifier and runs only when it allows |
+| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is refused (reads, workspace writes, the test runner and the auto-allowed commands still run) |
 | `acceptEdits` | starts, with a notice | starts, with a notice |
 | `default`, `plan` | unchanged | unchanged |
 
@@ -1977,6 +1977,8 @@ External Model Context Protocol servers are configured in `~/.delfin/mcp_servers
 
 A tool reached through MCP runs in a process DELFIN did not start a command line for, so the shell sandbox is not around it. Give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it is started inside a namespace holding only those paths. A server that declares neither runs uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all name it as such.
 
+A stdio server and a hook start with the environment DELFIN's shell commands get: no model provider key, no `GH_TOKEN`/`GITHUB_TOKEN`, no AWS or other cloud secret, and no variable whose name ends in a credential marker such as `_TOKEN`, `_SECRET` or `_API_KEY`. A server or hook that needs one names it in its own entry: `"env": {"GH_TOKEN": "${GH_TOKEN}", "MODE": "ci"}` passes `GH_TOKEN` from your environment and sets `MODE`; `"env": ["GH_TOKEN"]` is the short form for passing names unchanged. For a hook, `env` goes on the command entry beside `command`.
+
 DELFIN ships three servers of its own: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions). They can take their roots from your settings with `agent.mcp_isolation: "builtin"`.
 
 ### Tool groups per workspace
@@ -2000,7 +2002,10 @@ delfin-agent sessions            # earlier sessions: id, age, model, task
 delfin-agent where               # which node the dashboard runs on, and how to get back in
 delfin-agent jobs                # watched cluster jobs
 delfin-agent ops status          # checkouts, dashboard servers, session locks, leftovers; changes nothing
+delfin-agent audit verify        # is the audit log intact (no edited, removed or cut-off record); exit 1 if not
 ```
+
+`audit verify` checks `~/.delfin/audit.log` and every rotated week (`--log PATH` for one file, `--json` for the reports). Each record carries the hash of the one before it and a head file holds the last one, so an edited, removed or inserted record, a cut tail and a torn line are named with their line number; records written before the chain existed are counted as legacy. If the log cannot be written at all (a full disk, a link in its place), the containment panel and the attention inbox say so once.
 
 `ops status` is the first thing to run when the dashboard or the agent behaves oddly around git or sessions (a branch switch that fails, a save that is refused, a git command that reports a lock). It lists:
 
@@ -2074,7 +2079,7 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `--output-format` | `stream-json`: one JSON object per line while the turn runs; `json`: one object at the end; `text`: the answer only |
 | `--permission-mode` | `plan`, `default`, `acceptEdits` or `bypassPermissions`. **Always pass it**: without it the run takes `default_mode` from your permission settings, or `default` |
 | `--max-turns N` | Ends the turn after N tool rounds, with a notice |
-| `--max-run-seconds S` / `--max-budget-usd USD` | Session ceilings. From 80 % the model is told to wind down, at 100 % to start no new work, and past 110 % no further turn of the session starts; a turn already running is not cut off |
+| `--max-run-seconds S` / `--max-budget-usd USD` | Session ceilings. From 80 % the model is told to wind down; at 100 % a running turn stops between two tool rounds (its work is kept, the session saved, the stop reason names the setting); past 110 % no further turn of the session starts. A run with no terminal on stdin, or with `--unattended`, that sets neither gets the unattended defaults: 8 h, 200 turns, 500 tool rounds per turn where `agent.max_tool_rounds` is 0 (uncapped), and $25 on a model with a published rate (KIT endpoints and local servers bill nothing, so there time and turns are the bound). Inside a SLURM, PBS or LSF job the job's time limit replaces the 8 h. An auto-mode run or loop in the session widens these defaults to its own budget (iterations, wall, tokens) and says so when it starts. Change them in `agent.unattended_budget` (`{"usd": 10, "seconds": 3600, "turns": 50, "tool_rounds": 200}`; 0 lifts one); a flag (`--max-run-turns N` for turns) or `agent.run_budget_usd` / `run_budget_s` / `run_budget_turns` replaces the default. stderr names the ceilings in force; a ceiling that ends the run is named in the turn's notice, its stop reason and the attention inbox, with the command that continues it: `delfin-agent -p "continue where the run stopped" --session <id> --max-run-seconds <higher>` (the clock and turn count carry over a resume, so the flag must exceed what was used) |
 | `--allowed-tools a,b` / `--disallowed-tools a,b` | Narrow the tool surface; a named tool is refused when called, not only hidden. Deny wins. Neither can grant a tool the mode or role forbids; an unknown name is reported on stderr |
 | `--cwd DIR` | The workspace. Your home directory, a parent of it, a system directory and a missing directory are refused (exit 2) |
 | `--session ID` / `--session latest` | Continue a saved session; `latest` is this workspace's last one, or the newest on the machine when the workspace has none. The `session_id` is in the `result` line |

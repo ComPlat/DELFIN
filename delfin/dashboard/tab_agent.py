@@ -4428,15 +4428,20 @@ def _render_artifact_body(path) -> str | None:
                 f'🎨 <code>{name_html}</code> ({len(text) // 1024} KB) — '
                 f'too large to embed inline.</div>'
             )
-        # Strip a leading XML declaration for clean inline embedding
-        if text.lstrip().startswith("<?xml"):
-            text = text.split("?>", 1)[-1]
+        # As an image, not as inline markup: an <img> renders the drawing
+        # but runs none of the script or event handlers an SVG file can
+        # carry, which inline markup would run on the dashboard's origin.
+        import base64
+        b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
         return (
             f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
             f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🎨 <code>{name_html}</code></div>'
-            f'<div style="max-width:100%;overflow:auto;">{text}</div></div>'
+            f'<div style="max-width:100%;overflow:auto;">'
+            f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'style="max-width:100%;display:block;" alt="{name_html}"/>'
+            f'</div></div>'
         )
 
     # ---- CSV / TSV preview ---------------------------------------------
@@ -6800,7 +6805,7 @@ def create_tab(ctx):
 
         # One-line summary: roots inline, comma-separated, repo first.
         roots_html = " · ".join(
-            f"<code>{r}</code>" + (" <small>(repo)</small>" if i == 0 else "")
+            f"<code>{_html.escape(str(r))}</code>" + (" <small>(repo)</small>" if i == 0 else "")
             for i, r in enumerate(roots)
         )
         kit_dirs_status.value = (
@@ -8741,7 +8746,7 @@ def create_tab(ctx):
             status_line_html.value = (
                 f"<div style='font-family:monospace;font-size:11px;"
                 f"color:#777;border-top:1px solid #333;padding:3px 6px;'>"
-                f"{line}</div>" if line else ""
+                f"{_html.escape(str(line))}</div>" if line else ""
             )
         except Exception:
             status_line_html.value = ""
@@ -13027,7 +13032,7 @@ def create_tab(ctx):
                 _append_system_message(
                     "No MCP servers configured.\n"
                     "Add one with: /mcp add <name> <command> [args ...]\n"
-                    "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp"
+                    "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem@1.0.0 /tmp"
                 )
                 return True
             lines = ["MCP servers in effect (source shown per entry):"]
@@ -22173,7 +22178,7 @@ def create_tab(ctx):
                 return
             push_status_html.value = (
                 f'<span style="color:#ef6c00;">'
-                f'Push <b>{branch}</b>? '
+                f'Push <b>{_html.escape(str(branch))}</b>? '
                 f'({len(unpushed.splitlines())} commit(s))'
                 f'</span>'
             )

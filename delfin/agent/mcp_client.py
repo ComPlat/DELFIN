@@ -25,8 +25,8 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
       "servers": {
         "fs": {
           "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-          "env": {"FOO": "bar"},
+          "args": ["-y", "@modelcontextprotocol/server-filesystem@1.0.0", "/tmp"],
+          "env": {"FOO": "bar", "GH_TOKEN": "${GH_TOKEN}"},
           "enabled": true,
           "roots": ["/data/project"],
           "read_roots": ["/opt/corpus"]
@@ -42,6 +42,17 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
 
 A server is treated as HTTP when ``type`` is ``http``/``sse``/
 ``streamable-http`` or a ``url`` is present; otherwise stdio.
+
+A stdio server starts with the environment every bash child gets
+(``api_client._configured_child_env``): no model provider key, no
+GitHub, cloud or other ``*_TOKEN``/``*_SECRET``/``*_API_KEY`` variable.
+``env`` puts back what the server needs, by name: an object sets values
+(``"${NAME}"`` takes the parent's NAME), a list of names passes those
+variables unchanged.
+
+The example names the package version (``@1.0.0``): ``npx -y <package>``
+without one fetches and runs the newest upload of that package at every
+start, so what the agent talks to changes without any change here.
 
 ``roots`` / ``read_roots`` on a stdio entry launch that server inside a
 namespace holding only those paths — the one containment that works for a
@@ -78,7 +89,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import queue
 import re
 import subprocess
@@ -293,7 +303,16 @@ def _extract_jsonrpc_from_sse(raw: str, rid: Any) -> dict:
     return best or {"error": {"message": "no JSON-RPC payload in SSE stream"}}
 
 
-# Credentials of the model providers the agent itself uses.
+def _env_spec(raw) -> dict:
+    """``env`` of a server entry as ``{name: value template}``
+    (``api_client.env_spec``: a list passes names, an object sets)."""
+    from .api_client import env_spec
+    return env_spec(raw)
+
+
+# Credentials of the model providers the agent itself uses. A server's
+# environment is built by api_client._configured_child_env, which removes
+# these and every other credential; kept for the callers that name them.
 _DELFIN_PROVIDER_KEYS = frozenset({
     "KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_API_KEY",
@@ -310,6 +329,38 @@ class MCPTool:
     @property
     def namespaced_name(self) -> str:
         return f"{_NAMESPACE_PREFIX}{self.server}__{self.name}"
+
+
+def advertised_description(tool: "MCPTool") -> tuple[str, list[str]]:
+    """The description the model is shown for ``tool``, and why it was
+    withheld ([] when it was not).
+
+    Input: a discovered tool; its description is text the server's author
+    wrote, read by the model in the tool schema of every request. Output:
+    the description inside an ``untrusted`` "tool_description" fence
+    (``src: mcp:<server>``) with a content-keyed nonce
+    (``project_memory._fence_nonce``: the schema sits in the cached
+    prefix, so the bytes must not change between requests); or, when the
+    text carries an ``untrusted.instruction_shapes`` finding, a one-line
+    notice naming the tool and the kinds, and the findings. The tool stays
+    on the surface either way: its calls pass the MCP gate like any other.
+
+    Rejected: refusing the tool (a server with one odd sentence would lose
+    every tool); pinning descriptions by hash and asking on a change (a
+    store and a dialog per server -- the fence and the shape check are the
+    part that holds on every host). Cost: 186 characters plus the server
+    name per tool, paid from the MCP schema budget."""
+    raw = str(getattr(tool, "description", "") or "").strip() or tool.name
+    from . import untrusted
+    found = untrusted.instruction_shapes(raw)
+    if found:
+        kinds = ", ".join(f.split(":", 1)[0] for f in found)
+        return (f"(The description of {tool.name} from MCP server "
+                f"{tool.server} was withheld: it carries text shaped as an "
+                f"instruction ({kinds}).)", found)
+    from .project_memory import _fence_nonce
+    return (untrusted.wrap_as("tool_description", f"mcp:{tool.server}", raw,
+                              nonce=_fence_nonce(raw)), [])
 
 
 @dataclass
@@ -387,11 +438,12 @@ class MCPServer:
         with self._lock:
             if self.proc is not None and self.proc.poll() is None:
                 return
-            # The model providers' keys DELFIN runs on are no server's
-            # business; a server that needs one names it in its config.
-            env = {k: v for k, v in os.environ.items()
-                   if k not in _DELFIN_PROVIDER_KEYS}
-            env.update(self.env or {})
+            # The environment every bash child gets (no provider key, no
+            # GitHub/cloud token, no *_TOKEN/*_SECRET variable), plus what
+            # this server's own ``env`` names: a list passes those
+            # variables, an object sets values with ${NAME} from the parent.
+            from .api_client import _configured_child_env
+            env = _configured_child_env(self.env or {})
             argv = [self.command, *self.args]
             if self.isolation is not None:
                 # A declared containment either holds or the server does
@@ -1020,7 +1072,7 @@ def _server_from_config(name: str, cfg: dict,
         name=name,
         command=str(cfg.get("command", "")),
         args=list(cfg.get("args", []) or []),
-        env={k: str(v) for k, v in (cfg.get("env") or {}).items()},
+        env=_env_spec(cfg.get("env")),
         # Only stdio. An HTTP server runs somewhere DELFIN cannot build a
         # namespace around, so accepting roots there would be a promise
         # made by a field nobody enforces.
@@ -1371,7 +1423,7 @@ def effective_servers(workspace: Path | None) -> list[dict]:
             "name": name,
             "command": cfg.get("command", ""),
             "args": list(cfg.get("args") or []),
-            "env": dict(cfg.get("env") or {}),
+            "env": _env_spec(cfg.get("env")),
             "url": url,
             "enabled": bool(cfg.get("enabled", True)),
             "source": sources.get(name, ""),

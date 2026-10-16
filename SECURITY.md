@@ -65,6 +65,19 @@ owner. The checks bind administrators too; the one way around them is a
 documented, logged emergency procedure. Both are described in
 [docs/MAIN_PROTECTION.md](docs/MAIN_PROTECTION.md).
 
+## What a release and a fetched component are checked against
+
+A release is built by `.github/workflows/release.yml` from a tag, with its
+build tools installed by SHA-256 (`pip install --require-hashes`); each
+distribution carries a SLSA provenance attestation and a CycloneDX SBOM
+attestation, and the SBOM is attached to the GitHub release
+(`gh attestation verify`, see [docs/RELEASING.md](docs/RELEASING.md)).
+What DELFIN fetches at run time is pinned the same way: the Ketcher drawing
+editor is one build refused unless its SHA-256 matches and unpacked only
+inside its own directory, and the agent's default container image is named
+by digest. The full table of pins and the tests that hold them is in
+docs/RELEASING.md.
+
 ## Scope
 
 DELFIN runs quantum-chemical software, often on shared clusters, and ships an
@@ -91,8 +104,11 @@ agent that executes model-written commands on the user's behalf. In scope:
   being constrained; one user's job reading or altering another user's
   calculations or scratch.
 - **The dashboard**: it serves a browser interface over a filesystem; path
-  traversal, unintended file access and a bind that exposes it beyond
-  localhost belong here.
+  traversal, unintended file access, a route answering without the token,
+  markup injected through file names or contents, and a bind that exposes
+  it beyond localhost belong here. Its routes, authentication, headers and
+  upload limits are described in the dashboard section of
+  [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#the-dashboard-server).
 
 The threat model the agent's protections are built against, and what each
 layer guarantees on which host, is in

@@ -467,23 +467,65 @@ def _create_token_file(token: str) -> Path:
     raise RuntimeError(f"could not create secure token file: {last_error}")
 
 
+#: Set to 1 to accept a DELFIN_VOILA_ROOT_DIR of /, /home, /tmp or $HOME.
+BROAD_ROOT_ENV = "DELFIN_VOILA_ALLOW_BROAD_ROOT"
+
+
+def _broad_roots() -> set:
+    """Directories too wide to serve: every user's files, or all of one's own."""
+    return {
+        Path("/").resolve(),
+        Path("/home").resolve(),
+        Path("/tmp").resolve(),
+        Path.home().resolve(),
+    }
+
+
+def _checked_root_override(raw: str) -> Path | None:
+    """The DELFIN_VOILA_ROOT_DIR override, or None when it is not taken.
+
+    Taken only when it names an existing directory that is not one of
+    :func:`_broad_roots` (unless BROAD_ROOT_ENV=1). A refused override is
+    reported on stderr and the default root is used instead, so the
+    dashboard still starts.
+    """
+    try:
+        path = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError):
+        path = None
+    reason = ""
+    if path is None or not path.is_dir():
+        reason = "is not an existing directory"
+    elif (path in _broad_roots()
+          and os.environ.get(BROAD_ROOT_ENV, "").strip() != "1"):
+        reason = (f"would serve far more than the dashboard needs "
+                  f"(set {BROAD_ROOT_ENV}=1 to allow it)")
+    if reason:
+        print(f"  \u26a0  DELFIN_VOILA_ROOT_DIR={raw!r} {reason}; "
+              "using the default root instead.", file=sys.stderr)
+        return None
+    return path
+
+
 def _default_voila_root() -> Path:
     """Return a narrow default root_dir for files served by Voilà."""
     override = os.environ.get("DELFIN_VOILA_ROOT_DIR", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        checked = _checked_root_override(override)
+        if checked is not None:
+            return checked
 
     cwd = Path.cwd().resolve()
     home = Path.home().resolve()
-    forbidden = {
-        Path("/").resolve(),
-        Path("/home").resolve(),
-        Path("/tmp").resolve(),
-        home,
-    }
-    if cwd not in forbidden and home in cwd.parents:
+    if cwd not in _broad_roots() and home in cwd.parents:
         return cwd
     return _secure_cache_dir("voila-root").resolve()
+
+
+def _file_allowlist() -> str:
+    from delfin.dashboard.web_security import FILE_ALLOWLIST
+
+    return FILE_ALLOWLIST
 
 
 def _dashboard_default_url(notebook: str, root_dir: str) -> str:
@@ -579,9 +621,8 @@ def _prepare_published_dir() -> str | None:
     login page — which is why what is published gets a directory of its own
     rather than a route into ``~/.delfin``, where the credentials and the
     agent's memory live. It holds the editor and nothing else, and the editor
-    is a public open-source bundle. This narrows the surface rather than
-    widening it: ``/voila/files/`` is equally unauthenticated and reaches
-    every .png/.pdf/.html below the launch directory.
+    is a public open-source bundle. ``/voila/files/``, which reaches the
+    launch directory, requires the token (``web_security``).
     """
     try:
         from delfin.dashboard import ketcher
@@ -1054,7 +1095,11 @@ def main(argv=None):
         # Info-disclosure: never surface Python tracebacks to the browser
         # (they leak paths, usernames, code). Off by default; set explicitly.
         "--VoilaConfiguration.show_tracebacks=False",
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)",
+        # What the UI loads from /voila/files/: images, PDFs and the drawing
+        # editor's launch copy (web_security.FILE_ALLOWLIST). The route itself
+        # is put behind authentication by the server_guard extension, which
+        # also serves anything active from user data as a download.
+        "--VoilaConfiguration.file_allowlist=" + _file_allowlist(),
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
         # Shrink the RCE surface: no server terminals, unless the Claude

@@ -3244,11 +3244,17 @@ class AgentEngine:
         try:
             _bfrac, _, _bdim = self._run_budget_detail()
             if _bfrac >= 1.1:
+                try:
+                    from .run_limits import resume_hint as _rh
+                    _resume = " To continue: " + _rh(
+                        self, _bdim or "agent.run_budget_usd") + "."
+                except Exception:
+                    _resume = ""
                 _msg = (
                     "🛑 Run budget exhausted (>110%). No further turns will "
                     "run in this session. State is saved — raise "
                     f"{_bdim or 'agent.run_budget_usd'} or start a new run "
-                    "to continue.")
+                    "to continue." + _resume)
                 self._emit_budget_attention(
                     "hard_stop",
                     "Run stopped: budget ceiling reached",
@@ -3459,6 +3465,13 @@ class AgentEngine:
         try:
             self.client.turn_cost_cap = lambda: float(
                 getattr(self, "_cost_cap_value", 0.0) or 0.0)
+        except Exception:
+            pass
+        # ...and the RUN's wall-clock and spend ceilings, for the same
+        # reason one level up: the gate above runs before a turn, and a
+        # one-turn unattended run is a single turn of many rounds.
+        try:
+            self.client.run_ceiling = self._run_ceiling_hit
         except Exception:
             pass
 
@@ -7470,6 +7483,49 @@ class AgentEngine:
             except Exception:
                 pass
         return usd, secs
+
+    def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
+        """The run ceiling a RUNNING turn has reached, or "".
+
+        Input: what the running turn has spent so far (the client's
+        estimate; ``cost_usd`` holds the finished turns). Output: the
+        stop reason the turn ends with -- ``run_budget_s`` once the wall
+        clock since ``_run_started_at`` reaches ``run_budget_s``,
+        ``run_budget_usd`` once finished plus running spend reaches
+        ``run_budget_usd`` -- else "". The turn ceiling is not checked
+        here: it counts finished turns, which do not change mid-turn.
+        Consulted by the client between tool rounds (``run_ceiling``);
+        the 110 % gate before a turn stays. Never raises.
+        """
+        hit = ""
+        try:
+            usd, secs = self._run_budget()
+            if secs > 0:
+                import time as _t
+                started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
+                if started > 0 and _t.time() - started >= secs:
+                    hit = "run_budget_s"
+            if not hit and usd > 0:
+                spent = (float(getattr(self, "cost_usd", 0.0) or 0.0)
+                         + max(0.0, float(spent_this_turn or 0.0)))
+                if spent >= usd:
+                    hit = "run_budget_usd"
+        except Exception:
+            return ""
+        if hit:
+            # Once per run (the level dedups): the turn's own notice goes
+            # to the stream, this one to whoever is not watching it.
+            try:
+                from .run_limits import resume_hint
+                self._emit_budget_attention(
+                    "ceiling", "Run stopped: budget ceiling reached",
+                    f"agent.{hit} was reached inside a turn; the turn "
+                    "stopped between two tool rounds, its work is kept and "
+                    "the session is saved. To continue: "
+                    + resume_hint(self, hit))
+            except Exception:
+                pass
+        return hit
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.

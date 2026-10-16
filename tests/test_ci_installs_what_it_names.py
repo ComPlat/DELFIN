@@ -7,7 +7,9 @@ Input: the ``run:`` blocks of .github/workflows/*.yml,
 Output: failures for
 - a constraint that is not ``name==version``;
 - a ``pip install`` that does not install the project (``-e``, ``.``,
-  ``.[extras]``) and does not pass the constraints file: the tool version
+  ``.[extras]``) and neither passes the constraints file nor installs a
+  hashed file (``--require-hashes -r .github/ci/<name>-requirements.txt``,
+  tests/test_the_release_tools_are_installed_by_hash.py): the tool version
   would be whatever PyPI served that morning (OpenSSF Scorecard,
   Pinned-Dependencies);
 - a download piped straight into ``tar``, ``sh``, ``bash`` or ``python``:
@@ -81,8 +83,12 @@ def test_a_tool_install_names_its_version(path):
                 continue
             if _is_project_install(cmd):
                 continue
-            if "-c .github/ci/constraints-ci.txt" not in cmd:
-                bad.append(cmd)
+            if "-c .github/ci/constraints-ci.txt" in cmd:
+                continue
+            if "--require-hashes" in cmd and re.search(
+                    r"-r \.github/ci/[\w-]+-requirements\.txt\b", cmd):
+                continue
+            bad.append(cmd)
     assert not bad, f"{path.name}: unpinned tool installs: {bad}"
 
 

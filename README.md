@@ -199,7 +199,7 @@ The usual way to run DELFIN. Start it as a standalone web app:
 delfin-voila                 # starts on 127.0.0.1:8866
 ```
 
-Voila prints a URL containing an access token — token authentication is mandatory and cannot be switched off. Open that URL, go to **Submit Job**, paste a SMILES or load an XYZ, choose the workflow settings, and submit. **Job Status** follows the queue; **Calculations** browses the results.
+`delfin-voila` prints a URL containing an access token. The token cannot be switched off: the dashboard, its files and its kernels all require it (only the server's own static assets, such as the login page's, are served without it); see the dashboard section of [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#the-dashboard-server). Open that URL, go to **Submit Job**, paste a SMILES or load an XYZ, choose the workflow settings, and submit. **Job Status** follows the queue; **Calculations** browses the results.
 
 ### The command line
 
@@ -550,7 +550,7 @@ DELFIN's workflows (ORCA, xTB, CREST and the other engines) run on your machines
 | CLI terminal tab (`delfin-voila --claude-terminal`) | the browser loads xterm.js from `cdn.jsdelivr.net` (pinned version, SRI hash); the CLI it runs talks to its own provider | not available; no local copy of xterm.js is supported yet |
 | Diagrams in the agent chat | mermaid from `cdn.jsdelivr.net` (pinned version, SRI hash), fetched only when a diagram appears | place `mermaid.min.js` in `delfin/dashboard/static/`; without it the diagram is shown as source text |
 | 3D structure viewers | none while the bundled `delfin/dashboard/static/3Dmol-min.js` is loaded, which the dashboard does at start; several viewers fall back to `https://3Dmol.org` only if the library is not defined | works with the bundled copy |
-| Ketcher editor, xtb and g-xTB installers | GitHub, once, on first use and after confirmation | install on a machine with network access and copy the files |
+| Ketcher editor, xtb and g-xTB installers | GitHub, once, on first use and after confirmation (Ketcher: one pinned build, refused unless its SHA-256 matches) | install on a machine with network access and copy the files |
 
 ### Subagents
 

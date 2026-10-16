@@ -13,7 +13,9 @@ changes it):
     and has the image. A named runtime is never swapped for another.
 ``agent.container.image``
     OCI runtimes: an image reference present locally (never pulled at run
-    time, ``--pull=never``); default ``DEFAULT_OCI_IMAGE``. Apptainer: a
+    time, ``--pull=never``); default ``DEFAULT_OCI_IMAGE``, python:3.11-slim
+    pinned by digest (a copy pulled by tag is a different reference and is
+    not used; the notice says what to pull). Apptainer: a
     ``.sif`` file or sandbox directory, or a URI (``docker://...``) the
     runtime resolves itself; default ``default_sif()``.
 
@@ -66,8 +68,14 @@ from pathlib import Path
 
 RUNTIMES = ("apptainer", "singularity", "podman", "docker")
 _APPTAINER = ("apptainer", "singularity")
-DEFAULT_OCI_IMAGE = "docker.io/library/python:3.11-slim"
-_SIF_SOURCE = "docker://python:3.11-slim"
+#: python:3.11-slim by the digest of its image index, read from the registry
+#: 2026-10-16. A tag is a pointer the registry can move; a digest names the
+#: bytes. Digest only, without the tag: Docker, Podman and Apptainer all
+#: accept repository@sha256, and they do not treat tag@digest alike.
+#: Dependabot proposes updates through .github/ci/agent-container/Dockerfile,
+#: whose digest a test holds equal to this one.
+DEFAULT_OCI_IMAGE = "docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce"
+_SIF_SOURCE = "docker://" + DEFAULT_OCI_IMAGE
 
 
 def default_sif() -> Path:

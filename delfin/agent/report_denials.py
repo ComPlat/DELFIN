@@ -211,6 +211,9 @@ def collect(
             if c.get("total"):
                 out["security_events"] = {
                     "total": c["total"], "blocked": c["blocked"],
+                    # Pushed out of the 200-event ring: the window is
+                    # not the whole session when this is non-zero.
+                    "dropped": c.get("dropped", 0),
                     "recent": [
                         {"kind": e.kind, "tool": e.tool, "blocked": e.blocked}
                         for e in security_events.recent(limit=10)],

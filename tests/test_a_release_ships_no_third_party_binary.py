@@ -266,9 +266,10 @@ def test_the_packaging_workflow_builds_and_runs_the_checker():
     for owner in re.findall(r"uses:\s*([\w.-]+)/", text):
         assert owner == "actions", owner
     # The build tools are pinned, so the same commit builds the same set:
-    # installed through the CI constraints file, which names exact versions
-    # of the frontend and of the backend --no-isolation builds against.
-    assert "pip install -c .github/ci/constraints-ci.txt build setuptools wheel" in text
-    pins = (REPO / ".github" / "ci" / "constraints-ci.txt").read_text()
+    # installed by hash from the file release.yml builds with, which names
+    # exact versions of the frontend and of the backend --no-isolation
+    # builds against (tests/test_the_release_tools_are_installed_by_hash.py).
+    assert "pip install --require-hashes -r .github/ci/release-requirements.txt" in text
+    pins = (REPO / ".github" / "ci" / "release-requirements.txt").read_text()
     for tool in ("build", "setuptools", "wheel"):
         assert re.search(rf"^{tool}==\d", pins, re.M), tool
