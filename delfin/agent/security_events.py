@@ -47,6 +47,7 @@ _KINDS = {
     "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
     "memory_refused": ("🧠", "Instruction-shaped memory refused"),
+    "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
     "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
     "calc_edit":      ("🧪", "Stored-calculation edit"),
     "read_only_write": ("📕", "Write into a read-only location"),

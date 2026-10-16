@@ -141,8 +141,15 @@ def test_the_cage_binds_the_existing_stores_read_only(tmp_path, home):
     for rel in (".delfin/memory", ".delfin/knowledge",
                 ".delfin/projects/-ws/memory"):
         (home / rel).mkdir(parents=True, exist_ok=True)
-    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions")
+    perms = KitToolPermissions(workspace=ws, mode="bypassPermissions",
+                               extra_workspace_dirs=(home / ".delfin",))
     ro = set(A._caged_readonly_paths(perms))
+    # Without the grant the stores are not writable in the cage at all,
+    # and no bind is added for them.
+    plain = set(A._caged_readonly_paths(
+        KitToolPermissions(workspace=ws, mode="bypassPermissions")))
+    import os as _os
+    assert _os.path.realpath(home / ".delfin/memory") not in plain
     import os
     for p in (ws / "delfin/agent/pack/knowledge", ws / ".delfin/knowledge",
               home / ".delfin/memory", home / ".delfin/knowledge",

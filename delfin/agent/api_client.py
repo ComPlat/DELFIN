@@ -7911,6 +7911,22 @@ def _is_git_configuration_file(resolved: Path, workspace) -> bool:
     except Exception:
         return False
 
+#: Shared lessons (knowledge.py): the global layer in the DELFIN tree and
+#: a repository's project layer. Every later session of every user of that
+#: tree or repository is shown them, so an edit is a way to tell all of
+#: them something. The person's own route is the share dialog
+#: (knowledge_share, knowledge_curation for the admin), which writes
+#: through its own code after a one-time code and never through these
+#: tools; the gate only stops the agent's tools from doing it unasked.
+_KNOWLEDGE_PROTECTED_GLOBS: tuple[str, ...] = (
+    "delfin/agent/pack/knowledge",
+    "delfin/agent/pack/knowledge/**",
+    ".delfin/knowledge",
+    "**/.delfin/knowledge",
+    ".delfin/knowledge/**",
+    "**/.delfin/knowledge/**",
+)
+
 _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/api_client.py",
     "delfin/agent/kit_confirm.py",
@@ -7977,7 +7993,55 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     # can't silently poison CI or relax the merge protections of a repo.
     ".github/**",
     "**/.github/**",
-) + _GIT_CONFIG_PROTECTED_GLOBS
+) + _KNOWLEDGE_PROTECTED_GLOBS + _GIT_CONFIG_PROTECTED_GLOBS
+
+
+def _memory_store_roots() -> tuple[Path, ...]:
+    """The stores under ``~/.delfin`` whose text later sessions are shown:
+    the user-wide memory, private lessons and their review queue
+    (``~/.delfin/knowledge``, plus ``knowledge_share.queue_dir()`` where a
+    setting moves it), the swarm findings. The per-project memory is
+    ``~/.delfin/projects/<slug>/memory`` (``_is_memory_store_path``)."""
+    base = Path.home() / ".delfin"
+    roots = [base / "memory", base / "knowledge", base / "swarm"]
+    try:
+        from .knowledge_share import queue_dir
+        roots.append(Path(queue_dir()).expanduser())
+    except Exception:
+        pass
+    return tuple(roots)
+
+
+def _is_memory_store_path(resolved) -> bool:
+    """Whether a write to ``resolved`` writes a memory or lesson store
+    (``_memory_store_roots`` or ``~/.delfin/projects/*/memory``). These
+    lie in the home directory, never a workspace; a granted directory
+    (``--add-dir ~/.delfin``) is how a write tool reaches them, and then
+    the write is asked in every mode like the agent's own safety layer.
+    Both the path as given and its real path are tested. Never raises."""
+    try:
+        cands = {Path(os.path.abspath(str(resolved))),
+                 Path(os.path.realpath(str(resolved)))}
+        roots: list[Path] = []
+        for r in _memory_store_roots():
+            roots += [Path(os.path.abspath(str(r))),
+                      Path(os.path.realpath(str(r)))]
+        projects = Path.home() / ".delfin" / "projects"
+        proj = {Path(os.path.abspath(str(projects))),
+                Path(os.path.realpath(str(projects)))}
+        for c in cands:
+            if any(c == r or r in c.parents for r in roots):
+                return True
+            for pr in proj:
+                try:
+                    parts = c.relative_to(pr).parts
+                except ValueError:
+                    continue
+                if len(parts) >= 2 and parts[1] == "memory":
+                    return True
+        return False
+    except Exception:
+        return False
 
 
 _REDIRECT_TARGET_RE = re.compile(
@@ -20113,6 +20177,14 @@ class _DocToolExecutor:
         _is_gitcfg = is_protected and any(
             fnmatch.fnmatchcase(_low, g.lower())
             for g in _GIT_CONFIG_PROTECTED_GLOBS)
+        # Shared lessons and the memory stores: text every later session
+        # is shown. Asked in every mode, like the safety layer, with its
+        # own preview (the files are not the permission code).
+        _is_store = _is_memory_store_path(resolved) or any(
+            fnmatch.fnmatchcase(_low, g.lower())
+            for g in _KNOWLEDGE_PROTECTED_GLOBS)
+        if _is_store:
+            is_protected = True
         # A file the configuration names (global file, XDG file, include
         # target, attributes file): the same reach as `git config` with a
         # program key, so the same rule -- asked in every mode.
@@ -20135,11 +20207,13 @@ class _DocToolExecutor:
             if not was_refused:
                 _record_security_event(
                     "git_config_program" if _is_gitcfg
+                    else "knowledge_write" if _is_store
                     else "self_mod" if is_protected else "calc_edit",
                     name, rel_str,
                     blocked=perms.confirm_callback is None)
             if perms.confirm_callback is None:
                 _what = ("a file git reads as configuration" if _is_gitcfg
+                         else "a shared lesson or memory store" if _is_store
                          else "the agent's own safety layer" if is_protected
                          else "a stored calculation under calc" if is_calc
                          else "a file the user refused a write to earlier")
@@ -20160,6 +20234,14 @@ class _DocToolExecutor:
                     "git reads this file as configuration: it can name a "
                     "filter, diff driver or hook program that the next "
                     "git status or git add runs.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            elif _is_store:
+                preview = (
+                    "[SHARED KNOWLEDGE / MEMORY STORE]\n"
+                    "Later sessions are shown this file: shared lessons or "
+                    "stored memory. Approving lets the agent change what "
+                    "they are told.\n\n"
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_protected:
@@ -28215,6 +28297,27 @@ def _caged_readonly_paths(perms) -> list[str]:
     for r in roots:
         for rel in sorted(rels):
             _add(r / rel)
+    # The memory and lesson stores in the home directory
+    # (_is_memory_store_path), which a granted ~/.delfin would otherwise
+    # leave writable to a caged command. Only where a writable root holds
+    # them: elsewhere the cage does not mount them writable anyway, and a
+    # home with 180 project stores would add 180 binds for nothing.
+    def _writable(p) -> bool:
+        try:
+            return perms.find_root_for(Path(os.path.realpath(str(p)))) \
+                is not None
+        except Exception:
+            return False
+    _stores = list(_memory_store_roots())
+    if _writable(Path.home() / ".delfin" / "projects"):
+        try:
+            _stores += sorted((Path.home() / ".delfin" / "projects")
+                              .glob("*/memory"))
+        except OSError:
+            pass
+    for r in _stores:
+        if _writable(r):
+            _add(r)
     for d in (tuple(getattr(perms, "confirm_write_dirs", ()) or ())
               + tuple(getattr(perms, "read_only_workspace_dirs", ()) or ())):
         _add(d)
