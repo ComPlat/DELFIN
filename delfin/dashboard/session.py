@@ -28,6 +28,7 @@ Two properties this module is built around:
 
 from __future__ import annotations
 
+import html as _html
 import os
 import threading
 import time
@@ -390,10 +391,11 @@ def _strip_html(armed: bool, name: str, url: str) -> str:
     if url:
         # The title sits on the dot, which is what a pointer hovers; the
         # anchor around it is where a click goes.
-        title = f"Kept as {name} &middot; click for the return address"
+        title = (f"Kept as {_html.escape(str(name), quote=True)} &middot; "
+                 "click for the return address")
         return (
             '<div class="delfin-session-strip">'
-            f'<a class="delfin-session-link" href="{url}">'
+            f'<a class="delfin-session-link" href="{_html.escape(url, quote=True)}">'
             f'<span class="delfin-session-dot on" title="{title}"></span></a></div>'
         )
     return (
@@ -892,7 +894,7 @@ def _banner_html(records: list[dict]) -> str:
         if elsewhere and elsewhere != _hostname():
             # Its kernel is served on that machine; a link here would ask
             # this server for a kernel it does not run.
-            link = (f'<span style="color:#8a919e">runs on <code>{elsewhere}'
+            link = (f'<span style="color:#8a919e">runs on <code>{_html.escape(elsewhere)}'
                     '</code> &mdash; log in there to return</span>')
         elif url:
             # A button, and a verb that says what happens. "re-enter"
@@ -900,7 +902,7 @@ def _banner_html(records: list[dict]) -> str:
             # and the one control that takes a person back into their
             # running work is not the place to be clever (2026-09-17).
             link = (
-                f'<a href="{url}" style="display:inline-block;'
+                f'<a href="{_html.escape(url, quote=True)}" style="display:inline-block;'
                 ' background:#2f7d4f; color:#fff; text-decoration:none;'
                 ' padding:3px 12px; border-radius:4px; font-weight:600;'
                 '">Open this session &rarr;</a>'
@@ -909,7 +911,7 @@ def _banner_html(records: list[dict]) -> str:
             link = '<span style="color:#8a919e">address unknown</span>'
 
         rows.append(
-            f'<li style="margin:2px 0"><code>{name}</code>'
+            f'<li style="margin:2px 0"><code>{_html.escape(str(name))}</code>'
             f'{" &middot; " + when if when else ""} &middot; {link}</li>')
     return (
         '<div style="border:1px solid #d7dbe2; border-left:3px solid #4b9e5f;'

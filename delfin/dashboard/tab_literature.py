@@ -620,7 +620,7 @@ def create_tab(ctx):
             return lit_dir
 
     def _set_status(msg: str, color: str = '#666') -> None:
-        lit_status.value = f'<span style="font-size:12px;color:{color}">{msg}</span>'
+        lit_status.value = f'<span style="font-size:12px;color:{color}">{_html.escape(str(msg))}</span>'
 
     def _run_js(script: str) -> None:
         ctx.run_js(script)

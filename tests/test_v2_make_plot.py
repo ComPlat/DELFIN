@@ -85,8 +85,16 @@ def test_the_card_is_the_chats_artifact_preview(tmp_path):
 def test_a_hostile_title_does_not_reach_the_page_raw(tmp_path):
     spec = {**_spec(), "title": '"><img src=x onerror=alert(1)>'}
     card = T._make_plot_card_html(cp.make_plot(spec, out_dir=str(tmp_path)))
-    assert "<img src=x" not in card and '"><img' not in card
-    assert "&lt;img src=x" in card      # inert text in the SVG
+    import base64
+    import re
+    assert "<img src=x" not in card
+    # Every image on the card is a data: URI; the SVG is one of them, and
+    # inside it the title is inert text.
+    sources = re.findall(r'<img src="([^"]*)"', card)
+    assert sources and all(s.startswith("data:image/") for s in sources)
+    svg = [base64.b64decode(s.split(",", 1)[1]).decode("utf-8")
+           for s in sources if s.startswith("data:image/svg+xml;base64,")]
+    assert svg and "&lt;img src=x" in svg[0]
 
 
 def test_a_payload_naming_another_file_type_is_a_text_card(tmp_path):

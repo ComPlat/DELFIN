@@ -54,7 +54,9 @@ try:
 except ImportError:
     _list_remote_folder_files = None
 
-from .helpers import disable_spellcheck
+from .helpers import (
+    disable_spellcheck, image_data_uri, neutralise_link_targets,
+)
 from . import text_view as _text_view
 from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
@@ -1428,7 +1430,7 @@ def create_tab(ctx):
                     payload = handle.read()
                 content_type = image.content_type or "image/png"
                 b64 = base64.b64encode(payload).decode("ascii")
-                return {"src": f"data:{content_type};base64,{b64}"}
+                return {"src": image_data_uri(content_type, b64)}
             except Exception:
                 return {"src": ""}
 
@@ -1445,7 +1447,7 @@ def create_tab(ctx):
             ".remote-docx table { border-collapse:collapse; width:100%; margin:10px 0; }"
             ".remote-docx td, .remote-docx th { border:1px solid #ddd; padding:8px; }"
             "</style>"
-            f"<div class='remote-docx'>{result.value}</div>"
+            f"<div class='remote-docx'>{neutralise_link_targets(result.value)}</div>"
             "</div>"
         )
 

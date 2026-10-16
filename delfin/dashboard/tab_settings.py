@@ -2909,7 +2909,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 _set_status(f'{label} installation failed (exit {result.returncode}).', color='#d32f2f')
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+            _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
         # Invalidate cache so next refresh re-checks
         _outdated_cache.clear()
         refresh_fn()
@@ -2941,7 +2941,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     _set_status(f'{label} installation failed; the log says why.', color='#d32f2f')
             except Exception as exc:
                 tool_install_log.value += f'\nError: {exc}'
-                _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+                _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
             refresh_fn()
 
         threading.Thread(target=work, daemon=True).start()
@@ -2966,7 +2966,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 _set_status(f'{label} update failed (exit {result.returncode}).', color='#d32f2f')
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+            _set_status(f'{label} update error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -3008,7 +3008,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 )
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+            _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -3050,7 +3050,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 )
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+            _set_status(f'{label} update error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 

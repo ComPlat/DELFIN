@@ -33,7 +33,8 @@ from .input_processing import (
     is_smiles,
 )
 from .helpers import (
-    disable_spellcheck, js_string_literal, save_neb_trajectory_csv,
+    disable_spellcheck, image_data_uri, js_string_literal,
+    neutralise_link_targets, save_neb_trajectory_csv,
     save_neb_trajectory_plot_png,
 )
 from . import docx_view as _docx
@@ -3315,14 +3316,14 @@ def create_tab(ctx):
 
     def _calc_preselect_title_for_mode(mode, csv_name):
         if mode == 'complete_preselection':
-            return f'<b>Preselection:</b> {csv_name}'
+            return f'<b>Preselection:</b> {_html.escape(str(csv_name))}'
         if mode == 'complete_visualize':
-            return f'<b>Visualize:</b> {csv_name}'
+            return f'<b>Visualize:</b> {_html.escape(str(csv_name))}'
         if mode == 'preselected_visualize':
-            return f'<b>Visualize (Preselected):</b> {csv_name}'
+            return f'<b>Visualize (Preselected):</b> {_html.escape(str(csv_name))}'
         if mode == 'rejected_visualize':
-            return f'<b>Visualize (Rejected):</b> {csv_name}'
-        return f'<b>Visualize:</b> {csv_name}'
+            return f'<b>Visualize (Rejected):</b> {_html.escape(str(csv_name))}'
+        return f'<b>Visualize:</b> {_html.escape(str(csv_name))}'
 
     def _calc_preselect_load(csv_path, mode='complete_preselection'):
         entries = _calc_parse_mutation_csv(csv_path)
@@ -4926,8 +4927,8 @@ def create_tab(ctx):
 
                 calc_content_area.value = (
                     f'<span style="color:#2e7d32;">NMR spectrum saved: '
-                    f'<code>{out_png.name}</code></span><br><br>'
-                    f'<img src="files/{out_png.relative_to(selected_path.parent)}" '
+                    f'<code>{_html.escape(out_png.name)}</code></span><br><br>'
+                    f'<img src="files/{_html.escape(str(out_png.relative_to(selected_path.parent)), quote=True)}" '
                     f'style="max-width:100%;" /><br><br>'
                     f'<pre style="font-size:11px;">{table_html}</pre>'
                 )
@@ -8440,7 +8441,7 @@ def create_tab(ctx):
                     where = f'{hit.sheet} · {where}'
             calc_search_result.value = (
                 f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
-                f'<span style="color:#555;">({where})</span>{note_html}'
+                f'<span style="color:#555;">({_html.escape(str(where))})</span>{note_html}'
             )
             return
         if state.get('search_kind') == 'docx':
@@ -8453,7 +8454,7 @@ def create_tab(ctx):
                          else f'paragraph {hit.block + 1}')
             calc_search_result.value = (
                 f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
-                f'<span style="color:#555;">({where})</span>{note_html}'
+                f'<span style="color:#555;">({_html.escape(str(where))})</span>{note_html}'
             )
             return
         start, _ = state['search_spans'][state['current_match']]
@@ -9299,7 +9300,7 @@ def create_tab(ctx):
                          else f'{len(targets)} selected items')
                 calc_download_status.value = (
                     '<span style="color:#d32f2f;">'
-                    f'{_what} too large to download '
+                    f'{_html.escape(str(_what))} too large to download '
                     f'({_calc_format_bytes(_raw)} before compression). '
                     f'Limit: {_calc_format_bytes(CALC_DOWNLOAD_MAX_BYTES)}. '
                     'Select less, or a subfolder.</span>'
@@ -9417,7 +9418,7 @@ def create_tab(ctx):
         if len(report_targets) == 1:
             target_label = _calc_report_target_label(report_targets[0])
             calc_report_status.value = (
-                f'<span style="color:blue;">Generating report in {target_label}...</span>'
+                f'<span style="color:blue;">Generating report in {_html.escape(str(target_label))}...</span>'
             )
         else:
             calc_report_status.value = (
@@ -9433,12 +9434,12 @@ def create_tab(ctx):
                     target_label = _calc_report_target_label(target_dir)
                     if len(report_targets) == 1:
                         calc_report_status.value = (
-                            f'<span style="color:blue;">Generating report in {target_label}...</span>'
+                            f'<span style="color:blue;">Generating report in {_html.escape(str(target_label))}...</span>'
                         )
                     else:
                         calc_report_status.value = (
                             f'<span style="color:blue;">Generating report {idx}/{len(report_targets)} '
-                            f'in {target_label}...</span>'
+                            f'in {_html.escape(str(target_label))}...</span>'
                         )
 
                     try:
@@ -9467,9 +9468,9 @@ def create_tab(ctx):
                         parts.append(f'{len(timeouts)} timeout')
                     detail = ''
                     if failures:
-                        detail = f' First error in {failures[0][0]}: {_html.escape(failures[0][1])}'
+                        detail = f' First error in {_html.escape(str(failures[0][0]))}: {_html.escape(failures[0][1])}'
                     elif timeouts:
-                        detail = f' Timeout in {timeouts[0]}.'
+                        detail = f' Timeout in {_html.escape(str(timeouts[0]))}.'
                     calc_report_status.value = (
                         f'<span style="color:#d32f2f;">Report run finished: {", ".join(parts)}.'
                         f'{detail}</span>'
@@ -9477,7 +9478,7 @@ def create_tab(ctx):
                 else:
                     if len(successes) == 1:
                         calc_report_status.value = (
-                            f'<span style="color:green;">Report generated in {successes[0]}!</span>'
+                            f'<span style="color:green;">Report generated in {_html.escape(str(successes[0]))}!</span>'
                         )
                     else:
                         calc_report_status.value = (
@@ -9835,7 +9836,7 @@ def create_tab(ctx):
                 calc_render_content(scroll_to='top')
             except Exception as e:
                 calc_override_status.value = (
-                    f'<span style="color:#d32f2f;">Error saving CONTROL.txt: {e}</span>'
+                    f'<span style="color:#d32f2f;">Error saving CONTROL.txt: {_html.escape(str(e))}</span>'
                 )
                 return
 
@@ -9901,22 +9902,22 @@ def create_tab(ctx):
             if result.returncode == 0:
                 if not is_recalc:
                     calc_override_status.value = (
-                        f'<span style="color:#388e3c;">Submitted from {workspace_root} '
+                        f'<span style="color:#388e3c;">Submitted from {_html.escape(str(workspace_root))} '
                         f'(Override: {_html.escape(override_value)}): '
-                        f'{result.stdout.strip()}</span>'
+                        f'{_html.escape(result.stdout.strip())}</span>'
                     )
                 else:
                     recalc_label = 'Smart Recalc' if is_smart_recalc else 'Recalc'
                     calc_override_status.value = (
-                        f'<span style="color:#388e3c;">Submitted {recalc_label} from {workspace_root}: '
-                        f'{result.stdout.strip()}</span>'
+                        f'<span style="color:#388e3c;">Submitted {recalc_label} from {_html.escape(str(workspace_root))}: '
+                        f'{_html.escape(result.stdout.strip())}</span>'
                     )
             else:
                 calc_override_status.value = (
-                    f'<span style="color:#d32f2f;">Error: {result.stderr.strip()}</span>'
+                    f'<span style="color:#d32f2f;">Error: {_html.escape(result.stderr.strip())}</span>'
                 )
         except Exception as e:
-            calc_override_status.value = f'<span style="color:#d32f2f;">Error: {e}</span>'
+            calc_override_status.value = f'<span style="color:#d32f2f;">Error: {_html.escape(str(e))}</span>'
 
     def calc_on_recalc_click(button):
         if not state['selected_inp_path'] or not state['selected_inp_path'].exists():
@@ -12707,7 +12708,7 @@ def create_tab(ctx):
                 else:
                     calc_file_info.value = f'<b>{_html.escape(name)}</b> (could not parse)'
             except Exception as e:
-                calc_file_info.value = f'<b>{_html.escape(name)}</b> (error: {e})'
+                calc_file_info.value = f'<b>{_html.escape(name)}</b> (error: {_html.escape(str(e))})'
             return
 
         # --- XYZ file (with trajectory support) ---
@@ -13091,7 +13092,7 @@ def create_tab(ctx):
                             img_data = img_stream.read()
                             content_type = image.content_type if image.content_type else 'image/png'
                             b64 = base64.b64encode(img_data).decode('ascii')
-                            return {'src': f'data:{content_type};base64,{b64}'}
+                            return {'src': image_data_uri(content_type, b64)}
                     except Exception:
                         return {'src': ''}
 
@@ -13100,7 +13101,7 @@ def create_tab(ctx):
                         docx_file,
                         convert_image=mammoth.images.img_element(convert_image_to_base64),
                     )
-                    html_content = result.value
+                    html_content = neutralise_link_targets(result.value)
 
                 styled_html = (
                     '<div style="font-family: Calibri, Arial, sans-serif; line-height: 1.5;'

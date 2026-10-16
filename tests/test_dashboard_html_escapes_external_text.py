@@ -96,8 +96,17 @@ def _sites():
     return sorted(set(out))
 
 
+#: f-strings that look like markup but are Markdown, rendered by the chat's
+#: escaping Markdown converter (``_md_to_html``): escaping here would show
+#: the entities literally.
+MARKDOWN_NOT_HTML = {
+    "tab_agent.py a path's name: tpl.name",
+}
+
+
 def test_no_html_fstring_in_the_dashboard_interpolates_outside_text_raw():
-    sites = _sites()
+    sites = [s for s in _sites()
+             if f"{s.split(':', 1)[0]} {s.split(' ', 1)[1]}" not in MARKDOWN_NOT_HTML]
     assert sites == [], "\n".join(sites)
 
 
@@ -119,15 +128,13 @@ def test_the_named_tabs_escape_every_interpolation(name):
             expr = value.value
             if value.format_spec is not None or _escaped(expr):
                 continue
-            if isinstance(expr, ast.Constant):
-                continue
-            root = expr
-            while isinstance(root, (ast.Call, ast.Attribute, ast.BinOp)):
-                root = (root.func if isinstance(root, ast.Call)
-                        else root.value if isinstance(root, ast.Attribute)
-                        else root.left)
-            if isinstance(root, ast.Name) and (
-                    root.id in _OWN or root.id.endswith("_html")):
+            if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name)
+                    and expr.func.id in ("len", "int", "float", "round", "abs")):
+                continue              # a number
+            called = {id(n.func) for n in ast.walk(expr) if isinstance(n, ast.Call)}
+            names = [n.id for n in ast.walk(expr)
+                     if isinstance(n, ast.Name) and id(n) not in called]
+            if all(n in _OWN or n.endswith("_html") for n in names):
                 continue
             raw.append(f"{name}:{value.lineno}: {ast.unparse(expr)}")
     raw = sorted(set(raw))
@@ -150,6 +157,21 @@ def test_the_fukui_viewer_keeps_file_text_inside_its_script(monkeypatch):
     html = MV.build_fukui_viewer_html(xyz, labels=[MARKER], cube_text=cube)
     assert "<b>marker</b>" not in html
     assert html.count("</script>") == 1
+
+
+def test_a_converted_document_keeps_no_script_link():
+    from delfin.dashboard.helpers import image_data_uri, neutralise_link_targets
+
+    markup = ('<a href="https://example.org/x">ok</a>'
+              '<a href="mailto:a@b.c">mail</a><a href="#n">frag</a>'
+              '<a href="java&#x09;script:void(0)">x</a>'
+              "<a HREF=' JavaScript:void(0)'>y</a>")
+    out = neutralise_link_targets(markup)
+    assert 'href="https://example.org/x"' in out
+    assert 'href="mailto:a@b.c"' in out and 'href="#n"' in out
+    assert "script:" not in out.lower()
+    assert image_data_uri("image/png", "AA==") == "data:image/png;base64,AA=="
+    assert image_data_uri('image/png" onerror="x', "AA==") == ""
 
 
 def test_py3dmol_embeds_model_text_without_a_script_end(monkeypatch):

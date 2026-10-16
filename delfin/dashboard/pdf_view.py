@@ -1551,7 +1551,8 @@ class PdfPanel:
             from delfin.agent import office
             from . import spreadsheet_view as _sheet
         except Exception as exc:  # pragma: no cover - depends on the install
-            self.form_status.value = f'<span style="color:#d32f2f;">{exc}</span>'
+            self.form_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
             return
 
         source = self._path
