@@ -14,6 +14,7 @@ nothing about how it was reached.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import queue
 import signal
@@ -1202,6 +1203,13 @@ class TerminalAgent:
         self._idle_interrupts = 0
         self._prev_sigint = None
         self._prev_sigwinch = None
+        # The leave (see begin_leaving): started, its deadline armed, and
+        # whether the caller holds the signals until its save is done.
+        self._leaving = False
+        self._leave_armed = False
+        self._leave_held = False
+        self._leave_gone = False         # armed because the terminal went
+        self._leave_timer = None
         # How much history was already on disk when this session started.
         self._hist_base = 0
         # Set by the resize handler, acted on by the loop. A signal handler
@@ -1286,6 +1294,8 @@ class TerminalAgent:
         do the writing. Getting that wrong produces interleaved output once
         every few interrupts, which is the worst kind of bug to reproduce.
         """
+        if self._leaving:
+            return              # the leave is under way and has a deadline
         if not self._turn_active.is_set():
             raise KeyboardInterrupt
         self._interrupts += 1
@@ -3034,6 +3044,7 @@ class TerminalAgent:
     def run(self, first_prompt: str = "") -> int:
         from . import repl_keys as rk
 
+        self._leaving = False
         self._install_sigint()
         self._load_history()
         self._install_completer()
@@ -3083,11 +3094,13 @@ class TerminalAgent:
                             woke = bool(from_wake)
                             pending = text.strip()
                     except EOFError:
+                        self.begin_leaving(0)
                         self.transcript.chrome("")
                         return 0
                     except KeyboardInterrupt:
                         self._idle_interrupts += 1
                         if self._idle_interrupts >= 2:
+                            self.begin_leaving(130)
                             self.transcript.chrome("")
                             return 130
                         self.transcript.chrome(
@@ -3104,6 +3117,7 @@ class TerminalAgent:
                 pending = self._expand_next_step(pending)
                 pending = self._handle_line(pending)
                 if self._quit:
+                    self.begin_leaving(0)
                     return 0
                 if not pending:
                     continue
@@ -3123,6 +3137,7 @@ class TerminalAgent:
                 try:
                     last = self.turn(pending)
                 except KeyboardInterrupt:
+                    self.begin_leaving(130)
                     self.transcript.chrome("")
                     return 130
                 # The turn finished: the conversation goes on disk now,
@@ -3164,6 +3179,7 @@ class TerminalAgent:
                     try:
                         last = self.turn(HarnessText(continuation))
                     except KeyboardInterrupt:
+                        self.begin_leaving(130)
                         self.transcript.chrome("")
                         return 130
                     self._checkpoint_session()
@@ -3182,11 +3198,14 @@ class TerminalAgent:
             # in a dialog -- the terminal is gone and so is the session.
             # Returning (rather than dying) is what saves it for a resume.
             # The deadline comes first: everything after it can hang.
-            self._arm_leave_deadline(left.code)
+            self.begin_leaving(left.code, terminal_gone=True)
             self._stop_for_leaving()
             self._end_what_it_started()
             return left.code
         finally:
+            # Every way out, an exception included, is a leave from here
+            # on: a repeated signal no longer unwinds the cleanup below.
+            self.begin_leaving(1)
             _ctl = self.__dict__.get("_auto")
             if _ctl is not None and getattr(_ctl, "enabled", False):
                 try:
@@ -3233,10 +3252,92 @@ class TerminalAgent:
                 pass
 
     def _on_leave_signal(self, signum, _frame) -> None:
-        """Same rule as the other handlers: never print, only unwind."""
+        """Same rule as the other handlers: never print, only unwind.
+
+        Once the leave has begun, a repeat is ignored: raised again, it
+        would unwind the cleanup or the save that the first one started,
+        and the leave already ends by its deadline.
+        """
+        if self._leaving:
+            return
         from . import repl_keys as rk
         raise rk.TerminalLeft(signal.Signals(signum).name.lower(),
                               128 + int(signum))
+
+    def _on_held_sigint(self, signum, frame) -> None:
+        """SIGINT outside run() while the leave is held: KeyboardInterrupt
+        as by default, ignored once the leave has begun."""
+        if self._leaving:
+            return
+        raise KeyboardInterrupt
+
+    def begin_leaving(self, code: int, *, terminal_gone: bool = False) -> None:
+        """The session is leaving with exit *code*; idempotent.
+
+        From here SIGHUP, SIGTERM and SIGINT are ignored by this agent's
+        handlers. The leave deadline (``_LEAVE_DEADLINE_S``, then
+        ``os._exit(code)``) is armed once: always when the terminal is
+        gone (hangup, SIGHUP, SIGTERM), and for every other way out --
+        ctrl+d at the prompt, /exit, the second idle ctrl+c -- while the
+        caller holds the leave (``leave_held``). Without a holder a
+        returning run() arms nothing: an in-process caller (the service
+        worker, a test) is not ended by a timer it did not ask for.
+        """
+        self._leaving = True
+        if self._leave_armed or not (terminal_gone or self._leave_held):
+            return
+        self._leave_armed = True
+        self._leave_gone = terminal_gone
+        self._arm_leave_deadline(code)
+
+    @contextlib.contextmanager
+    def leave_held(self):
+        """For the owner of the process that saves the session after run().
+
+        Input: none. Inside the block, SIGHUP and SIGTERM take the REPL's
+        leave handler and SIGINT ``_on_held_sigint``, so run()'s restore
+        returns to them instead of to the defaults; every way out of run()
+        arms the leave deadline. Once the leave has begun, a repeated
+        signal is ignored until the block ends, so the save after run()
+        is ended only by the deadline or by SIGKILL. On exit the previous
+        handlers are back. A deadline armed because the terminal went
+        stays armed (as before); one armed by ctrl+d, /exit or ctrl+c is
+        cancelled once the block has finished, so it bounds the cleanup,
+        the save and the session-end stages, and never outlives them in a
+        process that goes on (``main()`` called in-process: os._exit(0)
+        there would end a test run with exit status 0).
+
+        Rejected: restoring the defaults at the end of run(), as before.
+        A second SIGHUP or SIGTERM then ended the process by the default
+        action in the middle of ``_finish_interactive_session``'s save,
+        and a SIGINT raised KeyboardInterrupt there (exit 130).
+        """
+        held: dict = {}
+        for name, handler in (("SIGHUP", self._on_leave_signal),
+                              ("SIGTERM", self._on_leave_signal),
+                              ("SIGINT", self._on_held_sigint)):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                held[sig] = signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+        self._leave_held = True
+        try:
+            yield self
+        finally:
+            self._leave_held = False
+            timer = self._leave_timer
+            if self._leave_armed and not self._leave_gone and timer:
+                timer.cancel()
+                self._leave_timer = None
+                self._leave_armed = False
+            for sig, prev in held.items():
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, OSError, TypeError):
+                    pass
 
     def _restore_leave_signals(self) -> None:
         for sig, prev in (getattr(self, "_prev_leave", None) or {}).items():
@@ -3289,6 +3390,7 @@ class TerminalAgent:
         timer = threading.Timer(_LEAVE_DEADLINE_S, os._exit, args=(code,))
         timer.daemon = True
         timer.start()
+        self._leave_timer = timer
 
     def _install_sigwinch(self) -> None:
         """Notice the window changing size.

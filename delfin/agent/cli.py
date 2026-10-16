@@ -2076,17 +2076,26 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 + (f"\n\n{notices}" if notices else "")),
     ))
     import time as _time
+    from . import repl_keys as _rk
     _t0 = _time.monotonic()
-    try:
-        return agent.run(positional)
-    finally:
-        _finish_interactive_session(
-            engine, agent, workspace,
-            title=getattr(args, "session_name", "") or "", t0=_t0)
+    # Held from the loop's start until the session is saved: every way out
+    # is bounded by the leave deadline, and a repeated SIGHUP, SIGTERM or
+    # SIGINT does not end the process in the middle of the save.
+    with agent.leave_held():
         try:
-            os.chdir(_cwd_before)
-        except Exception:
-            pass
+            return agent.run(positional)
+        except _rk.TerminalLeft as left:
+            # A signal before the loop's own try took it.
+            agent.begin_leaving(left.code, terminal_gone=True)
+            return left.code
+        finally:
+            _finish_interactive_session(
+                engine, agent, workspace,
+                title=getattr(args, "session_name", "") or "", t0=_t0)
+            try:
+                os.chdir(_cwd_before)
+            except Exception:
+                pass
 
 
 def cmd_init(args: argparse.Namespace) -> int:

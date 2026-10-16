@@ -479,6 +479,13 @@ def _interactive(monkeypatch, tmp_path, argv, answer):
         def run(self, positional):
             return 0
 
+        def leave_held(self):
+            import contextlib
+            return contextlib.nullcontext(self)
+
+        def begin_leaving(self, code, *, terminal_gone=False):
+            pass
+
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(launch_guard, "inspect_launch_dir",
                         lambda *a, **k: _Report())
