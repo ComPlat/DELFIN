@@ -113,6 +113,8 @@ _KINDS = {
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
     "pr_route":       ("🔀", "Direct push or merge refused (PR route requested)"),
     "pr_merge_unpinned": ("🚫", "Merge not pinned to a green PR head"),
+    "gh_credential_print": ("🔑", "GitHub login printed by a command"),
+    "gh_api_write": ("🚫", "GitHub write through the raw API"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
     # The user's permission rules (permission_rules.py).
     "permission_rule_deny": ("⛔", "Refused by a permission rule"),
