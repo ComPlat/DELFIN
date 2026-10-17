@@ -106,6 +106,28 @@ def test_threshold_zero_negative_text_nan_fall_back():
     now = 1_000_000.0
     r = _rec(last_turn_end=_age(now, 1800), idle_s=1800,
              last_turn={"stopped": True}, open_work=True)
-    for bad in (0, -5, "twenty", float("nan"), None, float("inf")):
+    for bad in (0, -5, "twenty", float("nan"), None, float("inf"), True):
         v = session_health.classify(r, now, _s(stalled_min=bad))
         assert v["verdict"] == "stalled", bad
+
+
+def test_malformed_record_fields_never_raise(reviewed=set()):
+    """The enriched fields come from untrusted-ish sources: classify is
+    total. A malformed field is treated as 0 / None, never a TypeError."""
+    now = 1_000_000.0
+    base = _rec(last_turn_end=_age(now, 30), idle_s=30)
+    for field, bad in (("no_token_s", "soon"),
+                       ("approval_opened_at", "not-a-number"),
+                       ("idle_s", "an hour"),
+                       ("api_errors_in_a_row", "three"),
+                       ("no_token_s", True),
+                       ("idle_s", {"minutes": 5})):
+        v = session_health.classify(dict(base, **{field: bad}), now, _s())
+        assert v["verdict"] in session_health.VERDICTS, (field, bad)
+
+
+def test_truthy_non_bool_paused_is_paused():
+    now = 1_000_000.0
+    for truthy in (1, "yes"):
+        v = session_health.classify(_rec(paused=truthy), now, _s())
+        assert v["verdict"] == "paused", truthy

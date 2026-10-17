@@ -27,6 +27,8 @@ DEFAULT_API_ERRORS = 3
 
 def _threshold(value, default, minimum):
     """*value* bounded into [minimum, ...); anything unusable -> *default*."""
+    if isinstance(value, bool):
+        return default
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -35,6 +37,20 @@ def _threshold(value, default, minimum):
         return default
     if f < minimum:
         return default
+    return f
+
+
+def _num(value):
+    """*value* as a float, 0.0 when it is not a number (a malformed record
+    field must never make classify raise)."""
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isnan(f) or math.isinf(f):
+        return 0.0
     return f
 
 
@@ -84,16 +100,16 @@ def classify(record, now, settings):
                 "reason": "the process is dead and the session record is left",
                 "next": "nothing to do; ignore it or clean the record"}
 
-    errors = record.get("api_errors_in_a_row") or 0
-    if isinstance(errors, int) and errors >= api_errors:
+    errors = _num(record.get("api_errors_in_a_row"))
+    if errors >= api_errors:
         return {"verdict": "erroring",
                 "reason": f"{errors} API errors in a row",
                 "next": "check the provider; the session retries on its own"}
 
     approvals = record.get("open_approvals") or []
     if approvals:
-        opened = record.get("approval_opened_at")
-        age_s = (now - opened) if opened else 0.0
+        opened = _num(record.get("approval_opened_at"))
+        age_s = max(0.0, now - opened) if opened else 0.0
         if age_s >= wait_person_min * 60:
             return {"verdict": "waiting_on_person",
                     "reason": f"open approval for "
@@ -104,7 +120,7 @@ def classify(record, now, settings):
                 "reason": "open approval",
                 "next": "answer the approval or escalate it"}
 
-    no_token = record.get("no_token_s") or 0
+    no_token = _num(record.get("no_token_s"))
     if no_token >= wait_model_min * 60:
         return {"verdict": "waiting_on_model",
                 "reason": f"no model token for {int(no_token / 60)} min",
@@ -114,14 +130,14 @@ def classify(record, now, settings):
     ended = turn.get("stopped") is True
     if ended:
         if record.get("open_work"):
-            idle = record.get("idle_s") or 0
+            idle = _num(record.get("idle_s"))
             if idle >= stalled_min * 60:
                 return {"verdict": "stalled",
                         "reason": f"turn ended {int(idle / 60)} min ago "
                                   "with open work and nothing waiting",
                         "next": "look at it and nudge it yourself"}
         if not record.get("open_work") and not record.get("resume_planned"):
-            idle = record.get("idle_s") or 0
+            idle = _num(record.get("idle_s"))
             if idle >= stalled_min * 60:
                 return {"verdict": "stopped",
                         "reason": f"the last turn stopped and nothing "
