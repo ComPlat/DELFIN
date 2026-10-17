@@ -23431,6 +23431,25 @@ class _DocToolExecutor:
                     base = resolved_cwd
             out = []
             targets = list(_bash_write_targets(cmd))
+            # V22W hook (package V22W, one hook in this protected file):
+            # _bash_write_targets reads quotes as text, so a quoted redirect
+            # or destination word with a space ("my file.txt") is split at
+            # the space. A refusal then records only "engine" while the
+            # later spelling of the same write names "engine with space.py"
+            # -- the dialog comes up again for a file the user already
+            # refused. The quote-aware pass in refusal_memory (owned by V22W)
+            # keeps a quoted word whole; its targets are folded in here so
+            # the record path (_remember_refusal callers, 21789) and the
+            # check path (21285) see the same whole word. The pass only
+            # ADDS candidates, never removes: conservative in the refusing
+            # direction, nothing new is refused.
+            try:
+                from .refusal_memory import _redirect_targets
+                for _qt in _redirect_targets(cmd):
+                    if _qt not in targets:
+                        targets.append(_qt)
+            except Exception:
+                pass
             # git checkout/restore/apply and patch: the paths the write
             # gate folds in from patch_targets. UNKNOWABLE names nothing
             # here -- the write gate refuses that command on its own.
