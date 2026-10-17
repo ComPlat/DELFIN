@@ -191,7 +191,15 @@ def send(to_key: str, text: str, *, from_key: str = "",
 
     Credentials are redacted first: the other session may run on another
     provider, and the text goes into its transcript and every later
-    request it makes."""
+    request it makes.
+
+    An empty or whitespace-only address is refused with ValueError BEFORE
+    any file is touched: _inbox('') would name a stem-less '.jsonl' that
+    no session ever reads and that directory scans would choke on
+    (reviewer nacht-s25, finding #3)."""
+    canon = _canonical_key(to_key)
+    if not canon:
+        raise ValueError("send: the recipient address is empty")
     try:
         from .output_guard import scrub_secrets
         text = scrub_secrets(str(text or ""))
