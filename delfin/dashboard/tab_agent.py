@@ -2504,9 +2504,13 @@ def format_undo_result(scope: str, result: dict) -> str:
 def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
     """Whether switching between these modes moves the working folder.
 
-    Office is pinned to the office folder, Dashboard to the agent folder,
-    and everything else follows the launch directory. Comparing the GROUP
-    rather than the mode name keeps a rebuild from firing on a switch that
+    Office is pinned to the office folder, Dashboard and Research share the
+    agent scratch folder, and everything else follows the launch directory.
+    Research sits in its OWN group, not "launch": its engine is built in
+    ctx.agent_dir (see the _ensure_engine research branch), so a Code ->
+    Research switch must rebuild, or the next send would reuse an engine
+    bound to the launch directory. Comparing the GROUP rather than the mode
+    name keeps a rebuild from firing on a switch that
     changes nothing (solo to pipeline), which would discard a live session
     for no reason.
     """
@@ -2515,6 +2519,8 @@ def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
             return "office"
         if mode == "dashboard":
             return "dashboard"
+        if mode == "research":
+            return "research"
         return "launch"
 
     return group(old_mode) != group(new_mode)
