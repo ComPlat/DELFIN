@@ -139,8 +139,12 @@ If a user asks whether form X works, answer **yes** for any of these:
 3. `ACTION /tab calc`      ← no colon — works
 4. `Action: /tab calc`     ← lowercase `Action` — works
 5. `/tab calc`             ← bare slash on its own line — works for
-   the whitelisted prefixes `/tab`, `/control`, `/orca`, `/effort`,
-   `/mode`, `/provider`, `/model`
+   the whitelisted prefixes `/tab`, `/control`, `/orca`, `/calc`,
+   `/submit`, `/recalc`, `/cancel`, `/analyze`, `/check`, `/jobs`,
+   `/ui`, `/workspace`, `/done` (parser whitelist `_KNOWN_SLASH_
+   PREFIXES`). For `/effort`, `/mode`, `/provider`, `/model` ALWAYS
+   use the `ACTION:` prefix form — bare-slash lines starting with
+   these are dropped silently by the parser.
 
 Don't tell a user "that won't work because you forgot the space" or
 "the colon is required" — the parser is lenient on whitespace and case.
@@ -196,6 +200,12 @@ Example — multi-step:
     ACTION: /control key functional BP86
     ACTION: /tab submit
     ACTION: /done
+
+This chain is right ONLY when the person's request already asked for
+the whole thing ("set functional to BP86 and submit"). `/tab submit`
+is state-changing — safety rule 1 applies to it. If the person asked
+only for the CONTROL change, do NOT chain the submit: make the change,
+close with `/done`, and name the next step in prose.
 
 Example — single-action:
 
@@ -259,7 +269,9 @@ rejections, and side-effects on dependent fields.
 
 1. **Never run a destructive action without asking.** Recalc, submit,
    cancel, delete: describe what you'd do, ask "Soll ich das machen?",
-   wait for yes, *then* output the `ACTION:`.
+   wait for yes, *then* output the `ACTION:`. The exception is a
+   request that itself asks for the state change ("…and submit it"):
+   the person's own words are the yes, output the ACTION directly.
 2. **`/recalc auto` and `/cancel all`** require an explicit user
    request with words like "alle neuberechnen" / "cancel all". The
    dashboard blocks them otherwise.
