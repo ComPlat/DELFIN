@@ -35,8 +35,10 @@ def _unique_independent_sources(sources: Iterable[dict]) -> list[dict]:
 
     Two sources are the SAME voice when they share a URL, or when one is
     a secondary: a secondary restates a primary's voice, it does not add
-    one. Independence therefore needs >= 2 distinct PRIMARIES (or, with
-    no primary at all, the secondaries still make exactly one voice).
+    one. Independence therefore needs >= 2 distinct PRIMARIES WITH a
+    non-empty URL: a primary without a URL cannot be deduplicated
+    against anything, so it can never serve as the second voice (two
+    URL-less primaries are one paper cited twice, unverifiable).
     """
     primaries = 0
     any_source = False
@@ -47,7 +49,9 @@ def _unique_independent_sources(sources: Iterable[dict]) -> list[dict]:
         kind = (src.get("kind") or "primary").strip().lower()
         if kind != "primary":
             continue
-        if url and url in seen_urls:
+        if not url:
+            continue  # URL-less primary: not deduplicable, never a voice
+        if url in seen_urls:
             continue
         seen_urls.add(url)
         primaries += 1
@@ -107,7 +111,10 @@ def review_conflicts(records: list[tuple[str, list[dict]]]) -> list[dict]:
     conflicts: list[dict] = []
     for stem, variants in by_stem.items():
         pols = {p for _, p in variants}
-        if len(variants) > 1 and len([p for p in pols if p]) > 1:
+        # Polarity sets differing (incl. neg-vs-None: one source says a
+        # method does not proceed, the other says it does) is a conflict;
+        # two claims with the SAME polarity are not.
+        if len(variants) > 1 and len(pols) > 1:
             conflicts.append({"type": "conflict",
                               "claims": [c for c, _ in variants],
                               "stem": stem.strip()})
