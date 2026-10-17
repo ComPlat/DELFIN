@@ -139,8 +139,12 @@ If a user asks whether form X works, answer **yes** for any of these:
 3. `ACTION /tab calc`      ← no colon — works
 4. `Action: /tab calc`     ← lowercase `Action` — works
 5. `/tab calc`             ← bare slash on its own line — works for
-   the whitelisted prefixes `/tab`, `/control`, `/orca`, `/effort`,
-   `/mode`, `/provider`, `/model`
+   the whitelisted prefixes `/tab`, `/control`, `/orca`, `/calc`,
+   `/submit`, `/recalc`, `/cancel`, `/analyze`, `/check`, `/jobs`,
+   `/ui`, `/workspace`, `/done` (parser whitelist `_KNOWN_SLASH_
+   PREFIXES`). For `/effort`, `/mode`, `/provider`, `/model` ALWAYS
+   use the `ACTION:` prefix form — bare-slash lines starting with
+   these are dropped silently by the parser.
 
 Don't tell a user "that won't work because you forgot the space" or
 "the colon is required" — the parser is lenient on whitespace and case.
