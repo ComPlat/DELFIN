@@ -150,6 +150,38 @@ def _targets_of(tool: str, args: dict) -> list[str]:
     return []
 
 
+def _redirect_targets(cmd: str) -> list[str]:
+    """Redirect words a quote-aware reading of ``cmd`` sees.
+
+    ``_bash_write_targets`` reads quotes as text, so a quoted redirect
+    word with a space (``cat x > "my file.txt"``) is split at the space
+    and the refused file is never named. This pass reads the same command
+    with shlex (posix), which keeps a quoted word together, and takes the
+    token after a bare ``>`` / ``>>`` redirection.
+
+    Conservative: on a shlex failure, or whenever the next token could be
+    something else (a number, ``&``, ``&1``, ``-``), nothing is taken.
+    A token here always carries its quotes already stripped, so the
+    space-containing name arrives whole.
+    """
+    targets: list[str] = []
+    try:
+        import shlex as _shlex
+        lx = _shlex.shlex(cmd, posix=True, punctuation_chars="<>")
+        lx.whitespace = " \t\r"
+        lx.whitespace_split = True
+        toks = list(lx)
+    except ValueError:
+        return []
+    for i, tok in enumerate(toks):
+        if tok in (">", ">>") and i + 1 < len(toks):
+            nxt = toks[i + 1]
+            if (nxt and not nxt.startswith(("-", "&"))
+                    and not (len(nxt) == 1 and nxt.isdigit())):
+                targets.append(nxt)
+    return targets
+
+
 def same_change(refusal: Refusal, tool: str, args: object,
                 workspace: object, write_targets=None) -> str | None:
     """Does this attempt CHANGE (write) the target a person refused?
@@ -191,6 +223,11 @@ def same_change(refusal: Refusal, tool: str, args: object,
             return None
         cmd = str(args.get("command", ""))
         targets = list(write_targets(cmd))
+        # Quote-aware supplement: quoted redirect words with a space are
+        # split by the tokenizer above (its regex reads quotes as text);
+        # this pass keeps a quoted word whole. A target both passes see
+        # dedupes below; neither pass may lie in the ALLOWING direction.
+        targets += _redirect_targets(cmd)
     else:
         targets = _targets_of(tool, args if isinstance(args, dict) else {})
 

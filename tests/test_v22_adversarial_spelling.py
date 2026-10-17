@@ -85,14 +85,13 @@ class TestQuoting:
             Path(F).resolve()
         )
 
-    @pytest.mark.xfail(
-        reason="V22 finding (2026-10-17): the gate's own tokenizer "
-        "_bash_write_targets (api_client.py:2516) splits a quoted "
-        "redirect word at the space, so same_change never sees the "
-        "refused target 'my file.txt'. Protected-file patch to operator.",
-        strict=True,
-    )
     def test_quoted_around_variable(self):
+        # V22 finding (2026-10-17, xfailed then): the gate's tokenizer
+        # splits a quoted redirect word at the space. V22W fixed it in
+        # refusal_memory.py: same_change supplements the tokenizer's
+        # targets with a quote-aware shlex pass (_redirect_targets), so
+        # the refused 'my file.txt' is seen again. This test was red on
+        # e724cdd8 (None != target) and is green since the V22W fix.
         refused = _refused_write(WS + "/my file.txt")
         assert _changed(
             refused, f"cat x > \"{WS}/my file.txt\""
