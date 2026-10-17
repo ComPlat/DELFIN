@@ -21703,6 +21703,7 @@ class _DocToolExecutor:
                 return _refuse_by_rule("bash", _caged_rule[1])
             _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
+                    and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
                 verdict = self._classifier_second_opinion(
@@ -28423,6 +28424,29 @@ def _caged_command_names_excluded(cmd: str) -> bool:
         if re.sub(r"[\d.]+$", "", tok) in _CAGED_UNASKED_EXCLUDED_WORDS:
             return True
     return False
+
+
+def _allow_rule_names_bash(perms, name: str, args: dict) -> bool:
+    """Whether an allow rule the user wrote names this shell command.
+
+    Such a command is the user's informed decision and is answered by
+    that rule at the command dialog (``_rule_answers``), as before the
+    caged route existed. The caged route must not take it first: its
+    Landlock read list holds only the workspace and the toolchain, so a
+    program the rule names outside them -- a test gate under the
+    checkout's ``.delfin/gate-tools`` -- failed with EACCES (exit 126) and
+    the rule never answered (wave 16, 2026-10-16). Nothing is recorded
+    here; the rule's own event is recorded where it answers. Any failure
+    answers False (the caged route is consulted as before)."""
+    try:
+        from . import permission_rules as _pr
+        _, rs = _permission_rules(perms)
+        if rs is None:
+            return False
+        return _pr.allows(rs, "bash", name, args or {},
+                          perms.workspace) is not None
+    except Exception:
+        return False
 
 
 def _caged_command_may_run_unasked(cmd: str, perms, mode: str,
