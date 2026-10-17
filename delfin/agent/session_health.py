@@ -263,6 +263,7 @@ def watch_events(records, now, state, *, settings=None, stop_all=None,
     health = settings.get("health", {}) if isinstance(settings, dict) else {}
     if not isinstance(health, dict):
         health = {}
+    health_for_classify = {"health": health} if health else {}
     from . import attention
     emitted = []
     seen = state.setdefault("seen", {})
@@ -294,23 +295,27 @@ def watch_events(records, now, state, *, settings=None, stop_all=None,
                                     "session started after it. New agents "
                                     "are allowed again."))
 
-        verdict = classify(rec, now, health)
+        verdict = classify(rec, now, health_for_classify)
         title = _one_line(rec.get("title") or "")
         name = _one_line(rec.get("name") or rec.get("session_id"))
-        grace = WAITING_EMIT_MIN if verdict == "waiting_on_person" else 0
-        if verdict not in _EMIT_VERDICTS:
-            seen.pop(name, None)
+        v = verdict["verdict"]
+        grace = WAITING_EMIT_MIN if v == "waiting_on_person" else 0
+        if v not in _EMIT_VERDICTS:
+            # The session LEFT the stuck state: forget every (name, verdict)
+            # entry for it, so a later re-entry emits again (F3.1).
+            for old in [k for k in seen if k[0] == name]:
+                seen.pop(old, None)
             continue
-        if verdict == "waiting_on_person":
+        if v == "waiting_on_person":
             opened = _num(rec.get("approval_opened_at"))
             if opened and now - opened < grace * 60:
                 continue
-        key = (name, verdict)
+        key = (name, v)
         if seen.get(key):
             continue
         seen[key] = True
-        emitted.append((name, f"{name} {verdict}: "
-                        f"{_one_line(rec.get('reason')) or verdict}. "
+        emitted.append((name, f"{name} {v}: "
+                        f"{_one_line(rec.get('reason')) or v}. "
                         f"{_one_line(rec.get('next'))}"))
         _ = title
     for name, text in emitted:

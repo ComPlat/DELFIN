@@ -5562,6 +5562,11 @@ def build_parser() -> argparse.ArgumentParser:
         from delfin.agent import ops_interface as _oi
         from delfin.agent import session_health as _sh
         from delfin.agent import stop_all as _sa
+        try:
+            from delfin import user_settings
+            agent_cfg = (user_settings.load_settings().get("agent") or {})
+        except Exception:
+            agent_cfg = {}
 
         interval = max(60, int(getattr(args, "interval", 0) or 0))
         state = {"seen": {}}
@@ -5574,13 +5579,14 @@ def build_parser() -> argparse.ArgumentParser:
                 return 0
             if getattr(args, "wait", False):
                 events = _sh.watch_events(records, _t.time(), state,
-                                          settings={}, stop_all=stop,
+                                          settings=agent_cfg,
+                                          stop_all=stop,
                                           stop_all_seen=stop_seen)
                 for name, text in events:
                     print(f"attention: {text}", flush=True)
             rows = []
             for rec in records:
-                verdict = _sh.classify(rec, _t.time(), {})
+                verdict = _sh.classify(rec, _t.time(), agent_cfg)
                 rows.append({
                     "name": rec.get("name"),
                     "session_id": rec.get("session_id"),

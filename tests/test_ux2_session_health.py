@@ -111,7 +111,7 @@ def test_threshold_zero_negative_text_nan_fall_back():
         assert v["verdict"] == "stalled", bad
 
 
-def test_malformed_record_fields_never_raise(reviewed=set()):
+def test_malformed_record_fields_never_raise():
     """The enriched fields come from untrusted-ish sources: classify is
     total. A malformed field is treated as 0 / None, never a TypeError."""
     now = 1_000_000.0
