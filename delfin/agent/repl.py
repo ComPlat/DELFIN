@@ -833,6 +833,7 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         turn_outcome.denied(name, "backend_denied", "")
         _emit(RenderItem("denied", name=name))
 
+    _turn_started = time.monotonic()
     in_before, out_before = _usage(engine)
     from . import turn_context
     if memory_context is None:
@@ -896,6 +897,23 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     result.tool_calls = tool_calls
     result.input_tokens = max(0, in_after - in_before)
     result.output_tokens = max(0, out_after - out_before)
+
+    # KG4 phase 1: the metrics contract agent_metrics.py states ("one
+    # JSONL line per finished agent turn") was kept only by the
+    # dashboard's turn footer; a `delfin-agent chat` turn never wrote a
+    # line. run_turn is the one place a non-dashboard turn ends with its
+    # numbers computed -- record here from exactly those numbers.
+    # Best-effort: record_chat_turn swallows every failure, a metrics
+    # write never breaks the turn it describes.
+    try:
+        from . import agent_metrics as _metrics
+        _metrics.record_chat_turn(
+            engine, result,
+            duration_s=time.monotonic() - _turn_started,
+            mode=str(getattr(engine, "mode", "") or ""),
+        )
+    except Exception:
+        pass
 
     # The answer was streamed before the sanitiser ran on it, and a
     # terminal cannot un-print. Say so rather than let the screen and the
