@@ -494,12 +494,75 @@ def compare_windows(
     }
 
 
+def record_chat_turn(engine, result, *, duration_s: float = 0.0,
+                     mode: str = "") -> None:
+    """The metrics line for a chat / window turn, from what the turn
+    already measured.
+
+    ``repl.run_turn`` (delfin/agent/repl.py:718) is the one place a
+    non-dashboard turn ends with its numbers computed: token deltas in
+    ``result``, the engine carrying session, model, mode and delegated
+    spend. This turns them into the same TurnMetrics record the
+    dashboard's footer writes (tab_agent.py:21585), so one chat turn
+    leaves exactly one line -- the contract agent_metrics states in its
+    header.
+
+    Best-effort like ``record_turn``: any failure is swallowed -- a
+    metrics write never breaks the turn it describes.
+    """
+    try:
+        model = str(getattr(engine, "model", "") or "")
+        profile_name = "default"
+        try:
+            from delfin.agent.model_profiles import get_profile
+            profile_name = (str(get_profile(model).notes or "")
+                            or "default")[:80]
+        except Exception:
+            pass
+        tool_errors = 0
+        try:
+            tool_errors = int(len(getattr(result, "denials", None) or []))
+        except Exception:
+            tool_errors = 0
+        delegation: dict = {}
+        try:
+            sp = engine.delegate_spend().turn
+            delegation = {
+                "delegate_count": sp.count,
+                "delegated_input_tokens": sp.input_tokens,
+                "delegated_output_tokens": sp.output_tokens,
+                "delegated_cost_usd": sp.cost_usd,
+                "delegates_unpriced": sp.unpriced,
+            }
+        except Exception:
+            pass
+        rec_mode = str(mode or getattr(engine, "mode", "") or "")
+        record_turn(TurnMetrics(
+            session_id=str(getattr(engine, "session_id", "") or ""),
+            model=model,
+            profile_name=profile_name,
+            mode=rec_mode,
+            duration_s=max(0.0, float(duration_s or 0.0)),
+            input_tokens=int(getattr(result, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(result, "output_tokens", 0) or 0),
+            cost_usd=0.0,
+            tool_calls=int(len(getattr(result, "tool_calls", None) or [])),
+            silent_exit=bool(
+                not str(getattr(result, "text", "") or "").strip()
+                and not getattr(result, "tool_calls", None)),
+            **delegation,
+        ))
+    except Exception:
+        return
+
+
 __all__ = [
     "DelegateLedger",
     "DelegateSpend",
     "format_turn_delegation",
     "TurnMetrics",
     "record_turn",
+    "record_chat_turn",
     "read_turns",
     "aggregate_by_model",
     "compare_windows",
