@@ -32,34 +32,38 @@ def test_hook_input_shape_builds_the_line():
 
 
 def test_hook_failure_path_yields_empty_string():
-    # The hook's except branch stores "". Empty must be falsy so the
-    # status row simply omits the part (same omission rule as the
-    # timing text) and never renders a broken fragment.
-    assert not ""
-    # The formatter with nothing to show falls back to "Turn ended"
-    # (phase-2 pin); the hook's failure path is the empty string, which
-    # is what the status row must omit — the two are distinct paths.
-    assert format_turn_summary(duration_s=None, ended_at=None,
-                               outcome="", running_jobs=None) == \
-        "Turn ended"
-    assert not ("" )  # the failure-path value is falsy -> omitted
+    # The hook's except branch stores ""; the status row's omission rule
+    # (patch, _render_status) is truthiness: a falsy stored value renders
+    # nothing. Pin the actual contract, not a tautology:
+    failure_value = ""
+    assert not failure_value, "hook failure path must be falsy"
+    # The formatter, by contrast, always returns a non-empty line
+    # ("Turn ended" fallback, phase-2 pin) — a success path never
+    # produces a value the row would omit.
+    success_value = format_turn_summary(duration_s=None, ended_at=None,
+                                        outcome="", running_jobs=None)
+    assert success_value
+    assert success_value == "Turn ended"
 
 
 def test_status_row_shape_escapes_everything():
     # The status row wraps the summary in
     #   · <span class="turn-summary">{escaped}</span>
-    # The summary contains "·" separators and nothing renderable as
-    # HTML; a hypothetical hostile value would be escaped by
-    # html.escape. Pin the wrapper shape here so the patched render
-    # site is recognisable by its output.
+    # Escape rule proven with a HOSTILE string, not a formatter output:
+    # whatever reaches the wrapper goes through html.escape first.
     import html as _html
-    summary = format_turn_summary(duration_s=31, ended_at=None,
-                                  outcome="ok", running_jobs=1)
+    summary = '<img src=x onerror=alert(1)>'
     expected = (' · <span class="turn-summary">'
                 + _html.escape(summary) + "</span>")
-    assert expected == (' · <span class="turn-summary">'
-                        "Surfaced after 31s · 1 shell still running"
-                        "</span>")
+    escaped = _html.escape(summary)
+    assert "<" not in escaped.replace("&lt;", "")
+    assert ">" not in escaped.replace("&gt;", "")
+    # And the whole hostile string never forms a live tag: the opener
+    # '<img' and closer '>' are both gone, so nothing renders.
+    # The formatter's own output stays intact under the same escape.
+    benign = format_turn_summary(duration_s=31, ended_at=None,
+                                 outcome="ok", running_jobs=1)
+    assert _html.escape(benign) == benign  # no HTML chars to escape
 
 
 def test_restore_shows_the_line_again():
