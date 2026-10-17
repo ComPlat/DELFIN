@@ -258,9 +258,16 @@ def test_the_counts_still_match_what_was_measured():
     # builds one git repository in its own subdirectory of
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
+    #
+    # other 52 -> 57 on 2026-10-18: tasks_w17_web.yaml (W1, wave 17,
+    # agent/s32-w1b). Five web-research tasks graded on their answers and
+    # citations; each setup writes local fixture pages under
+    # w17_web_pages/ in the workspace and refuses an existing fixture.
+    # No task_class key, so they land in "other"; they write only inside
+    # the fixture, never the checkout.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
                       "science": 23, "chemistry": 5, "generalist": 17,
-                      "other": 52}, counts
+                      "other": 57}, counts
 
 
 # ---------------------------------------------------------------------------
