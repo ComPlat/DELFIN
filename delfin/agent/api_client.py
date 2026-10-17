@@ -21706,46 +21706,6 @@ class _DocToolExecutor:
                     and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
-                # A2W (workspace self-service, wired): the rated shapes of
-                # workspace_selfservice.classify run without a question
-                # too — they are ordinary commands whose harm profile is
-                # already confined by the cage itself (writes to the
-                # session's roots, no processes outside, egress policy).
-                # Reached ONLY after every hard tier above and inside the
-                # caged admission; classify returns "auto" for an exact
-                # allow-listed form and None otherwise, so any mismatch
-                # falls through to the classifier/dialog below. The
-                # shapes live in the user settings block
-                # agent.workspace_selfservice and can be switched off
-                # there; the shapes list is rendered in the session's
-                # permissions view (see the module's settings contract).
-                # Read-only for this verdict: nothing recorded, nothing
-                # granted beyond the caged admission itself.
-                _wss_shape = ""
-                try:
-                    from . import workspace_selfservice as _wss
-                    from delfin.user_settings import load_settings as _wss_load
-                    _wss_cfg = _wss.settings_from_payload(_wss_load() or {})
-                    if _wss_cfg.get("enabled"):
-                        _wss_shape = _wss.classify(
-                            cmd, str(getattr(perms, "workspace", "") or ""))
-                except Exception:
-                    _wss_shape = ""
-                if _wss_shape == "auto":
-                    _record_security_event(
-                        "workspace_selfservice_auto", "bash", cmd[:80],
-                        blocked=False)
-                    caged_admission.append(True)
-                    try:
-                        from . import caged_test_runners as _ctr
-                        from . import channels as _channels
-                        _ws_c2 = str(getattr(perms, "workspace", "") or ".")
-                        if _ctr.admitted_runners(cmd, _cage_cwd or _ws_c2,
-                                                 _ws_c2):
-                            _channels.fire("caged_test_runner")
-                    except Exception:
-                        pass
-                    return None
                 verdict = self._classifier_second_opinion(
                     perms, name, args, mode)
                 if verdict is None:
