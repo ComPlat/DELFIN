@@ -6,7 +6,8 @@ ANSI-free. (3) an error line collapses whitespace and strips escapes.
 
 import datetime
 
-from delfin.agent.cli_stream import StreamRenderer, render_turn_footer
+from delfin.agent.cli_stream import (StreamRenderer, render_turn_footer,
+                                     render_turn_summary_line)
 from delfin.agent.turn_summary import format_duration, format_turn_summary
 
 
@@ -19,18 +20,23 @@ def test_inf_duration_renders_nothing_not_crash():
 
 
 def test_footer_pipe_has_no_ansi():
+    # The legacy stats line stays ANSI-free in a pipe (pinned
+    # contract); the UX1 summary line is plain always.
     stats = {"duration_s": 1.0, "outcome": "ok", "input_tokens": 1,
              "output_tokens": 2, "tool_calls": 1, "is_tty": False}
     line = render_turn_footer(stats)
     assert "\x1b" not in line
-    assert line == "Surfaced after 1s · in=1 · out=2 · tools=1"
+    assert line == "→ in=1 · out=2 · tools=1 · 1.0s"
 
 
-def test_footer_tty_keeps_dimmed_suffix():
+def test_footer_tty_keeps_bold_head():
+    # On a TTY the legacy footer's head is bold; the summary line is
+    # never ANSI-decorated.
     stats = {"duration_s": 1.0, "outcome": "ok", "input_tokens": 1,
              "tool_calls": 1, "is_tty": True}
     line = render_turn_footer(stats)
-    assert line == "Surfaced after 1s · \x1b[2min=1 · tools=1\x1b[0m"
+    assert line == "\x1b[1m→ in=1 · tools=1 · 1.0s\x1b[0m"
+    assert "\x1b" not in render_turn_summary_line(stats)
 
 
 def test_error_line_collapses_whitespace_and_strips_ansi():
@@ -41,7 +47,8 @@ def test_error_line_collapses_whitespace_and_strips_ansi():
     lines = list(StreamRenderer(iter(events), is_tty=False))
     assert lines[0] == "⚠ boom! second line"
     assert "\x1b" not in lines[0]
-    assert lines[-1] == "Stopped after 12s"
+    assert lines[-1] == "→ 12.0s"
+    assert lines[-2] == "Stopped after 12s"
 
 
 def test_error_turn_still_reports_stopped_after_sanitising():
@@ -52,7 +59,8 @@ def test_error_turn_still_reports_stopped_after_sanitising():
         {"type": "turn_end", "duration_s": 3},
     ]
     lines = list(StreamRenderer(iter(events), is_tty=False))
-    assert lines[-1] == "Stopped after 3s"
+    assert lines[-1] == "→ 3.0s"
+    assert lines[-2] == "Stopped after 3s"
 
 
 def test_ended_at_datetime_still_renders_done_hhmm():

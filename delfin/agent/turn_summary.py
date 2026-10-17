@@ -12,8 +12,6 @@ jobs are still running. Only counts ever reach the string — a job
 name, a command or a hostile label can never appear in the line.
 """
 
-import datetime
-
 # The rotating verb set behind ``agent.ui.turn_verbs = "rotate"``.
 _ROTATING_VERBS = ("Dived", "Surfaced", "Distilled", "Crystallized",
                    "Echolocated")
