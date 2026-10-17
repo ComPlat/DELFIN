@@ -6,6 +6,7 @@ steer-followed judgement over the caller-supplied actions).
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -64,7 +65,26 @@ def check(workspace: Path, steer_followed: bool | None = None) -> tuple[bool, st
 
 def main() -> None:
     ws = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
-    ok, msg = check(ws)
+    # The runner delivers what it OBSERVED in .longrun_facts.json
+    # (benchmark_runner patch): the mid-run steer deliveries and the
+    # per-turn records. steer_followed is judged HERE against the
+    # rubric — a turn after the steer that acts on the new goal —
+    # never taken on faith from the file.
+    steer_followed = None
+    facts_path = ws / ".longrun_facts.json"
+    if facts_path.is_file():
+        try:
+            facts = json.loads(facts_path.read_text(encoding="utf-8"))
+            delivered = [m.get("text", "") for m in
+                         (facts.get("steer_delivered") or [])]
+            steer_seen = any(_STEER_MARKER in t for t in delivered)
+            after = [t.get("text", "") for t in (facts.get("turns") or [])]
+            if steer_seen:
+                steer_followed = any(
+                    "new goal" in (t or "").lower() for t in after)
+        except Exception:
+            steer_followed = None
+    ok, msg = check(ws, steer_followed=steer_followed)
     print(msg)
     sys.exit(0 if ok else 1)
 
