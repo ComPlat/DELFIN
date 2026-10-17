@@ -32,6 +32,16 @@ def test_case_sensitive_units_are_different_readings():
     assert set(result["units"]) == {"kJ/mol", "KJ/MOL"}
 
 
+def test_bare_and_unit_mix_is_mixed_shape_with_n_bare():
+    """QS ruling (nacht-s30): a column mixing unit-carrying values with
+    bare numbers is mixed_shape — bare values do NOT inherit the column
+    unit, and n_bare is reported so the caller can decide."""
+    result = dchecks.unit_consistency(["13.1 kcal/mol", "8.986", "12.4 kcal/mol"])
+    assert result["consistent"] is False
+    assert result["mixed_shape"] is True
+    assert result["n_bare"] == 1
+
+
 def test_bare_float_object_has_no_unit():
     """A real float carries no unit; a float-typed column stays consistent."""
     result = dchecks.unit_consistency([1.5, 2.5, 3.0])
