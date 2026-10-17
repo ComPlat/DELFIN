@@ -258,8 +258,13 @@ def test_the_counts_still_match_what_was_measured():
     # builds one git repository in its own subdirectory of
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
+    #
+    # generalist 17 -> 22 on 2026-10-17 (C1, wave 17): the five
+    # tasks_w17_code.yaml tasks. Each setup builds one git repository in
+    # its own subdirectory of the fixture workspace; the acceptance
+    # scripts judge end state on scratch copies only.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
-                      "science": 23, "chemistry": 5, "generalist": 17,
+                      "science": 23, "chemistry": 5, "generalist": 22,
                       "other": 52}, counts
 
 
