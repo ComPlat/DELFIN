@@ -333,10 +333,32 @@ def should_continue(answer: str, open_tasks: int) -> tuple[bool, str]:
     """
     if not announced_action(answer):
         return False, ""
+    # A turn that registered a WAIT is not nudged: the wait is the
+    # mechanism that brings the session back when its event arrives
+    # (wait_registry.due fires it once, with a note naming the event).
+    # Nudging on top would have the model re-announce work it is
+    # deliberately parked on (package KG1, phase 2). An empty or
+    # unreadable registry nudges as before.
+    try:
+        from .wait_registry import SessionWaits
+        if SessionWaits().list():
+            return False, _WAIT_NOTE
+    except Exception:
+        pass
     n = max(0, open_tasks or 0)
     if n:
         return True, _CONTINUATION_NOTE
     return True, _CONTINUATION_NOTE_NO_TASKS
+
+
+#: The note for a suppressed nudge. It names the mechanism, so the person
+#: reading the status line sees WHY the session is not being poked: it is
+#: waiting, on purpose, and the wait will wake it.
+_WAIT_NOTE = (
+    "System note: the nudge is suppressed because this turn registered a "
+    "wait (wait_registry); the session wakes when the waited-for event "
+    "arrives. The person can clear the wait."
+)
 
 
 #: The note for an announcement with an empty task list. It must not talk
