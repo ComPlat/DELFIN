@@ -5764,13 +5764,14 @@ def create_tab(ctx):
     # place because the same fact drives two independent pieces of UI (the
     # cycle inspector and the minimal layout); when it lived in both, a new
     # mode was added to one and forgotten in the other.
-    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office")
+    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office", "research")
 
-    # Modes that are not tied to a directory: their workspace is a fixed
-    # location, so their sessions are reachable from any launch. Kept
+    # Modes that are not tied to a project directory, so their sessions
+    # are reachable from any launch: each runs in its own fixed folder
+    # (the agent scratch folder, or the office workspace). Kept
     # beside the set above because both describe the same modes from
     # different angles and a new mode has to be considered for each.
-    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office")
+    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office", "research")
 
     _MODE_DESCRIPTIONS = {
         "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
@@ -5792,7 +5793,8 @@ def create_tab(ctx):
                 "step-by-step plan in markdown, and waits for your approval via "
                 "exit_plan_mode before any file edits or bash run.",
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
-                    "state-of-the-art methods. Web search enabled, read-only, no code changes.",
+                    "state-of-the-art methods. Web search and code reading; "
+                    "read-only: no file changes, no shell commands.",
         # quick / reviewed / tdd / cluster / full were retired with the
         # pipeline modes (see the dropdown below). Their descriptions
         # outlived them here by months: a dictionary nothing looks up,
@@ -5818,7 +5820,7 @@ def create_tab(ctx):
         # remains is what genuinely differs — which folder the session works
         # in, and what it is allowed to reach from there.
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Office", "office")],
+                 ("Office", "office"), ("Research", "research")],
         value="dashboard",
         # "Mode:", and not "Workspace:" as it read between 478eb33e and
         # this change. The argument for the rename was that the control
@@ -9795,7 +9797,7 @@ def create_tab(ctx):
             "default": "solo", "high_risk": "solo", "runtime_cluster": "solo",
             "release": "solo", "quick": "solo", "reviewed": "solo",
             "tdd": "solo", "cluster": "solo", "full": "solo",
-            "research": "solo", "plan": "solo", "code": "solo",
+            "plan": "solo", "code": "solo",
             # Pipeline is a skill now; a session saved under it reopens as
             # the agent it always ran, with the procedure one call away.
             "pipeline": "solo",
@@ -10345,6 +10347,20 @@ def create_tab(ctx):
                     "Write", "Bash",              # agent_workspace only
                     "WebSearch", "WebFetch",      # literature research
                 ]
+            elif mode_dropdown.value == "research":
+                # Literature work binds no project checkout: like Dashboard,
+                # its workspace is the fixed agent scratch folder so a saved
+                # research session is reachable from any launch. The tool
+                # surface is read-only — web search and code reading — the
+                # write denylist of the research_agent role enforces the
+                # rest at the permission layer.
+                _research_ws = _abs_dir(getattr(ctx, "agent_dir", None))
+                if _research_ws:
+                    repo_dir = _research_ws
+                _cli_tools = [
+                    "Read", "Grep", "Glob",      # read code + data
+                    "WebSearch", "WebFetch",      # literature research
+                ]
             elif state.get("_perm_profile") == "repo_free":
                 # repo_free + non-dashboard: auto-approve safe bash commands
                 # so the agent doesn't get stuck in permission-denial loops
@@ -10425,11 +10441,15 @@ def create_tab(ctx):
             # starts. Stamp it now as well, so an office session is locked
             # from construction — otherwise a directory could be granted
             # through the settings UI in the window before the first turn.
-            if mode_dropdown.value == "office":
+            if mode_dropdown.value in ("office", "research"):
                 try:
                     _kp = getattr(engine, "kit_permissions", None)
                     if _kp is not None:
-                        _kp.agent_role = "office_agent"
+                        _kp.agent_role = (
+                            "research_agent"
+                            if mode_dropdown.value == "research"
+                            else "office_agent"
+                        )
                 except Exception:
                     pass
 
