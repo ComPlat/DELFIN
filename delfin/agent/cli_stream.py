@@ -109,32 +109,17 @@ def render_tool_call(name: str, args: dict[str, Any] | None,
 
 
 def render_turn_footer(stats: dict[str, Any]) -> str:
-    """The closing line of a turn: the turn summary, plus tokens.
+    """The legacy closing stats line, exactly as before UX1.
 
-    The summary line comes from :mod:`delfin.agent.turn_summary`
-    ("Surfaced after 31s · done 11:11 · 1 shell still running"); the
-    token figures stay as a dimmed suffix when the event carries them.
+    "→ in=100 · out=20 · tools=3 · 12.3s" — bold head on a TTY, plain
+    in a pipe; the format is a pinned contract for consumers that
+    parse the CLI output. The UX1 summary line ("Surfaced after ...")
+    is rendered separately by the caller as its own line.
     ``stats``: ``{"input_tokens", "output_tokens", "tool_calls",
-    "duration_s", "ended_at", "outcome", "running_jobs", "is_tty"}``;
-    missing fields are omitted rather than guessed at zero.
+    "duration_s", ...}``; missing fields are omitted rather than
+    guessed at zero.
     """
     is_tty = bool(stats.get("is_tty"))
-    ended_at = stats.get("ended_at")
-    if isinstance(ended_at, str):
-        # The turn_end event carries the end time as an ISO string;
-        # the summary wants a datetime. Naive parse: the event is in
-        # local time already, and a malformed string renders no time
-        # rather than breaking the footer.
-        try:
-            ended_at = datetime.datetime.fromisoformat(ended_at)
-        except ValueError:
-            ended_at = None
-    summary = format_turn_summary(
-        duration_s=stats.get("duration_s"),
-        ended_at=ended_at,
-        outcome=stats.get("outcome", "ok"),
-        running_jobs=stats.get("running_jobs"),
-    )
     parts: list[str] = []
     if stats.get("input_tokens") is not None:
         parts.append(f"in={stats['input_tokens']}")
@@ -142,13 +127,37 @@ def render_turn_footer(stats: dict[str, Any]) -> str:
         parts.append(f"out={stats['output_tokens']}")
     if stats.get("tool_calls") is not None and stats["tool_calls"] > 0:
         parts.append(f"tools={stats['tool_calls']}")
-    if parts:
-        suffix = " · ".join(parts)
-        # Dim only on a tty — in a pipe the output must stay verbatim
-        # (no ANSI escapes), matching the old footer's contract.
-        return summary + (f" · {_dim(suffix, is_tty)}" if is_tty
-                          else f" · {suffix}")
-    return summary
+    if stats.get("duration_s") is not None:
+        parts.append(f"{stats['duration_s']:.1f}s")
+    if not parts:
+        return "→ turn ended"
+    suffix = " · ".join(parts)
+    head, sep, tail = suffix.partition(" · ")
+    body = f"→ {head}" + (f" · {tail}" if sep else "")
+    return f"\x1b[1m{body}\x1b[0m" if is_tty else body
+
+
+def render_turn_summary_line(stats: dict[str, Any]) -> str:
+    """The UX1 summary line ("Surfaced after 31s · done 11:11").
+
+    Plain text always — no ANSI escapes here, the summary is the
+    person-facing line and pipes must stay verbatim. ``ended_at`` may
+    be a datetime or an ISO string (the turn_end event carries a
+    string; a malformed string renders no time rather than breaking
+    the line).
+    """
+    ended_at = stats.get("ended_at")
+    if isinstance(ended_at, str):
+        try:
+            ended_at = datetime.datetime.fromisoformat(ended_at)
+        except ValueError:
+            ended_at = None
+    return format_turn_summary(
+        duration_s=stats.get("duration_s"),
+        ended_at=ended_at,
+        outcome=stats.get("outcome", "ok"),
+        running_jobs=stats.get("running_jobs"),
+    )
 
 
 class StreamRenderer:
@@ -266,13 +275,18 @@ class StreamRenderer:
                         {"is_tty": self._is_tty, "spinner": tick,
                          "elapsed_s": self._now() - started[name]})
             elif kind == "turn_end":
+                # The UX1 summary is its own line BEFORE the legacy
+                # stats footer, so the footer's pinned format and its
+                # one-line-per-event contract stay intact.
+                yield render_turn_summary_line(
+                    {"duration_s": event.get("duration_s"),
+                     "ended_at": event.get("ended_at"),
+                     "running_jobs": event.get("running_jobs"),
+                     "outcome": ("stopped" if self._saw_error
+                                 else event.get("outcome", "ok"))})
                 yield render_turn_footer(
                     {"input_tokens": event.get("input_tokens"),
                      "output_tokens": event.get("output_tokens"),
                      "tool_calls": event.get("tool_calls", self._tool_calls),
                      "duration_s": event.get("duration_s"),
-                     "ended_at": event.get("ended_at"),
-                     "running_jobs": event.get("running_jobs"),
-                     "outcome": ("stopped" if self._saw_error
-                                 else event.get("outcome", "ok")),
                      "is_tty": self._is_tty})
