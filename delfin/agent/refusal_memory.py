@@ -303,6 +303,37 @@ class RefusalMemory:
                     return r
         return None
 
+    def lift(self, path: str) -> int:
+        """Drop the refusals this path is covered by; how many were dropped.
+
+        The person allowed what was refused ("yes, now do it"). A stale
+        entry must not keep handing the session the old reason. A refused
+        directory is lifted together with everything beneath it; a file
+        entry lifts only itself. Returns the number of entries removed
+        (an entry may cover the path without matching it exactly, so a
+        count, not a bool). Never raises.
+        """
+        try:
+            norm = _norm(path)
+            if not norm:
+                return 0
+            keep = []
+            dropped = 0
+            for r in self.entries:
+                if r.is_dir and _contains(r.target, path):
+                    dropped += 1
+                    continue
+                if _norm(r.target) == norm:
+                    dropped += 1
+                    continue
+                keep.append(r)
+            if dropped:
+                self.entries = keep
+                self._save()
+            return dropped
+        except Exception:
+            return 0
+
     def note(self, refusal: Refusal) -> str:
         """The English reminder handed back with a repeated ask."""
         time = refusal.time or "(time unknown)"
