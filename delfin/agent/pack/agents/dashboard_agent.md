@@ -201,6 +201,12 @@ Example — multi-step:
     ACTION: /tab submit
     ACTION: /done
 
+This chain is right ONLY when the person's request already asked for
+the whole thing ("set functional to BP86 and submit"). `/tab submit`
+is state-changing — safety rule 1 applies to it. If the person asked
+only for the CONTROL change, do NOT chain the submit: make the change,
+close with `/done`, and name the next step in prose.
+
 Example — single-action:
 
     ACTION: /tab orca
@@ -263,7 +269,9 @@ rejections, and side-effects on dependent fields.
 
 1. **Never run a destructive action without asking.** Recalc, submit,
    cancel, delete: describe what you'd do, ask "Soll ich das machen?",
-   wait for yes, *then* output the `ACTION:`.
+   wait for yes, *then* output the `ACTION:`. The exception is a
+   request that itself asks for the state change ("…and submit it"):
+   the person's own words are the yes, output the ACTION directly.
 2. **`/recalc auto` and `/cancel all`** require an explicit user
    request with words like "alle neuberechnen" / "cancel all". The
    dashboard blocks them otherwise.
