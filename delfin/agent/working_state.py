@@ -58,6 +58,12 @@ _MAX_TESTS = 5
 _MAX_TEST_LINE_CHARS = 160
 # Open tasks come from the task store, capped by open_task_summary.
 _MAX_TASKS = 6
+# The persistent task-state store (task_state.TaskState), second writer
+# of the same state: read at compaction so the goal, the person's
+# instruction and decisions survive alongside the task tool's plan.
+_MAX_TASKSTATE_LINES = 8
+_MAX_TASKSTATE_ITEMS = 3
+_MAX_TASKSTATE_CHARS = 180
 
 # The whole block may never exceed this, whatever the history holds.
 _MAX_BLOCK_CHARS = 2200
@@ -292,6 +298,48 @@ def _scrub(text: str) -> str:
         return text
 
 
+def _task_state_lines(workspace: Path | None) -> list[str]:
+    """The persistent task-state store written next to the session, if a
+    TaskState was saved there. Newest fields first; each entry clipped and
+    the section capped. Never raises (best-effort, like every reader
+    here)."""
+    if workspace is None:
+        return []
+    try:
+        from . import task_state as _ts
+        st = _ts.open(Path(workspace) / _ts.DEFAULT_FILENAME)
+        st.load()
+        if st.task or st.person_instruction:
+            st.render()  # exercise render once so the block mirrors it
+    except Exception:
+        return []
+    lines: list[str] = []
+    if st.task:
+        lines.append(_clip(f"task: {st.task}", _MAX_TASKSTATE_CHARS))
+    if st.success_criterion:
+        lines.append(_clip(f"success criterion: {st.success_criterion}",
+                           _MAX_TASKSTATE_CHARS))
+    if st.person_instruction:
+        marker = " (fresh)" if st.person_instruction_is_fresh else ""
+        lines.append(_clip(
+            f"person's latest instruction{marker}: {st.person_instruction}",
+            _MAX_TASKSTATE_CHARS))
+    if st.waiting_for:
+        lines.append(_clip(f"waiting on: {st.waiting_for}",
+                           _MAX_TASKSTATE_CHARS))
+    for d in st.decisions[:_MAX_TASKSTATE_ITEMS]:
+        line = d.get("decision", "")
+        if d.get("reason"):
+            line += f" — {d['reason']}"
+        lines.append(_clip(f"decision: {line}", _MAX_TASKSTATE_CHARS))
+    for d in st.done[:_MAX_TASKSTATE_ITEMS]:
+        line = d.get("what", "")
+        if d.get("evidence"):
+            line += f" [{d['evidence']}]"
+        lines.append(_clip(f"done: {line}", _MAX_TASKSTATE_CHARS))
+    return lines[:_MAX_TASKSTATE_LINES]
+
+
 def build_working_state_block(
     messages: Iterable[dict],
     *,
@@ -307,6 +355,7 @@ def build_working_state_block(
     msgs = [m for m in (messages or []) if isinstance(m, dict)]
 
     tasks = _open_tasks(workspace) if workspace is not None else []
+    state = _task_state_lines(workspace)
     files = _journal_files(session_id)
     names = _touched_names(msgs)
     tests = _test_outcomes(msgs)
@@ -315,7 +364,7 @@ def build_working_state_block(
     refusals = _refusals(refusals)
 
     if not (tasks or files or names or tests or denials or instr
-            or refusals):
+            or refusals or state):
         return ""
 
     # Build by priority: tasks, instructions, denials, refusals, tests,
@@ -324,6 +373,7 @@ def build_working_state_block(
     # ceiling regardless.
     pieces = [
         ("Open tasks (task tool):", tasks),
+        ("Persistent task state:", state),
         ("Standing instructions:", instr),
         ("Recent denials (do not retry):", denials),
         ("Operator refusals (do not ask again):", refusals),
