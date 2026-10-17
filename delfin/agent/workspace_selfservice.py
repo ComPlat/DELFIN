@@ -164,6 +164,24 @@ _EDITABLE = ("-e", "--editable")
 _DANGEROUS_PIP_OPTS = _INDEX_OVERRIDE + _EDITABLE + ("--user", "--prefix", "--root")
 
 
+def _matches_dangerous_opt(w: str) -> bool:
+    """True when the word is a dangerous pip option in ANY spelling pip
+    accepts: standalone (``-e``), attached value (``-e.``), or equals form
+    (``--index-url=https://...``). pip's own parser accepts all of these
+    (measured in s25's adversarial cases F1/F2), so containment cannot
+    match only the standalone word."""
+    for opt in _DANGEROUS_PIP_OPTS:
+        if w == opt:
+            return True
+        if w.startswith(opt + "="):
+            return True
+        # attached value: only for short options (-e. / -e/tmp/evil); for
+        # long options an attached form without '=' is not one option.
+        if not opt.startswith("--") and w.startswith(opt) and len(w) > len(opt):
+            return True
+    return False
+
+
 def _pip_install_r(cmd: str, workspace: str) -> bool:
     words = _plain_words(cmd)
     if words is None:
@@ -184,18 +202,29 @@ def _pip_install_r(cmd: str, workspace: str) -> bool:
     if idx < len(words) and words[idx] != "install":
         return False
     idx += 1  # past "install"
-    req: Optional[str] = None
-    for i in range(idx, len(words)):
+    req_values: list[str] = []
+    consumed_flag_word = False
+    i = idx
+    while i < len(words):
         w = words[i]
-        if w in _DANGEROUS_PIP_OPTS:
+        if _matches_dangerous_opt(w):
             return False
         if w in ("-r", "--requirement"):
-            if i + 1 >= len(words):
+            # -r consumes the next word as its value. If there is no next
+            # word, or the next word looks like another option (starts with
+            # '-'), the option is malformed -- pip would abort or swallow
+            # it (s25 F6/F7); the pinned form cannot be verified -> None.
+            if i + 1 >= len(words) or words[i + 1].startswith("-"):
                 return False
-            req = words[i + 1]
-    if req is None or not _inside(req, workspace):
+            req_values.append(words[i + 1])
+            i += 2
+            continue
+        if w == "--require-hashes":
+            consumed_flag_word = True
+        i += 1
+    if not req_values or any(not _inside(r, workspace) for r in req_values):
         return False
-    if "--require-hashes" not in words:
+    if not consumed_flag_word:
         return False
     # The pinned word form produces no targets in the gate's extractor
     # (measured: pip install with -r and --require-hashes yields []); the
@@ -241,6 +270,11 @@ def _is_own_branch_switch(words: list[str]) -> Optional[str]:
         return None
     if branch.startswith("origin/"):
         return None
+    # A refname component may not be '..' (git check-ref-format); a branch
+    # containing '..' would resolve to another ref or fail -- s25 F3 pins
+    # it to None.
+    if ".." in branch:
+        return None
     if not _SAFE_BRANCH_RE.match(branch):
         return None
     if branch.startswith("agent/") or re.match(r"^s\d+[-_]", branch):
@@ -280,6 +314,10 @@ def _tool_version(cmd: str) -> bool:
     if len(words) != 2:
         return False
     tool, flag = words
+    # Only real version flags: `gh version` is not gh's version command
+    # (s25 F4) and `-V` is not bash's. A bare `git version` is git's.
+    if flag in ("version", "-V") and tool != "git":
+        return False
     if flag not in ("--version", "-V", "version"):
         return False
     if tool not in _KNOWN_VERSION_TOOLS:
