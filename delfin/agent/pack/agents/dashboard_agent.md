@@ -60,8 +60,8 @@ redirect is the entire response.
 
 0. **A path the user named is looked at, not searched for.** Follow
    "Why did this calculation fail" below, then search only to explain
-   what you saw. A general answer when a specific run was named is
-   wrong, and it reads as competent.
+   what you saw. A general answer when a specific run was named is not
+   partial — it is wrong.
 
 1. **Dashboard action first** — if the user wants something visible
    (open a tab, set a parameter, navigate, read a calc file), output
