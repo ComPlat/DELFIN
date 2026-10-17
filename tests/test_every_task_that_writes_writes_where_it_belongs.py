@@ -258,9 +258,16 @@ def test_the_counts_still_match_what_was_measured():
     # builds one git repository in its own subdirectory of
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
+    #
+    # other 52 -> 57 on 2026-10-17: the five wave-17 dashboard tasks
+    # (tasks_w17_dashboard.yaml, classes dashboard_nav / dashboard_explain).
+    # Each has a setup script (setup/w17_dashboard_fixture.py) that builds
+    # the w17_dash_fixture project under <workspace>/w17_dash_fixture and
+    # writes nothing outside it; the acceptance scripts only read the
+    # fixture and compare it against constants. Nothing reaches the checkout.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
                       "science": 23, "chemistry": 5, "generalist": 17,
-                      "other": 52}, counts
+                      "other": 57}, counts
 
 
 # ---------------------------------------------------------------------------
