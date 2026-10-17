@@ -54,6 +54,13 @@ class _FakeEngine:
         self._model_name = "fake-model"
         self._tmp_home = tmp_home
 
+    @property
+    def model(self) -> str:
+        # The real engine exposes its model name as a property
+        # (delfin/agent/engine.py:1281); run_turn's metrics hook reads
+        # that shape, so the fake must match it.
+        return self._model_name
+
     def stream_response(self, **kwargs):
         on_token = kwargs.get("on_token")
         if on_token:
