@@ -35,6 +35,7 @@ is ANSI dim/bold, and only when ``is_tty``.
 from __future__ import annotations
 
 import datetime
+import re
 import sys
 import time
 from typing import Any, Callable, Iterable, Iterator
@@ -43,6 +44,9 @@ from delfin.agent.turn_summary import format_turn_summary
 
 # Spinner frames — braille, one frame per tick while a call is open.
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+# ANSI escape sequences, for stripping them out of event text.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 # How much of each argument value to show before ellipsis.
 _ARG_MAX = 40
@@ -140,7 +144,10 @@ def render_turn_footer(stats: dict[str, Any]) -> str:
         parts.append(f"tools={stats['tool_calls']}")
     if parts:
         suffix = " · ".join(parts)
-        return summary + f" · {_dim(suffix, True)}"
+        # Dim only on a tty — in a pipe the output must stay verbatim
+        # (no ANSI escapes), matching the old footer's contract.
+        return summary + (f" · {_dim(suffix, is_tty)}" if is_tty
+                          else f" · {suffix}")
     return summary
 
 
@@ -179,10 +186,14 @@ class StreamRenderer:
             kind = event.get("type")
             if kind == "error":
                 # An error event is a failed turn: the footer must not
-                # call it "Surfaced" later. Rendered as a notice line.
+                # call it "Surfaced" later. Rendered as a notice line;
+                # whitespace collapsed and escape characters stripped,
+                # because the text can carry newlines or ANSI from
+                # anything upstream.
                 self._saw_error = True
-                text = str(event.get("text", ""))
-                if text.strip():
+                text = " ".join(
+                    _ANSI_RE.sub("", str(event.get("text", ""))).split())
+                if text:
                     yield f"⚠ {text}"
             if kind == "text":
                 text = str(event.get("text", ""))

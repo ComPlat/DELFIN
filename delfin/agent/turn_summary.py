@@ -26,10 +26,14 @@ _OK_OUTCOMES = frozenset({"ok", "success", "done", ""})
 
 
 def format_duration(duration_s) -> str:
-    """``31`` -> ``31s``, ``133`` -> ``2m 13s``, ``3840`` -> ``1h 4m``."""
+    """``31`` -> ``31s``, ``133`` -> ``2m 13s``, ``3840`` -> ``1h 4m``.
+
+    A non-finite duration (inf/nan) renders nothing rather than
+    crashing: OverflowError on round() is caught like TypeError.
+    """
     try:
         seconds = int(round(float(duration_s)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return ""
     if seconds < 0:
         seconds = 0
