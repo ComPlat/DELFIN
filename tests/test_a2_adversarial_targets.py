@@ -68,14 +68,20 @@ def test_pip_multiple_r_flags_last_wins_is_none(tmp_path):
     # Two -r flags: pip accepts the LAST one. The matcher records req on each
     # iteration so the last one is checked -- but BOTH must be inside for the
     # pinned form; this pins the last-wins reading stays refused when either
-    # is outside.
-    _venv(tmp_path)
+    # is outside. The workspace is a SUBFOLDER of tmp_path so the evil
+    # requirements file genuinely sits outside it (it did not, in the first
+    # version: outside_dir was a sibling of the workspace root, i.e. inside).
+    ws_root = tmp_path / "ws"
+    ws_root.mkdir()
+    venv = ws_root / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (ws_root / "requirements.txt").write_text("numpy==1.26.4\n")
     outside_dir = tmp_path / "outside"
     outside_dir.mkdir()
     (outside_dir / "evil.txt").write_text("numpy==1.26.4\n")
     cmd = (".venv/bin/pip install -r requirements.txt -r "
            f"{outside_dir / 'evil.txt'} --require-hashes")
-    assert ws.classify(cmd, _ws(tmp_path)) is None, "F5: double -r escape"
+    assert ws.classify(cmd, str(ws_root)) is None, "F5: double -r escape"
 
 
 def test_pip_aborted_dash_r_is_none(tmp_path):
