@@ -21802,6 +21802,10 @@ class _DocToolExecutor:
                 return self._classifier_second_opinion(perms, name, args, mode)
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
+                # W1 (dead yes, handled at the read-arg gate below, not
+                # here): a path that is ONLY the command's write target
+                # and lies outside every writable root is refused once
+                # there, never asked as a read.
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
                 try:
@@ -23307,6 +23311,32 @@ class _DocToolExecutor:
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     continue
+                # W1: a path that is ONLY the command's WRITE target must
+                # never produce a read question. For `python3 -m venv
+                # /scratch/x/venv` the destination is scanned as a potential
+                # read (the read-extractor is conservative), so today the
+                # person is asked to read a path that a "yes" cannot make the
+                # WRITE run — the write-root check would refuse it right
+                # after (a second-order dead yes). Decide it purely: a write
+                # target outside every writable root and not an ephemeral
+                # sink is refused ONCE with the directory route (the same
+                # grant the write path names), never asked as a read.
+                try:
+                    _res = path.resolve(strict=False)
+                    _is_dead_write = (
+                        target in set(_bash_write_targets(scan))
+                        and not _is_ephemeral_sink(
+                            _res, getattr(perms, "workspace", None))
+                        and perms.find_root_for(_res) is None)
+                except Exception:
+                    _is_dead_write = False
+                if _is_dead_write:
+                    return json.dumps({"error": (
+                        f"blocked: this command writes '{target}', which lies "
+                        "outside the workspace roots; a yes to read it could "
+                        "not make the write run. Grant the directory via "
+                        "--add-dir / extra_workspace_dirs to make it work."
+                    )})
                 err = self._check_read_access(perms, path)
                 if err is not None:
                     return json.dumps({"error": (
