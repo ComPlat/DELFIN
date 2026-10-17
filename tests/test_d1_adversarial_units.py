@@ -36,10 +36,21 @@ def test_bare_and_unit_mix_is_mixed_shape_with_n_bare():
     """QS ruling (nacht-s30): a column mixing unit-carrying values with
     bare numbers is mixed_shape — bare values do NOT inherit the column
     unit, and n_bare is reported so the caller can decide."""
-    result = dchecks.unit_consistency(["13.1 kcal/mol", "8.986", "12.4 kcal/mol"])
+    result = dchecks.unit_consistency(["13.1 kcal/mol", "8.5", "12.4 kcal/mol"])
     assert result["consistent"] is False
     assert result["mixed_shape"] is True
     assert result["n_bare"] == 1
+    assert result["undecided"] is False
+
+
+def test_undecided_thousands_value_is_not_counted_as_bare():
+    """An ambiguous bare decimal ("8.986") is routed to undecided, ask,
+    and does not silently enter the bare-value count: the two traps must
+    not blur together."""
+    result = dchecks.unit_consistency(["13.1 kcal/mol", "8.986"])
+    assert result["consistent"] is False
+    assert result["undecided"] is True
+    assert result["n_bare"] == 0
 
 
 def test_bare_float_object_has_no_unit():
