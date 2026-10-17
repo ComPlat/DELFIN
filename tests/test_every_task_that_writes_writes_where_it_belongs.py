@@ -258,8 +258,17 @@ def test_the_counts_still_match_what_was_measured():
     # builds one git repository in its own subdirectory of
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
-    assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
-                      "science": 23, "chemistry": 5, "generalist": 17,
+    #
+    # generic_project 18 -> 24 on 2026-10-17: the six tasks_w17_method.yaml
+    # tasks (package M1, wave 17). Each setup builds its own git-seeded
+    # fixture repo (or data files) inside the task workspace and writes
+    # nothing else; the acceptance scripts read that end state only.
+    #
+    # generalist 17 -> 22 on 2026-10-17: the five tasks_w17_code.yaml
+    # tasks (package C1, wave 17), same git-seeded setup pattern. This
+    # patch starts from main, so it carries both the C1 and the M1 change.
+    assert counts == {"office": 13, "behavior": 16, "generic_project": 24,
+                      "science": 23, "chemistry": 5, "generalist": 22,
                       "other": 52}, counts
 
 
