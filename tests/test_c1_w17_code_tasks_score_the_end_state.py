@@ -32,7 +32,15 @@ _BY_ID = {t["id"]: t for t in _TASKS}
 
 
 def _env(tmp_path) -> dict:
+    # GIT_CONFIG_GLOBAL points at an empty fixture file: without it git
+    # still reads ~/.gitconfig (or $XDG_CONFIG_HOME/git/config), so the
+    # suite fails or degrades in any cage where the real home is
+    # unreadable (QS finding F1, 2026-10-17).
+    cfg = tmp_path / "gitconfig"
+    if not cfg.exists():
+        cfg.write_text("", encoding="utf-8")
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+           "GIT_CONFIG_GLOBAL": str(cfg),
            "PYTHONDONTWRITEBYTECODE": "1", "GIT_TERMINAL_PROMPT": "0",
            "GIT_AUTHOR_NAME": "Dev", "GIT_AUTHOR_EMAIL": "dev@example.invalid",
            "GIT_COMMITTER_NAME": "Dev",
