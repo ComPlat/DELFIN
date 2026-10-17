@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "setup"))
 
 from generalist_check import (  # noqa: E402
-    Report, base, blob_at, changed_paths, out, read,
+    Report, base, changed_paths, out, read,
 )
 from w17_code_repo import NOTE_TEXT, NOTE_NAME  # noqa: E402
 
