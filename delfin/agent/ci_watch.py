@@ -12,7 +12,11 @@ comes back verbatim inside a string, never executed or followed.
 from __future__ import annotations
 
 # A check counts as green only when it is completed and succeeded.
+# SKIPPED is not a failure: a skipped job is common in rollups and no
+# repair can make it run, so it is ignored (same precedent as api_client's
+# _GREEN_CONCLUSIONS, which includes SKIPPED).
 _OK_CONCLUSION = "SUCCESS"
+_IGNORED_CONCLUSIONS = {"SKIPPED"}
 # Conclusions that mean "this check failed on its own content" — anything
 # else on a completed check (CANCELLED, TIMED_OUT, ...) is a failure too,
 # but a still-running check is "running", never "red".
@@ -20,11 +24,13 @@ _MAX_FAILING_TESTS = 50
 
 
 def _check_state(entry: dict) -> str:
-    """Classify one statusCheckRollup entry: ok | running | failed."""
+    """Classify one statusCheckRollup entry: ok | running | failed | skipped."""
     status = str(entry.get("status", "")).upper()
     if status != "COMPLETED":
         return "running"
     conclusion = str(entry.get("conclusion", "") or "").upper()
+    if conclusion in _IGNORED_CONCLUSIONS:
+        return "skipped"
     return "ok" if conclusion == _OK_CONCLUSION else "failed"
 
 
@@ -35,25 +41,35 @@ def summarize(rollup_json: dict, current_head: str | None = None) -> dict:
     ``red`` / ``running`` / ``none``; ``stale`` when the rollup belongs to
     an older commit than ``current_head`` (an old verdict must not be read
     as the new head's result — the caller re-reads after the run finishes).
+    A non-dict payload (``gh`` failed and the caller got None) is ``none``:
+    nothing is known, nothing is red.
     """
+    if not isinstance(rollup_json, dict):
+        return {"state": "none", "failing": [], "head_sha": ""}
     head_sha = str(rollup_json.get("headRefOid", "") or "")
     if current_head and head_sha and current_head != head_sha:
         return {"state": "stale", "failing": [], "head_sha": head_sha}
     entries = rollup_json.get("statusCheckRollup") or []
     if not isinstance(entries, list) or not entries:
         return {"state": "none", "failing": [], "head_sha": head_sha}
-    states = [_check_state(e) for e in entries if isinstance(e, dict)]
+    checks = [e for e in entries if isinstance(e, dict)]
+    states = [_check_state(e) for e in checks]
     if any(s == "running" for s in states):
         state = "running"
     elif any(s == "failed" for s in states):
         state = "red"
     else:
         state = "green"
-    failing = [
-        str(e.get("name", "") or "<unnamed>")
-        for e in entries
-        if isinstance(e, dict) and _check_state(e) == "failed"
-    ]
+    failing: list[str] = []
+    seen: set[str] = set()
+    for e in checks:
+        if _check_state(e) != "failed":
+            continue
+        name = str(e.get("name", "") or "<unnamed>")
+        if name in seen:
+            continue
+        seen.add(name)
+        failing.append(name)
     return {"state": state, "failing": failing, "head_sha": head_sha}
 
 
@@ -108,6 +124,9 @@ def next_step(
         return ("wait", "checks still running" if state == "running" else "no checks yet")
     if state == "stale":
         return ("wait", "rollup belongs to an older commit - re-read after the run finishes")
+    if state != "red":
+        return ("ask_person",
+                f"unknown check state {state!r} - not something a repair can fix")
     if attempts >= max_repairs:
         return ("ask_person",
                 f"the same red persisted after {attempts} repairs (limit {max_repairs})")

@@ -142,10 +142,22 @@ def test_skill_lint_no_forbidden_flags_or_weakening(skill_name):
                     or "not allowed" in context), \
                 f"{skill_name} instructs {flag}"
             idx += 1
-    # No test skipping / weakening advice, no CI-config editing.
+    # No test skipping / weakening advice, no CI-config editing: these
+    # phrases may appear only in prohibition context (the brief REQUIRES
+    # naming 'a CI configuration change' and 'branch protection' as stop
+    # conditions, so a bare mention ban would contradict it).
     for phrase in ("pytest.skip", "xfail", "skip test", "branch protection",
                    "ci config", ".github/workflows"):
-        assert phrase not in lowered, f"{skill_name} mentions {phrase}"
+        idx = 0
+        while True:
+            idx = lowered.find(phrase, idx)
+            if idx == -1:
+                break
+            context = lowered[max(0, idx - 60):idx]
+            assert ("never" in context or "do not" in context
+                    or "not allowed" in context), \
+                f"{skill_name} advises {phrase} outside a prohibition"
+            idx += 1
 
 
 def test_pr_until_green_exists_and_bounded():
