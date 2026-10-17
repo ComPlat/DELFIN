@@ -11458,10 +11458,13 @@ def create_tab(ctx):
                 )
             else:
                 content = _md_to_html(msg["content"])
+            _ts = str(msg.get("turn_summary") or "")
+            _ts_html = (f'<div class="delfin-chat-turn-summary">'
+                        f'{_html.escape(_ts)}</div>' if _ts else "")
             return (
                 f'<div class="delfin-chat-msg delfin-chat-agent">'
                 f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
-                f"{content}</div>"
+                f"{content}{_ts_html}</div>"
             )
         elif role == "thinking":
             raw = msg["content"]
@@ -20333,6 +20336,52 @@ def create_tab(ctx):
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks and not answer_shown[0]:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
+                    # UX1: the end-of-turn line lives ON the last
+                    # assistant entry as meta, so it renders dimmed
+                    # under the answer, is saved with the session and
+                    # comes back after a restore. Never a message of
+                    # its own in engine.messages — the model's context
+                    # is untouched. Built from the same timing source
+                    # the status row uses; outcome from what this
+                    # turn actually did (self-correction runs below
+                    # may still append, but they refresh the meta
+                    # through their own finalize calls).
+                    try:
+                        import datetime as _datetime
+                        from delfin.agent.turn_summary import (
+                            format_turn_summary,
+                        )
+                        from delfin.agent import bash_jobs as _bj
+                        _kp = getattr(engine, "kit_permissions", None)
+                        _ws = (_kp.workspace if _kp is not None
+                               else (_agent_workspace_path()
+                                     or str(ctx.repo_dir or "")))
+                        _rj = len(_bj.running_jobs_for_workspace(_ws))
+                        _outcome = ("stopped" if getattr(
+                            engine, "_stop_requested", False) else "ok")
+                        _summary_line = format_turn_summary(
+                            duration_s=(time.monotonic()
+                                        - float(state.get(
+                                            "_turn_started_monotonic")
+                                        or time.monotonic())),
+                            ended_at=_datetime.datetime.now().astimezone(),
+                            outcome=_outcome,
+                            running_jobs=_rj,
+                        )
+                        _meta = {}
+                        if (state["chat_messages"]
+                                and state["chat_messages"][-1].get("role")
+                                == "assistant"):
+                            _meta = dict(state["chat_messages"][-1])
+                            _meta["turn_summary"] = _summary_line
+                            state["chat_messages"][-1] = _meta
+                        else:
+                            _meta = {"role": "assistant", "content": "",
+                                     "role_label": role_label,
+                                     "turn_summary": _summary_line}
+                            state["chat_messages"].append(_meta)
+                    except Exception:
+                        pass
 
                     # Files the answer NAMED, which the artifact diff above
                     # cannot see: it only knows what this turn wrote. See
