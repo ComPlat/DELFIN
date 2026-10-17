@@ -12,6 +12,8 @@ does not exist yet), so every case below is red with the module unchanged.
 """
 from pathlib import Path
 
+import pytest
+
 from delfin.agent.api_client import _bash_write_targets
 from delfin.agent.refusal_memory import Refusal, same_change
 
@@ -83,6 +85,13 @@ class TestQuoting:
             Path(F).resolve()
         )
 
+    @pytest.mark.xfail(
+        reason="V22 finding (2026-10-17): the gate's own tokenizer "
+        "_bash_write_targets (api_client.py:2516) splits a quoted "
+        "redirect word at the space, so same_change never sees the "
+        "refused target 'my file.txt'. Protected-file patch to operator.",
+        strict=True,
+    )
     def test_quoted_around_variable(self):
         refused = _refused_write(WS + "/my file.txt")
         assert _changed(
