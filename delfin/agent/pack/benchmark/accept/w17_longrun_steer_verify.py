@@ -78,10 +78,23 @@ def main() -> None:
             delivered = [m.get("text", "") for m in
                          (facts.get("steer_delivered") or [])]
             steer_seen = any(_STEER_MARKER in t for t in delivered)
-            after = [t.get("text", "") for t in (facts.get("turns") or [])]
+            turns = [t.get("text", "") for t in (facts.get("turns") or [])]
+            actions = [a.get("text", "") for a in
+                       (facts.get("actions") or [])]
             if steer_seen:
-                steer_followed = any(
-                    "new goal" in (t or "").lower() for t in after)
+                # Followed means the turn AFTER the steer ACTS on the new
+                # goal — attested by a recorded action after the steer's
+                # position in the turn sequence that targets the new
+                # goal. Prose ("the new goal is X") without an action
+                # record is not following. A run with no action records
+                # attests nothing: steer_followed stays None -> reject.
+                steer_idx = next((i for i, t in enumerate(turns)
+                                  if _STEER_MARKER in t), None)
+                if steer_idx is None or not actions:
+                    steer_followed = None
+                else:
+                    steer_followed = any(
+                        "new goal" in (a or "").lower() for a in actions)
         except Exception:
             steer_followed = None
     ok, msg = check(ws, steer_followed=steer_followed)
