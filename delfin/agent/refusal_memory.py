@@ -150,6 +150,21 @@ def _targets_of(tool: str, args: dict) -> list[str]:
     return []
 
 
+def _command_changes_directory(cmd: str) -> bool:
+    """True when *cmd* contains a cd/pushd segment. A command that does
+    resolves its relative redirect words against a directory this module
+    cannot know, so the quote-aware supplement must not run on it (the
+    supplement only ever ADDS candidates; skipping is always safe)."""
+    return bool(re.search(r"(?:^|[;&|]\s*|\s)(?:cd|pushd)\b", cmd or ""))
+
+
+def _redirect_targets_safe(cmd: str) -> list[str]:
+    """_redirect_targets, guarded: [] when the command changes directory."""
+    if _command_changes_directory(cmd):
+        return []
+    return _redirect_targets(cmd)
+
+
 def _redirect_targets(cmd: str) -> list[str]:
     """Redirect words a quote-aware reading of ``cmd`` sees.
 
@@ -227,7 +242,16 @@ def same_change(refusal: Refusal, tool: str, args: object,
         # split by the tokenizer above (its regex reads quotes as text);
         # this pass keeps a quoted word whole. A target both passes see
         # dedupes below; neither pass may lie in the ALLOWING direction.
-        targets += _redirect_targets(cmd)
+        # BUT a command that changes directory resolves its redirect
+        # words against a different base than this pass can know (the
+        # gate resolves relative to the cd'd directory, this pass would
+        # resolve to the workspace) — a bare `f.txt` would then match a
+        # refusal of ./f.txt that was never written. Conservative rule
+        # (operator, PR #308 CI): with cd/pushd in the command take no
+        # quote-aware candidate at all; the pass only ever ADDS, so
+        # skipping is always safe.
+        if not _command_changes_directory(cmd):
+            targets += _redirect_targets(cmd)
     else:
         targets = _targets_of(tool, args if isinstance(args, dict) else {})
 
