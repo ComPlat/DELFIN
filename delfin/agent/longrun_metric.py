@@ -133,10 +133,15 @@ def summarize(inputs: LongrunInputs) -> LongrunResult:
             res.idle_with_mail_s = idle
         if inputs.due_event_waiting:
             res.idle_with_due_event_s = idle
-        # Nudges delivered INSIDE the idle window, while waiting.
+        # Nudges delivered INSIDE the idle window, while waiting. Malformed
+        # records (missing/non-numeric ts) are pre-filtered like comps and
+        # steers below: the records cannot attest them, so they are not
+        # counted and must not crash (reviewer nacht-s19, adversarial pass
+        # on 1ebf8a8e).
         if idle > 0:
+            nudged = (n for n in (inputs.nudges or []) if _ts(n) is not None)
             res.nudges_while_waiting = sum(
-                1 for n in (inputs.nudges or [])
+                1 for n in nudged
                 if last_ts <= _ts(n) <= float(inputs.next_turn_ts))
 
     # --- Work redone after a compaction or restart: a command that ran
