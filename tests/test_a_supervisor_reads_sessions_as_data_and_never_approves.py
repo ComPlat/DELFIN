@@ -327,7 +327,12 @@ def test_the_ops_commands_are_exactly_these():
                    if isinstance(a, argparse._SubParsersAction))
     names = set(ops_sub.choices)
     assert names == {"status", "sessions", "session", "approvals", "events",
-                     "wait", "send", "escalate", "pause"}
+                     "wait", "send", "escalate", "pause",
+                     # UX2 (wave 17): read-only session-health overview.
+                     # The read-only class is what this pin exists to
+                     # decide; proven never-approves in
+                     # tests/test_ux2_ops_health_never_approves.py.
+                     "health"}
     assert not names & {"approve", "answer", "allow", "grant", "accept"}
 
 

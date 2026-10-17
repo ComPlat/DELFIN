@@ -83,6 +83,12 @@ ATTENTION_KINDS = (
     "run_finished",
     "run_failed",
     "budget_warning",
+    # UX2 (wave 17): a control stepped in or a session is stuck. Emitted by
+    # session_pause.pause/resume (pause/resume) and by
+    # `delfin-agent ops health --watch` (every other session-state event).
+    # Filterable in /attention <kind> (tab_agent.py matches _sub against
+    # ATTENTION_KINDS).
+    "session_state",
 )
 
 # Kinds that mean "the agent is BLOCKED on the user right now" — a turn
@@ -706,6 +712,7 @@ def drain_resolved(
 _KIND_ORDER = (
     "confirm_pending", "question_pending", "plan_pending",
     "security_alert", "run_failed", "run_finished", "budget_warning",
+    "session_state",
 )
 _KIND_LABELS = {
     "confirm_pending": "Confirmations waiting",
@@ -715,6 +722,7 @@ _KIND_LABELS = {
     "run_failed": "Failed runs",
     "run_finished": "Finished runs",
     "budget_warning": "Budget warnings",
+    "session_state": "Sessions paused or stuck",
 }
 
 
