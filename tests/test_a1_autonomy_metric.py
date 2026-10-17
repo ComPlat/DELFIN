@@ -89,12 +89,21 @@ def test_blocked_dead_yes_last_ask_could_not_work(tmp_path):
     log = tmp_path / "audit.log"
     _write(log, tool="bash", decision="denied",
            command="python3 -m venv /scratch/x/venv",
-           reason="ask")
+           reason="outside_ws")
     r = _summarize(log, finished=False)
+    # SUPERSEDED DECISION: the original pin (f8f859df) expected a dead yes
+    # here — the gate ASKED a read question whose yes was then refused
+    # (verdict "ask", if_approved refuse). Wave-16 A3 (a60ce242) changed
+    # the gate to refuse once WITHOUT asking when a yes could not work
+    # (blocked_question.classify -> Impossible before the ask). So the
+    # metric sees a counted refusal and NO ask: dead_yes==0,
+    # asks_by_reason=={}. A counted dead_yes here would mean the gate
+    # REGRESSED to asking unworkable questions — that is what this pin
+    # now guards against.
     assert r.stop_kind == m.BLOCKED
     assert r.refusals == 1
-    assert r.dead_yes == 1
-    assert r.asks_by_reason.get("confirm_required", 0) >= 1
+    assert r.dead_yes == 0
+    assert r.asks_by_reason == {}
 
 
 def test_blocked_hard_refuse(tmp_path):
