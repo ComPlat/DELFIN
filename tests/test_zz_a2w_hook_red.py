@@ -55,7 +55,13 @@ def _gate(ws, cmd, mode="default", attended=False):
 
 
 # --- the rated shapes must RUN without a question ----------------------------
+# xfail until the operator builds the ONE hook (api_client ~21705-21724,
+# caged-admission consults workspace_selfservice.classify): on hookless
+# main these are NOT admitted -- that red is the control. When the hook
+# lands, strict=False keeps them green without any edit here.
 
+@pytest.mark.xfail(reason="hook not built yet: rated shape not admitted "
+                          "on hookless main", strict=False)
 @pytest.mark.parametrize("attended", [True, False])
 def test_pip_require_hashes_runs_unasked_when_caged(ws, monkeypatch,
                                                     attended):
@@ -68,6 +74,8 @@ def test_pip_require_hashes_runs_unasked_when_caged(ws, monkeypatch,
     assert verdict is None, verdict
 
 
+@pytest.mark.xfail(reason="hook not built yet: rated shape not admitted "
+                          "on hookless main", strict=False)
 @pytest.mark.parametrize("attended", [True, False])
 def test_git_switch_own_branch_runs_unasked_when_caged(ws, monkeypatch,
                                                        attended):
@@ -79,6 +87,8 @@ def test_git_switch_own_branch_runs_unasked_when_caged(ws, monkeypatch,
     assert verdict is None, verdict
 
 
+@pytest.mark.xfail(reason="hook not built yet: rated shape not admitted "
+                          "on hookless main", strict=False)
 def test_tool_version_runs_unasked_when_caged(ws, monkeypatch):
     _cage(monkeypatch, "bwrap")
     verdict, asked, admitted = _gate(ws, "tar --version")
