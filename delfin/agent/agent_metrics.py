@@ -545,7 +545,20 @@ def record_chat_turn(engine, result, *, duration_s: float = 0.0,
             duration_s=max(0.0, float(duration_s or 0.0)),
             input_tokens=int(getattr(result, "input_tokens", 0) or 0),
             output_tokens=int(getattr(result, "output_tokens", 0) or 0),
+            # No cost on the chat path: the engine's price state here is
+            # not the dashboard's own metering (tab_agent.py:21594 uses its
+            # per-turn delta). An unpriced model must not read as $0.00
+            # free, so the chat record simply carries no cost figure and
+            # reports keep treating price_state as the truth about it.
+            # Do NOT "fix" this into cost_usd=0.0 without pricing here.
             cost_usd=0.0,
+            # tool_errors = denials, deliberately different from the
+            # dashboard: its counter (_turn_tool_errors, set at 21624,
+            # read at 21597) is never incremented anywhere, so the
+            # dashboard records tool_errors=0 for every turn. The chat
+            # record at least carries the refusal count the field name
+            # loosely covers; the field itself predates both writers.
+            tool_errors=tool_errors,
             tool_calls=int(len(getattr(result, "tool_calls", None) or [])),
             silent_exit=bool(
                 not str(getattr(result, "text", "") or "").strip()
