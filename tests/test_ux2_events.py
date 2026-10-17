@@ -112,9 +112,10 @@ def _watch_state():
 def test_watch_emits_once_per_state_and_dedupes_across_ticks(home):
     clock = _Clock()
     record = _rec(paused=True)
-    s1 = health_mod.watch_events([record], clock, _watch_state())
+    state = _watch_state()
+    s1 = health_mod.watch_events([record], clock, state)
     assert len(s1) == 1
-    s2 = health_mod.watch_events([record], clock, _watch_state())
+    s2 = health_mod.watch_events([record], clock, state)
     assert len(s2) == 0                       # dedup holds across two ticks
 
 
