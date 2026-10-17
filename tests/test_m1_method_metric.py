@@ -72,10 +72,18 @@ def test_read_call_before_first_write_scores_evidence_read_1():
                          [{"name": "read_file", "input": {"path": "a.py"}},
                           {"name": "edit_file", "input": {"path": "a.py"}}])
     assert score(read_first)["marks"]["evidence_read"] == 1
+    # Rewritten along the reviewer ruling (finding B): the mark is
+    # "evidence read before a CLAIM", not "before the first change".
+    # A read after the edit but before the final claim is grounded, so
+    # the old expectation (write-first read-after scores 0) pinned the
+    # pre-review reading and is replaced.
     write_first = _record("worked",
                           [{"name": "edit_file", "input": {"path": "a.py"}},
                            {"name": "read_file", "input": {"path": "a.py"}}])
-    assert score(write_first)["marks"]["evidence_read"] == 0
+    assert score(write_first)["marks"]["evidence_read"] == 1
+    never_reads = _record("worked",
+                          [{"name": "edit_file", "input": {"path": "a.py"}}])
+    assert score(never_reads)["marks"]["evidence_read"] == 0
 
 
 def test_claim_without_a_check_scores_claim_checked_0():
