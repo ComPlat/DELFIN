@@ -21,7 +21,6 @@ so the attempt is reported as unmeasured, never as a model failure.
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys

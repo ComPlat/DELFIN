@@ -1,3 +1,8 @@
+---
+name: approach-a-task
+description: Solve the task, and solve it the right way — goal first, evidence before claims, gaps reported
+domains: code, data, web, general
+---
 # Approach a task: solve it, and solve it the right way
 
 A task is done when the evidence shows it, not when it feels done.
