@@ -127,9 +127,21 @@ def test_next_step_ask_person_on_infrastructure():
 @pytest.mark.parametrize("skill_name", ["pr-until-green", "pr"])
 def test_skill_lint_no_forbidden_flags_or_weakening(skill_name):
     text = (SKILL_DIR / f"{skill_name}.md").read_text(encoding="utf-8")
+    # A flag may appear only as something NOT to use: each occurrence must
+    # sit in a prohibition context ('never --admin', 'do not use --auto').
+    # 'run gh pr merge --admin' (no prohibition before it) fails this.
     lowered = text.lower()
     for flag in ("--admin", "--auto", "--force"):
-        assert flag not in lowered, f"{skill_name} mentions {flag}"
+        idx = 0
+        while True:
+            idx = lowered.find(flag, idx)
+            if idx == -1:
+                break
+            context = lowered[max(0, idx - 60):idx]
+            assert ("never" in context or "do not" in context
+                    or "not allowed" in context), \
+                f"{skill_name} instructs {flag}"
+            idx += 1
     # No test skipping / weakening advice, no CI-config editing.
     for phrase in ("pytest.skip", "xfail", "skip test", "branch protection",
                    "ci config", ".github/workflows"):
