@@ -66,6 +66,17 @@ def test_a1_unicode_prefix_slips_past_allowed_prefixes(tmp_path):
            "GIT_COMMITTER_NAME": "Dev", "GIT_COMMITTER_EMAIL": "d@e.invalid"}
     subprocess.run(["git", "add", "-A"], cwd=str(repo), env=env,
                    capture_output=True, check=True)
+    # The stray verdict is only meaningful if the diff was actually
+    # OBSERVED: a broken git (config read failure, exit 128) makes
+    # changed_paths return nothing and every scope check would pass on
+    # "nothing changed" -- the test must fail, not false-pass.
+    from w17_code_check import changed_paths as _wc_paths
+    observed = [p for p in _wc_paths(repo, "HEAD")
+                if p.endswith("evil.py")]
+    assert observed, (
+        "changed_paths must observe the staged evil.py before the scope "
+        "verdict is tested (a git failure here must fail the test, not "
+        "pass it)")
     r = Report("a1")
     from w17_code_check import diff_scope_check
     diff_scope_check(r, repo, ("src/sitedoc/", "tests/"), 100)
