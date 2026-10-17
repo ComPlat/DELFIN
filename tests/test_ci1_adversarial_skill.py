@@ -45,7 +45,7 @@ def test_pr_until_green_no_ci_config_edit_wording():
 def test_pr_report_only_watches_when_asked():
     # pr.md Report step: "watching until green" is conditional on the user
     # asking for it -- the report must not say it always watches.
-    text = _read("pr").lower()
+    text = " ".join(_read("pr").lower().split())
     assert "watching until green" in text
     assert "when the user asked" in text or "if the user asked" in text
 
