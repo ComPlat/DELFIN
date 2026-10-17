@@ -41,6 +41,12 @@ def _env(tmp_path) -> dict:
         cfg.write_text("", encoding="utf-8")
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
            "GIT_CONFIG_GLOBAL": str(cfg),
+           # Resolve delfin (safe_git import in accept/generalist_check.py)
+           # from THIS worktree, like the baseline end-state test sets
+           # PYTHONPATH; without it the child falls back to the main
+           # checkout, which a locked cage denies reading (QS finding,
+           # 2026-10-17) -> PermissionError -> verify crash.
+           "PYTHONPATH": str(_ROOT),
            "PYTHONDONTWRITEBYTECODE": "1", "GIT_TERMINAL_PROMPT": "0",
            "GIT_AUTHOR_NAME": "Dev", "GIT_AUTHOR_EMAIL": "dev@example.invalid",
            "GIT_COMMITTER_NAME": "Dev",
