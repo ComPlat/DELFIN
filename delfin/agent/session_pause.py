@@ -79,12 +79,16 @@ def _emit_state_event(key: str, what: str, detail: str) -> None:
     Wave-17 finding: a stale pause stopped 25 sessions and nobody saw it
     for 100 min. Every control worked -- the person was simply not told.
     Emitted through attention.emit_attention only; a failure here must
-    never undo the pause itself, hence the bare except.
+    never undo the pause itself, hence the bare except. Every interpolated
+    value is flattened to one safe line (same contract as
+    session_health._one_line): the reason is operator input and a hostile
+    reason must not inject a second line into the inbox or notification.
     """
     try:
         from .attention import emit_attention
-        emit_attention("session_state", session_id=key,
-                       title=f"{what}: {detail}")
+        from .session_health import _one_line
+        emit_attention("session_state", session_id=_one_line(key),
+                       title=f"{_one_line(what)}: {_one_line(detail)}")
     except Exception:
         pass
 

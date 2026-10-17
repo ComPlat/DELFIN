@@ -229,6 +229,8 @@ def test_ops_health_wait_subcommand_emits_the_events(home, capsys, monkeypatch):
     from delfin.agent import cli
     clock = _Clock()
     rec = _rec(paused=True)
+    rec["name"] = "nacht-s29"
+    rec["session_id"] = "id29"
     import delfin.agent.session_health as sh
     monkeypatch.setattr(sh, "pause_watch", lambda seconds: None)
     ticks = [0]
