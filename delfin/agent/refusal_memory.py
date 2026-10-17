@@ -159,9 +159,14 @@ def _command_changes_directory(cmd: str) -> bool:
 
 
 def _redirect_targets_safe(cmd: str) -> list[str]:
-    """_redirect_targets, guarded: [] when the command changes directory."""
-    if _command_changes_directory(cmd):
-        return []
+    """Alias of :func:`_redirect_targets`.
+
+    Kept because the operator-built hook (api_client.py, _bash_named_write_
+    paths) calls it by name. Since the operator ruling of the PR #308 CI
+    red, the guard lives INSIDE _redirect_targets (both the record and the
+    check path get nothing from a cd command), so both names behave
+    identically.
+    """
     return _redirect_targets(cmd)
 
 
@@ -178,7 +183,17 @@ def _redirect_targets(cmd: str) -> list[str]:
     something else (a number, ``&``, ``&1``, ``-``), nothing is taken.
     A token here always carries its quotes already stripped, so the
     space-containing name arrives whole.
+
+    GUARD (operator ruling, PR #308 CI red): when the command changes
+    directory (cd, pushd, popd, a subshell with cd), relative redirect
+    words resolve against a base this module cannot know, so return [] --
+    the pass only ever ADDS candidates, so returning nothing there is
+    always safe. This protects BOTH consumers: the record path in the
+    gate (the operator-built hook folds these targets into the ledger)
+    and same_change's check path.
     """
+    if _command_changes_directory(cmd):
+        return []
     targets: list[str] = []
     try:
         import shlex as _shlex
@@ -242,16 +257,11 @@ def same_change(refusal: Refusal, tool: str, args: object,
         # split by the tokenizer above (its regex reads quotes as text);
         # this pass keeps a quoted word whole. A target both passes see
         # dedupes below; neither pass may lie in the ALLOWING direction.
-        # BUT a command that changes directory resolves its redirect
-        # words against a different base than this pass can know (the
-        # gate resolves relative to the cd'd directory, this pass would
-        # resolve to the workspace) — a bare `f.txt` would then match a
-        # refusal of ./f.txt that was never written. Conservative rule
-        # (operator, PR #308 CI): with cd/pushd in the command take no
-        # quote-aware candidate at all; the pass only ever ADDS, so
-        # skipping is always safe.
-        if not _command_changes_directory(cmd):
-            targets += _redirect_targets_safe(cmd)
+        # cd/pushd/popd guard lives INSIDE _redirect_targets now (operator
+        # ruling, PR #308 CI red): a cd command resolves its redirect words
+        # against an unknown base, so the pass returns [] there -- for the
+        # record path (the operator-built hook) and this check path alike.
+        targets += _redirect_targets(cmd)
     else:
         targets = _targets_of(tool, args if isinstance(args, dict) else {})
 
