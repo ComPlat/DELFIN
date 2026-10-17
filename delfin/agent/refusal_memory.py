@@ -155,7 +155,7 @@ def _command_changes_directory(cmd: str) -> bool:
     resolves its relative redirect words against a directory this module
     cannot know, so the quote-aware supplement must not run on it (the
     supplement only ever ADDS candidates; skipping is always safe)."""
-    return bool(re.search(r"(?:^|[;&|]\s*|\s)(?:cd|pushd)\b", cmd or ""))
+    return bool(re.search(r"(?:^|[;&|]\s*|\s)(?:cd|pushd|popd)\b", cmd or ""))
 
 
 def _redirect_targets_safe(cmd: str) -> list[str]:
@@ -251,7 +251,7 @@ def same_change(refusal: Refusal, tool: str, args: object,
         # quote-aware candidate at all; the pass only ever ADDS, so
         # skipping is always safe.
         if not _command_changes_directory(cmd):
-            targets += _redirect_targets(cmd)
+            targets += _redirect_targets_safe(cmd)
     else:
         targets = _targets_of(tool, args if isinstance(args, dict) else {})
 

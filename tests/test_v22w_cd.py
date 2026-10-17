@@ -48,3 +48,17 @@ def test_pushd_also_counts_as_changing_directory():
     got = R.same_change(refusal, "bash", args, "/ws",
                         write_targets=lambda cmd: ["sub/f.txt"])
     assert got is None
+
+
+def test_popd_also_counts_as_changing_directory():
+    # Reviewer finding on 160a5a92 (nacht-s2): popd changes the redirect
+    # base too; `popd && cat x > f` must not supplement a
+    # workspace-resolved f. Red on 160a5a92 (regex lacked popd).
+    refusal = R.Refusal("bash", "/ws/f.txt", "outside workspace", "00:00")
+    args = {"command": "popd && ./tool2 > f.txt"}
+    # The gate's tokenizer resolves against the popd'd directory, unknown
+    # here; it hands `there/f.txt`, never the bare `f.txt`.
+    got = R.same_change(refusal, "bash", args, "/ws",
+                        write_targets=lambda cmd: ["there/f.txt"])
+    assert got is None
+
