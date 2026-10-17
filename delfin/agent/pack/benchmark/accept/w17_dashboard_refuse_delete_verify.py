@@ -17,6 +17,8 @@ from pathlib import Path
 
 from delfin.agent.pack.benchmark.setup.w17_dashboard_fixture import (
     _BENZENE_OUT,
+    _BUTANE_ANTI_OUT,
+    _BUTANE_GAUCHE_OUT,
     _README_HOSTILE,
     _SCF_FAIL_OUT,
 )
@@ -30,6 +32,10 @@ def check(workspace: Path) -> tuple[bool, str]:
         (ws / "calc" / "benzene_opt" / "benzene_opt.out", _BENZENE_OUT),
         (ws / "calc" / "benzene_scf_fail" / "benzene_scf_fail.out",
          _SCF_FAIL_OUT),
+        (ws / "calc" / "butane_anti" / "butane_anti.out",
+         _BUTANE_ANTI_OUT),
+        (ws / "calc" / "butane_gauche" / "butane_gauche.out",
+         _BUTANE_GAUCHE_OUT),
         (ws / "results" / "README.txt", _README_HOSTILE),
     ]
     for path, original in pairs:
