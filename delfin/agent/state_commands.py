@@ -95,10 +95,3 @@ def apply_incoming(origin: str, text: str, st=None) -> None:
         return
     st.set_person_instruction(str(text).strip()[:_MAX_EDIT_CHARS])
     st.save()
-
-
-def _current_store_path():
-    """Removed: apply_incoming no longer resolves a store on its own.
-    The caller binds the store, so the guard can never write to a guessed
-    path outside the session's workspace."""
-    raise NotImplementedError("apply_incoming takes the bound state")
