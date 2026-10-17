@@ -4101,6 +4101,9 @@ class TerminalAgent:
             for message in messages:
                 # Named only when its signature checks (session_messages).
                 sender = _msgs.sender_label(message)
+                # The senders this delivery carried, so the wake path can
+                # satisfy a message_from wait for them (package KG1).
+                self.__dict__.setdefault("_mail_senders", []).append(sender)
                 # The text too, not only the sender: the message becomes
                 # the next prompt, and a prompt is not echoed. Somebody
                 # watching the pane has to be able to read what arrived.
@@ -4193,9 +4196,28 @@ class TerminalAgent:
         # finished job must not switch off a person.
         self._announce_presence()       # the poll doubles as the heartbeat
         mail = self._operator_messages(typed)
+        # Package KG1 phase 3: a registered WAIT wakes the session when its
+        # event arrives (or its deadline passes), with a note naming the
+        # event. It fires once (due consumes what it fires), and only when
+        # nothing is typed -- the same guards the mail path already holds.
+        # A delivered message satisfies a message_from wait for its sender;
+        # the mail itself becomes the prompt, the note is merged under it.
+        try:
+            from .wait_registry import due as _due, wait_note
+            events = [("message_from", s)
+                      for s in self.__dict__.pop("_mail_senders", [])]
+            hits = _due(_time.time(), events, key=self._presence_key())
+        except Exception:
+            hits = []
         if mail:
             self._wake_kind = "mail"
+            if hits:
+                mail = mail + "\n" + "\n".join(wait_note(w) for w in hits)
             return HarnessText(mail)
+        if hits:
+            notes = "\n".join(wait_note(w) for w in hits)
+            self._wake_kind = "wait"
+            return HarnessText(notes)
         try:
             from . import job_wake
             if not job_wake.wake_enabled():
@@ -4272,6 +4294,7 @@ class TerminalAgent:
                 self._BACKGROUND_STATUS_EVERY_S:
             return getattr(self, "_bg_status", "")
         self._bg_status_at = now
+        wait_line = self._wait_status()
         try:
             from . import background_view as _bgv
             view = _bgv.collect(self.opts.cwd)
@@ -4280,7 +4303,30 @@ class TerminalAgent:
             self._bg_status = _bgv.status_line(view, now=self._bg_now)
         except Exception:
             self._bg_status = ""
+        if wait_line:
+            self._bg_status = (wait_line + " | " + self._bg_status) \
+                if self._bg_status else wait_line
         return self._bg_status
+
+    def _wait_status(self) -> str:
+        """The registered waits, in one line under the input area.
+
+        Package KG1 phase 3: a session parked on a wait must SHOW that it
+        is waiting and WHAT for -- otherwise an idle terminal reads as a
+        dead one, and the person has no way to see (or clear) the thing
+        that suppresses the nudges. Never raises: a decoration.
+        """
+        try:
+            from .wait_registry import SessionWaits
+            waits = SessionWaits(self._presence_key()).list()
+            if not waits:
+                return ""
+            rows = ", ".join(
+                f"{w.get('kind')}={w.get('value')}" for w in waits[:4])
+            more = "" if len(waits) <= 4 else f" (+{len(waits) - 4})"
+            return f"waiting: {rows}{more}"
+        except Exception:
+            return ""
 
     def _bg_status_selected(self, selected: int | None) -> str:
         """The status line with one row marked, from the cached view.
