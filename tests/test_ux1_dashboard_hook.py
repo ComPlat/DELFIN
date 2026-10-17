@@ -1,3 +1,4 @@
+# UX1 phase 3b: the dashboard hook renders the turn summary line.
 """UX1 phase 3b: the dashboard hook renders the turn summary line.
 
 The dashboard patch (built from .gate/px/dxa -> dxb by the operator)
@@ -16,8 +17,42 @@ try/except block in a 23k-line file; its guard property — a failing
 hook never breaks a turn — is what the patch is reviewed on.
 """
 
+import textwrap
+
+import pytest
+
 from delfin.agent.turn_summary import format_turn_summary
 
+
+def _hook_block_source():
+    """The hook block, extracted from the patched copy, dedented.
+
+    Reads .gate/px/dxb/tab_agent.py (the operator's patched copy of
+    tab_agent.py). Returns the try/except block's BODY lines dedented,
+    ready to exec in a prepared namespace. Missing copy -> skip: the
+    operator's build tree is the only place it exists.
+    """
+    import pathlib
+    copy = pathlib.Path(".gate/px/dxb/tab_agent.py")
+    if not copy.exists():
+        pytest.skip(".gate/px/dxb/tab_agent.py not present")
+    lines = copy.read_text().splitlines()
+    start = next(i for i, l in enumerate(lines)
+                 if "# UX1: the end-of-turn line lives ON the last" in l)
+    # the try: starts a few lines below the comment
+    tstart = next(i for i in range(start, start + 12)
+                  if lines[i].strip() == "try:")
+    # find the matching except at the try's indent
+    indent = len(lines[tstart]) - len(lines[tstart].lstrip())
+    tsend = next(i for i in range(tstart + 1, len(lines))
+                 if lines[i].strip().startswith("except Exception")
+                 and (len(lines[i]) - len(lines[i].lstrip())) == indent)
+    body = lines[tstart + 1:tsend]
+    dedent = textwrap.dedent("\n".join(body))
+    return dedent
+
+
+# --- end of extraction helper; the original contract tests follow ---
 
 def test_hook_input_shape_builds_the_line():
     # Exactly the call the hook makes (duration from the turn-started
@@ -94,3 +129,118 @@ def test_restore_shows_the_line_again():
     # An absent key degrades to "" (omitted, never an error).
     assert str({}.get("turn_summary") or "") == ""
     assert str({"turn_summary": None}.get("turn_summary") or "") == ""
+
+
+class _FakeEngine:
+    """Only the attributes the hook block reads."""
+
+    kit_permissions = None
+    _stop_requested = False
+
+
+class _FakeCtx:
+    class repo_dir:  # str-like is enough; str(ctx.repo_dir or "") below
+        pass
+
+    def __init__(self):
+        self.repo_dir = "/tmp/fake-repo"
+
+
+def _agent_workspace_path() -> str:
+    """The enclosing scope's real helper, faithfully reproduced from
+    tab_agent.py:9556: engine.kit_permissions.workspace first, then
+    ctx.repo_dir. The probe namespace must supply it, because the block
+    references it directly.
+    """
+    eng = state_probe["engine"]
+    kp = getattr(eng, "kit_permissions", None) if eng else None
+    ws = getattr(kp, "workspace", None) or getattr(eng, "repo_dir", None)
+    if ws:
+        return str(ws)
+    return str(getattr(state_probe["ctx"], "agent_workspace", "")
+               or (state_probe["ctx"].repo_dir or ""))
+
+
+def test_hook_block_runs_in_context_and_attaches_the_line():
+    """Drive the hook block IN CONTEXT — the test that would have
+    caught the msgs-NameError (s17's find): the buggy version referenced
+    ``msgs`` which the enclosing code never defines; its except
+    swallowed the NameError and the line silently never appeared.
+
+    The namespace provides ONLY the names the enclosing scope really
+    supplies (state, engine, ctx, role_label). ``msgs`` is deliberately
+    absent: the block must bind it from state["chat_messages"] itself
+    (s17's fix). The assertion is the SIDE EFFECT on chat_messages.
+    """
+    block = _hook_block_source()
+    import time as _time
+    import datetime as _dt
+    global state_probe
+    state = {
+        "chat_messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "the answer",
+             "role_label": "Agent"},
+        ],
+        "_turn_started_monotonic": _time.monotonic() - 31.0,
+    }
+    state_probe = {"engine": _FakeEngine(), "ctx": _FakeCtx()}
+    ns = {
+        "state": state,
+        "engine": _FakeEngine(),
+        "ctx": _FakeCtx(),
+        "role_label": "Agent",
+        "time": _time,
+        "datetime": _dt,
+        "_agent_workspace_path": _agent_workspace_path,
+    }
+    exec(compile(block, "<ux1-hook-block>", "exec"), ns)
+    msgs = state["chat_messages"]
+    assert msgs[-1]["role"] == "assistant"
+    summary = msgs[-1].get("turn_summary")
+    assert isinstance(summary, str) and summary
+    assert summary.startswith("Surfaced after ")
+    # Never a separate chat entry, never on the user message.
+    assert len(msgs) == 2
+    assert "turn_summary" not in msgs[0]
+
+
+def test_hook_block_survives_an_exception_and_never_breaks_the_turn():
+    """The guard property: a failure inside the block leaves the chat
+    history exactly as the turn left it (the except swallows, the
+    assistant entry stays untouched, no partial meta is written).
+    """
+    block = _hook_block_source()
+    import time as _time
+    import datetime as _dt
+
+    class _ExplodingJobs:
+        @staticmethod
+        def running_jobs_for_workspace(_ws):
+            raise RuntimeError("registry gone")
+
+    state = {
+        "chat_messages": [
+            {"role": "assistant", "content": "the answer"},
+        ],
+        "_turn_started_monotonic": _time.monotonic() - 5.0,
+    }
+    ns = {
+        "state": state,
+        "engine": _FakeEngine(),
+        "ctx": _FakeCtx(),
+        "role_label": "Agent",
+        "time": _time,
+        "datetime": _dt,
+        "_agent_workspace_path": _agent_workspace_path,
+    }
+    # The real block is inside try/except Exception: pass — the test
+    # models that guard the same way the enclosing code does.
+    state["_turn_started_monotonic"] = "not-a-number"
+    try:
+        exec(compile(block, "<ux1-hook-block>", "exec"), ns)
+    except Exception:
+        pass
+    msgs = state["chat_messages"]
+    assert msgs[-1]["content"] == "the answer"
+    assert "turn_summary" not in msgs[-1]
