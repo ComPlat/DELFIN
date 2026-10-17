@@ -258,9 +258,15 @@ def test_the_counts_still_match_what_was_measured():
     # builds one git repository in its own subdirectory of
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
+    #
+    # other 52 -> 56 on 2026-10-18: tasks_w17_longrun.yaml (KG4 phase 3),
+    # four long-run tasks, task classes office_ops x3 and office_read x1
+    # — none is a writing class; their fixtures are built by
+    # setup/w17_longrun_setup.py into the office workspace and cleaned by
+    # the guard.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
                       "science": 23, "chemistry": 5, "generalist": 17,
-                      "other": 52}, counts
+                      "other": 56}, counts
 
 
 # ---------------------------------------------------------------------------
