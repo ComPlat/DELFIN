@@ -37,8 +37,14 @@ from delfin.agent.api_client import _tool_denied_for_role
 from delfin.agent.engine import _ROLE_TOOL_WHITELIST
 
 # Roles whose declared set contains neither Edit nor Write.
+# research_agent is no longer in this tuple: the README and the dashboard
+# promise research "no shell commands" (README Modes table, tab_agent.py
+# description) and _ROLE_EXEC_DENYLIST["research_agent"] is the
+# enforcement — bash is denied for research by design, so the
+# "reading tools stay open" pin cannot include it. Research keeps its
+# read/search/report pin in its own test below.
 _READ_ONLY_ROLES = ("critic_agent", "reviewer_agent", "chief_agent",
-                    "session_manager", "runtime_agent", "research_agent")
+                    "session_manager", "runtime_agent")
 
 # The executor's own spellings. The CLI backend's names (Write, Edit, …)
 # are deliberately absent: that backend runs its tools in its own
@@ -69,6 +75,16 @@ def test_the_namespace_is_not_the_way_around_it(role, tool):
     """The whole reason the engine-side check missed: on the KIT and
     Ollama backends every coding tool arrives namespaced."""
     assert _tool_denied_for_role(role, f"mcp__kit-coding__{tool}")
+
+
+@pytest.mark.parametrize("tool", ["read_file", "grep_file", "list_files",
+                                  "search_docs", "report_verdict"])
+def test_research_reads_but_never_runs_shell(tool):
+    """The research counterpart of the pin above: its read and report
+    tools stay open, while the shell tools the review roles keep are
+    exactly what the research promise removes."""
+    assert not _tool_denied_for_role("research_agent", tool), \
+        f"research lost {tool}"
 
 
 @pytest.mark.parametrize("role", _READ_ONLY_ROLES)
