@@ -23,10 +23,10 @@ tasks:
     skill: data-uncertainty
     prompt: >
       Which group performs better, A or B, in
-      fixtures/trap_simpsons_paradox.csv? Report a single comparison.
-    fixture: trap_simpsons_paradox.csv
-    trap: Simpson's paradox — within each group B is lower (better);
-      the aggregate mean favours A because of group sizes
+      fixtures/trap_aggregate_split_weighting.csv? Report a single comparison.
+    fixture: trap_aggregate_split_weighting.csv
+    trap: aggregate-vs-split weighting — within each group B is lower
+      (better); the aggregate mean favours A only because of group sizes
     accept: w17_data_03_simpson.py
 
   - id: w17-data-04

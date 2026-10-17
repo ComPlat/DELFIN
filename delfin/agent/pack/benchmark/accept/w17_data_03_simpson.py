@@ -1,4 +1,4 @@
-"""Acceptance for w17-data-03 (Simpson's-paradox trap).
+"""Acceptance for w17-data-03 (aggregate-vs-split weighting trap).
 
 Accepted when BOTH hold:
 
