@@ -79,25 +79,31 @@ def _known_key(key: str) -> bool:
     key's record file before asking whether it is open."""
     if key == "operator":
         return True
-    if _inbox_known(key):
+    canon = _canonical_key(key)
+    if _inbox_known(canon):
         return True
     try:
         from . import session_presence as P
         # A record file (alive or stale) names a real session. Look before
         # open_sessions() runs `_reap`, which deletes same-host stale records.
-        record = P._path(key)
-        if record.exists():
-            try:
-                data = json.loads(record.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-            if isinstance(data, dict) and data.get("key") == key:
-                return True
+        # A session announces one spelling of its name (its -n name); a
+        # sender may hand a case/whitespace variant, so compare the record's
+        # own key canonically instead of requiring an exact match.
+        for cand in dict.fromkeys([key, canon]):
+            record = P._path(cand)
+            if record.exists():
+                try:
+                    data = json.loads(record.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+                if (isinstance(data, dict)
+                        and _canonical_key(data.get("key")) == canon):
+                    return True
         for record in P.open_sessions():
-            if record.get("key") == key:
+            if _canonical_key(record.get("key")) == canon:
                 return True
     except Exception:
-        return _inbox_known(key)
+        return _inbox_known(canon)
     return False
 
 
@@ -138,18 +144,31 @@ def deliverable(to_key: str) -> bool:
     return _known_key(to_key)
 
 
-def _reserved_canonical(key: str) -> str:
-    """The one mailbox every case-variant of a reserved address shares.
+def _canonical_key(key: str) -> str:
+    """The one mailbox every spelling of an address maps to.
 
-    deliverable() is case-insensitive for a reserved mailbox
-    (deliverable('OPERATOR') is True, lower() against _RESERVED), so a
-    case-variant send must write the SAME file a read by its canonical key
-    opens. Without this, send('OPERATOR') writes OPERATOR.jsonl while
-    take('operator') reads operator.jsonl and the message is dropped."""
-    low = str(key).lower()
+    The address a sender hands to send()/take() and the one a session
+    announces (its -n name) may differ in case or carry stray whitespace:
+    send('Welle-16') must land in the mailbox take('welle-16') reads, and
+    ' welle-16 ' must not open a second one. Folding is safe because the
+    mailbox FILENAME (in _inbox) already replaces every non-safe character
+    with '_', so no two distinct folded keys can share one file that their
+    raw spellings would have kept apart beyond a case/whitespace variant.
+
+    Reserved addresses keep their canonical lowercase spelling; every other
+    key is stripped and case-folded. Without the fold, a case-variant send
+    writes a file the session never reads and the message is dropped
+    silently -- that happened in wave 16."""
+    key = str(key or "").strip()
+    low = key.lower()
     if low in _RESERVED:
         return low
-    return str(key)
+    return low
+
+
+def _reserved_canonical(key: str) -> str:
+    """Backwards-compatible alias: the canonical mailbox spelling of ``key``."""
+    return _canonical_key(key)
 
 
 def _inbox(key: str) -> Path:
