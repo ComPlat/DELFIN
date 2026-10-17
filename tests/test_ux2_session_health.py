@@ -131,3 +131,17 @@ def test_truthy_non_bool_paused_is_paused():
     for truthy in (1, "yes"):
         v = session_health.classify(_rec(paused=truthy), now, _s())
         assert v["verdict"] == "paused", truthy
+
+
+def test_hostile_name_and_id_cannot_inject_a_line():
+    now = 1_000_000.0
+    hostile = {"name": "s9\nEVIL LINE", "session_id": "id9\vEVIL\x1b[31m",
+               "paused": True}
+    v = session_health.classify(_rec(**hostile), now, _s())
+    assert "\n" not in v["next"] and "\v" not in v["next"]
+    assert "\x1b" not in v["next"]
+    v2 = session_health.classify(
+        _rec(session_id="id9\u2028EVIL", last_turn={"stopped": True},
+             open_work=False, idle_s=1800,
+             last_turn_end=_age(now, 1800)), now, _s())
+    assert "EVIL" not in v2["next"].split("\n")[0] or "\n" not in v2["next"]

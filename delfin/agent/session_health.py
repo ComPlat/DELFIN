@@ -54,6 +54,20 @@ def _num(value):
     return f
 
 
+#: Characters kept of a sanitised name/id in a suggested command.
+_NAME_MAX = 80
+
+
+def _one_line(value):
+    """*value* as ONE safe line: every terminal control character and line
+    separator (\n, \r, \v, \f, U+0085, U+2028, U+2029, tab) removed, capped
+    at _NAME_MAX. A hostile session name or id must not be able to inject a
+    second line into a suggested command or an attention title."""
+    s = str(value or "")
+    bad = "\n\r\v\f\t\x1b\x85\u2028\u2029"
+    return "".join(c for c in s if c.isprintable() and c not in bad)[:_NAME_MAX]
+
+
 def _threshold_int(value, default, minimum):
     """Like _threshold, but integer-valued (error counts)."""
     f = _threshold(value, default, minimum)
@@ -89,11 +103,12 @@ def classify(record, now, settings):
     api_errors = _threshold_int(
         health.get("api_errors"), DEFAULT_API_ERRORS, 1)
 
+    name = _one_line(record.get("name") or record.get("session_id"))
+    sid = _one_line(record.get("session_id"))
     if record.get("paused"):
         return {"verdict": "paused",
                 "reason": "a pause flag is set for this session",
-                "next": f"resume it with: delfin-agent resume "
-                        f"{record.get('name') or record.get('session_id')}"}
+                "next": f"resume it with: delfin-agent resume {name}"}
 
     if record.get("pid_alive") is False:
         return {"verdict": "gone",
@@ -143,7 +158,7 @@ def classify(record, now, settings):
                         "reason": f"the last turn stopped and nothing "
                                   f"resumes it ({int(idle / 60)} min idle)",
                         "next": "resume it yourself: delfin-agent --resume "
-                                f"{record.get('session_id')}"}
+                                f"{sid}"}
     return {"verdict": "working",
             "reason": "recent turn activity, nothing waiting",
             "next": "no action needed"}
