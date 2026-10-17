@@ -34,9 +34,12 @@ is ANSI dim/bold, and only when ``is_tty``.
 
 from __future__ import annotations
 
+import datetime
 import sys
 import time
 from typing import Any, Callable, Iterable, Iterator
+
+from delfin.agent.turn_summary import format_turn_summary
 
 # Spinner frames — braille, one frame per tick while a call is open.
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -102,26 +105,43 @@ def render_tool_call(name: str, args: dict[str, Any] | None,
 
 
 def render_turn_footer(stats: dict[str, Any]) -> str:
-    """The closing line of a turn: tokens, tool calls, duration.
+    """The closing line of a turn: the turn summary, plus tokens.
 
-    ``stats``: ``{"input_tokens": int?, "output_tokens": int?,
-    "tool_calls": int?, "duration_s": float?, "is_tty": bool?}``.
-    Missing fields are omitted rather than guessed at zero.
+    The summary line comes from :mod:`delfin.agent.turn_summary`
+    ("Surfaced after 31s · done 11:11 · 1 shell still running"); the
+    token figures stay as a dimmed suffix when the event carries them.
+    ``stats``: ``{"input_tokens", "output_tokens", "tool_calls",
+    "duration_s", "ended_at", "outcome", "running_jobs", "is_tty"}``;
+    missing fields are omitted rather than guessed at zero.
     """
     is_tty = bool(stats.get("is_tty"))
+    ended_at = stats.get("ended_at")
+    if isinstance(ended_at, str):
+        # The turn_end event carries the end time as an ISO string;
+        # the summary wants a datetime. Naive parse: the event is in
+        # local time already, and a malformed string renders no time
+        # rather than breaking the footer.
+        try:
+            ended_at = datetime.datetime.fromisoformat(ended_at)
+        except ValueError:
+            ended_at = None
+    summary = format_turn_summary(
+        duration_s=stats.get("duration_s"),
+        ended_at=ended_at,
+        outcome=stats.get("outcome", "ok"),
+        running_jobs=stats.get("running_jobs"),
+    )
     parts: list[str] = []
     if stats.get("input_tokens") is not None:
         parts.append(f"in={stats['input_tokens']}")
     if stats.get("output_tokens") is not None:
         parts.append(f"out={stats['output_tokens']}")
-    if stats.get("tool_calls") is not None:
+    if stats.get("tool_calls") is not None and stats["tool_calls"] > 0:
         parts.append(f"tools={stats['tool_calls']}")
-    if stats.get("duration_s") is not None:
-        parts.append(f"{stats['duration_s']:.1f}s")
-    if not parts:
-        parts.append("turn ended")
-    line = "→ " + " · ".join(parts)
-    return _dim(line, is_tty) if not is_tty else f"{_ANSI_BOLD}{line}{_ANSI_RESET}"
+    if parts:
+        suffix = " · ".join(parts)
+        return summary + f" · {_dim(suffix, True)}"
+    return summary
 
 
 class StreamRenderer:
@@ -142,6 +162,9 @@ class StreamRenderer:
                         else bool(is_tty))
         self._now = now
         self._tool_calls = 0
+        # One failure anywhere in the turn marks the outcome the footer
+        # reports: a turn that errored never renders a success verb.
+        self._saw_error = False
 
     @property
     def tool_calls(self) -> int:
@@ -154,6 +177,13 @@ class StreamRenderer:
         waited = False   # a pipe gets the first wait tick only
         for event in self._events:
             kind = event.get("type")
+            if kind == "error":
+                # An error event is a failed turn: the footer must not
+                # call it "Surfaced" later. Rendered as a notice line.
+                self._saw_error = True
+                text = str(event.get("text", ""))
+                if text.strip():
+                    yield f"⚠ {text}"
             if kind == "text":
                 text = str(event.get("text", ""))
                 if text.strip():
@@ -230,4 +260,8 @@ class StreamRenderer:
                      "output_tokens": event.get("output_tokens"),
                      "tool_calls": event.get("tool_calls", self._tool_calls),
                      "duration_s": event.get("duration_s"),
+                     "ended_at": event.get("ended_at"),
+                     "running_jobs": event.get("running_jobs"),
+                     "outcome": ("stopped" if self._saw_error
+                                 else event.get("outcome", "ok")),
                      "is_tty": self._is_tty})
