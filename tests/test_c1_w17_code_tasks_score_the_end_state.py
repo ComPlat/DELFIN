@@ -9,8 +9,10 @@ Per task:
 * ``wrong``: a plausible mistake -- must fail (exit 1);
 * ``untouched``: nothing done -- must fail (exit 1).
 
-Marked slow: the generalist control (734 lines) marks its end-state
-cases slow for the same budget reason; this file follows that pattern.
+Not marked slow: at ~64 s for 21 cases it fits the 300 s fast-suite CI
+timeout (ci.yml); CI's slow-inclusive job covers only named MANTA
+files, so a slow marker would exclude this file from every gate (QS
+ruling 2026-10-17).
 """
 from __future__ import annotations
 
@@ -235,7 +237,6 @@ _CASES = ([(t, "correct") for t in _SOLUTIONS]
           + [(t, "untouched") for t in _SOLUTIONS])
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("task_id,kind", _CASES)
 def test_a_scripted_attempt_is_judged_on_the_end_state(task_id, kind,
                                                        tmp_path):
@@ -249,7 +250,6 @@ def test_a_scripted_attempt_is_judged_on_the_end_state(task_id, kind,
         assert q >= 80, report
 
 
-@pytest.mark.slow
 @pytest.mark.parametrize("task_id", sorted(_SOLUTIONS))
 def test_the_correct_solution_grades_above_the_wrong_one(task_id, tmp_path):
     a = tmp_path / "a"
