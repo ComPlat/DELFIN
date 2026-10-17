@@ -150,11 +150,20 @@ def _overlap(item: str, after: str) -> bool:
             item = _norm(item[len(prefix):])
     if not item:
         return True
-    words = [w for w in item.split() if len(w) >= 4]
-    if not words:
-        return True
-    kept = sum(1 for w in words if w in after)
-    return kept >= max(1, int(len(words) * 0.6))
+    # Exact tokens (never substrings: "touch" must not match "touched")
+    # as CONTIGUOUS pairs over ALL tokens — filtering short words before
+    # pairing would break contiguity ("waiting for the cluster" loses
+    # the runs). A single marker word cannot fake a keep, but a line
+    # genuinely carried into the block shares at least one two-word run
+    # with the item even when the block paraphrases.
+    tokens = item.split()
+    if len(tokens) == 1:
+        return len(tokens[0]) >= 4 and tokens[0] in after.split()
+    after_words = after.split()
+    pairs = {(tokens[i], tokens[i + 1]) for i in range(len(tokens) - 1)}
+    after_pairs = {(after_words[i], after_words[i + 1])
+                   for i in range(len(after_words) - 1)}
+    return bool(pairs & after_pairs)
 
 
 def category_names() -> tuple:
