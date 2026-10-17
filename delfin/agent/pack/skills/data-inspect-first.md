@@ -1,5 +1,5 @@
 ---
-domains: data
+domains: data, office
 ---
 # Inspect the data before you analyse it
 > Read the raw table first — shape, header, units, missing values — before computing anything.

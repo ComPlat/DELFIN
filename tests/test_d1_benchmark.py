@@ -24,7 +24,13 @@ def test_four_d1_skills_ship_and_stay_within_their_brief():
     for name in ("data-inspect-first", "data-sanity-checks",
                  "data-uncertainty", "data-figures"):
         text = _skill(name)
-        assert text.startswith("---\ndomains: data\n---\n"), name
+        if name == "data-inspect-first":
+            # declares office too: it calls read_document, an office
+            # tool (test_skills_match_the_workspace enforces that)
+            assert text.startswith(
+                "---\ndomains: data, office\n---\n"), name
+        else:
+            assert text.startswith("---\ndomains: data\n---\n"), name
         assert len(text.splitlines()) <= 40, f"{name} longer than 40 lines"
         # a skill must not widen permissions or point at credentials
         assert "permission" not in text.lower() or "never" in text.lower()
