@@ -4575,7 +4575,24 @@ class AgentEngine:
             elif not _dsml_name:
                 # The turn ended on a real answer: whatever repeated before
                 # it is over.
-                self._stall_progress()
+                #
+                # W2: EXCEPT one that only ANNOUNCES open work it did not do
+                # (a should_continue "announced-but-not-done" ending). That is
+                # not progress, so it must not reset the W2 streak: otherwise
+                # _note_turn_continuation (which advances it at :4358 for the
+                # open-work-no-question dead turn) runs first and the reset
+                # here would wipe it every turn, so the streak could never
+                # pass 1. The dsml_leak branch above is untouched.
+                _announced = False
+                try:
+                    from delfin.agent.turn_continuation import (
+                        should_continue as _sc)
+                    _announced, _note = _sc(
+                        full_response, self._open_task_count())
+                except Exception:
+                    _announced = False
+                if not _announced:
+                    self._stall_progress()
 
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
@@ -7884,6 +7901,34 @@ class AgentEngine:
         if cont and note:
             self._continuation_fired = True
             self.pending_turn_continuation = note
+            # W2: this turn ends with open work and no question pending — the
+            # answer announced work (matches should_continue) it did not do,
+            # and no tool call asked the person anything. Feed the stall guard
+            # a dead-ending kind so repeated such turns stop, just as repeated
+            # dsml_leak turns do. The fingerprint is the open-task count, so
+            # the three turns are the same dead ending regardless of wording.
+            # EXACTLY ONE advance per turn: a dsml_leak turn (whose answer IS
+            # a leaked tool call) is fed its own kind near :4521, so this
+            # kind is skipped there — two different keys in a row would reset
+            # the streak and neither stop ever fires (operator build v3).
+            _this_is_a_leak = False
+            try:
+                from delfin.agent.text_sanitize import leaked_tool_call_dominates
+                _this_is_a_leak = bool(leaked_tool_call_dominates(answer))
+            except Exception:
+                _this_is_a_leak = False
+            if not _this_is_a_leak:
+                _guard = getattr(self, "_stall_guard", None)
+                if (_guard is not None and _guard.advance(
+                        "open_work_no_question",
+                        str(self._open_task_count())) == "stop"):
+                    _stopped = (
+                        f"This session has ended {_guard.repeats} turns in a row "
+                        "on open work with no question pending and nothing that "
+                        "ran; it stops sending further follow-ups. To go on, "
+                        "send a message or resolve the open work.")
+                    self._stall_guard_stopped = _stopped
+                    self.clear_turn_continuation()
 
     def _honour_pause(self) -> bool:
         """Request a stop when ``delfin-agent pause`` flagged this session.
