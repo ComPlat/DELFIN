@@ -48,11 +48,12 @@ from .benchmark_fixtures import ensure_office_fixtures
 _ACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*ACTION\s*[:.]?\s*(/\S.*?)\s*$",
                re.MULTILINE | re.IGNORECASE),
-    re.compile(r"`(/(?:tab|control|orca|effort|mode|provider|model)\s+\S[^`]*)`"),
+    re.compile(r"`(/(?:tab|control|orca|submit|recalc|cancel|calc|analyze|check|jobs|ui|workspace|done)\s+\S[^`]*)`"),
 )
 _BARE_SLASH_PREFIXES = (
-    "/tab ", "/control ", "/orca ", "/effort ", "/mode ", "/provider ",
-    "/model ",
+    "/tab ", "/control ", "/orca ", "/submit ", "/recalc ", "/cancel ",
+    "/calc ", "/analyze ", "/check ", "/jobs ", "/ui ", "/workspace ",
+    "/done ",
 )
 
 
