@@ -32,7 +32,16 @@ from pathlib import Path
 _MAX_RENDER_COMMITS = 15
 # Hard ceiling on the rendered block (same spirit as working_state's).
 _MAX_RENDER_CHARS = 1600
+# Per-value clip for the new free-text fields, so a hostile or runaway
+# value burns the ceiling in a bounded number of lines.
+_MAX_FIELD_CHARS = 300
+# Newest decisions/done entries kept.
+_MAX_DECISIONS = 10
+_MAX_DONE = 15
 _HEADER = "Task state (written after the last commit/handoff)"
+# Default store filename under a workspace. working_state reads the
+# same store at compaction (the second writer of the same state).
+DEFAULT_FILENAME = "task_state.json"
 
 # Section order in render(), highest priority first. When the ceiling is hit
 # the last sections drop first.
@@ -67,6 +76,11 @@ class TaskState:
         self.commits: list[str] = []
         self.findings: list[str] = []
         self.waiting_for: str = ""
+        self.success_criterion: str = ""
+        self.decisions: list[dict] = []
+        self.done: list[dict] = []
+        self.person_instruction: str = ""
+        self.person_instruction_is_fresh: bool = False
 
     def commit(self, *, task: str | None = None, phase: str | None = None,
                phase_status: str | None = None,
@@ -76,13 +90,56 @@ class TaskState:
         ``task`` sets the session task; ``phase`` + ``phase_status`` record
         (or update) that phase; ``commit`` is the new commit hash. Each is
         optional so a caller can record only what it knows this call.
+
+        Recording a commit is the agent ACTING on the state; the person's
+        instruction (if any) is therefore no longer fresh afterwards --
+        a stored plan never resumes against a newer instruction, and an
+        executed instruction is not presented as live steering.
         """
         if task:
             self.task = task
         if commit:
             self.commits.append(str(commit))
+            self.person_instruction_is_fresh = False
         if phase:
             self._set_phase(phase, phase_status or "")
+
+    def set_person_instruction(self, text: str) -> None:
+        """The person's newest instruction, verbatim.
+
+        It REPLACES the stored plan as the goal (the person's newest word
+        outranks every stored plan) and is marked fresh until the agent
+        next acts on the state. Only the person's own channel sets this;
+        a session/operator message must never reach this setter.
+        """
+        self.person_instruction = str(text or "").strip()
+        self.person_instruction_is_fresh = bool(self.person_instruction)
+        if self.person_instruction:
+            self.task = self.person_instruction
+
+    def set_success_criterion(self, text: str) -> None:
+        """What 'done' means for the session task."""
+        self.success_criterion = str(text or "").strip()
+
+    def add_decision(self, *, decision: str, reason: str = "") -> None:
+        """Record one decision with why (newest first, capped)."""
+        entry = {"decision": str(decision or "").strip(),
+                 "reason": str(reason or "").strip()}
+        if not entry["decision"]:
+            return
+        if entry not in self.decisions:
+            self.decisions.insert(0, entry)
+            del self.decisions[_MAX_DECISIONS:]
+
+    def add_done(self, *, what: str, evidence: str = "") -> None:
+        """Record completed work WITH its evidence (newest first, capped)."""
+        entry = {"what": str(what or "").strip(),
+                 "evidence": str(evidence or "").strip()}
+        if not entry["what"]:
+            return
+        if entry not in self.done:
+            self.done.insert(0, entry)
+            del self.done[_MAX_DONE:]
 
     def add_finding(self, *, finding: str) -> None:
         """Add one open finding (a reviewer note not yet resolved)."""
@@ -138,6 +195,28 @@ class TaskState:
         self.waiting_for = str(data.get("waiting_for", "") or "")
         self.commits = [str(c) for c in data.get("commits", []) or []]
         self.findings = [str(f) for f in data.get("findings", []) or []]
+        self.success_criterion = str(
+            data.get("success_criterion", "") or "")
+        self.person_instruction = str(
+            data.get("person_instruction", "") or "")
+        # Freshness is a session-live property: a state loaded from disk
+        # (restart, other model) is by definition not mid-act, so a
+        # restored instruction is presented as the standing goal, not as
+        # live steering. An old file without the field stays False.
+        self.person_instruction_is_fresh = bool(
+            data.get("person_instruction_is_fresh", False))
+        decisions: list[dict] = []
+        for d in data.get("decisions", []) or []:
+            if isinstance(d, dict) and d.get("decision"):
+                decisions.append({"decision": str(d["decision"]),
+                                  "reason": str(d.get("reason", "") or "")})
+        self.decisions = decisions[:_MAX_DECISIONS]
+        done: list[dict] = []
+        for d in data.get("done", []) or []:
+            if isinstance(d, dict) and d.get("what"):
+                done.append({"what": str(d["what"]),
+                             "evidence": str(d.get("evidence", "") or "")})
+        self.done = done[:_MAX_DONE]
         phases: list[dict] = []
         for p in data.get("phases", []) or []:
             if isinstance(p, dict) and p.get("name"):
@@ -167,8 +246,30 @@ class TaskState:
             status = open_phase.get("status") or ""
             sections.append(f"Open phase: {name}"
                             + (f" [{status}]" if status else ""))
+        if self.success_criterion:
+            sections.append(f"Success criterion: {self.success_criterion}")
         if self.waiting_for:
             sections.append(f"Waiting on: {self.waiting_for}")
+        if self.person_instruction:
+            marker = " (fresh)" if self.person_instruction_is_fresh else ""
+            sections.append(
+                f"Person's latest instruction{marker}: "
+                f"{self.person_instruction}")
+        if self.decisions:
+            sections.append(
+                "Decisions (newest first):\n"
+                + "\n".join(
+                    f"  - {d.get('decision', '')}"
+                    + (f" — {d.get('reason', '')}" if d.get("reason") else "")
+                    for d in self.decisions))
+        if self.done:
+            sections.append(
+                "Done (newest first):\n"
+                + "\n".join(
+                    f"  - {d.get('what', '')}"
+                    + (f" [{d.get('evidence', '')}]"
+                       if d.get("evidence") else "")
+                    for d in self.done))
         if findings:
             sections.append("Open findings:\n" + "\n".join(f"  - {f}" for f in findings))
         if commits:
@@ -189,6 +290,11 @@ class TaskState:
             "phases": list(self.phases),
             "commits": list(self.commits),
             "findings": list(self.findings),
+            "success_criterion": self.success_criterion,
+            "decisions": list(self.decisions),
+            "done": list(self.done),
+            "person_instruction": self.person_instruction,
+            "person_instruction_is_fresh": self.person_instruction_is_fresh,
         }
 
 
