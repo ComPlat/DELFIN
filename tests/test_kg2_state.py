@@ -40,7 +40,11 @@ def test_new_fields_round_trip(tmp_path):
     assert other.success_criterion == "gate green on all three phases"
     assert other.person_instruction == (
         "run the fast suite, skip the slow markers")
-    assert other.person_instruction_is_fresh is True
+    # Freshness is a session-live property: text survives the round
+    # trip, the (fresh) flag does not (load() forces False — a restored
+    # state presents the instruction as standing goal, never as live
+    # steering).
+    assert other.person_instruction_is_fresh is False
     assert other.decisions == [
         {"decision": "no third state mechanism",
          "reason": "brief forbids it"}]

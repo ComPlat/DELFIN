@@ -205,6 +205,10 @@ class TaskState:
         # live steering. An old file without the field stays False.
         self.person_instruction_is_fresh = bool(
             data.get("person_instruction_is_fresh", False))
+        # A state loaded from disk (restart, other model) is by
+        # definition not mid-act: the instruction is presented as the
+        # standing goal, never as live steering, however it was saved.
+        self.person_instruction_is_fresh = False
         decisions: list[dict] = []
         for d in data.get("decisions", []) or []:
             if isinstance(d, dict) and d.get("decision"):
@@ -240,40 +244,41 @@ class TaskState:
         findings = self.findings[::-1]
         sections: list[str] = []
         if self.task:
-            sections.append(f"Task: {self.task}")
+            sections.append(f"Task: {_flat(self.task)}")
         if open_phase and open_phase.get("name"):
-            name = open_phase["name"]
-            status = open_phase.get("status") or ""
+            name = _flat(open_phase["name"])
+            status = _flat(open_phase.get("status") or "")
             sections.append(f"Open phase: {name}"
                             + (f" [{status}]" if status else ""))
         if self.success_criterion:
-            sections.append(f"Success criterion: {self.success_criterion}")
+            sections.append(
+                f"Success criterion: {_flat(self.success_criterion)}")
         if self.waiting_for:
-            sections.append(f"Waiting on: {self.waiting_for}")
+            sections.append(f"Waiting on: {_flat(self.waiting_for)}")
         if self.person_instruction:
             marker = " (fresh)" if self.person_instruction_is_fresh else ""
             sections.append(
                 f"Person's latest instruction{marker}: "
-                f"{self.person_instruction}")
+                f"{_flat(self.person_instruction)}")
         if self.decisions:
             sections.append(
                 "Decisions (newest first):\n"
                 + "\n".join(
-                    f"  - {d.get('decision', '')}"
-                    + (f" — {d.get('reason', '')}" if d.get("reason") else "")
+                    f"  - {_flat(d.get('decision', ''))}"
+                    + (f" — {_flat(d.get('reason', ''))}" if d.get("reason") else "")
                     for d in self.decisions))
         if self.done:
             sections.append(
                 "Done (newest first):\n"
                 + "\n".join(
-                    f"  - {d.get('what', '')}"
-                    + (f" [{d.get('evidence', '')}]"
+                    f"  - {_flat(d.get('what', ''))}"
+                    + (f" [{_flat(d.get('evidence', ''))}]"
                        if d.get("evidence") else "")
                     for d in self.done))
         if findings:
-            sections.append("Open findings:\n" + "\n".join(f"  - {f}" for f in findings))
+            sections.append("Open findings:\n" + "\n".join(f"  - {_flat(f)}" for f in findings))
         if commits:
-            sections.append("Commits (newest first):\n" + "\n".join(f"  - {c}" for c in commits))
+            sections.append("Commits (newest first):\n" + "\n".join(f"  - {_flat(c)}" for c in commits))
 
         if not sections:
             return ""
@@ -305,6 +310,14 @@ def _scrub(text: str) -> str:
         return scrub_secrets(text)
     except Exception:
         return text
+
+
+def _flat(text: str) -> str:
+    """Flatten a stored value for rendering: newlines become " / ", so a
+    hostile value can never open a new line that could pass for a section
+    header the code did not write (render's lines are the only ones the
+    reader may trust)."""
+    return " / ".join(str(text or "").splitlines())
 
 
 def open(path: str | Path) -> TaskState:
