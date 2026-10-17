@@ -237,5 +237,6 @@ def score(record: dict) -> dict:
             "in_scope": in_scope,
             "outcome": outcome,
         },
+        "record_truncated": bool(truncated),
         "error": "",
     }
