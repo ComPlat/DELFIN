@@ -47,9 +47,13 @@ def test_double_r_both_inside_is_auto(tmp_path):
     # given, so the shape's risk is unchanged; containment is
     # workspace-scoped. Pins the correct reading that the s25 test's
     # assertion (refuse when the second file is merely inside) contradicts.
+    # F2 (operator, 2026-10-17): the rated pip shape requires
+    # --only-binary=:all: besides --require-hashes -- old decision
+    # "--require-hashes alone sufficed" is replaced by that ruling.
     _venv(tmp_path)
     (tmp_path / "more.txt").write_text("numpy==1.26.4\n")
-    cmd = ".venv/bin/pip install -r requirements.txt -r more.txt --require-hashes"
+    cmd = (".venv/bin/pip install -r requirements.txt -r more.txt "
+           "--require-hashes --only-binary=:all:")
     assert ws.classify(cmd, str(tmp_path)) == "auto"
 
 
