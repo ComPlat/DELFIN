@@ -358,4 +358,55 @@ def classify(cmd: str, workspace: str) -> Verdict:
     return None
 
 
-__all__ = ["classify", "AUTO", "Verdict"]
+# ── stored settings contract ────────────────────────────────────────────────
+#
+# The gate (api_client.py, protected) consults ``agent.workspace_selfservice``
+# from the user settings payload at the caged bash admission; the person can
+# switch the shapes off there. The keys, the defaults and the normalisation
+# live HERE so both sides read one definition:
+#
+#     agent.workspace_selfservice = {
+#         "enabled": bool,   # master switch, default True
+#     }
+#
+# Normalisation on load: a malformed value falls back to the default, and a
+# partial save can never corrupt the block.
+
+SETTINGS_KEY = "workspace_selfservice"
+
+
+def selfservice_defaults() -> dict:
+    """The canonical on-disk settings for the workspace self-service gate."""
+    return {"enabled": True}
+
+
+def settings_from_payload(payload: dict) -> dict:
+    """Return the normalised ``workspace_selfservice`` block from *payload*.
+
+    *payload* is a user-settings dict; the block lives under
+    ``payload['agent']['workspace_selfservice']``. Missing payload, missing
+    block or malformed values fall back to the default (master switch ON).
+    """
+    agent = (payload or {}).get("agent") or {}
+    block = agent.get(SETTINGS_KEY) or {}
+    if not isinstance(block, dict):
+        return selfservice_defaults()
+    enabled = block.get("enabled", True)
+    if not isinstance(enabled, bool):
+        enabled = True
+    return {"enabled": enabled}
+
+
+def settings_into_payload(payload: dict, settings: dict) -> dict:
+    """Write the normalised *settings* block back into *payload* (mutating)
+    without disturbing other ``agent`` keys, and return *payload*."""
+    payload.setdefault("agent", {})
+    stored = dict(selfservice_defaults())
+    stored["enabled"] = bool(settings.get("enabled", True))
+    payload["agent"][SETTINGS_KEY] = stored
+    return payload
+
+
+__all__ = ["classify", "AUTO", "Verdict",
+           "SETTINGS_KEY", "selfservice_defaults",
+           "settings_from_payload", "settings_into_payload"]
