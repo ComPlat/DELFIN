@@ -150,6 +150,63 @@ def _targets_of(tool: str, args: dict) -> list[str]:
     return []
 
 
+def same_change(refusal: Refusal, tool: str, args: object,
+                workspace: object, write_targets=None) -> str | None:
+    """Does this attempt CHANGE (write) the target a person refused?
+
+    Pure module function. Built on :func:`_targets_of` (file tools) and on
+    the gate's own bash write-target tokenizer, which the caller injects as
+    ``write_targets`` (typically ``delfin.agent.api_client._bash_write_targets``)
+    so no second parser lives here.
+
+    Returns None ("no / cannot be judged") or the normalized target this
+    attempt would change. It NEVER allows: None means "no match", not
+    "may proceed" -- the caller still judges the call by its own rules.
+
+    Reading is not changing: ``read_file`` / ``read_document`` never match.
+    A tool that is neither a known file-change tool nor bash is not judged.
+    """
+
+    def _resolved(p: str) -> str:
+        # Refusal targets are recorded as resolved paths (symlinks out);
+        # attempt-side paths must be normalized the same way or a symlinked
+        # home directory would break the comparison.
+        try:
+            p = str(p)
+            if not os.path.isabs(p) and workspace:
+                p = str(Path(workspace) / p)
+            return _norm(str(Path(p).resolve()))
+        except Exception:
+            return _norm(p)
+    CHANGING_TOOLS = ("write_file", "edit_file", "bash")
+    if refusal is None or tool not in CHANGING_TOOLS:
+        return None
+
+    if tool == "bash":
+        if write_targets is None:
+            # Without the gate's own tokenizer we cannot know the write
+            # targets; return None rather than guess.
+            return None
+        if not isinstance(args, dict):
+            return None
+        cmd = str(args.get("command", ""))
+        targets = list(write_targets(cmd))
+    else:
+        targets = _targets_of(tool, args if isinstance(args, dict) else {})
+
+    refusal_target = _resolved(refusal.target)
+    for target in targets:
+        norm = _resolved(target)
+        if not norm:
+            continue
+        if refusal.is_dir:
+            if _contains(refusal_target, norm):
+                return norm
+        elif norm == refusal_target:
+            return norm
+    return None
+
+
 class RefusalMemory:
     """Bounded, serializable per-session record of refusals."""
 
