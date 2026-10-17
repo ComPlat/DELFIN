@@ -21703,6 +21703,7 @@ class _DocToolExecutor:
                 return _refuse_by_rule("bash", _caged_rule[1])
             _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
+                    and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
                 verdict = self._classifier_second_opinion(
@@ -21761,6 +21762,10 @@ class _DocToolExecutor:
                 return self._classifier_second_opinion(perms, name, args, mode)
             if (mode in ("default", "diff_approval", "acceptEdits")
                     and perms.confirm_callback is not None):
+                # W1 (dead yes, handled at the read-arg gate below, not
+                # here): a path that is ONLY the command's write target
+                # and lies outside every writable root is refused once
+                # there, never asked as a read.
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
                 try:
@@ -23266,6 +23271,32 @@ class _DocToolExecutor:
                 path = Path(target).expanduser()
                 if not path.is_absolute():
                     continue
+                # W1: a path that is ONLY the command's WRITE target must
+                # never produce a read question. For `python3 -m venv
+                # /scratch/x/venv` the destination is scanned as a potential
+                # read (the read-extractor is conservative), so today the
+                # person is asked to read a path that a "yes" cannot make the
+                # WRITE run — the write-root check would refuse it right
+                # after (a second-order dead yes). Decide it purely: a write
+                # target outside every writable root and not an ephemeral
+                # sink is refused ONCE with the directory route (the same
+                # grant the write path names), never asked as a read.
+                try:
+                    _res = path.resolve(strict=False)
+                    _is_dead_write = (
+                        target in set(_bash_write_targets(scan))
+                        and not _is_ephemeral_sink(
+                            _res, getattr(perms, "workspace", None))
+                        and perms.find_root_for(_res) is None)
+                except Exception:
+                    _is_dead_write = False
+                if _is_dead_write:
+                    return json.dumps({"error": (
+                        f"blocked: this command writes '{target}', which lies "
+                        "outside the workspace roots; a yes to read it could "
+                        "not make the write run. Grant the directory via "
+                        "--add-dir / extra_workspace_dirs to make it work."
+                    )})
                 err = self._check_read_access(perms, path)
                 if err is not None:
                     return json.dumps({"error": (
@@ -28423,6 +28454,29 @@ def _caged_command_names_excluded(cmd: str) -> bool:
         if re.sub(r"[\d.]+$", "", tok) in _CAGED_UNASKED_EXCLUDED_WORDS:
             return True
     return False
+
+
+def _allow_rule_names_bash(perms, name: str, args: dict) -> bool:
+    """Whether an allow rule the user wrote names this shell command.
+
+    Such a command is the user's informed decision and is answered by
+    that rule at the command dialog (``_rule_answers``), as before the
+    caged route existed. The caged route must not take it first: its
+    Landlock read list holds only the workspace and the toolchain, so a
+    program the rule names outside them -- a test gate under the
+    checkout's ``.delfin/gate-tools`` -- failed with EACCES (exit 126) and
+    the rule never answered (wave 16, 2026-10-16). Nothing is recorded
+    here; the rule's own event is recorded where it answers. Any failure
+    answers False (the caged route is consulted as before)."""
+    try:
+        from . import permission_rules as _pr
+        _, rs = _permission_rules(perms)
+        if rs is None:
+            return False
+        return _pr.allows(rs, "bash", name, args or {},
+                          perms.workspace) is not None
+    except Exception:
+        return False
 
 
 def _caged_command_may_run_unasked(cmd: str, perms, mode: str,
