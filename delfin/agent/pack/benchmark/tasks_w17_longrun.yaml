@@ -42,6 +42,16 @@
     the run; if one arrives, follow it and abandon the old goal.
   setup: w17_longrun_setup.py
   verify: w17_longrun_steer_verify.py
+  mid_run_messages:
+    - when: after
+      text: >-
+        PERSON (mid-task steering, new goal): New goal for the rest of
+        the run — answer.txt in w17_longrun/lr_steered_goal/ must hold
+        exactly these four lines: 'a: <value of entry a from
+        catalog.txt>', 'b: absent', 'c: <mean of the c values in
+        catalog.txt> kJ/mol', 'd: absent'. Delete the old goal's
+        summary.txt if it exists. Do not answer the old goal any
+        further.
   max_duration_s: 240
   max_cost_usd: 0.60
   max_tool_calls: 40
