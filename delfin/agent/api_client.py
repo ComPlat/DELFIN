@@ -7225,7 +7225,11 @@ _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     "chief_agent": _WRITE_TOOL_NAMES,
     "session_manager": _WRITE_TOOL_NAMES,
     "runtime_agent": _WRITE_TOOL_NAMES,
-    "research_agent": _WRITE_TOOL_NAMES,
+    # Research reads and searches, it does not execute: the dashboard and
+    # README promise "no shell commands" and this denylist is the
+    # enforcement (tab_agent.py description, README Modes table). Unlike
+    # the review roles above, research has no test/git loop to run.
+    "research_agent": _WRITE_TOOL_NAMES | frozenset({"bash", "bash_background"}),
 }
 
 
