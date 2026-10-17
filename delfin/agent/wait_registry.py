@@ -42,28 +42,37 @@ _NOTE_BY_KIND = {
 }
 
 
-def _store_path() -> Path:
-    """Resolved per call, so a redirected home moves it (wave-15a rule)."""
+def _store_path(key: str = "") -> Path:
+    """Resolved per call, so a redirected home moves it (wave-15a rule).
+
+    One file per session key (the inbox pattern in session_messages): a
+    wait belongs to the session that registered it. Reviewer nacht-s25,
+    finding #4: keyed only by workspace, one session's wait suppressed
+    the nudges of another. The key is the session's presence key -- the
+    same address pause flags and mailboxes use.
+    """
     from . import state_paths
-    return state_paths.workspace_state_dir("") / "wait_registry.json"
+    safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                   for c in str(key or ""))[:80] or "_default"
+    return state_paths.workspace_state_dir("") / f"waits_{safe}.json"
 
 
-def _load() -> list[dict]:
+def _load(key: str = "") -> list[dict]:
     try:
-        raw = json.loads(_store_path().read_text(encoding="utf-8"))
+        raw = json.loads(_store_path(key).read_text(encoding="utf-8"))
     except (FileNotFoundError, NotADirectoryError, ValueError, OSError):
         return []
     return [w for w in raw if isinstance(w, dict)] if isinstance(raw, list) else []
 
 
-def _save(waits: list[dict]) -> None:
+def _save(waits: list[dict], key: str = "") -> None:
     from .state_paths import ensure_dir, write_text_atomic
-    ensure_dir(_store_path().parent)
-    write_text_atomic(_store_path(), json.dumps(waits))
+    ensure_dir(_store_path(key).parent)
+    write_text_atomic(_store_path(key), json.dumps(waits))
 
 
-def register(kind: str, value: str) -> dict:
-    """Register one wait for the current session. Returns the wait row.
+def register(kind: str, value: str, *, key: str = "") -> dict:
+    """Register one wait for session ``key``. Returns the wait row.
 
     Raises ValueError for an unknown kind or an empty value: a wait with
     nothing to wait for can never fire and would suppress nudges forever.
@@ -79,9 +88,9 @@ def register(kind: str, value: str) -> dict:
         "value": value if kind == "time" else value,
         "registered_at": time.time(),
     }
-    waits = _load()
+    waits = _load(key)
     waits.append(wait)
-    _save(waits)
+    _save(waits, key)
     return wait
 
 
@@ -92,8 +101,9 @@ def wait_note(wait: dict) -> str:
         kind=kind, value=wait.get("value"))
 
 
-def due(now: float, events: list) -> list[dict]:
-    """The waits ``now`` and ``events`` satisfy, removed from the store.
+def due(now: float, events: list, *, key: str = "") -> list[dict]:
+    """The waits of session ``key`` that ``now`` and ``events`` satisfy,
+    removed from that session's store.
 
     ``events`` is an iterable of (kind, value) pairs the caller gathered
     this round (messages taken, job records seen, approvals answered).
@@ -103,7 +113,7 @@ def due(now: float, events: list) -> list[dict]:
     consumed: the wake happens once.
     """
     now = float(now)
-    waits = _load()
+    waits = _load(key)
     hits: list[dict] = []
     rest: list[dict] = []
     for w in waits:
@@ -122,21 +132,24 @@ def due(now: float, events: list) -> list[dict]:
     hits.sort(key=lambda w: (0 if w["kind"] == "time" else 1,
                              w.get("registered_at") or 0.0))
     if hits:
-        _save(rest)
+        _save(rest, key)
     return hits
 
 
 class SessionWaits:
     """The person's view of the waits: list and clear (the status line and
-    /state clear-wait read these)."""
+    /state clear-wait read these). Keyed like the registry itself."""
+
+    def __init__(self, key: str = ""):
+        self.key = str(key or "")
 
     def list(self) -> list[dict]:
-        return _load()
+        return _load(self.key)
 
     def clear(self, wait_id: str) -> bool:
-        waits = _load()
+        waits = _load(self.key)
         keep = [w for w in waits if w.get("id") != str(wait_id)]
         if len(keep) == len(waits):
             return False
-        _save(keep)
+        _save(keep, self.key)
         return True

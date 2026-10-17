@@ -143,28 +143,48 @@ def test_due_orders_time_waits_before_event_waits(home):
 
 def test_a_wait_suppresses_the_continuation_nudge(home):
     cont, _ = turn_continuation.should_continue(
-        "Let me write the tests now.", 0)
+        "Let me write the tests now.", 0, session_key="kg1-s20")
     assert cont is True
-    register("message_from", "nacht-s25")
+    register("message_from", "nacht-s25", key="kg1-s20")
     cont, note = turn_continuation.should_continue(
-        "Let me write the tests now.", 0)
+        "Let me write the tests now.", 0, session_key="kg1-s20")
     assert cont is False
     assert "wait" in note.lower()
 
 
 def test_suppression_ends_when_the_wait_is_consumed(home):
-    register("message_from", "nacht-s25")
-    due(time.time(), [("message_from", "nacht-s25")])
+    register("message_from", "nacht-s25", key="kg1-s20")
+    due(time.time(), [("message_from", "nacht-s25")], key="kg1-s20")
     cont, note = turn_continuation.should_continue(
-        "Let me write the tests now.", 0)
+        "Let me write the tests now.", 0, session_key="kg1-s20")
     assert cont is True
     assert note  # the ordinary continuation note returns
 
 
 def test_an_empty_registry_suppresses_nothing(home):
     cont, note = turn_continuation.should_continue(
+        "Let me write the tests now.", 0, session_key="kg1-s20")
+    assert cont is True
+
+
+def test_a_caller_without_a_key_suppresses_nothing(home):
+    # session_key=None (the engine's current call shape): no suppression,
+    # so the wiring change cannot turn a nudge off by accident.
+    register("message_from", "nacht-s25", key="kg1-s20")
+    cont, _ = turn_continuation.should_continue(
         "Let me write the tests now.", 0)
     assert cont is True
+
+
+# -- one session's wait never suppresses another's (finding #4) --------------
+
+def test_a_wait_is_scoped_to_its_session(home):
+    register("message_from", "nacht-s25", key="kg1-s20")
+    cont, _ = turn_continuation.should_continue(
+        "Let me write the tests now.", 0, session_key="kg2-s13")
+    assert cont is True, "another session's wait must not suppress this one"
+    assert due(time.time(), [("message_from", "nacht-s25")], key="kg2-s13") == []
+    assert due(time.time(), [("message_from", "nacht-s25")], key="kg1-s20")
 
 
 # -- the wake note names the event -------------------------------------------

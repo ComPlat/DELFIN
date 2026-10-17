@@ -307,7 +307,8 @@ def _is_conditional(text: str) -> bool:
                 or _RE_CONDITIONAL_NAMED.search(text))
 
 
-def should_continue(answer: str, open_tasks: int) -> tuple[bool, str]:
+def should_continue(answer: str, open_tasks: int,
+                    session_key: str | None = None) -> tuple[bool, str]:
     """Whether the session should be nudged to continue, and the note.
 
     One condition: the answer announces agent work it did not do.
@@ -338,13 +339,17 @@ def should_continue(answer: str, open_tasks: int) -> tuple[bool, str]:
     # (wait_registry.due fires it once, with a note naming the event).
     # Nudging on top would have the model re-announce work it is
     # deliberately parked on (package KG1, phase 2). An empty or
-    # unreadable registry nudges as before.
-    try:
-        from .wait_registry import SessionWaits
-        if SessionWaits().list():
-            return False, _WAIT_NOTE
-    except Exception:
-        pass
+    # unreadable registry nudges as before. ``session_key`` scopes the
+    # registry to ONE session (reviewer finding #4): None suppresses
+    # nothing, so a caller that does not know its session nudges as
+    # before.
+    if session_key:
+        try:
+            from .wait_registry import SessionWaits
+            if SessionWaits(session_key).list():
+                return False, _WAIT_NOTE
+        except Exception:
+            pass
     n = max(0, open_tasks or 0)
     if n:
         return True, _CONTINUATION_NOTE
