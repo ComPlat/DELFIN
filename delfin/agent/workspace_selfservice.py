@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Callable, Literal, Optional
+from typing import Literal, Optional
 
 # The single verdict this classifier may emit. None means "the gate decides".
 AUTO = "auto"
