@@ -81,15 +81,44 @@ class TestDeliverability:
     def test_an_unknown_name_stays_refused(self, inbox):
         assert msgs.deliverable("no-such-session") is False
 
-    def test_a_presence_record_matches_its_case_variant(self, inbox,
-                                                        monkeypatch):
-        # Only a presence record exists (no inbox yet): announce as
-        # "welle-16", then the upper-case variant must still deliver.
+    def test_a_presence_record_is_identity_for_its_EXACT_name(self, inbox,
+                                                              monkeypatch):
+        # Old decision (phase 2): the record's key was compared through the
+        # case-folding _canonical_key, so the upper-case variant of an
+        # announced name was deliverable. That broke the earlier t3
+        # adversarial pin (tests/test_t3_adversarial_phase2.py:
+        # test_known_session_case_variant_not_deliverable): a sender must
+        # not reach nacht-s12 by spelling NACHT-S12. New decision: identity
+        # is the record's EXACT key; only the mailbox (send/take) folds.
         import delfin.agent.session_presence as P
         monkeypatch.setattr(P, "_DIR", inbox / "session_presence")
         P.announce("welle-16", session_id="abcdef01", title="W16",
                    workspace=".")
-        assert msgs.deliverable("Welle-16") is True
+        assert msgs.deliverable("welle-16") is True
+        assert msgs.deliverable("Welle-16") is False
+        # The fold still serves delivery: a send to the variant lands in
+        # the ONE mailbox the exact-name session reads.
+        msgs.send("Welle-16", "wake: folded mailbox")
+        got = _agent(name="welle-16")._operator_messages("")
+        assert "wake: folded mailbox" in got
 
     def test_reserved_addresses_stay_case_insensitive(self, inbox):
         assert msgs.deliverable("OPERATOR") is True
+
+    def test_a_case_variant_of_an_ANNOUNCED_name_is_not_deliverable(self,
+                                                                    inbox,
+                                                                    monkeypatch):
+        # The t3 adversarial pin (tests/test_t3_adversarial_phase2.py,
+        # test_known_session_case_variant_not_deliverable): a case variant
+        # of a known session NAME must not count as deliverable. A sender
+        # should not reach nacht-s12 by spelling it NACHT-S12, and a
+        # mailbox keyed by the variant must never be taken by the real
+        # session. The case fold serves only the MAILBOX (send/take land
+        # in one file), never identity: without an inbox or presence
+        # record under the variant, deliverable("NACHT-S12") stays False.
+        import delfin.agent.session_presence as P
+        monkeypatch.setattr(P, "_DIR", inbox / "session_presence")
+        P.announce("nacht-s12", session_id="abcdef02", title="S12",
+                   workspace=".")
+        assert msgs.deliverable("nacht-s12") is True
+        assert msgs.deliverable("NACHT-S12") is False

@@ -76,34 +76,37 @@ def _known_key(key: str) -> bool:
     session queues for its next start instead of being refused.
     Order matters: a presence record may be reaped (deleted) by a check of
     open_sessions (its `_reap` drops same-host stale records), so look for the
-    key's record file before asking whether it is open."""
+    key's record file before asking whether it is open.
+
+    Identity is compared CASE-SENSITIVELY against the record's own key: a
+    case variant of an announced name (NACHT-S12 for nacht-s12) must NOT
+    count as deliverable -- that is the t3 adversarial pin. The case fold
+    lives only in _canonical_key/_inbox, where it serves the MAILBOX
+    (send/take land in one file); it never widens who a message may reach."""
     if key == "operator":
         return True
-    canon = _canonical_key(key)
-    if _inbox_known(canon):
+    if _inbox_known(key):
         return True
     try:
         from . import session_presence as P
         # A record file (alive or stale) names a real session. Look before
-        # open_sessions() runs `_reap`, which deletes same-host stale records.
-        # A session announces one spelling of its name (its -n name); a
-        # sender may hand a case/whitespace variant, so compare the record's
-        # own key canonically instead of requiring an exact match.
-        for cand in dict.fromkeys([key, canon]):
-            record = P._path(cand)
-            if record.exists():
-                try:
-                    data = json.loads(record.read_text(encoding="utf-8"))
-                except Exception:
-                    data = {}
-                if (isinstance(data, dict)
-                        and _canonical_key(data.get("key")) == canon):
-                    return True
-        for record in P.open_sessions():
-            if _canonical_key(record.get("key")) == canon:
+        # open_sessions() runs `_reap`, which deletes same-host stale
+        # records. The record's own key is the identity: match the exact
+        # spelling it was announced under, no case fold.
+        record = P._path(key)
+        if record.exists():
+            try:
+                data = json.loads(record.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if (isinstance(data, dict)
+                    and data.get("key") == key):
+                return True
+        for rec in P.open_sessions():
+            if rec.get("key") == key:
                 return True
     except Exception:
-        return _inbox_known(canon)
+        return _inbox_known(key)
     return False
 
 

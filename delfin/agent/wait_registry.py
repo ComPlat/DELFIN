@@ -24,7 +24,6 @@ DELIVERY, not about who the event came from).
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from pathlib import Path
