@@ -29,15 +29,16 @@ _HOSTILE_MARKERS = (
 
 
 def _row_get(row: Any, key: str, default: Any = None) -> Any:
-    # Real compose_sections rows arrive as dicts; recorded rows may also
-    # be (name, layer, content) tuples. Both are real rows, both count.
+    # Real compose_sections rows arrive as PromptSection OBJECTS with
+    # name/layer/content attributes; recorded copies may be dicts or
+    # (name, layer, content) tuples. All three are real rows.
     if isinstance(row, dict):
         value = row.get(key, default)
         return value if value is not None else default
     if isinstance(row, tuple) and len(row) == 3:
         return {"name": row[0], "layer": row[1], "content": row[2]}.get(
             key, default)
-    return default
+    return getattr(row, key, default)
 
 
 def stable_prefix_len(
