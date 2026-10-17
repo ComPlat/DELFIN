@@ -114,9 +114,10 @@ def test_repeated_refused_act_is_counted(tmp_path):
     # the agent then re-runs the same act (a second admitted command record)
     _write(log, tool="bash", decision="auto", command="rm -rf /tmp/nope")
     r = _summarize(log, finished=False)
-    # the refused act appears twice in the command stream (its own attempt
-    # plus the repeat), both keyed on the same (tool, command) tuple
-    assert r.repeats == 2
+    # The audit writer lists a denied bash command under ``commands`` too
+    # (audit_log.py:1035-1038), so the first stream occurrence IS the
+    # denial; a repeat is each occurrence beyond it. One retry -> 1.
+    assert r.repeats == 1
 
 
 def test_in_stream_none_stays_unobserved(tmp_path):

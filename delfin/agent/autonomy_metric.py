@@ -47,8 +47,13 @@ Terminology for ``stop_kind`` (the headline of the map):
                      helped: the block is a refusal a yes does not lift
                      (hard refuse, or an ask whose approval is itself
                      refused --- a dead "yes").
-  * ``open_work`` -- the attempt stopped without a terminal security
-                     reason: ended with work open and no refusal recorded.
+    * ``open_work`` -- the attempt stopped without a terminal security
+                       reason: ended with work open and no refusal recorded.
+    * ``unclassified`` -- the attempt stopped on a refusal the metric
+                       could not re-classify (tool the gate cannot
+                       explain, or a record with no arguments). The
+                       refusal is counted, but no security block is
+                       claimed: the record does not attest one.
 """
 from __future__ import annotations
 
@@ -60,6 +65,7 @@ FINISHED = "finished"
 NEEDED_YES = "needed_yes"
 BLOCKED = "blocked"
 OPEN_WORK = "open_work"
+UNCLASSIFIED = "unclassified"
 
 # Verdicts the classifier may return. Anything else is treated as
 # "unclassified" rather than guessed.
@@ -177,14 +183,24 @@ def count_repeats(denials: List[Dict[str, Any]], commands: List[Dict[str, Any]])
     if not refused:
         return 0
     count = 0
+    # The first occurrence of a refused command in the stream is the
+    # denial itself: the audit writer lists a denied bash command under
+    # ``commands`` as well (audit_log.build_changes_report keeps a denied
+    # command so it is not hidden). A repeat is only an occurrence beyond
+    # that first one -- the agent trying the refused act AGAIN.
+    seen: set = set()
     for rec in commands:
         # A ``commands`` entry carries no ``tool``; normalize to the bash
         # default (see _COMMAND_DEFAULT) so it keys like the denied record
         # of the same bash command (which does carry ``tool``).
         tool = str(rec.get("tool") or _COMMAND_DEFAULT)
         key = (tool, str(rec.get("command") or rec.get("target") or rec.get("path") or ""))
-        if key in refused:
+        if key not in refused:
+            continue
+        if key in seen:
             count += 1
+        else:
+            seen.add(key)
     return count
 
 
@@ -202,9 +218,12 @@ def stop_kind(inputs: AutonomyInputs) -> str:
     tool = str(last.get("tool") or "")
     verdict = _explain(inputs, tool, last)
     if verdict is None:
-        # Unclassifiable tool: fall back to the recorded decision --- a
-        # real "denied" is a block the record itself attests.
-        return BLOCKED
+        # The record cannot be re-classified (tool the gate cannot
+        # explain, or a bash record with no command text). The refusal
+        # itself is still counted in refusals / refusals_by_reason, but
+        # the stop kind must not CLAIM a security block the record
+        # cannot attest (reviewer finding F2/F3): report unclassified.
+        return UNCLASSIFIED
     v = verdict.get("verdict")
     if v == _ASK and verdict.get("if_approved") != _REFUSE:
         return NEEDED_YES
