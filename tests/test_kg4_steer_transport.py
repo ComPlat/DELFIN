@@ -45,8 +45,14 @@ def test_run_acceptance_subprocess_accepts_when_steer_was_followed(
             {"text": "PERSON (mid-task steering, new goal): follow it",
              "tool_calls": [], "error": ""}],
         "turns": [
+            {"text": "PERSON (mid-task steering, new goal): follow it",
+             "tool_calls": [], "error": ""},
             {"text": "wrote answer.txt with the new goal lines",
              "tool_calls": [{"name": "write_file"}]},
+        ],
+        "actions": [
+            {"text": "write answer.txt with the new goal lines "
+                     "(new goal)"},
         ],
     })
     from delfin.agent.benchmark_runner import run_acceptance
