@@ -154,6 +154,13 @@ def _venv_prefix_of(words: list[str]) -> Optional[str]:
 #     workspace;
 #   * ``--require-hashes`` present, so a remote index cannot substitute
 #     unvetted wheels;
+#   * ``--only-binary=:all:`` present, so nothing is built from source at
+#     install time -- no sdist, no setup.py, no arbitrary code from the
+#     index runs in the workspace (operator finding F2: --require-hashes
+#     alone only pins WHAT is installed, not HOW it is built); the option
+#     must be the ``:all:`` form, a package list like
+#     ``--only-binary=requests`` would still let every OTHER package build
+#     from source;
 #   * NO index override (``--index-url``/``-i``/``--extra-index-url``), NO
 #     editable VCS source (``-e``/``--editable``), NO ``--user`` install;
 #   * every write target the gate's own extractor finds is inside the
@@ -204,6 +211,7 @@ def _pip_install_r(cmd: str, workspace: str) -> bool:
     idx += 1  # past "install"
     req_values: list[str] = []
     consumed_flag_word = False
+    only_binary_all = False
     i = idx
     while i < len(words):
         w = words[i]
@@ -219,12 +227,14 @@ def _pip_install_r(cmd: str, workspace: str) -> bool:
             req_values.append(words[i + 1])
             i += 2
             continue
+        if w == "--only-binary=:all:":
+            only_binary_all = True
         if w == "--require-hashes":
             consumed_flag_word = True
         i += 1
     if not req_values or any(not _inside(r, workspace) for r in req_values):
         return False
-    if not consumed_flag_word:
+    if not consumed_flag_word or not only_binary_all:
         return False
     # The pinned word form produces no targets in the gate's extractor
     # (measured: pip install with -r and --require-hashes yields []); the
@@ -366,7 +376,7 @@ def classify(cmd: str, workspace: str) -> Verdict:
 # live HERE so both sides read one definition:
 #
 #     agent.workspace_selfservice = {
-#         "enabled": bool,   # master switch, default True
+#         "enabled": bool,   # master switch, default False (fail closed)
 #     }
 #
 # Normalisation on load: a malformed value falls back to the default, and a
@@ -376,8 +386,13 @@ SETTINGS_KEY = "workspace_selfservice"
 
 
 def selfservice_defaults() -> dict:
-    """The canonical on-disk settings for the workspace self-service gate."""
-    return {"enabled": True}
+    """The canonical on-disk settings for the workspace self-service gate.
+
+    Default OFF: letting a command skip the approval dialog is an
+    opt-in decision of the person, never a default (operator finding
+    F1 -- fail closed).
+    """
+    return {"enabled": False}
 
 
 def settings_from_payload(payload: dict) -> dict:
@@ -385,15 +400,17 @@ def settings_from_payload(payload: dict) -> dict:
 
     *payload* is a user-settings dict; the block lives under
     ``payload['agent']['workspace_selfservice']``. Missing payload, missing
-    block or malformed values fall back to the default (master switch ON).
+    block, a missing key or any non-bool value fall back to OFF -- the
+    switch fails closed: a command may only skip a check when the person
+    turned it on with an explicit True (operator finding F1).
     """
     agent = (payload or {}).get("agent") or {}
     block = agent.get(SETTINGS_KEY) or {}
     if not isinstance(block, dict):
         return selfservice_defaults()
-    enabled = block.get("enabled", True)
+    enabled = block.get("enabled", False)
     if not isinstance(enabled, bool):
-        enabled = True
+        return selfservice_defaults()
     return {"enabled": enabled}
 
 
@@ -402,7 +419,7 @@ def settings_into_payload(payload: dict, settings: dict) -> dict:
     without disturbing other ``agent`` keys, and return *payload*."""
     payload.setdefault("agent", {})
     stored = dict(selfservice_defaults())
-    stored["enabled"] = bool(settings.get("enabled", True))
+    stored["enabled"] = bool(settings.get("enabled", False))
     payload["agent"][SETTINGS_KEY] = stored
     return payload
 

@@ -95,7 +95,8 @@ def test_pip_quoted_req_with_space_is_none(tmp_path):
     # not split on whitespace.
     _venv(tmp_path)
     (tmp_path / "my reqs.txt").write_text("numpy==1.26.4\n")
-    cmd = ".venv/bin/pip install -r 'my reqs.txt' --require-hashes"
+    cmd = (".venv/bin/pip install -r 'my reqs.txt' --require-hashes "
+           "--only-binary=:all:")
     assert ws.classify(cmd, _ws(tmp_path)) == "auto", \
         "F5: quoted path with space inside workspace should stay auto"
 

@@ -70,13 +70,15 @@ def _make_venv(tmp_path):
 
 def test_hashed_install_into_workspace_venv_is_auto(tmp_path):
     _make_venv(tmp_path)
-    cmd = ".venv/bin/pip install -r requirements.txt --require-hashes"
+    cmd = (".venv/bin/pip install -r requirements.txt --require-hashes "
+           "--only-binary=:all:")
     assert ws.classify(cmd, str(tmp_path)) == "auto"
 
 
 def test_hashed_install_via_venv_python_is_auto(tmp_path):
     _make_venv(tmp_path)
-    cmd = ".venv/bin/python -m pip install -r requirements.txt --require-hashes"
+    cmd = (".venv/bin/python -m pip install -r requirements.txt "
+           "--require-hashes --only-binary=:all:")
     assert ws.classify(cmd, str(tmp_path)) == "auto"
 
 
@@ -108,7 +110,8 @@ def test_install_target_outside_workspace_is_none(tmp_path):
     # interpreter path pointing at the original tmp_path.
     _make_venv(tmp_path)
     venv_pip = str(tmp_path / ".venv" / "bin" / "pip")
-    cmd = f"{venv_pip} install -r requirements.txt --require-hashes"
+    cmd = (f"{venv_pip} install -r requirements.txt --require-hashes "
+           "--only-binary=:all:")
     other = tmp_path / "other"
     other.mkdir()
     assert ws.classify(cmd, str(other)) is None
