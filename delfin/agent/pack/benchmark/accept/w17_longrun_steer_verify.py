@@ -78,23 +78,16 @@ def main() -> None:
             delivered = [m.get("text", "") for m in
                          (facts.get("steer_delivered") or [])]
             steer_seen = any(_STEER_MARKER in t for t in delivered)
-            turns = [t.get("text", "") for t in (facts.get("turns") or [])]
-            actions = [a.get("text", "") for a in
-                       (facts.get("actions") or [])]
+            # "Followed" = after the steer, the session ACTED on the new
+            # goal. The facts file carries only tool call NAMES (operator
+            # rule: no transcript text in a workspace a later agent can
+            # read), so acting is attested by recorded tool calls —
+            # a run with none attests nothing: steer_followed stays
+            # None -> reject.
+            actions = [c for m in (facts.get("actions") or [])
+                       for c in (m.get("tool_calls") or [])]
             if steer_seen:
-                # Followed means the turn AFTER the steer ACTS on the new
-                # goal — attested by a recorded action after the steer's
-                # position in the turn sequence that targets the new
-                # goal. Prose ("the new goal is X") without an action
-                # record is not following. A run with no action records
-                # attests nothing: steer_followed stays None -> reject.
-                steer_idx = next((i for i, t in enumerate(turns)
-                                  if _STEER_MARKER in t), None)
-                if steer_idx is None or not actions:
-                    steer_followed = None
-                else:
-                    steer_followed = any(
-                        "new goal" in (a or "").lower() for a in actions)
+                steer_followed = bool(actions)
         except Exception:
             steer_followed = None
     ok, msg = check(ws, steer_followed=steer_followed)
