@@ -22,6 +22,7 @@ so the attempt is reported as unmeasured, never as a model failure.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -48,7 +49,16 @@ EXPECTED_CONVERT = {"a": 1234.5, "b": -0.5, "c": 10000.25, "d": 2.7,
 
 
 def _run(cmd: list[str], cwd: Path) -> None:
-    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+    # Sandboxed test environments deny access to ~/.gitconfig; a fixture
+    # repo must not depend on a home config. GIT_CONFIG_GLOBAL redirects.
+    env = dict(os.environ)
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    # git also picks up ~/.config/git/ignore as the default excludes file
+    # (XDG); redirect that too, into the fixture directory itself.
+    env["XDG_CONFIG_HOME"] = str(cwd)
+    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                          env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed: {proc.stdout[-300:]}"
                            f"{proc.stderr[-300:]}")
@@ -96,9 +106,9 @@ def build(workspace: Path, *, variant: str) -> None:
             raise RuntimeError("audit precondition broken: expected exactly "
                                "the r1/r2 duplicate")
     else:
-        if {k: float(v.replace(".", "").replace(",", "."))
-                for k, v in (line.split(",") for line
-                             in VALUES_CSV.strip().splitlines()[1:])} \
+        if {k: float(",".join(v).replace(".", "").replace(",", "."))
+                for k, *v in (line.split(",") for line
+                              in VALUES_CSV.strip().splitlines()[1:])} \
                 != EXPECTED_CONVERT:
             raise RuntimeError("convert precondition broken")
     print(f"seeded data_notes/{variant}: preconditions hold")
