@@ -63,9 +63,11 @@ def stable_prefix_len(
     else:
         if len(a) != len(b):
             first_change_row = min(len(a), len(b))
+            # The extra row lives in the LONGER turn; indexing the
+            # shorter one there was out of range by construction.
+            longer = a if len(a) > len(b) else b
             first_change_section = (
-                str(_row_get((a if len(a) < len(b) else b)[
-                    first_change_row], "name") or "?"))
+                str(_row_get(longer[first_change_row], "name") or "?"))
     expected = [r for r in a[:rows] if _row_get(r, "layer", 0) is not None
                 and int(_row_get(r, "layer", 0)) < 2]
     # "all stable" means: no STABLE (layer 0) row sits after the shared
