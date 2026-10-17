@@ -52,7 +52,8 @@ def test_run_acceptance_subprocess_accepts_when_steer_was_followed(
         ],
         "actions": [
             {"text": "write answer.txt with the new goal lines "
-                     "(new goal)"},
+                     "(new goal)",
+             "tool_calls": [{"name": "write_file"}]},
         ],
     })
     from delfin.agent.benchmark_runner import run_acceptance
