@@ -520,7 +520,7 @@ A mode decides which role prompt and which surface the agent gets:
 | `dashboard` (default) | dashboard, terminal | Operating DELFIN: settings, submissions, results |
 | `solo`, shown as **Code** | dashboard, terminal | Reading and writing code |
 | `office` | dashboard, terminal | Documents and spreadsheets, without the chemistry tools |
-| `research` | terminal only | Literature and method research |
+| `research` | dashboard, terminal | Literature and method research: web search and code reading, read-only — no file changes, no shell commands |
 
 `plan` is **not** a mode but a permission profile — see below.
 
