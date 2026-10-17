@@ -44,6 +44,21 @@ _UNIT_RE = re.compile(r"^(?P<value>.+?)\s*(?P<unit>[A-Za-zµ/%°][A-Za-z0-9/^%·
 _THOUSANDS_RE = re.compile(r"^-?\d{1,3}(\.\d{3})+$")
 
 
+def _as_float(value: Any) -> float:
+    """Reject bool/NaN/inf: they are not data, and each poisons a statistic."""
+    if isinstance(value, bool) or value is None:
+        raise DataCheckError(
+            f"{value!r} is not a numeric value (bool/None)")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise DataCheckError(f"{value!r} is not a numeric value") from exc
+    if math.isnan(result) or math.isinf(result):
+        raise DataCheckError(
+            f"{value!r} is NaN/inf — it poisons every statistic")
+    return result
+
+
 def _parse_number(raw: Any) -> tuple[float | None, str]:
     """Parse one cell into (value, unit). Unit is '' for bare numbers."""
     if raw is None:
@@ -59,6 +74,10 @@ def _parse_number(raw: Any) -> tuple[float | None, str]:
     if match and not _is_bare_decimal(match.group("value")):
         unit = match.group("unit")
         candidate = match.group("value").strip()
+    text = str(raw).strip()
+    if "_" in text:
+        # '1_234' is both 1234 and 1.234 — refuse, ask.
+        return None, ""
     try:
         value = float(candidate)
     except ValueError:
@@ -78,19 +97,31 @@ def _is_bare_decimal(text: str) -> bool:
 def unit_consistency(values: Iterable[Any]) -> dict[str, Any]:
     """Check that a column carries one unit.
 
-    Returns ``{"consistent", "units", "undecided", "unreadable"}``.
+    Returns ``{"consistent", "units", "undecided", "unreadable",
+    "mixed_shape", "n_bare"}``.
     ``consistent=False`` with ``units=[...]`` names the mixed units so a
     report can say which two readings collided. ``undecided=True`` marks
     an ambiguous bare decimal ("8.986") — the caller must ask, not guess.
+    ``mixed_shape=True`` marks a column that mixes unit-carrying values
+    with bare numbers: a bare number's unit is an inference, and an
+    average over inferred-unit values is the mixed-population trap this
+    module exists to catch (QS ruling nacht-s30, 2026-10). ``n_bare`` is
+    the count of bare values so the caller can decide; bare values do
+    NOT implicitly inherit the column unit.
     """
     units: set[str] = set()
     undecided = False
     unreadable: list[int] = []
+    n_bare = 0
     for index, raw in enumerate(values):
         value, unit = _parse_number(raw)
         if value is None:
             if raw not in (None, ""):
                 text = str(raw).strip()
+                if "_" in text:
+                    # '1_234' is both 1234 and 1.234 — refuse, ask.
+                    undecided = True
+                    continue
                 if text.lower() not in {"n/a", "na", "-", "—", ""}:
                     unreadable.append(index)
             continue
@@ -100,13 +131,20 @@ def unit_consistency(values: Iterable[Any]) -> dict[str, Any]:
             continue
         if unit:
             units.add(unit)
+        else:
+            n_bare += 1
     if undecided:
         units.add("<undecided>")
+    mixed_shape = bool(units) and n_bare > 0
+    consistent = (len(units) <= 1 and not undecided and not unreadable
+                  and not mixed_shape)
     return {
-        "consistent": len(units) <= 1 and not undecided and not unreadable,
+        "consistent": consistent,
         "units": sorted(units),
         "undecided": undecided,
         "unreadable": unreadable,
+        "mixed_shape": mixed_shape,
+        "n_bare": n_bare,
     }
 
 
@@ -123,7 +161,12 @@ def find_duplicates(
         raise DataCheckError("key must name at least one column")
     seen: dict[tuple, list[int]] = {}
     for index, row in enumerate(rows):
-        identity = tuple(row.get(column) for column in key)
+        missing = [column for column in key if column not in row]
+        if missing:
+            raise DataCheckError(
+                f"key column(s) {missing} not present in row {index}; "
+                "a missing key would silently report zero duplicates")
+        identity = tuple(row[column] for column in key)
         seen.setdefault(identity, []).append(index)
     groups = [
         {"key": dict(zip(key, identity)), "rows": indices}
@@ -149,7 +192,10 @@ def flag_outliers(
     if rule not in _OUTLIER_RULES:
         raise DataCheckError(
             f"unknown outlier rule {rule!r}; known rules: {sorted(_OUTLIER_RULES)}")
-    numbers = [float(value) for value in values]
+    if not isinstance(k, (int, float)) or isinstance(k, bool) or not k > 0:
+        raise DataCheckError(
+            f"k must be a positive number, got {k!r}")
+    numbers = [_as_float(value) for value in values]
     if len(numbers) < 4:
         raise DataCheckError(
             "outlier rule needs at least 4 values to say anything about")
@@ -192,7 +238,7 @@ def summarize(values: Sequence[float]) -> dict[str, Any]:
     ``std`` is the sample standard deviation (ddof=1). An empty input is
     a refusal: a mean of nothing is not zero, it does not exist.
     """
-    numbers = [float(value) for value in values]
+    numbers = [_as_float(value) for value in values]
     n = len(numbers)
     if n == 0:
         raise DataCheckError("cannot summarize an empty column")
