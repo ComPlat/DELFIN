@@ -44,8 +44,11 @@ def build_fixtures(base: str) -> dict[str, str]:
     _write_csv(os.path.join(base, "trap_duplicated_block.csv"), rows)
     paths["duplicated_block"] = os.path.join(base, "trap_duplicated_block.csv")
 
-    # 3. Simpson's paradox: within each group B beats A, in the aggregate A
-    #    wins because of the group sizes.
+    # 3. aggregate-vs-split weighting: within each group B beats A; the
+    #    aggregate favours A only because group A has five rows and B two.
+    #    (A true Simpson's paradox needs the association to REVERSE across
+    #    a third variable — here it does not, so the trap is named
+    #    correctly: an aggregate that hides the per-group story.)
     rows = [
         ["x1", "A", "90.0", "kcal/mol", ""],
         ["x2", "A", "91.0", "kcal/mol", ""],
@@ -55,8 +58,9 @@ def build_fixtures(base: str) -> dict[str, str]:
         ["y1", "B", "10.0", "kcal/mol", ""],
         ["y2", "B", "11.0", "kcal/mol", ""],
     ]
-    _write_csv(os.path.join(base, "trap_simpsons_paradox.csv"), rows)
-    paths["simpsons_paradox"] = os.path.join(base, "trap_simpsons_paradox.csv")
+    _write_csv(os.path.join(base, "trap_aggregate_split_weighting.csv"), rows)
+    paths["aggregate_split_weighting"] = os.path.join(
+        base, "trap_aggregate_split_weighting.csv")
 
     # 4. outlier that is a typo: 1.30 should have been 13.0
     rows = [
