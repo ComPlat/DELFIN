@@ -28,8 +28,9 @@ def _task(**kw) -> bm.Task:
     return bm.Task(**base)
 
 
-def _record(text: str, calls: list[dict], *, verify_ok=None,
+def _record(text: str, calls: list[dict] | None = None, *, verify_ok=None,
             success=True, unmeasured=False) -> dict:
+    calls = calls or []
     traj = bm.Trajectory(text=text, tool_calls=calls)
     traj.verify_ok = verify_ok
     result = bm.score_outcome(_task(), traj, model="m")
