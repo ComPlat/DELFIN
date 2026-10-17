@@ -16,33 +16,25 @@ import pytest
 import delfin.agent.workspace_selfservice as ws
 
 
-# xfail(strict=False) marks the cases that are RED on the builder's
-# current module (32e3e955) and must flip to green when the builder lands
-# the operator's F1/F2 fix. Red stays visible as xfail; no silent green.
+# The xfails of the review round are gone: the fix (c83d35f9) landed and
+# all 8 formerly-red cases pass plain. The tests pin the fail-closed
+# contract from here on.
 
 # --- F1: fail closed ---------------------------------------------------------
 
-@pytest.mark.xfail(reason="F1: module still fails open (32e3e955)",
-                   strict=False)
 def test_f1_defaults_off():
     assert ws.selfservice_defaults() == {"enabled": False}
 
 
-@pytest.mark.xfail(reason="F1: module still fails open (32e3e955)",
-                   strict=False)
 def test_f1_missing_payload_is_off():
     assert ws.settings_from_payload({}) == {"enabled": False}
     assert ws.settings_from_payload(None) == {"enabled": False}
 
 
-@pytest.mark.xfail(reason="F1: module still fails open (32e3e955)",
-                   strict=False)
 def test_f1_missing_key_is_off():
     assert ws.settings_from_payload({"agent": {}}) == {"enabled": False}
 
 
-@pytest.mark.xfail(reason="F1: module still fails open (32e3e955)",
-                   strict=False)
 def test_f1_non_bool_is_off():
     for bad in (None, "yes", "true", 1, 0, [], {}, "False"):
         assert ws.settings_from_payload({"agent": {"workspace_selfservice":
@@ -50,8 +42,6 @@ def test_f1_non_bool_is_off():
             "enabled": False}, bad
 
 
-@pytest.mark.xfail(reason="F1: module still fails open (32e3e955)",
-                   strict=False)
 def test_f1_wrong_type_block_is_off():
     assert ws.settings_from_payload({"agent": {"workspace_selfservice": "on"}}
                                     ) == {"enabled": False}
@@ -73,16 +63,12 @@ def _venv(tmp_path):
     return venv
 
 
-@pytest.mark.xfail(reason="F2: no --only-binary=:all: requirement (32e3e955)",
-                   strict=False)
 def test_f2_pip_without_only_binary_is_none(tmp_path):
     venv = _venv(tmp_path)
     cmd = f"{venv}/bin/pip install -r requirements.txt --require-hashes"
     assert ws.classify(cmd, str(tmp_path)) is None
 
 
-@pytest.mark.xfail(reason="F2: no --only-binary=:all: requirement (32e3e955)",
-                   strict=False)
 def test_f2_pip_without_only_binary_interpreter_form_is_none(tmp_path):
     venv = _venv(tmp_path)
     cmd = f"{venv}/bin/python -m pip install -r requirements.txt --require-hashes"
@@ -103,8 +89,6 @@ def test_f2_attached_only_binary_is_auto(tmp_path):
     assert ws.classify(cmd, str(tmp_path)) == ws.AUTO
 
 
-@pytest.mark.xfail(reason="F2: narrowed --only-binary not refused (32e3e955)",
-                   strict=False)
 def test_f2_only_binary_wrong_value_is_none(tmp_path):
     # A narrowed --only-binary for specific packages does NOT ban sdists.
     venv = _venv(tmp_path)
