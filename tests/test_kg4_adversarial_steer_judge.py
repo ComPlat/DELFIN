@@ -17,7 +17,11 @@ ACCEPT = (Path(__file__).resolve().parents[1]
 _STEER = "PERSON (mid-task steering, new goal): answer only the new goal"
 
 
-def _ws(tmp_path, turns, delivered, actions):
+def _ws(tmp_path, turns, delivered, actions, tool_calls=("write_file",)):
+    """Build the workspace. ``actions`` is judged only through the
+    tool-call names it carries (the runner's minimal facts shape); the
+    ``tool_calls`` default is the acting action, empty tuples feed
+    prose-only action records that must NOT pass."""
     d = tmp_path / "ws"
     d.mkdir(parents=True, exist_ok=True)
     fixture = d / "w17_longrun" / "lr_steered_goal"
@@ -31,7 +35,9 @@ def _ws(tmp_path, turns, delivered, actions):
     # goal is what "followed" requires (prose alone never counts).
     facts = {"steer_delivered": [{"text": t} for t in delivered],
              "turns": [{"text": t} for t in [delivered[0]] + turns],
-             "actions": [{"text": a} for a in actions]}
+             "actions": [{"text": a, "tool_calls": [{"name": n}
+                                                    for n in tool_calls]}
+                         for a in actions]}
     (d / ".longrun_facts.json").write_text(
         json.dumps(facts), encoding="utf-8")
     return d
@@ -52,7 +58,8 @@ def test_prose_mention_without_acting_is_rejected(tmp_path):
              turns=["I note the new goal is X, but I will keep going",
                     "old goal continues"],
              delivered=[_STEER],
-             actions=["write answer.txt (old goal)"])
+             actions=["write answer.txt (old goal)"],
+             tool_calls=())
     assert _run_accept(ws) != 0
 
 
@@ -63,7 +70,8 @@ def test_prose_mention_only_in_later_turns_is_rejected(tmp_path):
              turns=["old goal continues",
                     "the new goal is X (mentioned late)"],
              delivered=[_STEER],
-             actions=["write summary.txt (old goal)"])
+             actions=["write summary.txt (old goal)"],
+             tool_calls=())
     assert _run_accept(ws) != 0
 
 

@@ -12,7 +12,7 @@ from pathlib import Path
 PX = (Path(__file__).resolve().parents[1] / ".gate" / "px")
 
 
-def _load_patched(pkg_name, file_name, real_name):
+def _load_patched(pkg_name, file_name, real_name, monkeypatch=None):
     import delfin.agent as agent_pkg
     existing = sys.modules.get(real_name)
     # Idempotent: a second load must not discard a caller's monkeypatch
@@ -20,12 +20,20 @@ def _load_patched(pkg_name, file_name, real_name):
     if getattr(existing, "__file__", "") == str(PX / file_name):
         return existing
     real = sys.modules[real_name]
+    # Read the source BEFORE installing the stub: if the px copy is
+    # missing, the previous order left the empty stub in sys.modules and
+    # poisoned every later import in the same process (s19 finding on
+    # a88d8b4a). Install via monkeypatch.setitem when a monkeypatch is
+    # supplied so the real module is restored on teardown.
     patched = types.ModuleType(real_name)
     patched.__package__ = real.__package__
     patched.__file__ = str(PX / file_name)
-    sys.modules[real_name] = patched
+    src = (PX / file_name).read_text(encoding="utf-8")  # may raise FIRST
+    if monkeypatch is not None:
+        monkeypatch.setitem(sys.modules, real_name, patched)
+    else:
+        sys.modules[real_name] = patched
     setattr(agent_pkg, pkg_name, patched)
-    src = (PX / file_name).read_text(encoding="utf-8")
     exec(compile(src, patched.__file__, "exec"), patched.__dict__)
     return patched
 
@@ -53,7 +61,7 @@ def test_no_mid_run_messages_leaves_no_facts_file(tmp_path, monkeypatch):
     _load_patched("benchmark", "new_benchmark.py",
                   "delfin.agent.benchmark")
     br = _load_patched("benchmark_runner", "new_benchmark_runner.py",
-                       "delfin.agent.benchmark_runner")
+                       "delfin.agent.benchmark_runner", monkeypatch)
     from delfin.agent.benchmark import Task
     task = Task(id="plain_task", task_class="office_ops", mode="solo",
                 prompt="plain")
@@ -75,7 +83,7 @@ def test_intervention_count_survives_the_late_overwrite(tmp_path,
     _load_patched("benchmark", "new_benchmark.py",
                   "delfin.agent.benchmark")
     br = _load_patched("benchmark_runner", "new_benchmark_runner.py",
-                       "delfin.agent.benchmark_runner")
+                       "delfin.agent.benchmark_runner", monkeypatch)
     from delfin.agent.benchmark import Task
     task = Task(id="lr_steered_goal", task_class="office",
                 mode="solo", prompt="old goal",
@@ -99,7 +107,7 @@ def test_facts_file_minimal_shape(tmp_path, monkeypatch):
     _load_patched("benchmark", "new_benchmark.py",
                   "delfin.agent.benchmark")
     br = _load_patched("benchmark_runner", "new_benchmark_runner.py",
-                       "delfin.agent.benchmark_runner")
+                       "delfin.agent.benchmark_runner", monkeypatch)
     from delfin.agent.benchmark import Task
     task = Task(id="lr_steered_goal", task_class="office",
                 mode="solo", prompt="old goal", verify="never_called.py",
