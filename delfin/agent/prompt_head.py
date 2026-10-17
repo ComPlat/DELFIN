@@ -28,11 +28,16 @@ _HOSTILE_MARKERS = (
     "instruction-shaped", "not quoted: the output carries")
 
 
-def _row_get(row: dict, key: str, default: Any = None) -> Any:
-    if not isinstance(row, dict):
-        return default
-    value = row.get(key, default)
-    return value if value is not None else default
+def _row_get(row: Any, key: str, default: Any = None) -> Any:
+    # Real compose_sections rows arrive as dicts; recorded rows may also
+    # be (name, layer, content) tuples. Both are real rows, both count.
+    if isinstance(row, dict):
+        value = row.get(key, default)
+        return value if value is not None else default
+    if isinstance(row, tuple) and len(row) == 3:
+        return {"name": row[0], "layer": row[1], "content": row[2]}.get(
+            key, default)
+    return default
 
 
 def stable_prefix_len(
