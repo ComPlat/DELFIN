@@ -45,7 +45,14 @@ _THOUSANDS_RE = re.compile(r"^-?\d{1,3}(\.\d{3})+$")
 
 
 def _as_float(value: Any) -> float:
-    """Reject bool/NaN/inf: they are not data, and each poisons a statistic."""
+    """Reject bool/NaN/inf: they are not data, and each poisons a statistic.
+
+    Deliberate name collision with the private _as_float in
+    delfin/common/control_validator.py:1011: different contracts. That
+    one validates CONTROL keys (accepts bool/NaN); this one must reject
+    bool/None/NaN/inf because they poison statistics. Do not "dedupe"
+    the two — that would break one of the two sanity contracts.
+    """
     if isinstance(value, bool) or value is None:
         raise DataCheckError(
             f"{value!r} is not a numeric value (bool/None)")
