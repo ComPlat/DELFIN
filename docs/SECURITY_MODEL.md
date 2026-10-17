@@ -217,7 +217,9 @@ granted directory). `agent.classifier.user_rules` takes rules that start
 with "never allow" or "always allow" and are applied without the model;
 never-allow wins.
 
-The classifier fails closed where nobody looks. When it gives no verdict (a
+The classifier fails closed where nobody looks. A verdict is waited for 20 s;
+`agent.classifier.timeout_s` sets 5 to 120 s (waiting longer only spares a
+question a slow model caused, it lets nothing more through). When it gives no verdict (a
 model error after one retry, a timeout, a garbled answer), an action that
 leaves the workspace (`api_client._leaves_workspace`: network and remote
 tools, messages to other agents, writes outside the workspace or into
