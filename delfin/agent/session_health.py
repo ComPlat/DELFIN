@@ -92,8 +92,10 @@ def classify(record, now, settings):
     *now* is epoch seconds; *settings* the ``agent`` dict from settings.
     Returns ``{"verdict", "reason", "next"}``.
     """
-    health = (settings.get("health", {}) if isinstance(settings, dict)
-              else {})
+    health = settings.get("health", {}) if isinstance(settings, dict) \
+        else {}
+    if not isinstance(health, dict):
+        health = {}
     wait_person_min = _threshold(
         health.get("waiting_on_person_min"), DEFAULT_WAIT_ON_PERSON_MIN, 1.0)
     wait_model_min = _threshold(
@@ -162,3 +164,161 @@ def classify(record, now, settings):
     return {"verdict": "working",
             "reason": "recent turn activity, nothing waiting",
             "next": "no action needed"}
+
+
+# ---------------------------------------------------------------------------
+# collect + watch (the emitting half; classify above stays pure)
+# ---------------------------------------------------------------------------
+
+#: Verdicts whose ENTERING is worth an attention event. waiting_on_person
+#: is emitted only once it is OLD (the watch's own grace), so a question
+#: answered within minutes does not page anyone.
+_EMIT_VERDICTS = ("stalled", "stopped", "paused", "gone", "erroring",
+                  "waiting_on_person")
+
+#: A waiting_on_person verdict must be at least this old (minutes) before
+#: the watch emits for it.
+WAITING_EMIT_MIN = 15
+
+
+def pause_watch(seconds: int) -> None:
+    """Sleep between watch ticks, interruptibly: a sleep that a
+    KeyboardInterrupt wakes must not swallow the interrupt (a person's
+    Ctrl-C stops the loop). Tests pass 0 to keep runs fast."""
+    import time as _t
+    try:
+        _t.sleep(max(0, int(seconds)))
+    except KeyboardInterrupt:
+        raise
+
+
+def collect(settings=None):
+    """One health record per open session, ready for classify.
+
+    Reads only: presence records (session_presence.open_sessions), pause
+    flags (session_pause.is_paused), pending approvals
+    (ops_interface.pending_approvals), last turns (ops_interface.sessions,
+    which enriches each row). Never writes, never sends.
+    """
+    from . import ops_interface
+    from . import session_pause
+
+    approvals = ops_interface.pending_approvals()
+    paused = set(session_pause.paused_keys())
+    oldest = {}
+    for a in approvals:
+        s = str(a.get("session") or "")
+        opened = a.get("opened_at") or 0.0
+        if opened and (s not in oldest or opened < oldest[s]):
+            oldest[s] = opened
+    out = []
+    seen_keys = set()
+    for row in ops_interface.sessions():
+        key = str(row.get("name") or "")
+        sid = str(row.get("session_id") or "")
+        seen_keys.add(key)
+        mine = [a for a in approvals
+                if a["session"] in (key, sid) or a["session_id"] == sid]
+        rec = dict(row)
+        rec["paused"] = key in paused or bool(
+            key and session_pause.is_paused(key))
+        rec["pid_alive"] = True
+        rec["open_approvals"] = [a["id"] for a in mine]
+        rec["approval_opened_at"] = min(
+            (a["opened_at"] for a in mine if a.get("opened_at")),
+            default=None)
+        rec["title"] = row.get("title") or ""
+        rec.setdefault("api_errors_in_a_row", 0)
+        rec.setdefault("no_token_s", 0)
+        rec.setdefault("open_work", False)
+        rec.setdefault("resume_planned", False)
+        rec.setdefault("started_at", None)
+        out.append(rec)
+    # A paused session whose process died leaves only the pause flag: it is
+    # exactly the wave-17 case nobody saw. Include it even though no
+    # presence record announces it any more.
+    for key in sorted(paused - seen_keys):
+        out.append({"name": key, "session_id": "", "title": "",
+                    "paused": True, "pid_alive": False,
+                    "open_approvals": [], "approval_opened_at": None,
+                    "last_turn_end": None, "last_turn": {}, "idle_s": None,
+                    "api_errors_in_a_row": 0, "no_token_s": 0,
+                    "open_work": False, "resume_planned": False,
+                    "started_at": None})
+    return out
+
+
+def watch_events(records, now, state, *, settings=None, stop_all=None,
+                 stop_all_seen=None, emit=True, _clock=None):
+    """One watch tick: emit ONE attention event per (session, verdict)
+    entering an emitting state, deduped until the session leaves it.
+
+    *state* is a persistent dict ({"seen": {...}}); the caller owns it and
+    passes the same dict on every tick. ``stop_all`` is the stop_all record
+    (or None) and ``stop_all_seen`` the watch's dict remembering which stop
+    was already announced. Returns the events emitted this tick. With
+    ``emit=False`` it plans the events without sending them (the --json
+    path uses this to show what WOULD be told).
+    """
+    health = settings.get("health", {}) if isinstance(settings, dict) else {}
+    if not isinstance(health, dict):
+        health = {}
+    from . import attention
+    emitted = []
+    seen = state.setdefault("seen", {})
+    stop_seen = stop_all_seen if stop_all_seen is not None else {}
+
+    if stop_all:
+        at = stop_all.get("at")
+        mark = ("stop-all", _num(at))
+        if mark not in stop_seen:
+            stop_seen[mark] = True
+            emitted.append(("stop-all", f"stop-all is SET: every agent of "
+                            "yours ends itself (reason: "
+                            f"{stop_all.get('reason') or 'not given'}). "
+                            "Restart a session yourself when you are back."))
+    else:
+        stop_seen.clear() if isinstance(stop_seen, dict) else None
+
+    fresh = False
+    for rec in records:
+        started = _num(rec.get("started_at"))
+        at = _num((stop_all or {}).get("at"))
+        if at:
+            # a fresh session started after the stop: the stop is over
+            if started > at and rec.get("pid_alive") and not fresh:
+                fresh = True
+                if ("cleared", at) not in stop_seen:
+                    stop_seen[("cleared", at)] = True
+                    emitted.append(("cleared", "stop-all is over: a fresh "
+                                    "session started after it. New agents "
+                                    "are allowed again."))
+
+        verdict = classify(rec, now, health)
+        title = _one_line(rec.get("title") or "")
+        name = _one_line(rec.get("name") or rec.get("session_id"))
+        grace = WAITING_EMIT_MIN if verdict == "waiting_on_person" else 0
+        if verdict not in _EMIT_VERDICTS:
+            seen.pop(name, None)
+            continue
+        if verdict == "waiting_on_person":
+            opened = _num(rec.get("approval_opened_at"))
+            if opened and now - opened < grace * 60:
+                continue
+        key = (name, verdict)
+        if seen.get(key):
+            continue
+        seen[key] = True
+        emitted.append((name, f"{name} {verdict}: "
+                        f"{_one_line(rec.get('reason')) or verdict}. "
+                        f"{_one_line(rec.get('next'))}"))
+        _ = title
+    for name, text in emitted:
+        if emit:
+            try:
+                attention.emit_attention("session_state", session_id=name,
+                                         title=text)
+            except Exception:
+                pass
+    _ = _clock
+    return emitted

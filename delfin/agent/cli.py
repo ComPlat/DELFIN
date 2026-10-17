@@ -5552,6 +5552,69 @@ def build_parser() -> argparse.ArgumentParser:
                                    "the checkout DELFIN runs from)")
     ops_status_p.set_defaults(func=_cmd_ops)
 
+    # ops health -- the person sees at a glance which session is stuck and
+    # why (UX2, wave 17). READ-ONLY: classify + collect read, nothing
+    # writes; --wait is the loop the person or operator starts that emits
+    # the attention events (emit_attention only, interval >= 60 s).
+    def _cmd_ops_health(args):
+        import time as _t
+
+        from delfin.agent import ops_interface as _oi
+        from delfin.agent import session_health as _sh
+        from delfin.agent import stop_all as _sa
+
+        interval = max(60, int(getattr(args, "interval", 0) or 0))
+        state = {"seen": {}}
+        stop_seen = {}
+        stop = _sa.last_stop()
+        while True:
+            try:
+                records = _sh.collect()
+            except KeyboardInterrupt:
+                return 0
+            if getattr(args, "wait", False):
+                events = _sh.watch_events(records, _t.time(), state,
+                                          settings={}, stop_all=stop,
+                                          stop_all_seen=stop_seen)
+                for name, text in events:
+                    print(f"attention: {text}", flush=True)
+            rows = []
+            for rec in records:
+                verdict = _sh.classify(rec, _t.time(), {})
+                rows.append({
+                    "name": rec.get("name"),
+                    "session_id": rec.get("session_id"),
+                    "verdict": verdict["verdict"],
+                    "reason": verdict["reason"],
+                    "next": verdict["next"],
+                })
+            if getattr(args, "json", False):
+                print(_oi.dumps(rows), flush=True)
+            else:
+                for r in rows:
+                    print(f"{r['name']}  {r['verdict']}: {r['reason']} "
+                          f"[{r['next']}]", flush=True)
+            if not getattr(args, "wait", False):
+                return 0
+            _sh.pause_watch(interval)
+            stop = _sa.last_stop()
+
+    ops_health_p = ops_sub.add_parser(
+        "health",
+        help="One line per open session: verdict (working / waiting on "
+             "you / stalled / paused / gone / ...), why, and the next "
+             "step; --wait loops and emits the attention events",
+    )
+    ops_health_p.add_argument("--json", action="store_true",
+                              help="Print the rows as JSON")
+    ops_health_p.add_argument("--wait", action="store_true",
+                              help="Loop forever (interval >= 60 s) and "
+                                   "emit ONE attention event per session "
+                                   "entering a stuck state, deduped")
+    ops_health_p.add_argument("--interval", type=int, default=60,
+                              help="Seconds between --wait ticks (min 60)")
+    ops_health_p.set_defaults(func=_cmd_ops_health)
+
     # The supervisor's side of running sessions, as data
     # (delfin/agent/ops_interface.py): events and state to read; a message,
     # an escalation to the person and a pause as the only actions. There is

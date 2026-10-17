@@ -73,13 +73,34 @@ def wake_blocked(key: str) -> bool:
     return is_paused(key)
 
 
+def _emit_state_event(key: str, what: str, detail: str) -> None:
+    """Tell the person, once, that a control stepped in (UX2, wave 17).
+
+    Wave-17 finding: a stale pause stopped 25 sessions and nobody saw it
+    for 100 min. Every control worked -- the person was simply not told.
+    Emitted through attention.emit_attention only; a failure here must
+    never undo the pause itself, hence the bare except.
+    """
+    try:
+        from .attention import emit_attention
+        emit_attention("session_state", session_id=key,
+                       title=f"{what}: {detail}")
+    except Exception:
+        pass
+
+
 def pause(key: str, reason: str = "") -> dict:
     """Mark session ``key`` paused (idempotent, atomic).
 
     Writes the flag under the cross-process lock so two pauses cannot tear
     each other. Returns the flag record. Reason is for the operator's
     benefit when it lists pauses; it is not read by the engine.
+
+    The FIRST pause emits one attention event ("session paused", who, why,
+    the resume command); a pause of an already-paused session emits nothing
+    (the person was told once -- that is the whole point).
     """
+    already = is_paused(key)
     path = _path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {"key": str(key), "reason": _reason(reason),
@@ -91,22 +112,36 @@ def pause(key: str, reason: str = "") -> dict:
         with open(tmp, "wb") as fh:
             fh.write(blob)
         os.replace(tmp, path)
+    if not already:
+        why = record["reason"] or "no reason given"
+        _emit_state_event(str(key), "paused",
+                          f"{why}. Resume: delfin-agent resume {key}")
     return record
 
 
 def resume(key: str) -> bool:
-    """Un-pause session ``key``. Returns True if a flag was removed."""
+    """Un-pause session ``key``. Returns True if a flag was removed.
+
+    Resuming an unpaused session emits nothing (there is nothing to undo;
+    resume returns False then).
+    """
     path = _path(key)
+    was = False
     try:
         from .bash_jobs import cross_process_lock
         with cross_process_lock(path):
             try:
                 os.remove(path)
-                return True
+                was = True
             except FileNotFoundError:
-                return False
+                was = False
     except OSError:
-        return False
+        was = False
+    if was:
+        _emit_state_event(str(key), "resumed",
+                          f"the pause flag was removed. "
+                          f"Re-pause: delfin-agent pause {key}")
+    return was
 
 
 def paused_keys() -> list[str]:
