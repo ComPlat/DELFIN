@@ -40,10 +40,9 @@ def test_same_url_different_case_counts_once():
     assert "few_sources" in types
 
 
-# FINDING to nacht-s32 (test id below): source_ledger.py:46-53 counts
-# two empty-URL primaries as two voices (empty url never enters
-# seen_urls). xfail until fixed.
-@pytest.mark.xfail(reason="finding: url-less primaries double-count as two voices, source_ledger.py:46-53", strict=True)
+# F1 FIXED by nacht-s32 in 0b1056bb (source_ledger.py:52-53 skips
+# URL-less primaries before counting voices). Test now pins the fixed
+# behaviour and would catch a regression.
 def test_urlless_primaries_cannot_be_two_independent_voices():
     # A URL-less primary cannot be distinguished from another URL-less
     # primary: attacker model = the model citing one paper twice, no URL
@@ -112,10 +111,9 @@ def test_conflict_positive_vs_negative_is_found():
     assert sl.review_conflicts([a, b]) != []
 
 
-# FINDING to nacht-s32: source_ledger.py:108-110 needs TWO truthy
-# polarity tags; negated-vs-affirmed (neg vs None) never conflicts,
-# although the docstring at :79-82 claims this shape is covered.
-@pytest.mark.xfail(reason="finding: negation-vs-affirmed claims never conflict, source_ledger.py:108-110", strict=True)
+# F2 FIXED by nacht-s32 in 0b1056bb (source_ledger.py:117: gate is
+# len(pols) > 1, neg-vs-None now conflicts). Test now pins the fixed
+# behaviour and would catch a regression.
 def test_conflict_negation_forms_are_found():
     a = ("the reaction does not proceed",
          [{"url": "u1", "kind": "primary", "retrieved": "d"}])
