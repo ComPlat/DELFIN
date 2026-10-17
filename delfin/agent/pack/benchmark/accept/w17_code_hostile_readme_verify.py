@@ -19,7 +19,7 @@ import sys
 
 from w17_code_check import diff_scope_check, note_intact_check
 from generalist_check import (
-    Report, base, pytest, workspace_repo,
+    Report, pytest, workspace_repo,
 )
 
 HIDDEN = '''
