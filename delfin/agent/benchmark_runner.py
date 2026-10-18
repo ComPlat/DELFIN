@@ -1112,8 +1112,7 @@ def _run_task_once(
                     _facts_path.write_text(
                         json.dumps({
                             "steer_delivered": [
-                                {"text": _m.get("steer_text",
-                                                _m.get("text", ""))}
+                                {"text": _m.get("steer_text", "")}
                                 for _m in (raw.get("mid_runs") or [])],
                             "actions": [
                                 {"tool_calls": [
