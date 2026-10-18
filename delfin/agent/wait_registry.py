@@ -30,7 +30,16 @@ from pathlib import Path
 
 #: The kinds a turn may wait for. Time waits fire when ``now >= value``;
 #: every other kind fires when an event of the same kind and value arrives.
-WAIT_KINDS = ("message_from", "job_id", "approval_id", "time")
+#: ``file`` fires when the file's CONTENT changes (a stat snapshot taken at
+#: register time; a touch without a content change does not fire).
+WAIT_KINDS = ("message_from", "job_id", "approval_id", "time", "file")
+
+#: Who a registered wait may name. A free-form on_whom is an injection
+#: surface (reviewer nacht-s19, wave 18): only these four exist.
+ON_WHOM_VALUES = ("session", "operator", "person", "ci")
+
+#: for_what is one line; a second line or markup has no business here.
+FOR_WHAT_MAX = 200
 
 _KH = ("message_from", "job_id", "approval_id")
 _NOTE_BY_KIND = {
@@ -38,6 +47,7 @@ _NOTE_BY_KIND = {
     "job_id": "Job {value} reported while the session waited.",
     "approval_id": "Approval {value} was answered while the session waited.",
     "time": "The wait until {value} is over.",
+    "file": "The file {value} changed while the session waited.",
 }
 
 
@@ -70,23 +80,119 @@ def _save(waits: list[dict], key: str = "") -> None:
     write_text_atomic(_store_path(key), json.dumps(waits))
 
 
-def register(kind: str, value: str, *, key: str = "") -> dict:
+def _strip_markup(text: str) -> str:
+    """Drop angle-bracket markup so a for_what like
+    ``line one <script>alert(1)</script>`` cannot carry HTML into a
+    renderer that does not escape. Content in the tags stays as plain
+    text; the tags themselves go."""
+    import re
+
+    return re.sub(r"<[^>]*>", "", str(text or ""))
+
+
+def _clean_oneline(value, limit: int = FOR_WHAT_MAX) -> str:
+    """*value* as ONE bounded line: newlines and carriage returns become
+    spaces, the rest is stripped, capped at *limit* chars. Markup is left
+    as data — the renderer escapes (session_health._one_line and the
+    cli printer both plain-text it); what must not happen is a second
+    line or unbounded length reaching the display."""
+    text = " ".join(str(value or "").replace("\r", " ").split("\n"))
+    text = " ".join(text.split())
+    return _strip_markup(text)[:limit]
+
+
+def _clean_on_whom(value) -> str:
+    """*value* if it is one of ON_WHOM_VALUES (case-folded), else ''.
+    An unknown on_whom is rejected, not mapped: a wait that claims to wait
+    on a name that is not one of the four is a lie about who can satisfy
+    it."""
+    text = str(value or "").strip().lower()
+    return text if text in ON_WHOM_VALUES else ""
+
+
+def _file_signature(path: Path) -> str:
+    """A content-bound signature of *path*: size + sha256 of up to
+    256 KiB. mtime is deliberately NOT in the signature — a touch without
+    a content change must not fire the wait (target 4). Missing file ->
+    'missing' (a later appearance IS a change)."""
+    import hashlib
+
+    try:
+        if not path.is_file():
+            return "missing"
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            digest.update(fh.read(256 * 1024))
+        return f"{path.stat().st_size}:{digest.hexdigest()}"
+    except OSError:
+        return "missing"
+
+
+def _resolve_workspace_path(raw: str) -> Path:
+    """A file-wait value as a workspace-relative path.
+
+    Reviewer constraint (wave 18): the value must stay inside the
+    session's workspace — no absolute paths, no ``..`` escapes, no
+    symlink escape. Absolute paths and escapes raise ValueError at
+    register time; a symlink escape is caught by resolve() against the
+    workspace root.
+    """
+    from . import state_paths
+
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("wait_registry: empty file path")
+    if text.startswith("/") or (len(text) > 1 and text[1] == ":"):
+        raise ValueError(
+            f"wait_registry: file wait must be workspace-relative, got {text!r}")
+    candidate = Path(text)
+    if any(part == ".." for part in candidate.parts):
+        raise ValueError(
+            f"wait_registry: file wait must not contain '..', got {text!r}")
+    root = state_paths.workspace_state_dir("").parent.parent
+    resolved = (root / candidate).resolve()
+    root_resolved = root.resolve()
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise ValueError(
+            f"wait_registry: file wait escapes the workspace: {text!r}")
+    return resolved
+
+
+def register(kind: str, value: str, *, key: str = "",
+             on_whom: str = "", for_what: str = "") -> dict:
     """Register one wait for session ``key``. Returns the wait row.
 
     Raises ValueError for an unknown kind or an empty value: a wait with
     nothing to wait for can never fire and would suppress nudges forever.
-    """
+
+    ``on_whom`` names who can satisfy the wait — one of ON_WHOM_VALUES
+    (a session name is carried in ``value``; the enum only says the KIND
+    of satisfier). ``for_what`` is the one line the display shows. Both
+    are optional so every existing caller keeps its signature.
+
+    A ``file`` wait takes its content signature NOW (register time, not
+    lazily — reviewer nacht-s19: a lazily-read snapshot is a race and a
+    write amplification)."""
     if kind not in WAIT_KINDS:
         raise ValueError(f"wait_registry: unknown wait kind {kind!r}")
     value = str(value or "").strip()
     if not value:
         raise ValueError(f"wait_registry: empty value for {kind!r}")
+    whom = _clean_on_whom(on_whom)
+    if on_whom and not whom:
+        raise ValueError(
+            f"wait_registry: on_whom must be one of {ON_WHOM_VALUES}, "
+            f"got {on_whom!r}")
     wait = {
         "id": uuid.uuid4().hex[:12],
         "kind": kind,
         "value": value if kind == "time" else value,
         "registered_at": time.time(),
+        "on_whom": whom,
+        "for_what": _clean_oneline(for_what),
     }
+    if kind == "file":
+        wait["file_sig"] = _file_signature(_resolve_workspace_path(value))
     waits = _load(key)
     waits.append(wait)
     _save(waits, key)
