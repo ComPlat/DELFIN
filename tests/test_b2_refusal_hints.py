@@ -39,6 +39,35 @@ def test_no_hint_for_harmless_checkout_reads():
     assert refusal_hints.suggest("git status", "checkout") == ""
 
 
+def test_bare_restore_of_a_file_gets_the_hint():
+    # Reviewer finding 3: `git restore <file>` discards uncommitted work
+    # exactly like `git checkout -- <file>`.
+    hint = refusal_hints.suggest("git restore delfin/agent/x.py", "checkout")
+    assert hint, "bare git restore must fire the checkout hint"
+    assert len(hint.splitlines()) == 1
+    assert "commit" in hint
+
+
+def test_restore_staged_stays_silent():
+    assert refusal_hints.suggest("git restore --staged x.py", "checkout") == ""
+
+
+def test_env_prefixed_checkout_gets_the_hint():
+    # Reviewer finding 4: leading VAR=value tokens and env(1) wrappers
+    # must not defeat the shape check; the gate sees the full line.
+    for cmd in ("env GIT_CONFIG_NOSYSTEM=1 git checkout -- delfin/agent/x.py",
+                "GIT_CONFIG_NOSYSTEM=1 git checkout -- delfin/agent/x.py",
+                "nohup git restore delfin/agent/x.py"):
+        hint = refusal_hints.suggest(cmd, "checkout")
+        assert hint, cmd
+        assert len(hint.splitlines()) == 1
+
+
+def test_env_prefixed_reads_stay_silent():
+    assert refusal_hints.suggest(
+        "GIT_CONFIG_NOSYSTEM=1 git log --oneline", "checkout") == ""
+
+
 # 2. --amend / revert of a shared or merge commit.
 def test_amend_hint():
     hint = refusal_hints.suggest("git commit --amend", "amend")

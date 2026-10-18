@@ -66,20 +66,50 @@ def _hint_stderr(command: str) -> str:
     return f"Drop the stderr redirect: `{reduced}`."
 
 
+_ENV_VAR_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+
+
+def _git_words(command: str) -> list[str]:
+    """The words of ``command`` after leading VAR=value tokens and after
+    env(1)/nohup, or [] when the line is not a git invocation. The shell
+    gate reads the full line, so the shape check must too -- but it never
+    widens to 'contains git anywhere' (that would hint git log)."""
+    words = (command or "").split()
+    if words and words[0] in ("env", "nohup", "command", "nice"):
+        words = words[1:]
+    while words and _ENV_VAR_TOKEN.fullmatch(words[0]):
+        words = words[1:]
+    if words and words[0] == "env":
+        words = words[1:]
+    if not words or words[0] != "git" or len(words) < 2:
+        return []
+    if words[1] not in ("checkout", "restore"):
+        return []
+    return words
+
+
 def _checkout_shape(command: str) -> str:
-    """Which checkout shape a git line is: "paths" (``git checkout --
-    paths`` or ``git checkout <ref> -- paths``), "branch" (a plain branch
-    switch), or "" (anything else, e.g. git log that merely mentions the
-    word). The split on `` -- `` is what separates a destructive checkout
-    from a read; the word "checkout" alone never does."""
-    words = command.split()
-    if not words or words[0] != "git" or "checkout" not in words[1:2]:
-        if not (words and words[0] == "git" and len(words) > 1
-                and words[1] == "checkout"):
+    """Which checkout/restore shape a git line is: "paths" (``git checkout
+    -- paths``, ``git checkout <ref> -- paths``, or a bare ``git restore
+    <paths>``, which discards uncommitted work without any --), "branch"
+    (a plain branch switch), or "" (anything else, e.g. git log that
+    merely mentions the word). The `` -- `` separator is what separates a
+    destructive checkout from a read; the word "checkout" alone never
+    does."""
+    words = _git_words(command)
+    if not words:
+        return ""
+    rest = words[2:]
+    if words[1] == "restore":
+        # Bare `git restore <paths>` discards uncommitted changes in the
+        # named files. --staged / --worktree variants are staging-area
+        # operations, not tree rewrites; leave them to the caller.
+        if "--staged" in rest or "-S" in rest:
             return ""
+        return "paths"
     if " -- " in command:
         return "paths"
-    if "--" in words[2:]:
+    if "--" in rest:
         return "paths"
     return "branch"
 
