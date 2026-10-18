@@ -37,4 +37,8 @@ their request for that push and that pull request.
    here: give the link.
 
 ## Report
-The pull request link, what it contains, and the check results.
+The pull request link, what it contains, and the check results. When the
+user asked for it, say "watching until green" and continue with the
+`pr-until-green` skill: it waits for the checks (no tight polling),
+repairs reds on this branch within its limits, and stops and asks the
+person at its limits. It never merges.
