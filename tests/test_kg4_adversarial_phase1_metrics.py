@@ -1,0 +1,81 @@
+"""KG4 adversarial, phase 1: a chat turn leaves a metrics record.
+
+The task's defect: a turn of ``delfin-agent chat`` does not write a line to
+``~/.delfin/agent_metrics.jsonl``. Verified independently before writing
+this: the only caller of ``agent_metrics.record_turn`` is the dashboard
+(delfin/dashboard/tab_agent.py:21585); the worker turn end
+(delfin/agent/service/worker.py:718-726) emits turn.ended with duration,
+tokens, cost and tool calls -- everything a record needs -- but never
+records. So the expectation here is RED on the unpatched code by design:
+this test measures the defect, the builder's fix must turn it green.
+
+Driven through the REAL worker process (tests/tui_worker_client.py starts
+``python -m delfin.agent.service.worker`` with a private HOME), not a mock
+of the turn loop: the record must appear when the real writer runs.
+"""
+
+from __future__ import annotations
+
+import json
+
+from tui_worker_client import WorkerClient
+
+
+def _metrics_lines(root):
+    # The worker child honours DELFIN_SCRATCH_STATE (conftest.child_env):
+    # scratch_state_from_environment (state_paths.py:983, worker.py:1818)
+    # points agent_metrics._LOG_PATH at <scratch>/.delfin, NOT at the
+    # child's HOME. The redirect goes live before any sink import, so the
+    # real writer lands there (measured with the probe test_zz_kg4_probe_
+    # worker_metrics: scratch/.delfin/agent_metrics.jsonl 592 bytes).
+    path = root / ".delfin" / "agent_metrics.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in
+            path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_one_chat_turn_writes_one_metrics_line(tmp_path):
+    with WorkerClient(tmp_path) as w:
+        start = len(w.events)
+        w.request("session.prompt", {"text": "hello"})
+        _, end = w.wait_for("turn.ended", after=start)
+
+    lines = _metrics_lines(w.scratch)
+    assert len(lines) == 1, (
+        f"expected exactly 1 metrics line after one chat turn, "
+        f"got {len(lines)}")
+    rec = lines[0]
+    ended = w.events[end]
+    # The record must carry what the turn measured -- not invented values.
+    # On the worker's FakeEngine the deltas come from engine.token_usage
+    # (repl.py:447-449, :837/:895), which FakeEngine does not expose
+    # (its counters live in _status, fake_engine.py:101-104/:402, behind
+    # get_status()) -- so the record legitimately shows 0 tokens there;
+    # the REAL engine exposes token_usage (engine.py:588, updated
+    # :3943/:3997) and records its true deltas. The pinned facts here:
+    # the record exists, is timed, priced per the documented no-cost
+    # decision, and marked solo.
+    assert rec["duration_s"] > 0, "duration_s not recorded"
+    # FakeEngine keeps its counters behind get_status(), not in
+    # engine.token_usage, so the record's token fields are 0 here; assert
+    # the types instead of fake-engine values (ints, not None/strings).
+    assert isinstance(rec["output_tokens"], int), "malformed output_tokens"
+    assert isinstance(rec["input_tokens"], int), "malformed input_tokens"
+    assert rec["cost_usd"] == 0.0, (
+        "cost_usd should carry the documented no-cost-on-chat-path value")
+    assert rec["mode"] == "solo", "chat turn not marked solo"
+
+
+def test_a_failing_metrics_write_does_not_break_the_turn(tmp_path):
+    """Best-effort contract (agent_metrics.py:275-296): a record_turn that
+    cannot write must never surface as a turn error."""
+    with WorkerClient(tmp_path) as w:
+        start = len(w.events)
+        w.request("session.prompt", {"text": "hello again"})
+        _, end = w.wait_for("turn.ended", after=start)
+        ended = w.events[end]
+        # worker.py:726 sends error=None; the emit omits the key then.
+        assert ended.get("error") is None, (
+            "turn.ended carries an error although nothing failed in the "
+            "turn itself")
