@@ -3,7 +3,7 @@
 Three commands over the TaskState store (delfin/agent/task_state.py),
 wired into the terminal by repl.py (KG1) as one line:
 
-    from .state_commands import dispatch as _state_dispatch
+    from . import state_commands as _state_commands
 
 * ``/state``            -> show(st): the whole store, bounded.
 * ``/state edit <f>…``  -> edit(st, field, text): the PERSON names a
@@ -21,7 +21,7 @@ And one guard the terminal must call for every incoming message:
 """
 from __future__ import annotations
 
-# Fields /state edit accepts. Deliberately narrow: a typos is refused
+# Fields /state edit accepts. Deliberately narrow: a typo is refused
 # with the list, not guessed. "goal" is the alias for the task field.
 _EDITABLE = {
     "goal": "task",
