@@ -36,10 +36,16 @@ def _sink():
 
 
 def test_a_wake_prompt_stays_marked_after_the_hook():
+    # Rewritten along its intent (operator finding on PR #324): the
+    # mark must survive anything the hook does — but a wake is never
+    # fused with the instruction at all, so here the wake passes
+    # through untouched and STILL marked. The mark-survival fusion
+    # case itself is covered by the plain-prompt path in
+    # test_b1_task_presence.py::test_hooks_do_not_double_fuse.
     history = [{"role": "user", "content": "wake", HARNESS_KEY: True}]
     engine = _engine(history)
     repl_mod.run_turn(engine, HarnessText("[operator] wake"), sink=_sink())
-    assert "no task from the person" in str(engine.sent)
+    assert str(engine.sent) == "[operator] wake", engine.sent
     assert isinstance(engine.sent, HarnessText), type(engine.sent).__name__
 
 
