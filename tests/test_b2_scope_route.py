@@ -15,10 +15,18 @@ from __future__ import annotations
 
 import pytest
 
+import posixpath
+
+
 from delfin.agent import scope_route
 
 
-SCOPE = ("delfin/**", "tests/**", ".gate/**")
+# A realistic write scope: the builder's OWNED files, exactly as the
+# write_allow_globs name them -- not "delfin/**", which would wrongly
+# cover protected files (api_client.py, engine.py) that are precisely the
+# paths this module routes.
+SCOPE = ("delfin/agent/scope_route.py", "delfin/agent/refusal_hints.py",
+         "tests/**", ".gate/**")
 
 
 def test_in_scope_path_gets_no_plan():
@@ -30,8 +38,9 @@ def test_out_of_scope_path_gets_the_px_route():
     plan = scope_route.plan("delfin/agent/api_client.py", SCOPE,
                             "/home/u/proj")
     assert plan is not None
-    assert plan["orig_copy"].endswith(".gate/px/orig_api_client.py")
-    assert plan["new_copy"].endswith(".gate/px/new_api_client.py")
+    assert plan["orig_copy"].startswith("/home/u/proj/.gate/px/orig_")
+    assert plan["new_copy"].startswith("/home/u/proj/.gate/px/new_")
+    assert plan["orig_copy"].endswith("api_client.py")
     assert plan["message"].startswith("commit please")
     assert "api_client.py" in plan["message"]
     # One line, and no shell syntax in it.
@@ -77,10 +86,21 @@ def test_hostile_path_with_dots_and_shell_syntax_gets_a_generic_message():
         assert "secrets" not in plan["message"], nasty
 
 
-def test_message_name_is_derived_from_the_basename_only():
+def test_message_name_is_derived_from_the_sanitised_path_not_the_raw_one():
     plan = scope_route.plan("deeply/nested/dir/name.py", SCOPE, "/home/u/proj")
-    assert plan["orig_copy"].endswith("orig_name.py")
-    assert plan["new_copy"].endswith("new_name.py")
+    # The copy name comes from sanitised path components, never the raw
+    # text, and ends in the file's basename.
+    assert plan["orig_copy"].endswith("name.py")
+    assert "deeply" not in posixpath.basename(plan["orig_copy"])
+
+
+def test_single_star_matches_one_level_only():
+    # A scope entry without '**' matches a file at that depth, and must
+    # NOT reach deeper levels.
+    assert scope_route.plan("delfin/x.py", ("delfin/*",), "/home/u/proj") \
+        is None
+    plan = scope_route.plan("delfin/agent/x.py", ("delfin/*",), "/home/u/proj")
+    assert plan is not None
 
 
 def test_duplicate_names_are_kept_distinct():
@@ -96,8 +116,3 @@ def test_empty_or_whitespace_path_is_not_planned():
     assert scope_route.plan("", SCOPE, "/home/u/proj") is None
     assert scope_route.plan("   ", SCOPE, "/home/u/proj") is None
 
-
-def test_scope_matched_globs_honour_a_direct_star():
-    # A scope entry without '**' must still match one path level.
-    plan = scope_route.plan("delfin/agent/x.py", ("delfin/*",), "/home/u/proj")
-    assert plan is None
