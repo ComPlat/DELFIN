@@ -262,9 +262,21 @@ def test_the_counts_still_match_what_was_measured():
     # other 52 -> 57 on 2026-10-17: tasks_w17_data.yaml (wave 17, D1) --
     # five data-analysis tasks on local CSV fixtures; each setup builds
     # only its own fixture folder under the workspace.
-    assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
-                      "science": 23, "chemistry": 5, "generalist": 17,
-                      "other": 57}, counts
+    # generic_project 18 -> 24 on 2026-10-17: the six tasks_w17_method.yaml
+    # tasks (package M1, wave 17). Each setup builds its own git-seeded
+    # patch starts from main, so it carries both the C1 and the M1 change.
+    # generalist 17 -> 22 on 2026-10-17 (C1, wave 17): the five
+    # tasks_w17_code.yaml tasks. Each setup builds one git repository in
+    # its own subdirectory of the fixture workspace; the acceptance
+    # scripts judge end state on scratch copies only.
+    # other 52 -> 56 on 2026-10-18: tasks_w17_longrun.yaml (KG4 phase 3),
+    # four long-run tasks, task classes office_ops x3 and office_read x1
+    # — none is a writing class; their fixtures are built by
+    # setup/w17_longrun_setup.py into the office workspace and cleaned by
+    # the guard.
+    assert counts == {"office": 13, "behavior": 16, "generic_project": 24,
+                      "science": 23, "chemistry": 5, "generalist": 22,
+                      "other": 61}, counts
 
 
 # ---------------------------------------------------------------------------
