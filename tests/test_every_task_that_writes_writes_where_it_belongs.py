@@ -259,6 +259,8 @@ def test_the_counts_still_match_what_was_measured():
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
     #
+    # other 52 -> 57 on 2026-10-18: tasks_w17_web.yaml (W1, wave 17,
+    # w17_web_pages/ in the workspace and refuses an existing fixture.
     # other 52 -> 57 on 2026-10-17: tasks_w17_data.yaml (wave 17, D1) --
     # five data-analysis tasks on local CSV fixtures; each setup builds
     # only its own fixture folder under the workspace.
@@ -276,7 +278,7 @@ def test_the_counts_still_match_what_was_measured():
     # the guard.
     assert counts == {"office": 13, "behavior": 16, "generic_project": 24,
                       "science": 23, "chemistry": 5, "generalist": 22,
-                      "other": 61}, counts
+                      "other": 66}, counts
 
 
 # ---------------------------------------------------------------------------
