@@ -866,6 +866,7 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     # proceeds with its full prompt either way.
     try:
         from . import task_presence as _tp
+        was_harness = isinstance(prompt, HarnessText)
         _ws = getattr(getattr(engine, "kit_permissions", None),
                       "workspace", None)
         _status, _reason = _tp.assess(
@@ -874,6 +875,12 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         _note = _tp.instruction_for(_status)
         if _note:
             prompt = _note + "\n\n" + prompt
+            # A HarnessText wake keeps its mark after the fusion: a
+            # re-wrapped plain str would look like a person message to
+            # every later turn (the wave-17 bug again). Same re-wrap
+            # the fresh-start branch below makes at repl.py:864-865.
+            if was_harness:
+                prompt = HarnessText(prompt)
             _emit(RenderItem("notice", text=_note))
     except Exception:
         pass

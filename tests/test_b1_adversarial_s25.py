@@ -1,27 +1,21 @@
-"""s25 adversarial tests for package B1 (task presence).
+"""Reviewer (s25) adversarial cases for B1, folded into the builder's file.
 
-Reviewer layer on top of the builder's controls
-(tests/test_b1_task_presence.py). Attacking what the builder's suite
-does not:
-A. HarnessText wake prompt reaching run_turn — the mark must survive the
-   hook (the sent user message must stay harness-marked, and the wake
-   text must never count as a task).
-B. A person's message arriving mid-session (after a missing-history
-   turn) flips the status to present; the notice stops.
-C. First turn of a real session: EMPTY history + a plain typed prompt
-   must be present, not missing (a real first task is not scolded).
-D. None history and None workspace must not raise (assess is called on
-   every turn; robustness of the pure module).
-E. The hook must not change what the model receives on present (the
-   prompt passes through byte-identical).
+Source: git show 28fba2c4:tests/test_b1_adversarial_s25.py (the reviewer's
+branch; the cases, not the branch, are merged here). 4 were red on the
+pre-fix tree; they pin:
 
-Wave-15b rule: real call sites (run_turn / prepare_fresh_turn) with the
-fake engine/sink; the engine records what it was actually sent.
+A. a HarnessText wake stays HarnessText after the hook (the mark must
+   survive the fusion — a re-wrapped plain str would look like the person
+   to every later turn, the wave-17 bug again);
+B. a person speaking mid-session flips missing -> present and the notice
+   stops;
+C. empty history + plain typed prompt = present (a real first task is
+   not scolded); empty history alone = missing;
+D. assess(None history) must not raise;
+E. on present the prompt passes through byte-identical.
 """
 
 from __future__ import annotations
-
-import types
 
 import pytest
 
@@ -31,52 +25,25 @@ from delfin.agent.harness_rows import HARNESS_KEY, HarnessText
 pytestmark = pytest.mark.timeout(60)
 
 
-class _FakeEngine:
-    def __init__(self, history=None):
-        self.messages = list(history or [])
-        self.session_id = "test-session"
-        self.kit_permissions = types.SimpleNamespace(workspace=None)
-        self.start_fresh = None
-        self.last_turn_stop_reason = ""
-        self._refusal_entries = lambda: None
-        self._last_input_tokens = 0
-
-    def stream_response(self, user_message=None, **kwargs):
-        self.sent = user_message
-        return "ack"
-
-    def get_status(self):
-        return {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
-
-    def estimate_context_tokens(self):
-        return 0
+def _engine(history):
+    from tests.test_b1_task_presence import _FakeEngine
+    return _FakeEngine(history)
 
 
-class _Sink:
-    def __init__(self):
-        self.items = []
-
-    def __call__(self, item):
-        self.items.append(item)
+def _sink():
+    from tests.test_b1_task_presence import _Sink
+    return _Sink()
 
 
 def test_a_wake_prompt_stays_marked_after_the_hook():
-    """Fused HarnessText wake text keeps the harness mark after the hook.
-
-    If the hook re-wraps the prompt as a plain str, the wake text would
-    look like a person message to every LATER turn — the exact bug the
-    wave-17 finding describes.
-    """
     history = [{"role": "user", "content": "wake", HARNESS_KEY: True}]
-    engine = _FakeEngine(history)
-    out = repl_mod.run_turn(engine, HarnessText("[operator] wake"), sink=_Sink())
+    engine = _engine(history)
+    repl_mod.run_turn(engine, HarnessText("[operator] wake"), sink=_sink())
     assert "no task from the person" in str(engine.sent)
-    # The mark must survive whatever the hook did to the prompt.
     assert isinstance(engine.sent, HarnessText), type(engine.sent).__name__
 
 
 def test_b_person_speaks_mid_session_notice_stops():
-    """After a missing turn, a typed person message flips to present."""
     from delfin.agent import task_presence
     harness_only = [{"role": "user", "content": "[wake]", HARNESS_KEY: True}]
     status, _ = task_presence.assess(harness_only, workspace=None)
@@ -88,12 +55,9 @@ def test_b_person_speaks_mid_session_notice_stops():
 
 
 def test_c_first_turn_empty_history_plain_prompt_is_present():
-    """A real first task must not be told it has no task."""
     from delfin.agent import task_presence
     status, reason = task_presence.assess([], workspace=None)
-    # Empty history alone is missing...
     assert status == "missing", reason
-    # ...but assess with a plain typed prompt counts it (prompt kwarg).
     status, _ = task_presence.assess([], workspace=None, prompt="Fix bug 1234")
     assert status == "present"
 
@@ -106,10 +70,9 @@ def test_d_assess_survives_none_history_and_none_workspace():
 
 
 def test_e_present_passes_prompt_through_unchanged():
-    """On present the hook must not touch the prompt at all."""
     history = [{"role": "user", "content": "the task: run the suite"}]
-    engine = _FakeEngine(history)
-    sink = _Sink()
+    engine = _engine(history)
+    sink = _sink()
     out = repl_mod.prepare_fresh_turn(engine, "continue phase 2")
     assert out == "continue phase 2", out
     repl_mod.run_turn(engine, "continue phase 2", sink=sink)
