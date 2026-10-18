@@ -58,7 +58,7 @@ Terminology for ``stop_kind`` (the headline of the map):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 # Stop kinds --- vocabulary of the map, as above.
 FINISHED = "finished"
