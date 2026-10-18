@@ -176,10 +176,14 @@ def test_plain_prompt_counts_as_person_even_after_harness_only_turns():
 # --------------------------------------------------- 6: run_turn surface
 
 def test_run_turn_emits_notice_on_missing():
+    # The instruction fuses into a non-str prompt (the person typed
+    # nothing this turn — prompt=None, e.g. an internal continuation) on
+    # a missing history. A plain typed prompt is the person ALWAYS
+    # (QS ruling), and a HarnessText wake never carries the instruction
+    # (PR #324 hang); see test_wake_prompt_never_fuses_the_instruction.
     engine = _FakeEngine(_history_operator_only())
     sink = _Sink()
-    result = repl_mod.run_turn(engine, HarnessText("[operator] wake"),
-                               sink=sink)
+    result = repl_mod.run_turn(engine, None, sink=sink)
     # The instruction reaches the model as part of the user message...
     sent = str(getattr(engine, "sent", ""))
     assert "no task from the person" in sent, sent
@@ -189,8 +193,6 @@ def test_run_turn_emits_notice_on_missing():
                if getattr(i, "kind", "") == "notice"
                and "no task" in str(getattr(i, "text", ""))]
     assert notices, [i.kind for i in sink.items]
-    # Nothing is refused: the original prompt is still inside.
-    assert "wake" in sent
 
 
 def test_run_turn_no_notice_when_task_present():
@@ -222,3 +224,49 @@ def test_prepare_fresh_turn_no_notice_when_present():
     out = repl_mod.prepare_fresh_turn(engine, "next step")
     assert "no task from the person" not in out
     assert "next step" in out
+
+
+# ----------------------------------- 9: a wake never becomes a blocking ask
+# Operator-named hang (PR #324 shard 3): test_a_wake_up_is_not_dropped_for
+# _a_queued_line stalls forever. A job-finished wake (HarnessText) into an
+# empty-history session fused the "stop and ask" instruction in front of
+# the prompt; the wake text then contains "ask", and the model asks — a
+# question nobody answers in an unattended session. A wake is harness
+# transport, not where a person gives a task: never fuse the instruction
+# into a HarnessText prompt.
+
+def test_wake_prompt_never_fuses_the_instruction():
+    engine = _FakeEngine([])   # empty history -> missing on an empty wake
+    sink = _Sink()
+    result = repl_mod.run_turn(
+        engine, HarnessText("[job finished] the ORCA run ended"),
+        sink=sink)
+    sent = str(getattr(engine, "sent", ""))
+    assert "no task from the person" not in sent, sent
+    # The wake text itself reaches the model unchanged in position:
+    # nothing fused in front of it.
+    assert sent == "[job finished] the ORCA run ended", sent
+    assert isinstance(engine.sent, HarnessText)
+
+
+def test_prepare_fresh_turn_never_fuses_into_a_harness_prompt():
+    engine = _FakeEngine([])   # empty history -> missing
+    out = repl_mod.prepare_fresh_turn(
+        engine, HarnessText("[job finished] the ORCA run ended"))
+    assert "no task from the person" not in str(out), out
+    assert str(out) == "[job finished] the ORCA run ended", out
+
+
+# --------------------------- 10: the two hooks never both fuse in one turn
+# prepare_fresh_turn is called by cli.py:830 which then hands the fused
+# prompt to run_turn; run_turn must not fuse AGAIN on a prompt that
+# already carries the instruction, or the model gets it twice.
+
+def test_hooks_do_not_double_fuse_in_one_turn():
+    engine = _FakeEngine(_history_operator_only())
+    once = repl_mod.prepare_fresh_turn(engine, None) or ""
+    assert "no task from the person" in once
+    sink = _Sink()
+    repl_mod.run_turn(engine, once, sink=sink)
+    sent = str(getattr(engine, "sent", ""))
+    assert sent.count("no task from the person") == 1, sent

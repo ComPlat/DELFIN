@@ -172,3 +172,19 @@ def instruction_for(status: str) -> str:
     if status == "present":
         return ""
     return NO_TASK_INSTRUCTION
+
+
+def instruction_present(prompt: object) -> bool:
+    """True when the prompt already carries the B1 instruction.
+
+    The double-fuse guarantee between the two hooks (PR #324):
+    prepare_fresh_turn fuses the instruction, then cli.py hands its
+    result to run_turn — run_turn must not fuse AGAIN, or the model gets
+    it twice. A typed sentinel beats matching the text: the instruction
+    is fused as a prefix of the prompt, so the check is a prefix
+    comparison on the exact constant, never on a substring that task
+    text could imitate.
+    """
+    if not isinstance(prompt, str):
+        return False
+    return prompt.startswith(NO_TASK_INSTRUCTION)
