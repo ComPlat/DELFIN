@@ -307,7 +307,8 @@ def _is_conditional(text: str) -> bool:
                 or _RE_CONDITIONAL_NAMED.search(text))
 
 
-def should_continue(answer: str, open_tasks: int) -> tuple[bool, str]:
+def should_continue(answer: str, open_tasks: int,
+                    session_key: str | None = None) -> tuple[bool, str]:
     """Whether the session should be nudged to continue, and the note.
 
     One condition: the answer announces agent work it did not do.
@@ -333,10 +334,36 @@ def should_continue(answer: str, open_tasks: int) -> tuple[bool, str]:
     """
     if not announced_action(answer):
         return False, ""
+    # A turn that registered a WAIT is not nudged: the wait is the
+    # mechanism that brings the session back when its event arrives
+    # (wait_registry.due fires it once, with a note naming the event).
+    # Nudging on top would have the model re-announce work it is
+    # deliberately parked on (package KG1, phase 2). An empty or
+    # unreadable registry nudges as before. ``session_key`` scopes the
+    # registry to ONE session (reviewer finding #4): None suppresses
+    # nothing, so a caller that does not know its session nudges as
+    # before.
+    if session_key:
+        try:
+            from .wait_registry import SessionWaits
+            if SessionWaits(session_key).list():
+                return False, _WAIT_NOTE
+        except Exception:
+            pass
     n = max(0, open_tasks or 0)
     if n:
         return True, _CONTINUATION_NOTE
     return True, _CONTINUATION_NOTE_NO_TASKS
+
+
+#: The note for a suppressed nudge. It names the mechanism, so the person
+#: reading the status line sees WHY the session is not being poked: it is
+#: waiting, on purpose, and the wait will wake it.
+_WAIT_NOTE = (
+    "System note: the nudge is suppressed because this turn registered a "
+    "wait (wait_registry); the session wakes when the waited-for event "
+    "arrives. The person can clear the wait."
+)
 
 
 #: The note for an announcement with an empty task list. It must not talk
