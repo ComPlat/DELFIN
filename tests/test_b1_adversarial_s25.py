@@ -83,3 +83,19 @@ def test_e_present_passes_prompt_through_unchanged():
     assert out == "continue phase 2", out
     repl_mod.run_turn(engine, "continue phase 2", sink=sink)
     assert engine.sent == "continue phase 2", engine.sent
+
+
+def test_f_wake_in_a_taskless_session_never_fuses_the_instruction():
+    """Operator finding on PR #324: the fused "stop and ask" instruction
+    inside a job-finished wake makes the turn wait on a question
+    forever. A HarnessText wake in a task-less session must reach the
+    engine WITHOUT the no-task instruction fused in — the wake proceeds,
+    nothing asks. RED until s20's no-fusion-into-wakes fix lands.
+    """
+    history = [{"role": "user", "content": "wake", HARNESS_KEY: True}]
+    engine = _engine(history)
+    repl_mod.run_turn(engine, HarnessText("[operator] job finished"),
+                      sink=_sink())
+    assert engine.sent is not None
+    assert "no task from the person" not in str(engine.sent), engine.sent
+
