@@ -2504,9 +2504,13 @@ def format_undo_result(scope: str, result: dict) -> str:
 def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
     """Whether switching between these modes moves the working folder.
 
-    Office is pinned to the office folder, Dashboard to the agent folder,
-    and everything else follows the launch directory. Comparing the GROUP
-    rather than the mode name keeps a rebuild from firing on a switch that
+    Office is pinned to the office folder, Dashboard and Research share the
+    agent scratch folder, and everything else follows the launch directory.
+    Research sits in its OWN group, not "launch": its engine is built in
+    ctx.agent_dir (see the _ensure_engine research branch), so a Code ->
+    Research switch must rebuild, or the next send would reuse an engine
+    bound to the launch directory. Comparing the GROUP rather than the mode
+    name keeps a rebuild from firing on a switch that
     changes nothing (solo to pipeline), which would discard a live session
     for no reason.
     """
@@ -2515,6 +2519,8 @@ def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
             return "office"
         if mode == "dashboard":
             return "dashboard"
+        if mode == "research":
+            return "research"
         return "launch"
 
     return group(old_mode) != group(new_mode)
@@ -5764,13 +5770,14 @@ def create_tab(ctx):
     # place because the same fact drives two independent pieces of UI (the
     # cycle inspector and the minimal layout); when it lived in both, a new
     # mode was added to one and forgotten in the other.
-    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office")
+    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office", "research")
 
-    # Modes that are not tied to a directory: their workspace is a fixed
-    # location, so their sessions are reachable from any launch. Kept
+    # Modes that are not tied to a project directory, so their sessions
+    # are reachable from any launch: each runs in its own fixed folder
+    # (the agent scratch folder, or the office workspace). Kept
     # beside the set above because both describe the same modes from
     # different angles and a new mode has to be considered for each.
-    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office")
+    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office", "research")
 
     _MODE_DESCRIPTIONS = {
         "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
@@ -5792,7 +5799,8 @@ def create_tab(ctx):
                 "step-by-step plan in markdown, and waits for your approval via "
                 "exit_plan_mode before any file edits or bash run.",
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
-                    "state-of-the-art methods. Web search enabled, read-only, no code changes.",
+                    "state-of-the-art methods. Web search and code reading; "
+                    "read-only: no file changes, no shell commands.",
         # quick / reviewed / tdd / cluster / full were retired with the
         # pipeline modes (see the dropdown below). Their descriptions
         # outlived them here by months: a dictionary nothing looks up,
@@ -5818,7 +5826,7 @@ def create_tab(ctx):
         # remains is what genuinely differs — which folder the session works
         # in, and what it is allowed to reach from there.
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Office", "office")],
+                 ("Office", "office"), ("Research", "research")],
         value="dashboard",
         # "Mode:", and not "Workspace:" as it read between 478eb33e and
         # this change. The argument for the rename was that the control
@@ -9795,7 +9803,7 @@ def create_tab(ctx):
             "default": "solo", "high_risk": "solo", "runtime_cluster": "solo",
             "release": "solo", "quick": "solo", "reviewed": "solo",
             "tdd": "solo", "cluster": "solo", "full": "solo",
-            "research": "solo", "plan": "solo", "code": "solo",
+            "plan": "solo", "code": "solo",
             # Pipeline is a skill now; a session saved under it reopens as
             # the agent it always ran, with the procedure one call away.
             "pipeline": "solo",
@@ -10345,6 +10353,20 @@ def create_tab(ctx):
                     "Write", "Bash",              # agent_workspace only
                     "WebSearch", "WebFetch",      # literature research
                 ]
+            elif mode_dropdown.value == "research":
+                # Literature work binds no project checkout: like Dashboard,
+                # its workspace is the fixed agent scratch folder so a saved
+                # research session is reachable from any launch. The tool
+                # surface is read-only — web search and code reading — the
+                # write denylist of the research_agent role enforces the
+                # rest at the permission layer.
+                _research_ws = _abs_dir(getattr(ctx, "agent_dir", None))
+                if _research_ws:
+                    repo_dir = _research_ws
+                _cli_tools = [
+                    "Read", "Grep", "Glob",      # read code + data
+                    "WebSearch", "WebFetch",      # literature research
+                ]
             elif state.get("_perm_profile") == "repo_free":
                 # repo_free + non-dashboard: auto-approve safe bash commands
                 # so the agent doesn't get stuck in permission-denial loops
@@ -10425,11 +10447,15 @@ def create_tab(ctx):
             # starts. Stamp it now as well, so an office session is locked
             # from construction — otherwise a directory could be granted
             # through the settings UI in the window before the first turn.
-            if mode_dropdown.value == "office":
+            if mode_dropdown.value in ("office", "research"):
                 try:
                     _kp = getattr(engine, "kit_permissions", None)
                     if _kp is not None:
-                        _kp.agent_role = "office_agent"
+                        _kp.agent_role = (
+                            "research_agent"
+                            if mode_dropdown.value == "research"
+                            else "office_agent"
+                        )
                 except Exception:
                     pass
 
@@ -11438,10 +11464,13 @@ def create_tab(ctx):
                 )
             else:
                 content = _md_to_html(msg["content"])
+            _ts = str(msg.get("turn_summary") or "")
+            _ts_html = (f'<div class="delfin-chat-turn-summary">'
+                        f'{_html.escape(_ts)}</div>' if _ts else "")
             return (
                 f'<div class="delfin-chat-msg delfin-chat-agent">'
                 f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
-                f"{content}</div>"
+                f"{content}{_ts_html}</div>"
             )
         elif role == "thinking":
             raw = msg["content"]
@@ -20313,6 +20342,52 @@ def create_tab(ctx):
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks and not answer_shown[0]:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
+                    # UX1: the end-of-turn line lives ON the last
+                    # assistant entry as meta, so it renders dimmed
+                    # under the answer, is saved with the session and
+                    # comes back after a restore. Never a message of
+                    # its own in engine.messages — the model's context
+                    # is untouched. Built from the same timing source
+                    # the status row uses; outcome from what this
+                    # turn actually did (self-correction runs below
+                    # may still append, but they refresh the meta
+                    # through their own finalize calls).
+                    try:
+                        import datetime as _datetime
+                        from delfin.agent.turn_summary import (
+                            format_turn_summary,
+                        )
+                        from delfin.agent import bash_jobs as _bj
+                        _kp = getattr(engine, "kit_permissions", None)
+                        _ws = (_kp.workspace if _kp is not None
+                               else (_agent_workspace_path()
+                                     or str(ctx.repo_dir or "")))
+                        _rj = len(_bj.running_jobs_for_workspace(_ws))
+                        _outcome = ("stopped" if getattr(
+                            engine, "_stop_requested", False) else "ok")
+                        _summary_line = format_turn_summary(
+                            duration_s=(time.monotonic()
+                                        - float(state.get(
+                                            "_turn_started_monotonic")
+                                        or time.monotonic())),
+                            ended_at=_datetime.datetime.now().astimezone(),
+                            outcome=_outcome,
+                            running_jobs=_rj,
+                        )
+                        _meta = {}
+                        if (state["chat_messages"]
+                                and state["chat_messages"][-1].get("role")
+                                == "assistant"):
+                            _meta = dict(state["chat_messages"][-1])
+                            _meta["turn_summary"] = _summary_line
+                            state["chat_messages"][-1] = _meta
+                        else:
+                            _meta = {"role": "assistant", "content": "",
+                                     "role_label": role_label,
+                                     "turn_summary": _summary_line}
+                            state["chat_messages"].append(_meta)
+                    except Exception:
+                        pass
 
                     # Files the answer NAMED, which the artifact diff above
                     # cannot see: it only knows what this turn wrote. See
