@@ -200,6 +200,29 @@ def register(kind: str, value: str, *, key: str = "",
     return wait
 
 
+def register_once(kind: str, value: str, *, key: str = "",
+                  on_whom: str = "", for_what: str = "") -> dict | None:
+    """Register the wait, unless an identical one already exists.
+
+    The idempotent form for call sites that fire repeatedly: a turn that
+    ends blocked can end blocked again, and a plain register() would
+    stack a duplicate row on every blocked turn (the wake note then
+    repeats, and the registry grows without bound). The identity is
+    (kind, value, on_whom) — a changed ``for_what`` is the same wait
+    reworded, and the first wording wins.
+
+    Returns the existing row when one matches, else the new row.
+    """
+    existing = _load(key)
+    whom = _clean_on_whom(on_whom)
+    for w in existing:
+        if (w.get("kind") == kind and str(w.get("value")) == str(value)
+                and w.get("on_whom") == whom):
+            return w
+    return register(kind, value, key=key, on_whom=on_whom,
+                    for_what=for_what)
+
+
 def wait_note(wait: dict) -> str:
     """The one-line note a wake names its event with."""
     kind = str(wait.get("kind"))
