@@ -9,6 +9,7 @@ paths (those live in tests/test_b4_waits.py).
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 
 from delfin.agent import state_paths
 from delfin.agent.wait_registry import (
@@ -20,7 +21,13 @@ from delfin.agent.wait_registry import (
 
 
 @pytest.fixture
-def home(tmp_path):
+def home(tmp_path, monkeypatch):
+    # The file-wait anchor is the process cwd (builder P2 fix cd3e928d):
+    # every test chdirs into its own throwaway workspace so the anchor
+    # and the escape targets are both tmp-scoped.
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.chdir(ws)
     with state_paths.RedirectedUserState(tmp_path):
         yield tmp_path / ".delfin"
 
@@ -98,21 +105,18 @@ def test_file_wait_refuses_parent_escape(home):
 
 
 def test_file_wait_refuses_symlink_escape(home, tmp_path):
+    # The workspace anchor is the process cwd (see the fixture); the link
+    # sits INSIDE it and points OUTSIDE it. resolve() must catch this.
     target = tmp_path / "outside_symlink_dir"
     target.mkdir(exist_ok=True)
     (target / "leak.txt").write_text("secret", encoding="utf-8")
-    root = _workspace_root()
-    (root / "link_dir").mkdir(parents=True, exist_ok=True)
     import os
-    os.symlink(str(target), str(root / "link_dir" / "out"))
+    os.symlink(str(target), str(Path.cwd() / "link_dir"))
     with pytest.raises(ValueError):
-        register("file", "link_dir/out/leak.txt")
+        register("file", "link_dir/leak.txt")
 
 
-def _workspace_root():
-    from delfin.agent import state_paths as sp
-    return sp.workspace_state_dir("").parent.parent
-
+# (_workspace_root helper removed: the anchor is now cwd — see fixture.)
 
 def test_file_wait_refuses_empty_and_whitespace(home):
     for bad in ("", "   "):
@@ -121,9 +125,10 @@ def test_file_wait_refuses_empty_and_whitespace(home):
 
 
 def test_file_wait_accepts_a_legitimate_relative_path(home, tmp_path):
-    root = _workspace_root()
-    f = root / "watched.txt"
-    f.parent.mkdir(parents=True, exist_ok=True)
+    # Anchored at cwd (P2 fix cd3e928d): create the file in the chdir'd
+    # throwaway workspace, not under the state root (the old fixture
+    # pinned the state root — stated here, the old decision is bent).
+    f = Path.cwd() / "watched.txt"
     f.write_text("v1", encoding="utf-8")
     w = register("file", "watched.txt")
     assert w["kind"] == "file"
