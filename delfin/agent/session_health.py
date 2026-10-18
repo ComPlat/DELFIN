@@ -181,6 +181,70 @@ _EMIT_VERDICTS = ("stalled", "stopped", "paused", "gone", "erroring",
 WAITING_EMIT_MIN = 15
 
 
+def _emit(session_id: str, text: str) -> None:
+    """The one emit route of the watch (tests stub this)."""
+    from . import attention
+
+    attention.emit_attention("session_state", session_id=session_id,
+                             title=text)
+
+
+def waits_summary() -> list[dict]:
+    """Every session key that holds registered waits, with what it waits
+    for — the wait side of ops health (target 1: the registry's
+    on_whom/for_what reach the display; the cli's health rows and this
+    table together show who waits on whom)."""
+    from . import wait_registry, state_paths
+
+    rows = []
+    for path in sorted((state_paths.workspace_state_dir("")
+                        ).glob("waits_*.json")):
+        stem = path.stem[len("waits_"):]
+        if stem == "_default":
+            continue
+        waits = wait_registry.SessionWaits(stem).list()
+        if not waits:
+            continue
+        rows.append({
+            "session": stem,
+            "waits": "; ".join(
+                (str(w.get("on_whom") or "?") + ": "
+                 + (str(w.get("for_what")) or str(w.get("value"))))
+                for w in waits),
+        })
+    return rows
+
+
+def watch_cycle_events(cycles: list, state: dict, *, emit: bool = True):
+    """One attention event per NEW wait cycle, deduped in *state*.
+
+    *cycles* is the list mutual_wait.find produced (each a list of edge
+    rows). The dedup key is the cycle's sorted member set, so the same
+    ring (however it is entered) emits once, and a ring with a NEW member
+    emits again. No polling added: this runs at the watch tick's existing
+    cadence.
+    """
+    from . import mutual_wait
+
+    seen = state.setdefault("cycles_seen", set())
+    out = []
+    for cyc in cycles or []:
+        key = frozenset(_one_line(str(w.get("session") or ""))
+                        for w in cyc)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        text = "mutual wait: " + "; ".join(mutual_wait.describe([cyc]))
+        out.append((",".join(sorted(key)), text))
+    for sid, text in out:
+        if emit:
+            try:
+                _emit(sid, text)
+            except Exception:
+                pass
+    return out
+
+
 def pause_watch(seconds: int) -> None:
     """Sleep between watch ticks, interruptibly: a sleep that a
     KeyboardInterrupt wakes must not swallow the interrupt (a person's
