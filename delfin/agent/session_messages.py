@@ -76,7 +76,13 @@ def _known_key(key: str) -> bool:
     session queues for its next start instead of being refused.
     Order matters: a presence record may be reaped (deleted) by a check of
     open_sessions (its `_reap` drops same-host stale records), so look for the
-    key's record file before asking whether it is open."""
+    key's record file before asking whether it is open.
+
+    Identity is compared CASE-SENSITIVELY against the record's own key: a
+    case variant of an announced name (NACHT-S12 for nacht-s12) must NOT
+    count as deliverable -- that is the t3 adversarial pin. The case fold
+    lives only in _canonical_key/_inbox, where it serves the MAILBOX
+    (send/take land in one file); it never widens who a message may reach."""
     if key == "operator":
         return True
     if _inbox_known(key):
@@ -84,17 +90,20 @@ def _known_key(key: str) -> bool:
     try:
         from . import session_presence as P
         # A record file (alive or stale) names a real session. Look before
-        # open_sessions() runs `_reap`, which deletes same-host stale records.
+        # open_sessions() runs `_reap`, which deletes same-host stale
+        # records. The record's own key is the identity: match the exact
+        # spelling it was announced under, no case fold.
         record = P._path(key)
         if record.exists():
             try:
                 data = json.loads(record.read_text(encoding="utf-8"))
             except Exception:
                 data = {}
-            if isinstance(data, dict) and data.get("key") == key:
+            if (isinstance(data, dict)
+                    and data.get("key") == key):
                 return True
-        for record in P.open_sessions():
-            if record.get("key") == key:
+        for rec in P.open_sessions():
+            if rec.get("key") == key:
                 return True
     except Exception:
         return _inbox_known(key)
@@ -138,18 +147,31 @@ def deliverable(to_key: str) -> bool:
     return _known_key(to_key)
 
 
-def _reserved_canonical(key: str) -> str:
-    """The one mailbox every case-variant of a reserved address shares.
+def _canonical_key(key: str) -> str:
+    """The one mailbox every spelling of an address maps to.
 
-    deliverable() is case-insensitive for a reserved mailbox
-    (deliverable('OPERATOR') is True, lower() against _RESERVED), so a
-    case-variant send must write the SAME file a read by its canonical key
-    opens. Without this, send('OPERATOR') writes OPERATOR.jsonl while
-    take('operator') reads operator.jsonl and the message is dropped."""
-    low = str(key).lower()
+    The address a sender hands to send()/take() and the one a session
+    announces (its -n name) may differ in case or carry stray whitespace:
+    send('Welle-16') must land in the mailbox take('welle-16') reads, and
+    ' welle-16 ' must not open a second one. Folding is safe because the
+    mailbox FILENAME (in _inbox) already replaces every non-safe character
+    with '_', so no two distinct folded keys can share one file that their
+    raw spellings would have kept apart beyond a case/whitespace variant.
+
+    Reserved addresses keep their canonical lowercase spelling; every other
+    key is stripped and case-folded. Without the fold, a case-variant send
+    writes a file the session never reads and the message is dropped
+    silently -- that happened in wave 16."""
+    key = str(key or "").strip()
+    low = key.lower()
     if low in _RESERVED:
         return low
-    return str(key)
+    return low
+
+
+def _reserved_canonical(key: str) -> str:
+    """Backwards-compatible alias: the canonical mailbox spelling of ``key``."""
+    return _canonical_key(key)
 
 
 def _inbox(key: str) -> Path:
@@ -172,7 +194,15 @@ def send(to_key: str, text: str, *, from_key: str = "",
 
     Credentials are redacted first: the other session may run on another
     provider, and the text goes into its transcript and every later
-    request it makes."""
+    request it makes.
+
+    An empty or whitespace-only address is refused with ValueError BEFORE
+    any file is touched: _inbox('') would name a stem-less '.jsonl' that
+    no session ever reads and that directory scans would choke on
+    (reviewer nacht-s25, finding #3)."""
+    canon = _canonical_key(to_key)
+    if not canon:
+        raise ValueError("send: the recipient address is empty")
     try:
         from .output_guard import scrub_secrets
         text = scrub_secrets(str(text or ""))
