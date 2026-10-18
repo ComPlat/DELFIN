@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -20,18 +21,23 @@ from delfin.agent.wait_registry import due, register
 
 
 @pytest.fixture
-def home(tmp_path):
+def home(tmp_path, monkeypatch):
+    # The file-wait anchor is the process cwd: every test gets its own
+    # throwaway workspace so nothing leaks into the checkout (the
+    # conftest guard counts new checkout paths).
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.chdir(ws)
     with state_paths.RedirectedUserState(tmp_path):
         yield tmp_path / ".delfin"
 
 
 def _workspace_file(rel: str, content: str) -> str:
-    # workspace root = redirected-home parent.parent... actually the
-    # register-time resolver anchors at state_paths.workspace_state_dir("")
-    # .parent.parent; in the redirected cage that is tmp_path. Write the
-    # file there and return the relative path used as the wait value.
-    root = state_paths.workspace_state_dir("").parent.parent
-    p = root / rel
+    # The file-wait anchor is the process cwd (the session's own
+    # workspace; reviewer nacht-s19's P2 finding moved it off the state
+    # dir). Write there; tmp_path fixture is cwd-independent for the
+    # redirected HOME only.
+    p = Path(rel)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return rel
@@ -53,9 +59,8 @@ def test_file_wait_does_not_fire_on_touch_without_change(home):
     rel = _workspace_file("reports/state.md", "v1")
     register("file", rel, key="s16")
     assert due(time.time(), [], key="s16") == []
-    # touch: same content, new mtime
-    os.utime(state_paths.workspace_state_dir("").parent.parent / rel,
-             (time.time() + 10, time.time() + 10))
+    # touch: same content, new mtime (cwd anchor)
+    os.utime(rel, (time.time() + 10, time.time() + 10))
     assert due(time.time(), [], key="s16") == []
 
 
@@ -75,9 +80,10 @@ def test_file_wait_rejects_escaping_paths(home):
             register("file", bad, key="s16")
 
 
-def test_file_wait_rejects_symlink_escape(home):
-    root = state_paths.workspace_state_dir("").parent.parent
-    outside = root.parent / "b4_outside_target.txt"
+def test_file_wait_rejects_symlink_escape(home, tmp_path):
+    root = Path.cwd()
+    outside = tmp_path / "outside" / "b4_outside_target.txt"
+    outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("secret", encoding="utf-8")
     link = root / "reports"
     link.mkdir(parents=True, exist_ok=True)
