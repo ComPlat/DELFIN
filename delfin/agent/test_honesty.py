@@ -69,7 +69,10 @@ _TEST_ZZ_PATH = re.compile(r"^tests/test_zz_.+\.py$")
 _GATE_REFS = re.compile(r"[\"\']\.gate(/|[\"\'])")
 
 # Settings-switch shape: an UPPER_SNAKE module constant assigned a
-# bool literal (True/False), OR an env/settings lookup of a flag.
+# bool literal (True/False). An env/settings lookup of a flag (e.g.
+# DELFIN_X = os.environ.get("DELFIN_X", False)) is NOT detected — the
+# detection is deliberate literal-assignment only; do not claim more
+# than the code checks.
 _SWITCH_ASSIGN = re.compile(
     r"^([A-Z][A-Z0-9_]{2,})\s*=\s*(True|False)\s*(?:#.*)?$", re.MULTILINE)
 
