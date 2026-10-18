@@ -1657,6 +1657,12 @@ class TerminalAgent:
         denied = bool(getattr(self, "_denied_in_turn", False))
         self.__dict__.pop("_denied_in_turn", None)
         self._note_turn_blocked(result.text, denied=denied)
+        # B4 target 1: a turn that ended blocked IS a wait — register it
+        # so ops health shows on_whom/for_what and the idle poll can
+        # satisfy it. register_once keeps it idempotent. A registry
+        # failure (ValueError, OSError) costs one log line; other errors
+        # propagate.
+        self._register_blocked_wait(result.text, denied=denied)
         self._offer_next_steps()
         self._report_status()
         # For the length-continuation: a length end WITH a tool call is
@@ -3190,6 +3196,79 @@ class TerminalAgent:
             if note:
                 self.__dict__["_blocked_note"] = note
         except Exception:
+            return
+
+    def _register_blocked_wait(self, text: str = "", denied: bool = False
+                               ) -> None:
+        """A turn that ended blocked registers that wait (B4 target 1).
+
+        Operator finding: on_whom must name who REALLY holds the turn,
+        not always the operator. Classification from what the turn end
+        already knows: a denial or a question waits on the PERSON (an
+        approval, an answer); anything else is the operator.
+        register_once keeps it idempotent.
+
+        Never swallows broadly: only ValueError/OSError from the
+        registry is caught and logged — a wider except here hid two real
+        bugs in wave 17. Everything else propagates, so a test sees it.
+        """
+        try:
+            from .job_wake import _ends_with_open_question as _question
+            from .wait_registry import SessionWaits, register_once
+            # A session with no broker (broker=None) registers no wait, so
+            # ops health and the status footer stay unchanged for every
+            # unsupervised user (operator finding, pty regression: a
+            # "waiting" footer pushed the draft line). Broker presence
+            # alone is NOT the marker: cli.py:2114 builds a broker for
+            # every person at a tty. The documented marker (cli.py:2116):
+            # a person at the keyboard passes --confirm-timeout 0 (wait
+            # for the answer as long as it takes); a session nobody
+            # watches (a wave run in tmux) passes --confirm-timeout > 0.
+            # So: supervised = broker present AND timeout_s > 0 — the
+            # broker's own attribute (terminal_confirm.py:641) decides,
+            # no new flag, no env guess.
+            _broker = getattr(self, "broker", None)
+            if _broker is None or not float(
+                    getattr(_broker, "timeout_s", 0) or 0) > 0:
+                return
+            # The hook's own previous wait is satisfied the moment a new
+            # turn ran: whatever it waited on got its answer. Clear it
+            # before judging THIS turn, so the footer shows at most the
+            # current wait and disappears after an unblocked turn. Waits
+            # on another session's reply are not the hook's footprint and
+            # stay (operator finding 2).
+            _own_values = ("answer", "operator")
+            waits_key = self._presence_key()
+            for old in SessionWaits(waits_key).list():
+                if (str(old.get("kind")) == "message_from"
+                        and str(old.get("value")) in _own_values):
+                    SessionWaits(waits_key).clear(str(old.get("id") or ""))
+            # The session branch was dropped (operator finding 3): the
+            # turn-end hook knows no message recipient, so it was dead
+            # code. on_whom "session" waits are registered by whoever
+            # sends a message and parks on the reply — not here.
+            if denied or _question(text):
+                whom, value, what = "person", "answer", \
+                    "turn ended blocked; waiting on the person"
+            else:
+                whom, value, what = "operator", "operator", \
+                    "turn ended blocked; waiting on the operator"
+            register_once("message_from", value, on_whom=whom,
+                          for_what=what, key=self._presence_key())
+        except (ValueError, OSError) as exc:
+            # OSError too: the registry file is written here at every
+            # turn end — a full disk / a lost lock must cost one record,
+            # not the session's turn loop. Anything else (NameError,
+            # ImportError, TypeError) propagates: that is the bug class
+            # we want loud. The record goes to the session's own failure
+            # log, never to the person's terminal (operator finding,
+            # pty test: a root-logger warning on stderr drew a line onto
+            # the screen). record_failure itself never raises
+            # (failure_log.py:36), so no outer wrapper is added — an
+            # ImportError on this in-package relative import must stay
+            # visible (reviewer finding).
+            from .failure_log import record_failure
+            record_failure("wait_registration", "", str(exc))
             return
 
     def _checkpoint_session(self) -> None:

@@ -40,7 +40,11 @@ def home(tmp_path):
 # -- kind vocabulary ---------------------------------------------------------
 
 def test_kinds_are_the_briefs_kinds(home):
-    assert set(WAIT_KINDS) == {"message_from", "job_id", "approval_id", "time"}
+    # B4 P2 extends the brief's four kinds with "file": a wait on a
+    # workspace file that wakes when the file's content changes.
+    assert set(WAIT_KINDS) == {
+        "message_from", "job_id", "approval_id", "time", "file",
+    }
 
 
 # -- registration ------------------------------------------------------------
