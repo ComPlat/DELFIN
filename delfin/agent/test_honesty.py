@@ -33,7 +33,6 @@ change's test files over with the records.
 """
 
 import ast
-import os
 import re
 from dataclasses import dataclass
 
