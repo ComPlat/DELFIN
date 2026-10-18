@@ -685,7 +685,26 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     performs: under the budget it returns ``prompt`` unchanged; over it, it
     archives the history, arms the engine's one-shot ``start_fresh`` and
     returns the fresh block fused with ``prompt``. Never raises.
+
+    Package B1: a session without its task stops and asks. When the
+    person gave no task (no unmarked user row in this session's history
+    and no prompt that is a person typing now), the ONE plain
+    instruction is fused in front of the prompt and a notice names it
+    for the person watching. Nothing is refused: the turn proceeds.
+    The check runs BEFORE the budget branch, so it fires on every
+    dashboard/cli turn, not only on fresh starts.
     """
+    try:
+        from . import task_presence as _tp
+        _history = list(getattr(engine, "messages", None) or [])
+        _ws = workspace if workspace is not None else getattr(
+            getattr(engine, "kit_permissions", None), "workspace", None)
+        _status, _reason = _tp.assess(_history, workspace=_ws, prompt=prompt)
+        _note = _tp.instruction_for(_status)
+        if _note:
+            prompt = _note + "\n\n" + prompt
+    except Exception:
+        pass
     try:
         budget = _resolve_fresh_budget(context_budget, engine)
         if budget <= 0:
@@ -839,6 +858,25 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     if memory_context is None:
         memory_context = turn_context.memory_context(engine, prompt)
     prompt = turn_context.user_message(prompt)
+    # Package B1: a session without its task stops and asks. assess keys
+    # on the RAW prompt (before the fusion at ~863 re-wraps it), so a
+    # wake prompt's HarnessText type is still visible here. The ONE
+    # plain instruction is fused in front of the prompt and a notice
+    # names it for the person watching. Nothing is refused: the turn
+    # proceeds with its full prompt either way.
+    try:
+        from . import task_presence as _tp
+        _ws = getattr(getattr(engine, "kit_permissions", None),
+                      "workspace", None)
+        _status, _reason = _tp.assess(
+            list(getattr(engine, "messages", None) or []),
+            workspace=_ws, prompt=prompt)
+        _note = _tp.instruction_for(_status)
+        if _note:
+            prompt = _note + "\n\n" + prompt
+            _emit(RenderItem("notice", text=_note))
+    except Exception:
+        pass
     user_message = prompt
     budget = _resolve_fresh_budget(context_budget, engine)
     if budget > 0 and (_context_tokens(engine) <= budget
