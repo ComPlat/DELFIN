@@ -272,10 +272,11 @@ def _switch_findings(path: str, source: str, all_paths) -> list:
         if on and off:
             continue
         if not on and not off:
-            reason = (f"switch {name} is introduced but no test sets it "
-                      "True and none leaves it off — the feature behind "
-                      "a switch is tested with the switch ON and OFF "
-                      "(wave-17 failure)")
+            reason = (f"switch {name} is introduced but no test found in "
+                      "the provided records that sets it True and none "
+                      "that leaves it off — the feature behind a switch "
+                      "is tested with the switch ON and OFF (wave-17 "
+                      "failure)")
         elif not off:
             reason = (f"switch {name} is only ever tested ON — add the "
                       "test that leaves it off (wave-17 failure: a "
