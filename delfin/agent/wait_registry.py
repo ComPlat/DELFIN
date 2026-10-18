@@ -131,14 +131,16 @@ def _file_signature(path: Path) -> str:
 def _resolve_workspace_path(raw: str) -> Path:
     """A file-wait value as a workspace-relative path.
 
-    Reviewer constraint (wave 18): the value must stay inside the
-    session's workspace — no absolute paths, no ``..`` escapes, no
-    symlink escape. Absolute paths and escapes raise ValueError at
-    register time; a symlink escape is caught by resolve() against the
-    workspace root.
-    """
-    from . import state_paths
+    The anchor is the SESSION'S OWN WORKSPACE — the process cwd. Each
+    DELFIN session runs in its own workspace (worktree); the state dir
+    (workspace_state_dir) is NOT a workspace, and anchoring there would
+    silently watch a state file (reviewer nacht-s19, P2 finding).
 
+    Reviewer constraint (wave 18): the value must stay inside that
+    workspace — no absolute paths, no ``..`` escapes, no symlink escape.
+    Absolute paths and escapes raise ValueError at register time; a
+    symlink escape is caught by resolve() against the workspace root.
+    """
     text = str(raw or "").strip()
     if not text:
         raise ValueError("wait_registry: empty file path")
@@ -149,10 +151,9 @@ def _resolve_workspace_path(raw: str) -> Path:
     if any(part == ".." for part in candidate.parts):
         raise ValueError(
             f"wait_registry: file wait must not contain '..', got {text!r}")
-    root = state_paths.workspace_state_dir("").parent.parent
+    root = Path.cwd().resolve()
     resolved = (root / candidate).resolve()
-    root_resolved = root.resolve()
-    if resolved != root_resolved and root_resolved not in resolved.parents:
+    if resolved != root and root not in resolved.parents:
         raise ValueError(
             f"wait_registry: file wait escapes the workspace: {text!r}")
     return resolved
@@ -230,6 +231,20 @@ def due(now: float, events: list, *, key: str = "") -> list[dict]:
                     continue
             except ValueError:
                 pass
+        elif kind == "file":
+            # Evaluated HERE, inside due(), against the register-time
+            # snapshot: the repl idle path passes events but a file
+            # change has no event — the signature comparison IS the
+            # wake route. No polling is added: due() runs at the idle
+            # path's existing cadence (repl.py:4224).
+            try:
+                path = _resolve_workspace_path(value)
+                current = _file_signature(path)
+            except ValueError:
+                current = None  # an escaping path can never fire
+            if current is not None and current != str(w.get("file_sig")):
+                hits.append(w)
+                continue
         elif any(k == kind and v == value for k, v in events):
             hits.append(w)
             continue
