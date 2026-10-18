@@ -1,0 +1,87 @@
+# Wave-17 long-run tasks (package KG4): 4 long tasks on local fixtures.
+#
+# What makes them LONG-RUN, not just slow: each one measures a behaviour
+# that only shows over many turns -- waiting without spinning, following
+# a mid-run steer, surviving a compaction, continuing a checkpoint after
+# a restart. Each task's acceptance script checks the OUTCOME and, where
+# the brief demands it, the RECORD-attested behaviour (waiting, steer
+# followed, compaction event, no redone work). The records come from the
+# real writers: agent_metrics JSONL, turn_metrics, compaction_log
+# (record_compaction / read_compactions), reduced by
+# delfin/agent/longrun_metric.summarize.
+#
+# The operator runs these via SLURM before and after the wave. The
+# scripted person steer for lr_steered_goal is injected by the harness
+# as a mid-run message (text in the fixture folder:
+# lr_steered_goal/STEERING_MESSAGE.txt; the prompt tells the session a
+# steering message may arrive and replaces the goal).
+
+- id: lr_wait_for_job
+  task_class: office_ops
+  mode: solo
+  prompt: >-
+    In w17_longrun/lr_wait_for_job/ there is samples.csv and
+    slow_report.py, which computes the mean enthalpy but takes about
+    20 seconds to finish. Run it in the background, WAIT for the job to
+    finish, then report the mean with its unit. Do not busy-poll in a
+    tight loop; collect the result once it lands. Write the mean value
+    to result_report.txt in the same folder.
+  setup: w17_longrun_setup.py
+  verify: w17_longrun_wait_verify.py
+  max_duration_s: 240
+  max_cost_usd: 0.60
+  max_tool_calls: 40
+
+- id: lr_steered_goal
+  task_class: office_ops
+  mode: solo
+  prompt: >-
+    In w17_longrun/lr_steered_goal/ there is catalog.txt and README.txt.
+    Start with the goal the README states. During the run the person may
+    send you a steering message that REPLACES the goal for the rest of
+    the run; if one arrives, follow it and abandon the old goal.
+  setup: w17_longrun_setup.py
+  verify: w17_longrun_steer_verify.py
+  mid_run_messages:
+    - when: after
+      text: >-
+        PERSON (mid-task steering, new goal): New goal for the rest of
+        the run — answer.txt in w17_longrun/lr_steered_goal/ must hold
+        exactly these four lines: 'a: <value of entry a from
+        catalog.txt>', 'b: absent', 'c: <mean of the c values in
+        catalog.txt> kJ/mol', 'd: absent'. Delete the old goal's
+        summary.txt if it exists. Do not answer the old goal any
+        further.
+  max_duration_s: 240
+  max_cost_usd: 0.60
+  max_tool_calls: 40
+
+- id: lr_forced_compaction
+  task_class: office_read
+  mode: solo
+  prompt: >-
+    In w17_longrun/lr_forced_compaction/ there is notes.md with 40
+    recorded decisions and README.txt with the task. Read the notes and
+    write digest.md with one line per decision in the form
+    'Decision <n>: cutoff <x> eV'. The file is long; if your context is
+    compacted mid-way, keep the digest complete.
+  setup: w17_longrun_setup.py
+  verify: w17_longrun_compaction_verify.py
+  max_duration_s: 240
+  max_cost_usd: 0.60
+  max_tool_calls: 40
+
+- id: lr_restart_midway
+  task_class: office_ops
+  mode: solo
+  prompt: >-
+    In w17_longrun/lr_restart_midway/ there is state.json (a checkpoint
+    from an earlier run: which molecules are already done and with which
+    energies), energies.csv and README.txt. Continue the run from the
+    checkpoint: finish what remains and write energy.txt with one line
+    per molecule. Do not redo the work the checkpoint already records.
+  setup: w17_longrun_setup.py
+  verify: w17_longrun_restart_verify.py
+  max_duration_s: 240
+  max_cost_usd: 0.60
+  max_tool_calls: 40

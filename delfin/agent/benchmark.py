@@ -353,6 +353,13 @@ class Task:
     # (id ``<id>.en``) so the two languages never share a history row or
     # a baseline. Empty: the task has no English form.
     prompt_en: str = ""
+    # Mid-run scripted person messages (KG4, wave 17): each is
+    # ``(when, text)`` with ``when`` = "after" — delivered as its own
+    # user turn AFTER the previous turn's ``run_once`` completed. A
+    # steer changes the goal mid-run; only the run's records attest
+    # whether it was followed. Default empty: every existing task and
+    # every existing run_once signature keeps working.
+    mid_run_messages: tuple = ()
 
 
 def english_variant(task: Task) -> Optional[Task]:
@@ -652,6 +659,11 @@ def _coerce_task(raw: dict) -> Task:
         max_tool_calls=int(raw.get("max_tool_calls", 5)),
         behavior=str(raw.get("behavior", "") or "").strip().lower(),
         prompt_en=str(raw.get("prompt_en", "") or ""),
+        mid_run_messages=tuple(
+            (str(m.get("when", "after")),
+             str(m.get("text", "")))
+            for m in (raw.get("mid_run_messages") or [])
+            if isinstance(m, dict) and str(m.get("text", "") or "")),
     )
 
 

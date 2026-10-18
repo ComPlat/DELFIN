@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import contextlib
+import json
 import os
 import re
 import subprocess
@@ -48,11 +49,12 @@ from .benchmark_fixtures import ensure_office_fixtures
 _ACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*ACTION\s*[:.]?\s*(/\S.*?)\s*$",
                re.MULTILINE | re.IGNORECASE),
-    re.compile(r"`(/(?:tab|control|orca|effort|mode|provider|model)\s+\S[^`]*)`"),
+    re.compile(r"`(/(?:tab|control|orca|submit|recalc|cancel|calc|analyze|check|jobs|ui|workspace|done)\s+\S[^`]*)`"),
 )
 _BARE_SLASH_PREFIXES = (
-    "/tab ", "/control ", "/orca ", "/effort ", "/mode ", "/provider ",
-    "/model ",
+    "/tab ", "/control ", "/orca ", "/submit ", "/recalc ", "/cancel ",
+    "/calc ", "/analyze ", "/check ", "/jobs ", "/ui ", "/workspace ",
+    "/done ",
 )
 
 
@@ -1056,9 +1058,82 @@ def _run_task_once(
                     # interventions read 0 -- the docstrings say so.
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens)
+                # KG4 (wave 17): a task may declare mid-run scripted person
+                # messages. Each is delivered as its own user turn after the
+                # previous turn's run_once completed — that is what a person
+                # steer IS at this layer, and the accept script for
+                # lr_steered_goal requires the run's records to attest the
+                # steer being followed. The declared text goes in verbatim;
+                # a task with no declaration runs exactly one turn, exactly
+                # as before.
+                for _when, _text in (getattr(task, "mid_run_messages", None)
+                                     or ()):
+                    if _when != "after":
+                        raise ValueError(
+                            f"task {task.id}: unsupported mid_run_messages "
+                            f"trigger {_when!r} (only 'after' is wired)")
+                    try:
+                        _mraw = run_once(engine, _text,
+                                         max_tokens=max_tokens,
+                                         on_tool_result=_collect_result,
+                                         on_permission_denied=_collect_denial)
+                    except TypeError:
+                        _mraw = run_once(engine, _text, max_tokens=max_tokens)
+                    _mraw["tool_results"] = pair_results(
+                        _mraw.get("tool_calls") or [], _results)
+                    # The steer TEXT, not the run's output text: the accept's
+                    # marker check needs the message that was delivered.
+                    _mraw["steer_text"] = _text
+                    raw.setdefault("mid_runs", []).append(_mraw)
+                    # The steer reached the session: counted after the
+                    # overwrite below (operator finding 1).
+                    raw["user_interventions"] = (
+                        int(raw.get("user_interventions", 0)) + 1)
+            # KG4 transport (operator findings 1-3): the accept scripts
+            # run as subprocesses with only the workspace
+            # (run_acceptance :1274), so the facts they must judge have
+            # to cross as a file. Written ONLY for tasks that declare
+            # mid_run_messages — every other task's workspace is
+            # untouched. Minimal content: the steer deliveries (the
+            # fixture text the accept's marker check needs) and the tool
+            # CALL NAMES recorded in the runs after each steer — no
+            # transcript text; the file sits in a workspace a later
+            # agent can read. Nothing computed, nothing guessed: the
+            # accept script does the judging against its rubric.
+            # A task class without a fixture workspace resolves _ws to
+            # None (workspace_for :289-292) — Path(None) raised and the
+            # except at the bottom replaced the raw dict, silently
+            # discarding mid_runs and the intervention count. No
+            # workspace -> no facts file: the accepts read it from the
+            # workspace the run had, and a run without one has no
+            # fixture to grade anyway.
+            if _ws and getattr(task, "mid_run_messages", None):
+                _facts_path = Path(_ws) / ".longrun_facts.json"
+                try:
+                    _facts_path.write_text(
+                        json.dumps({
+                            "steer_delivered": [
+                                {"text": _m.get("steer_text", "")}
+                                for _m in (raw.get("mid_runs") or [])],
+                            "actions": [
+                                {"tool_calls": [
+                                    c.get("name", "") for c in
+                                    (_m.get("tool_calls") or [])
+                                    if isinstance(c, dict)]}
+                                for _m in (raw.get("mid_runs") or [])],
+                        }),
+                        encoding="utf-8")
+                except Exception:
+                    _facts_path.unlink(missing_ok=True)
             raw["tool_results"] = pair_results(raw.get("tool_calls") or [],
                                                _results)
-            raw["user_interventions"] = len(_denied)
+            # Operator finding 1: the line below OVERWRITES any earlier
+            # count, so delivered steers are added HERE — after it — and
+            # separately in steers_delivered, so a run where the steer
+            # was never delivered stays distinguishable.
+            raw["user_interventions"] = (
+                len(_denied) + len(raw.get("mid_runs") or []))
+            raw["steers_delivered"] = len(raw.get("mid_runs") or [])
             # Which mechanisms this attempt reached (channels.py).
             raw["channels"] = _channels.snapshot()
             # Model rounds: one assistant message per round.
