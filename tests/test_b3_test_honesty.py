@@ -8,11 +8,7 @@ here exercises the PUBLIC path: ``test_honesty.check(diff_or_files)``
 on real source text, never an inner helper.
 """
 
-import os
-import subprocess
 import textwrap
-
-import pytest
 
 import delfin.agent.test_honesty as th
 
@@ -20,26 +16,6 @@ import delfin.agent.test_honesty as th
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _repo_root() -> str:
-    """Top of the repository this test file lives in."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.dirname(here)
-
-
-def _git_changed_files() -> list[str]:
-    """Files this branch adds or changes against its merge-base with
-    main, via the real git plumbing (read-only)."""
-    out = subprocess.run(
-        ["git", "diff", "--name-only", "HEAD"],
-        cwd=_repo_root(), capture_output=True, text=True, check=True)
-    files = [ln for ln in out.stdout.splitlines() if ln]
-    added = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        cwd=_repo_root(), capture_output=True, text=True, check=True)
-    files += [ln for ln in added.stdout.splitlines() if ln]
-    return sorted(set(files))
-
 
 # ---------------------------------------------------------------------------
 # Kind 1: bare `except:` / `except Exception: pass` (or `return None`)
@@ -143,26 +119,17 @@ def test_committed_test_zz_file_is_flagged():
 
 
 def test_untracked_test_zz_file_is_quiet():
-    # Untracked probes never reach check() as committed content: a
-    # file that does not exist on disk and is not tracked must not be
-    # judged. check() distinguishes tracked (committed) from scratch
-    # copies by whether the file exists in the tree.
-    probe = os.path.join(_repo_root(), "tests", "test_zz_b3_quiet.py")
-    created = False
-    if not os.path.exists(probe):
-        with open(probe, "w") as fh:
-            fh.write("def test_quiet():\n    assert True\n")
-        created = True
-    try:
-        # On disk but NOT passed in as content: the caller passes only
-        # committed files it got from git, so a real untracked file is
-        # simply not in the list — this asserts the shape, and the
-        # committed-probe detector keys on the path, not on disk state.
-        findings = th.check([("tests/test_b3_present.py", 1, 2, "x = 1\n")])
-        assert not [f for f in findings if "test_zz" in f.path]
-    finally:
-        if created:
-            os.remove(probe)
+    # The locked API: tracked-ness is the CALLER's determination — the
+    # caller hands over only committed files, so an untracked probe
+    # never appears as a record with source. check() never touches the
+    # disk or git to re-derive it (purity). A path-only mention
+    # (source=None) is also never judged for kind 2.
+    records = [
+        ("tests/test_zz_b3_quiet.py", 1, 0, None),   # path-only mention
+        ("tests/test_b3_present.py", 1, 2, "x = 1\n"),
+    ]
+    findings = th.check(records)
+    assert not [f for f in findings if "test_zz" in f.path]
 
 
 # ---------------------------------------------------------------------------
@@ -254,11 +221,41 @@ def test_empty_input_returns_empty_list():
     assert th.check([]) == []
 
 
-def test_real_branch_state_scans_clean():
-    """The scanner, pointed at this branch's real changed files, must
-    not fire on code that follows the rules (the wave-17 bugs live in
-    committed code — this test pins that OUR shipped code is clean)."""
-    files = _git_changed_files()
-    assert files, "this branch must have changes to scan"
-    th.check([(f, 0, 0, None) for f in files
-              if not f.startswith("tests/test_zz_")])
+def test_real_change_record_with_source_scans_clean():
+    """A record with REAL source text (like the wiring's caller hands
+    over) that follows the rules stays quiet — replaces an earlier
+    git-dependent version (reviewer finding on 20ebdab2: a clean tree
+    made it fail, and source=None records measured nothing)."""
+    clean_real = _record_full(
+        "delfin/agent/demo_module.py",
+        textwrap.dedent("""\
+            import logging
+            _log = logging.getLogger(__name__)
+
+
+            def load(path):
+                try:
+                    return open(path).read()
+                except OSError:
+                    _log.exception("cannot read %s", path)
+                    raise
+            """),
+        switch=("DEMO_ON", "tests/test_b3_demo.py",
+                "mod.DEMO_ON = True\n\n\ndef test_off():\n"
+                "    mod.DEMO_ON = False\n"
+                "    assert not run()\n"),
+    )
+    assert th.check(clean_real) == []
+
+
+def _record_full(path, text, switch=None):
+    """A full-file record; optionally pairs a switch with a test file
+    that exercises both states (kind-4 quiet shape)."""
+    if switch:
+        name, tpath, ttext = switch
+        return [
+            (path, 1, text.count("\n") + 1, text),
+            (tpath, 1, ttext.count("\n") + 1, ttext
+             + f"\ndef test_on():\n    mod.{name} = True\n    assert run()\n"),
+        ]
+    return [(path, 1, text.count("\n") + 1, text)]
