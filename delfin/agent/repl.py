@@ -701,11 +701,13 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
             getattr(engine, "kit_permissions", None), "workspace", None)
         _status, _reason = _tp.assess(_history, workspace=_ws, prompt=prompt)
         _note = _tp.instruction_for(_status)
-        if _note:
-            # The fused prompt keeps the HarnessText mark (a wake stays
-            # harness transport for later turns — the wave-17 bug), and a
-            # None prompt fuses the note alone instead of raising past the
-            # swallow-guard below.
+        if _note and not isinstance(prompt, HarnessText):
+            # A HarnessText wake never carries the instruction (PR #324
+            # hang: the fused "stop and ask" in front of a job-finished
+            # wake made the model ask — a question nobody answers in an
+            # unattended session). A wake is harness transport, not where
+            # a person gives a task. And a None prompt fuses the note
+            # alone instead of raising past the swallow-guard below.
             was_harness = isinstance(prompt, HarnessText)
             body = prompt if isinstance(prompt, str) else ""
             prompt = _note + "\n\n" + body
@@ -874,21 +876,24 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     # proceeds with its full prompt either way.
     try:
         from . import task_presence as _tp
-        was_harness = isinstance(prompt, HarnessText)
         _ws = getattr(getattr(engine, "kit_permissions", None),
                       "workspace", None)
         _status, _reason = _tp.assess(
             list(getattr(engine, "messages", None) or []),
             workspace=_ws, prompt=prompt)
         _note = _tp.instruction_for(_status)
-        if _note:
-            prompt = _note + "\n\n" + prompt
-            # A HarnessText wake keeps its mark after the fusion: a
-            # re-wrapped plain str would look like a person message to
-            # every later turn (the wave-17 bug again). Same re-wrap
-            # the fresh-start branch below makes at repl.py:864-865.
-            if was_harness:
-                prompt = HarnessText(prompt)
+        if _note and not isinstance(prompt, HarnessText) \
+                and not _tp.instruction_present(prompt):
+            # A HarnessText wake never carries the instruction (PR #324
+            # hang: the fused "stop and ask" in front of a job-finished
+            # wake made the model ask — a question nobody answers in an
+            # unattended session). And a prompt that already carries the
+            # instruction (prepare_fresh_turn fused it; cli.py:830 hands
+            # its result here) is never fused AGAIN. A non-str prompt
+            # fuses the note alone instead of raising past the
+            # swallow-guard below.
+            prompt = _note + "\n\n" + (prompt if isinstance(prompt, str)
+                                       else "")
             _emit(RenderItem("notice", text=_note))
     except Exception:
         pass
