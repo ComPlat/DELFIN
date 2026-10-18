@@ -230,6 +230,20 @@ def due(now: float, events: list, *, key: str = "") -> list[dict]:
                     continue
             except ValueError:
                 pass
+        elif kind == "file":
+            # Evaluated HERE, inside due(), against the register-time
+            # snapshot: the repl idle path passes events but a file
+            # change has no event — the signature comparison IS the
+            # wake route. No polling is added: due() runs at the idle
+            # path's existing cadence (repl.py:4224).
+            try:
+                path = _resolve_workspace_path(value)
+                current = _file_signature(path)
+            except ValueError:
+                current = None  # an escaping path can never fire
+            if current is not None and current != str(w.get("file_sig")):
+                hits.append(w)
+                continue
         elif any(k == kind and v == value for k, v in events):
             hits.append(w)
             continue
