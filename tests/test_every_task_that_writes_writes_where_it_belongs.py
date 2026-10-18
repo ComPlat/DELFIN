@@ -259,6 +259,9 @@ def test_the_counts_still_match_what_was_measured():
     # generalist_workspace and refuses an existing one; the acceptance
     # scripts run hidden tests on scratch copies only.
     #
+    # generic_project 18 -> 24 on 2026-10-17: the six tasks_w17_method.yaml
+    # tasks (package M1, wave 17). Each setup builds its own git-seeded
+    # patch starts from main, so it carries both the C1 and the M1 change.
     # generalist 17 -> 22 on 2026-10-17 (C1, wave 17): the five
     # tasks_w17_code.yaml tasks. Each setup builds one git repository in
     # its own subdirectory of the fixture workspace; the acceptance
@@ -268,7 +271,7 @@ def test_the_counts_still_match_what_was_measured():
     # — none is a writing class; their fixtures are built by
     # setup/w17_longrun_setup.py into the office workspace and cleaned by
     # the guard.
-    assert counts == {"office": 13, "behavior": 16, "generic_project": 18,
+    assert counts == {"office": 13, "behavior": 16, "generic_project": 24,
                       "science": 23, "chemistry": 5, "generalist": 22,
                       "other": 56}, counts
 
