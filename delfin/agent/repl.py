@@ -702,7 +702,15 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
         _status, _reason = _tp.assess(_history, workspace=_ws, prompt=prompt)
         _note = _tp.instruction_for(_status)
         if _note:
-            prompt = _note + "\n\n" + prompt
+            # The fused prompt keeps the HarnessText mark (a wake stays
+            # harness transport for later turns — the wave-17 bug), and a
+            # None prompt fuses the note alone instead of raising past the
+            # swallow-guard below.
+            was_harness = isinstance(prompt, HarnessText)
+            body = prompt if isinstance(prompt, str) else ""
+            prompt = _note + "\n\n" + body
+            if was_harness:
+                prompt = HarnessText(prompt)
     except Exception:
         pass
     try:

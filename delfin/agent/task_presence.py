@@ -132,13 +132,16 @@ def assess(history, *, workspace, prompt=None):
     for it (garbage history has no person's words in it).
     """
     try:
-        # A plain typed prompt IS the person speaking now — but only on
-        # an otherwise-empty history (the real first turn). Once turns
-        # have run without a person row, a plain prompt is just as
-        # likely a harness continuation that lost its type (wave 17:
-        # the lost first message), so it does not rescue the session.
+        # A plain typed non-empty prompt IS the person speaking now —
+        # ALWAYS (QS ruling s29 on Finding 2, 2026-10-18): the person is
+        # known by the message's shape, not by history state. Harness
+        # transport/marker (HARNESS_KEY / HarnessText) is what separates
+        # a wake from the person; a history heuristic would re-create
+        # the wave-17 classification bug on the other side. Any residual
+        # unmarked-continuation shape is a QS brief question, not solved
+        # here.
         if prompt is not None and type(prompt) is str \
-                and str(prompt).strip() and not list(history or []):
+                and str(prompt).strip():
             return ("present",
                     "the turn's prompt is a plain message (the person "
                     "is typing this turn)")

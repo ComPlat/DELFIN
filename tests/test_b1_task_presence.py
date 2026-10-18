@@ -161,6 +161,18 @@ def test_other_session_message_is_not_the_person():
     assert status in ("missing", "stale")
 
 
+# QS ruling (s29) on Finding 2: the person is known by SHAPE, not history
+# state. A plain typed non-empty prompt counts as the person speaking now
+# ALWAYS — no empty-history qualifier. Residual risk (a harness
+# continuation arriving without the marker) is a shape question for the
+# QS lead, not a history heuristic.
+def test_plain_prompt_counts_as_person_even_after_harness_only_turns():
+    from delfin.agent import task_presence
+    status, reason = task_presence.assess(
+        _history_operator_only(), workspace=None, prompt="run phase 3")
+    assert status == "present", reason
+
+
 # --------------------------------------------------- 6: run_turn surface
 
 def test_run_turn_emits_notice_on_missing():
@@ -193,10 +205,16 @@ def test_run_turn_no_notice_when_task_present():
 # --------------------------------------- 7-8: prepare_fresh_turn surface
 
 def test_prepare_fresh_turn_carries_notice_on_missing():
+    # QS ruling (s29): a plain prompt is the person ALWAYS. So a missing
+    # verdict on the dashboard surface needs a prompt that is NOT a
+    # plain typed string — the wake passes prompt=None here; run_turn is
+    # where the wake (HarnessText) is classified. (The original test
+    # drove missing with a plain "next step" prompt, which the ruling
+    # reclassifies as the person typing.)
     engine = _FakeEngine(_history_operator_only())
-    out = repl_mod.prepare_fresh_turn(engine, "next step")
+    out = repl_mod.prepare_fresh_turn(engine, None)
+    out = out or ""
     assert "no task from the person" in out, out
-    assert "next step" in out
 
 
 def test_prepare_fresh_turn_no_notice_when_present():
