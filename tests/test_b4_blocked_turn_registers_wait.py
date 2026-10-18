@@ -34,13 +34,13 @@ def _agent(tmp_path, monkeypatch):
 def test_a_blocked_turn_registers_its_wait(tmp_path, monkeypatch, home):
     a = _agent(tmp_path, monkeypatch)
     a._note_turn_blocked("QUESTION: proceed?", denied=False)
-    a._register_blocked_wait()
+    a._register_blocked_wait("QUESTION: proceed?", denied=False)
     waits = wait_registry.SessionWaits("sess-b4-hook").list()
     assert len(waits) == 1, waits
     w = waits[0]
     assert w["kind"] == "message_from"
-    assert w["value"] == "operator"
-    assert w["on_whom"] == "operator"
+    assert w["value"] == "answer"
+    assert w["on_whom"] == "person"
     assert "blocked" in w["for_what"].lower()
 
 
@@ -52,7 +52,7 @@ def test_the_wiring_is_in_the_turn_end_hook(tmp_path, monkeypatch, home):
 
     turn_src = inspect.getsource(repl.TerminalAgent)
     assert "_note_turn_blocked(result.text" in turn_src
-    assert "_register_blocked_wait()" in turn_src
+    assert "_register_blocked_wait(result.text, denied=denied)" in turn_src
     # The call sits right beside the note writer in the turn-end hook.
-    assert turn_src.index("_register_blocked_wait()") \
+    assert turn_src.index("_register_blocked_wait(result.text") \
         > turn_src.index("_note_turn_blocked(result.text")
