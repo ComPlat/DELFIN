@@ -58,8 +58,13 @@ def _glob_regex(pattern: str) -> re.Pattern:
 def _in_scope(rel_path: str, scope: tuple[str, ...]) -> bool:
     """True when ``rel_path`` (workspace-relative, '/'-separated) matches
     one scope glob. ``**`` spans any depth, ``*`` one level, like the
-    write gate reads them."""
+    write gate reads them. An EMPTY scope matches everything: that is the
+    gate's own reading (_write_in_scope, api_client.py:13883-13884 -- no
+    write scope set means no restriction), mirrored here so the two never
+    disagree on which writes are allowed."""
     norm = posixpath.normpath(rel_path.replace("\\", "/"))
+    if not (scope or ()):  # empty scope == no restriction (gate: :13883)
+        return True
     for pattern in scope or ():
         pattern = (pattern or "").strip()
         if not pattern:
@@ -128,6 +133,11 @@ def plan(path: str, scope: tuple[str, ...], workspace: str) -> dict | None:
         rel = posixpath.normpath(path.replace("\\", "/"))
 
     if rel is not None and not rel.startswith(".."):
+        if rel in (".", ""):
+            # The path IS the workspace itself (e.g. "delfin/..") -- a
+            # directory, not a file; the gate resolves it to the workspace
+            # root. Nothing to plan.
+            return None
         if _in_scope(rel, scope):
             return None
         copies = _copies_for(rel, workspace)

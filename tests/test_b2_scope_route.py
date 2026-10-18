@@ -112,6 +112,20 @@ def test_duplicate_names_are_kept_distinct():
     assert plan_a["orig_copy"] != plan_b["orig_copy"]
 
 
+def test_empty_scope_means_no_restriction_like_the_gate():
+    # Gate ground truth: _write_in_scope returns True when no globs are
+    # set (api_client.py:13883-13884) -- plan must agree.
+    assert scope_route.plan("delfin/agent/x.py", (), "/home/u/proj") is None
+    assert scope_route.plan("delfin/agent/x.py", None, "/home/u/proj") is None
+
+
+def test_workspace_itself_is_not_planned():
+    # "delfin/.." resolves to the workspace root in the gate; a directory
+    # gets no copy plan.
+    assert scope_route.plan("delfin/..", SCOPE, "/home/u/proj") is None
+    assert scope_route.plan(".", SCOPE, "/home/u/proj") is None
+
+
 def test_empty_or_whitespace_path_is_not_planned():
     assert scope_route.plan("", SCOPE, "/home/u/proj") is None
     assert scope_route.plan("   ", SCOPE, "/home/u/proj") is None
