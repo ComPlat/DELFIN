@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the harness checks, remembers and measures what the agent does, for any task
+
+Six changes from the same session (2026-10-19, `78c36f8c`), each general:
+
+- **Every edited file is checked by its kind** at the end of the turn
+  (`artifact_check.py`), not only `.py`: `node --check` for JavaScript; for
+  an HTML page its inline scripts (at their HTML line), its missing local
+  `src`/`href`, and with the new optional `browser` extra (Playwright) the
+  page loaded headless with its uncaught and console errors; JSON parsed;
+  `bash -n`. A broken file sends the model back to fix it. A two-hour
+  browser game had not one harness check, and the model asked the user to
+  test every edit.
+- **A weak agent driver is named for every provider** (`agent_fitness`):
+  no tools, a small window, the vendor's smallest tier (nano, lite, tiny,
+  micro) or a small parameter count. In the dashboard preflight, the
+  terminal's startup banner (by name, no network) and after `/model`. Only
+  `kit.*` names were checked, so `azure.gpt-5-nano` went unwarned.
+- **The user's yes holds for the session** for the identical action in a
+  second-opinion dialog. One server was asked about in three turns.
+- **A running job is handed back, not started twice**: the same command in
+  the same directory, or a file server on the same address. A started file
+  server names its URL. One session started eight.
+- **A file the model already has is not sent twice**: the same lines,
+  unchanged (size and nanosecond mtime), with the earlier result still in
+  the request byte for byte (`reread.py`). A 441-line page was read whole
+  again and again while requests grew past 400k input tokens.
+- **The benchmark measures acting on a clear order** (`behavior: act`): an
+  edit that landed and no question before it; two tasks on a one-file page.
+
 ### Fixed — an agent's edit reaches the file, and a refused one is not reported as made
 
 One session (2026-10-19, gpt-5-nano building a browser game in one HTML
