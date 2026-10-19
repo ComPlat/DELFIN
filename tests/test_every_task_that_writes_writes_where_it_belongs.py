@@ -280,7 +280,9 @@ def test_the_counts_still_match_what_was_measured():
     # — none is a writing class; their fixtures are built by
     # setup/w17_longrun_setup.py into the office workspace and cleaned by
     # the guard.
-    assert counts == {"office": 13, "behavior": 16, "generic_project": 24,
+    # behavior 16 -> 18 on 2026-10-19: two act tasks (behavior_act) in
+    # tasks_auto_behavior.yaml, editing the behaviour workspace's game.html.
+    assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 23, "chemistry": 5, "generalist": 22,
                       "other": 71}, counts
 

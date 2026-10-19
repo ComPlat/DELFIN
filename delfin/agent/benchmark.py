@@ -1345,6 +1345,29 @@ def _behavior_asked(calls: list[dict], traj: Trajectory) -> bool:
     return asked_tool or asked_prose
 
 
+def _behavior_acted(calls: list[dict], traj: Trajectory) -> bool:
+    """Acted-on-an-order: a clear, complete instruction led to an edit that
+    LANDED (its result is no error), and no question came before it.
+
+    The counterpart of ``asked``: there the instruction is ambiguous and
+    acting is the failure; here it is complete and asking or re-planning
+    is. Session 78c36f8c (2026-10-19): after "ja mach" the turn answered
+    with the plan again; when it did call an edit, the edit was refused
+    and the answer said it was made. A refused edit is not acting, so the
+    flag reads the results, not only the calls."""
+    results = _paired_results(list(traj.tool_calls or []),
+                              list(traj.tool_results or []))
+    first_ask = _first_idx(calls, "ask")
+    for c in calls:
+        if "mutate" not in c["kinds"]:
+            continue
+        res = results[c["idx"]] if c["idx"] < len(results) else ""
+        if str(res).lstrip().startswith('{"error"'):
+            continue
+        return first_ask is None or first_ask > c["idx"]
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Hint behaviours (Wave 4).  The four plan/scout/verify/ask flags ask "did
 # the agent do X before Y" from tool calls alone.  These ask the second
@@ -1493,6 +1516,8 @@ def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
                         traj.checkout_root)))}
     if beh == "ask":
         return {"asked": int(_behavior_asked(calls, traj))}
+    if beh == "act":
+        return {"acted": int(_behavior_acted(calls, traj))}
     scorer = _HINT_BEHAVIOR_SCORERS.get(beh)
     if scorer is not None:
         return {beh: int(scorer(calls, traj))}
