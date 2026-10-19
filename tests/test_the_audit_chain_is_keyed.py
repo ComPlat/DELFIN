@@ -46,6 +46,14 @@ def store(tmp_path, monkeypatch):
     trust_store.forget_cached_keys()
     SE.clear()
 
+def _now_ts() -> str:
+    """A timestamp in the current ISO week. The log rotates weekly when the
+    first line is from an earlier week; a fixed date made these lines rotate
+    away once that week had passed (main went red on 2026-10-19)."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 
 def _log(tmp_path):
     return tmp_path / "state" / "audit.log"
@@ -137,7 +145,7 @@ def test_an_unkeyed_chain_from_before_the_key_continues(tmp_path, store):
     prev = AL.GENESIS
     lines = []
     for i in range(3):
-        raw = json.dumps({"ts": "2026-10-16T00:00:00Z", "tool": "bash",
+        raw = json.dumps({"ts": _now_ts(), "tool": "bash",
                           "command": f"old {i}", "prev": prev}).encode()
         lines.append(raw)
         prev = AL._line_hash(raw)
