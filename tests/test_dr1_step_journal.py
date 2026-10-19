@@ -35,7 +35,7 @@ def _start(session="s1", turn=1, step=1, tool="bash", arguments=None):
 
 def test_start_then_finish_writes_two_append_only_lines(journal_dir):
     assert _start(arguments={"command": "git commit -m x"})
-    assert step_journal.finish_step("s1", step=1, ok=True,
+    assert step_journal.finish_step("s1", turn=1, step=1, tool="bash", ok=True,
                                     result="committed")
     text = (journal_dir / "s1.steps.jsonl").read_text()
     kinds = [json.loads(l)["kind"] for l in text.strip().splitlines()]
@@ -74,7 +74,7 @@ def test_finish_digest_is_secret_free_and_deterministic(journal_dir):
     step_journal.start_step("s2", turn=1, step=1, tool="bash",
                             arguments={"command": "echo hi"})
     secret = "token ghp_0123456789abcdefghijklmnopqrstuvwxyz012345"
-    step_journal.finish_step("s2", step=1, ok=True,
+    step_journal.finish_step("s2", turn=1, step=1, tool="bash", ok=True,
                              result=f"ok {secret}")
     raw = (journal_dir / "s2.steps.jsonl").read_text()
     assert secret not in raw
@@ -100,7 +100,7 @@ def test_open_step_detected_after_start_without_finish(journal_dir):
 
 def test_finished_step_is_not_open(journal_dir):
     _start(turn=1, step=1, tool="bash")
-    step_journal.finish_step("s1", step=1, ok=True, result="done")
+    step_journal.finish_step("s1", turn=1, step=1, tool="bash", ok=True, result="done")
     open_out, _ = step_journal.open_steps("s1")
     assert open_out == []
 
@@ -118,7 +118,7 @@ def test_may_or_may_not_have_run_line_for_open_side_effect(journal_dir):
 def test_finished_readonly_step_result_digest_replayable(journal_dir):
     step_journal.start_step("s1", turn=1, step=2, tool="read_file",
                             arguments={"path": "a.md"})
-    step_journal.finish_step("s1", step=2, ok=True,
+    step_journal.finish_step("s1", turn=1, step=2, tool="read_file", ok=True,
                              result="1  the content of a.md")
     fin = step_journal.finished_result("s1", step=2)
     assert fin is not None
@@ -149,7 +149,7 @@ def test_missing_journal_is_no_steps_no_note(journal_dir):
 def test_render_note_reports_corrupt_lines_and_last_finished(journal_dir):
     step_journal.start_step("s1", turn=1, step=1, tool="bash",
                             arguments={"command": "x"})
-    step_journal.finish_step("s1", step=1, ok=True, result="ok")
+    step_journal.finish_step("s1", turn=1, step=1, tool="bash", ok=True, result="ok")
     p = journal_dir / "s1.steps.jsonl"
     p.write_text(p.read_text() + "not-json-at-all\n")
     step_journal.start_step("s1", turn=1, step=2, tool="bash",
@@ -162,6 +162,53 @@ def test_render_note_reports_corrupt_lines_and_last_finished(journal_dir):
     # finished step line.
     assert "Last recorded finished step: 1" in note
     assert "must NOT be repeated" in note
+
+
+def test_stale_finish_from_older_turn_does_not_mask_open_step(journal_dir):
+    """Reviewer finding 1 (nacht-s2, adversarial a1): a finish must match
+    its start on (turn, step) — step numbers restart every turn."""
+    step_journal.start_step("s1", turn=7, step=1, tool="bash",
+                            arguments={"command": "git push"})
+    step_journal.finish_step("s1", turn=7, step=1, tool="bash", ok=True, result="ok")
+    step_journal.start_step("s1", turn=8, step=1, tool="bash",
+                            arguments={"command": "git push"})
+    open_out, _ = step_journal.open_steps("s1")
+    assert len(open_out) == 1
+    assert open_out[0]["turn"] == 8
+    note = step_journal.render_resume_note("s1")
+    assert note is not None and "step 1" in note and "CHECK BEFORE" in note
+
+
+def test_finish_without_turn_field_from_old_journal_still_parses(journal_dir):
+    """Compat: a pre-turn-field finish record (old journal shape) is
+    skipped as an unknown shape rather than crashing the reader — the
+    resume must always come up with something."""
+    step_journal.start_step("s1", turn=1, step=1, tool="bash",
+                            arguments={"command": "x"})
+    p = journal_dir / "s1.steps.jsonl"
+    p.write_text(p.read_text() + json.dumps({"kind": "finish",
+                                             "step": 1, "ok": True}) + "\n")
+    steps, notes = step_journal.read_steps("s1")
+    # The turn-less old-shape finish still parses as a finish (the kind
+    # filter accepts it), but it can never close a start's (turn, step)
+    # key — the turn-1 step-1 start stays open, not masked, and the
+    # reader does not crash.
+    assert [s["kind"] for s in steps] == ["start", "finish"]
+    open_out, _ = step_journal.open_steps("s1")
+    assert len(open_out) == 1
+
+
+def test_unknown_kind_line_is_skipped_not_crashed(journal_dir):
+    """Reviewer finding 2 (nacht-s2, adversarial a5): a well-formed JSON
+    line of an unknown kind is skipped with a note, never accepted into
+    the steps list."""
+    _start(arguments={"command": "x"})
+    p = journal_dir / "s1.steps.jsonl"
+    p.write_text(p.read_text()
+                 + json.dumps({"kind": "banana", "step": 9}) + "\n")
+    steps, notes = step_journal.read_steps("s1")
+    assert [s["kind"] for s in steps] == ["start"]
+    assert any("unknown shape" in n for n in notes)
 
 
 def test_journal_resolves_per_call_from_session_store(journal_dir, tmp_path):

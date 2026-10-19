@@ -169,15 +169,24 @@ def start_step(session: str, *, turn: int, step: int, tool: str,
     })
 
 
-def finish_step(session: str, *, step: int, ok: bool,
-                result: Any = "") -> bool:
-    """Record that the call returned. The result goes in as a digest."""
+def finish_step(session: str, *, turn: int, step: int, tool: str,
+                ok: bool, result: Any = "") -> bool:
+    """Record that the call returned. The result goes in as a digest.
+
+    ``turn`` travels with the finish record: a finish matches the start
+    it closes only on (turn, step). Step numbers restart each turn — a
+    finish without the turn would let a stale finish from an older turn
+    mask a genuinely open step of the current one. ``tool`` travels too:
+    a replayed result is only useful with the tool it came from.
+    """
     from . import tool_digest
     content = result if isinstance(result, str) else str(result or "")
     return _append(journal_path(session), {
         "kind": "finish",
         "ts": time.time(),
+        "turn": int(turn),
         "step": int(step),
+        "tool": str(tool),
         "ok": bool(ok),
         "result_digest": tool_digest.digest("", {}, content),
     })
@@ -227,7 +236,7 @@ def read_steps(session: str, *, root: "str | Path | None" = None,
         except (json.JSONDecodeError, ValueError):
             notes.append(f"step journal line {i} is corrupt — skipped")
             continue
-        if not isinstance(entry, dict) or "kind" not in entry:
+        if not isinstance(entry, dict) or entry.get("kind") not in ("start", "finish"):
             notes.append(f"step journal line {i} has an unknown shape — skipped")
             continue
         steps.append(entry)
@@ -245,37 +254,56 @@ def open_steps(session: str, *, root: "str | Path | None" = None,
     tell whether it completed.
     """
     steps, notes = read_steps(session, root=root)
-    finished: set[int] = set()
+    finished: set[tuple[int, int]] = set()
     for entry in steps:
         if entry.get("kind") == "finish":
-            try:
-                finished.add(int(entry.get("step", -1)))
-            except (TypeError, ValueError):
-                pass
+            key = _turn_step_key(entry)
+            if key is not None:
+                finished.add(key)
     open_out = [e for e in steps
                 if e.get("kind") == "start"
-                and int(e.get("step", -1)) not in finished]
+                and _turn_step_key(e) not in finished]
     return open_out, notes
 
 
-def finished_result(session: str, *, step: int,
+def _turn_step_key(entry: dict[str, Any]) -> "tuple[int, int] | None":
+    """(turn, step) of a journal record, or None when unusable.
+
+    Step numbers restart each turn, so a finish matches its start only
+    on BOTH fields — a stale finish of step 1 from turn 7 must not mask
+    the step-1 start of turn 8.
+    """
+    try:
+        return int(entry.get("turn", -1)), int(entry.get("step", -1))
+    except (TypeError, ValueError):
+        return None
+
+
+def finished_result(session: str, *, step: int, turn: int | None = None,
                     root: "str | Path | None" = None) -> dict[str, Any] | None:
     """The recorded finish of one step, or None when it never finished.
 
-    The resume path gives this back instead of re-running a finished
-    step: the digest is what the model sees, and re-running a finished
-    step silently (with stale arguments against changed state) is exactly
-    the duplication the journal exists to prevent.
+    With ``turn`` given (the resume path knows the turn it is resuming),
+    only the finish of that (turn, step) matches. Without it, the newest
+    finish of that step number is returned — the pre-turn-field journal
+    shape, kept for older files.
     """
     steps, notes = read_steps(session, root=root)
     for entry in reversed(steps):
         if entry.get("kind") != "finish":
             continue
         try:
-            if int(entry.get("step", -1)) == int(step):
-                return entry
+            if int(entry.get("step", -1)) != int(step):
+                continue
         except (TypeError, ValueError):
             continue
+        if turn is not None:
+            try:
+                if int(entry.get("turn", -1)) != int(turn):
+                    continue
+            except (TypeError, ValueError):
+                continue
+        return entry
     return None
 
 
