@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the agent reaches its own server, and the watcher waits for a slow endpoint
+
+- **A caged command reaches the server its own session started**: the egress
+  proxy admits, for a session's token, the loopback ports that session's
+  running background jobs listen on (read from /proc for the job and its
+  children) and connects to the loopback itself. Other ports, other
+  sessions' servers and the process token are refused as before. The agent
+  could not `curl` its own game server ("port 8324 is not allowed") and asked
+  the user to test every change.
+- **The second opinion waits as long as the endpoint currently takes**:
+  without a `timeout_s` setting, 1.5 x the 75th percentile of the last 20
+  first-token times, between the 20 s default and 90 s. The KIT proxy
+  answered in 18.5 s median with 45 % past 20 s, so the watcher failed again
+  and again and each failure under Bypass became a question.
+
 ### Added — a project builds and uses its own environment, in any language
 
 A browser game's agent (2026-10-19) could neither `npm install three` nor fetch
