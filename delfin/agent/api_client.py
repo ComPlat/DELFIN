@@ -6424,6 +6424,52 @@ def _go_ahead_applies(perms: Any) -> bool:
             and not int(getattr(perms, "subagent_depth", 0) or 0))
 
 
+def _served_url_of(cmd: str) -> str:
+    """The address a file server in *cmd* answers on, or ""."""
+    try:
+        from .background_view import served_url
+        return served_url(cmd)
+    except Exception:
+        return ""
+
+
+def _bj_running_twin(cmd: str, cwd: str, perms: Any) -> Optional[dict]:
+    """The answer for a background command this session already runs, or
+    None: the same command in the same directory, or a second file server
+    on an address one of its jobs already serves. A job of another session
+    is not this session's to hand out."""
+    try:
+        from . import bash_jobs as _bj
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        want = " ".join(str(cmd or "").split())
+        url = _served_url_of(cmd)
+        for job in _bj.get_registry().list_jobs(include_finished=False):
+            if sid and str(getattr(job, "session_id", "") or "") not in ("", sid):
+                continue
+            same_cmd = (" ".join(str(job.command or "").split()) == want
+                        and os.path.realpath(str(job.cwd or "")) ==
+                        os.path.realpath(cwd))
+            same_url = bool(url) and _served_url_of(job.command) == url
+            if not (same_cmd or same_url):
+                continue
+            return {
+                "status": "already_running",
+                "job_id": job.job_id,
+                "command": str(job.command or "")[:500],
+                **({"url": url} if url else {}),
+                "running_for_s": int(job.elapsed_s()),
+                "hint": (
+                    f"Job {job.job_id} already runs this"
+                    + (f" and serves {url}" if url else "")
+                    + ". Use it -- a file server shows edits on the next "
+                    "reload. To restart it on purpose, "
+                    f"bash_kill({job.job_id!r}) first."),
+            }
+    except Exception:
+        return None
+    return None
+
+
 def _ends_with_a_question(text: str) -> bool:
     """True when an answer ends by asking the user something."""
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
@@ -8937,6 +8983,9 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # Keys of actions the USER approved in a second-opinion dialog: not
+    # asked again in this session (see _classifier_second_opinion).
+    classifier_user_allowed: set = field(default_factory=set)
     # Set by isolation_posture.apply_at_start when a bypass start was
     # lowered to default because no layer isolates commands. With nobody
     # to ask, a command off the auto-allow list is then judged by the
@@ -20846,6 +20895,21 @@ class _DocToolExecutor:
         except Exception:
             key = hashlib.sha256(repr((base, args)).encode(
                 "utf-8", "replace")).hexdigest()
+        # The user said yes to exactly this action earlier in the session:
+        # not asked again. The per-turn ``allowed`` set forgot it at the
+        # next message, so one game server was asked about three times
+        # across three turns (2026-10-19), each time approved. Only the
+        # user's own yes is kept this long -- a model verdict still lives
+        # one turn -- and only for the identical tool and arguments.
+        _user_yes = getattr(perms, "classifier_user_allowed", None)
+        if not isinstance(_user_yes, set):
+            _user_yes = set()
+            try:
+                perms.classifier_user_allowed = _user_yes
+            except Exception:
+                pass
+        if key in _user_yes:
+            return None
 
         def _refused(reason: str, *, by_user: bool = False) -> str:
             # The user's own no holds for the session; the model's holds
@@ -21043,6 +21107,7 @@ class _DocToolExecutor:
             return f"confirm_callback raised: {exc}"
         if ok:
             state["allowed"].add(key)
+            _user_yes.add(key)
             return None
         if self._confirm_timed_out(perms):
             _record_security_event("approval_timeout", base, shown)
@@ -24422,6 +24487,14 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # The same work already running in this session: hand back that
+        # job instead of starting a second copy. Measured 2026-10-19: one
+        # session started eight `python3 -m http.server` jobs to show a
+        # game, each next one beside or over the last.
+        _dup = _bj_running_twin(cmd, str(run_cwd), perms)
+        if _dup is not None:
+            return json.dumps(_dup, ensure_ascii=False)
+
         # The job's file changes are journalled when it ends, in its
         # watcher thread, against the roots as they were at its start.
         _snap = self._shell_snapshot(perms)
@@ -24465,10 +24538,13 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
             "timeout_s": timeout_s,
+            **({"url": _url} if (_url := _served_url_of(cmd)) else {}),
             "hint": (
                 f"Use bash_status({job.job_id!r}) and "
                 f"bash_output({job.job_id!r}) to monitor; "
                 f"bash_kill({job.job_id!r}) to stop."
+                + (f" It serves {_url} -- give the user that address."
+                   if _url else "")
             ),
         }, ensure_ascii=False)
 
