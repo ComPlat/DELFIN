@@ -42,6 +42,14 @@ def _fresh(monkeypatch):
     yield
     SE.clear()
 
+def _now_ts() -> str:
+    """A timestamp in the current ISO week. The log rotates weekly when the
+    first line is from an earlier week; a fixed date made these lines rotate
+    away once that week had passed (main went red on 2026-10-19)."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 
 def _log(tmp_path):
     return tmp_path / "state" / "audit.log"
@@ -111,7 +119,7 @@ def test_a_cut_tail_is_found(tmp_path):
 def test_lines_from_before_the_chain_are_legacy(tmp_path):
     path = _log(tmp_path)
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"ts": "2026-10-16T00:00:00Z", "tool": "bash"})
+    path.write_text(json.dumps({"ts": _now_ts(), "tool": "bash"})
                     + "\n", encoding="utf-8")
     _write(path, 2)
     rep = AL.verify(path)
