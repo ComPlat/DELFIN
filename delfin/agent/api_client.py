@@ -3594,7 +3594,10 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # already split, and a `;` inside the quoted script (`'1d;$d'`) must
     # not end the look for a `-i` after it. Measured 2026-10-19: `sed
     # '1d;$d'` in a syntax check of a game asked three times.
-    r"^\s*sed\b(?!.*\s(?:-[A-Za-z]*[if]|--in-place\b|--file\b))",
+    # Every prefix of --in-place and --file counts: GNU sed takes `--i`
+    # and `--fi` for them (measured 2026-10-19: `sed --i` edited
+    # .delfin/settings.json unasked).
+    r"^\s*sed\b(?!.*\s(?:-[A-Za-z]*[if]|--i|--fi))",
     # The no-ops `grep ... || true` ends with.
     r"^\s*(?:true|false|:)\s*$",
     # node: the syntax check and the version, end-anchored -- running a
@@ -10029,6 +10032,41 @@ def _sed_blank_custom_regexes(text: str) -> str:
     return "".join(out)
 
 
+def _sed_loads_a_script_file(cmd: str) -> bool:
+    """True when sed in *cmd* takes its script from a file, which no scan
+    of the command line can read (a ``w`` or ``e`` in it writes or runs
+    unseen): ``-f`` alone or in a bundle (``-nf``) and every prefix GNU sed
+    accepts for ``--file`` (``--fi``, ``--fil``). Measured 2026-10-19:
+    ``sed -n -f x.sed f``, x.sed holding ``1e CMD``, ran unasked. An
+    unparsable line counts as True."""
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return True
+    skip = False
+    for w in words[1:]:
+        if skip:
+            skip = False
+            continue
+        if w == "--":
+            break
+        if w.startswith("--"):
+            name = w[2:].split("=", 1)[0]
+            if len(name) >= 2 and "file".startswith(name):
+                return True
+            if "=" not in w and name in ("expression", "line-length"):
+                skip = True
+            continue
+        if w.startswith("-") and len(w) > 1:
+            for k in range(1, len(w)):
+                if w[k] == "f":
+                    return True
+                if w[k] in "eil":       # the rest of the word is its value
+                    skip = w[k] in "el" and k == len(w) - 1
+                    break
+    return False
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
@@ -10105,7 +10143,8 @@ def _reader_writes_or_runs(cmd: str) -> bool:
         return any(not (w.startswith("-") or "=" in w) for w in rest) or \
             any(w in ("-S", "--split-string") for w in rest)
     if first == "sed":
-        return _sed_script_writes(stripped)
+        return (_sed_loads_a_script_file(stripped)
+                or _sed_script_writes(stripped))
     if first == "git" and _git_reaches_elsewhere(stripped):
         return True
     if first == "uniq":

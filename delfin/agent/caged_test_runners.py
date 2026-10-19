@@ -243,8 +243,10 @@ def _npx(words: list[str], here: Path, ws: Path) -> bool:
 
 # A package spec as an install names it: `three`, `three@0.160.1`,
 # `@types/node@^20`. Never a flag, a path or a URL (no "-" first, no "/"
-# outside a scope, no ":").
-_PKG_RE = re.compile(r"^(?!-)(?:@[\w.-]+/)?[\w.-]+(?:@[\w.^~<>=*|-]+)?$")
+# outside a scope, no ":", and not `.` or `..`, which npm and uv install as
+# the directory they name).
+_PKG_RE = re.compile(
+    r"^(?!-)(?!\.+(?:@|$))(?:@[\w.-]+/)?[\w.-]+(?:@[\w.^~<>=*|-]+)?$")
 _JS_INSTALL_FLAGS = {
     "-D", "-E", "-O", "-P", "--save", "--save-dev", "--save-exact",
     "--save-optional", "--save-peer", "--no-save", "--no-audit", "--no-fund",
@@ -311,8 +313,12 @@ def _uv(words: list[str], here: Path, ws: Path) -> bool:
             return _inside(here / value, ws) and value.endswith(".txt")
         return bool(re.match(r"^[\d.]+$", value))
 
+    # A path (a requirements file of `uv pip sync`, a local package) only
+    # inside the workspace: `uv pip install ../other` or `/abs/pkg` builds
+    # and installs what lies outside it.
     return _flags_ok(rest, _UV_FLAGS, _UV_VALUE_FLAGS, value_ok) and all(
-        w.startswith("-") or _PKG_RE.match(w) or re.match(r"^[\w./-]+$", w)
+        w.startswith("-") or _PKG_RE.match(w)
+        or (re.match(r"^[\w./-]+$", w) and _inside(here / w, ws))
         for w in rest)
 
 

@@ -192,19 +192,77 @@ def _check_html(path: Path) -> str:
     return "\n".join(probs)
 
 
+# The browser runs in the DELFIN process, outside the cage and its egress
+# proxy, on a page the model wrote. Measured 2026-10-19 without these
+# arguments: an <img>, fetch(), a WebSocket, a `localhost` name and a
+# WebRTC STUN packet each reached a listener on the loopback, and a
+# <script src> naming a file outside the workspace put a word of that file
+# into the error sent back to the model. With them: every name resolves to
+# nothing, every connection goes through a proxy that does not exist (the
+# loopback included, which Chromium otherwise bypasses), and WebRTC sends
+# no UDP outside that proxy.
+_BROWSER_ARGS = (
+    "--host-resolver-rules=MAP * ~NOTFOUND",
+    "--proxy-server=http://0.0.0.0:9",
+    "--proxy-bypass-list=<-loopback>",
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--disable-background-networking",
+)
+# What a page may load and still be judged: data:/blob:/about: and files
+# under its own directory. A request for anything else is refused, and the
+# browser part of the check is dropped for that page: a CDN script that
+# could not load makes a ReferenceError that is no bug of the page, and an
+# error about a file outside the directory would carry that file's text.
+_INTERNAL_SCHEMES = ("data:", "blob:", "about:")
+
+
 def _browser_errors(path: Path) -> list[str]:
     """Uncaught errors and console errors of the page loaded headless, when
-    Playwright and its browser are installed; [] otherwise."""
+    Playwright and its browser are installed; [] otherwise, and [] when the
+    page asked for anything outside its own directory (_BROWSER_ARGS)."""
     try:
         from playwright.sync_api import sync_playwright  # type: ignore
     except Exception:
         return []
+    from urllib.parse import unquote, urlparse
     errors: list[str] = []
+    reached_out: list[str] = []
+    root = path.resolve().parent
+
+    def _own(url: str) -> bool:
+        if url.startswith(_INTERNAL_SCHEMES):
+            return True
+        if not url.startswith("file:"):
+            return False
+        try:
+            local = Path(unquote(urlparse(url).path)).resolve()
+        except Exception:
+            return False
+        return local == root or root in local.parents
+
+    def _on_request(req) -> None:
+        if not _own(req.url):
+            reached_out.append(req.url)
+
+    def _route(route) -> None:
+        if _own(route.request.url):
+            route.continue_()
+        else:
+            reached_out.append(route.request.url)
+            route.abort()
+
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(headless=True,
+                                         args=list(_BROWSER_ARGS))
             try:
-                page = browser.new_page()
+                context = browser.new_context(offline=True,
+                                              service_workers="block")
+                context.route("**/*", _route)
+                page = context.new_page()
+                page.on("request", _on_request)
+                page.on("websocket", lambda ws: reached_out.append(ws.url))
                 page.on("pageerror", lambda e: errors.append(f"uncaught: {e}"))
                 page.on("console", lambda m: errors.append(
                     f"console.error: {m.text}") if m.type == "error" else None)
@@ -214,6 +272,8 @@ def _browser_errors(path: Path) -> list[str]:
             finally:
                 browser.close()
     except Exception:
+        return []
+    if reached_out:
         return []
     return [f"{path.name} in a headless browser: {e}"[:400]
             for e in errors[:5]]
