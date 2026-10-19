@@ -321,10 +321,13 @@ def _donor_plane_beta(P, syms, d):
     return abs(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(nrm, v / n_)))))))
 
 
-_BETA_BAND = 4.8        # deg -- the crystals' own upper beta.  ⚠ PROVENANCE: taken from our own
-                        # statistics on CSD crystal structures; one of the two values of the
-                        # shipped configuration that still are, until a re-derivation from the
-                        # COD (CC0) replaces it (see delfin/manta/PROVENANCE.md).
+_BETA_BAND = 5.2        # deg -- the crystals' own upper beta.  PROVENANCE: measured on the
+                        # Crystallography Open Database (CC0): median beta of sp2 N donors
+                        # (own environment planar, rms < 0.10 A) bound to one metal, per
+                        # denticity of their own ligand, over 117 427 COD complexes -- 3.9 mono,
+                        # 3.7 bi, 3.5 tri, 5.2 tetradentate (n = 13 296, 95 % bootstrap CI
+                        # 5.1-5.4); the band is the largest of these medians
+                        # (see delfin/manta/PROVENANCE.md).
                         # NOT a tuning knob: below it a donor is as flat as real chemistry
                         # gets, so there is nothing to win by preferring a flatter conformer.
 

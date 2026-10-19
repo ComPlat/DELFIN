@@ -7,11 +7,11 @@ actually sits in real crystal structures, NOT the single-bond covalent sum (~1.5
 for C-C) that a covalent-radius prior would give and NOT a Kekule-localised
 1.34/1.50 alternation.
 
-⚠ PROVENANCE.  The five values are medians of our own statistics on CSD crystal
-structures (bond order "ar" of ligand bonds in metal complexes).  They are one of
-the two values of the shipped configuration that are still CSD-derived; a
-re-derivation by the same method from the COD (CC0) reproduces them to within
-0.012 A (C-C identical) and will replace them.  See delfin/manta/PROVENANCE.md.
+PROVENANCE.  The five values are medians over the Crystallography Open Database
+(COD, CC0): the SMILES graph mapped onto each crystal structure, median per
+element pair of the bonds of bond order "aromatic", over 26 566 organic COD
+structures (C-C n=335 129, C-N 22 914, C-O 2 820, C-S 2 576, N-N 2 053).  See
+delfin/manta/PROVENANCE.md.
 
 They are deliberately VENDORED here (a plain dict, no external dependency) so the
 public DELFIN construction path can seat aromatic rings at the right length with
@@ -32,10 +32,10 @@ from typing import Dict, Optional, Tuple
 # Keyed by tuple(sorted((element_1, element_2))) -> delocalised aromatic length (A).
 AROMATIC_BOND_TARGETS: Dict[Tuple[str, str], float] = {
     ("C", "C"): 1.387,
-    ("C", "N"): 1.349,
-    ("C", "O"): 1.369,
-    ("C", "S"): 1.732,
-    ("N", "N"): 1.364,
+    ("C", "N"): 1.360,
+    ("C", "O"): 1.374,
+    ("C", "S"): 1.729,
+    ("N", "N"): 1.352,
 }
 
 
