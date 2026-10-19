@@ -290,3 +290,32 @@ def test_auto_finish_without_start_is_harmless(journal_dir):
         "s1", None, ok=True, result="x") is False
     steps, _ = step_journal.read_steps("s1")
     assert steps == []
+
+
+def test_corrupt_turn_value_never_raises_in_auto_start(journal_dir):
+    # C1: the bracket helpers promise never to raise (the api_client
+    # hook leans on that promise, step_journal.py:233). A corrupt tail
+    # with a non-int turn must not break auto_start with ValueError.
+    step_journal.start_step("s1", turn=1, step=1, tool="bash",
+                            arguments={"command": "ok"})
+    step_journal.finish_step("s1", turn=1, step=1, tool="bash",
+                             ok=True, result="x")
+    p = journal_dir / "s1.steps.jsonl"
+    p.write_text(p.read_text() + '{"kind": "start", "turn": "banana"}\n')
+    # Must not raise:
+    rec = step_journal.auto_start("s1", tool="bash")
+    assert rec["turn"] == 1
+    assert rec["step"] == 2
+
+
+def test_journal_replaced_by_directory_notes_unreadable(journal_dir):
+    # C3: a path that exists but is not a regular file (a failed close
+    # can leave anything behind) must fire a note, not read as
+    # silently "no journal".
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    d = journal_dir / "s1.steps.jsonl"
+    d.mkdir()
+    steps, notes = step_journal.read_steps("s1")
+    assert steps == []
+    assert notes, "missing the unreadable note"
+    assert any("not a regular file" in n for n in notes)

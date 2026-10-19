@@ -261,9 +261,15 @@ def _intable(v: Any) -> bool:
 
 
 def _next_step(session: str, turn: int) -> int:
-    """1 + the highest step recorded in ``turn`` (steps restart per turn)."""
+    """1 + the highest step recorded in ``turn`` (steps restart per turn).
+
+    A non-int turn (a corrupt tail line) is simply not in ``turn`` —
+    the helper's no-raise contract (leaned on by the api_client hook,
+    api_client.py:16660-16662) holds even against a broken journal.
+    """
     steps, _ = read_steps(session)
-    in_turn = [int(e["step"]) for e in steps if int(e.get("turn", -1)) == turn]
+    in_turn = [int(e["step"]) for e in steps
+               if e.get("turn") == turn]
     return max(in_turn, default=0) + 1
 
 
@@ -291,6 +297,14 @@ def read_steps(session: str, *, root: "str | Path | None" = None,
         max_lines = _MAX_NOTE_LINES
     p = journal_path(session, root=root)
     if not p.is_file():
+        if p.exists():
+            # A failed close can leave a directory (or anything else
+            # that is not a regular file) behind: the reader must say
+            # so, not read it as silently "no journal" — a step whose
+            # finish_step returned False would otherwise vanish from
+            # every resume surface.
+            return [], [f"step journal unreadable: {p.name} "
+                        "(exists, not a regular file)"]
         return [], []
     notes: list[str] = []
     steps: list[dict[str, Any]] = []
