@@ -33,12 +33,22 @@ from typing import Any
 
 #: Tool output kept in a span, after redaction (brief says 500).
 OUTPUT_CAP = 500
-#: Input is capped tighter than output: it is a replay aid, not content.
+#: Tool input is capped tighter than output: it is a replay aid, not content.
 INPUT_CAP = 200
+
+#: Redact failures since the last spans() call — drained into the notes so
+#: a broken redact path is VISIBLE ("note"), never a silent raw-text export.
+_REDACT_FAILURES: list = []
 
 
 def _redact(text: Any, cap: int) -> str:
-    """Redact then cut. Never raises."""
+    """Redact then cut, or DROP the content on a redact failure.
+
+    QS ruling on F1: scrub_secrets unavailable or raising must never yield
+    raw text in a span. The field content is dropped ("[redaction
+    unavailable]") and the caller records a visible note — the failure is
+    loud, the raw text never leaves.
+    """
     if not isinstance(text, str):
         try:
             text = json.dumps(text, ensure_ascii=False) if isinstance(
@@ -47,10 +57,10 @@ def _redact(text: Any, cap: int) -> str:
             text = str(text or "")
     try:
         from .output_guard import scrub_secrets
-        text = scrub_secrets(text)
+        return scrub_secrets(text)[:cap]
     except Exception:
-        pass
-    return text[:cap]
+        _REDACT_FAILURES.append(1)
+        return "[redaction unavailable]"[:cap]
 
 
 def _id(session: str, part: str) -> str:
@@ -156,7 +166,7 @@ def spans(session: str, *, notes: bool = False):
     stores only; a missing store is a note, not an error.
     """
     note_list: list[str] = []
-    import time as _time
+    _REDACT_FAILURES.clear()
     session_span = {
         "trace_id": _id(session, "trace"),
         "span_id": _id(session, "session"),
@@ -202,6 +212,11 @@ def spans(session: str, *, notes: bool = False):
         if s["parent_span_id"] and s["parent_span_id"] not in ids:
             s["parent_span_id"] = _id(session, "session")
     out = list(all_spans)
+    if _REDACT_FAILURES:
+        note_list.append(
+            f"redaction: {len(_REDACT_FAILURES)} field(s) DROPPED — the "
+            "redact path failed; raw text was never exported")
+        _REDACT_FAILURES.clear()
     return (out, note_list) if notes else out
 
 
