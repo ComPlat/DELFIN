@@ -5909,10 +5909,10 @@ def create_tab(ctx):
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
-                          "kit": "azure.gpt-5.1",
+                          "kit": "kit.glm-5.3",
                           "ollama": "qwen3-coder:32b"}
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
-                       "kit": "azure.gpt-5-nano",
+                       "kit": "kit.deepseek-v4-flash",
                        "ollama": "qwen2.5-coder:7b"}
 
     # Skip patterns: models that should not appear in the dropdown.
@@ -22029,6 +22029,15 @@ def create_tab(ctx):
         model_dropdown.options = models
         default = _PROVIDER_DEFAULTS.get(provider, models[0][1])
         valid_values = {v for _, v in models}
+        if default not in valid_values and provider == "kit":
+            # The default is not served (a roster change): the best KIT
+            # model that is, by the same ranking the agent falls back on.
+            try:
+                from delfin.agent.model_capabilities import _KIT_PREFERENCE
+                default = next((m for m in _KIT_PREFERENCE
+                                if m in valid_values), default)
+            except Exception:
+                pass
         model_dropdown.value = default if default in valid_values else models[0][1]
         # The panel stays. Switching the provider does not change who has
         # to approve a document write or a read outside the roots, and

@@ -29754,6 +29754,40 @@ def _is_transient_api_error(exc: Exception) -> bool:
     return False
 
 
+_MODEL_NOT_FOUND_HINTS = (
+    "model not found", "model_not_found", "no such model", "unknown model",
+    "model does not exist", "does not exist or you do not have access",
+)
+
+
+def _is_model_not_found_error(exc: Exception) -> bool:
+    """Whether an API error says the endpoint does not serve the model."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int) and status not in (400, 404):
+        return False
+    low = str(exc).lower()
+    return any(h in low for h in _MODEL_NOT_FOUND_HINTS)
+
+
+def _kit_fallback_model(current: str, provider: str, base_url: str = "",
+                        api_key: str = "") -> str:
+    """The best KIT model to continue on when ``current`` is not served, or
+    "" (not a KIT session). The ranked roster's first entry the endpoint
+    lists; when the listing cannot be read, the first ranked entry that is
+    not ``current`` -- it was the ranking that named ``current`` too."""
+    if str(provider or "").lower() != "kit":
+        return ""
+    try:
+        from . import model_capabilities as _mc
+        served = _mc.kit_models_served(base_url, api_key, fetch=True)
+        ranked = [m for m in _mc._KIT_PREFERENCE if m != current]
+        if served:
+            return next((m for m in ranked if m in served), "")
+        return ranked[0] if ranked else ""
+    except Exception:
+        return ""
+
+
 _CONTEXT_LENGTH_HINTS = (
     "context_length_exceeded", "context length exceeded",
     "maximum context length", "reduce the length", "too many tokens",
@@ -31135,6 +31169,7 @@ class OpenAIClient(_BaseClient):
             except Exception:
                 pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
+        _model_fallback_done = False   # once per turn: see _kit_fallback_model
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
@@ -31694,6 +31729,38 @@ class OpenAIClient(_BaseClient):
                             _stream_attempt, _STREAM_RETRY_MAX, _delay))
                         time.sleep(_delay)
                         continue
+                    # The endpoint does not serve the model (a KIT roster
+                    # change): once per turn, the best KIT model it serves
+                    # takes over, said in the stream, and the round is sent
+                    # again. Measured 2026-10-19: kit.glm-5.3 answered
+                    # "400 - Model not found" with no explanation.
+                    if (_is_model_not_found_error(_stream_exc)
+                            and not _model_fallback_done):
+                        _model_fallback_done = True
+                        _old_model = self.model
+                        _alt = _kit_fallback_model(
+                            _old_model, getattr(self, "_provider", ""),
+                            str(getattr(self, "_base_url", "") or ""),
+                            str(getattr(self, "_api_key", "") or ""))
+                        if _alt:
+                            self.model = _alt
+                            kwargs["model"] = _alt
+                            _text_chunks = []
+                            _tool_calls = {}
+                            _round_in = 0
+                            finish_reason = None
+                            yield StreamEvent(type="notice", text=(
+                                f"\n⚠️ KIT does not serve `{_old_model}` right "
+                                "now (\"Model not found\"). This session "
+                                f"continues on `{_alt}`, the best KIT model it "
+                                "serves; /model or the dashboard's model menu "
+                                "picks another.\n"))
+                            continue
+                        yield StreamEvent(type="notice", text=(
+                            f"\n⚠️ The endpoint does not serve `{_old_model}` "
+                            "(\"Model not found\"). Pick a model it serves: "
+                            "/model lists them in the terminal, the model menu "
+                            "in the dashboard.\n"))
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which

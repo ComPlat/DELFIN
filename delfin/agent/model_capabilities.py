@@ -76,14 +76,18 @@ _CACHE_VERSION = 2
 # actually lists; the constant below is only what is said when the listing
 # cannot be reached.
 _KIT_PREFERENCE: tuple[str, ...] = (
-    # Fast: the endpoint rates it 6/6 for speed and 4/6 for intelligence, and
-    # a 15k-token prompt answers in ~5s cold. For an agent that spends its
-    # day on many short tool rounds, that is the axis that decides.
-    "kit.deepseek-v4-flash",
     # Strongest of the three (the endpoint calls it the best open-source
     # model, 6/6 intelligence) but rated 2/6 for speed, and measured at ~200s
     # for a 15k-token prompt whose prefix the endpoint cannot serve warm.
+    # First since 2026-10-19 by the user's choice: the best model drives the
+    # agent, and when KIT does not serve it the session continues on the
+    # next one here (api_client._kit_fallback_model) with a notice.
     "kit.glm-5.3",
+    # Fast: the endpoint rates it 6/6 for speed and 4/6 for intelligence, and
+    # a 15k-token prompt answers in ~5s cold. The fallback for GLM, and the
+    # cheap tier (model_routing), the action watcher and the dashboard's
+    # cheap default.
+    "kit.deepseek-v4-flash",
     # Multimodal MoE, the base model behind the ``standard-local`` alias.
     "kit.mistral-small-4-119b-a8b",
 )

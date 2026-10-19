@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — KIT runs on its best model, and a model KIT does not serve is explained
+
+- **GLM-5.3 is the KIT default and first in the ranking**, DeepSeek V4
+  Flash next: the dashboard's KIT default (was `azure.gpt-5.1`), the strong
+  routing tier (was `azure.gpt-5.4`) and `KIT_BEST_MODEL`. DeepSeek is the
+  cheap default (was `azure.gpt-5-nano`) and stays the action watcher's model.
+- **A model KIT does not serve is explained and replaced**: a "Model not
+  found" from the endpoint moves the session once per turn to the best KIT
+  model it serves, by that ranking, with a notice naming both models, and
+  the round is sent again. Off KIT the error is explained and raised. When
+  the dashboard's default is missing from the live list it now picks the
+  best served model by the same ranking instead of the list's first entry.
+  `kit.glm-5.3` had answered "400 - Model not found" and nothing else.
+
 ### Changed — the agent reaches its own server, and the watcher waits for a slow endpoint
 
 - **A caged command reaches the server its own session started**: the egress
