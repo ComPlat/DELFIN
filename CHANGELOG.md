@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — a project builds and uses its own environment, in any language
+
+A browser game's agent (2026-10-19) could neither `npm install three` nor fetch
+it from a CDN (curl exit 56: unknown under Bypass), and rebuilt a 3D renderer
+by hand. A venv with pip worked; nothing else did.
+
+- **Installs into the project run where the cage holds**, like the stack test
+  runners (`caged_test_runners`): `npm install|i|ci|add`, `npm init -y`,
+  `yarn [install|add]`, `pnpm install|i|add` and `uv venv`, `uv pip
+  install|sync`, `uv add|sync|lock`, with package specs and listed flags
+  only. Without a cage they are asked; global installs, `--prefix`,
+  `--system`, `--target`, paths and URLs are never admitted, nor are `cargo
+  install` and `go install` (they write into the home directory). Under
+  Bypass they no longer count as leaving the workspace.
+  `.venv/bin/python -m pip install` is free like `.venv/bin/pip install`.
+- **The egress proxy knows the package indexes**: `registry.npmjs.org`,
+  `cdn.jsdelivr.net`, `unpkg.com`, crates.io, the Go module proxy -- for
+  reading; uploads stay held.
+- **Each package manager's cache lands in the cage's temp dir**
+  (`npm_config_cache`, `YARN_CACHE_FOLDER`, `npm_config_store_dir`,
+  `UV_CACHE_DIR`) under bubblewrap, Landlock and Seatbelt: npm failed before
+  fetching anything because `~/.npm` is not writable in the cage.
+- **npm's 407 is named with its cause**: npm before 10 never sends the proxy
+  credentials (measured: npm 9.2 opens its CONNECT with no
+  Proxy-Authorization; npm 10 sends it), so the agent tells the user to
+  update instead of retrying. Verified end to end in the Landlock cage: npm
+  10 installs into `node_modules`, a venv and pip install work.
+
 ### Added — the harness checks, remembers and measures what the agent does, for any task
 
 Six changes from the same session (2026-10-19, `78c36f8c`), each general:

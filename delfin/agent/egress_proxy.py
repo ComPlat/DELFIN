@@ -89,6 +89,15 @@ DEFAULT_ALLOWED_DOMAINS = (
     "github.com", "api.github.com", "codeload.github.com",
     "objects.githubusercontent.com", "raw.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    # A project's own environment in other languages: the npm registry and
+    # the two CDNs browser pages load their libraries from, Rust's and Go's
+    # package indexes. Read-only like the rest: an upload to them is still
+    # held by the rules below. Measured 2026-10-19: a browser game could
+    # not fetch three.js (curl exit 56, the CDN unknown under Bypass), and
+    # the agent rewrote a 3D renderer by hand instead.
+    "registry.npmjs.org", "cdn.jsdelivr.net", "unpkg.com",
+    "crates.io", "static.crates.io", "index.crates.io",
+    "proxy.golang.org", "sum.golang.org",
 )
 DEFAULT_ALLOWED_PORTS = (80, 443)
 DEFAULT_UPLOAD_ASK_BYTES = 1024 * 1024

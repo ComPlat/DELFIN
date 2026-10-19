@@ -6484,6 +6484,36 @@ def _reads_of(client: Any):
     return ledger
 
 
+def _proxy_auth_note(exit_code: int, text: str) -> str:
+    """The cause of a package manager's 407 from DELFIN's egress proxy, or "".
+
+    npm before 10 never sends the proxy credentials that HTTP(S)_PROXY
+    carries (measured 2026-10-19: npm 9.2 opens its CONNECT with no
+    Proxy-Authorization at all; npm 10 sends it), so every install fails
+    with E407 while curl and pip through the same proxy work. A model
+    reading only "407" retries, rewrites the URL or gives up on the library;
+    this names the cause and the fix, which only the user can apply."""
+    if not exit_code or not re.search(
+            r"E407|407 Proxy Authentication Required", text or ""):
+        return ""
+    return ("407 from DELFIN's egress proxy: this client did not send the "
+            "proxy credentials in HTTPS_PROXY. npm before version 10 never "
+            "does (npm --version shows it). Do not retry or work around it: "
+            "tell the user that installing into the project needs npm >= 10 "
+            "(for example `npm install -g npm@10` in their own shell, or a "
+            "current Node.js), then try again.")
+
+
+def _package_cache_dirs() -> tuple:
+    """(variable, subdirectory) pairs that put each package manager's
+    cache in the cage's temp dir (landlock_exec.PACKAGE_CACHE_DIRS)."""
+    try:
+        from .landlock_exec import PACKAGE_CACHE_DIRS
+        return tuple(PACKAGE_CACHE_DIRS)
+    except Exception:
+        return ()
+
+
 def _ends_with_a_question(text: str) -> bool:
     """True when an answer ends by asking the user something."""
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
@@ -9739,6 +9769,38 @@ class KitToolPermissions:
                 candidate = (self.workspace / p).resolve(strict=False)
         if candidate is not None and self.find_root_for(candidate) is not None:
             return True
+        # pip through the workspace venv's python: the venv rule above
+        # admits `.venv/bin/pip install` but missed this spelling. The other
+        # package managers are admitted only in the cage
+        # (caged_test_runners), where the sandbox holds what they run.
+        if _VENV_PIP_MODULE_RE.match(cmd):
+            return True
+        return False
+
+
+# An install into the project's own environment: npm/yarn/pnpm/uv by the
+# cage's grammar (caged_test_runners.is_project_install), or pip through
+# the workspace venv's python, which the venv rule above admits as `pip`
+# but not as `python -m pip`.
+_VENV_PIP_MODULE_RE = re.compile(
+    r"^\s*(?:[\w.-]+/)*\.?venv[\w.-]*/bin/python[\d.]*\s+-m\s+pip\s+"
+    r"install(?:\s+(?!-)[\w.\[\],=<>~!-]+|\s+-r\s+[\w./-]+\.txt|\s+-U|"
+    r"\s+--upgrade|\s+-q)*\s*$")
+
+
+def _project_env_command(cmd: str) -> bool:
+    """Whether *cmd* installs into the project's own environment in the
+    workspace. Measured 2026-10-19: a browser game's agent could neither
+    ``npm install three`` nor fetch it, and rebuilt a 3D renderer by hand."""
+    c = str(cmd or "")
+    if re.search(r"[$`<>;&|]|://|(?:^|\s)(?:/|~|\.\./)|\bglobal\b", c):
+        return False
+    if _VENV_PIP_MODULE_RE.match(c):
+        return True
+    try:
+        from .caged_test_runners import is_project_install
+        return is_project_install(c)
+    except Exception:
         return False
 
 
@@ -14308,14 +14370,17 @@ def _leaves_workspace(
         if _BYPASS_HIGH_RISK_BASH.search(cmd):
             return True
         if _LEAVING_BASH.search(cmd):
-            # A curl to this machine's loopback does not leave it.
+            # A curl to this machine's loopback does not leave it, and an
+            # install into the project's own environment fetches from the
+            # package indexes the proxy knows and writes into the workspace.
             try:
                 segs = _split_shell_segments(
                     str(action.get("command") or ""))
             except Exception:
                 return True
             if any(_LEAVING_BASH.search(_prose_blanked(seg))
-                   and not _LOOPBACK_CURL_RE.match(seg) for seg in segs):
+                   and not _LOOPBACK_CURL_RE.match(seg)
+                   and not _project_env_command(seg) for seg in segs):
                 return True
         if bypass:
             try:
@@ -14329,9 +14394,13 @@ def _leaves_workspace(
                 # other users' services too, and there the user decides.
                 # Measured 2026-10-19: seven dialogs in one Bypass session,
                 # each a status check of the agent's own game server.
+                # An install into the project's own environment (npm, yarn,
+                # pnpm, uv) stays too: under Bypass the cage holds it, and it
+                # fetches only from the package indexes the proxy knows.
                 segs = _split_shell_segments(full)
                 return not (segs and all(
                     _LOOPBACK_CURL_RE.match(sg)
+                    or _project_env_command(sg)
                     or perms.matches_bash_auto_allow(sg) for sg in segs))
             except Exception:
                 return True
@@ -24357,8 +24426,12 @@ class _DocToolExecutor:
             if _cage_note:
                 payload["cage_note"] = _cage_note
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
+        _proxy_note = _proxy_auth_note(
+            proc.returncode, (proc.stdout or "") + "\n" + (proc.stderr or ""))
         if _ssh_note:
             payload["hint"] = _ssh_note
+        elif _proxy_note:
+            payload["hint"] = _proxy_note
         elif _is_push:
             # The one-line cause of a failed push (push_diagnosis), so the
             # first refusal is read as final instead of re-spelled.
@@ -28039,7 +28112,8 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"]
+    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"] + [
+        f"{k}={tmp}/{sub}" for k, sub in _package_cache_dirs()]
     port = 0
     if mode == "proxy":
         try:
@@ -29318,6 +29392,8 @@ def _bash_isolation_argv(
         "--setenv", "TMP", "/tmp",
         "--setenv", "TEMP", "/tmp",
     ]
+    for _key, _sub in _package_cache_dirs():
+        args += ["--setenv", _key, f"/tmp/{_sub}"]
     for rel in _HOME_SECRET_DIRS:
         p = home / rel
         try:
