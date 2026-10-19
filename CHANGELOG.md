@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — an agent's edit reaches the file, and a refused one is not reported as made
+
+One session (2026-10-19, gpt-5-nano building a browser game in one HTML
+file) spent fifty minutes without a single change landing while telling the
+user each change was made. Four causes, each fixed where it sat:
+
+- `apply_patch` accepts the `*** Begin Patch` envelope GPT-family models
+  send, under `patch` or `input` as well as `diff`. The envelope is
+  translated into a unified diff against the file before any gate runs, so
+  the write gate, approval preview and undo journal see the real change;
+  it cannot reach outside the workspace or into a secret. All six calls of
+  the session had been refused with "diff is required".
+- A static file server (`python -m http.server`, `npx serve`, `php -S`,
+  ...) no longer locks the files it serves against edits. It reads them per
+  request, so an edit is what running it is for.
+- An awk program's `>` counts as a write only before a string or a name
+  (`print > "f"`). `/<\/script>/{f=0}` and `$3 >= 5` were refused as
+  writes to `/{f=0}` and `=` outside the workspace.
+- "Ich habe ... entfernt" / "I've updated ..." in a turn where no file
+  change landed gets a `[verify]` caveat naming how many writes failed.
+
+The Background panel and the terminal status line name a running server's
+address (`⚙ http://127.0.0.1:8038/ 50m00s [8678a5da]`), as a link in the
+dashboard.
+
+The same session asked the user 22 times under `bypassPermissions` (the
+action watcher timed out, and every command off the auto-allow list counts
+as leaving the workspace); all 22 were approved. Now free, because they
+write nothing but stdout and reach nothing but the loopback: `sed` without
+`-i`/`-f` (a `w`/`e` in the script is still caught), `node --check` and
+`node --version`, `true`/`false`/`:`, and `curl` to `127.0.0.1`,
+`localhost` or `[::1]` with only non-writing options (`-o /dev/null` is the
+one output). awk's program, sed's script and grep's pattern are no longer
+read as paths by the outside-read gate. Starting a listener
+(`python -m http.server`) stays asked: on a shared machine the loopback is
+shared too.
+
+### Changed — a go-ahead is acted on, and a choice is decided or asked as a choice
+
+In the same session 4 of 7 go-aheads ("Ja", "ja mach", "Patch a + B") were
+answered with the plan again and no tool that acts, and every choice (width
+10, 12 or 16) came as a numbered prose list although `ask_user_question`
+was bound. Both answers end in a question, where the announced-action
+trigger stands down. Two more triggers in the tool loop (`go_ahead.py`),
+once each per turn, never in plan mode or a delegate:
+
+- the user gave a go-ahead and the turn called nothing that acts: sent back
+  once to act now. An explicit order ("mach", "setz um", "warum machst du
+  nicht einfach") always counts; a bare "ja"/"ok" only as the answer to an
+  offer or question in the agent's previous answer, so "ok" after a
+  finished report stays an acknowledgement;
+- the answer ends asking the user to pick between options written as text:
+  sent back once to pick the sensible default and act, or to ask with
+  `ask_user_question` (named only when an ask dialog is bound).
+
+`solo_agent.md` and the `ask_user_question` description no longer tell the
+model to write choices as prose: a clear instruction is the go-ahead, a
+choice with a sensible default is made and named, and only a choice that is
+truly the user's is asked, with options and a recommendation. Head budget
+11555 -> 11605 tokens.
+
 ### Changed — PyMOL is an optional extra, so DELFIN installs on glibc 2.34 (RHEL 9)
 
 `pymol-open-source` moves from the core dependencies to the new `pymol` extra

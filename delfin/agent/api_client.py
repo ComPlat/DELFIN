@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
 from . import german as _german
+from . import go_ahead as _ga
 from . import inline_payload as _inline_payload
 from . import pricing
 from . import safe_git
@@ -1748,6 +1749,55 @@ def _shell_segments(cmd: str) -> list[str]:
 _SHELL_PROGRAMS: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
 
 
+# Programs whose first operand is their own script or pattern, not a file,
+# with the options that take a separate value and the ones that supply the
+# script instead (then no operand is the script). Measured 2026-10-19: the
+# awk program `/<script>$/,/^<\/script>$/ {print}` was asked about four
+# times as a read of an absolute path outside the workspace.
+_SCRIPT_FIRST_PROGRAMS: dict[str, tuple[frozenset, frozenset]] = {
+    **{p: (frozenset({"-F", "-v", "-f", "-i", "-l", "-E", "--field-separator",
+                      "--assign", "--file", "--include", "--load", "--exec"}),
+           frozenset({"-f", "--file", "-E", "--exec"}))
+       for p in ("awk", "gawk", "mawk", "nawk")},
+    "sed": (frozenset({"-e", "-f", "-l", "--expression", "--file",
+                       "--line-length"}),
+            frozenset({"-e", "-f", "--expression", "--file"})),
+    **{p: (frozenset({"-e", "-f", "-m", "-A", "-B", "-C", "--regexp",
+                      "--file", "--max-count", "--after-context",
+                      "--before-context", "--context", "--include",
+                      "--exclude", "--exclude-dir", "--color", "--label"}),
+           frozenset({"-e", "-f", "--regexp", "--file"}))
+       for p in ("grep", "egrep", "fgrep")},
+}
+
+
+def _script_argument_index(prog: str, args: list) -> Optional[int]:
+    """Index in *args* of the operand *prog* reads as its script or
+    pattern (awk's program, sed's script, grep's pattern), or None."""
+    spec = _SCRIPT_FIRST_PROGRAMS.get(prog)
+    if spec is None:
+        return None
+    takes_value, supplies_script = spec
+    skip = False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if a == "--":
+            return i + 1 if i + 1 < len(args) else None
+        if a.startswith("-") and a != "-":
+            opt = a.split("=", 1)[0]
+            if opt in supplies_script or (
+                    not opt.startswith("--") and len(opt) > 2
+                    and opt[:2] in supplies_script):
+                return None
+            if opt in takes_value and "=" not in a:
+                skip = True
+            continue
+        return i
+    return None
+
+
 def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                         _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
@@ -1852,11 +1902,14 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 _add(a[1:])
         if prog in _BASH_NO_FILE_PROGRAMS:
             return
+        script_at = _script_argument_index(prog, args)
         skip_next = False
         for i, a in enumerate(args):
             if skip_next:
                 skip_next = False
                 continue
+            if i == script_at:
+                continue    # the program's script or pattern, not a file
             if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
                 skip_next = True    # the redirection's own target
                 continue
@@ -2209,6 +2262,62 @@ def _malformed_arguments(name: str, arguments: dict) -> Optional[str]:
             arguments[alias_of.get(key, key)] = value
     except Exception:
         return None
+    return None
+
+
+# Keys a model sends the patch under besides the schema's ``diff``:
+# ``patch`` and ``input`` are what the *** Begin Patch tool of GPT-family
+# models calls it.
+_PATCH_KEYS: tuple[str, ...] = ("patch", "input")
+
+
+def _canonical_patch_arguments(arguments: Any, perms: Any) -> Optional[str]:
+    """Bring an apply_patch call to the one shape everything downstream
+    reads: a unified diff under ``diff``. Mutates *arguments* in place, so
+    the gate, the approval preview, the journal and the post-turn verify
+    harvest all see the diff that is applied. Returns an error message
+    when an envelope cannot be translated, else None.
+
+    Measured 2026-10-19: gpt-5-nano sent six envelopes under ``patch`` in
+    one session; each was answered "diff is required", which it never
+    connected to the key name, and the user's game was never changed.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    if not str(arguments.get("diff") or "").strip():
+        for key in _PATCH_KEYS:
+            if str(arguments.get(key) or "").strip():
+                arguments["diff"] = arguments.pop(key)
+                break
+    text = arguments.get("diff")
+    if not isinstance(text, str):
+        return None
+    from . import patch_apply as _pa
+    if not _pa.is_envelope(text):
+        return None
+    ws = getattr(perms, "workspace", None)
+    if ws is None:
+        return None          # no workspace: the executor refuses the call
+
+    def _read(rel: str) -> Optional[str]:
+        root = Path(ws).resolve()
+        path = (root / rel).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            raise ValueError(f"{rel} is outside the workspace")
+        if _is_secret_path(perms, path):
+            raise ValueError(f"{rel} matches a secret deny-glob")
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8")
+
+    try:
+        arguments["diff"] = _pa.envelope_to_unified(text, _read)
+    except (ValueError, OSError, UnicodeDecodeError) as exc:
+        return (f"apply_patch could not use this *** Begin Patch envelope: "
+                f"{exc}. Nothing was changed. Fix the envelope, or use "
+                "edit_file (old_string/new_string) for this change.")
     return None
 
 
@@ -2613,6 +2722,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # `eval`) is re-parsed by that shell, so `>=` there -- like `>=`
         # unquoted -- stays a redirect to a file named `=`.
         _code = _quoted_text_spans(_scan, owners=_CODE_INTERPRETERS)
+        # An awk program's `>` writes only to a string expression: `print >
+        # "f"` or `print > name`. Anything else after it is awk syntax --
+        # `/<\/script>/{f=0}` is the end of a regex and a block, `>=` a
+        # comparison -- and reporting `/{f=0}` as a write outside the
+        # workspace refused every awk that matched an HTML closing tag
+        # (measured 2026-10-19: two syntax checks of a game, both refused).
+        _awk = _quoted_text_spans(_scan, owners=_AWK_PROGRAMS)
         _cuts = [0]
         for _sep in re.finditer(r"[;&|]{1,2}|\n", _scan):
             _cuts += [_sep.start(), _sep.end()]
@@ -2639,6 +2755,11 @@ def _bash_write_targets(cmd: str) -> list[str]:
                         and (_scan[_gt - 1:_gt] in ("-", "=")
                              or _scan[_past:_past + 1] == "=")):
                     continue    # an operator of the interpreted language
+                if (any(lo <= _gt < hi for lo, hi in _awk)
+                        and (_scan[_gt - 1:_gt] in ("-", "=", "<")
+                             or not re.match(r"""[\s>]*["'A-Za-z_$]""",
+                                             _scan[_past:]))):
+                    continue    # awk syntax, not an output redirection
                 tok = m.group(1)
                 if not tok.startswith("&"):
                     _add(tok)
@@ -3392,6 +3513,18 @@ def _names_a_delfin_program(cmd: str) -> bool:
 #       compile-only invocations). Anything that pushes to remote, publishes,
 #       installs into system paths, or touches /dev|/etc must NOT be here —
 #       the bash deny-list catches the obvious cases anyway.
+_LOOPBACK_CURL_OPTION = (
+    r"(?:-[sSfLIvkiN]+|--(?:silent|show-error|fail|location|head|verbose|"
+    r"include|insecure|no-buffer)|--noproxy\s+(?:'[^']*'|\"[^\"]*\"|\S+)|"
+    r"(?:-w|--write-out)\s+(?:'[^']*'|\"[^\"$`]*\"|[^\s'\"]+)|"
+    r"(?:-o|--output)\s+/dev/null|(?:-m|--max-time|--connect-timeout)\s+"
+    r"[\d.]+)")
+_LOOPBACK_CURL_PATTERN = (
+    r"^\s*curl(?:\s+" + _LOOPBACK_CURL_OPTION + r")*\s+['\"]?"
+    r"https?://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?"
+    r"(?:/[\w./%~?=&+-]*)?['\"]?(?:\s+" + _LOOPBACK_CURL_OPTION + r")*\s*$")
+_LOOPBACK_CURL_RE = re.compile(_LOOPBACK_CURL_PATTERN)
+
 _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # -- (a) read-only / info --------------------------------------------
     r"^\s*(?:ls|pwd|whoami|hostname|uname|id|date|uptime|df|du|free|tree)\b",
@@ -3460,6 +3593,24 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*find\b(?![^|;&]*-delete)(?![^|;&]*-exec[^|;&]*rm)",
     r"^\s*grep\b", r"^\s*rg\b", r"^\s*ag\b",
     r"^\s*sed\s+-n\b",                                       # read-only sed
+    # sed without in-place editing or a script file prints to stdout, like
+    # `sed -n`; a w/W/e command in the script is caught by
+    # _reader_writes_or_runs. `.*` and not `[^|;&]*`: the segment is
+    # already split, and a `;` inside the quoted script (`'1d;$d'`) must
+    # not end the look for a `-i` after it. Measured 2026-10-19: `sed
+    # '1d;$d'` in a syntax check of a game asked three times.
+    r"^\s*sed\b(?!.*\s(?:-[A-Za-z]*[if]|--in-place\b|--file\b))",
+    # The no-ops `grep ... || true` ends with.
+    r"^\s*(?:true|false|:)\s*$",
+    # node: the syntax check and the version, end-anchored -- running a
+    # script stays asked.
+    r"^\s*node\s+(?:(?:--check|-c)\s+[\w./-]+|--version|-v)\s*$",
+    # curl reading a server on this machine: every option from a list
+    # that writes nothing but stdout (`-o /dev/null` is the one output
+    # allowed), the URL loopback. Measured 2026-10-19: seven dialogs in
+    # one session, each a status check of the game server the agent had
+    # started, each approved.
+    _LOOPBACK_CURL_PATTERN,
     r"^\s*awk\s+",                                           # awk has no destructive default
     r"^\s*jq\b", r"^\s*yq\b",
     # `worktree list` reads the registry and changes nothing -- the same
@@ -4678,6 +4829,8 @@ def _sed_script_is_pure(script: str) -> bool:
 # Non-shell interpreters: a quoted argument is code in their own language,
 # which no shell parses for redirects. `python3.11` is matched as `python3`.
 # Shells, `eval`, `awk` and `env`-style wrappers are deliberately absent.
+_AWK_PROGRAMS = frozenset({"awk", "gawk", "mawk", "nawk"})
+
 _CODE_INTERPRETERS = frozenset({
     "python", "python2", "python3", "node", "nodejs", "perl", "ruby",
     "Rscript", "R", "php"})
@@ -6241,6 +6394,46 @@ def _grant_push_from_answer(perms: Any, raw_result: Any) -> None:
     answers = " ".join(str(a) for a in (payload.get("answers") or []))
     if answers:
         _grant_push_from(perms, answers, new_request=False)
+
+
+def _turn_opening(messages: Any) -> tuple:
+    """``(user_text, offered)``: the text of the user message that opened
+    this turn -- the last user row with string content that is not a
+    harness note -- and the text of the assistant answer before it, which
+    a bare "ja" answers. ``("", "")`` when there is none."""
+    try:
+        rows = list(messages or [])
+        for i in range(len(rows) - 1, -1, -1):
+            m = rows[i]
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            if _is_harness_row(m) or isinstance(m.get("content"), _HarnessText):
+                continue
+            c = m.get("content")
+            if not isinstance(c, str):
+                return "", ""
+            if c.lstrip().startswith(("System note", "[DELFIN")):
+                continue
+            offered = ""
+            for prev in reversed(rows[:i]):
+                if (isinstance(prev, dict) and prev.get("role") == "assistant"
+                        and isinstance(prev.get("content"), str)
+                        and prev["content"].strip()):
+                    offered = prev["content"]
+                    break
+            return c, offered
+    except Exception:
+        return "", ""
+    return "", ""
+
+
+def _go_ahead_applies(perms: Any) -> bool:
+    """The go-ahead and prose-choice triggers judge a user's own session:
+    not plan mode (acting is exit_plan_mode there), not a delegate."""
+    if perms is None:
+        return True
+    return (getattr(perms, "mode", "") != "plan"
+            and not int(getattr(perms, "subagent_depth", 0) or 0))
 
 
 def _ends_with_a_question(text: str) -> bool:
@@ -12074,10 +12267,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask a structured multiple-choice question and wait; returns "
-                "the selected label(s). NOT for free-text questions (write "
-                "those as prose) and NOT for plan approval (use "
-                "exit_plan_mode). Errors when no ask-user UI is bound."
+                "Ask the user to choose and wait; returns the chosen "
+                "label(s). Use for every choice left to the user, never a "
+                "prose list. Recommended option first. Not for plan "
+                "approval (exit_plan_mode). Errors without an ask UI."
             ),
             "parameters": {
                 "type": "object",
@@ -14051,8 +14244,18 @@ def _leaves_workspace(
     tool = str(action.get("tool") or "")
     if tool in ("bash", "bash_background"):
         cmd = _prose_blanked(str(action.get("command") or ""))
-        if _BYPASS_HIGH_RISK_BASH.search(cmd) or _LEAVING_BASH.search(cmd):
+        if _BYPASS_HIGH_RISK_BASH.search(cmd):
             return True
+        if _LEAVING_BASH.search(cmd):
+            # A curl to this machine's loopback does not leave it.
+            try:
+                segs = _split_shell_segments(
+                    str(action.get("command") or ""))
+            except Exception:
+                return True
+            if any(_LEAVING_BASH.search(_prose_blanked(seg))
+                   and not _LOOPBACK_CURL_RE.match(seg) for seg in segs):
+                return True
         if bypass:
             try:
                 return not perms.matches_bash_auto_allow(
@@ -16488,6 +16691,10 @@ class _DocToolExecutor:
         permissions: Optional["KitToolPermissions"] = None,
     ) -> str:
         """The body of :meth:`execute`, under one pinned policy."""
+        if _bare_tool_name(name) == "apply_patch":
+            _shape_err = _canonical_patch_arguments(arguments, permissions)
+            if _shape_err:
+                return json.dumps({"error": _shape_err})
         if permissions is None and _needs_a_sandbox(name):
             _record_security_event("no_sandbox", name, "", blocked=True)
             return json.dumps({"error": _no_sandbox_refusal(name)})
@@ -30802,6 +31009,13 @@ class OpenAIClient(_BaseClient):
         # Whether the announced-action continuation already fired this
         # turn; see the second auto-continue trigger.
         _announced_once = False
+        # The go-ahead and prose-choice triggers (go_ahead.py), once each
+        # per turn, judged against the message that opened the turn and
+        # every tool the turn called.
+        _go_ahead_once = False
+        _choice_once = False
+        _turn_tool_names: set = set()
+        _turn_user_text, _turn_offered = _turn_opening(messages)
         # Completion events that arrive as the turn is ENDING. Both drains
         # below are exactly-once: what they hand over is gone from their
         # store, so it has to be acted on in this turn -- nothing in the
@@ -31516,6 +31730,8 @@ class OpenAIClient(_BaseClient):
                     })
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
+                _turn_tool_names.update(
+                    str(_tc["function"]["name"] or "") for _tc in tc_list)
 
                 # Parallel subagent fan-out: when the
                 # model emits ≥2 `subagent` calls in ONE turn, run them
@@ -32765,6 +32981,44 @@ class OpenAIClient(_BaseClient):
                     "ask with ask_user_question instead of announcing.")))
                 yield StreamEvent(
                     type="notice", text="\n\n↻ announced an action → taking it\n")
+                continue
+
+            # Third and fourth triggers (go_ahead.py): the user said go and
+            # the turn called nothing that acts -- it restated the plan or
+            # asked again; or it ends asking the user to pick between
+            # options written as prose. Both stand where the two triggers
+            # above stand down (an answer ending in a question), so each
+            # fires once per turn, never in plan mode, never in a delegate
+            # (its "user" is the parent's prompt).
+            _ga_ok = (_auto_cont_count < _AUTO_CONT_CAP
+                      and not self._waiting_on_watched_jobs()
+                      and _go_ahead_applies(self._permissions))
+            _ga_text = "".join(_text_chunks)
+            _ga_note = ""
+            if (_ga_ok and not _go_ahead_once
+                    and _ga.ignored_go_ahead(_turn_user_text,
+                                             _turn_tool_names,
+                                             _turn_offered)):
+                _go_ahead_once = True
+                _ga_note, _ga_shown = (_ga.GO_AHEAD_NOTE,
+                                       "↻ go-ahead given → acting on it")
+            elif (_ga_ok and not _choice_once
+                    and "ask_user_question" not in _turn_tool_names
+                    and _ga.is_choice_question(_ga_text)):
+                _choice_once = True
+                _can_ask = getattr(self._permissions, "ask_user_callback",
+                                   None) is not None
+                _ga_note, _ga_shown = (
+                    _ga.CHOICE_NOTE if _can_ask else _ga.CHOICE_NOTE_NO_UI,
+                    "↻ choice written as text → deciding or asking properly")
+            if _ga_note:
+                _auto_cont_count += 1
+                _did_tools_since_cont = False
+                if _ga_text.strip():
+                    api_messages.append({"role": "assistant",
+                                         "content": _ga_text})
+                api_messages.append(_harness_row(_ga_note))
+                yield StreamEvent(type="notice", text=f"\n\n{_ga_shown}\n")
                 continue
 
             if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP

@@ -5333,6 +5333,7 @@ class AgentEngine:
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
         out = self._append_test_claim_caveat(out, on_token, source=source)
+        out = self._append_change_claim_caveat(out, on_token, source=source)
         if out != text:
             try:
                 from . import channels as _channels
@@ -5403,6 +5404,52 @@ class AgentEngine:
         except Exception:
             pass
         return text + caveat
+
+    def _append_change_claim_caveat(
+        self, text: str, on_token: Callable[[str], None] | None,
+        *, source: str,
+    ) -> str:
+        """Name a change reported as made in a turn where none landed.
+
+        Input: the model's own text (``source``) and the turn's account
+        (``_last_turn_verification``). A caveat, like the test-claim one:
+        the user must not test a change that is not on disk believing it
+        is. See change_claims for the session that made it necessary."""
+        tv_acc = getattr(self, "_last_turn_verification", None)
+        try:
+            from . import turn_verification as _tvm
+            from . import change_claims as _cc
+        except Exception:
+            return text
+        if not isinstance(tv_acc, _tvm.TurnVerification) \
+                or self._turn_describes_intent():
+            return text
+        try:
+            note = _cc.caveat(_cc.find(source),
+                              landed=tv_acc.landed_edits(),
+                              failed=tv_acc.failed_writes)
+        except Exception:
+            return text
+        if not note:
+            return text
+        try:
+            from . import channels as _channels
+            _channels.fire("change_claim_flagged")
+        except Exception:
+            pass
+        if on_token:
+            try:
+                on_token(note)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += note
+        except Exception:
+            pass
+        return text + note
 
     def _append_figure_coverage_caveat(
         self, text: str, on_token: Callable[[str], None] | None,

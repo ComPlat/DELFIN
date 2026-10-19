@@ -1903,6 +1903,29 @@ def _named_paths(command: str, cwd: str) -> list[str]:
     return out
 
 
+# Static file servers: they read each file per request, so an edit is the
+# point of running them -- the next reload shows it. Nothing they produce
+# can "stand for code that no longer exists".
+_FILE_SERVER_RE = re.compile(
+    r"(?:^|[\s;&|/])(?:"
+    r"python[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:http\.server|SimpleHTTPServer)"
+    r"|(?:npx\s+(?:-y\s+)?)?(?:http-server|live-server|serve)(?:\s|$)"
+    r"|php\s+-S\s"
+    r"|busybox\s+httpd"
+    r")")
+
+
+def serves_files(command: str) -> bool:
+    """Whether *command* is a static file server (``python -m http.server``,
+    ``npx serve``, ``php -S``...).
+
+    Measured 2026-10-19: ``python3 -m http.server 8038 --directory
+    3d-tetris`` held every file of the game it served closed to edit_file
+    for 50 minutes -- named by ``--directory``, so counted as "in use" --
+    and the model, refused each time, told the user it had made the
+    changes instead."""
+    return bool(_FILE_SERVER_RE.search(str(command or "")))
+
 def job_using(path, *, session_id: str = "") -> Optional[dict]:
     """The running job of this process that uses *path*, or None.
 
@@ -1923,6 +1946,8 @@ def job_using(path, *, session_id: str = "") -> Optional[dict]:
     for job in jobs:
         sid = str(getattr(job, "session_id", "") or "")
         if session_id and sid and sid != session_id:
+            continue
+        if serves_files(job.command):
             continue
         cwd = str(getattr(job, "cwd", "") or "")
         for named in _named_paths(job.command, cwd):
