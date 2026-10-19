@@ -215,3 +215,28 @@ def test_the_page_s_own_files_are_loaded_and_judged(tmp_path, monkeypatch):
     assert out and "missingThing" in out[0]
     assert fake.aborted == []
     assert own in fake.continued
+
+
+@pytest.mark.parametrize("cmd,free", [
+    (".venv/bin/python -m pip install numpy", True),
+    ("proj/.venv/bin/python -m pip install numpy==1.26 scipy>=1", True),
+    (".venv/bin/python -m pip install -r requirements.txt -U", True),
+    ("a/../../venv/bin/python -m pip install numpy", False),
+    (".venv/bin/python -m pip install -r ../r.txt", False),
+    ("/abs/.venv/bin/python -m pip install x", False),
+    (".venv/bin/python -m pip install --index-url http://x y", False),
+])
+def test_pip_through_the_venv_python_stays_in_the_workspace(cmd, free):
+    from delfin.agent import api_client as A
+    assert A._venv_pip_module_install(cmd) is free, cmd
+
+
+def test_a_long_pip_line_is_judged_in_linear_time():
+    """The one-regex form backtracked exponentially (code scanning
+    py/redos on #332)."""
+    import time
+    from delfin.agent import api_client as A
+    cmd = ".venv/bin/python -m pip install" + " -r a.txt" * 5000 + " ./x"
+    t = time.monotonic()
+    assert A._venv_pip_module_install(cmd) is False
+    assert time.monotonic() - t < 1.0

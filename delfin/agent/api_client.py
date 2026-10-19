@@ -9777,7 +9777,7 @@ class KitToolPermissions:
         # admits `.venv/bin/pip install` but missed this spelling. The other
         # package managers are admitted only in the cage
         # (caged_test_runners), where the sandbox holds what they run.
-        if _VENV_PIP_MODULE_RE.match(cmd):
+        if _venv_pip_module_install(cmd):
             return True
         return False
 
@@ -9785,11 +9785,48 @@ class KitToolPermissions:
 # An install into the project's own environment: npm/yarn/pnpm/uv by the
 # cage's grammar (caged_test_runners.is_project_install), or pip through
 # the workspace venv's python, which the venv rule above admits as `pip`
-# but not as `python -m pip`.
-_VENV_PIP_MODULE_RE = re.compile(
-    r"^\s*(?:[\w.-]+/)*\.?venv[\w.-]*/bin/python[\d.]*\s+-m\s+pip\s+"
-    r"install(?:\s+(?!-)[\w.\[\],=<>~!-]+|\s+-r\s+[\w./-]+\.txt|\s+-U|"
-    r"\s+--upgrade|\s+-q)*\s*$")
+# but not as `python -m pip`. Judged word by word: the one-regex form
+# backtracked exponentially on a long argument list (code scanning
+# py/redos), and its `[\w.-]+/` took `..` as a directory, so
+# `a/../../venv/bin/python -m pip install` named a venv outside.
+_VENV_PIP_COMPONENT_RE = re.compile(r"[\w.-]+")
+_VENV_PIP_VENV_RE = re.compile(r"\.?venv[\w.-]*")
+_VENV_PIP_PYTHON_RE = re.compile(r"python[\d.]*")
+_VENV_PIP_SPEC_RE = re.compile(r"(?!-)[\w.\[\],=<>~!-]+")
+_VENV_PIP_REQUIREMENTS_RE = re.compile(r"[\w./-]*[\w-]\.txt")
+_VENV_PIP_FLAGS = frozenset({"-U", "--upgrade", "-q"})
+
+
+def _venv_pip_module_install(cmd: str) -> bool:
+    """``[dir/]*[.]venv*/bin/python* -m pip install`` with package specs,
+    ``-r FILE.txt``, ``-U``/``--upgrade``/``-q``; no ``..`` anywhere."""
+    words = str(cmd or "").split()
+    if len(words) < 4 or words[1:4] != ["-m", "pip", "install"]:
+        return False
+    parts = words[0].split("/")
+    if (len(parts) < 3 or parts[-2] != "bin"
+            or not _VENV_PIP_PYTHON_RE.fullmatch(parts[-1])
+            or not _VENV_PIP_VENV_RE.fullmatch(parts[-3])
+            or any(p in ("", ".", "..") for p in parts[:-3])
+            or not all(_VENV_PIP_COMPONENT_RE.fullmatch(p)
+                       for p in parts[:-3])):
+        return False
+    rest = words[4:]
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w == "-r":
+            if (i + 1 >= len(rest)
+                    or not _VENV_PIP_REQUIREMENTS_RE.fullmatch(rest[i + 1])
+                    or ".." in rest[i + 1].split("/")
+                    or rest[i + 1].startswith("/")):
+                return False
+            i += 2
+            continue
+        if w not in _VENV_PIP_FLAGS and not _VENV_PIP_SPEC_RE.fullmatch(w):
+            return False
+        i += 1
+    return True
 
 
 def _project_env_command(cmd: str) -> bool:
@@ -9799,7 +9836,7 @@ def _project_env_command(cmd: str) -> bool:
     c = str(cmd or "")
     if re.search(r"[$`<>;&|]|://|(?:^|\s)(?:/|~|\.\./)|\bglobal\b", c):
         return False
-    if _VENV_PIP_MODULE_RE.match(c):
+    if _venv_pip_module_install(c):
         return True
     try:
         from .caged_test_runners import is_project_install
