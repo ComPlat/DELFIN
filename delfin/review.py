@@ -33,6 +33,16 @@ Findings from elsewhere can be shown next to a frame in the normal mode, read
 from a JSON ``{"<file>": {"<frame_index>": ["text", ...]}}`` (by default
 ``findings.json`` in the folder).  The blinded mode never shows them.
 
+The categories of a new review can be given in a ``kategorien.txt`` next to
+the structures (or in the folder above): one category per line, blank lines
+and lines starting with ``#`` ignored (:func:`read_category_file`).  A
+review stores its own list; categories added later are appended, so the
+categories already in use keep their place (and their key in the tab).
+
+A frame the reviewer is not sure about carries the word ``unsicher`` in its
+comment (:func:`with_unsure`); readers of the review look for that word (or
+``unsure``) in the comment, so the file format stays as it was.
+
 ``delfin review summary <review.json>`` prints the counts per verdict and per
 category and writes the records as CSV.
 """
@@ -45,6 +55,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import tempfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -67,6 +78,9 @@ VERDICTS = ('pass', 'block')
 SCHEMA_VERSION = 1
 FINDINGS_NAME = 'findings.json'
 INDEX_NAME = 'index.tsv'
+CATEGORY_FILE_NAME = 'kategorien.txt'
+UNSURE_WORD = 'unsicher'
+_UNSURE_RE = re.compile(r'(?<!\w)(?:unsicher|unsure)(?!\w)', re.IGNORECASE)
 CSV_FIELDS = (
     'file', 'frame', 'label', 'verdict', 'categories', 'note',
     'timestamp', 'sha256', 'blind_number', 'smiles', 'file_comment',
@@ -151,6 +165,62 @@ def read_index(folder: Path) -> dict[str, dict[str, str]]:
             return {row['id']: {k: v for k, v in row.items() if k and k != 'id'}
                     for row in rows if row.get('id')}
     return {}
+
+
+def clean_categories(categories: Iterable[str]) -> list[str]:
+    """Stripped, non-empty, each once, in the given order."""
+    out: list[str] = []
+    for c in categories:
+        c = str(c).strip()
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def read_category_file(source) -> list[str] | None:
+    """The categories of a ``kategorien.txt`` beside *source* (or one folder up).
+
+    *source* is the folder under review or a file in it.  One category per
+    line; blank lines and lines starting with ``#`` are skipped.  None when
+    there is no such file or it lists nothing.
+    """
+    source = Path(source).expanduser()
+    folder = source if source.is_dir() else source.parent
+    for candidate in (folder / CATEGORY_FILE_NAME, folder.parent / CATEGORY_FILE_NAME):
+        if not candidate.is_file():
+            continue
+        try:
+            lines = candidate.read_text(encoding='utf-8', errors='replace').splitlines()
+        except OSError:
+            continue
+        cats = clean_categories(line for line in lines if not line.strip().startswith('#'))
+        if cats:
+            return cats
+    return None
+
+
+def is_unsure(note: str) -> bool:
+    """True when the comment carries the word ``unsicher`` (or ``unsure``)."""
+    return bool(_UNSURE_RE.search(note or ''))
+
+
+def with_unsure(note: str, unsure: bool) -> str:
+    """The comment with the word ``unsicher`` added (at the end) or removed.
+
+    Removing takes ``unsure`` along as well, so that afterwards no reader of
+    the comment counts the frame as unsure; the rest of the text is kept.
+    """
+    note = str(note or '')
+    if unsure:
+        if is_unsure(note):
+            return note
+        return f'{note.rstrip()} {UNSURE_WORD}'.strip()
+    if not is_unsure(note):
+        return note
+    text = _UNSURE_RE.sub(' ', note)
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r' *\n *', '\n', text)
+    return text.strip(' \t\n,;')
 
 
 def read_findings(path: Path | None) -> dict[str, dict[str, list[str]]]:
@@ -354,6 +424,22 @@ class ReviewSession:
     def set_categories(self, categories: Iterable[str]) -> None:
         self.data['categories'] = [c for c in (s.strip() for s in categories) if c]
         self.save()
+
+    def has_ratings(self) -> bool:
+        """True once any frame was rated (also against an older version of its file)."""
+        return any(True for _ in iter_records(self.data))
+
+    def append_categories(self, categories: Iterable[str]) -> list[str]:
+        """Add the categories not yet listed at the end, save, and return them.
+
+        The categories already listed keep their order, so a rating and the
+        key of each category stay what they were.
+        """
+        have = self.categories
+        new = [c for c in clean_categories(categories) if c not in have]
+        if new:
+            self.set_categories(have + new)
+        return new
 
     def record(self, file: str, index: int) -> dict[str, Any] | None:
         """The current rating of a frame, or None (also when the file changed since)."""
@@ -637,7 +723,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
-    'DEFAULT_CATEGORIES', 'Frame', 'ReviewSession', 'blinded_order',
-    'default_review_path', 'format_summary', 'load_review', 'main',
-    'parse_frames', 'read_findings', 'read_index', 'summarize', 'write_csv',
+    'CATEGORY_FILE_NAME', 'DEFAULT_CATEGORIES', 'Frame', 'ReviewSession', 'UNSURE_WORD',
+    'blinded_order', 'clean_categories', 'default_review_path', 'format_summary',
+    'is_unsure', 'load_review', 'main', 'parse_frames', 'read_category_file',
+    'read_findings', 'read_index', 'summarize', 'with_unsure', 'write_csv',
 ]
