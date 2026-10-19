@@ -1047,6 +1047,44 @@ def kit_recommendation(model: str, caps: "ModelCapabilities",
     )
 
 
+# The tier markers hosted vendors put in the name of their smallest model:
+# gpt-5-nano, gemini-2.5-flash-lite, *-tiny, *-micro. A provider prefix
+# (``azure.``, ``kit.``) does not hide them. "mini" is deliberately not
+# here: several "mini" models are sound agents, and a wrong warning teaches
+# the user to ignore the right ones.
+_TINY_TIER_RE = _re.compile(r"(?:^|[-_.:/])(?:nano|tiny|micro|lite)(?:$|[-_.:/\d])",
+                            _re.IGNORECASE)
+_AGENT_MIN_WINDOW = _KIT_MIN_WINDOW
+
+
+def agent_fitness(provider: str, model: str,
+                  caps: "ModelCapabilities") -> str:
+    """Why *model* is a poor driver for multi-step agent work, or "".
+
+    For every provider, not only KIT: measured 2026-10-19, a coding session
+    on ``azure.gpt-5-nano`` (served through the KIT endpoint, so the KIT
+    check never looked at it) mixed up tool formats for an hour and
+    reported changes it never made. The reasons are facts about the model
+    -- no tools, a small window, the vendor's smallest tier, a small
+    parameter count -- and the message names them and a better choice."""
+    reasons: list[str] = []
+    if not caps.supports_tools:
+        reasons.append("no tool support")
+    if 0 < int(caps.context_window or 0) < _AGENT_MIN_WINDOW:
+        reasons.append(f"small context window ({caps.context_window})")
+    if _TINY_TIER_RE.search(model or ""):
+        reasons.append("the vendor's smallest tier")
+    elif _is_weak(model):
+        reasons.append("weak/small model")
+    if not reasons:
+        return ""
+    better = (f"`{KIT_BEST_MODEL}`" if (provider or "").lower() == "kit"
+              else "the strongest model your endpoint serves")
+    return (f"`{model}` is a weak driver for agent work "
+            f"({', '.join(reasons)}): expect tool-call mistakes and work "
+            f"reported but not done on longer tasks. Better: {better}.")
+
+
 def preflight(
     provider: str,
     model: str,
@@ -1095,11 +1133,12 @@ def preflight(
             f"this model in pure chat mode."
         )
 
-    # Soft warning: a KIT model that works but isn't worth the agent.
-    if provider == "kit":
-        warn = kit_recommendation(model, caps)
-        if warn:
-            return True, warn
+    # Soft warning: a KIT model that works but isn't worth the agent, and
+    # for every provider a model too small to drive one.
+    warn = kit_recommendation(model, caps) if provider == "kit" else ""
+    warn = warn or agent_fitness(provider, model, caps)
+    if warn:
+        return True, warn
 
     return True, ""
 
@@ -1109,6 +1148,7 @@ __all__ = [
     "resolve",
     "preflight",
     "kit_recommendation",
+    "agent_fitness",
     "register_static",
     "clear_cache",
     "nonchat_reason",

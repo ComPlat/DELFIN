@@ -1249,6 +1249,19 @@ def _startup_banner(engine, report, workspace: Path,
         f"delfin-agent · {provider}/{model} · {role_mode}",
         f"workspace  {_tilde(workspace)}  ({where})",
     ]
+    # A model too small to drive an agent, said where the model is named
+    # (model_capabilities.agent_fitness): the dashboard warned in its
+    # preflight, the terminal started on gpt-5-nano without a word.
+    try:
+        from . import model_capabilities as _mc
+        # By name only: the banner must not wait on a model listing.
+        _warn = _mc.agent_fitness(provider, model, _mc.ModelCapabilities(
+            model=model, provider=provider, context_window=0,
+            supports_tools=True))
+        if _warn:
+            lines.append(f"model      ⚠ {_warn}")
+    except Exception:
+        pass
     if perms_mode:
         lines.append(f"approval   {perms_mode}"
                      + (f"  [{why}]" if why else ""))
