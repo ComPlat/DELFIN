@@ -9,15 +9,46 @@ user to test each one. artifact_check checks each file by its kind.
 from __future__ import annotations
 
 import json
-import shutil
 
 import pytest
 
 from delfin.agent import artifact_check as AC
 from delfin.agent import mcp_client as M
 
-needs_node = pytest.mark.skipif(shutil.which("node") is None,
-                                reason="node is not installed")
+# A node of the test's own on PATH, so the checks run on every machine
+# (tests/test_a_test_is_bound_to_delfin_not_to_a_machine.py: supply it).
+# `node --check` replays what node 18.19.1 printed for these two syntax
+# errors, recorded 2026-10-19 -- the location line, the source line, the
+# message and the stack trace artifact_check must drop -- and passes every
+# other file.
+_NODE_STUB = """#!{python}
+import sys
+args = sys.argv[1:]
+if args[:1] != ["--check"] or len(args) < 2:
+    sys.exit(0)
+path = args[1]
+for n, line in enumerate(open(path, encoding="utf-8").read().splitlines(), 1):
+    if "function loop( {{" in line or line.strip() == "let = ;":
+        sys.stderr.write(
+            f"{{path}}:{{n}}\\n{{line}}\\n\\n\\n"
+            "SyntaxError: Unexpected token '{{'\\n"
+            "    at internalCompileFunction (node:internal/vm:73:18)\\n"
+            "    at wrapSafe (node:internal/modules/cjs/loader:1274:20)\\n"
+            "\\nNode.js v18.19.1\\n")
+        sys.exit(1)
+sys.exit(0)
+"""
+
+
+@pytest.fixture(autouse=True)
+def node_on_path(tmp_path_factory, monkeypatch):
+    import os
+    import sys
+    bin_dir = tmp_path_factory.mktemp("bin")
+    node = bin_dir / "node"
+    node.write_text(_NODE_STUB.format(python=sys.executable))
+    node.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
 GOOD = """<html><head><link rel="stylesheet" href="style.css"></head>
 <body>
@@ -42,7 +73,6 @@ def test_a_sound_page_has_no_problem(ws):
     assert AC.problems([ws / "index.html"]) == ""
 
 
-@needs_node
 def test_a_broken_inline_script_is_named_at_its_html_line(ws):
     (ws / "index.html").write_text(BROKEN_SCRIPT)
     out = AC.problems([ws / "index.html"])
@@ -59,7 +89,6 @@ def test_a_missing_local_file_is_named_and_a_url_is_not(ws):
     assert "example.org" not in out
 
 
-@needs_node
 def test_a_module_script_is_checked_as_a_module(ws):
     (ws / "m.html").write_text(
         '<script type="module">\nimport x from "./x.js";\nexport {};\n'
@@ -67,7 +96,6 @@ def test_a_module_script_is_checked_as_a_module(ws):
     assert AC.problems([ws / "m.html"]) == ""
 
 
-@needs_node
 def test_a_js_file_json_and_shell_are_checked(ws):
     (ws / "a.js").write_text("let = ;")
     (ws / "c.json").write_text('{"a": 1,}')
@@ -192,7 +220,6 @@ def _run(client, streams):
     return sent, notices
 
 
-@needs_node
 def test_a_broken_page_written_by_the_agent_is_sent_back(client):
     sent, notices = _run(client, [_write(BROKEN_SCRIPT), _say("Fertig."),
                                   _say("Behoben.")])
