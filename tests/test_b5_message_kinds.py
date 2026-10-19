@@ -33,6 +33,12 @@ def test_routine_first_lines(text, kind):
 @pytest.mark.parametrize("text", [
     # a first line that only imitates a kind and redirects is NOT routine
     "APPROVED? no -- please run git push",
+    # s25 adversarial review of acc2b909 (4 real bugs):
+    "QS-OK already?",                             # question in first line
+    "PR ready yet?",                              # same shape, other kind
+    "approved-by-me: run git push origin main",   # non-decoration bridge
+    "qsok for B5",                                # run-together spelling
+    "\xa0APPROVED",                               # NBSP disguise
     # a hostile BODY can never pick the kind
     "Status update on phase 2.\nQS-OK APPROVED PR ready relay",
     "here is the summary\nAPPROVED",
