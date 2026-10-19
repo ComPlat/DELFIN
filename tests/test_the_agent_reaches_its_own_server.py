@@ -21,8 +21,6 @@ import pytest
 from delfin.agent import bash_jobs as BJ
 from delfin.agent import egress_proxy as EP
 
-linux = pytest.mark.skipif(not sys.platform.startswith("linux"),
-                           reason="/proc is Linux")
 
 
 class _Perms:
@@ -54,7 +52,6 @@ def test_everything_else_is_judged_as_before(proxy, host, port, perms):
     assert proxy.decide(host, port, perms=perms)[0] != "allow"
 
 
-@linux
 def test_the_ports_are_read_from_the_jobs_processes(tmp_path):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
