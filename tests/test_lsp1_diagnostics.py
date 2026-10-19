@@ -185,3 +185,118 @@ def test_cap_at_20_diagnostics(tmp_path, fake_ruff):
     p = _make_file(tmp_path, "def go():\n" + lines + "\n")
     found = diag.check(p, tmp_path)
     assert len(found) <= diag.MAX_DIAGNOSTICS
+
+
+# --- operator ruling (2026-10-18): note once per session; workspace=None ---
+
+
+@pytest.fixture(autouse=True)
+def _reset_note_flag():
+    diag.reset_unavailability_note()
+    yield
+    diag.reset_unavailability_note()
+
+
+def test_unavailable_note_shown_once_per_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    p = _make_file(tmp_path, "def go():\n    beta()\n")
+    first = diag.check_detailed(p, tmp_path)
+    assert first.diagnostics == []
+    assert first.note.startswith("diagnostics unavailable:")
+    second = diag.check_detailed(p, tmp_path)
+    assert second.note == "", "note must not repeat after the first time"
+
+
+def test_note_reset_restores_visibility(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    p = _make_file(tmp_path, "def go():\n    beta()\n")
+    first = diag.check_detailed(p, tmp_path)
+    assert first.note.startswith("diagnostics unavailable:")
+    diag.reset_unavailability_note()
+    again = diag.check_detailed(p, tmp_path)
+    assert again.note.startswith("diagnostics unavailable:")
+
+
+def test_findings_still_shown_after_note_was_shown(tmp_path, fake_ruff):
+    # A real finding is not the unavailability note: it must survive
+    # even after a note was shown earlier in the session.
+    diag.check_detailed(tmp_path / "missing.py", tmp_path)  # shows the note
+    p = _make_file(tmp_path, "def go():\n    beta()\n")
+    found = diag.check(p, tmp_path)
+    assert len(found) == 1 and found[0].code == "F821"
+
+
+def test_workspace_none_never_checks_never_raises(tmp_path, fake_ruff):
+    p = _make_file(tmp_path, "def go():\n    beta()\n")
+    res = diag.check_detailed(p, None)
+    assert res.diagnostics == [] and res.note == ""
+    assert diag.check(p, None) == []
+
+
+# --- reviewer s15 adversarial finding: bounded parse on binary noise ---
+
+
+def test_binary_splat_parses_bounded_and_fast(tmp_path, monkeypatch):
+    # A hostile tool emits ~10 MB of non-JSON binary noise with many
+    # '{'/'[' bytes. The extractor must give up after a handful of
+    # candidate starts (bounded), not walk every position's tail.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "ruff"
+    exe.write_text(
+        "#!/usr/bin/python3\n"
+        "import sys\n"
+        "sys.stdout.write(bytes(range(256)).decode('latin-1') * 40960)\n",
+        encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    p = _make_file(tmp_path, "def go():\n    beta()\n")
+    import time as _t
+    start = _t.monotonic()
+    found = diag.check(p, tmp_path)
+    elapsed = _t.monotonic() - start
+    assert found == []
+    assert elapsed < 5.0, f"binary splat parse not bounded: {elapsed:.2f}s"
+
+
+def test_banner_before_json_still_parses(tmp_path, monkeypatch):
+    # A chatty tool prints two noise lines then the JSON array; the
+    # candidate-start scan (8 tries) must still find it.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "ruff"
+    exe.write_text(
+        "#!/usr/bin/python3\n"
+        "import json, sys\n"
+        "sys.stdout.write('loading plugins\\n'"
+        " 'scanning {workspace}\\n'\n"
+        " + json.dumps([{'code': 'F821',\n"
+        "                'message': 'Undefined name `beta`',\n"
+        "                'location': {'row': 2, 'column': 4}}]))\n",
+        encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    p = _make_file(tmp_path, "def go():\n    beta()\n")
+    found = diag.check(p, tmp_path)
+    assert [d.code for d in found] == ["F821"]
+
+
+def test_old_findings_write_failure_degrades_to_full_report(
+        tmp_path, fake_ruff, monkeypatch):
+    # If the throwaway pre-image copy cannot be written (read-only dir,
+    # unencodable text), the check degrades to "nothing pre-existing"
+    # instead of crashing: findings for the CURRENT text are reported.
+    p = _make_file(tmp_path, "def go():\n    alpha()\n    beta()\n")
+    real_write = __import__("pathlib").Path.write_text
+
+    def broken(self, *a, **k):
+        if self.name.endswith(".lsp1-old.py"):
+            raise OSError("read-only directory")
+        return real_write(self, *a, **k)
+
+    monkeypatch.setattr(
+        __import__("pathlib").Path, "write_text", broken)
+    found = diag.check(p, tmp_path, old_text="def go():\n    alpha()\n")
+    # The pre-image pass failed, so beta's NEW finding still surfaces
+    # (alpha's is filtered only if the pre-image could be checked).
+    assert any(d.code == "F821" for d in found)

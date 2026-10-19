@@ -73,6 +73,12 @@ class CheckResult:
 #: ANSI escape sequences never belong in a diagnostic message.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
+#: How many plausible JSON start positions the extractor tries before it
+#: gives up. Real ruff/pyright output starts with the value itself (or a
+#: banner line before it), so a handful of candidates is generous; a
+#: binary splat fails fast here instead of an O(n^2) tail-walk.
+_JSON_START_CANDIDATES = 8
+
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
@@ -80,13 +86,23 @@ def _strip_ansi(text: str) -> str:
 
 def _extract_json_array(text: str):
     """Parse the FIRST JSON value in possibly noisy stdout (hostile or
-    chatty tool output); raises ValueError when none parses."""
+    chatty tool output); raises ValueError when none parses.
+
+    Bounded, deliberately: only the first _JSON_START_CANDIDATES
+    plausible start positions are tried, and raw_decode never rescans a
+    failing position's whole tail — a 10 MB binary splat is rejected in
+    milliseconds instead of the O(n^2) full-tail walk a naive loop does
+    (reviewer s15, 2026-10-18: real timeout found by adversarial run)."""
     text = _strip_ansi(text)
     dec = json.JSONDecoder()
+    tried = 0
     for start in range(len(text)):
+        if tried >= _JSON_START_CANDIDATES:
+            break
         ch = text[start]
         if ch not in "[{":
             continue
+        tried += 1
         try:
             value, _end = dec.raw_decode(text, start)
         except ValueError:
@@ -205,9 +221,38 @@ def check(path, workspace, old_text: Optional[str] = None) -> list:
     return check_detailed(path, workspace, old_text).diagnostics
 
 
+#: Session-wide flag for the operator ruling (2026-10-18): a missing
+#: tool or a timeout is shown as the one-line "diagnostics unavailable:
+#: <why>" note ONCE per session, then the block stays quiet — an edit
+#: stream must not repeat the same bad-news line after every write.
+_unavailability_shown = False
+
+
+def reset_unavailability_note() -> None:
+    """Test/turn-boundary hook: show the note again."""
+    global _unavailability_shown
+    _unavailability_shown = False
+
+
+def _take_unavailability(note: str) -> str:
+    """Return the note the first time it occurs this session, else ''."""
+    global _unavailability_shown
+    if not note:
+        return ""
+    if _unavailability_shown:
+        return ""
+    _unavailability_shown = True
+    return note
+
+
 def check_detailed(path, workspace,
                    old_text: Optional[str] = None) -> CheckResult:
-    """Like :func:`check`, but carries the unavailability note."""
+    """Like :func:`check`, but carries the unavailability note (shown
+    once per session, see _take_unavailability)."""
+    if workspace is None:
+        # No workspace known (e.g. perms without one): never check
+        # anything, never raise — the edit result stays untouched.
+        return CheckResult([], "")
     try:
         path = Path(path)
         workspace = Path(workspace)
@@ -216,7 +261,9 @@ def check_detailed(path, workspace,
         if not path.is_file():
             return CheckResult([], "")
         if not _is_inside(path, workspace):
-            return CheckResult([], "diagnostics unavailable: file outside workspace")
+            return CheckResult(
+                [], _take_unavailability(
+                    "diagnostics unavailable: file outside workspace"))
         findings, note = _ruff_findings(path, workspace)
         pyright_items, pyright_note = _pyright_findings(path, workspace)
         seen = {}
@@ -228,7 +275,7 @@ def check_detailed(path, workspace,
                 d for d in seen.values() if _key_of(d) not in old_codes]
         else:
             findings = list(seen.values())
-        final_note = note or pyright_note
+        final_note = _take_unavailability(note or pyright_note)
         if len(findings) > MAX_DIAGNOSTICS:
             findings = findings[:MAX_DIAGNOSTICS]
         return CheckResult(findings, final_note)
@@ -239,11 +286,23 @@ def check_detailed(path, workspace,
 def _old_findings(path: Path, workspace: Path, old_text: str) -> set:
     """Codes+messages the PRE-EDIT text already carried. The pre-image
     goes into a throwaway copy next to the real file so ruff sees
-    identical project context; we clean it up ourselves."""
+    identical project context; we clean it up ourselves. The copy is
+    dot-prefixed (hidden from lint/glob) and a write failure (read-only
+    dir, unencodable text) degrades to "nothing pre-existing" — the
+    edit result then shows the file's full findings rather than none.
+
+    Filtering key: (code, message), WITHOUT the line number — a finding
+    that merely moved lines counts as pre-existing. Deliberate: line
+    numbers shift on every insert above the finding, and re-reporting
+    the same defect because it slid down two lines is noise, not
+    signal."""
     import os
 
-    tmp = path.with_name(path.name + ".lsp1-old.py")
-    tmp.write_text(old_text, encoding="utf-8")
+    tmp = path.with_name("." + path.name + ".lsp1-old.py")
+    try:
+        tmp.write_text(old_text, encoding="utf-8")
+    except Exception:
+        return set()
     findings, note = _ruff_findings(tmp, workspace)
     try:
         os.unlink(tmp)

@@ -67,7 +67,8 @@ def test_note_clean_edit(tmp_path, monkeypatch):
     p = tmp_path / "mod.py"
     p.write_text("def go():\n    return 1\n", encoding="utf-8")
     note = api._diagnostics_note(p, tmp_path, "def go():\n    return 1\n")
-    assert note == "\n\nDiagnostics after this edit: clean"
+    # A clean edit yields no block at all — nothing to tell the model.
+    assert note == ""
 
 
 def test_note_reports_added_beta(tmp_path, monkeypatch):
