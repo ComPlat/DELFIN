@@ -193,6 +193,81 @@ def finish_step(session: str, *, turn: int, step: int, tool: str,
 
 
 # ---------------------------------------------------------------------------
+# The tool-loop bracket (phase 3): derive turn/step from the journal tail
+# ---------------------------------------------------------------------------
+
+def auto_start(session: str, *, tool: str, arguments: Any = None,
+               turn: int | None = None,
+               ) -> dict[str, Any]:
+    """Derive (turn, step) from the journal and record the call start.
+
+    The protected api_client hook (phase 3) has no turn/step counter of
+    its own — this one is derived from the tail: step = last recorded
+    step + 1 within the current turn, turn rolling over when the caller
+    announces a new turn (``turn`` given) or when the previous open
+    bracket ended a turn. Returns the record dict with its derived
+    turn/step, which auto_finish consumes; on a write failure returns a
+    record marked ``recorded: False`` so the finish is skipped rather
+    than paired to a line that never landed.
+    """
+    record = {"recorded": False, "turn": 0, "step": 0}
+    if turn is None:
+        turn = _current_turn(session)
+    step = _next_step(session, turn)
+    ok = start_step(session, turn=turn, step=step, tool=tool,
+                    arguments=arguments)
+    record.update({"recorded": ok, "turn": turn, "step": step,
+                   "tool": tool})
+    return record
+
+
+def auto_finish(session: str, record: dict[str, Any] | None, *,
+                ok: bool, result: Any = "") -> bool:
+    """Close the bracket auto_start opened. No-op without a real start."""
+    if not isinstance(record, dict) or not record.get("recorded"):
+        return False
+    try:
+        return finish_step(session, turn=record["turn"],
+                           step=record["step"], tool=record["tool"],
+                           ok=ok, result=result)
+    except Exception:
+        # Never let the journal take a tool call down with it: the hook
+        # wraps real dispatch, and a failed close must not surface as a
+        # tool error. An open step reads as "may or may not have run",
+        # which is the honest state when the close never landed.
+        return False
+
+
+def _current_turn(session: str) -> int:
+    """The turn the journal is currently in; 1 for an empty journal.
+
+    Consecutive calls continue the same turn — steps must increment, not
+    restart — so the fallback keeps the highest turn already recorded. A
+    NEW turn is announced explicitly by the caller (auto_start(turn=...)),
+    which also restarts the step numbering via _next_step.
+    """
+    steps, _ = read_steps(session)
+    turns = [int(e["turn"]) for e in steps
+             if isinstance(e.get("turn"), int) or _intable(e.get("turn"))]
+    return max(turns) if turns else 1
+
+
+def _intable(v: Any) -> bool:
+    try:
+        int(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _next_step(session: str, turn: int) -> int:
+    """1 + the highest step recorded in ``turn`` (steps restart per turn)."""
+    steps, _ = read_steps(session)
+    in_turn = [int(e["step"]) for e in steps if int(e.get("turn", -1)) == turn]
+    return max(in_turn, default=0) + 1
+
+
+# ---------------------------------------------------------------------------
 # Reading: what the resume path sees
 # ---------------------------------------------------------------------------
 

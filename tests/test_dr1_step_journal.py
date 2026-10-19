@@ -246,3 +246,47 @@ def test_self_trim_keeps_recent_tail(journal_dir, monkeypatch):
     assert len(steps) == 10
     assert any("trimmed" in n for n in notes), notes
     assert steps[-1]["step"] == 25
+
+
+# --- the tool-loop bracket helpers (P3) -------------------------------------
+
+def test_auto_bracket_records_full_cycle(journal_dir):
+    rec = step_journal.auto_start("s1", tool="bash",
+                                  arguments={"command": "ls"})
+    assert rec["turn"] >= 1 and rec["step"] == 1
+    step_journal.auto_finish("s1", rec, ok=True, result="out")
+    steps, _ = step_journal.read_steps("s1")
+    assert [e["kind"] for e in steps] == ["start", "finish"]
+    assert steps[1]["turn"] == rec["turn"]
+    assert steps[1]["step"] == rec["step"]
+
+
+def test_auto_bracket_increments_step_and_turn(journal_dir):
+    r1 = step_journal.auto_start("s1", tool="read_file",
+                                 arguments={"path": "a"})
+    step_journal.auto_finish("s1", r1, ok=True, result="x")
+    r2 = step_journal.auto_start("s1", tool="bash",
+                                 arguments={"command": "ls"})
+    assert r2["step"] == r1["step"] + 1
+    step_journal.auto_finish("s1", r2, ok=False, result="boom")
+    r3 = step_journal.auto_start("s1", tool="write_file",
+                                 arguments={"path": "b", "content": "c"})
+    assert r3["step"] == r2["step"] + 1
+    step_journal.auto_finish("s1", r3, ok=True, result="w")
+
+
+def test_auto_finish_on_exception_marks_step_failed(journal_dir):
+    rec = step_journal.auto_start("s1", tool="bash",
+                                  arguments={"command": "false"})
+    step_journal.auto_finish("s1", rec, ok=False, result="Traceback ...")
+    open_out, _ = step_journal.open_steps("s1")
+    assert open_out == [], "a finished-failed step must not read as open"
+
+
+def test_auto_finish_without_start_is_harmless(journal_dir):
+    # A bracket whose start never landed (journal write refused): the
+    # finish must not invent a half-record or crash.
+    assert step_journal.auto_finish(
+        "s1", None, ok=True, result="x") is False
+    steps, _ = step_journal.read_steps("s1")
+    assert steps == []
