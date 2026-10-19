@@ -105,3 +105,23 @@ def test_wiring_seams_present_in_source():
         if "_stage_pending_change(" in line and "diagnostics" in line:
             raise AssertionError(
                 f"diff_approval path fires diagnostics at line {line_no}: {line}")
+
+
+def test_unavailable_note_reaches_first_edit_result_only(
+        tmp_path, monkeypatch):
+    """Operator ruling v2: with no ruff on PATH, the FIRST edit result
+    carries 'diagnostics unavailable', the second does not (the once-
+    flag consumed it — and the wiring must PRINT the note, not just
+    consume it)."""
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    from delfin.agent import diagnostics as diag
+    diag.reset_unavailability_note()
+    p = tmp_path / "mod.py"
+    p.write_text("def go():\n    return 1\n", encoding="utf-8")
+    first = api._diagnostics_note(p, tmp_path, "def go():\n    return 1\n")
+    assert "diagnostics unavailable" in first, (
+        f"first edit must show the note, got: {first!r}")
+    second = api._diagnostics_note(p, tmp_path, "def go():\n    return 1\n")
+    assert second == "", f"second edit must be silent, got: {second!r}"
+    diag.reset_unavailability_note()
+
