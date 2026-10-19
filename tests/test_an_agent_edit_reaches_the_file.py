@@ -270,6 +270,15 @@ def _leaves(perms, cmd):
 @pytest.mark.parametrize("cmd", [
     'curl -s -o /dev/null -w "%{http_code}\\n" http://127.0.0.1:8324/index.html',
     "curl -s --noproxy '*' -o /dev/null -w \"%{http_code}\\n\" http://127.0.0.1:8038/",
+])
+def test_a_loopback_status_check_does_not_leave_under_bypass(bypass, cmd):
+    assert not _leaves(bypass, cmd)
+    # ...but is not auto-allowed: in default mode the user decides, since
+    # on a shared host the loopback reaches other users' services too.
+    assert not bypass.matches_bash_auto_allow(cmd)
+
+
+@pytest.mark.parametrize("cmd", [
     "sed '1d;$d' 3d-tetris/index.html",
     "node --check 3d-tetris/_check.js",
     "grep -n outer 3d-tetris/index.html || true",
@@ -296,12 +305,15 @@ def test_what_writes_runs_or_leaves_is_still_asked(bypass, cmd):
     assert _leaves(bypass, cmd)
 
 
-def test_an_awk_program_is_not_read_as_a_path():
-    from delfin.agent.api_client import _bash_outside_reads
+def test_an_awk_program_is_not_read_as_a_path(ws):
+    # Through the real read gate, which blanks grep/sed patterns first.
+    perms = KitToolPermissions(workspace=str(ws), mode="default")
+    gate = _doc_executor._gate_bash_read_paths
     cmd = ("awk '/<script>$/,/^<\\/script>$/ {print}' 3d-tetris/index.html "
            "| sed 's/^<\\/script>$//'")
-    assert _bash_outside_reads(cmd, "/w") == ["/w/3d-tetris/index.html"]
-    assert _bash_outside_reads("awk -F: '{print $1}' /etc/passwd", "/w") \
-        == ["/etc/passwd"]
-    assert "/etc/x.awk" in _bash_outside_reads("awk -f /etc/x.awk f", "/w")
-    assert _bash_outside_reads("grep -r '/etc/x' /etc/ssh", "/w") == ["/etc/ssh"]
+    assert gate(cmd, perms, "") is None
+    for outside in ("awk -F: '{print $1}' /etc/passwd",
+                    "awk -f /etc/x.awk 3d-tetris/index.html",
+                    "grep root /etc/passwd", "sed -n 1,2p /etc/passwd"):
+        out = gate(outside, perms, "")
+        assert out and "/etc/" in out, outside

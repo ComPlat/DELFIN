@@ -87,8 +87,11 @@ HELD = [
     # The loop rule rejects a header that runs something.
     "for f in $(ls); do cat $f; done",
     "while read l; do echo $l; done < notes.txt",
-    # sed without -n does not match the sed pattern.
-    "sed s/a/b/ notes.txt",
+    # sed is auto-allowed without -n since 2026-10-19 (it prints, like
+    # cat): what writes or runs still asks -- in place, a script file, a
+    # w or e command (tests/test_an_agent_edit_reaches_the_file.py).
+    "sed -i s/a/b/ notes.txt",
+    "sed s/a/b/w out.txt notes.txt",
     "sed -n s/a/b/w out notes.txt",
     # cd with a non-literal path is refused by the cd pattern.
     "cd $(pwd) && ls",

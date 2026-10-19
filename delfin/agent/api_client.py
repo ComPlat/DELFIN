@@ -1749,25 +1749,19 @@ def _shell_segments(cmd: str) -> list[str]:
 _SHELL_PROGRAMS: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
 
 
-# Programs whose first operand is their own script or pattern, not a file,
+# awk, whose first operand is its own program, not a file,
 # with the options that take a separate value and the ones that supply the
 # script instead (then no operand is the script). Measured 2026-10-19: the
 # awk program `/<script>$/,/^<\/script>$/ {print}` was asked about four
-# times as a read of an absolute path outside the workspace.
+# times as a read of an absolute path outside the workspace. grep and sed
+# are not here: _pattern_blanked already blanks their pattern and script
+# before this scanner runs, so their first operand left is a FILE -- adding
+# them skipped `/etc/passwd` in `grep root /etc/passwd`.
 _SCRIPT_FIRST_PROGRAMS: dict[str, tuple[frozenset, frozenset]] = {
-    **{p: (frozenset({"-F", "-v", "-f", "-i", "-l", "-E", "--field-separator",
-                      "--assign", "--file", "--include", "--load", "--exec"}),
-           frozenset({"-f", "--file", "-E", "--exec"}))
-       for p in ("awk", "gawk", "mawk", "nawk")},
-    "sed": (frozenset({"-e", "-f", "-l", "--expression", "--file",
-                       "--line-length"}),
-            frozenset({"-e", "-f", "--expression", "--file"})),
-    **{p: (frozenset({"-e", "-f", "-m", "-A", "-B", "-C", "--regexp",
-                      "--file", "--max-count", "--after-context",
-                      "--before-context", "--context", "--include",
-                      "--exclude", "--exclude-dir", "--color", "--label"}),
-           frozenset({"-e", "-f", "--regexp", "--file"}))
-       for p in ("grep", "egrep", "fgrep")},
+    p: (frozenset({"-F", "-v", "-f", "-i", "-l", "-E", "--field-separator",
+                   "--assign", "--file", "--include", "--load", "--exec"}),
+        frozenset({"-f", "--file", "-E", "--exec"}))
+    for p in ("awk", "gawk", "mawk", "nawk")
 }
 
 
@@ -3605,12 +3599,6 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # node: the syntax check and the version, end-anchored -- running a
     # script stays asked.
     r"^\s*node\s+(?:(?:--check|-c)\s+[\w./-]+|--version|-v)\s*$",
-    # curl reading a server on this machine: every option from a list
-    # that writes nothing but stdout (`-o /dev/null` is the one output
-    # allowed), the URL loopback. Measured 2026-10-19: seven dialogs in
-    # one session, each a status check of the game server the agent had
-    # started, each approved.
-    _LOOPBACK_CURL_PATTERN,
     r"^\s*awk\s+",                                           # awk has no destructive default
     r"^\s*jq\b", r"^\s*yq\b",
     # `worktree list` reads the registry and changes nothing -- the same
@@ -14258,8 +14246,20 @@ def _leaves_workspace(
                 return True
         if bypass:
             try:
-                return not perms.matches_bash_auto_allow(
-                    str(action.get("command") or ""))
+                full = str(action.get("command") or "")
+                if perms.matches_bash_auto_allow(full):
+                    return False
+                # curl reading a server on this machine, every option one
+                # that writes nothing but stdout (`-o /dev/null` the one
+                # output): under Bypass it does not leave. Not auto-allowed
+                # in default mode -- on a shared host the loopback reaches
+                # other users' services too, and there the user decides.
+                # Measured 2026-10-19: seven dialogs in one Bypass session,
+                # each a status check of the agent's own game server.
+                segs = _split_shell_segments(full)
+                return not (segs and all(
+                    _LOOPBACK_CURL_RE.match(sg)
+                    or perms.matches_bash_auto_allow(sg) for sg in segs))
             except Exception:
                 return True
         return False
