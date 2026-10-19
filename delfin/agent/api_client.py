@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import contextvars as _contextvars
 import difflib
@@ -14306,6 +14307,33 @@ _CLASSIFIER_TIMEOUT_S = 20.0
 # the person a question a slow proxy caused (wave 16: nine sessions on the
 # KIT proxy, verdicts past 20 s, every message between sessions asked).
 _CLASSIFIER_TIMEOUT_BOUNDS_S = (5.0, 120.0)
+# Without a setting, the wait follows the endpoint: 1.5 x the 75th
+# percentile of the last first-token times of this process's requests, never
+# below the default and never above this. Measured 2026-10-19 on the KIT
+# proxy: median 18.5 s, 45 % of 137 requests past 20 s -- the watcher, on
+# the same endpoint with a fixed 20 s, failed again and again, and each
+# failure under Bypass became a question to the user.
+_CLASSIFIER_ADAPTIVE_MAX_S = 90.0
+_ENDPOINT_TTFT_S: "collections.deque[float]" = collections.deque(maxlen=20)
+
+
+def _note_endpoint_latency(ttft_s: Optional[float]) -> None:
+    """One request's time to first token, for the watcher's wait."""
+    try:
+        if ttft_s is not None and ttft_s >= 0:
+            _ENDPOINT_TTFT_S.append(float(ttft_s))
+    except Exception:
+        pass
+
+
+def _adaptive_classifier_wait() -> float:
+    """The default wait, lengthened to what the endpoint takes now."""
+    samples = sorted(_ENDPOINT_TTFT_S)
+    if len(samples) < 3:
+        return _CLASSIFIER_TIMEOUT_S
+    p75 = samples[min(len(samples) - 1, int(len(samples) * 0.75))]
+    return min(max(_CLASSIFIER_TIMEOUT_S, 1.5 * p75),
+               _CLASSIFIER_ADAPTIVE_MAX_S)
 _CLASSIFIER_REFUSALS_PER_TURN = 3
 _CLASSIFIED_NETWORK_TOOLS = frozenset({
     "web_fetch", "remote_trigger", "push_notification"})
@@ -14684,7 +14712,7 @@ def _classifier_timeout_s() -> float:
         cfg = ((load_settings() or {}).get("agent") or {}).get("classifier")
         value = cfg.get("timeout_s") if isinstance(cfg, dict) else None
         if value is None or isinstance(value, bool):
-            return _CLASSIFIER_TIMEOUT_S
+            return _adaptive_classifier_wait()
         low, high = _CLASSIFIER_TIMEOUT_BOUNDS_S
         seconds = float(value)
         if seconds != seconds:          # NaN
@@ -31764,6 +31792,14 @@ class OpenAIClient(_BaseClient):
             # fresh set of retries rather than inheriting an exhausted count.
             _stream_attempt = 0
 
+            # The endpoint's current first-token time, for the watcher's
+            # wait (_adaptive_classifier_wait), whether or not metrics are
+            # recorded.
+            try:
+                if _round_ttft is not None:
+                    _note_endpoint_latency(_round_ttft - _round_t0)
+            except Exception:
+                pass
             # One line per request, written now rather than at the turn's
             # end, so a report filed mid-turn has it (turn_metrics).
             _metrics_session = getattr(self, "metrics_session", "")
