@@ -298,9 +298,11 @@ def write_otlp_json(session: str, path) -> "str | None":
 def timeline(session: str) -> str:
     """One line per span, indented, with durations; the longest 3 marked.
 
-    Text timeline for ``delfin-agent trace <session>`` (cli.py).
+    Text timeline for ``delfin-agent trace <session>`` (cli.py). Notes are
+    rendered so a terminal user sees a redaction failure too (s4, phase-3
+    review): a dropped field must never look like an ordinary timeline.
     """
-    tree = spans(session)
+    tree, note_list = spans(session, notes=True)
     if not tree:
         return "(no spans — nothing recorded for this session)"
     durations = sorted((s["end_time_unix_nano"] - s["start_time_unix_nano"]
@@ -323,5 +325,7 @@ def timeline(session: str) -> str:
             f"{mark} {ind}{s['name']}"
             + (f" {label}" if label else "")
             + f"  ({dur_ms:.1f} ms)")
+    for n in note_list:
+        lines.append(f"! {n}")
     return "\n".join(lines)
 
