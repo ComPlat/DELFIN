@@ -1984,6 +1984,97 @@ def take_in_use_notes() -> list[str]:
         return out
 
 
+def _descendants(root: int) -> set:
+    """``root`` and every process below it, from /proc (Linux); {root}
+    elsewhere."""
+    out = {root}
+    try:
+        parent_of: dict[int, int] = {}
+        for name in os.listdir("/proc"):
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", encoding="latin-1") as fh:
+                    stat = fh.read()
+                parent_of[int(name)] = int(stat.rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+        grew = True
+        while grew:
+            grew = False
+            for pid, ppid in parent_of.items():
+                if ppid in out and pid not in out:
+                    out.add(pid)
+                    grew = True
+    except OSError:
+        pass
+    return out
+
+
+def _listening_ports_of(pids: set) -> set:
+    """The TCP ports the processes ``pids`` listen on (Linux /proc)."""
+    inodes: set[str] = set()
+    for pid in pids:
+        try:
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                try:
+                    link = os.readlink(f"/proc/{pid}/fd/{fd}")
+                except OSError:
+                    continue
+                if link.startswith("socket:["):
+                    inodes.add(link[8:-1])
+        except OSError:
+            continue
+    ports: set[int] = set()
+    if not inodes:
+        return ports
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table, encoding="latin-1") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    # local_address, state 0A = LISTEN, inode at index 9
+                    if len(cols) > 9 and cols[3] == "0A" and cols[9] in inodes:
+                        ports.add(int(cols[1].rsplit(":", 1)[1], 16))
+        except (OSError, ValueError):
+            continue
+    return ports
+
+
+def own_listening_ports(session_id: str) -> set:
+    """The ports this session's running background jobs listen on.
+
+    What the egress proxy lets a caged command reach on the loopback:
+    the agent checking the server it started (python -m http.server,
+    vite, flask, node) and nothing else on this machine. Measured
+    2026-10-19: `curl http://127.0.0.1:8324/` from the cage was refused
+    ("port 8324 is not allowed") -- the agent could not see its own game.
+    Read from /proc, so it holds whatever the server is; empty off Linux,
+    for a job of another session, and when nothing is read. Never raises."""
+    sid = str(session_id or "")
+    if not sid:
+        return set()
+    try:
+        jobs = get_registry().list_jobs(include_finished=False)
+    except Exception:
+        return set()
+    pids: set[int] = set()
+    for job in jobs:
+        if str(getattr(job, "session_id", "") or "") != sid:
+            continue
+        try:
+            pid = int(getattr(getattr(job, "proc", None), "pid", 0) or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            pids |= _descendants(pid)
+    try:
+        return _listening_ports_of(pids)
+    except Exception:
+        return set()
+
+
 def live_jobs() -> list[dict]:
     """Every background job of this user that is still running, anywhere.
 

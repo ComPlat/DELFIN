@@ -108,6 +108,21 @@ _UPLOAD_METHODS = ("POST", "PUT", "PATCH")
 _WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
 
+def _is_loopback(host: str) -> bool:
+    h = str(host or "").strip("[]").lower()
+    return h in ("localhost", "::1") or h.startswith("127.")
+
+
+def _own_ports(perms) -> set:
+    """Ports the background jobs of ``perms``'s session listen on."""
+    try:
+        from .bash_jobs import own_listening_ports
+        return own_listening_ports(
+            str(getattr(perms, "task_session_id", "") or ""))
+    except Exception:
+        return set()
+
+
 def _settings() -> dict:
     try:
         from delfin.user_settings import load_settings
@@ -594,6 +609,13 @@ class EgressProxy:
     def decide(self, host: str, port: int, *, method: str = "CONNECT",
                body_bytes: int = 0, perms=None) -> tuple[str, str, bool]:
         """``(verdict, reason, upload)``; verdict is allow, ask or deny."""
+        # The session's own server on this machine (bash_jobs.
+        # own_listening_ports): a port one of ITS running background jobs
+        # listens on, on the loopback, for a session's token only -- the
+        # process token and every other port and host go on below.
+        if (perms is not None and _is_loopback(host)
+                and port in _own_ports(perms)):
+            return "allow", "", False
         if port not in self.allowed_ports:
             return "deny", (
                 f"blocked by DELFIN's egress proxy: port {port} is not allowed "
@@ -783,7 +805,7 @@ class EgressProxy:
                     meter = (lambda sent, _h=host, _p=port, _perms=perms:
                              self.settle(_h, _p, method="CONNECT",
                                          body_bytes=sent, perms=_perms) is None)
-                upstream = self._open(conn, host, port)
+                upstream = self._open(conn, host, port, perms)
                 if upstream is None:
                     return
                 conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -816,7 +838,7 @@ class EgressProxy:
                     except OSError:
                         pass
                     return
-                upstream = self._open(conn, url.hostname, port)
+                upstream = self._open(conn, url.hostname, port, perms)
                 if upstream is None:
                     return
                 path = url.path or "/"
@@ -839,8 +861,14 @@ class EgressProxy:
                     except OSError:
                         pass
 
-    def _open(self, conn, host: str, port: int):
+    def _open(self, conn, host: str, port: int, perms=None):
         try:
+            if (perms is not None and _is_loopback(host)
+                    and port in _own_ports(perms)):
+                # The session's own server (decide): the loopback itself,
+                # never a name that resolves elsewhere.
+                addr = "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
+                return socket.create_connection((addr, port), timeout=30.0)
             return self._connector(host, port, 30.0)
         except OSError as exc:
             reason = str(exc)
