@@ -37,12 +37,12 @@ action watcher timed out, and every command off the auto-allow list counts
 as leaving the workspace); all 22 were approved. Now free, because they
 write nothing but stdout and reach nothing but the loopback: `sed` without
 `-i`/`-f` (a `w`/`e` in the script is still caught), `node --check` and
-`node --version`, `true`/`false`/`:`, and `curl` to `127.0.0.1`,
-`localhost` or `[::1]` with only non-writing options (`-o /dev/null` is the
-one output). awk's program, sed's script and grep's pattern are no longer
-read as paths by the outside-read gate. Starting a listener
-(`python -m http.server`) stays asked: on a shared machine the loopback is
-shared too.
+`node --version` and `true`/`false`/`:`. Under Bypass, `curl` to
+`127.0.0.1`, `localhost` or `[::1]` with only non-writing options no longer
+counts as leaving the workspace; in default mode it is still asked, as is
+starting a listener (`python -m http.server`): on a shared machine the
+loopback reaches other users' services too. awk's program is no longer read
+as a path by the outside-read gate (grep and sed patterns already were not).
 
 ### Changed — a go-ahead is acted on, and a choice is decided or asked as a choice
 
