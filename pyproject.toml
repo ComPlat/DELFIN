@@ -165,6 +165,14 @@ pdf = [
 keyring = [
     "keyring>=24",
 ]
+# A page the agent edits is also loaded in a headless browser by the
+# turn-end check (delfin/agent/artifact_check.py), which then reports its
+# uncaught errors and console errors. Optional: without it the page's
+# scripts and references are still checked; `playwright install chromium`
+# fetches the browser once.
+browser = [
+    "playwright>=1.40,<2",
+]
 csp = [
     "mpi4py",
 ]

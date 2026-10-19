@@ -13699,20 +13699,21 @@ def _resolve_verify_nudge() -> str:
 
 
 def _syntax_check(edited_paths: list) -> str:
-    """py_compile the edited .py files (fast, no execution). Returns a summary
-    of any syntax errors, or ""."""
-    import py_compile
-    probs: list[str] = []
-    for p in edited_paths:
-        try:
-            py_compile.compile(str(p), doraise=True)
-        except py_compile.PyCompileError as exc:
-            probs.append(str(exc).strip()[:400])
-        except FileNotFoundError:
-            continue
-        except Exception:
-            continue
-    return "\n".join(probs)
+    """Check each edited file by its kind, fast and without running the
+    project (artifact_check: py_compile, node --check, an HTML page's
+    scripts and local references, JSON, bash -n). Returns a summary of
+    what is broken, or ""."""
+    from . import artifact_check as _ac
+    return _ac.problems(edited_paths)
+
+
+def _artifact_checkable(path: str) -> bool:
+    """A file the turn-end check can check (artifact_check)."""
+    try:
+        from . import artifact_check as _ac
+        return _ac.is_checkable(path)
+    except Exception:
+        return str(path).endswith(".py")
 
 
 def _detect_test_command(workspace) -> str:
@@ -13980,6 +13981,15 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             syn = _syntax_check(edited_paths)
             if syn or mode == "syntax":
                 return syn
+            # Only non-Python files edited (a page, a script, a config): the
+            # file check above IS their verification. A Python suite says
+            # nothing about them, and "no test suite detected" would call a
+            # checked page unverified.
+            edited_paths = [p for p in edited_paths
+                            if str(p).endswith(".py")]
+            if not edited_paths:
+                st["command"] = "file check (artifact_check)"
+                return ""
             # smart: syntax clean → the tests that cover the edit; the whole
             # suite only when no test does (bounded + adaptive).
             ws_key = str(workspace)
@@ -32382,14 +32392,15 @@ class OpenAIClient(_BaseClient):
                     if self._turn_verification is not None:
                         self._turn_verification.note(fn_name, fn_args, result)
 
-                    # Track .py files successfully edited this turn (for the
-                    # turn-end auto-verify). A new edit invalidates a prior pass.
+                    # Track the checkable files (artifact_check) edited this
+                    # turn, for the turn-end auto-verify. A new edit
+                    # invalidates a prior pass.
                     if (_av_mode != "off"
                             and fn_name in ("edit_file", "multi_edit", "write_file")
                             and not str(result).lstrip().startswith('{"error"')):
                         _ep = (fn_args.get("path")
                                if isinstance(fn_args, dict) else None)
-                        if _ep and str(_ep).endswith(".py"):
+                        if _ep and _artifact_checkable(str(_ep)):
                             try:
                                 # "." default matches the verify gate's
                                 # workspace default, so edit-tracking and
@@ -32417,7 +32428,7 @@ class OpenAIClient(_BaseClient):
                                                   "workspace", ".") or ".")
                                 for _pp in _paths_from_diff(
                                         str(fn_args.get("diff", "") or "")):
-                                    if _pp.endswith(".py"):
+                                    if _artifact_checkable(_pp):
                                         _abs = (_pp if os.path.isabs(_pp)
                                                 else os.path.join(_ws, _pp))
                                         _edited_py[_abs] = True
