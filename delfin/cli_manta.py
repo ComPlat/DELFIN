@@ -112,8 +112,8 @@ _CHAMPION_FLAGS = (
                           # Env DELFIN_FFFREE_CN6_OH_ADD; impl smiles_converter energy-outlier-cut root (keep
                           # inf-energy topo-valid isomer primaries; VOYWUD 6->5->6).
     "AROM_SEAT",          # #21: construction-time FREE-aromatic bond-length seat toward the delocalised
-                          # targets of delfin.fffree.aromatic_bond_targets (CSD-derived until their COD
-                          # re-derivation lands, see delfin/manta/PROVENANCE.md).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
+                          # targets of delfin.fffree.aromatic_bond_targets (COD-derived since landing 8,
+                          # see delfin/manta/PROVENANCE.md).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
                           # coordination byte-identical, never-worse by construction) + UFF AddDistanceConstraint
                           # on the metal-free path + bond_decollapse target.  landed 2026-07-17 (night):
                           # class:sigma_coord:100 never-worse (n=3 affected, cap_LOST=0, mean -13.5) + full:120
@@ -330,6 +330,11 @@ _CHAMPION_FLAGS = (
     # 63 affected, every never-worse term 0, absolute hard frames 485 -> 446 and no system with
     # more hard frames.  Impl delfin/manta/_lone_pair_space.py, _oxidation_state.py.
     "LONE_PAIR_SPACE", "LONE_PAIR_MD",
+    # LANDING 8 (2026-10-19, AB:codwerte6k): no new switch -- the five aromatic bond targets
+    # (delfin/fffree/aromatic_bond_targets.py) and the donor-plane tolerance _BETA_BAND
+    # (4.8 -> 5.2 deg, assemble_donor_plane.py) are now COD (CC0) statistics.  6000-pool A/B:
+    # 5866 byte-identical, 51 affected, every never-worse term 0, existing frames intact;
+    # absolute hard frames 829 -> 832, all three in 11 added frames (8 of them clean).
                           # #31: ring-pucker symmetry reduction WITH the add guard in front of it --
                           # landed 2026-09-07, label symmfoldadd6k, pool_6000, both historic floors.
                           #   n_compared 5819, affected 123, judged intersection 107,

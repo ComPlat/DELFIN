@@ -1,6 +1,6 @@
 # Where MANTA's numbers come from
 
-The numerical values the MANTA constructor uses fall into six classes. This file names the class and the source of every table and constant that sets a geometry; the many gate thresholds are summarised as one row.
+The numerical values the MANTA constructor uses fall into five classes. This file names the class and the source of every table and constant that sets a geometry; the many gate thresholds are summarised as one row.
 
 | Class | Meaning |
 |---|---|
@@ -8,7 +8,6 @@ The numerical values the MANTA constructor uses fall into six classes. This file
 | **COD** | Our own statistics on the Crystallography Open Database (CC0; Gražulis et al., *Nucleic Acids Res.* 40, D420, 2012) |
 | **Theory** | Ideal geometry: VSEPR angles, regular polyhedra and polygons |
 | **Hand-set** | Chosen by hand: round thresholds, typical distances from textbook ranges, some adjusted to individual published structures. Several thresholds were afterwards *checked* against crystal structures (for example, that a gate stays silent on clean structures); checking does not make them derived values |
-| **CSD-derived, to be replaced** | Our own statistics on CSD crystal structures. Exactly two values of the shipped configuration are in this class; see below |
 | **Not shipped** | Values used by paths that are off in the shipped configuration and that were calibrated on structure statistics we do not distribute. The code reads them from a file named by an environment variable and has no value without it |
 
 ## Values of the shipped configuration
@@ -25,8 +24,8 @@ The numerical values the MANTA constructor uses fall into six classes. This file
 | Metal–O distance of a neutral O–H donor (aqua, alcohol) | `_lone_pair_space._SHANNON`, `_R_O_CN3` | **Literature**: Shannon effective ionic radii of the metal ion at its oxidation state and coordination number plus three-coordinate O²⁻ (R. D. Shannon, *Acta Cryst.* A32, 751, 1976) |
 | Oxidation state of the metal | `_oxidation_state` (read by cutting the metal–donor bonds of the SMILES) | **Theory**: electron counting on the written SMILES, no table |
 | Interpolation of aromatic radii (2/3 of the way from single to double) | `_arom_bond_length._AROM_FRACTION` | **Hand-set** on Literature radii |
-| **Delocalised aromatic bond lengths** C–C, C–N, C–O, C–S, N–N | `delfin/fffree/aromatic_bond_targets.py` (`AROMATIC_BOND_TARGETS`), used by the aromatic-bond seat | **CSD-derived, to be replaced**: medians of our own statistics on CSD crystal structures (bond order "aromatic", ligand bonds in metal complexes). The same method applied to the COD reproduces them to within 0.012 Å, C–C identically; the COD values will replace them |
-| **Donor-plane tolerance** 4.8° | `assemble_donor_plane._BETA_BAND`, used by the ring-pucker, lone-pair and β siblings | **CSD-derived, to be replaced**: the upper out-of-plane angle of the metal at conjugated donors in clean CSD crystal structures. It will be re-measured on the COD and replaced |
+| Delocalised aromatic bond lengths C–C, C–N, C–O, C–S, N–N | `delfin/fffree/aromatic_bond_targets.py` (`AROMATIC_BOND_TARGETS`), used by the aromatic-bond seat | **COD**: the SMILES graph mapped onto each crystal structure, median per element pair of the bonds of bond order "aromatic", over 26 566 organic COD structures (C–C n = 335 129, C–N 22 914, C–O 2 820, C–S 2 576, N–N 2 053) |
+| Donor-plane tolerance 5.2° | `assemble_donor_plane._BETA_BAND`, used by the ring-pucker, lone-pair and β siblings | **COD**: median out-of-plane angle β of the metal at sp2 N donors (own environment planar, rms < 0.10 Å) bound to one metal, per denticity of their own ligand, over 117 427 COD complexes (3.9° mono, 3.7° bi, 3.5° tri, 5.2° tetradentate, n = 13 296, 95 % bootstrap CI 5.1–5.4°); the tolerance is the largest of these medians |
 
 ## Values used only by paths that are off in the shipped configuration
 
