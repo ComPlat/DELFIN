@@ -6470,6 +6470,20 @@ def _bj_running_twin(cmd: str, cwd: str, perms: Any) -> Optional[dict]:
     return None
 
 
+def _reads_of(client: Any):
+    """The client's ledger of reads its conversation may still hold
+    (reread.ReadLedger), created on first use."""
+    ledger = getattr(client, "_read_ledger", None)
+    if ledger is None:
+        from .reread import ReadLedger
+        ledger = ReadLedger()
+        try:
+            client._read_ledger = ledger
+        except Exception:
+            pass
+    return ledger
+
+
 def _ends_with_a_question(text: str) -> bool:
     """True when an answer ends by asking the user something."""
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
@@ -31827,6 +31841,7 @@ class OpenAIClient(_BaseClient):
 
                 # Execute each tool call and append results
                 for tc in tc_list:
+                    _reread_note = None
                     fn_name = (tc["function"]["name"] or "").strip()
                     # Parse arguments defensively: a backend may stream a dict
                     # already, invalid JSON, or valid JSON that is NOT an object
@@ -32173,9 +32188,20 @@ class OpenAIClient(_BaseClient):
                             # refs against the caller's messages even when a
                             # nested subagent stream ran in between.
                             _doc_executor.live_messages = messages
-                            result = _doc_executor.execute(
-                                fn_name, fn_args, permissions=self._permissions
-                            )
+                            # A file the model already has, unchanged and
+                            # still in this request: say so instead of
+                            # sending it again (reread.py).
+                            if (fn_name == "read_file"
+                                    and self._permissions is not None):
+                                _reread_note = _reads_of(self).repeat_note(
+                                    fn_args, self._permissions.workspace,
+                                    api_messages)
+                            if _reread_note:
+                                result = _reread_note
+                            else:
+                                result = _doc_executor.execute(
+                                    fn_name, fn_args,
+                                    permissions=self._permissions)
                         except Exception as exc:
                             result = json.dumps({
                                 "error": f"tool '{fn_name}' failed: {exc}"
@@ -32345,6 +32371,13 @@ class OpenAIClient(_BaseClient):
                         "tool_call_id": tc["id"],
                         "content": context_result,
                     })
+                    if (fn_name == "read_file"
+                            and self._permissions is not None
+                            and not str(result).lstrip().startswith('{"error"')
+                            and not _reread_note):
+                        _reads_of(self).record(
+                            fn_args, self._permissions.workspace, tc["id"],
+                            context_result)
                     _round_results.append(result)
                     if self._turn_verification is not None:
                         self._turn_verification.note(fn_name, fn_args, result)
