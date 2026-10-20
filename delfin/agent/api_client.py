@@ -6520,12 +6520,16 @@ def _package_cache_dirs() -> tuple:
 _ANNOUNCE_CONT_MAX = 3
 
 
+# vite with any options and values (`--port 5173`), not its build or
+# optimize: one parse per word. `(?:\s+--?\S+)*` read `--a` both as
+# `-`+`-a` and `--`+`a`, so `vite --a --a ... b` took 2**n steps to
+# refuse (1.5 s at 22 words), and a value without a dash was not matched.
 _DEV_SERVER_RE = re.compile(
     r"^\s*(?:"
     r"python[\d.]*\s+(?:-\S+\s+)*-m\s+(?:http\.server|SimpleHTTPServer)\b"
     r"|(?:npx\s+(?:-y\s+)?)?(?:http-server|live-server|serve)(?:\s|$)"
     r"|php\s+-S\s"
-    r"|(?:npx\s+)?vite(?:\s+(?:dev|serve|preview))?(?:\s+--?\S+)*\s*$"
+    r"|(?:npx\s+)?vite(?:\s+(?!build\b|optimize\b)\S+)*\s*$"
     r"|npm\s+(?:run\s+(?:dev|serve|start|preview)|start)\b"
     r"|(?:flask\s+run|uvicorn\s|gunicorn\s|streamlit\s+run|"
     r"jupyter(?:-lab|\s+lab|\s+notebook)|voila\s)"

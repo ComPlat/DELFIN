@@ -85,6 +85,7 @@ def test_the_terminal_lists_and_closes_the_port(listening_job):
     "python3 -m http.server 8038 --bind 127.0.0.1 --directory site",
     "cd site && python3 -m http.server 8000", "npm run dev", "npx vite",
     "flask run", "uvicorn app:app --port 8000", "jupyter lab",
+    "npx vite --port 5173 --host", "vite dev -l info",
 ])
 def test_a_server_in_the_foreground_is_refused_before_anything_runs(
         tmp_path, cmd):
@@ -100,7 +101,18 @@ def test_a_server_in_the_foreground_is_refused_before_anything_runs(
 
 @pytest.mark.parametrize("cmd", [
     "python3 -m http.server 8000 &", "timeout 5 python3 -m http.server 8000",
-    "npm run build", "vite build", "npm test", "curl http://127.0.0.1:8000",
+    "npm run build", "vite build", "vite build --mode x", "npm test", "curl http://127.0.0.1:8000",
 ])
 def test_a_bounded_or_background_or_ordinary_command_is_not(cmd):
     assert A._foreground_server(cmd) == ""
+
+
+def test_a_long_option_list_is_judged_in_linear_time():
+    """`--?\\S+` read `--a` two ways, so 22 such words took 1.5 s and
+    every further word doubled it. The run is refused before it starts, so
+    the words are judged by _foreground_server alone."""
+    import time
+    t = time.monotonic()
+    assert A._foreground_server("vite" + " --a" * 5000 + " build") == ""
+    assert A._foreground_server("vite" + " --a" * 5000) != ""
+    assert time.monotonic() - t < 1.0
