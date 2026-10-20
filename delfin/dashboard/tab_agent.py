@@ -1010,7 +1010,9 @@ _AGENT_CSS = """\
    is always on screen. */
 .delfin-agent-root {
     height: calc(100vh - var(--delfin-agent-top, 140px) - 6px);
-    min-height: 420px;
+    /* 320, not 420: on a window under ~530px (a laptop with the browser's
+       developer tools docked) the floor itself made the page scroll. */
+    min-height: 320px;
     overflow-y: auto;
     box-sizing: border-box;
 }
@@ -1051,7 +1053,10 @@ _AGENT_CSS = """\
 .delfin-agent-root > .delfin-agent-chat-frame,
 .delfin-agent-chat-row > .delfin-agent-chat-frame {
     flex: 1 1 0 !important;
-    min-height: 45vh;
+    /* Never below 45vh while the window has room for it; on a short one
+       the floor gives way to the rows outside the frame (top bar, input,
+       the folded details: ~340px), so the closed layout still fits. */
+    min-height: min(45vh, calc(100vh - 340px));
     display: flex;
     flex-direction: column;
     border: 1px solid #ddd;
@@ -1063,7 +1068,9 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame > .delfin-agent-chat-host {
     flex: 1 1 0 !important;
     height: auto !important;
-    min-height: 120px;
+    /* !important: the widget carries min-height 200px inline, which made
+       this rule a dead letter and the frame 200px plus its foot at least. */
+    min-height: 100px !important;
     border: none;
     border-radius: 0;
 }
@@ -9524,24 +9531,42 @@ def create_tab(ctx):
     # the window". Measured, not guessed: the header above it differs
     # between Voila and Jupyter, and between the single and the session
     # layout. Re-measured on resize and while the page settles.
+    #
+    # The top is taken in the coordinates of the page's scroller, which in
+    # Voila is #rendered_cells and not the window: window.scrollY stays 0
+    # there, and a viewport top shrinks as the page scrolls, which made the
+    # tab taller the further it was scrolled. What still overflows the
+    # scroller with the tab at that height -- padding and margins below
+    # it -- is measured with the trim at zero and added to the top, so the
+    # page itself never scrolls while the tab is above its min-height.
+    #
+    # Sent with the startup scripts (ctx.add_init_js). Through ctx.run_js
+    # it never ran: run_js clears the shared output, and the next call
+    # during startup replaced it before the browser executed it (measured
+    # 2026-10-20: window.__delfinAgentTop undefined, the 140px fallback in
+    # use on every page since 2026-10-09).
     _measure_top_js = (
         "(function(){if(window.__delfinAgentTop)return;"
-        "window.__delfinAgentTop=1;function m(){"
+        "window.__delfinAgentTop=1;var de=document.documentElement;"
+        "function scrollers(el){var out=[];"
+        "for(var p=el.parentElement;p;p=p.parentElement){"
+        "var oy=getComputedStyle(p).overflowY;"
+        "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
+        "return out;}"
+        "function m(){"
         "var rs=document.querySelectorAll('.delfin-agent-root');"
         "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
-        "var t=r.getBoundingClientRect().top+window.scrollY;"
-        "document.documentElement.style.setProperty('--delfin-agent-top',"
-        "Math.max(0,Math.round(t))+'px');return;}}"
+        "var ss=scrollers(r),k,y=0;"
+        "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
+        "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
+        "de.style.setProperty('--delfin-agent-top',t+'px');"
+        "var over=0;for(k=0;k<ss.length;k++)"
+        "over=Math.max(over,ss[k].scrollHeight-ss[k].clientHeight);"
+        "if(over>0&&over<200&&r.offsetHeight-over>=320){"
+        "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
+        "return;}}"
         "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
-    try:
-        ctx.run_js(_measure_top_js, keep=True)
-    except TypeError:                    # a context without page scripts
-        try:
-            ctx.run_js(_measure_top_js)
-        except Exception:
-            pass
-    except Exception:
-        pass
+    ctx.add_init_js(_measure_top_js)
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
