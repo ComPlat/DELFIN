@@ -5888,6 +5888,7 @@ def create_tab(ctx):
             ("Azure GPT-5", "azure.gpt-5"),
             ("Azure GPT-5-mini", "azure.gpt-5-mini"),
             ("Azure GPT-5-nano", "azure.gpt-5-nano"),
+            ("KIT GLM-5.3 Flash", "kit.glm-5.3-flash"),
             ("KIT DeepSeek V4 Flash", "kit.deepseek-v4-flash"),
             ("KIT GLM-5.3", "kit.glm-5.3"),
             ("KIT mistral-small-4 119B-a8b", "kit.mistral-small-4-119b-a8b"),
@@ -5909,7 +5910,7 @@ def create_tab(ctx):
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
-                          "kit": "kit.glm-5.3",
+                          "kit": "kit.glm-5.3-flash",
                           "ollama": "qwen3-coder:32b"}
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
                        "kit": "kit.deepseek-v4-flash",
@@ -21761,6 +21762,13 @@ def create_tab(ctx):
             return
         done = int(state.get("_announce_followups") or 0)
         if done >= 3:
+            # No follow-up will run: say so, or "I'll do it now" reads as
+            # work in progress with no indicator (bug report davh 414e5a17).
+            try:
+                from delfin.agent.engine import AgentEngine as _AE
+                _append_system_message(_AE.NOTHING_RUNS_NOTICE.strip())
+            except Exception:
+                pass
             return
         state["_announce_followups"] = done + 1
         _send_on_its_own(note)

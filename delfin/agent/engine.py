@@ -431,6 +431,37 @@ def _added_lines(old: str, new: str) -> str:
     return "\n".join(added).strip("\n")
 
 
+def _ends_announcing(answer: str) -> bool:
+    """Whether *answer* closes by announcing a step it does not show done.
+
+    Either detector of an announcement (turn_continuation for the engine's
+    follow-up, api_client for the tool loop's), or a last paragraph that
+    speaks in the first person and ends on a colon -- "Ich lese die Imports
+    (Z.1-50) und den _build-Bereich, um meine Edits anzusetzen:" escaped
+    both, the line reference read as a sentence end. Used only to TELL the
+    user nothing runs, never to start a round, so a wider net costs a line
+    at most."""
+    import re as _re
+    text = str(answer or "").rstrip().rstrip("*_`").rstrip()
+    if not text:
+        return False
+    try:
+        from delfin.agent.turn_continuation import announced_action
+        if announced_action(text):
+            return True
+    except Exception:
+        pass
+    try:
+        from delfin.agent.api_client import _announces_an_action
+        if _announces_an_action(text):
+            return True
+    except Exception:
+        pass
+    last = _re.split(r"\n\s*\n", text)[-1]
+    return (last.endswith(":") and bool(_re.search(
+        r"(?i)\b(?:ich|wir|i|we|let me|lass mich|lasst uns)\b", last)))
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -4355,10 +4386,12 @@ class AgentEngine:
             # into full_response, and judging it drew 8 false notes in 10
             # (report 20261012-082746). A NEED_CONTEXT re-answer replaces
             # the text, so then the replacement is judged.
-            self._note_turn_continuation(
-                "".join(chunks[_chunks_at_last_tool:])
-                if _turn_tool_calls and full_response is _answer_streamed
-                else full_response)
+            _judged_answer = ("".join(chunks[_chunks_at_last_tool:])
+                              if _turn_tool_calls
+                              and full_response is _answer_streamed
+                              else full_response)
+            self._note_turn_continuation(_judged_answer)
+            self._say_nothing_runs(_judged_answer, on_token)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has
@@ -7976,6 +8009,33 @@ class AgentEngine:
                         "send a message or resolve the open work.")
                     self._stall_guard_stopped = _stopped
                     self.clear_turn_continuation()
+
+    #: Shown when a turn ends on an announced step and no follow-up is
+    #: queued: the turn is over, nothing works in the background.
+    NOTHING_RUNS_NOTICE = (
+        "\n\n⏸ Nothing is running now: this turn ended on a step the agent "
+        "announced but did not take. Send \"weiter\" (or say what to change) "
+        "to continue.")
+
+    def _say_nothing_runs(self, answer: str, on_token) -> None:
+        """Tell the user the turn is over when *answer* closes by announcing
+        a next step and no follow-up turn is queued.
+
+        Bug report davh 414e5a17 (2026-10-20): "he says he is solving it now,
+        and then there is no feedback at all -- no progress bar, no sign; I
+        cannot tell whether he works or the model hangs". The turn had ended
+        on "Ich speichere zuerst ..., dann implementiere ich:"; the indicator
+        went out, correctly, and nothing said why. Not shown when a
+        follow-up is pending (it will run), nor when the stall guard stopped
+        follow-ups (its own message says so). Never raises."""
+        try:
+            if (not answer or self.pending_turn_continuation
+                    or getattr(self, "_stall_guard_stopped", "")):
+                return
+            if callable(on_token) and _ends_announcing(answer):
+                on_token(self.NOTHING_RUNS_NOTICE)
+        except Exception:
+            pass
 
     def _honour_pause(self) -> bool:
         """Request a stop when ``delfin-agent pause`` flagged this session.

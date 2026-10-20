@@ -58,7 +58,7 @@ def collect(workspace: Any, *, now: Optional[float] = None,
                 "id": str(jid),
                 "label": str(rec.get("description") or rec.get("command") or "")[:90],
                 "since": float(rec.get("started_at") or now),
-                "url": served_url(str(rec.get("command") or "")),
+                **_ports_and_url(str(jid), str(rec.get("command") or "")),
             })
     except Exception as _exc:
         _failed("shells", _exc)
@@ -122,6 +122,23 @@ def collect(workspace: Any, *, now: Optional[float] = None,
     return view
 
 
+def _ports_and_url(job_id: str, command: str) -> dict:
+    """``{"ports", "url"}`` of a running shell: the ports its processes
+    really listen on (bash_jobs.job_listening_ports, any server: vite,
+    flask, node), and the address to open -- the one its command names,
+    else the loopback at its lowest port."""
+    ports: list[int] = []
+    try:
+        from . import bash_jobs as _bj
+        ports = sorted(_bj.job_listening_ports(_bj.get_registry().get(job_id)))
+    except Exception:
+        ports = []
+    url = served_url(command)
+    if not url and ports:
+        url = f"http://127.0.0.1:{ports[0]}/"
+    return {"ports": ports, "url": url}
+
+
 def served_url(command: str) -> str:
     """The address a static file server in *command* answers on, or "".
 
@@ -178,7 +195,7 @@ def _duration(seconds: float) -> str:
 
 # What the × on a row does, said where the user can read it first.
 _STOP_TIPS = {
-    "shells": "Stop this command",
+    "shells": "Stop this command (and close the ports it holds)",
     "watches": "Stop watching — the job itself keeps running",
     "agents": "Stop this background agent",
     "wakeups": "Cancel this wake-up",
@@ -200,10 +217,14 @@ def rows(view: dict, *, now: Optional[float] = None) -> list[dict]:
 
     for row in view.get("shells", []):
         url = str(row.get("url") or "")
-        _add("shells", row["id"], "Server" if url else "Shell",
+        ports = [int(p) for p in (row.get("ports") or [])]
+        port_text = " ".join(f":{p}" for p in ports)
+        _add("shells", row["id"], "Server" if (url or ports) else "Shell",
              row["label"] or row["id"],
              f"running · {_duration(now - row['since'])}"
+             + (f" · port {port_text}" if port_text else "")
              + (f" · {url}" if url else ""), url)
+        out[-1]["ports"] = ports
     for row in view.get("watches", []):
         kind = row["kind"].upper() if row["kind"] in ("ci", "slurm") else row["kind"]
         _add("watches", row["id"], f"Watch · {kind}", row["label"] or row["id"],

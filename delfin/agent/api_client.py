@@ -6518,6 +6518,50 @@ def _package_cache_dirs() -> tuple:
         return ()
 
 
+#: How often one turn sends an announcing answer back to act (the second and
+#: later only after tool activity since the previous one).
+_ANNOUNCE_CONT_MAX = 3
+
+
+# vite with any options and values (`--port 5173`), not its build or
+# optimize: one parse per word. `(?:\s+--?\S+)*` read `--a` both as
+# `-`+`-a` and `--`+`a`, so `vite --a --a ... b` took 2**n steps to
+# refuse (1.5 s at 22 words), and a value without a dash was not matched.
+_DEV_SERVER_RE = re.compile(
+    r"^\s*(?:"
+    r"python[\d.]*\s+(?:-\S+\s+)*-m\s+(?:http\.server|SimpleHTTPServer)\b"
+    r"|(?:npx\s+(?:-y\s+)?)?(?:http-server|live-server|serve)(?:\s|$)"
+    r"|php\s+-S\s"
+    r"|(?:npx\s+)?vite(?:\s+(?!build\b|optimize\b)\S+)*\s*$"
+    r"|npm\s+(?:run\s+(?:dev|serve|start|preview)|start)\b"
+    r"|(?:flask\s+run|uvicorn\s|gunicorn\s|streamlit\s+run|"
+    r"jupyter(?:-lab|\s+lab|\s+notebook)|voila\s)"
+    r")")
+
+
+def _foreground_server(cmd: str) -> str:
+    """The server a foreground command would start and hold, or "".
+
+    A segment that starts a long-running listener (a static file server,
+    a dev server, a notebook server) and is neither backgrounded (`&`) nor
+    bounded (`timeout N ...`). Measured 2026-10-20 (session 7cc700dc): the
+    agent ran `python3 -m http.server 8038 ...` with bash; the call waited
+    the full 120 s, was killed, and only then did the agent use
+    bash_background. Refused at once, before any question, with the way
+    that works."""
+    text = str(cmd or "")
+    if re.search(r"(?<![&|>])&\s*(?:$|;|\n)", text):
+        return ""
+    for seg in re.split(r"\s*(?:&&|\|\||;|\n|\|)\s*", text):
+        seg = seg.strip()
+        if not seg or re.match(r"^(?:timeout|gtimeout)\b", seg):
+            continue
+        seg = re.sub(r"^(?:cd\s+\S+\s*$)", "", seg)
+        if _DEV_SERVER_RE.match(seg):
+            return seg[:80]
+    return ""
+
+
 def _ends_with_a_question(text: str) -> bool:
     """True when an answer ends by asking the user something."""
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
@@ -16941,6 +16985,16 @@ class _DocToolExecutor:
             _shape_err = _canonical_patch_arguments(arguments, permissions)
             if _shape_err:
                 return json.dumps({"error": _shape_err})
+        if _bare_tool_name(name) == "bash" and isinstance(arguments, dict):
+            _server = _foreground_server(str(arguments.get("command") or ""))
+            if _server:
+                return json.dumps({"error": (
+                    f"`{_server}` starts a server that runs until it is "
+                    "stopped; in the foreground it would hold this call "
+                    "until the time limit and then be killed. Start it with "
+                    "bash_background -- it returns at once with a job id and "
+                    "the address, keeps running, and you can curl it from "
+                    "the next call. Nothing was run.")})
         if permissions is None and _needs_a_sandbox(name):
             _record_security_event("no_sandbox", name, "", blocked=True)
             return json.dumps({"error": _no_sandbox_refusal(name)})
@@ -31323,7 +31377,7 @@ class OpenAIClient(_BaseClient):
         _did_tools_since_cont = False
         # Whether the announced-action continuation already fired this
         # turn; see the second auto-continue trigger.
-        _announced_once = False
+        _announced_count = 0
         # The go-ahead and prose-choice triggers (go_ahead.py), once each
         # per turn, judged against the message that opened the turn and
         # every tool the turn called.
@@ -33334,15 +33388,22 @@ class OpenAIClient(_BaseClient):
             # spent seven consecutive turns announcing and calling nothing.
             # Neither had open tasks, so the trigger above could not fire.
             # An announcement is a stronger signal than an open task: the
-            # model has said the action itself. Once per turn, so a model
-            # that announces again after being sent back costs one extra
-            # round and not a loop; and never over a question.
-            _announced = (not _announced_once
+            # model has said the action itself. Never over a question.
+            #
+            # Up to _ANNOUNCE_CONT_MAX times per turn, the second and third
+            # only after tool activity since the last one: a model that only
+            # announces again costs one extra round, a model that reads and
+            # then announces the next step is kept going. Measured
+            # 2026-10-20 (bug report davh 414e5a17): "Ich lese jetzt ...",
+            # sent back once, read, announced the edit, and the turn ended --
+            # turn after turn; the user saw "I'm doing it now" and nothing.
+            _announced = (_announced_count < _ANNOUNCE_CONT_MAX
+                          and (_announced_count == 0 or _did_tools_since_cont)
                           and _auto_cont_count < _AUTO_CONT_CAP
                           and not self._waiting_on_watched_jobs()
                           and _announces_an_action("".join(_text_chunks)))
             if _announced:
-                _announced_once = True
+                _announced_count += 1
                 _auto_cont_count += 1
                 _did_tools_since_cont = False
                 _final = "".join(_text_chunks) if _text_chunks else ""

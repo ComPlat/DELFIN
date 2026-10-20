@@ -25,8 +25,9 @@ class _NotFound(Exception):
 
 
 def test_the_ranking_puts_glm_first_and_deepseek_next():
-    assert mc._KIT_PREFERENCE[:2] == ("kit.glm-5.3", "kit.deepseek-v4-flash")
-    assert MR._PROVIDER_TIERS["kit"] == {"strong": "kit.glm-5.3",
+    assert mc._KIT_PREFERENCE[:3] == ("kit.glm-5.3-flash", "kit.glm-5.3",
+                                      "kit.deepseek-v4-flash")
+    assert MR._PROVIDER_TIERS["kit"] == {"strong": "kit.glm-5.3-flash",
                                          "cheap": "kit.deepseek-v4-flash"}
 
 
@@ -41,9 +42,9 @@ def test_model_not_found_is_recognised_and_other_400s_are_not():
 @pytest.mark.parametrize("served,current,expected", [
     ({"kit.deepseek-v4-flash", "azure.gpt-5.4"}, "kit.glm-5.3",
      "kit.deepseek-v4-flash"),
-    ({"kit.glm-5.3", "kit.deepseek-v4-flash"}, "azure.gpt-5-nano",
-     "kit.glm-5.3"),
-    (set(), "kit.glm-5.3", "kit.deepseek-v4-flash"),     # listing unreadable
+    ({"kit.glm-5.3-flash", "kit.deepseek-v4-flash"}, "azure.gpt-5-nano",
+     "kit.glm-5.3-flash"),
+    (set(), "kit.glm-5.3", "kit.glm-5.3-flash"),     # listing unreadable
     ({"azure.gpt-5.4"}, "kit.glm-5.3", ""),              # nothing ranked
 ])
 def test_the_fallback_is_the_best_served(monkeypatch, served, current,
