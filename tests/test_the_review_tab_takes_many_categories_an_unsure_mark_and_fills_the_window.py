@@ -216,7 +216,7 @@ def test_the_viewer_height_follows_the_window_through_the_shared_mechanism(revie
     assert "100vh" in tab_review.VIEWER_HEIGHT
     seen = {}
     monkeypatch.setattr(molecule_viewer, "render_xyz_in_output",
-                        lambda out, xyz, width=None, height=None:
+                        lambda out, xyz, width=None, height=None, **_kw:
                         seen.update(width=width, height=height))
     panel = _panel(review_dir)
     assert seen == {"width": "100%", "height": tab_review.VIEWER_HEIGHT}
@@ -248,7 +248,7 @@ def test_h_atoms_can_be_hidden_and_r_draws_the_view_again(review_dir, monkeypatc
     from delfin.dashboard import molecule_viewer
     drawn = []
     monkeypatch.setattr(molecule_viewer, "render_xyz_in_output",
-                        lambda out, xyz, width=None, height=None: drawn.append(xyz))
+                        lambda out, xyz, width=None, height=None, **_kw: drawn.append(xyz))
     panel = _panel(review_dir)
     assert drawn[-1].splitlines()[0] == "3"                   # all atoms by default
     panel.handle_key("h")
@@ -299,3 +299,34 @@ def test_a_long_file_list_shows_a_window_around_the_current_file(tmp_path):
     assert len(panel.file_list.options) == 2 * tab_review.FRAME_WINDOW
     panel.go_to(f"T{2 * tab_review.FRAME_WINDOW + 50:04d}")
     assert panel.file_list.value == f"T{2 * tab_review.FRAME_WINDOW + 50:04d}.xyz"
+
+
+# ---------------------------------------------------------------- atoms marked in the view
+def test_a_clicked_atom_is_marked_saved_with_the_rating_and_shown_again(review_dir):
+    """A click sends ``a<place in the view>``; with H hidden the place is mapped
+    back to the atom line of the file, and the marks travel with the rating."""
+    panel = _panel(review_dir)
+    panel.handle_key("a0", at=0)                              # O, the first atom
+    panel.h_toggle.value = False                              # the view now shows only O
+    panel.handle_key("a0", at=0)                              # unmarks the same O
+    assert panel.marked_atoms() == []
+    panel.h_toggle.value = True
+    panel.handle_key("a2", at=0)                              # the second H
+    panel.handle_key("a0", at=1)                              # pressed for another frame
+    assert panel.marked_atoms() == [2]
+    assert "H3" in panel.atoms_html.value
+    panel.handle_key("b")
+    rec = panel.session.record("T0001.xyz", 0)
+    assert rec["atoms"] == [2]
+    panel.handle_key("left")
+    assert panel.marked_atoms() == [2]
+    again = _panel(review_dir)                                # resumed: marks come back
+    again.session.go_to_file("T0001.xyz")
+    again.refresh()
+    assert again.marked_atoms() == [2]
+    assert "[2].forEach" in tab_review._atoms_js([2])
+    again.clear_atoms()
+    assert again.marked_atoms() == [] and "click" in again.atoms_html.value
+    import csv
+    rows = list(csv.DictReader(open(again.session.export_csv(), encoding="utf-8")))
+    assert [r["atoms"] for r in rows if r["file"] == "T0001.xyz"] == ["2"]

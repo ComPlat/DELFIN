@@ -50,6 +50,7 @@ reached the tab.
 from __future__ import annotations
 
 import html
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -76,15 +77,17 @@ VIEWER_CLASS = 'delfin-review-viewer'
 FRAME_WINDOW = 100
 VIEWER_WIDTH = '100%'   # of the middle column; a fixed 720 px ran under the rating column
 # The dashboard's tab bodies are calc(100vh - 145px) tall (helpers.create_page_css);
-# the folded setup, the status line and the bar above the viewer take about 130 px
-# more.  A CSS length, not pixels: the viewer box follows the window, and the
-# viewer factory's ResizeObserver (__delfinKeepSized) resizes the canvas with it.
-VIEWER_HEIGHT = 'max(360px, calc(100vh - 275px))'
+# the folded setup, the status line, the bar above the viewer and the key line
+# below it take about 155 px more (measured: at 300 px nothing scrolls but the
+# file list).  A CSS length, not pixels: the viewer box follows the window, and
+# the viewer factory's ResizeObserver (__delfinKeepSized) resizes the canvas.
+VIEWER_HEIGHT = 'max(340px, calc(100vh - 300px))'
 MAX_KEYED_CATEGORIES = 19
 _MARK = {'pass': '✓', 'block': '✗', None: '·'}
 _HELP = "<span style='color:#757575;font-size:11.5px'>{}</span>"
 _PASS_COLOR = '#1b7f3b'
 _BLOCK_COLOR = '#b00020'
+MARK_COLOR = '#ff9800'      # a marked atom (the place of a defect)
 KEY_LEGEND = ('<b>P</b> pass &middot; <b>B</b> block &middot; <b>1</b>&ndash;<b>9</b>, '
               '<b>0</b>, <b>&#8679;1</b>&ndash;<b>&#8679;9</b> categories &middot; '
               '<b>U</b> unsure &middot; <b>N</b> next unrated &middot; <b>&larr;</b> / '
@@ -109,6 +112,10 @@ _CSS = """<style>
   {flex:1 1 0 !important;min-height:0 !important;}
 .delfin-review-panel .delfin-review-grow .widget-select select {height:100% !important;}
 .delfin-review-panel .delfin-review-viewer {overflow:hidden !important;}
+/* a 100 % wide field plus its border or margin is 2-4 px wider than its box:
+   without this every such box showed a small horizontal scroll bar */
+.delfin-review-panel .widget-box, .delfin-review-panel .widget-gridbox
+  {overflow-x:hidden !important;}
 .delfin-review-panel .delfin-review-rating,
 .delfin-review-panel .delfin-review-rating .widget-gridbox {overflow:visible !important;}
 </style>"""
@@ -185,6 +192,19 @@ def _keys_js() -> str:
         "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
         "    return true;\n"
         "  }\n"
+        "  function mark(viewer,atom){\n"
+        "    var m=viewer.__delfinMarks=viewer.__delfinMarks||{}, i=atom.index;\n"
+        "    if(m[i]){viewer.removeShape(m[i]);delete m[i];}\n"
+        "    else m[i]=viewer.addSphere({center:{x:atom.x,y:atom.y,z:atom.z},radius:0.62,\n"
+        "      color:'" + MARK_COLOR + "',opacity:0.6});\n"
+        "    viewer.render();\n"
+        "  }\n"
+        "  window.__delfinReviewMark=mark;\n"
+        "  window.__delfinReviewPick=function(viewer,atom){\n"
+        "    var panel=document.querySelector('." + PANEL_CLASS + "');\n"
+        "    if(!panel||!send(panel,'a'+atom.index)) return;\n"
+        "    mark(viewer,atom);\n"
+        "  };\n"
         "  document.addEventListener('keydown',function(ev){\n"
         "    if(ev.ctrlKey||ev.metaKey||ev.altKey) return;\n"
         "    var panel=document.querySelector('." + PANEL_CLASS + "');\n"
@@ -222,6 +242,19 @@ def _keys_js() -> str:
         "    ev.preventDefault();ev.stopPropagation();\n"
         "  },true);\n"
         "})();\n"
+    )
+
+
+def _atoms_js(marked: list[int]) -> str:
+    """Viewer script: a click on an atom marks it (the key script sends ``a<index>``),
+    and the atoms marked before are drawn again (*marked*: indices as shown)."""
+    return (
+        "viewer_UNIQUEID.setClickable({},true,function(atom,viewer){\n"
+        "  if(window.__delfinReviewPick) window.__delfinReviewPick(viewer,atom);});\n"
+        "(function(v){var m=window.__delfinReviewMark; if(!m) return;\n"
+        f"  {json.dumps(marked)}.forEach(function(i){{\n"
+        "    var a=v.selectedAtoms({index:i})[0]; if(a) m(v,a);});\n"
+        "})(viewer_UNIQUEID);\n"
     )
 
 
@@ -320,7 +353,10 @@ class ReviewPanel:
             b.add_class('delfin-review-big')
         self.pass_btn.add_class(PASS_CLASS)
         self.block_btn.add_class(BLOCK_CLASS)
-        self.verdict_html = W.HTML('')
+        self.verdict_html = W.HTML('', layout=L(display='none'))   # the bar shows it
+        self.atoms_html = W.HTML('')
+        self.clear_atoms_btn = W.Button(description='', icon='times', tooltip='unmark all atoms',
+                                        layout=L(width='30px', height='24px'))
         self.multi_cb = W.Checkbox(value=True, description='several', indent=False,
                                    tooltip='several categories per frame',
                                    layout=L(width='90px'))
@@ -332,10 +368,11 @@ class ReviewPanel:
                                          icon='question',
                                          tooltip='adds or removes the word "unsicher" '
                                                  'in the comment (U)',
-                                         layout=L(width='110px', height='26px'))
+                                         layout=L(width='112px', height='auto',
+                                                  flex='0 0 auto'))
         self.note_input = W.Textarea(value='', placeholder='your comment on this frame',
                                      continuous_update=False,
-                                     layout=L(width='100%', height='50px'))
+                                     layout=L(flex='1 1 auto', width='auto', height='50px'))
         self.saved_html = W.HTML('')
         self.help_html = W.HTML(_HELP.format(KEY_LEGEND))
         self.context_html = W.HTML('')
@@ -357,6 +394,8 @@ class ReviewPanel:
         self.keys_input = W.Text(value='', layout=L(display='none'))
         self.keys_input.add_class(KEYS_CLASS)
         self._at_class = ''
+        self._marked: dict[tuple[str, int], set[int]] = {}   # atoms marked per frame
+        self._shown: list[int] = []      # atom index in the file of each atom shown
 
         self._build_categories(rv.DEFAULT_CATEGORIES)
         self._wire()
@@ -423,6 +462,8 @@ class ReviewPanel:
             W.HTML('<b>Add categories</b> ' + _HELP.format(
                 'appended at the end; ratings and keys stay')),
             W.HBox([self.add_cat_input, self.add_cat_btn], layout=L(width='100%')),
+            W.HBox([W.HTML('<b>Categories</b> ' + _HELP.format('several per frame')),
+                    self.multi_cb], layout=L(align_items='center')),
             self.export_btn,
         ], layout=L(width='100%'))
         self.more = W.Accordion(children=[more_body])
@@ -434,12 +475,12 @@ class ReviewPanel:
             W.HBox([self.pass_btn, self.block_btn],
                    layout=L(width='100%', justify_content='space-between')),
             self.verdict_html,
-            W.HBox([W.HTML('<b>Categories</b>'), self.multi_cb],
-                   layout=L(align_items='center', justify_content='space-between')),
+            W.HBox([self.atoms_html, self.clear_atoms_btn],
+                   layout=L(width='100%', align_items='center',
+                            justify_content='space-between')),
             self.category_box,
-            W.HBox([W.HTML('<b>Comment</b>'), self.unsure_btn],
-                   layout=L(align_items='center', justify_content='space-between')),
-            self.note_input,
+            W.HBox([self.note_input, self.unsure_btn],
+                   layout=L(width='100%', align_items='stretch')),
             self.saved_html,
             self.more,
         ], layout=L(width='390px', min_width='260px'))
@@ -472,6 +513,7 @@ class ReviewPanel:
         self.categories_btn.on_click(lambda _b: self.apply_categories())
         self.add_cat_btn.on_click(lambda _b: self.add_categories(self.add_cat_input.value))
         self.reset_btn.on_click(lambda _b: self.reset_view())
+        self.clear_atoms_btn.on_click(lambda _b: self.clear_atoms())
         self.h_toggle.observe(self._on_h_toggle, names='value')
         self.unsure_btn.observe(self._on_unsure_btn, names='value')
         self.list_toggle.observe(self._on_list_toggle, names='value')
@@ -641,7 +683,8 @@ class ReviewPanel:
         if s is None:
             return None
         where = s.display_name()
-        rec = s.rate(verdict, self.selected_categories(), self.note_input.value)
+        rec = s.rate(verdict, self.selected_categories(), self.note_input.value,
+                     atoms=self._marked.get(self._frame_place(), ()))
         color = _PASS_COLOR if rec['verdict'] == 'pass' else _BLOCK_COLOR
         self.saved_html.value = (
             f'<span style="color:{color};font-size:12px">&#10003; saved '
@@ -752,6 +795,47 @@ class ReviewPanel:
         finally:
             self._busy = was
 
+    # -- atoms marked as the place of a defect -----------------------------------
+    def _frame_place(self) -> tuple[str, int]:
+        frame = self.session.current
+        return frame.file, frame.index
+
+    def marked_atoms(self) -> list[int]:
+        """Atoms marked on the current frame: 0-based indices into its atom lines."""
+        if self.session is None:
+            return []
+        return sorted(self._marked.get(self._frame_place(), ()))
+
+    def toggle_atom(self, shown: int):
+        """Mark or unmark the atom at place *shown* of the view (H hidden or not)."""
+        if self.session is None or not 0 <= shown < len(self._shown):
+            return
+        atoms = self._marked.setdefault(self._frame_place(), set())
+        atoms ^= {self._shown[shown]}
+        self._draw_atoms()
+
+    def clear_atoms(self):
+        if self.session is None:
+            return
+        self._marked.pop(self._frame_place(), None)
+        self._draw_atoms()
+        self._draw_viewer(self.session.current)
+
+    def _draw_atoms(self):
+        marked = self.marked_atoms()
+        if not marked:
+            self.atoms_html.value = _HELP.format(
+                'Atoms: click in the view to mark where the defect is (again: unmark)')
+            self.clear_atoms_btn.layout.visibility = 'hidden'
+            return
+        lines = self.session.current.xyz('').splitlines()[2:]
+        names = [f'{lines[i].split()[0]}{i + 1}' if i < len(lines) else f'#{i + 1}'
+                 for i in marked]
+        self.atoms_html.value = (f'<span style="font-size:12.5px"><b>Atoms:</b> '
+                                 f'<span style="color:{MARK_COLOR}"><b>'
+                                 f'{html.escape(", ".join(names))}</b></span></span>')
+        self.clear_atoms_btn.layout.visibility = 'visible'
+
     def reset_view(self):
         """Draw the frame again: orientation and zoom as when it was first shown."""
         if self.session is not None:
@@ -768,8 +852,9 @@ class ReviewPanel:
         if self.session is None:
             return
         cat = category_index(key)
+        atom = re.fullmatch(r'a(\d+)', key)
         if (at is not None and at != self.session.position
-                and (key in ('p', 'b', 'u') or cat is not None)):
+                and (key in ('p', 'b', 'u') or cat is not None or atom)):
             self._say(f'Key {key.upper()} ignored: it was pressed for a frame no longer shown.')
             return
         if key == 'left':
@@ -788,6 +873,8 @@ class ReviewPanel:
             self.reset_view()
         elif key == 'h':
             self.h_toggle.value = not self.h_toggle.value
+        elif atom:
+            self.toggle_atom(int(atom.group(1)))
         elif cat is not None and cat < len(self.category_buttons):
             btn = self.category_buttons[cat]
             btn.value = not btn.value
@@ -926,6 +1013,8 @@ class ReviewPanel:
             return
         frame = s.current
         rec = s.record(frame.file, frame.index)
+        if rec and rec.get('atoms') and (frame.file, frame.index) not in self._marked:
+            self._marked[(frame.file, frame.index)] = {int(i) for i in rec['atoms']}
         self._busy = True
         try:
             chosen = set(rec.get('categories', [])) if rec else set()
@@ -942,6 +1031,7 @@ class ReviewPanel:
         self._draw_position(frame, rec)
         self._draw_progress()
         self._draw_context(frame)
+        self._draw_atoms()
         self._draw_viewer(frame)
         self._mark_shown(s.position)
 
@@ -1059,11 +1149,17 @@ class ReviewPanel:
     def _draw_viewer(self, frame):
         comment = '' if self.session.blind else frame.comment
         xyz = frame.xyz(comment)
+        lines = xyz.splitlines()[2:]
+        self._shown = [i for i, ln in enumerate(lines) if ln.split()
+                       and (self.h_toggle.value or ln.split()[0].upper() not in ('H', 'D'))]
         if not self.h_toggle.value:
             xyz = _without_h(xyz)
+        place = {atom: k for k, atom in enumerate(self._shown)}
+        marked = [place[i] for i in self.marked_atoms() if i in place]
         try:
             from delfin.dashboard.molecule_viewer import render_xyz_in_output
-            render_xyz_in_output(self.viewer, xyz, width=VIEWER_WIDTH, height=VIEWER_HEIGHT)
+            render_xyz_in_output(self.viewer, xyz, width=VIEWER_WIDTH, height=VIEWER_HEIGHT,
+                                 extra_js=_atoms_js(marked))
         except Exception as exc:                     # pragma: no cover - no browser
             with self.viewer:
                 print(f'Viewer unavailable: {exc}')

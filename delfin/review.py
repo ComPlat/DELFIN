@@ -83,7 +83,7 @@ UNSURE_WORD = 'unsicher'
 _UNSURE_RE = re.compile(r'(?<!\w)(?:unsicher|unsure)(?!\w)', re.IGNORECASE)
 CSV_FIELDS = (
     'file', 'frame', 'label', 'verdict', 'categories', 'note',
-    'timestamp', 'sha256', 'blind_number', 'smiles', 'file_comment',
+    'timestamp', 'sha256', 'blind_number', 'smiles', 'file_comment', 'atoms',
 )
 
 
@@ -452,8 +452,12 @@ class ReviewSession:
         return rec
 
     def rate(self, verdict: str, categories: Iterable[str] = (), note: str = '',
-             *, advance: bool = True) -> dict[str, Any]:
-        """Rate the current frame, save at once and (by default) move on."""
+             *, atoms: Iterable[int] = (), advance: bool = True) -> dict[str, Any]:
+        """Rate the current frame, save at once and (by default) move on.
+
+        *atoms* are the atoms the reviewer marked as the place of the defect:
+        0-based indices into the frame's atom lines (hydrogens counted).
+        """
         verdict = str(verdict).strip().lower()
         if verdict not in VERDICTS:
             raise ValueError(f'verdict must be one of {VERDICTS}, not {verdict!r}')
@@ -469,6 +473,9 @@ class ReviewSession:
             'label': frame.label,
             'sha256': meta.get('sha256', ''),
         }
+        marked = sorted({int(i) for i in atoms})
+        if marked:
+            rec['atoms'] = marked
         if self.blind:
             rec['blind_number'] = self.position + 1
             rec['seed'] = self.seed
@@ -649,6 +656,7 @@ def write_csv(data: dict[str, Any], path: Path) -> None:
                 'blind_number': rec.get('blind_number', ''),
                 'smiles': rec.get('smiles') or (meta.get('index') or {}).get('smiles', ''),
                 'file_comment': meta.get('comment', ''),
+                'atoms': ';'.join(str(i) for i in rec.get('atoms') or []),
                 'stale': 'yes' if stale else '',
             })
 
