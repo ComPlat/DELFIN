@@ -27,6 +27,8 @@ PROVENANCE.md).  Rows, most specific first:
     D  metal ox cn element class  n  median ...   direct median M-D at this oxidation state and CN
     R  metal ox *  element class  n  R0_eff ...   effective R0 = median(r + b ln(V/CN)), CN pooled
     R  metal ox *  element *      n  R0_eff ...   the same over all donor classes of the element
+    R  metal *  *  element class  n  R0_eff ...   over all oxidation states (V carries them)
+    R  metal *  *  element *      n  R0_eff ...
 
 A donor takes the first level whose row exists with n >= DELFIN_FFFREE_ML_TARGETS_BV_MIN_N
 (default 30); the literature R0 is the last level and is used only with
@@ -262,7 +264,7 @@ def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
                 if len(p) < 8 or p[0] not in ("D", "R"):
                     continue
                 try:
-                    tbl[(p[0], p[1], int(p[2]), p[3], p[4], p[5])] = (int(p[6]), float(p[7]))
+                    tbl[(p[0], p[1], p[2], p[3], p[4], p[5])] = (int(p[6]), float(p[7]))
                 except ValueError:
                     continue
     except OSError:
@@ -274,16 +276,19 @@ def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
 def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optional[str]):
     """(target A, level) of one donor, or (None, None)."""
     nmin = _min_n()
-    row = table.get(("D", metal, ox, str(cn), element, cls))
+    row = table.get(("D", metal, str(ox), str(cn), element, cls))
     if row is not None and row[0] >= nmin:
         return row[1], "D"
     if ox <= 0 or cn <= 0:
         return None, None
     lns = B_BV * math.log(ox / float(cn))
-    for c in (cls, "*"):
-        row = table.get(("R", metal, ox, "*", element, c))
+    # effective R0 at this oxidation state, then over all oxidation states of the metal (the
+    # bond-valence model carries the oxidation-state dependence through V); per class, then
+    # per element
+    for o, c, lev in ((str(ox), cls, "R"), (str(ox), "*", "Re"), ("*", cls, "Ro"), ("*", "*", "Roe")):
+        row = table.get(("R", metal, o, "*", element, c))
         if row is not None and row[0] >= nmin:
-            return row[1] - lns, ("R" if c != "*" else "Re")
+            return row[1] - lns, lev
     if os.environ.get(LITERATURE_ENV, "0") == "1":
         r0 = r0_literature(metal, element)
         if r0 is not None:

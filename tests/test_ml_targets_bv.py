@@ -134,3 +134,13 @@ def test_no_context_for_what_the_cut_declines(monkeypatch):
     assert BV.current_context() is None
     BV.set_context("CCO")                      # no metal
     assert BV.current_context() is None
+
+
+def test_the_shipped_cod_table_is_the_default_and_reads():
+    assert BV.table_path() == BV.SHIPPED_TABLE
+    tbl = BV.load_table(BV.SHIPPED_TABLE)
+    assert len(tbl) > 100
+    # every row is a COD aggregate with its sample size
+    assert all(n >= 10 for n, _v in tbl.values())
+    t, lev = BV.donor_target(tbl, "Co", 3, 6, "N", "sp3l")
+    assert lev is not None and 1.85 < t < 2.05
