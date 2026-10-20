@@ -1229,9 +1229,11 @@ class Worker:
         """This session's background work (background_view.snapshot), each
         label one plain line. A list that cannot be read keeps the last one
         rather than announcing that nothing runs."""
+        # getattr: a worker built without __init__ (tests of the posture
+        # ladder) has neither, and session facts must still be readable.
         now = time.monotonic()
-        if now - self._background_at < self._BACKGROUND_EVERY_S:
-            return self._background
+        if now - getattr(self, "_background_at", -1e9) < self._BACKGROUND_EVERY_S:
+            return getattr(self, "_background", [])
         self._background_at = now
         try:
             from .. import background_view
@@ -1249,7 +1251,7 @@ class Worker:
                 for r in rows[:self._BACKGROUND_MAX]]
         except Exception:
             pass
-        return self._background
+        return getattr(self, "_background", [])
 
     def check_session(self) -> None:
         """Announce the posture, model, effort or task list whenever it
@@ -1288,7 +1290,8 @@ class Worker:
                 "tasks": facts["tasks"],
                 "bypassBlocked": facts["bypassBlocked"],
                 "bypassConfirmed": facts["bypassConfirmed"],
-                "auto": facts["auto"]}
+                "auto": facts["auto"],
+                "background": facts["background"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""
