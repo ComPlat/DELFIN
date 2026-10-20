@@ -608,41 +608,52 @@ def _login_logo_data_uri() -> str:
     return ""
 
 
-def _prepare_login_template_dir() -> str | None:
-    """Materialise the DELFIN-branded ``login.html`` for jupyter_server.
+def _render_login_template(template: str, logo_uri: str) -> str:
+    """``template`` with the DELFIN logo inlined as a ``data:`` URI, or
+    without its logo tile when there is no logo (no broken image)."""
+    if logo_uri:
+        return template.replace("__DELFIN_LOGO_URI__", logo_uri)
+    import re
 
-    Reads the shipped template, inlines the DELFIN logo as a ``data:`` URI, and
-    writes the result into a private 0700 directory that is handed to
-    jupyter_server via ``extra_template_paths`` (searched before the packaged
-    template, so ours wins). Returns the directory path, or ``None`` if the
-    template is unavailable (jupyter_server then falls back to its own page —
-    auth is unaffected either way).
+    return re.sub(
+        r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
+        "",
+        template,
+        flags=re.DOTALL,
+    ).replace("__DELFIN_LOGO_URI__", "")
+
+
+def _prepare_login_template_dir() -> str | None:
+    """Materialise the DELFIN-branded sign-in and sign-out pages for
+    jupyter_server.
+
+    Reads every shipped template in ``voila_assets/login_templates``
+    (``login.html``, ``logout.html`` and the card style they include),
+    inlines the DELFIN logo as a ``data:`` URI, and writes the results into
+    a private 0700 directory that is handed to jupyter_server via
+    ``extra_template_paths`` (searched before the packaged templates, so
+    ours win). Returns the directory path, or ``None`` if ``login.html`` is
+    unavailable (jupyter_server then falls back to its own pages — auth is
+    unaffected either way). ``logout.html`` used to be jupyter_server's own:
+    an unstyled "Successfully logged out. Proceed to the login page."
     """
     try:
-        src = importlib.resources.files("delfin.voila_assets").joinpath(
-            "login_templates", "login.html"
-        )
-        template = src.read_text(encoding="utf-8")
+        folder = importlib.resources.files("delfin.voila_assets").joinpath(
+            "login_templates")
+        templates = {f.name: f.read_text(encoding="utf-8")
+                     for f in folder.iterdir()
+                     if f.name.endswith(".html") and f.is_file()}
     except Exception:
+        return None
+    if "login.html" not in templates:
         return None
 
     logo_uri = _login_logo_data_uri()
-    if logo_uri:
-        rendered = template.replace("__DELFIN_LOGO_URI__", logo_uri)
-    else:
-        # No logo available: drop the whole tile so no broken image shows.
-        import re
-
-        rendered = re.sub(
-            r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
-            "",
-            template,
-            flags=re.DOTALL,
-        ).replace("__DELFIN_LOGO_URI__", "")
-
     try:
         target_dir = _secure_cache_dir("voila-login")
-        (target_dir / "login.html").write_text(rendered, encoding="utf-8")
+        for name, template in templates.items():
+            (target_dir / name).write_text(
+                _render_login_template(template, logo_uri), encoding="utf-8")
         return str(target_dir)
     except Exception:
         return None
