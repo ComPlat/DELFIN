@@ -1131,6 +1131,15 @@ _AGENT_CSS = """\
     color: #28a745; text-decoration: line-through;
 }
 .delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
+/* What is still out -- shells, jobs, sub-agents, wake-ups -- under the
+   task line. Not a chat-foot row: it stays while the reader is up in the
+   history, since a running server is not about the newest output. Capped,
+   so a long list scrolls in itself instead of taking the chat. */
+.delfin-agent-chat-frame > .delfin-agent-background {
+    border-top: 1px solid #e5e7eb; background: #f8fafc;
+    padding: 2px 10px; margin: 0;
+    max-height: 132px; overflow-y: auto;
+}
 .delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
 /* The task line belongs to the newest output: while the reader is up in
    the history it would sit under text it has nothing to do with. */
@@ -8129,9 +8138,6 @@ def create_tab(ctx):
         ctx_pct = state.get("_fold_ctx")
         if ctx_pct is not None:
             parts.append(f"ctx {ctx_pct:.0f}%")
-        n_bg = int(state.get("_fold_background", 0) or 0)
-        if n_bg:
-            parts.append(f"{n_bg} running")
         n_tools = int(state.get("_fold_tools", 0) or 0)
         if n_tools:
             last = str(state.get("_fold_last_tool", "") or "")
@@ -8268,6 +8274,14 @@ def create_tab(ctx):
     # One row per background item, each with its × (the panel's header is
     # subagent_panel_html above).
     background_rows_box = widgets.VBox(layout=widgets.Layout(margin="0 0 2px 0"))
+    # Header and rows together, at the foot of the chat and only while
+    # something is out. They sat in the folded details, where a running
+    # shell showed as "N running" in a closed header among the token
+    # counts and the containment report.
+    background_box = widgets.VBox(
+        [subagent_panel_html, background_rows_box],
+        layout=widgets.Layout(display="none"))
+    background_box.add_class("delfin-agent-background")
     # Session-start stamp (updated on each New Session) so the panel is
     # session-scoped from first load — never leaks a prior session's subagents.
     import time as _t_init
@@ -8288,8 +8302,9 @@ def create_tab(ctx):
             _ws = _agent_workspace_path()
             _items = _bgv.rows(_bgv.collect(_ws, session_id=_background_owner()))
             subagent_panel_html.value = _bgv.header_html(len(_items))
-            state["_fold_background"] = len(_items)
-            _refresh_fold_title()
+            _shown = "" if _items else "none"
+            if background_box.layout.display != _shown:
+                background_box.layout.display = _shown
             # Rows are kept by item, so a refresh updates the text and a
             # pointer resting on a × is not pulled out from under it.
             _cache = state.setdefault("_background_row_widgets", {})
@@ -8340,6 +8355,7 @@ def create_tab(ctx):
                 "<div style='font-size:11px; color:#b45309;'>Background: the "
                 f"list could not be read ({type(_exc).__name__}).</div>")
             background_rows_box.children = ()
+            background_box.layout.display = ""
 
     def _send_on_its_own(text: str, *, leave_text_when_held: bool = False) -> bool:
         """Start a turn nobody typed: a scheduled wake-up, a finished job, a
@@ -9439,11 +9455,12 @@ def create_tab(ctx):
     state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
         [kit_dirs_status,
-         subagent_pane_html, subagent_panel_html, background_rows_box,
+         subagent_pane_html,
          tools_fold, security_fold, context_bar_html, status_row])
-    # Folded by default: the tool calls, the containment report, the task
-    # list and the subagents are there when wanted, one click away, and
-    # take no height from the chat otherwise.
+    # Folded by default: the tool calls, the containment report and the
+    # sub-agent call log are there when wanted, one click away, and take no
+    # height from the chat otherwise. What is still running is not in
+    # here (background_box, at the foot of the chat).
     below_panels.add_class("delfin-agent-below-body")
     below_fold = widgets.Accordion(
         children=[below_panels],
@@ -9460,8 +9477,8 @@ def create_tab(ctx):
     # task line at the foot of the chat, not in a row of their own.
     palette_row.add_class("delfin-agent-chat-foot")
     chat_frame = widgets.VBox(
-        [chat_html, working_html, queue_html, task_strip, auto_box,
-         palette_row, plan_accept_btn, ask_user_box, approval_dock])
+        [chat_html, working_html, queue_html, task_strip, background_box,
+         auto_box, palette_row, plan_accept_btn, ask_user_box, approval_dock])
     chat_frame.add_class("delfin-agent-chat-frame")
     # The command palette opens OVER the chat, anchored to the top edge of
     # the input: opening it used to push the input down and squeeze the
