@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — open ports are on screen and can be closed; a server never runs in the foreground
+
+- **The ports a background job really listens on** (read from /proc for the
+  job and its children, any server: http.server, vite, flask, node) show in
+  the dashboard's Background panel and the terminal's status line, with the
+  address to open; the row's × closes the job and its port.
+- **`/ports` in the terminal** lists the open ports with address and job;
+  `/ports close <port|job_id>` closes one.
+- **A server started with plain bash is refused at once**, before any
+  question, naming bash_background: `python -m http.server`, `npm run dev`,
+  `vite`, `flask run`, `uvicorn`, `jupyter lab` and the like, unless
+  backgrounded (`&`) or bounded (`timeout`). In session 7cc700dc the call
+  waited its full 120 s and was killed before the agent used bash_background.
+
 ### Changed — KIT runs on its best model, and a model KIT does not serve is explained
 
 - **GLM-5.3 Flash is the KIT default and first in the ranking** (KIT serves

@@ -2042,6 +2042,40 @@ def _listening_ports_of(pids: set) -> set:
     return ports
 
 
+def job_listening_ports(job) -> set:
+    """The TCP ports one job (and every process below it) listens on, read
+    from /proc; empty off Linux or for a job that has ended. Never raises."""
+    try:
+        if job is None or job.poll() is not None:
+            return set()
+        pid = int(getattr(getattr(job, "proc", None), "pid", 0) or 0)
+        return _listening_ports_of(_descendants(pid)) if pid > 0 else set()
+    except Exception:
+        return set()
+
+
+def open_ports(session_id: str = "") -> list[dict]:
+    """Every running background job that listens on a port, with its ports:
+    ``[{"job_id", "ports", "command", "session_id"}]``, for the views that
+    show open ports and close them (the terminal's /ports, the dashboard's
+    Background panel). With ``session_id``, that session's jobs only."""
+    out: list[dict] = []
+    try:
+        jobs = get_registry().list_jobs(include_finished=False)
+    except Exception:
+        return out
+    for job in jobs:
+        sid = str(getattr(job, "session_id", "") or "")
+        if session_id and sid != session_id:
+            continue
+        ports = job_listening_ports(job)
+        if ports:
+            out.append({"job_id": job.job_id, "ports": sorted(ports),
+                        "command": str(job.command or ""),
+                        "session_id": sid})
+    return out
+
+
 def own_listening_ports(session_id: str) -> set:
     """The ports this session's running background jobs listen on.
 

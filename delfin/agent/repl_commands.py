@@ -1326,6 +1326,53 @@ def _hooks(ctx, _args: str) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
+def _ports(ctx, args: str) -> CommandResult:
+    """The ports background jobs hold open, and closing one.
+
+    `/ports` lists each running job that listens, with its ports and the
+    address to open; `/ports close <port|job_id>` ends the job that holds
+    it, and with it the port. The ports are what the job's processes
+    really listen on (bash_jobs.open_ports, read from /proc), whatever the
+    server is. Asked for 2026-10-20: a server left running after a session
+    held its port with nothing on screen saying so, and closing it took a
+    process hunt.
+    """
+    try:
+        from . import bash_jobs
+        rows = bash_jobs.open_ports()
+    except Exception as exc:
+        return CommandResult(output=f"ports unavailable ({exc})")
+    parts = args.strip().split()
+    if parts[:1] == ["close"]:
+        if len(parts) < 2:
+            return CommandResult(output="usage: /ports close <port|job_id>")
+        want = parts[1].lstrip(":")
+        hit = next((r for r in rows if want.isdigit()
+                    and int(want) in r["ports"]), None) or next(
+            (r for r in rows if r["job_id"].startswith(want)), None)
+        if hit is None:
+            return CommandResult(output=(
+                f"no background job holds {parts[1]} -- /ports lists the "
+                "open ones"))
+        try:
+            ok, note = bash_jobs.get_registry().kill(hit["job_id"])
+        except Exception as exc:
+            return CommandResult(output=f"close failed: {exc}")
+        ports = " ".join(f":{p}" for p in hit["ports"])
+        return CommandResult(output=(
+            f"closed {ports} (job {hit['job_id']}: {note})" if ok
+            else f"not closed -- {note}"))
+    if not rows:
+        return CommandResult(output="no background job holds a port open")
+    lines = ["open ports of background jobs:"]
+    for r in rows:
+        ports = " ".join(f":{p}" for p in r["ports"])
+        lines.append(f"  {ports:<14} http://127.0.0.1:{r['ports'][0]}/   "
+                     f"job {r['job_id']}  {r['command'][:60]}")
+    lines.append("  /ports close <port|job_id>   ends the job, and its port")
+    return CommandResult(output="\n".join(lines))
+
+
 def _bash(ctx, args: str) -> CommandResult:
     """Background shell jobs: list them, look inside one, or kill one.
 
@@ -2048,6 +2095,9 @@ BUILTINS: dict[str, ReplCommand] = {
                     _reject, True),
         ReplCommand("/git", "workspace", "status | diff | log | branch | role",
                     _git, True),
+        ReplCommand("/ports", "workspace",
+                    "Open ports of background jobs; /ports close <port|id>",
+                    _ports, True),
         ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
                     _bash, True),
         ReplCommand("/jobs", "workspace",

@@ -6520,6 +6520,41 @@ def _package_cache_dirs() -> tuple:
 _ANNOUNCE_CONT_MAX = 3
 
 
+_DEV_SERVER_RE = re.compile(
+    r"^\s*(?:"
+    r"python[\d.]*\s+(?:-\S+\s+)*-m\s+(?:http\.server|SimpleHTTPServer)\b"
+    r"|(?:npx\s+(?:-y\s+)?)?(?:http-server|live-server|serve)(?:\s|$)"
+    r"|php\s+-S\s"
+    r"|(?:npx\s+)?vite(?:\s+(?:dev|serve|preview))?(?:\s+--?\S+)*\s*$"
+    r"|npm\s+(?:run\s+(?:dev|serve|start|preview)|start)\b"
+    r"|(?:flask\s+run|uvicorn\s|gunicorn\s|streamlit\s+run|"
+    r"jupyter(?:-lab|\s+lab|\s+notebook)|voila\s)"
+    r")")
+
+
+def _foreground_server(cmd: str) -> str:
+    """The server a foreground command would start and hold, or "".
+
+    A segment that starts a long-running listener (a static file server,
+    a dev server, a notebook server) and is neither backgrounded (`&`) nor
+    bounded (`timeout N ...`). Measured 2026-10-20 (session 7cc700dc): the
+    agent ran `python3 -m http.server 8038 ...` with bash; the call waited
+    the full 120 s, was killed, and only then did the agent use
+    bash_background. Refused at once, before any question, with the way
+    that works."""
+    text = str(cmd or "")
+    if re.search(r"(?<![&|>])&\s*(?:$|;|\n)", text):
+        return ""
+    for seg in re.split(r"\s*(?:&&|\|\||;|\n|\|)\s*", text):
+        seg = seg.strip()
+        if not seg or re.match(r"^(?:timeout|gtimeout)\b", seg):
+            continue
+        seg = re.sub(r"^(?:cd\s+\S+\s*$)", "", seg)
+        if _DEV_SERVER_RE.match(seg):
+            return seg[:80]
+    return ""
+
+
 def _ends_with_a_question(text: str) -> bool:
     """True when an answer ends by asking the user something."""
     return (text or "").rstrip().rstrip("*_`").rstrip().endswith(("?", "？"))
@@ -16870,6 +16905,16 @@ class _DocToolExecutor:
             _shape_err = _canonical_patch_arguments(arguments, permissions)
             if _shape_err:
                 return json.dumps({"error": _shape_err})
+        if _bare_tool_name(name) == "bash" and isinstance(arguments, dict):
+            _server = _foreground_server(str(arguments.get("command") or ""))
+            if _server:
+                return json.dumps({"error": (
+                    f"`{_server}` starts a server that runs until it is "
+                    "stopped; in the foreground it would hold this call "
+                    "until the time limit and then be killed. Start it with "
+                    "bash_background -- it returns at once with a job id and "
+                    "the address, keeps running, and you can curl it from "
+                    "the next call. Nothing was run.")})
         if permissions is None and _needs_a_sandbox(name):
             _record_security_event("no_sandbox", name, "", blocked=True)
             return json.dumps({"error": _no_sandbox_refusal(name)})
