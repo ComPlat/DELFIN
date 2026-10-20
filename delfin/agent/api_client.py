@@ -3594,7 +3594,10 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # already split, and a `;` inside the quoted script (`'1d;$d'`) must
     # not end the look for a `-i` after it. Measured 2026-10-19: `sed
     # '1d;$d'` in a syntax check of a game asked three times.
-    r"^\s*sed\b(?!.*\s(?:-[A-Za-z]*[if]|--in-place\b|--file\b))",
+    # Every prefix of --in-place and --file counts: GNU sed takes `--i`
+    # and `--fi` for them (measured 2026-10-19: `sed --i` edited
+    # .delfin/settings.json unasked).
+    r"^\s*sed\b(?!.*\s(?:-[A-Za-z]*[if]|--i|--fi))",
     # The no-ops `grep ... || true` ends with.
     r"^\s*(?:true|false|:)\s*$",
     # node: the syntax check and the version, end-anchored -- running a
@@ -9818,7 +9821,7 @@ class KitToolPermissions:
         # admits `.venv/bin/pip install` but missed this spelling. The other
         # package managers are admitted only in the cage
         # (caged_test_runners), where the sandbox holds what they run.
-        if _VENV_PIP_MODULE_RE.match(cmd):
+        if _venv_pip_module_install(cmd):
             return True
         return False
 
@@ -9826,11 +9829,48 @@ class KitToolPermissions:
 # An install into the project's own environment: npm/yarn/pnpm/uv by the
 # cage's grammar (caged_test_runners.is_project_install), or pip through
 # the workspace venv's python, which the venv rule above admits as `pip`
-# but not as `python -m pip`.
-_VENV_PIP_MODULE_RE = re.compile(
-    r"^\s*(?:[\w.-]+/)*\.?venv[\w.-]*/bin/python[\d.]*\s+-m\s+pip\s+"
-    r"install(?:\s+(?!-)[\w.\[\],=<>~!-]+|\s+-r\s+[\w./-]+\.txt|\s+-U|"
-    r"\s+--upgrade|\s+-q)*\s*$")
+# but not as `python -m pip`. Judged word by word: the one-regex form
+# backtracked exponentially on a long argument list (code scanning
+# py/redos), and its `[\w.-]+/` took `..` as a directory, so
+# `a/../../venv/bin/python -m pip install` named a venv outside.
+_VENV_PIP_COMPONENT_RE = re.compile(r"[\w.-]+")
+_VENV_PIP_VENV_RE = re.compile(r"\.?venv[\w.-]*")
+_VENV_PIP_PYTHON_RE = re.compile(r"python[\d.]*")
+_VENV_PIP_SPEC_RE = re.compile(r"(?!-)[\w.\[\],=<>~!-]+")
+_VENV_PIP_REQUIREMENTS_RE = re.compile(r"[\w./-]*[\w-]\.txt")
+_VENV_PIP_FLAGS = frozenset({"-U", "--upgrade", "-q"})
+
+
+def _venv_pip_module_install(cmd: str) -> bool:
+    """``[dir/]*[.]venv*/bin/python* -m pip install`` with package specs,
+    ``-r FILE.txt``, ``-U``/``--upgrade``/``-q``; no ``..`` anywhere."""
+    words = str(cmd or "").split()
+    if len(words) < 4 or words[1:4] != ["-m", "pip", "install"]:
+        return False
+    parts = words[0].split("/")
+    if (len(parts) < 3 or parts[-2] != "bin"
+            or not _VENV_PIP_PYTHON_RE.fullmatch(parts[-1])
+            or not _VENV_PIP_VENV_RE.fullmatch(parts[-3])
+            or any(p in ("", ".", "..") for p in parts[:-3])
+            or not all(_VENV_PIP_COMPONENT_RE.fullmatch(p)
+                       for p in parts[:-3])):
+        return False
+    rest = words[4:]
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w == "-r":
+            if (i + 1 >= len(rest)
+                    or not _VENV_PIP_REQUIREMENTS_RE.fullmatch(rest[i + 1])
+                    or ".." in rest[i + 1].split("/")
+                    or rest[i + 1].startswith("/")):
+                return False
+            i += 2
+            continue
+        if w not in _VENV_PIP_FLAGS and not _VENV_PIP_SPEC_RE.fullmatch(w):
+            return False
+        i += 1
+    return True
 
 
 def _project_env_command(cmd: str) -> bool:
@@ -9840,7 +9880,7 @@ def _project_env_command(cmd: str) -> bool:
     c = str(cmd or "")
     if re.search(r"[$`<>;&|]|://|(?:^|\s)(?:/|~|\.\./)|\bglobal\b", c):
         return False
-    if _VENV_PIP_MODULE_RE.match(c):
+    if _venv_pip_module_install(c):
         return True
     try:
         from .caged_test_runners import is_project_install
@@ -10073,6 +10113,41 @@ def _sed_blank_custom_regexes(text: str) -> str:
     return "".join(out)
 
 
+def _sed_loads_a_script_file(cmd: str) -> bool:
+    """True when sed in *cmd* takes its script from a file, which no scan
+    of the command line can read (a ``w`` or ``e`` in it writes or runs
+    unseen): ``-f`` alone or in a bundle (``-nf``) and every prefix GNU sed
+    accepts for ``--file`` (``--fi``, ``--fil``). Measured 2026-10-19:
+    ``sed -n -f x.sed f``, x.sed holding ``1e CMD``, ran unasked. An
+    unparsable line counts as True."""
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return True
+    skip = False
+    for w in words[1:]:
+        if skip:
+            skip = False
+            continue
+        if w == "--":
+            break
+        if w.startswith("--"):
+            name = w[2:].split("=", 1)[0]
+            if len(name) >= 2 and "file".startswith(name):
+                return True
+            if "=" not in w and name in ("expression", "line-length"):
+                skip = True
+            continue
+        if w.startswith("-") and len(w) > 1:
+            for k in range(1, len(w)):
+                if w[k] == "f":
+                    return True
+                if w[k] in "eil":       # the rest of the word is its value
+                    skip = w[k] in "el" and k == len(w) - 1
+                    break
+    return False
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
@@ -10149,7 +10224,8 @@ def _reader_writes_or_runs(cmd: str) -> bool:
         return any(not (w.startswith("-") or "=" in w) for w in rest) or \
             any(w in ("-S", "--split-string") for w in rest)
     if first == "sed":
-        return _sed_script_writes(stripped)
+        return (_sed_loads_a_script_file(stripped)
+                or _sed_script_writes(stripped))
     if first == "git" and _git_reaches_elsewhere(stripped):
         return True
     if first == "uniq":

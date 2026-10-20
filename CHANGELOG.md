@@ -21,6 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backgrounded (`&`) or bounded (`timeout`). In session 7cc700dc the call
   waited its full 120 s and was killed before the agent used bash_background.
 
+### Security — what runs unasked writes nothing, loads no script and reaches nothing
+
+- **sed asks when it edits in place or reads its script from a file**, in
+  every spelling GNU sed accepts: `-i`/`-f` alone or in a bundle, and every
+  prefix of `--in-place` and `--file` (`--i`, `--fi`). `sed --i …
+  .delfin/settings.json` and `sed -n -f x.sed` (a script file with an `e`
+  command) ran unasked. Printing sed stays free.
+- **An install of `.`, `..` or a path outside the workspace is no project
+  install**: `npm install ..` and `uv pip install ../other` are asked.
+- **The headless page check reaches nothing**: the browser runs outside the
+  cage, so it resolves no name, connects only through a proxy that does not
+  exist (the loopback included), sends no WebRTC UDP, works offline, and
+  loads only files under the page's own directory. A page that asks for
+  anything else is not judged by the browser (its static checks still run).
+  Before, a page reached a loopback listener by `<img>`, fetch, WebSocket
+  and STUN, and a word of a file outside the workspace came back in an
+  error message.
+
 ### Changed — KIT runs on its best model, and a model KIT does not serve is explained
 
 - **GLM-5.3 Flash is the KIT default and first in the ranking** (KIT serves
