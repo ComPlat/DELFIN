@@ -522,6 +522,52 @@ def _default_voila_root() -> Path:
     return _secure_cache_dir("voila-root").resolve()
 
 
+def _kernel_transport_args() -> list:
+    """The server's kernels talk over Unix sockets, not loopback TCP.
+
+    Over TCP every kernel channel is a port on 127.0.0.1, which any user
+    of the machine can connect to. The key in the connection file signs
+    messages, it does not encrypt them, and the IOPub channel publishes to
+    any subscriber: measured 2026-10-20, a client without the key read a
+    kernel's printed output over TCP (ipykernel 7.3, jupyter_client 8.10).
+    With ``ipc`` the sockets are files beside the connection file, in the
+    Jupyter runtime directory, which is the user's own (mode 0700), so no
+    other user can reach them. ipykernel 7 also stops warning about an
+    unencrypted TCP kernel. Windows has no ipc transport and keeps TCP.
+    ``DELFIN_KERNEL_TRANSPORT=tcp`` restores TCP (a kernel on another
+    machine, a remote debugger).
+
+    A socket path is at most 107 bytes on Linux and 103 on macOS
+    (sockaddr_un), and each one is ``<runtime>/kernel-<uuid>-ipc-<port>``;
+    under a deep runtime directory no kernel could start. Then the server
+    keeps TCP and says so, instead of a dashboard that never loads."""
+    if os.name == "nt":
+        return []
+    transport = os.environ.get("DELFIN_KERNEL_TRANSPORT", "ipc").strip().lower()
+    if transport != "ipc":
+        return []
+    try:
+        from jupyter_core.paths import jupyter_runtime_dir
+        runtime = os.path.realpath(jupyter_runtime_dir())
+    except Exception:
+        return []
+    try:
+        import zmq
+        limit = int(getattr(zmq, "IPC_PATH_MAX_LEN", 0) or 0)
+    except Exception:
+        limit = 0
+    limit = limit or (103 if sys.platform == "darwin" else 107)
+    longest = len(os.fsencode(runtime)) + len("/kernel-") + 36 + len("-ipc-") + 5
+    if longest > limit:
+        print(f"Note: kernels talk over loopback TCP, which other users of "
+              f"this machine can reach: the socket path under {runtime} "
+              f"would be {longest} bytes, more than the {limit} a Unix "
+              "socket allows. Set JUPYTER_RUNTIME_DIR to a short private "
+              "directory (mode 0700) to keep them private.", file=sys.stderr)
+        return []
+    return ["--KernelManager.transport=ipc"]
+
+
 def _file_allowlist() -> str:
     from delfin.dashboard.web_security import FILE_ALLOWLIST
 
@@ -1091,6 +1137,7 @@ def main(argv=None):
         # a grace, unless the session was kept. The flags switch the
         # culler on; the rule itself lives in the kernel manager above.
         *(_resume.cull_config_args() if kernel_manager_class else []),
+        *_kernel_transport_args(),
         f"--port={args.port}",
         *(["--ServerApp.port_retries=0"] if args.strict_port else []),
         f"--ServerApp.ip={args.ip}",
