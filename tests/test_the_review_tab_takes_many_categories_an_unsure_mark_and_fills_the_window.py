@@ -221,7 +221,7 @@ def test_the_viewer_height_follows_the_window_through_the_shared_mechanism(revie
     panel = _panel(review_dir)
     assert seen == {"width": "100%", "height": tab_review.VIEWER_HEIGHT}
     assert panel.sidebar.layout.height == tab_review.VIEWER_HEIGHT
-    assert panel.rating_box.layout.max_height == tab_review.VIEWER_HEIGHT
+    assert not panel.rating_box.layout.max_height       # no inner scroll bar
     view = molecule_viewer.py3Dmol.view(width=tab_review.VIEWER_WIDTH,
                                         height=tab_review.VIEWER_HEIGHT)
     molecule_viewer.apply_molecule_view_style(view)
@@ -261,3 +261,41 @@ def test_h_atoms_can_be_hidden_and_r_draws_the_view_again(review_dir, monkeypatc
     assert len(drawn) == n + 1
     panel.handle_key("h")
     assert drawn[-1].splitlines()[0] == "3"
+
+
+# ---------------------------------------------------------------- one list, a go-to field
+def test_a_folder_of_one_frame_files_shows_one_list_with_the_verdicts(review_dir):
+    """Four one-frame files: the frame list (always one line) is folded away
+    and each file carries its own verdict mark."""
+    panel = _panel(review_dir)
+    assert panel.frames_box.layout.display == "none"
+    assert panel.files_box.layout.display == ""
+    panel.handle_key("p")
+    labels = [label for label, _ in panel.file_list.options]
+    assert labels[0] == "✓ T0001.xyz" and labels[1] == "· T0002.xyz"
+
+
+def test_go_to_jumps_by_part_of_a_name_or_by_number_when_blinded(review_dir):
+    panel = _panel(review_dir)
+    panel.goto_input.value = "t0003"
+    assert panel.session.current.file == "T0003.xyz"
+    assert panel.goto_input.value == ""
+    panel.goto_input.value = "0002"
+    assert panel.session.current.file == "T0002.xyz"
+    panel.goto_input.value = "nothing"
+    assert panel.session.current.file == "T0002.xyz"
+    assert "nothing matches" in panel.status_html.value
+    blind = _panel(review_dir, blind_cb=True)
+    assert blind.go_to("#3") and blind.session.position == 2
+    assert not blind.go_to("T0001")
+
+
+def test_a_long_file_list_shows_a_window_around_the_current_file(tmp_path):
+    d = tmp_path / "many"
+    d.mkdir()
+    for k in range(1, 2 * tab_review.FRAME_WINDOW + 51):
+        (d / f"T{k:04d}.xyz").write_text(_xyz(f"T{k:04d}", 1))
+    panel = _panel(d)
+    assert len(panel.file_list.options) == 2 * tab_review.FRAME_WINDOW
+    panel.go_to(f"T{2 * tab_review.FRAME_WINDOW + 50:04d}")
+    assert panel.file_list.value == f"T{2 * tab_review.FRAME_WINDOW + 50:04d}.xyz"

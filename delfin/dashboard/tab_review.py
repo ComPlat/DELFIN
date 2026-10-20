@@ -90,17 +90,27 @@ KEY_LEGEND = ('<b>P</b> pass &middot; <b>B</b> block &middot; <b>1</b>&ndash;<b>
               '<b>U</b> unsure &middot; <b>N</b> next unrated &middot; <b>&larr;</b> / '
               '<b>&rarr;</b> previous / next &middot; <b>H</b> H atoms &middot; '
               '<b>R</b> reset view &middot; <b>Esc</b> leaves a text field')
+SHORT_KEY_LEGEND = ('Keys: <b>P</b>/<b>B</b> rate &middot; digits as on the categories '
+                    '&middot; <b>U</b> unsure &middot; <b>N</b> next unrated &middot; '
+                    '<b>&larr;</b>/<b>&rarr;</b> &middot; <b>H</b> H atoms &middot; '
+                    '<b>R</b> reset view &middot; <b>Esc</b> leaves the comment')
 _CSS = """<style>
 .delfin-review-panel .delfin-review-big {font-size:16px;font-weight:600;}
 .delfin-review-panel .delfin-review-cat {text-align:left;justify-content:flex-start;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 6px;font-size:12.5px;}
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 4px;font-size:11.5px;}
 .delfin-review-panel .widget-hbox {gap:6px;}
 .delfin-review-panel .widget-vbox {gap:3px;}
 .delfin-review-panel .delfin-review-bar {border-bottom:1px solid #e0e0e0;padding:0 0 4px 0;}
-.delfin-review-panel .delfin-review-side .widget-select {flex:1 1 0 !important;min-height:0 !important;}
-.delfin-review-panel .delfin-review-side .widget-select select {height:100% !important;}
+.delfin-review-panel .delfin-review-side > *, .delfin-review-panel .delfin-review-rating > *
+  {flex:0 0 auto !important;}
+.delfin-review-panel .delfin-review-side > .delfin-review-grow
+  {flex:1 1 0 !important;min-height:0 !important;}
+.delfin-review-panel .delfin-review-grow .widget-select
+  {flex:1 1 0 !important;min-height:0 !important;}
+.delfin-review-panel .delfin-review-grow .widget-select select {height:100% !important;}
 .delfin-review-panel .delfin-review-viewer {overflow:hidden !important;}
-.delfin-review-panel .delfin-review-rating {overflow-y:auto !important;overflow-x:hidden !important;}
+.delfin-review-panel .delfin-review-rating,
+.delfin-review-panel .delfin-review-rating .widget-gridbox {overflow:visible !important;}
 </style>"""
 
 
@@ -288,6 +298,10 @@ class ReviewPanel:
 
         # -- left: files and frames ------------------------------------------
         self.left_title = W.HTML('<b>Files</b>')
+        self.goto_input = W.Text(value='', placeholder='go to, e.g. T0123',
+                                 continuous_update=False,
+                                 tooltip='a file name or part of it (a number when blinded)',
+                                 layout=L(width='100%'))
         self.file_list = W.Select(options=[], rows=8, layout=L(width='100%'))
         self.frame_list = W.Select(options=[], rows=16, layout=L(width='100%'))
 
@@ -299,9 +313,9 @@ class ReviewPanel:
         # -- right: the rating ---------------------------------------------------
         self.progress_html = W.HTML('')
         self.pass_btn = W.Button(description='Pass (P)', button_style='success', icon='check',
-                                 layout=L(width='50%', height='54px'))
+                                 layout=L(width='50%', height='42px'))
         self.block_btn = W.Button(description='Block (B)', button_style='danger', icon='times',
-                                  layout=L(width='50%', height='54px'))
+                                  layout=L(width='50%', height='42px'))
         for b in (self.pass_btn, self.block_btn):
             b.add_class('delfin-review-big')
         self.pass_btn.add_class(PASS_CLASS)
@@ -311,8 +325,8 @@ class ReviewPanel:
                                    tooltip='several categories per frame',
                                    layout=L(width='90px'))
         self.category_box = W.GridBox([], layout=L(
-            width='100%', grid_template_columns='repeat(2, minmax(0, 1fr))',
-            grid_gap='3px 4px'))
+            width='100%', grid_template_columns='repeat(3, minmax(0, 1fr))',
+            grid_gap='3px 3px'))
         self.category_buttons: list[Any] = []
         self.unsure_btn = W.ToggleButton(value=False, description='Unsure (U)',
                                          icon='question',
@@ -321,7 +335,7 @@ class ReviewPanel:
                                          layout=L(width='110px', height='26px'))
         self.note_input = W.Textarea(value='', placeholder='your comment on this frame',
                                      continuous_update=False,
-                                     layout=L(width='100%', height='58px'))
+                                     layout=L(width='100%', height='50px'))
         self.saved_html = W.HTML('')
         self.help_html = W.HTML(_HELP.format(KEY_LEGEND))
         self.context_html = W.HTML('')
@@ -386,9 +400,15 @@ class ReviewPanel:
         ], layout=L(width='100%', **row))
         self.bar.add_class('delfin-review-bar')
 
-        self.files_box = W.VBox([self.left_title, self.file_list])
-        self.sidebar = W.VBox([self.files_box, W.HTML('<b>Frames</b>'), self.frame_list],
-                              layout=L(width='170px', min_width='140px',
+        # One list fills the column: a folder of one-frame files shows only the
+        # files (each with its verdict), a blinded review only the frames.
+        self.files_box = W.VBox([self.left_title, self.file_list], layout=L(min_height='0'))
+        self.frames_box = W.VBox([W.HTML('<b>Frames</b>'), self.frame_list],
+                                 layout=L(min_height='0'))
+        for box in (self.files_box, self.frames_box):
+            box.add_class('delfin-review-grow')
+        self.sidebar = W.VBox([self.goto_input, self.files_box, self.frames_box],
+                              layout=L(width='180px', min_width='140px',
                                        height=VIEWER_HEIGHT))
         self.sidebar.add_class(SIDE_CLASS)
         middle = W.VBox([self.viewer], layout=L(flex='1 1 420px', min_width='240px'))
@@ -397,6 +417,7 @@ class ReviewPanel:
                                         self.file_comment])
         more_body = W.VBox([
             self.context_html,
+            self.help_html,
             self.file_comment_box,
             W.HTML('<b>Comment on this review</b>'), self.session_comment,
             W.HTML('<b>Add categories</b> ' + _HELP.format(
@@ -405,7 +426,7 @@ class ReviewPanel:
             self.export_btn,
         ], layout=L(width='100%'))
         self.more = W.Accordion(children=[more_body])
-        self.more.set_title(0, 'More: findings, comments, categories, export')
+        self.more.set_title(0, 'More: keys, findings, comments, export')
         self.more.selected_index = None
 
         self.rating_box = W.VBox([
@@ -420,9 +441,9 @@ class ReviewPanel:
                    layout=L(align_items='center', justify_content='space-between')),
             self.note_input,
             self.saved_html,
-            self.help_html,
             self.more,
-        ], layout=L(width='340px', min_width='260px', max_height=VIEWER_HEIGHT))
+        ], layout=L(width='390px', min_width='260px'))
+        # No height of its own: an inner scroll bar hid half of the categories.
         self.rating_box.add_class('delfin-review-rating')
 
         self.work = W.VBox([
@@ -430,6 +451,7 @@ class ReviewPanel:
             W.HBox([self.sidebar, middle, self.rating_box],
                    layout=L(width='100%', flex_flow='row wrap',
                             align_items='flex-start')),
+            W.HTML(_HELP.format(SHORT_KEY_LEGEND)),
         ], layout=L(width='100%', display='none'))
         return W.VBox([
             W.HTML(_CSS),
@@ -457,6 +479,7 @@ class ReviewPanel:
         self.blind_cb.observe(self._on_mode, names='value')
         self.seed_input.observe(self._on_mode, names='value')
         self.file_list.observe(self._on_file_pick, names='value')
+        self.goto_input.observe(self._on_goto, names='value')
         self.frame_list.observe(self._on_frame_pick, names='value')
         self.note_input.observe(self._on_note, names='value')
         self.file_comment.observe(self._on_file_comment, names='value')
@@ -494,7 +517,7 @@ class ReviewPanel:
             tip = f'{cat}  (key {key})' if key else f'{cat}  (no key)'
             btn = widgets.ToggleButton(value=cat in chosen, description=f'{hint}{cat}',
                                        tooltip=tip, disabled=self.session is None,
-                                       layout=widgets.Layout(width='100%', height='28px'))
+                                       layout=widgets.Layout(width='100%', height='26px'))
             btn.add_class('delfin-review-cat')
             btn._review_category = cat
             btn.observe(self._on_category, names='value')
@@ -806,6 +829,45 @@ class ReviewPanel:
         self.session.go_to_file(change['new'])
         self.refresh()
 
+    def go_to(self, text: str) -> bool:
+        """Jump to a file named by *text* (whole name, stem, start or part), or to
+        structure number *text* when blinded.  False when nothing matches."""
+        s = self.session
+        want = (text or '').strip().lower()
+        if s is None or not want:
+            return False
+        if s.blind:
+            if not want.lstrip('#').isdigit():
+                return False
+            pos = int(want.lstrip('#')) - 1
+            if not 0 <= pos < len(s):
+                return False
+            s.go(pos)
+        else:
+            present = {fr.file for fr in s.frames}
+            names = [f for f in s.data['files'] if f in present]
+            low = {f: f.lower() for f in names}
+            hit = (next((f for f in names if low[f] == want or Path(low[f]).stem == want), None)
+                   or next((f for f in names if low[f].startswith(want)), None)
+                   or next((f for f in names if want in low[f]), None))
+            if hit is None:
+                return False
+            s.go_to_file(hit)
+        self.refresh()
+        return True
+
+    def _on_goto(self, change):
+        if self._busy or not change.get('new'):
+            return
+        found = self.go_to(change['new'])
+        if not found:
+            self._say(f'nothing matches "{change["new"]}"', error=True)
+        self._busy = True
+        try:
+            self.goto_input.value = ''
+        finally:
+            self._busy = False
+
     def _on_frame_pick(self, change):
         if self._busy or self.session is None or change.get('new') is None:
             return
@@ -897,16 +959,27 @@ class ReviewPanel:
         frame = s.current
         self._busy = True
         try:
+            present = {f.file for f in s.frames}
+            files = [f for f in s.data['files'] if f in present]
+            single = not s.blind and all(
+                s.data['files'][f].get('n_frames', 0) <= 1 for f in files)
             self.files_box.layout.display = 'none' if s.blind else ''
+            self.frames_box.layout.display = 'none' if single else ''
             self.file_comment_box.layout.display = 'none' if s.blind else ''
             if not s.blind:
-                files = list(s.data['files'])
-                present = {f.file for f in s.frames}
+                # Thousands of files are rebuilt after every rating, so the
+                # list shows a window around the current file (go to: the rest).
+                at = files.index(frame.file)
+                if len(files) > 2 * FRAME_WINDOW:
+                    lo = max(0, min(at - FRAME_WINDOW, len(files) - 2 * FRAME_WINDOW))
+                    files = files[lo:lo + 2 * FRAME_WINDOW]
                 opts = []
                 for fname in files:
-                    if fname not in present:
-                        continue
                     n = s.data['files'][fname].get('n_frames', 0)
+                    if single:
+                        r = s.record(fname, 0)
+                        opts.append((f'{_MARK[r["verdict"] if r else None]} {fname}', fname))
+                        continue
                     done = sum(1 for i in range(n) if s.record(fname, i))
                     mark = '✓' if n and done == n else ' '
                     opts.append((f'{mark} {fname}  {done}/{n}', fname))
