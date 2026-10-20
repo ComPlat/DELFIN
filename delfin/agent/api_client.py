@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import contextvars as _contextvars
 import difflib
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
 from . import german as _german
+from . import go_ahead as _ga
 from . import inline_payload as _inline_payload
 from . import pricing
 from . import safe_git
@@ -1748,6 +1750,49 @@ def _shell_segments(cmd: str) -> list[str]:
 _SHELL_PROGRAMS: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
 
 
+# awk, whose first operand is its own program, not a file,
+# with the options that take a separate value and the ones that supply the
+# script instead (then no operand is the script). Measured 2026-10-19: the
+# awk program `/<script>$/,/^<\/script>$/ {print}` was asked about four
+# times as a read of an absolute path outside the workspace. grep and sed
+# are not here: _pattern_blanked already blanks their pattern and script
+# before this scanner runs, so their first operand left is a FILE -- adding
+# them skipped `/etc/passwd` in `grep root /etc/passwd`.
+_SCRIPT_FIRST_PROGRAMS: dict[str, tuple[frozenset, frozenset]] = {
+    p: (frozenset({"-F", "-v", "-f", "-i", "-l", "-E", "--field-separator",
+                   "--assign", "--file", "--include", "--load", "--exec"}),
+        frozenset({"-f", "--file", "-E", "--exec"}))
+    for p in ("awk", "gawk", "mawk", "nawk")
+}
+
+
+def _script_argument_index(prog: str, args: list) -> Optional[int]:
+    """Index in *args* of the operand *prog* reads as its script or
+    pattern (awk's program, sed's script, grep's pattern), or None."""
+    spec = _SCRIPT_FIRST_PROGRAMS.get(prog)
+    if spec is None:
+        return None
+    takes_value, supplies_script = spec
+    skip = False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if a == "--":
+            return i + 1 if i + 1 < len(args) else None
+        if a.startswith("-") and a != "-":
+            opt = a.split("=", 1)[0]
+            if opt in supplies_script or (
+                    not opt.startswith("--") and len(opt) > 2
+                    and opt[:2] in supplies_script):
+                return None
+            if opt in takes_value and "=" not in a:
+                skip = True
+            continue
+        return i
+    return None
+
+
 def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                         _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
@@ -1852,11 +1897,14 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 _add(a[1:])
         if prog in _BASH_NO_FILE_PROGRAMS:
             return
+        script_at = _script_argument_index(prog, args)
         skip_next = False
         for i, a in enumerate(args):
             if skip_next:
                 skip_next = False
                 continue
+            if i == script_at:
+                continue    # the program's script or pattern, not a file
             if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
                 skip_next = True    # the redirection's own target
                 continue
@@ -2209,6 +2257,62 @@ def _malformed_arguments(name: str, arguments: dict) -> Optional[str]:
             arguments[alias_of.get(key, key)] = value
     except Exception:
         return None
+    return None
+
+
+# Keys a model sends the patch under besides the schema's ``diff``:
+# ``patch`` and ``input`` are what the *** Begin Patch tool of GPT-family
+# models calls it.
+_PATCH_KEYS: tuple[str, ...] = ("patch", "input")
+
+
+def _canonical_patch_arguments(arguments: Any, perms: Any) -> Optional[str]:
+    """Bring an apply_patch call to the one shape everything downstream
+    reads: a unified diff under ``diff``. Mutates *arguments* in place, so
+    the gate, the approval preview, the journal and the post-turn verify
+    harvest all see the diff that is applied. Returns an error message
+    when an envelope cannot be translated, else None.
+
+    Measured 2026-10-19: gpt-5-nano sent six envelopes under ``patch`` in
+    one session; each was answered "diff is required", which it never
+    connected to the key name, and the user's game was never changed.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    if not str(arguments.get("diff") or "").strip():
+        for key in _PATCH_KEYS:
+            if str(arguments.get(key) or "").strip():
+                arguments["diff"] = arguments.pop(key)
+                break
+    text = arguments.get("diff")
+    if not isinstance(text, str):
+        return None
+    from . import patch_apply as _pa
+    if not _pa.is_envelope(text):
+        return None
+    ws = getattr(perms, "workspace", None)
+    if ws is None:
+        return None          # no workspace: the executor refuses the call
+
+    def _read(rel: str) -> Optional[str]:
+        root = Path(ws).resolve()
+        path = (root / rel).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            raise ValueError(f"{rel} is outside the workspace")
+        if _is_secret_path(perms, path):
+            raise ValueError(f"{rel} matches a secret deny-glob")
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8")
+
+    try:
+        arguments["diff"] = _pa.envelope_to_unified(text, _read)
+    except (ValueError, OSError, UnicodeDecodeError) as exc:
+        return (f"apply_patch could not use this *** Begin Patch envelope: "
+                f"{exc}. Nothing was changed. Fix the envelope, or use "
+                "edit_file (old_string/new_string) for this change.")
     return None
 
 
@@ -2613,6 +2717,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
         # `eval`) is re-parsed by that shell, so `>=` there -- like `>=`
         # unquoted -- stays a redirect to a file named `=`.
         _code = _quoted_text_spans(_scan, owners=_CODE_INTERPRETERS)
+        # An awk program's `>` writes only to a string expression: `print >
+        # "f"` or `print > name`. Anything else after it is awk syntax --
+        # `/<\/script>/{f=0}` is the end of a regex and a block, `>=` a
+        # comparison -- and reporting `/{f=0}` as a write outside the
+        # workspace refused every awk that matched an HTML closing tag
+        # (measured 2026-10-19: two syntax checks of a game, both refused).
+        _awk = _quoted_text_spans(_scan, owners=_AWK_PROGRAMS)
         _cuts = [0]
         for _sep in re.finditer(r"[;&|]{1,2}|\n", _scan):
             _cuts += [_sep.start(), _sep.end()]
@@ -2639,6 +2750,11 @@ def _bash_write_targets(cmd: str) -> list[str]:
                         and (_scan[_gt - 1:_gt] in ("-", "=")
                              or _scan[_past:_past + 1] == "=")):
                     continue    # an operator of the interpreted language
+                if (any(lo <= _gt < hi for lo, hi in _awk)
+                        and (_scan[_gt - 1:_gt] in ("-", "=", "<")
+                             or not re.match(r"""[\s>]*["'A-Za-z_$]""",
+                                             _scan[_past:]))):
+                    continue    # awk syntax, not an output redirection
                 tok = m.group(1)
                 if not tok.startswith("&"):
                     _add(tok)
@@ -3392,6 +3508,18 @@ def _names_a_delfin_program(cmd: str) -> bool:
 #       compile-only invocations). Anything that pushes to remote, publishes,
 #       installs into system paths, or touches /dev|/etc must NOT be here —
 #       the bash deny-list catches the obvious cases anyway.
+_LOOPBACK_CURL_OPTION = (
+    r"(?:-[sSfLIvkiN]+|--(?:silent|show-error|fail|location|head|verbose|"
+    r"include|insecure|no-buffer)|--noproxy\s+(?:'[^']*'|\"[^\"]*\"|\S+)|"
+    r"(?:-w|--write-out)\s+(?:'[^']*'|\"[^\"$`]*\"|[^\s'\"]+)|"
+    r"(?:-o|--output)\s+/dev/null|(?:-m|--max-time|--connect-timeout)\s+"
+    r"[\d.]+)")
+_LOOPBACK_CURL_PATTERN = (
+    r"^\s*curl(?:\s+" + _LOOPBACK_CURL_OPTION + r")*\s+['\"]?"
+    r"https?://(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?"
+    r"(?:/[\w./%~?=&+-]*)?['\"]?(?:\s+" + _LOOPBACK_CURL_OPTION + r")*\s*$")
+_LOOPBACK_CURL_RE = re.compile(_LOOPBACK_CURL_PATTERN)
+
 _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # -- (a) read-only / info --------------------------------------------
     r"^\s*(?:ls|pwd|whoami|hostname|uname|id|date|uptime|df|du|free|tree)\b",
@@ -3460,6 +3588,21 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*find\b(?![^|;&]*-delete)(?![^|;&]*-exec[^|;&]*rm)",
     r"^\s*grep\b", r"^\s*rg\b", r"^\s*ag\b",
     r"^\s*sed\s+-n\b",                                       # read-only sed
+    # sed without in-place editing or a script file prints to stdout, like
+    # `sed -n`; a w/W/e command in the script is caught by
+    # _reader_writes_or_runs. `.*` and not `[^|;&]*`: the segment is
+    # already split, and a `;` inside the quoted script (`'1d;$d'`) must
+    # not end the look for a `-i` after it. Measured 2026-10-19: `sed
+    # '1d;$d'` in a syntax check of a game asked three times.
+    # Every prefix of --in-place and --file counts: GNU sed takes `--i`
+    # and `--fi` for them (measured 2026-10-19: `sed --i` edited
+    # .delfin/settings.json unasked).
+    r"^\s*sed\b(?!.*\s(?:-[A-Za-z]*[if]|--i|--fi))",
+    # The no-ops `grep ... || true` ends with.
+    r"^\s*(?:true|false|:)\s*$",
+    # node: the syntax check and the version, end-anchored -- running a
+    # script stays asked.
+    r"^\s*node\s+(?:(?:--check|-c)\s+[\w./-]+|--version|-v)\s*$",
     r"^\s*awk\s+",                                           # awk has no destructive default
     r"^\s*jq\b", r"^\s*yq\b",
     # `worktree list` reads the registry and changes nothing -- the same
@@ -4678,6 +4821,8 @@ def _sed_script_is_pure(script: str) -> bool:
 # Non-shell interpreters: a quoted argument is code in their own language,
 # which no shell parses for redirects. `python3.11` is matched as `python3`.
 # Shells, `eval`, `awk` and `env`-style wrappers are deliberately absent.
+_AWK_PROGRAMS = frozenset({"awk", "gawk", "mawk", "nawk"})
+
 _CODE_INTERPRETERS = frozenset({
     "python", "python2", "python3", "node", "nodejs", "perl", "ruby",
     "Rscript", "R", "php"})
@@ -6241,6 +6386,136 @@ def _grant_push_from_answer(perms: Any, raw_result: Any) -> None:
     answers = " ".join(str(a) for a in (payload.get("answers") or []))
     if answers:
         _grant_push_from(perms, answers, new_request=False)
+
+
+def _turn_opening(messages: Any) -> tuple:
+    """``(user_text, offered)``: the text of the user message that opened
+    this turn -- the last user row with string content that is not a
+    harness note -- and the text of the assistant answer before it, which
+    a bare "ja" answers. ``("", "")`` when there is none."""
+    try:
+        rows = list(messages or [])
+        for i in range(len(rows) - 1, -1, -1):
+            m = rows[i]
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            if _is_harness_row(m) or isinstance(m.get("content"), _HarnessText):
+                continue
+            c = m.get("content")
+            if not isinstance(c, str):
+                return "", ""
+            if c.lstrip().startswith(("System note", "[DELFIN")):
+                continue
+            offered = ""
+            for prev in reversed(rows[:i]):
+                if (isinstance(prev, dict) and prev.get("role") == "assistant"
+                        and isinstance(prev.get("content"), str)
+                        and prev["content"].strip()):
+                    offered = prev["content"]
+                    break
+            return c, offered
+    except Exception:
+        return "", ""
+    return "", ""
+
+
+def _go_ahead_applies(perms: Any) -> bool:
+    """The go-ahead and prose-choice triggers judge a user's own session:
+    not plan mode (acting is exit_plan_mode there), not a delegate."""
+    if perms is None:
+        return True
+    return (getattr(perms, "mode", "") != "plan"
+            and not int(getattr(perms, "subagent_depth", 0) or 0))
+
+
+def _served_url_of(cmd: str) -> str:
+    """The address a file server in *cmd* answers on, or ""."""
+    try:
+        from .background_view import served_url
+        return served_url(cmd)
+    except Exception:
+        return ""
+
+
+def _bj_running_twin(cmd: str, cwd: str, perms: Any) -> Optional[dict]:
+    """The answer for a background command this session already runs, or
+    None: the same command in the same directory, or a second file server
+    on an address one of its jobs already serves. A job of another session
+    is not this session's to hand out."""
+    try:
+        from . import bash_jobs as _bj
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        want = " ".join(str(cmd or "").split())
+        url = _served_url_of(cmd)
+        for job in _bj.get_registry().list_jobs(include_finished=False):
+            if sid and str(getattr(job, "session_id", "") or "") not in ("", sid):
+                continue
+            same_cmd = (" ".join(str(job.command or "").split()) == want
+                        and os.path.realpath(str(job.cwd or "")) ==
+                        os.path.realpath(cwd))
+            same_url = bool(url) and _served_url_of(job.command) == url
+            if not (same_cmd or same_url):
+                continue
+            return {
+                "status": "already_running",
+                "job_id": job.job_id,
+                "command": str(job.command or "")[:500],
+                **({"url": url} if url else {}),
+                "running_for_s": int(job.elapsed_s()),
+                "hint": (
+                    f"Job {job.job_id} already runs this"
+                    + (f" and serves {url}" if url else "")
+                    + ". Use it -- a file server shows edits on the next "
+                    "reload. To restart it on purpose, "
+                    f"bash_kill({job.job_id!r}) first."),
+            }
+    except Exception:
+        return None
+    return None
+
+
+def _reads_of(client: Any):
+    """The client's ledger of reads its conversation may still hold
+    (reread.ReadLedger), created on first use."""
+    ledger = getattr(client, "_read_ledger", None)
+    if ledger is None:
+        from .reread import ReadLedger
+        ledger = ReadLedger()
+        try:
+            client._read_ledger = ledger
+        except Exception:
+            pass
+    return ledger
+
+
+def _proxy_auth_note(exit_code: int, text: str) -> str:
+    """The cause of a package manager's 407 from DELFIN's egress proxy, or "".
+
+    npm before 10 never sends the proxy credentials that HTTP(S)_PROXY
+    carries (measured 2026-10-19: npm 9.2 opens its CONNECT with no
+    Proxy-Authorization at all; npm 10 sends it), so every install fails
+    with E407 while curl and pip through the same proxy work. A model
+    reading only "407" retries, rewrites the URL or gives up on the library;
+    this names the cause and the fix, which only the user can apply."""
+    if not exit_code or not re.search(
+            r"E407|407 Proxy Authentication Required", text or ""):
+        return ""
+    return ("407 from DELFIN's egress proxy: this client did not send the "
+            "proxy credentials in HTTPS_PROXY. npm before version 10 never "
+            "does (npm --version shows it). Do not retry or work around it: "
+            "tell the user that installing into the project needs npm >= 10 "
+            "(for example `npm install -g npm@10` in their own shell, or a "
+            "current Node.js), then try again.")
+
+
+def _package_cache_dirs() -> tuple:
+    """(variable, subdirectory) pairs that put each package manager's
+    cache in the cage's temp dir (landlock_exec.PACKAGE_CACHE_DIRS)."""
+    try:
+        from .landlock_exec import PACKAGE_CACHE_DIRS
+        return tuple(PACKAGE_CACHE_DIRS)
+    except Exception:
+        return ()
 
 
 def _ends_with_a_question(text: str) -> bool:
@@ -8756,6 +9031,9 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # Keys of actions the USER approved in a second-opinion dialog: not
+    # asked again in this session (see _classifier_second_opinion).
+    classifier_user_allowed: set = field(default_factory=set)
     # Set by isolation_posture.apply_at_start when a bypass start was
     # lowered to default because no layer isolates commands. With nobody
     # to ask, a command off the auto-allow list is then judged by the
@@ -9495,6 +9773,75 @@ class KitToolPermissions:
                 candidate = (self.workspace / p).resolve(strict=False)
         if candidate is not None and self.find_root_for(candidate) is not None:
             return True
+        # pip through the workspace venv's python: the venv rule above
+        # admits `.venv/bin/pip install` but missed this spelling. The other
+        # package managers are admitted only in the cage
+        # (caged_test_runners), where the sandbox holds what they run.
+        if _venv_pip_module_install(cmd):
+            return True
+        return False
+
+
+# An install into the project's own environment: npm/yarn/pnpm/uv by the
+# cage's grammar (caged_test_runners.is_project_install), or pip through
+# the workspace venv's python, which the venv rule above admits as `pip`
+# but not as `python -m pip`. Judged word by word: the one-regex form
+# backtracked exponentially on a long argument list (code scanning
+# py/redos), and its `[\w.-]+/` took `..` as a directory, so
+# `a/../../venv/bin/python -m pip install` named a venv outside.
+_VENV_PIP_COMPONENT_RE = re.compile(r"[\w.-]+")
+_VENV_PIP_VENV_RE = re.compile(r"\.?venv[\w.-]*")
+_VENV_PIP_PYTHON_RE = re.compile(r"python[\d.]*")
+_VENV_PIP_SPEC_RE = re.compile(r"(?!-)[\w.\[\],=<>~!-]+")
+_VENV_PIP_REQUIREMENTS_RE = re.compile(r"[\w./-]*[\w-]\.txt")
+_VENV_PIP_FLAGS = frozenset({"-U", "--upgrade", "-q"})
+
+
+def _venv_pip_module_install(cmd: str) -> bool:
+    """``[dir/]*[.]venv*/bin/python* -m pip install`` with package specs,
+    ``-r FILE.txt``, ``-U``/``--upgrade``/``-q``; no ``..`` anywhere."""
+    words = str(cmd or "").split()
+    if len(words) < 4 or words[1:4] != ["-m", "pip", "install"]:
+        return False
+    parts = words[0].split("/")
+    if (len(parts) < 3 or parts[-2] != "bin"
+            or not _VENV_PIP_PYTHON_RE.fullmatch(parts[-1])
+            or not _VENV_PIP_VENV_RE.fullmatch(parts[-3])
+            or any(p in ("", ".", "..") for p in parts[:-3])
+            or not all(_VENV_PIP_COMPONENT_RE.fullmatch(p)
+                       for p in parts[:-3])):
+        return False
+    rest = words[4:]
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w == "-r":
+            if (i + 1 >= len(rest)
+                    or not _VENV_PIP_REQUIREMENTS_RE.fullmatch(rest[i + 1])
+                    or ".." in rest[i + 1].split("/")
+                    or rest[i + 1].startswith("/")):
+                return False
+            i += 2
+            continue
+        if w not in _VENV_PIP_FLAGS and not _VENV_PIP_SPEC_RE.fullmatch(w):
+            return False
+        i += 1
+    return True
+
+
+def _project_env_command(cmd: str) -> bool:
+    """Whether *cmd* installs into the project's own environment in the
+    workspace. Measured 2026-10-19: a browser game's agent could neither
+    ``npm install three`` nor fetch it, and rebuilt a 3D renderer by hand."""
+    c = str(cmd or "")
+    if re.search(r"[$`<>;&|]|://|(?:^|\s)(?:/|~|\.\./)|\bglobal\b", c):
+        return False
+    if _venv_pip_module_install(c):
+        return True
+    try:
+        from .caged_test_runners import is_project_install
+        return is_project_install(c)
+    except Exception:
         return False
 
 
@@ -9722,6 +10069,41 @@ def _sed_blank_custom_regexes(text: str) -> str:
     return "".join(out)
 
 
+def _sed_loads_a_script_file(cmd: str) -> bool:
+    """True when sed in *cmd* takes its script from a file, which no scan
+    of the command line can read (a ``w`` or ``e`` in it writes or runs
+    unseen): ``-f`` alone or in a bundle (``-nf``) and every prefix GNU sed
+    accepts for ``--file`` (``--fi``, ``--fil``). Measured 2026-10-19:
+    ``sed -n -f x.sed f``, x.sed holding ``1e CMD``, ran unasked. An
+    unparsable line counts as True."""
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return True
+    skip = False
+    for w in words[1:]:
+        if skip:
+            skip = False
+            continue
+        if w == "--":
+            break
+        if w.startswith("--"):
+            name = w[2:].split("=", 1)[0]
+            if len(name) >= 2 and "file".startswith(name):
+                return True
+            if "=" not in w and name in ("expression", "line-length"):
+                skip = True
+            continue
+        if w.startswith("-") and len(w) > 1:
+            for k in range(1, len(w)):
+                if w[k] == "f":
+                    return True
+                if w[k] in "eil":       # the rest of the word is its value
+                    skip = w[k] in "el" and k == len(w) - 1
+                    break
+    return False
+
+
 def _sed_script_writes(cmd: str) -> bool:
     """True when a sed script in *cmd* holds a command that writes a file
     or runs one: ``w``/``W`` (write), ``e`` (execute), or the ``s///w``
@@ -9798,7 +10180,8 @@ def _reader_writes_or_runs(cmd: str) -> bool:
         return any(not (w.startswith("-") or "=" in w) for w in rest) or \
             any(w in ("-S", "--split-string") for w in rest)
     if first == "sed":
-        return _sed_script_writes(stripped)
+        return (_sed_loads_a_script_file(stripped)
+                or _sed_script_writes(stripped))
     if first == "git" and _git_reaches_elsewhere(stripped):
         return True
     if first == "uniq":
@@ -12074,10 +12457,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask a structured multiple-choice question and wait; returns "
-                "the selected label(s). NOT for free-text questions (write "
-                "those as prose) and NOT for plan approval (use "
-                "exit_plan_mode). Errors when no ask-user UI is bound."
+                "Ask the user to choose and wait; returns the chosen "
+                "label(s). Use for every choice left to the user, never a "
+                "prose list. Recommended option first. Not for plan "
+                "approval (exit_plan_mode). Errors without an ask UI."
             ),
             "parameters": {
                 "type": "object",
@@ -13455,20 +13838,21 @@ def _resolve_verify_nudge() -> str:
 
 
 def _syntax_check(edited_paths: list) -> str:
-    """py_compile the edited .py files (fast, no execution). Returns a summary
-    of any syntax errors, or ""."""
-    import py_compile
-    probs: list[str] = []
-    for p in edited_paths:
-        try:
-            py_compile.compile(str(p), doraise=True)
-        except py_compile.PyCompileError as exc:
-            probs.append(str(exc).strip()[:400])
-        except FileNotFoundError:
-            continue
-        except Exception:
-            continue
-    return "\n".join(probs)
+    """Check each edited file by its kind, fast and without running the
+    project (artifact_check: py_compile, node --check, an HTML page's
+    scripts and local references, JSON, bash -n). Returns a summary of
+    what is broken, or ""."""
+    from . import artifact_check as _ac
+    return _ac.problems(edited_paths)
+
+
+def _artifact_checkable(path: str) -> bool:
+    """A file the turn-end check can check (artifact_check)."""
+    try:
+        from . import artifact_check as _ac
+        return _ac.is_checkable(path)
+    except Exception:
+        return str(path).endswith(".py")
 
 
 def _detect_test_command(workspace) -> str:
@@ -13736,6 +14120,15 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             syn = _syntax_check(edited_paths)
             if syn or mode == "syntax":
                 return syn
+            # Only non-Python files edited (a page, a script, a config): the
+            # file check above IS their verification. A Python suite says
+            # nothing about them, and "no test suite detected" would call a
+            # checked page unverified.
+            edited_paths = [p for p in edited_paths
+                            if str(p).endswith(".py")]
+            if not edited_paths:
+                st["command"] = "file check (artifact_check)"
+                return ""
             # smart: syntax clean → the tests that cover the edit; the whole
             # suite only when no test does (bounded + adaptive).
             ws_key = str(workspace)
@@ -13990,6 +14383,33 @@ _CLASSIFIER_TIMEOUT_S = 20.0
 # the person a question a slow proxy caused (wave 16: nine sessions on the
 # KIT proxy, verdicts past 20 s, every message between sessions asked).
 _CLASSIFIER_TIMEOUT_BOUNDS_S = (5.0, 120.0)
+# Without a setting, the wait follows the endpoint: 1.5 x the 75th
+# percentile of the last first-token times of this process's requests, never
+# below the default and never above this. Measured 2026-10-19 on the KIT
+# proxy: median 18.5 s, 45 % of 137 requests past 20 s -- the watcher, on
+# the same endpoint with a fixed 20 s, failed again and again, and each
+# failure under Bypass became a question to the user.
+_CLASSIFIER_ADAPTIVE_MAX_S = 90.0
+_ENDPOINT_TTFT_S: "collections.deque[float]" = collections.deque(maxlen=20)
+
+
+def _note_endpoint_latency(ttft_s: Optional[float]) -> None:
+    """One request's time to first token, for the watcher's wait."""
+    try:
+        if ttft_s is not None and ttft_s >= 0:
+            _ENDPOINT_TTFT_S.append(float(ttft_s))
+    except Exception:
+        pass
+
+
+def _adaptive_classifier_wait() -> float:
+    """The default wait, lengthened to what the endpoint takes now."""
+    samples = sorted(_ENDPOINT_TTFT_S)
+    if len(samples) < 3:
+        return _CLASSIFIER_TIMEOUT_S
+    p75 = samples[min(len(samples) - 1, int(len(samples) * 0.75))]
+    return min(max(_CLASSIFIER_TIMEOUT_S, 1.5 * p75),
+               _CLASSIFIER_ADAPTIVE_MAX_S)
 _CLASSIFIER_REFUSALS_PER_TURN = 3
 _CLASSIFIED_NETWORK_TOOLS = frozenset({
     "web_fetch", "remote_trigger", "push_notification"})
@@ -14051,12 +14471,41 @@ def _leaves_workspace(
     tool = str(action.get("tool") or "")
     if tool in ("bash", "bash_background"):
         cmd = _prose_blanked(str(action.get("command") or ""))
-        if _BYPASS_HIGH_RISK_BASH.search(cmd) or _LEAVING_BASH.search(cmd):
+        if _BYPASS_HIGH_RISK_BASH.search(cmd):
             return True
+        if _LEAVING_BASH.search(cmd):
+            # A curl to this machine's loopback does not leave it, and an
+            # install into the project's own environment fetches from the
+            # package indexes the proxy knows and writes into the workspace.
+            try:
+                segs = _split_shell_segments(
+                    str(action.get("command") or ""))
+            except Exception:
+                return True
+            if any(_LEAVING_BASH.search(_prose_blanked(seg))
+                   and not _LOOPBACK_CURL_RE.match(seg)
+                   and not _project_env_command(seg) for seg in segs):
+                return True
         if bypass:
             try:
-                return not perms.matches_bash_auto_allow(
-                    str(action.get("command") or ""))
+                full = str(action.get("command") or "")
+                if perms.matches_bash_auto_allow(full):
+                    return False
+                # curl reading a server on this machine, every option one
+                # that writes nothing but stdout (`-o /dev/null` the one
+                # output): under Bypass it does not leave. Not auto-allowed
+                # in default mode -- on a shared host the loopback reaches
+                # other users' services too, and there the user decides.
+                # Measured 2026-10-19: seven dialogs in one Bypass session,
+                # each a status check of the agent's own game server.
+                # An install into the project's own environment (npm, yarn,
+                # pnpm, uv) stays too: under Bypass the cage holds it, and it
+                # fetches only from the package indexes the proxy knows.
+                segs = _split_shell_segments(full)
+                return not (segs and all(
+                    _LOOPBACK_CURL_RE.match(sg)
+                    or _project_env_command(sg)
+                    or perms.matches_bash_auto_allow(sg) for sg in segs))
             except Exception:
                 return True
         return False
@@ -14339,7 +14788,7 @@ def _classifier_timeout_s() -> float:
         cfg = ((load_settings() or {}).get("agent") or {}).get("classifier")
         value = cfg.get("timeout_s") if isinstance(cfg, dict) else None
         if value is None or isinstance(value, bool):
-            return _CLASSIFIER_TIMEOUT_S
+            return _adaptive_classifier_wait()
         low, high = _CLASSIFIER_TIMEOUT_BOUNDS_S
         seconds = float(value)
         if seconds != seconds:          # NaN
@@ -16488,6 +16937,10 @@ class _DocToolExecutor:
         permissions: Optional["KitToolPermissions"] = None,
     ) -> str:
         """The body of :meth:`execute`, under one pinned policy."""
+        if _bare_tool_name(name) == "apply_patch":
+            _shape_err = _canonical_patch_arguments(arguments, permissions)
+            if _shape_err:
+                return json.dumps({"error": _shape_err})
         if permissions is None and _needs_a_sandbox(name):
             _record_security_event("no_sandbox", name, "", blocked=True)
             return json.dumps({"error": _no_sandbox_refusal(name)})
@@ -20639,6 +21092,21 @@ class _DocToolExecutor:
         except Exception:
             key = hashlib.sha256(repr((base, args)).encode(
                 "utf-8", "replace")).hexdigest()
+        # The user said yes to exactly this action earlier in the session:
+        # not asked again. The per-turn ``allowed`` set forgot it at the
+        # next message, so one game server was asked about three times
+        # across three turns (2026-10-19), each time approved. Only the
+        # user's own yes is kept this long -- a model verdict still lives
+        # one turn -- and only for the identical tool and arguments.
+        _user_yes = getattr(perms, "classifier_user_allowed", None)
+        if not isinstance(_user_yes, set):
+            _user_yes = set()
+            try:
+                perms.classifier_user_allowed = _user_yes
+            except Exception:
+                pass
+        if key in _user_yes:
+            return None
 
         def _refused(reason: str, *, by_user: bool = False) -> str:
             # The user's own no holds for the session; the model's holds
@@ -20836,6 +21304,7 @@ class _DocToolExecutor:
             return f"confirm_callback raised: {exc}"
         if ok:
             state["allowed"].add(key)
+            _user_yes.add(key)
             return None
         if self._confirm_timed_out(perms):
             _record_security_event("approval_timeout", base, shown)
@@ -24061,8 +24530,12 @@ class _DocToolExecutor:
             if _cage_note:
                 payload["cage_note"] = _cage_note
         _ssh_note = _discarded_ssh_config_note(cmd, proc.returncode, err)
+        _proxy_note = _proxy_auth_note(
+            proc.returncode, (proc.stdout or "") + "\n" + (proc.stderr or ""))
         if _ssh_note:
             payload["hint"] = _ssh_note
+        elif _proxy_note:
+            payload["hint"] = _proxy_note
         elif _is_push:
             # The one-line cause of a failed push (push_diagnosis), so the
             # first refusal is read as final instead of re-spelled.
@@ -24215,6 +24688,14 @@ class _DocToolExecutor:
         # cwd cannot be told apart from another workspace's.
         self._last_run_cwd = str(run_cwd)
 
+        # The same work already running in this session: hand back that
+        # job instead of starting a second copy. Measured 2026-10-19: one
+        # session started eight `python3 -m http.server` jobs to show a
+        # game, each next one beside or over the last.
+        _dup = _bj_running_twin(cmd, str(run_cwd), perms)
+        if _dup is not None:
+            return json.dumps(_dup, ensure_ascii=False)
+
         # The job's file changes are journalled when it ends, in its
         # watcher thread, against the roots as they were at its start.
         _snap = self._shell_snapshot(perms)
@@ -24258,10 +24739,13 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
             "timeout_s": timeout_s,
+            **({"url": _url} if (_url := _served_url_of(cmd)) else {}),
             "hint": (
                 f"Use bash_status({job.job_id!r}) and "
                 f"bash_output({job.job_id!r}) to monitor; "
                 f"bash_kill({job.job_id!r}) to stop."
+                + (f" It serves {_url} -- give the user that address."
+                   if _url else "")
             ),
         }, ensure_ascii=False)
 
@@ -27732,7 +28216,8 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"]
+    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"] + [
+        f"{k}={tmp}/{sub}" for k, sub in _package_cache_dirs()]
     port = 0
     if mode == "proxy":
         try:
@@ -29011,6 +29496,8 @@ def _bash_isolation_argv(
         "--setenv", "TMP", "/tmp",
         "--setenv", "TEMP", "/tmp",
     ]
+    for _key, _sub in _package_cache_dirs():
+        args += ["--setenv", _key, f"/tmp/{_sub}"]
     for rel in _HOME_SECRET_DIRS:
         p = home / rel
         try:
@@ -29341,6 +29828,40 @@ def _is_transient_api_error(exc: Exception) -> bool:
     if any(marker in low for marker in _INFRA_EXHAUSTION_MARKERS):
         return True
     return False
+
+
+_MODEL_NOT_FOUND_HINTS = (
+    "model not found", "model_not_found", "no such model", "unknown model",
+    "model does not exist", "does not exist or you do not have access",
+)
+
+
+def _is_model_not_found_error(exc: Exception) -> bool:
+    """Whether an API error says the endpoint does not serve the model."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int) and status not in (400, 404):
+        return False
+    low = str(exc).lower()
+    return any(h in low for h in _MODEL_NOT_FOUND_HINTS)
+
+
+def _kit_fallback_model(current: str, provider: str, base_url: str = "",
+                        api_key: str = "") -> str:
+    """The best KIT model to continue on when ``current`` is not served, or
+    "" (not a KIT session). The ranked roster's first entry the endpoint
+    lists; when the listing cannot be read, the first ranked entry that is
+    not ``current`` -- it was the ranking that named ``current`` too."""
+    if str(provider or "").lower() != "kit":
+        return ""
+    try:
+        from . import model_capabilities as _mc
+        served = _mc.kit_models_served(base_url, api_key, fetch=True)
+        ranked = [m for m in _mc._KIT_PREFERENCE if m != current]
+        if served:
+            return next((m for m in ranked if m in served), "")
+        return ranked[0] if ranked else ""
+    except Exception:
+        return ""
 
 
 _CONTEXT_LENGTH_HINTS = (
@@ -30724,6 +31245,7 @@ class OpenAIClient(_BaseClient):
             except Exception:
                 pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
+        _model_fallback_done = False   # once per turn: see _kit_fallback_model
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
@@ -30802,6 +31324,13 @@ class OpenAIClient(_BaseClient):
         # Whether the announced-action continuation already fired this
         # turn; see the second auto-continue trigger.
         _announced_once = False
+        # The go-ahead and prose-choice triggers (go_ahead.py), once each
+        # per turn, judged against the message that opened the turn and
+        # every tool the turn called.
+        _go_ahead_once = False
+        _choice_once = False
+        _turn_tool_names: set = set()
+        _turn_user_text, _turn_offered = _turn_opening(messages)
         # Completion events that arrive as the turn is ENDING. Both drains
         # below are exactly-once: what they hand over is gone from their
         # store, so it has to be acted on in this turn -- nothing in the
@@ -31276,6 +31805,38 @@ class OpenAIClient(_BaseClient):
                             _stream_attempt, _STREAM_RETRY_MAX, _delay))
                         time.sleep(_delay)
                         continue
+                    # The endpoint does not serve the model (a KIT roster
+                    # change): once per turn, the best KIT model it serves
+                    # takes over, said in the stream, and the round is sent
+                    # again. Measured 2026-10-19: kit.glm-5.3 answered
+                    # "400 - Model not found" with no explanation.
+                    if (_is_model_not_found_error(_stream_exc)
+                            and not _model_fallback_done):
+                        _model_fallback_done = True
+                        _old_model = self.model
+                        _alt = _kit_fallback_model(
+                            _old_model, getattr(self, "_provider", ""),
+                            str(getattr(self, "_base_url", "") or ""),
+                            str(getattr(self, "_api_key", "") or ""))
+                        if _alt:
+                            self.model = _alt
+                            kwargs["model"] = _alt
+                            _text_chunks = []
+                            _tool_calls = {}
+                            _round_in = 0
+                            finish_reason = None
+                            yield StreamEvent(type="notice", text=(
+                                f"\n⚠️ KIT does not serve `{_old_model}` right "
+                                "now (\"Model not found\"). This session "
+                                f"continues on `{_alt}`, the best KIT model it "
+                                "serves; /model or the dashboard's model menu "
+                                "picks another.\n"))
+                            continue
+                        yield StreamEvent(type="notice", text=(
+                            f"\n⚠️ The endpoint does not serve `{_old_model}` "
+                            "(\"Model not found\"). Pick a model it serves: "
+                            "/model lists them in the terminal, the model menu "
+                            "in the dashboard.\n"))
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which
@@ -31374,6 +31935,14 @@ class OpenAIClient(_BaseClient):
             # fresh set of retries rather than inheriting an exhausted count.
             _stream_attempt = 0
 
+            # The endpoint's current first-token time, for the watcher's
+            # wait (_adaptive_classifier_wait), whether or not metrics are
+            # recorded.
+            try:
+                if _round_ttft is not None:
+                    _note_endpoint_latency(_round_ttft - _round_t0)
+            except Exception:
+                pass
             # One line per request, written now rather than at the turn's
             # end, so a report filed mid-turn has it (turn_metrics).
             _metrics_session = getattr(self, "metrics_session", "")
@@ -31516,6 +32085,8 @@ class OpenAIClient(_BaseClient):
                     })
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
+                _turn_tool_names.update(
+                    str(_tc["function"]["name"] or "") for _tc in tc_list)
 
                 # Parallel subagent fan-out: when the
                 # model emits ≥2 `subagent` calls in ONE turn, run them
@@ -31535,6 +32106,7 @@ class OpenAIClient(_BaseClient):
 
                 # Execute each tool call and append results
                 for tc in tc_list:
+                    _reread_note = None
                     fn_name = (tc["function"]["name"] or "").strip()
                     # Parse arguments defensively: a backend may stream a dict
                     # already, invalid JSON, or valid JSON that is NOT an object
@@ -31881,9 +32453,20 @@ class OpenAIClient(_BaseClient):
                             # refs against the caller's messages even when a
                             # nested subagent stream ran in between.
                             _doc_executor.live_messages = messages
-                            result = _doc_executor.execute(
-                                fn_name, fn_args, permissions=self._permissions
-                            )
+                            # A file the model already has, unchanged and
+                            # still in this request: say so instead of
+                            # sending it again (reread.py).
+                            if (fn_name == "read_file"
+                                    and self._permissions is not None):
+                                _reread_note = _reads_of(self).repeat_note(
+                                    fn_args, self._permissions.workspace,
+                                    api_messages)
+                            if _reread_note:
+                                result = _reread_note
+                            else:
+                                result = _doc_executor.execute(
+                                    fn_name, fn_args,
+                                    permissions=self._permissions)
                         except Exception as exc:
                             result = json.dumps({
                                 "error": f"tool '{fn_name}' failed: {exc}"
@@ -32053,18 +32636,26 @@ class OpenAIClient(_BaseClient):
                         "tool_call_id": tc["id"],
                         "content": context_result,
                     })
+                    if (fn_name == "read_file"
+                            and self._permissions is not None
+                            and not str(result).lstrip().startswith('{"error"')
+                            and not _reread_note):
+                        _reads_of(self).record(
+                            fn_args, self._permissions.workspace, tc["id"],
+                            context_result)
                     _round_results.append(result)
                     if self._turn_verification is not None:
                         self._turn_verification.note(fn_name, fn_args, result)
 
-                    # Track .py files successfully edited this turn (for the
-                    # turn-end auto-verify). A new edit invalidates a prior pass.
+                    # Track the checkable files (artifact_check) edited this
+                    # turn, for the turn-end auto-verify. A new edit
+                    # invalidates a prior pass.
                     if (_av_mode != "off"
                             and fn_name in ("edit_file", "multi_edit", "write_file")
                             and not str(result).lstrip().startswith('{"error"')):
                         _ep = (fn_args.get("path")
                                if isinstance(fn_args, dict) else None)
-                        if _ep and str(_ep).endswith(".py"):
+                        if _ep and _artifact_checkable(str(_ep)):
                             try:
                                 # "." default matches the verify gate's
                                 # workspace default, so edit-tracking and
@@ -32092,7 +32683,7 @@ class OpenAIClient(_BaseClient):
                                                   "workspace", ".") or ".")
                                 for _pp in _paths_from_diff(
                                         str(fn_args.get("diff", "") or "")):
-                                    if _pp.endswith(".py"):
+                                    if _artifact_checkable(_pp):
                                         _abs = (_pp if os.path.isabs(_pp)
                                                 else os.path.join(_ws, _pp))
                                         _edited_py[_abs] = True
@@ -32765,6 +33356,44 @@ class OpenAIClient(_BaseClient):
                     "ask with ask_user_question instead of announcing.")))
                 yield StreamEvent(
                     type="notice", text="\n\n↻ announced an action → taking it\n")
+                continue
+
+            # Third and fourth triggers (go_ahead.py): the user said go and
+            # the turn called nothing that acts -- it restated the plan or
+            # asked again; or it ends asking the user to pick between
+            # options written as prose. Both stand where the two triggers
+            # above stand down (an answer ending in a question), so each
+            # fires once per turn, never in plan mode, never in a delegate
+            # (its "user" is the parent's prompt).
+            _ga_ok = (_auto_cont_count < _AUTO_CONT_CAP
+                      and not self._waiting_on_watched_jobs()
+                      and _go_ahead_applies(self._permissions))
+            _ga_text = "".join(_text_chunks)
+            _ga_note = ""
+            if (_ga_ok and not _go_ahead_once
+                    and _ga.ignored_go_ahead(_turn_user_text,
+                                             _turn_tool_names,
+                                             _turn_offered)):
+                _go_ahead_once = True
+                _ga_note, _ga_shown = (_ga.GO_AHEAD_NOTE,
+                                       "↻ go-ahead given → acting on it")
+            elif (_ga_ok and not _choice_once
+                    and "ask_user_question" not in _turn_tool_names
+                    and _ga.is_choice_question(_ga_text)):
+                _choice_once = True
+                _can_ask = getattr(self._permissions, "ask_user_callback",
+                                   None) is not None
+                _ga_note, _ga_shown = (
+                    _ga.CHOICE_NOTE if _can_ask else _ga.CHOICE_NOTE_NO_UI,
+                    "↻ choice written as text → deciding or asking properly")
+            if _ga_note:
+                _auto_cont_count += 1
+                _did_tools_since_cont = False
+                if _ga_text.strip():
+                    api_messages.append({"role": "assistant",
+                                         "content": _ga_text})
+                api_messages.append(_harness_row(_ga_note))
+                yield StreamEvent(type="notice", text=f"\n\n{_ga_shown}\n")
                 continue
 
             if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP

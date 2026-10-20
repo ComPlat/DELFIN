@@ -23,12 +23,23 @@ above it inside the workspace:
 * ``npx vitest [run]``, ``npx tsc --noEmit`` -- only when the tool is
   installed in the project (``node_modules/.bin/<tool>``), so npx runs the
   local copy and fetches nothing;
-* ``node --test`` needs nothing here: ``node`` is not an excluded word.
+* ``node --test`` needs nothing here: ``node`` is not an excluded word;
+* an install INTO THE PROJECT (since 2026-10-19): ``npm install|i|ci|add``,
+  ``npm init -y``, ``yarn [install|add]``, ``pnpm install|i|add`` with
+  package specs and flags from ``_JS_INSTALL_FLAGS``; ``uv venv``, ``uv pip
+  install|sync``, ``uv add|sync|lock`` with ``_UV_FLAGS``. It writes
+  node_modules / .venv in the workspace and fetches from the package
+  indexes the egress proxy knows -- the cage's own bounds. Measured: a
+  browser game's agent could neither install nor fetch three.js and
+  rebuilt a 3D renderer by hand.
 
 Never admitted: ``cargo install|publish|add|run|update|fetch``,
 ``+toolchain``, ``--config``, ``-Z``; ``go get|install|mod|run``,
-``-exec``, ``-toolexec``, ``-o``, ``-modfile``, ``-mod=mod``; ``npm
-install|ci|publish|exec|run <other>``, ``--prefix``; ``npx`` with
+``-exec``, ``-toolexec``, ``-o``, ``-modfile``, ``-mod=mod`` (cargo and
+go install into the home directory, outside the project); ``npm
+publish|exec|run <other>``; any install with ``-g``/``--global``,
+``global``, ``--prefix``, ``--location``, ``--system``, ``--target``, a
+path or a URL; ``npx`` with
 ``-p``/``--package``/``-y``/``--yes`` or any other package; environment
 assignments in the runner segment; quotes, command substitution,
 backticks, redirects other than ``2>&1`` and a background ``&``.
@@ -230,7 +241,117 @@ def _npx(words: list[str], here: Path, ws: Path) -> bool:
     return (proj.parent / "node_modules" / ".bin" / tool).exists()
 
 
-_RUNNERS = {"cargo": _cargo, "go": _go, "npm": _npm, "npx": _npx}
+# A package spec as an install names it: `three`, `three@0.160.1`,
+# `@types/node@^20`. Never a flag, a path or a URL (no "-" first, no "/"
+# outside a scope, no ":", and not `.` or `..`, which npm and uv install as
+# the directory they name).
+_PKG_RE = re.compile(
+    r"^(?!-)(?!\.+(?:@|$))(?:@[\w.-]+/)?[\w.-]+(?:@[\w.^~<>=*|-]+)?$")
+_JS_INSTALL_FLAGS = {
+    "-D", "-E", "-O", "-P", "--save", "--save-dev", "--save-exact",
+    "--save-optional", "--save-peer", "--no-save", "--no-audit", "--no-fund",
+    "--ignore-scripts", "--legacy-peer-deps", "--production",
+    "--frozen-lockfile", "--prefer-offline", "--dev", "-W", "--silent",
+    "--omit=dev", "--omit=optional", "--omit=peer",
+}
+_UV_FLAGS = {"--upgrade", "-U", "--dev", "--frozen", "--locked", "--seed",
+             "-q", "--quiet", "--no-cache"}
+_UV_VALUE_FLAGS = {"--python", "-p", "-r", "--requirement", "-e",
+                   "--editable"}
+
+
+def _specs_ok(words: list[str], flags: set) -> bool:
+    # `yarn global add`: an install outside the project, spelled as a word.
+    return all((w in flags or _PKG_RE.match(w)) and w != "global"
+               for w in words)
+
+
+def _npm_install(words: list[str], here: Path, ws: Path) -> bool:
+    if words[1:] in (["init", "-y"], ["init", "--yes"]):
+        return True
+    if len(words) < 2 or words[1] not in ("install", "i", "ci", "add"):
+        return False
+    return _specs_ok(words[2:], _JS_INSTALL_FLAGS)
+
+
+def _yarn(words: list[str], here: Path, ws: Path) -> bool:
+    rest = words[1:]
+    if rest[:1] in (["install"], ["add"]):
+        rest = rest[1:]
+    if not _specs_ok(rest, _JS_INSTALL_FLAGS):
+        return False
+    return _find_up(here, ws, "package.json") is not None
+
+
+def _pnpm(words: list[str], here: Path, ws: Path) -> bool:
+    if len(words) < 2 or words[1] not in ("install", "i", "add"):
+        return False
+    if not _specs_ok(words[2:], _JS_INSTALL_FLAGS):
+        return False
+    return _find_up(here, ws, "package.json") is not None
+
+
+def _uv(words: list[str], here: Path, ws: Path) -> bool:
+    rest = words[1:]
+    if rest[:1] == ["venv"]:
+        rest = rest[1:]
+        names = [w for w in rest if not w.startswith("-")]
+        if any(not re.match(r"^\.?venv[\w.-]*$", n) and not re.match(
+                r"^[\d.]+$", n) for n in names):
+            return False
+    elif rest[:2] in (["pip", "install"], ["pip", "sync"]):
+        rest = rest[2:]
+    elif rest[:1] in (["add"], ["sync"], ["lock"]):
+        rest = rest[1:]
+    else:
+        return False
+
+    def value_ok(flag: str, value: str) -> bool:
+        if flag in ("-e", "--editable"):
+            return value == "."
+        if flag in ("-r", "--requirement"):
+            return _inside(here / value, ws) and value.endswith(".txt")
+        return bool(re.match(r"^[\d.]+$", value))
+
+    # A path (a requirements file of `uv pip sync`, a local package) only
+    # inside the workspace: `uv pip install ../other` or `/abs/pkg` builds
+    # and installs what lies outside it.
+    return _flags_ok(rest, _UV_FLAGS, _UV_VALUE_FLAGS, value_ok) and all(
+        w.startswith("-") or _PKG_RE.match(w)
+        or (re.match(r"^[\w./-]+$", w) and _inside(here / w, ws))
+        for w in rest)
+
+
+def _npm_any(words: list[str], here: Path, ws: Path) -> bool:
+    return _npm(words, here, ws) or _npm_install(words, here, ws)
+
+
+_RUNNERS = {"cargo": _cargo, "go": _go, "npm": _npm_any, "npx": _npx,
+            "yarn": _yarn, "pnpm": _pnpm, "uv": _uv}
+
+
+def is_project_install(cmd: str) -> bool:
+    """Whether ``cmd`` is, by its words alone, an install into the project
+    (npm/yarn/pnpm/uv; module docstring). No marker file is checked: the
+    caller asks whether it leaves the workspace, not whether it may run."""
+    words = str(cmd or "").split()
+    if not words or _UNSAFE_RE.search(str(cmd)) or re.search(
+            r"\bglobal\b", str(cmd)):
+        return False
+    tmp = Path("/nonexistent-delfin-probe")
+    if words[0] == "npm":
+        return _npm_install(words, tmp, tmp)
+    if words[0] == "yarn":
+        rest = words[1:]
+        if rest[:1] in (["install"], ["add"]):
+            rest = rest[1:]
+        return _specs_ok(rest, _JS_INSTALL_FLAGS)
+    if words[0] == "pnpm":
+        return (len(words) > 1 and words[1] in ("install", "i", "add")
+                and _specs_ok(words[2:], _JS_INSTALL_FLAGS))
+    if words[0] == "uv":
+        return _uv(words, tmp, tmp)
+    return False
 
 
 def _segments(cmd: str) -> Optional[list[str]]:
@@ -281,4 +402,5 @@ def without_admitted_runners(cmd: str, cwd: str, workspace: str) -> Optional[str
     return text
 
 
-__all__ = ["admitted_runners", "without_admitted_runners"]
+__all__ = ["admitted_runners", "without_admitted_runners",
+           "is_project_install"]

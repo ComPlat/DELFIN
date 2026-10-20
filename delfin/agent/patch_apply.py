@@ -352,4 +352,155 @@ def apply_patch(
     return _apply_python(workspace, diff_text, check_only=check_only)
 
 
-__all__ = ["apply_patch"]
+_ENVELOPE_BEGIN = "*** Begin Patch"
+
+
+def is_envelope(text: str) -> bool:
+    """Whether *text* is a ``*** Begin Patch`` envelope, not a unified diff.
+
+    GPT-family models are trained on that format and send it whatever the
+    schema says. Measured 2026-10-19 (session 78c36f8c, gpt-5-nano, a 3D
+    game in one HTML file): six apply_patch calls in an hour, every one an
+    envelope under the key ``patch``, every one refused with "diff is
+    required" -- and the model then told the user the change was made.
+    """
+    return str(text or "").lstrip().startswith(_ENVELOPE_BEGIN)
+
+
+def _find_block(lines: list[str], block: list[str], start: int) -> int:
+    """Index where *block* occurs in *lines* at or after *start*, else -1.
+
+    Exact first, then ignoring trailing and finally surrounding whitespace:
+    a model copies indentation loosely, and the context lines are only
+    there to place the change, not to be rewritten."""
+    if not block:
+        return len(lines)
+    n = len(block)
+    for norm in (lambda s: s, str.rstrip, str.strip):
+        want = [norm(b) for b in block]
+        for i in range(max(start, 0), len(lines) - n + 1):
+            if [norm(x) for x in lines[i:i + n]] == want:
+                return i
+    return -1
+
+
+def _apply_envelope_chunks(rel: str, src: str, body: list[str]) -> str:
+    """New content of *rel* after the ``@@`` chunks of one Update File."""
+    lines = src.splitlines()
+    had_nl = src.endswith("\n") or not src
+    chunks: list[tuple[str, list[str]]] = []
+    for ln in body:
+        if ln.startswith("@@"):
+            chunks.append((ln[2:].strip(), []))
+        elif ln.strip() == "*** End of File":
+            continue
+        else:
+            if not chunks:
+                chunks.append(("", []))
+            chunks[-1][1].append(ln)
+    cursor = 0
+    for anchor, chunk in chunks:
+        old: list[str] = []
+        new: list[str] = []
+        for ln in chunk:
+            tag, payload = (ln[:1], ln[1:]) if ln else (" ", "")
+            if tag == "-":
+                old.append(payload)
+            elif tag == "+":
+                new.append(payload)
+            else:
+                # " " context -- or a line whose leading space the model
+                # dropped, which is still context.
+                payload = payload if tag == " " else ln
+                old.append(payload)
+                new.append(payload)
+        if anchor:
+            at = _find_block(lines, [anchor], cursor)
+            if at < 0:
+                raise ValueError(
+                    f"{rel}: the @@ line {anchor!r} is not in the file")
+            cursor = at + 1
+        if not old:
+            # Pure insertion with nothing to place it by: at the end.
+            at = len(lines)
+        else:
+            at = _find_block(lines, old, cursor)
+            if at < 0:
+                raise ValueError(
+                    f"{rel}: these lines are not in the file (re-read it and "
+                    f"copy them exactly): {old[:3]!r}")
+        lines[at:at + len(old)] = new
+        cursor = at + len(new)
+    return "\n".join(lines) + ("\n" if had_nl and lines else "")
+
+
+def _unified(rel: str, old: str, new: str, *, created: bool) -> str:
+    import difflib
+    out = []
+    for line in difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            "/dev/null" if created else f"a/{rel}", f"b/{rel}"):
+        out.append(line if line.endswith("\n")
+                   else line + "\n\\ No newline at end of file\n")
+    return "".join(out)
+
+
+def envelope_to_unified(text: str, read_file) -> str:
+    """Translate a ``*** Begin Patch`` envelope into a unified diff.
+
+    *read_file(rel)* returns the file's current text, or None when it does
+    not exist; it is the caller's job to refuse paths the agent may not
+    read. Update File and Add File are supported; Delete File and Move to
+    raise ValueError naming what does them, so the model is told what to
+    do rather than that its call was malformed. The result goes through
+    the same gates and applier as any diff.
+    """
+    lines = str(text).strip().splitlines()
+    if not lines or lines[0].strip() != _ENVELOPE_BEGIN:
+        raise ValueError("not a *** Begin Patch envelope")
+    files: list[tuple[str, str, list[str]]] = []
+    for ln in lines[1:]:
+        s = ln.strip()
+        if s == "*** End Patch":
+            break
+        m = re.match(r"\*\*\* (Update|Add|Delete) File:\s*(.+)$", s)
+        if m:
+            files.append((m.group(1), m.group(2).strip(), []))
+            continue
+        if s.startswith("*** Move to:"):
+            raise ValueError(
+                "*** Move to is not supported: rename with `git mv` or "
+                "`mv` in bash, then patch the new path")
+        if not files:
+            if not s:
+                continue
+            raise ValueError(f"line before any *** File header: {ln!r}")
+        files[-1][2].append(ln)
+    if not files:
+        raise ValueError("the envelope names no file")
+    out = []
+    for kind, rel, body in files:
+        if kind == "Delete":
+            raise ValueError(
+                f"*** Delete File ({rel}) is not supported here: delete it "
+                "with `rm` in bash")
+        src = read_file(rel)
+        if kind == "Add":
+            if src is not None:
+                raise ValueError(
+                    f"*** Add File: {rel} already exists; use *** Update File")
+            new = "\n".join(ln[1:] if ln.startswith("+") else ln
+                            for ln in body) + "\n"
+            out.append(_unified(rel, "", new, created=True))
+            continue
+        if src is None:
+            raise ValueError(f"*** Update File: {rel} does not exist")
+        new = _apply_envelope_chunks(rel, src, body)
+        if new != src:
+            out.append(_unified(rel, src, new, created=False))
+    if not out:
+        raise ValueError("the envelope changes nothing")
+    return "".join(out)
+
+
+__all__ = ["apply_patch", "envelope_to_unified", "is_envelope"]

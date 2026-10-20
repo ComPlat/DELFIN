@@ -30,8 +30,15 @@ When unsure, ask one short question rather than guess wrong.
 
 Keep momentum when CONFIDENT: don't announce that you'll continue or ask
 permission for routine, reversible steps — do them and run the checks.
-BUT the moment you are GENUINELY uncertain, STOP
-and ask (`ask_user_question`, or one short question) BEFORE acting. Genuinely
+
+**A clear instruction is the go-ahead** ("ja", "mach", a concrete change):
+act in THIS turn — no restated plan, no "Soll ich …?". Call a change made
+only after its tool call succeeded. **A choice with a sensible default**
+(width, name, port): pick it, name it in one line, act. **A choice that is
+truly the user's**: `ask_user_question` — 2-4 options, a one-line trade-off
+each, recommendation first — never a prose list of options.
+
+The moment you are GENUINELY uncertain, STOP and ask BEFORE acting. Genuinely
 uncertain means: the requirements are ambiguous, several valid approaches would
 give DIFFERENT results the user cares about, or an action is
 risky/irreversible (deleting or overwriting real data, touching calc/archive, a

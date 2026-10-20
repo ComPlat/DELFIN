@@ -89,6 +89,15 @@ DEFAULT_ALLOWED_DOMAINS = (
     "github.com", "api.github.com", "codeload.github.com",
     "objects.githubusercontent.com", "raw.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    # A project's own environment in other languages: the npm registry and
+    # the two CDNs browser pages load their libraries from, Rust's and Go's
+    # package indexes. Read-only like the rest: an upload to them is still
+    # held by the rules below. Measured 2026-10-19: a browser game could
+    # not fetch three.js (curl exit 56, the CDN unknown under Bypass), and
+    # the agent rewrote a 3D renderer by hand instead.
+    "registry.npmjs.org", "cdn.jsdelivr.net", "unpkg.com",
+    "crates.io", "static.crates.io", "index.crates.io",
+    "proxy.golang.org", "sum.golang.org",
 )
 DEFAULT_ALLOWED_PORTS = (80, 443)
 DEFAULT_UPLOAD_ASK_BYTES = 1024 * 1024
@@ -97,6 +106,21 @@ _MAX_HEADER = 64 * 1024
 _UPLOAD_METHODS = ("POST", "PUT", "PATCH")
 # What counts as a write to a KNOWN host when nobody can be asked.
 _WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def _is_loopback(host: str) -> bool:
+    h = str(host or "").strip("[]").lower()
+    return h in ("localhost", "::1") or h.startswith("127.")
+
+
+def _own_ports(perms) -> set:
+    """Ports the background jobs of ``perms``'s session listen on."""
+    try:
+        from .bash_jobs import own_listening_ports
+        return own_listening_ports(
+            str(getattr(perms, "task_session_id", "") or ""))
+    except Exception:
+        return set()
 
 
 def _settings() -> dict:
@@ -585,6 +609,13 @@ class EgressProxy:
     def decide(self, host: str, port: int, *, method: str = "CONNECT",
                body_bytes: int = 0, perms=None) -> tuple[str, str, bool]:
         """``(verdict, reason, upload)``; verdict is allow, ask or deny."""
+        # The session's own server on this machine (bash_jobs.
+        # own_listening_ports): a port one of ITS running background jobs
+        # listens on, on the loopback, for a session's token only -- the
+        # process token and every other port and host go on below.
+        if (perms is not None and _is_loopback(host)
+                and port in _own_ports(perms)):
+            return "allow", "", False
         if port not in self.allowed_ports:
             return "deny", (
                 f"blocked by DELFIN's egress proxy: port {port} is not allowed "
@@ -774,7 +805,7 @@ class EgressProxy:
                     meter = (lambda sent, _h=host, _p=port, _perms=perms:
                              self.settle(_h, _p, method="CONNECT",
                                          body_bytes=sent, perms=_perms) is None)
-                upstream = self._open(conn, host, port)
+                upstream = self._open(conn, host, port, perms)
                 if upstream is None:
                     return
                 conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -807,7 +838,7 @@ class EgressProxy:
                     except OSError:
                         pass
                     return
-                upstream = self._open(conn, url.hostname, port)
+                upstream = self._open(conn, url.hostname, port, perms)
                 if upstream is None:
                     return
                 path = url.path or "/"
@@ -830,8 +861,14 @@ class EgressProxy:
                     except OSError:
                         pass
 
-    def _open(self, conn, host: str, port: int):
+    def _open(self, conn, host: str, port: int, perms=None):
         try:
+            if (perms is not None and _is_loopback(host)
+                    and port in _own_ports(perms)):
+                # The session's own server (decide): the loopback itself,
+                # never a name that resolves elsewhere.
+                addr = "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
+                return socket.create_connection((addr, port), timeout=30.0)
             return self._connector(host, port, 30.0)
         except OSError as exc:
             reason = str(exc)

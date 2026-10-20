@@ -1,5 +1,6 @@
 """A stack's test or check runner runs unasked inside the process cage, and
-is asked everywhere else; its install, publish and network verbs are never
+is asked everywhere else; so does an install into the project (since
+2026-10-19). Publish, network and installs outside the project are never
 admitted.
 
 Diagnosis 2026-10-15: 0 of 12 cargo test, 0 of 8 go test and 0 of 10 npm
@@ -99,6 +100,20 @@ RUNNERS = [
     ("node --test test/", "ts"),
 ]
 
+# Installs into the project, admitted in the cage since 2026-10-19
+# (caged_test_runners docstring): node_modules / .venv in the workspace,
+# fetched through the proxy's package indexes. Asked outside the cage like
+# a runner, but their refusal has no edit to call UNTESTED.
+INSTALLS = [
+    ("npm install", "ts"),
+    ("npm ci", "ts"),
+    ("npm install three@0.160.1 --save", "ts"),
+    ("yarn add three", "ts"),
+    ("pnpm add -D vite", "ts"),
+    ("uv venv", "ts"),
+    ("uv add httpx", "ts"),
+]
+
 # Never admitted by the cage rule, wherever the cage holds.
 NEVER = [
     ("cargo install ripgrep", "rs"),
@@ -123,8 +138,12 @@ NEVER = [
     ("go test $(echo ./...)", "gomod"),
     ("GOFLAGS=-mod=mod go test ./...", "gomod"),
     ("go test ./...", "bare"),
-    ("npm install", "ts"),
-    ("npm ci", "ts"),
+    ("npm install -g typescript", "ts"),
+    ("npm i --prefix /usr/local x", "ts"),
+    ("npm install https://example.org/x.tgz", "ts"),
+    ("npm i ../other", "ts"),
+    ("yarn global add x", "ts"),
+    ("uv pip install --system requests", "ts"),
     ("npm publish", "ts"),
     ("npm run build", "ts"),
     ("npm exec vitest", "ts"),
@@ -142,7 +161,7 @@ NEVER = [
 
 @pytest.mark.parametrize("attended", [True, False])
 @pytest.mark.parametrize("mode", ["default", "acceptEdits"])
-@pytest.mark.parametrize("cmd,cwd", RUNNERS)
+@pytest.mark.parametrize("cmd,cwd", RUNNERS + INSTALLS)
 def test_a_stack_runner_runs_unasked_in_the_cage(cmd, cwd, mode, attended,
                                                  ws, monkeypatch):
     _cage(monkeypatch, "bwrap")
@@ -152,7 +171,7 @@ def test_a_stack_runner_runs_unasked_in_the_cage(cmd, cwd, mode, attended,
     assert admitted == [True]
 
 
-@pytest.mark.parametrize("cmd,cwd", [r for r in RUNNERS
+@pytest.mark.parametrize("cmd,cwd", [r for r in RUNNERS + INSTALLS
                                      if not r[0].startswith("node ")])
 def test_without_a_cage_the_runner_is_asked(cmd, cwd, ws, monkeypatch):
     _cage(monkeypatch, "none")

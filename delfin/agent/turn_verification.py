@@ -465,10 +465,20 @@ class TurnVerification:
         self.events: list[dict] = []
         self._jobs: dict = {}
         self._n = 0
+        #: Writes of this turn that were refused or failed. events_for_call
+        #: drops them (a failed edit backs nothing), so they are counted
+        #: here for change_claims: "I changed it" after only refusals.
+        self.failed_writes = 0
 
     def note(self, tool: str, args: Any, result: Any) -> None:
         try:
             name = str(tool or "").split("__")[-1]
+            head = str(result or "").lstrip()[:200]
+            if ((name in MUTATE_TOOLS and (head.startswith('{"error"')
+                                           or "invalid JSON" in head))
+                    or (name == "bash" and head.startswith(
+                        '{"error": "blocked: this command would write'))):
+                self.failed_writes += 1
             self.events.extend(events_for_call(
                 name, args, result, float(self._n), self._to_rel,
                 jobs=self._jobs))
@@ -483,6 +493,7 @@ class TurnVerification:
         for e in getattr(other, "events", []) or []:
             self.events.append({**e, "idx": base + float(e["idx"])})
         self._n += int(getattr(other, "_n", 0) or 0)
+        self.failed_writes += int(getattr(other, "failed_writes", 0) or 0)
         self._jobs.update(getattr(other, "_jobs", {}) or {})
 
     def note_run(self, command: str, passed: bool) -> None:
@@ -523,6 +534,11 @@ class TurnVerification:
                                                read=self._read):
                     return None
         return path
+
+    def landed_edits(self) -> int:
+        """File changes of this turn that landed (tool or shell)."""
+        return sum(1 for e in self.events
+                   if e["kind"] == "edit" and e["outcome"] == "ok")
 
     def unbacked_claims(self, text: str) -> list:
         a = account(self.events, self._read,

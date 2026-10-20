@@ -55,6 +55,11 @@ _REVIEWED = ("`git ls-files --error-unmatch` and `git status --porcelain` "
 EXPLAINED = {
     ("_execute_pinned", "_ensure_loaded", "read_text"):
         "the documentation index at get_default_index_path()",
+    ("_execute_pinned", "_read", "read_text"):
+        "_canonical_patch_arguments reads the file a *** Begin Patch "
+        "envelope updates, to place its chunks: resolved inside the "
+        "workspace and refused when it matches a secret deny-glob before "
+        "the read; the diff it builds then meets apply_patch's write gate",
     ("_execute_read_file", "_on_another_sessions_branch", "iterdir"):
         _SIBLINGS,
     ("_execute_edit_file", "_on_another_sessions_branch", "iterdir"):

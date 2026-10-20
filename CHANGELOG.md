@@ -7,6 +7,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security — what runs unasked writes nothing, loads no script and reaches nothing
+
+- **sed asks when it edits in place or reads its script from a file**, in
+  every spelling GNU sed accepts: `-i`/`-f` alone or in a bundle, and every
+  prefix of `--in-place` and `--file` (`--i`, `--fi`). `sed --i …
+  .delfin/settings.json` and `sed -n -f x.sed` (a script file with an `e`
+  command) ran unasked. Printing sed stays free.
+- **An install of `.`, `..` or a path outside the workspace is no project
+  install**: `npm install ..` and `uv pip install ../other` are asked.
+- **The headless page check reaches nothing**: the browser runs outside the
+  cage, so it resolves no name, connects only through a proxy that does not
+  exist (the loopback included), sends no WebRTC UDP, works offline, and
+  loads only files under the page's own directory. A page that asks for
+  anything else is not judged by the browser (its static checks still run).
+  Before, a page reached a loopback listener by `<img>`, fetch, WebSocket
+  and STUN, and a word of a file outside the workspace came back in an
+  error message.
+
+### Changed — KIT runs on its best model, and a model KIT does not serve is explained
+
+- **GLM-5.3 is the KIT default and first in the ranking**, DeepSeek V4
+  Flash next: the dashboard's KIT default (was `azure.gpt-5.1`), the strong
+  routing tier (was `azure.gpt-5.4`) and `KIT_BEST_MODEL`. DeepSeek is the
+  cheap default (was `azure.gpt-5-nano`) and stays the action watcher's model.
+- **A model KIT does not serve is explained and replaced**: a "Model not
+  found" from the endpoint moves the session once per turn to the best KIT
+  model it serves, by that ranking, with a notice naming both models, and
+  the round is sent again. Off KIT the error is explained and raised. When
+  the dashboard's default is missing from the live list it now picks the
+  best served model by the same ranking instead of the list's first entry.
+  `kit.glm-5.3` had answered "400 - Model not found" and nothing else.
+
+### Changed — the agent reaches its own server, and the watcher waits for a slow endpoint
+
+- **A caged command reaches the server its own session started**: the egress
+  proxy admits, for a session's token, the loopback ports that session's
+  running background jobs listen on (read from /proc for the job and its
+  children) and connects to the loopback itself. Other ports, other
+  sessions' servers and the process token are refused as before. The agent
+  could not `curl` its own game server ("port 8324 is not allowed") and asked
+  the user to test every change.
+- **The second opinion waits as long as the endpoint currently takes**:
+  without a `timeout_s` setting, 1.5 x the 75th percentile of the last 20
+  first-token times, between the 20 s default and 90 s. The KIT proxy
+  answered in 18.5 s median with 45 % past 20 s, so the watcher failed again
+  and again and each failure under Bypass became a question.
+
+### Added — a project builds and uses its own environment, in any language
+
+A browser game's agent (2026-10-19) could neither `npm install three` nor fetch
+it from a CDN (curl exit 56: unknown under Bypass), and rebuilt a 3D renderer
+by hand. A venv with pip worked; nothing else did.
+
+- **Installs into the project run where the cage holds**, like the stack test
+  runners (`caged_test_runners`): `npm install|i|ci|add`, `npm init -y`,
+  `yarn [install|add]`, `pnpm install|i|add` and `uv venv`, `uv pip
+  install|sync`, `uv add|sync|lock`, with package specs and listed flags
+  only. Without a cage they are asked; global installs, `--prefix`,
+  `--system`, `--target`, paths and URLs are never admitted, nor are `cargo
+  install` and `go install` (they write into the home directory). Under
+  Bypass they no longer count as leaving the workspace.
+  `.venv/bin/python -m pip install` is free like `.venv/bin/pip install`.
+- **The egress proxy knows the package indexes**: `registry.npmjs.org`,
+  `cdn.jsdelivr.net`, `unpkg.com`, crates.io, the Go module proxy -- for
+  reading; uploads stay held.
+- **Each package manager's cache lands in the cage's temp dir**
+  (`npm_config_cache`, `YARN_CACHE_FOLDER`, `npm_config_store_dir`,
+  `UV_CACHE_DIR`) under bubblewrap, Landlock and Seatbelt: npm failed before
+  fetching anything because `~/.npm` is not writable in the cage.
+- **npm's 407 is named with its cause**: npm before 10 never sends the proxy
+  credentials (measured: npm 9.2 opens its CONNECT with no
+  Proxy-Authorization; npm 10 sends it), so the agent tells the user to
+  update instead of retrying. Verified end to end in the Landlock cage: npm
+  10 installs into `node_modules`, a venv and pip install work.
+
+### Added — the harness checks, remembers and measures what the agent does, for any task
+
+Six changes from the same session (2026-10-19, `78c36f8c`), each general:
+
+- **Every edited file is checked by its kind** at the end of the turn
+  (`artifact_check.py`), not only `.py`: `node --check` for JavaScript; for
+  an HTML page its inline scripts (at their HTML line), its missing local
+  `src`/`href`, and with the new optional `browser` extra (Playwright) the
+  page loaded headless with its uncaught and console errors; JSON parsed;
+  `bash -n`. A broken file sends the model back to fix it. A two-hour
+  browser game had not one harness check, and the model asked the user to
+  test every edit.
+- **A weak agent driver is named for every provider** (`agent_fitness`):
+  no tools, a small window, the vendor's smallest tier (nano, lite, tiny,
+  micro) or a small parameter count. In the dashboard preflight, the
+  terminal's startup banner (by name, no network) and after `/model`. Only
+  `kit.*` names were checked, so `azure.gpt-5-nano` went unwarned.
+- **The user's yes holds for the session** for the identical action in a
+  second-opinion dialog. One server was asked about in three turns.
+- **A running job is handed back, not started twice**: the same command in
+  the same directory, or a file server on the same address. A started file
+  server names its URL. One session started eight.
+- **A file the model already has is not sent twice**: the same lines,
+  unchanged (size and nanosecond mtime), with the earlier result still in
+  the request byte for byte (`reread.py`). A 441-line page was read whole
+  again and again while requests grew past 400k input tokens.
+- **The benchmark measures acting on a clear order** (`behavior: act`): an
+  edit that landed and no question before it; two tasks on a one-file page.
+
+### Fixed — an agent's edit reaches the file, and a refused one is not reported as made
+
+One session (2026-10-19, gpt-5-nano building a browser game in one HTML
+file) spent fifty minutes without a single change landing while telling the
+user each change was made. Four causes, each fixed where it sat:
+
+- `apply_patch` accepts the `*** Begin Patch` envelope GPT-family models
+  send, under `patch` or `input` as well as `diff`. The envelope is
+  translated into a unified diff against the file before any gate runs, so
+  the write gate, approval preview and undo journal see the real change;
+  it cannot reach outside the workspace or into a secret. All six calls of
+  the session had been refused with "diff is required".
+- A static file server (`python -m http.server`, `npx serve`, `php -S`,
+  ...) no longer locks the files it serves against edits. It reads them per
+  request, so an edit is what running it is for.
+- An awk program's `>` counts as a write only before a string or a name
+  (`print > "f"`). `/<\/script>/{f=0}` and `$3 >= 5` were refused as
+  writes to `/{f=0}` and `=` outside the workspace.
+- "Ich habe ... entfernt" / "I've updated ..." in a turn where no file
+  change landed gets a `[verify]` caveat naming how many writes failed.
+
+The Background panel and the terminal status line name a running server's
+address (`⚙ http://127.0.0.1:8038/ 50m00s [8678a5da]`), as a link in the
+dashboard.
+
+The same session asked the user 22 times under `bypassPermissions` (the
+action watcher timed out, and every command off the auto-allow list counts
+as leaving the workspace); all 22 were approved. Now free, because they
+write nothing but stdout and reach nothing but the loopback: `sed` without
+`-i`/`-f` (a `w`/`e` in the script is still caught), `node --check` and
+`node --version` and `true`/`false`/`:`. Under Bypass, `curl` to
+`127.0.0.1`, `localhost` or `[::1]` with only non-writing options no longer
+counts as leaving the workspace; in default mode it is still asked, as is
+starting a listener (`python -m http.server`): on a shared machine the
+loopback reaches other users' services too. awk's program is no longer read
+as a path by the outside-read gate (grep and sed patterns already were not).
+
+### Changed — a go-ahead is acted on, and a choice is decided or asked as a choice
+
+In the same session 4 of 7 go-aheads ("Ja", "ja mach", "Patch a + B") were
+answered with the plan again and no tool that acts, and every choice (width
+10, 12 or 16) came as a numbered prose list although `ask_user_question`
+was bound. Both answers end in a question, where the announced-action
+trigger stands down. Two more triggers in the tool loop (`go_ahead.py`),
+once each per turn, never in plan mode or a delegate:
+
+- the user gave a go-ahead and the turn called nothing that acts: sent back
+  once to act now. An explicit order ("mach", "setz um", "warum machst du
+  nicht einfach") always counts; a bare "ja"/"ok" only as the answer to an
+  offer or question in the agent's previous answer, so "ok" after a
+  finished report stays an acknowledgement;
+- the answer ends asking the user to pick between options written as text:
+  sent back once to pick the sensible default and act, or to ask with
+  `ask_user_question` (named only when an ask dialog is bound).
+
+`solo_agent.md` and the `ask_user_question` description no longer tell the
+model to write choices as prose: a clear instruction is the go-ahead, a
+choice with a sensible default is made and named, and only a choice that is
+truly the user's is asked, with options and a recommendation. Head budget
+11555 -> 11605 tokens.
+
 ### Changed — PyMOL is an optional extra, so DELFIN installs on glibc 2.34 (RHEL 9)
 
 `pymol-open-source` moves from the core dependencies to the new `pymol` extra

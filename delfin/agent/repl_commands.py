@@ -236,7 +236,22 @@ def _model(ctx, args: str) -> CommandResult:
         switch(name)
     except Exception as exc:
         return CommandResult(output=f"could not switch: {exc}")
-    return CommandResult(output=f"model → {name}{note}")
+    return CommandResult(output=f"model → {name}{note}{_fitness_note(client, name)}")
+
+
+def _fitness_note(client, name: str) -> str:
+    """The agent-fitness warning for the model just switched to, on its
+    own line, or "" (model_capabilities.agent_fitness). The dashboard said
+    it in its preflight; the terminal switched without a word."""
+    try:
+        from . import model_capabilities as mc
+        provider = str(getattr(client, "provider", "")
+                       or getattr(client, "_provider", "") or "")
+        caps = mc.resolve(provider, name, str(getattr(client, "_base_url", "") or ""))
+        warn = mc.agent_fitness(provider, name, caps)
+    except Exception:
+        return ""
+    return f"\n⚠ {warn}" if warn else ""
 
 
 def _model_check(client, name: str) -> tuple[str, str]:
