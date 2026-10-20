@@ -5888,6 +5888,7 @@ def create_tab(ctx):
             ("Azure GPT-5", "azure.gpt-5"),
             ("Azure GPT-5-mini", "azure.gpt-5-mini"),
             ("Azure GPT-5-nano", "azure.gpt-5-nano"),
+            ("KIT GLM-5.3 Flash", "kit.glm-5.3-flash"),
             ("KIT DeepSeek V4 Flash", "kit.deepseek-v4-flash"),
             ("KIT GLM-5.3", "kit.glm-5.3"),
             ("KIT mistral-small-4 119B-a8b", "kit.mistral-small-4-119b-a8b"),
@@ -5909,7 +5910,7 @@ def create_tab(ctx):
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
-                          "kit": "kit.glm-5.3",
+                          "kit": "kit.glm-5.3-flash",
                           "ollama": "qwen3-coder:32b"}
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
                        "kit": "kit.deepseek-v4-flash",

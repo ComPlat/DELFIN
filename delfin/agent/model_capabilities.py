@@ -81,7 +81,12 @@ _KIT_PREFERENCE: tuple[str, ...] = (
     # for a 15k-token prompt whose prefix the endpoint cannot serve warm.
     # First since 2026-10-19 by the user's choice: the best model drives the
     # agent, and when KIT does not serve it the session continues on the
-    # next one here (api_client._kit_fallback_model) with a notice.
+    # next one here (api_client._kit_fallback_model) with a notice. The
+    # flash line is the one KIT serves: on 2026-10-20 kit.glm-5.3-flash
+    # answered and kit.glm-5.3 returned "400 - Model not found" (bug report
+    # davh 414e5a17, 08:30 and 08:44); the plain name stays as the next
+    # candidate in case it returns.
+    "kit.glm-5.3-flash",
     "kit.glm-5.3",
     # Fast: the endpoint rates it 6/6 for speed and 4/6 for intelligence, and
     # a 15k-token prompt answers in ~5s cold. The fallback for GLM, and the

@@ -452,7 +452,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         # As listed by the endpoint on 2026-09-07. The KIT-hosted roster
         # changed that day; a suggestion for a model that is gone reads as
         # a recommendation and answers with a 404.
-        'kit': ['kit.glm-5.3', 'kit.deepseek-v4-flash',
+        'kit': ['kit.glm-5.3-flash', 'kit.glm-5.3', 'kit.deepseek-v4-flash',
                 'kit.mistral-small-4-119b-a8b', 'azure.gpt-5.6-luna',
                 'azure.gpt-5.4', 'azure.gpt-5.1', 'azure.gpt-5-mini',
                 'azure.gpt-5-nano'],

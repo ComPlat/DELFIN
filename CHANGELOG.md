@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed — KIT runs on its best model, and a model KIT does not serve is explained
 
-- **GLM-5.3 is the KIT default and first in the ranking**, DeepSeek V4
-  Flash next: the dashboard's KIT default (was `azure.gpt-5.1`), the strong
+- **GLM-5.3 Flash is the KIT default and first in the ranking** (KIT serves
+  `kit.glm-5.3-flash`; `kit.glm-5.3` returned "Model not found" on
+  2026-10-20), DeepSeek V4 Flash the fallback: the dashboard's KIT default (was `azure.gpt-5.1`), the strong
   routing tier (was `azure.gpt-5.4`) and `KIT_BEST_MODEL`. DeepSeek is the
   cheap default (was `azure.gpt-5-nano`) and stays the action watcher's model.
 - **A model KIT does not serve is explained and replaced**: a "Model not
