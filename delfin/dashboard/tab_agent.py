@@ -21762,6 +21762,13 @@ def create_tab(ctx):
             return
         done = int(state.get("_announce_followups") or 0)
         if done >= 3:
+            # No follow-up will run: say so, or "I'll do it now" reads as
+            # work in progress with no indicator (bug report davh 414e5a17).
+            try:
+                from delfin.agent.engine import AgentEngine as _AE
+                _append_system_message(_AE.NOTHING_RUNS_NOTICE.strip())
+            except Exception:
+                pass
             return
         state["_announce_followups"] = done + 1
         _send_on_its_own(note)

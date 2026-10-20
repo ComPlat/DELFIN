@@ -3319,14 +3319,30 @@ class TerminalAgent:
         try:
             from . import session_pause as _sp
             if _sp.wake_blocked(self._presence_key()):
+                self._say_nothing_runs()
                 return ""
         except Exception:
             pass
         done = int(getattr(self, "_announce_followups", 0) or 0)
         if done >= self._ANNOUNCE_FOLLOWUP_CAP:
+            self._say_nothing_runs()
             return ""
         self._announce_followups = done + 1
         return note
+
+    def _say_nothing_runs(self) -> None:
+        """The turn ended on an announced step and no follow-up will run
+        (the cap is spent, or the session is paused): say so, or the user
+        reads "I'll do it now" and cannot tell a finished turn from a hung
+        model (bug report davh 414e5a17). Never raises."""
+        try:
+            from .engine import AgentEngine
+            from . import repl_render as rr
+            self.transcript.chrome(rr.notice_line(
+                AgentEngine.NOTHING_RUNS_NOTICE.strip(),
+                theme=getattr(self.transcript, "theme", None)))
+        except Exception:
+            pass
 
     def run(self, first_prompt: str = "") -> int:
         from . import repl_keys as rk
