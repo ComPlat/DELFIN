@@ -120,3 +120,26 @@ def test_one_press_repeats_the_stop_until_the_turn_ends(running_turn):
     settled = engine.stops
     time.sleep(0.3)
     assert engine.stops == settled
+
+
+@pytest.mark.parametrize("content,kept", [("", False), ("  \n", False),
+                                          ("Erst lese ich die Datei", True)])
+def test_a_stop_before_any_text_leaves_no_empty_answer(tmp_path, content, kept):
+    """Field report 20261020-140059: Stop while the model had sent nothing
+    left an empty "Code Agent" bubble in the chat; a partial answer stays."""
+    root, refs = _tab(tmp_path)
+    state = refs["state"]
+    try:
+        state["engine"] = _Engine()
+        state["streaming"] = True
+        state["chat_messages"].append({"role": "user", "content": "go"})
+        state["chat_messages"].append(
+            {"role": "assistant", "content": content, "_streaming": True})
+        stop = _stop_button(root)
+        stop.disabled = False
+        stop.click()
+        answers = [m for m in state["chat_messages"] if m.get("role") == "assistant"]
+        assert bool(answers) is kept
+        assert not any(m.get("_streaming") for m in state["chat_messages"])
+    finally:
+        refs["shutdown"]()
