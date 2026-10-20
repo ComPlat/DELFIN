@@ -182,7 +182,7 @@ def test_the_viewer_follows_the_width_of_its_column(folder, monkeypatch):
     from delfin.dashboard import molecule_viewer
     seen = {}
     monkeypatch.setattr(molecule_viewer, "render_xyz_in_output",
-                        lambda out, xyz, width=None, height=None: seen.update(width=width))
+                        lambda out, xyz, width=None, height=None, **_kw: seen.update(width=width))
     panel = ReviewPanel(folder)
     panel.open(str(folder))
     assert seen["width"] == "100%"
