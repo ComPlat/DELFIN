@@ -1256,22 +1256,26 @@ class AgentEngine:
         except Exception as exc:
             return False, f"persist failed: {exc}"
         # Apply to live perms so the next call benefits without restart.
+        # The running turn is told only about a rule that is new: a grant
+        # repeated for a rule already in force changed nothing, and saying
+        # it again (field report 20261020-140059, twice in one turn) told
+        # the agent that something had opened when nothing had.
         if kind == "allow":
             if pattern not in perms.bash_auto_allow_patterns:
                 perms.bash_auto_allow_patterns = (
                     perms.bash_auto_allow_patterns + (pattern,)
                 )
-            self._tell_the_running_turn(
-                f"[permissions] The user just allowed {pattern!r} for good, "
-                f"mid-turn. It no longer needs a confirmation. If you gave "
-                f"up on something because that command was refused, it is "
-                f"available now.")
+                self._tell_the_running_turn(
+                    f"[permissions] The user just allowed {pattern!r} for "
+                    f"good, mid-turn. It no longer needs a confirmation. If "
+                    f"you gave up on something because that command was "
+                    f"refused, it is available now.")
         else:
-            self._tell_the_running_turn(
-                f"[permissions] The user just denied {pattern!r} for good, "
-                f"mid-turn. Do not attempt it again; find another route or "
-                f"say what you cannot do without it.")
             if pattern not in perms.bash_deny_patterns:
+                self._tell_the_running_turn(
+                    f"[permissions] The user just denied {pattern!r} for "
+                    f"good, mid-turn. Do not attempt it again; find another "
+                    f"route or say what you cannot do without it.")
                 perms.bash_deny_patterns = (
                     perms.bash_deny_patterns + (pattern,)
                 )

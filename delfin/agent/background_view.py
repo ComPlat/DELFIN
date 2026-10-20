@@ -225,22 +225,47 @@ def rows(view: dict, *, now: Optional[float] = None) -> list[dict]:
              + (f" · port {port_text}" if port_text else "")
              + (f" · {url}" if url else ""), url)
         out[-1]["ports"] = ports
+        out[-1]["since"] = row["since"]
     for row in view.get("watches", []):
         kind = row["kind"].upper() if row["kind"] in ("ci", "slurm") else row["kind"]
         _add("watches", row["id"], f"Watch · {kind}", row["label"] or row["id"],
              f"{row['state'].lower()} · {_duration(now - row['since'])}")
+        out[-1]["since"] = row["since"]
+        out[-1]["state"] = row["state"].lower()
     for row in view.get("agents", []):
         detail = f"running · {_duration(now - row['since'])}"
         if row.get("last"):
             detail += f" · {row['last']}"
         _add("agents", row["id"], "Agent", row["label"], detail)
+        out[-1]["since"] = row["since"]
     for row in view.get("wakeups", []):
         label = "Loop" if row["kind"] == "interval" else "Wake-up"
         when = (f"in {_duration(row['at'] - now)}" if row["at"] > now else "due")
         _add("wakeups", row["id"], label, row["label"] or row["id"], when)
+        out[-1]["at"] = row["at"]
     for n, row in enumerate(view.get("errors", [])):
         _add("errors", f"error-{n}", "⚠ Not read",
              f"{row['group']}: could not be listed", row["error"])
+    return out
+
+
+def snapshot(view: dict) -> list[dict]:
+    """The rows without anything that changes with the clock.
+
+    For a window that draws the ages itself (the terminal UI): each row
+    is ``group``, ``id``, ``kind``, ``label``, ``url``, ``state``, and
+    ``since`` (when it started) or ``at`` (when a wake-up fires), epoch
+    seconds or None. ``detail`` is left out because it holds "running ·
+    2m10s", and a list that changes every second would be sent every
+    second. Same rows as :func:`rows`, so the panel and the window cannot
+    disagree about what is out.
+    """
+    out = []
+    for r in rows(view):
+        out.append({"group": r["group"], "id": r["id"], "kind": r["kind"],
+                    "label": r["label"], "url": r.get("url") or "",
+                    "state": r.get("state") or "",
+                    "since": r.get("since"), "at": r.get("at")})
     return out
 
 

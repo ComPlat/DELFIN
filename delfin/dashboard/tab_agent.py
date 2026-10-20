@@ -785,6 +785,11 @@ _JOB_WAKE_INTERVAL_S = 120.0
 # How often the Background panel re-reads what is running. Local files only.
 _BACKGROUND_REFRESH_S = 10.0
 
+# After Stop, how often the stop is sent again until the turn's thread has
+# ended. One stop can miss: a turn that is still starting clears the flag,
+# and a request blocked on its first byte only notices a closed transport.
+_STOP_REPEAT_S = 1.0
+
 
 def _job_wake_prompt(done: list) -> str:
     """The message a finished watched job sends an idle agent; "" for none.
@@ -1010,7 +1015,9 @@ _AGENT_CSS = """\
    is always on screen. */
 .delfin-agent-root {
     height: calc(100vh - var(--delfin-agent-top, 140px) - 6px);
-    min-height: 420px;
+    /* 320, not 420: on a window under ~530px (a laptop with the browser's
+       developer tools docked) the floor itself made the page scroll. */
+    min-height: 320px;
     overflow-y: auto;
     box-sizing: border-box;
 }
@@ -1051,7 +1058,10 @@ _AGENT_CSS = """\
 .delfin-agent-root > .delfin-agent-chat-frame,
 .delfin-agent-chat-row > .delfin-agent-chat-frame {
     flex: 1 1 0 !important;
-    min-height: 45vh;
+    /* Never below 45vh while the window has room for it; on a short one
+       the floor gives way to the rows outside the frame (top bar, input,
+       the folded details: ~340px), so the closed layout still fits. */
+    min-height: min(45vh, calc(100vh - 340px));
     display: flex;
     flex-direction: column;
     border: 1px solid #ddd;
@@ -1063,7 +1073,9 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame > .delfin-agent-chat-host {
     flex: 1 1 0 !important;
     height: auto !important;
-    min-height: 120px;
+    /* !important: the widget carries min-height 200px inline, which made
+       this rule a dead letter and the frame 200px plus its foot at least. */
+    min-height: 100px !important;
     border: none;
     border-radius: 0;
 }
@@ -1124,6 +1136,15 @@ _AGENT_CSS = """\
     color: #28a745; text-decoration: line-through;
 }
 .delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
+/* What is still out -- shells, jobs, sub-agents, wake-ups -- under the
+   task line. Not a chat-foot row: it stays while the reader is up in the
+   history, since a running server is not about the newest output. Capped,
+   so a long list scrolls in itself instead of taking the chat. */
+.delfin-agent-chat-frame > .delfin-agent-background {
+    border-top: 1px solid #e5e7eb; background: #f8fafc;
+    padding: 2px 10px; margin: 0;
+    max-height: 132px; overflow-y: auto;
+}
 .delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
 /* The task line belongs to the newest output: while the reader is up in
    the history it would sit under text it has nothing to do with. */
@@ -8122,9 +8143,6 @@ def create_tab(ctx):
         ctx_pct = state.get("_fold_ctx")
         if ctx_pct is not None:
             parts.append(f"ctx {ctx_pct:.0f}%")
-        n_bg = int(state.get("_fold_background", 0) or 0)
-        if n_bg:
-            parts.append(f"{n_bg} running")
         n_tools = int(state.get("_fold_tools", 0) or 0)
         if n_tools:
             last = str(state.get("_fold_last_tool", "") or "")
@@ -8261,6 +8279,14 @@ def create_tab(ctx):
     # One row per background item, each with its × (the panel's header is
     # subagent_panel_html above).
     background_rows_box = widgets.VBox(layout=widgets.Layout(margin="0 0 2px 0"))
+    # Header and rows together, at the foot of the chat and only while
+    # something is out. They sat in the folded details, where a running
+    # shell showed as "N running" in a closed header among the token
+    # counts and the containment report.
+    background_box = widgets.VBox(
+        [subagent_panel_html, background_rows_box],
+        layout=widgets.Layout(display="none"))
+    background_box.add_class("delfin-agent-background")
     # Session-start stamp (updated on each New Session) so the panel is
     # session-scoped from first load — never leaks a prior session's subagents.
     import time as _t_init
@@ -8281,8 +8307,9 @@ def create_tab(ctx):
             _ws = _agent_workspace_path()
             _items = _bgv.rows(_bgv.collect(_ws, session_id=_background_owner()))
             subagent_panel_html.value = _bgv.header_html(len(_items))
-            state["_fold_background"] = len(_items)
-            _refresh_fold_title()
+            _shown = "" if _items else "none"
+            if background_box.layout.display != _shown:
+                background_box.layout.display = _shown
             # Rows are kept by item, so a refresh updates the text and a
             # pointer resting on a × is not pulled out from under it.
             _cache = state.setdefault("_background_row_widgets", {})
@@ -8333,6 +8360,7 @@ def create_tab(ctx):
                 "<div style='font-size:11px; color:#b45309;'>Background: the "
                 f"list could not be read ({type(_exc).__name__}).</div>")
             background_rows_box.children = ()
+            background_box.layout.display = ""
 
     def _send_on_its_own(text: str, *, leave_text_when_held: bool = False) -> bool:
         """Start a turn nobody typed: a scheduled wake-up, a finished job, a
@@ -9432,11 +9460,12 @@ def create_tab(ctx):
     state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
         [kit_dirs_status,
-         subagent_pane_html, subagent_panel_html, background_rows_box,
+         subagent_pane_html,
          tools_fold, security_fold, context_bar_html, status_row])
-    # Folded by default: the tool calls, the containment report, the task
-    # list and the subagents are there when wanted, one click away, and
-    # take no height from the chat otherwise.
+    # Folded by default: the tool calls, the containment report and the
+    # sub-agent call log are there when wanted, one click away, and take no
+    # height from the chat otherwise. What is still running is not in
+    # here (background_box, at the foot of the chat).
     below_panels.add_class("delfin-agent-below-body")
     below_fold = widgets.Accordion(
         children=[below_panels],
@@ -9453,8 +9482,8 @@ def create_tab(ctx):
     # task line at the foot of the chat, not in a row of their own.
     palette_row.add_class("delfin-agent-chat-foot")
     chat_frame = widgets.VBox(
-        [chat_html, working_html, queue_html, task_strip, auto_box,
-         palette_row, plan_accept_btn, ask_user_box, approval_dock])
+        [chat_html, working_html, queue_html, task_strip, background_box,
+         auto_box, palette_row, plan_accept_btn, ask_user_box, approval_dock])
     chat_frame.add_class("delfin-agent-chat-frame")
     # The command palette opens OVER the chat, anchored to the top edge of
     # the input: opening it used to push the input down and squeeze the
@@ -9524,24 +9553,42 @@ def create_tab(ctx):
     # the window". Measured, not guessed: the header above it differs
     # between Voila and Jupyter, and between the single and the session
     # layout. Re-measured on resize and while the page settles.
+    #
+    # The top is taken in the coordinates of the page's scroller, which in
+    # Voila is #rendered_cells and not the window: window.scrollY stays 0
+    # there, and a viewport top shrinks as the page scrolls, which made the
+    # tab taller the further it was scrolled. What still overflows the
+    # scroller with the tab at that height -- padding and margins below
+    # it -- is measured with the trim at zero and added to the top, so the
+    # page itself never scrolls while the tab is above its min-height.
+    #
+    # Sent with the startup scripts (ctx.add_init_js). Through ctx.run_js
+    # it never ran: run_js clears the shared output, and the next call
+    # during startup replaced it before the browser executed it (measured
+    # 2026-10-20: window.__delfinAgentTop undefined, the 140px fallback in
+    # use on every page since 2026-10-09).
     _measure_top_js = (
         "(function(){if(window.__delfinAgentTop)return;"
-        "window.__delfinAgentTop=1;function m(){"
+        "window.__delfinAgentTop=1;var de=document.documentElement;"
+        "function scrollers(el){var out=[];"
+        "for(var p=el.parentElement;p;p=p.parentElement){"
+        "var oy=getComputedStyle(p).overflowY;"
+        "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
+        "return out;}"
+        "function m(){"
         "var rs=document.querySelectorAll('.delfin-agent-root');"
         "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
-        "var t=r.getBoundingClientRect().top+window.scrollY;"
-        "document.documentElement.style.setProperty('--delfin-agent-top',"
-        "Math.max(0,Math.round(t))+'px');return;}}"
+        "var ss=scrollers(r),k,y=0;"
+        "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
+        "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
+        "de.style.setProperty('--delfin-agent-top',t+'px');"
+        "var over=0;for(k=0;k<ss.length;k++)"
+        "over=Math.max(over,ss[k].scrollHeight-ss[k].clientHeight);"
+        "if(over>0&&over<200&&r.offsetHeight-over>=320){"
+        "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
+        "return;}}"
         "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
-    try:
-        ctx.run_js(_measure_top_js, keep=True)
-    except TypeError:                    # a context without page scripts
-        try:
-            ctx.run_js(_measure_top_js)
-        except Exception:
-            pass
-    except Exception:
-        pass
+    ctx.add_init_js(_measure_top_js)
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
@@ -12366,13 +12413,20 @@ def create_tab(ctx):
             f'</div>'
         )
 
+    def _turn_thread_alive() -> bool:
+        t = state.get("_turn_thread")
+        return bool(t is not None and t.is_alive())
+
     def _update_button_states():
         engine = state["engine"]
         is_streaming = state["streaming"]
         # Keep textarea + send enabled during streaming for message queuing
         send_btn.disabled = False
         input_textarea.disabled = False
-        stop_btn.disabled = not is_streaming
+        # Stop stays a button while the turn's thread runs on after a stop:
+        # pressing it again is the one thing left to do when the first
+        # stop did not take.
+        stop_btn.disabled = not (is_streaming or _turn_thread_alive())
         mode_dropdown.disabled = is_streaming
         model_dropdown.disabled = is_streaming
         effort_dropdown.disabled = is_streaming
@@ -21745,7 +21799,12 @@ def create_tab(ctx):
                     # Stale worker — just save session, don't touch UI
                     _auto_save_session()
 
-        threading.Thread(target=_worker, daemon=True).start()
+        # Kept so Stop can tell whether the turn has really ended: the
+        # "streaming" flag goes off the moment Stop is pressed, the thread
+        # only when the engine lets go.
+        _turn_thread = threading.Thread(target=_worker, daemon=True)
+        state["_turn_thread"] = _turn_thread
+        _turn_thread.start()
 
     def _continue_after_announcement():
         """The engine's follow-up note for a turn that ended announcing work
@@ -21781,6 +21840,53 @@ def create_tab(ctx):
             input_textarea.value = next_msg
             _on_send(None)
 
+    def _send_stop(engine) -> None:
+        if not engine:
+            return
+        try:
+            engine.request_stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(engine.client, "signal_stop"):
+                engine.client.signal_stop()
+        except Exception:
+            pass
+
+    def _hold_stop(engine, thread) -> None:
+        """Send the stop again every _STOP_REPEAT_S until ``thread`` (the
+        stopped turn) has ended, then put the buttons right.
+
+        One stop can miss. A turn still starting clears the flag as it
+        takes the gate, and a request blocked on its first byte is only
+        cut by a closed transport. Either way the turn carried on after
+        the dashboard said "Stop." and had disabled the button. The
+        worker of the terminal service repeats a cancel the same way
+        (worker._look_around)."""
+        if thread is None or not thread.is_alive():
+            return
+        if state.get("_stop_holding") is thread:
+            return
+        state["_stop_holding"] = thread
+        import threading as _threading_stop
+
+        def _repeat():
+            try:
+                while thread.is_alive() and not state.get("_closed"):
+                    thread.join(_STOP_REPEAT_S)
+                    if thread.is_alive():
+                        _send_stop(engine)
+            finally:
+                if state.get("_stop_holding") is thread:
+                    state["_stop_holding"] = None
+                try:
+                    _update_button_states()
+                except Exception:
+                    pass
+
+        _threading_stop.Thread(target=_repeat, daemon=True,
+                               name="delfin-stop-hold").start()
+
     def _on_stop(button):
         # Soft-stop: cooperative end of the running turn so the next Send
         # can continue the same conversation (CLI session_id preserved).
@@ -21788,10 +21894,15 @@ def create_tab(ctx):
         # follow-up prompts. Old behaviour killed the subprocess and wiped
         # the queue, which forced a full re-init on every ESC.
         engine = state["engine"]
-        if engine:
-            engine.request_stop()
-            if hasattr(engine.client, "signal_stop"):
-                engine.client.signal_stop()
+        _send_stop(engine)
+        thread = state.get("_turn_thread")
+        if not state.get("streaming") and _turn_thread_alive():
+            # A second press on a turn already stopped once: stop again and
+            # keep repeating, without a second "Stop." line in the chat.
+            _hold_stop(engine, thread)
+            _update_button_states()
+            return
+        _hold_stop(engine, thread)
         # Bump generation so the old worker's finally block won't touch UI
         state["_generation_id"] = state.get("_generation_id", 0) + 1
         state["streaming"] = False
@@ -21802,10 +21913,16 @@ def create_tab(ctx):
             _turns.mark(False)
         except Exception:
             pass
-        # Finalize any in-progress streaming message
+        # Finalize any in-progress streaming message. One with no words in
+        # it goes, as it does when a turn finalizes empty (_update_stream):
+        # a Stop before the first token left an empty answer bubble, saved
+        # with the session and replayed on resume.
         msgs = state["chat_messages"]
         if msgs and msgs[-1].get("_streaming"):
             msgs[-1]["_streaming"] = False
+            if (msgs[-1].get("role") == "assistant"
+                    and _assistant_turn_is_wordless(msgs[-1])):
+                msgs.pop()
             _refresh_chat_html()
         _set_active_gate()
         # If the user stopped while messages are queued, show a queued
