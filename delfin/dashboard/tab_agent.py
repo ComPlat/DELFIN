@@ -21913,10 +21913,16 @@ def create_tab(ctx):
             _turns.mark(False)
         except Exception:
             pass
-        # Finalize any in-progress streaming message
+        # Finalize any in-progress streaming message. One with no words in
+        # it goes, as it does when a turn finalizes empty (_update_stream):
+        # a Stop before the first token left an empty answer bubble, saved
+        # with the session and replayed on resume.
         msgs = state["chat_messages"]
         if msgs and msgs[-1].get("_streaming"):
             msgs[-1]["_streaming"] = False
+            if (msgs[-1].get("role") == "assistant"
+                    and _assistant_turn_is_wordless(msgs[-1])):
+                msgs.pop()
             _refresh_chat_html()
         _set_active_gate()
         # If the user stopped while messages are queued, show a queued
