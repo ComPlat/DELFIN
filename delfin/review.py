@@ -84,6 +84,7 @@ _UNSURE_RE = re.compile(r'(?<!\w)(?:unsicher|unsure)(?!\w)', re.IGNORECASE)
 CSV_FIELDS = (
     'file', 'frame', 'label', 'verdict', 'categories', 'note',
     'timestamp', 'sha256', 'blind_number', 'smiles', 'file_comment', 'atoms',
+    'atoms_by_category',
 )
 
 
@@ -452,11 +453,15 @@ class ReviewSession:
         return rec
 
     def rate(self, verdict: str, categories: Iterable[str] = (), note: str = '',
-             *, atoms: Iterable[int] = (), advance: bool = True) -> dict[str, Any]:
+             *, atoms: Iterable[int] = (),
+             atoms_by_category: dict[str, Iterable[int]] | None = None,
+             advance: bool = True) -> dict[str, Any]:
         """Rate the current frame, save at once and (by default) move on.
 
-        *atoms* are the atoms the reviewer marked as the place of the defect:
-        0-based indices into the frame's atom lines (hydrogens counted).
+        *atoms_by_category* are the atoms the reviewer marked as the place of
+        each defect, *atoms* further ones without a category: 0-based indices
+        into the frame's atom lines (hydrogens counted).  ``atoms`` in the
+        record is the union of both.
         """
         verdict = str(verdict).strip().lower()
         if verdict not in VERDICTS:
@@ -473,9 +478,13 @@ class ReviewSession:
             'label': frame.label,
             'sha256': meta.get('sha256', ''),
         }
-        marked = sorted({int(i) for i in atoms})
+        by_cat = {str(c): sorted({int(i) for i in v})
+                  for c, v in (atoms_by_category or {}).items() if v}
+        marked = sorted({int(i) for i in atoms} | {i for v in by_cat.values() for i in v})
         if marked:
             rec['atoms'] = marked
+        if by_cat:
+            rec['atoms_by_category'] = by_cat
         if self.blind:
             rec['blind_number'] = self.position + 1
             rec['seed'] = self.seed
@@ -657,6 +666,9 @@ def write_csv(data: dict[str, Any], path: Path) -> None:
                 'smiles': rec.get('smiles') or (meta.get('index') or {}).get('smiles', ''),
                 'file_comment': meta.get('comment', ''),
                 'atoms': ';'.join(str(i) for i in rec.get('atoms') or []),
+                'atoms_by_category': ';'.join(
+                    f'{c}:' + ','.join(str(i) for i in v)
+                    for c, v in (rec.get('atoms_by_category') or {}).items()),
                 'stale': 'yes' if stale else '',
             })
 

@@ -87,7 +87,18 @@ _MARK = {'pass': '✓', 'block': '✗', None: '·'}
 _HELP = "<span style='color:#757575;font-size:11.5px'>{}</span>"
 _PASS_COLOR = '#1b7f3b'
 _BLOCK_COLOR = '#b00020'
-MARK_COLOR = '#ff9800'      # a marked atom (the place of a defect)
+ACTIVE_CLASS = 'delfin-review-active-'   # + <category place>-<colour> on the key field
+ACTIVE_BUTTON_CLASS = 'delfin-review-cat-active'
+# A marked atom (the place of a defect) is ringed in the colour of its category.
+MARK_COLORS = ('#ff9800', '#e91e63', '#2196f3', '#43a047', '#9c27b0', '#00acc1',
+               '#fdd835', '#6d4c41', '#f4511e', '#3949ab', '#c0ca33', '#d81b60')
+
+
+def mark_color(i: int) -> str:
+    """The colour of the category at 0-based place *i*."""
+    return MARK_COLORS[i % len(MARK_COLORS)]
+
+
 KEY_LEGEND = ('<b>P</b> pass &middot; <b>B</b> block &middot; <b>1</b>&ndash;<b>9</b>, '
               '<b>0</b>, <b>&#8679;1</b>&ndash;<b>&#8679;9</b> categories &middot; '
               '<b>U</b> unsure &middot; <b>N</b> next unrated &middot; <b>&larr;</b> / '
@@ -112,6 +123,8 @@ _CSS = """<style>
   {flex:1 1 0 !important;min-height:0 !important;}
 .delfin-review-panel .delfin-review-grow .widget-select select {height:100% !important;}
 .delfin-review-panel .delfin-review-viewer {overflow:hidden !important;}
+.delfin-review-panel .delfin-review-cat-active {outline:2px solid #222;outline-offset:-2px;
+  font-weight:700;}
 /* a 100 % wide field plus its border or margin is 2-4 px wider than its box:
    without this every such box showed a small horizontal scroll bar */
 .delfin-review-panel .widget-box, .delfin-review-panel .widget-gridbox
@@ -192,18 +205,21 @@ def _keys_js() -> str:
         "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
         "    return true;\n"
         "  }\n"
-        "  function mark(viewer,atom){\n"
-        "    var m=viewer.__delfinMarks=viewer.__delfinMarks||{}, i=atom.index;\n"
-        "    if(m[i]){viewer.removeShape(m[i]);delete m[i];}\n"
-        "    else m[i]=viewer.addSphere({center:{x:atom.x,y:atom.y,z:atom.z},radius:0.62,\n"
-        "      color:'" + MARK_COLOR + "',opacity:0.6});\n"
+        "  function mark(viewer,atom,cat,color){\n"
+        "    var m=viewer.__delfinMarks=viewer.__delfinMarks||{}, k=cat+':'+atom.index, n=0;\n"
+        "    if(m[k]){viewer.removeShape(m[k]);delete m[k];viewer.render();return;}\n"
+        "    for(var q in m) if(q.split(':')[1]===String(atom.index)) n++;\n"
+        "    m[k]=viewer.addSphere({center:{x:atom.x,y:atom.y,z:atom.z},radius:0.62+0.16*n,\n"
+        "      color:color,opacity:0.55});\n"
         "    viewer.render();\n"
         "  }\n"
         "  window.__delfinReviewMark=mark;\n"
         "  window.__delfinReviewPick=function(viewer,atom){\n"
         "    var panel=document.querySelector('." + PANEL_CLASS + "');\n"
-        "    if(!panel||!send(panel,'a'+atom.index)) return;\n"
-        "    mark(viewer,atom);\n"
+        "    var box=panel&&panel.querySelector('." + KEYS_CLASS + "');\n"
+        "    var c=box&&/(?:^|\\s)" + ACTIVE_CLASS + "(\\d+)-([0-9a-f]{6})(?:\\s|$)/.exec(box.className);\n"
+        "    if(!panel||!send(panel,'a'+atom.index+(c?'c'+c[1]:''))) return;\n"
+        "    if(c) mark(viewer,atom,c[1],'#'+c[2]);\n"
         "  };\n"
         "  document.addEventListener('keydown',function(ev){\n"
         "    if(ev.ctrlKey||ev.metaKey||ev.altKey) return;\n"
@@ -245,22 +261,25 @@ def _keys_js() -> str:
     )
 
 
-def _atoms_js(marked: list[int]) -> str:
-    """Viewer script: a click on an atom marks it (the key script sends ``a<index>``),
-    and the atoms marked before are drawn again (*marked*: indices as shown)."""
+def _atoms_js(marked: list[tuple[int, int, str]]) -> str:
+    """Viewer script: a click on an atom marks it for the active category (the key
+    script sends ``a<index>c<category>``), and the atoms marked before are drawn
+    again (*marked*: (index as shown, category place, colour))."""
     return (
         "viewer_UNIQUEID.setClickable({},true,function(atom,viewer){\n"
         "  if(window.__delfinReviewPick) window.__delfinReviewPick(viewer,atom);});\n"
         "(function(v){var m=window.__delfinReviewMark; if(!m) return;\n"
-        f"  {json.dumps(marked)}.forEach(function(i){{\n"
-        "    var a=v.selectedAtoms({index:i})[0]; if(a) m(v,a);});\n"
+        f"  {json.dumps([list(x) for x in marked])}.forEach(function(t){{\n"
+        "    var a=v.selectedAtoms({index:t[0]})[0]; if(a) m(v,a,String(t[1]),t[2]);});\n"
         "})(viewer_UNIQUEID);\n"
     )
 
 
 def _paint_category(change):
     """A chosen category stands out in colour, not only by a slightly darker grey."""
-    change['owner'].button_style = 'warning' if change.get('new') else ''
+    # The value, not the change: a press on a chosen, not active category is
+    # turned back on inside the change (it becomes the active one).
+    change['owner'].button_style = 'warning' if change['owner'].value else ''
 
 
 def _without_h(xyz: str) -> str:
@@ -394,7 +413,10 @@ class ReviewPanel:
         self.keys_input = W.Text(value='', layout=L(display='none'))
         self.keys_input.add_class(KEYS_CLASS)
         self._at_class = ''
-        self._marked: dict[tuple[str, int], set[int]] = {}   # atoms marked per frame
+        # atoms marked per frame and category, and the category a click marks for
+        self._marked: dict[tuple[str, int], dict[str, set[int]]] = {}
+        self._active: str | None = None
+        self._active_class = ''
         self._shown: list[int] = []      # atom index in the file of each atom shown
 
         self._build_categories(rv.DEFAULT_CATEGORIES)
@@ -684,7 +706,7 @@ class ReviewPanel:
             return None
         where = s.display_name()
         rec = s.rate(verdict, self.selected_categories(), self.note_input.value,
-                     atoms=self._marked.get(self._frame_place(), ()))
+                     atoms_by_category=self.marked_by_category())
         color = _PASS_COLOR if rec['verdict'] == 'pass' else _BLOCK_COLOR
         self.saved_html.value = (
             f'<span style="color:{color};font-size:12px">&#10003; saved '
@@ -800,18 +822,55 @@ class ReviewPanel:
         frame = self.session.current
         return frame.file, frame.index
 
-    def marked_atoms(self) -> list[int]:
-        """Atoms marked on the current frame: 0-based indices into its atom lines."""
+    def marked_by_category(self) -> dict[str, list[int]]:
+        """Atoms marked on the current frame per chosen category: 0-based indices
+        into its atom lines (hydrogens counted)."""
         if self.session is None:
-            return []
-        return sorted(self._marked.get(self._frame_place(), ()))
+            return {}
+        chosen = self.selected_categories()
+        marks = self._marked.get(self._frame_place(), {})
+        return {c: sorted(marks[c]) for c in chosen if marks.get(c)}
 
-    def toggle_atom(self, shown: int):
-        """Mark or unmark the atom at place *shown* of the view (H hidden or not)."""
-        if self.session is None or not 0 <= shown < len(self._shown):
+    def marked_atoms(self) -> list[int]:
+        """All atoms marked on the current frame, whatever their category."""
+        return sorted({i for v in self.marked_by_category().values() for i in v})
+
+    def active_category(self) -> str | None:
+        return self._active
+
+    def _set_active(self, cat: str | None):
+        """The category the next atom clicks belong to (outlined on its button)."""
+        self._active = cat
+        for b in self.category_buttons:
+            if b._review_category == cat:
+                b.add_class(ACTIVE_BUTTON_CLASS)
+            else:
+                b.remove_class(ACTIVE_BUTTON_CLASS)
+        if self._active_class:
+            self.keys_input.remove_class(self._active_class)
+        self._active_class = ''
+        if cat is not None and self.session is not None:
+            i = self.session.categories.index(cat)
+            self._active_class = f'{ACTIVE_CLASS}{i}-{mark_color(i)[1:]}'
+            self.keys_input.add_class(self._active_class)
+        self._draw_atoms()
+
+    def toggle_atom(self, shown: int, cat_place: int | None = None):
+        """Mark or unmark the atom at place *shown* of the view (H hidden or not)
+        for the category at *cat_place*, which the click was made for."""
+        s = self.session
+        if s is None or not 0 <= shown < len(self._shown):
             return
-        atoms = self._marked.setdefault(self._frame_place(), set())
-        atoms ^= {self._shown[shown]}
+        cats = s.categories
+        cat = cats[cat_place] if cat_place is not None and 0 <= cat_place < len(cats) else None
+        if cat is None or cat not in self.selected_categories():
+            self._say('Choose a category first (key or button), then click its atoms.',
+                      error=True)
+            if cat is not None:                    # the view drew a ring: take it back
+                self._draw_viewer(s.current)
+            return
+        marks = self._marked.setdefault(self._frame_place(), {})
+        marks.setdefault(cat, set()).symmetric_difference_update({self._shown[shown]})
         self._draw_atoms()
 
     def clear_atoms(self):
@@ -821,20 +880,35 @@ class ReviewPanel:
         self._draw_atoms()
         self._draw_viewer(self.session.current)
 
+    def _drop_marks(self, cat: str) -> bool:
+        """Forget the marks of a category no longer chosen; True when there were some."""
+        if self.session is None:
+            return False
+        return bool(self._marked.get(self._frame_place(), {}).pop(cat, None))
+
     def _draw_atoms(self):
-        marked = self.marked_atoms()
-        if not marked:
-            self.atoms_html.value = _HELP.format(
-                'Atoms: click in the view to mark where the defect is (again: unmark)')
-            self.clear_atoms_btn.layout.visibility = 'hidden'
+        if self.session is None:
+            return
+        by_cat = self.marked_by_category()
+        self.clear_atoms_btn.layout.visibility = 'visible' if by_cat else 'hidden'
+        if not by_cat:
+            hint = ('choose a category, then click its atoms in the view'
+                    if self._active is None else
+                    f'click the atoms of <b>{html.escape(self._active)}</b> in the view '
+                    '(again: unmark)')
+            self.atoms_html.value = _HELP.format('Atoms: ' + hint)
             return
         lines = self.session.current.xyz('').splitlines()[2:]
-        names = [f'{lines[i].split()[0]}{i + 1}' if i < len(lines) else f'#{i + 1}'
-                 for i in marked]
-        self.atoms_html.value = (f'<span style="font-size:12.5px"><b>Atoms:</b> '
-                                 f'<span style="color:{MARK_COLOR}"><b>'
-                                 f'{html.escape(", ".join(names))}</b></span></span>')
-        self.clear_atoms_btn.layout.visibility = 'visible'
+        cats = self.session.categories
+        parts = []
+        for cat, atoms in by_cat.items():
+            names = [f'{lines[i].split()[0]}{i + 1}' if i < len(lines) else f'#{i + 1}'
+                     for i in atoms]
+            color = mark_color(cats.index(cat)) if cat in cats else '#555'
+            parts.append(f'<span style="color:{color}"><b>{html.escape(cat)}</b>: '
+                         f'{html.escape(", ".join(names))}</span>')
+        self.atoms_html.value = ('<span style="font-size:12px"><b>Atoms</b> '
+                                 + ' &middot; '.join(parts) + '</span>')
 
     def reset_view(self):
         """Draw the frame again: orientation and zoom as when it was first shown."""
@@ -852,7 +926,7 @@ class ReviewPanel:
         if self.session is None:
             return
         cat = category_index(key)
-        atom = re.fullmatch(r'a(\d+)', key)
+        atom = re.fullmatch(r'a(\d+)(?:c(\d+))?', key)
         if (at is not None and at != self.session.position
                 and (key in ('p', 'b', 'u') or cat is not None or atom)):
             self._say(f'Key {key.upper()} ignored: it was pressed for a frame no longer shown.')
@@ -874,7 +948,8 @@ class ReviewPanel:
         elif key == 'h':
             self.h_toggle.value = not self.h_toggle.value
         elif atom:
-            self.toggle_atom(int(atom.group(1)))
+            self.toggle_atom(int(atom.group(1)),
+                             int(atom.group(2)) if atom.group(2) else None)
         elif cat is not None and cat < len(self.category_buttons):
             btn = self.category_buttons[cat]
             btn.value = not btn.value
@@ -962,15 +1037,39 @@ class ReviewPanel:
         self.refresh()
 
     def _on_category(self, change):
-        if self._busy or not change.get('new') or self.multi_cb.value:
+        """Choosing a category makes it the active one (atom clicks belong to it).
+        A press on a chosen category that is not active makes it active again;
+        a press on the active one unchooses it, and its marked atoms go."""
+        if self._busy:
             return
-        self._busy = True
-        try:
-            for b in self.category_buttons:
-                if b is not change['owner']:
-                    b.value = False
-        finally:
-            self._busy = False
+        btn = change['owner']
+        cat = btn._review_category
+        redraw = False
+        if change.get('new'):
+            if not self.multi_cb.value:
+                self._busy = True
+                try:
+                    for b in self.category_buttons:
+                        if b is not btn and b.value:
+                            b.value = False
+                            b.button_style = ''
+                            redraw |= self._drop_marks(b._review_category)
+                finally:
+                    self._busy = False
+            self._set_active(cat)
+        elif cat != self._active and self._active is not None:
+            self._busy = True
+            try:
+                btn.value = True
+            finally:
+                self._busy = False
+            self._set_active(cat)
+        else:
+            redraw = self._drop_marks(cat)
+            rest = self.selected_categories()
+            self._set_active(rest[-1] if rest else None)
+        if redraw and self.session is not None:
+            self._draw_viewer(self.session.current)
 
     def _on_note(self, change):
         """A changed comment is stored at once: in the rating, or for an unrated frame in ``notes``."""
@@ -1013,8 +1112,9 @@ class ReviewPanel:
             return
         frame = s.current
         rec = s.record(frame.file, frame.index)
-        if rec and rec.get('atoms') and (frame.file, frame.index) not in self._marked:
-            self._marked[(frame.file, frame.index)] = {int(i) for i in rec['atoms']}
+        if rec and rec.get('atoms_by_category') and (frame.file, frame.index) not in self._marked:
+            self._marked[(frame.file, frame.index)] = {
+                c: {int(i) for i in v} for c, v in rec['atoms_by_category'].items()}
         self._busy = True
         try:
             chosen = set(rec.get('categories', [])) if rec else set()
@@ -1031,7 +1131,9 @@ class ReviewPanel:
         self._draw_position(frame, rec)
         self._draw_progress()
         self._draw_context(frame)
-        self._draw_atoms()
+        order = list(rec.get('categories', [])) if rec else []
+        self._set_active(self._active if self._active in order
+                         else (order[-1] if order else None))
         self._draw_viewer(frame)
         self._mark_shown(s.position)
 
@@ -1155,7 +1257,10 @@ class ReviewPanel:
         if not self.h_toggle.value:
             xyz = _without_h(xyz)
         place = {atom: k for k, atom in enumerate(self._shown)}
-        marked = [place[i] for i in self.marked_atoms() if i in place]
+        cats = self.session.categories
+        marked = [(place[i], cats.index(c), mark_color(cats.index(c)))
+                  for c, atoms in self.marked_by_category().items() if c in cats
+                  for i in atoms if i in place]
         try:
             from delfin.dashboard.molecule_viewer import render_xyz_in_output
             render_xyz_in_output(self.viewer, xyz, width=VIEWER_WIDTH, height=VIEWER_HEIGHT,

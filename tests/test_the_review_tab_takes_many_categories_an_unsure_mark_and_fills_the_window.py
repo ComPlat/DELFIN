@@ -58,7 +58,9 @@ def test_key_zero_is_the_tenth_and_shift_digits_the_eleventh_to_nineteenth(revie
     for key in ("0", "s1", "s9"):
         panel.handle_key(key)
     assert panel.selected_categories() == ["C10", "C11", "C19"]
-    panel.handle_key("s1")                                    # toggles off again
+    panel.handle_key("s1")                                    # chosen, not active: active
+    assert panel.active_category() == "C11"
+    panel.handle_key("s1")                                    # active: toggles off
     panel.handle_key("b")
     rec = panel.session.record("T0001.xyz", 0)
     assert rec["categories"] == ["C10", "C19"]
@@ -301,32 +303,57 @@ def test_a_long_file_list_shows_a_window_around_the_current_file(tmp_path):
     assert panel.file_list.value == f"T{2 * tab_review.FRAME_WINDOW + 50:04d}.xyz"
 
 
-# ---------------------------------------------------------------- atoms marked in the view
-def test_a_clicked_atom_is_marked_saved_with_the_rating_and_shown_again(review_dir):
-    """A click sends ``a<place in the view>``; with H hidden the place is mapped
-    back to the atom line of the file, and the marks travel with the rating."""
-    panel = _panel(review_dir)
-    panel.handle_key("a0", at=0)                              # O, the first atom
-    panel.h_toggle.value = False                              # the view now shows only O
-    panel.handle_key("a0", at=0)                              # unmarks the same O
-    assert panel.marked_atoms() == []
+# ---------------------------------------------------------------- atoms marked per category
+def test_atoms_are_marked_for_the_active_category_and_saved_per_category(review_dir):
+    """A click sends ``a<place in the view>c<category>``: the atom belongs to the
+    category chosen last; with H hidden the place maps back to the file's line."""
+    panel = _panel(review_dir, ["H", "CLASH", "TOPO"])
+    panel.handle_key("a1c0", at=0)                            # no category chosen yet
+    assert panel.marked_atoms() == [] and "category first" in panel.status_html.value
+    panel.handle_key("1")                                     # H, active
+    assert panel.active_category() == "H"
+    assert "delfin-review-active-0-ff9800" in panel.keys_input._dom_classes
+    panel.handle_key("a2c0", at=0)                            # the second H for H
+    panel.handle_key("2")                                     # CLASH, now active
+    panel.h_toggle.value = False                              # the view shows only O
+    panel.handle_key("a0c1", at=0)                            # O for CLASH
     panel.h_toggle.value = True
-    panel.handle_key("a2", at=0)                              # the second H
-    panel.handle_key("a0", at=1)                              # pressed for another frame
-    assert panel.marked_atoms() == [2]
-    assert "H3" in panel.atoms_html.value
+    panel.handle_key("a1c1", at=1)                            # pressed for another frame
+    assert panel.marked_by_category() == {"H": [2], "CLASH": [0]}
+    assert "H3" in panel.atoms_html.value and "O1" in panel.atoms_html.value
+    panel.handle_key("1")                                     # chosen, not active: active
+    assert panel.selected_categories() == ["H", "CLASH"]
+    assert panel.active_category() == "H"
+    panel.handle_key("3")                                     # TOPO chosen and active
+    panel.handle_key("3")                                     # active: unchosen
+    assert panel.selected_categories() == ["H", "CLASH"]
+    assert panel.active_category() == "CLASH"
     panel.handle_key("b")
     rec = panel.session.record("T0001.xyz", 0)
-    assert rec["atoms"] == [2]
-    panel.handle_key("left")
-    assert panel.marked_atoms() == [2]
+    assert rec["atoms_by_category"] == {"H": [2], "CLASH": [0]}
+    assert rec["atoms"] == [0, 2]
     again = _panel(review_dir)                                # resumed: marks come back
     again.session.go_to_file("T0001.xyz")
     again.refresh()
-    assert again.marked_atoms() == [2]
-    assert "[2].forEach" in tab_review._atoms_js([2])
-    again.clear_atoms()
-    assert again.marked_atoms() == [] and "click" in again.atoms_html.value
+    assert again.marked_by_category() == {"H": [2], "CLASH": [0]}
+    assert again.active_category() == "CLASH"
+    js = tab_review._atoms_js([(2, 0, "#ff9800")])
+    assert '[[2, 0, "#ff9800"]].forEach' in js
     import csv
     rows = list(csv.DictReader(open(again.session.export_csv(), encoding="utf-8")))
-    assert [r["atoms"] for r in rows if r["file"] == "T0001.xyz"] == ["2"]
+    row = [r for r in rows if r["file"] == "T0001.xyz"][0]
+    assert row["atoms"] == "0;2" and row["atoms_by_category"] == "H:2;CLASH:0"
+    again.handle_key("2")                                     # unchoose the active CLASH
+    assert again.marked_by_category() == {"H": [2]}
+    again.clear_atoms()
+    assert again.marked_atoms() == []
+
+
+def test_a_single_category_mode_drops_the_marks_of_the_category_it_replaces(review_dir):
+    panel = _panel(review_dir, ["H", "CLASH"])
+    panel.multi_cb.value = False
+    panel.handle_key("1")
+    panel.handle_key("a0c0", at=0)
+    panel.handle_key("2")
+    assert panel.selected_categories() == ["CLASH"]
+    assert panel.marked_by_category() == {} and panel.active_category() == "CLASH"
