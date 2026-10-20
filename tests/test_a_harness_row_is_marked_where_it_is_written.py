@@ -226,10 +226,21 @@ def _unmarked(rows):
 def test_the_request_bytes_are_those_of_an_unmarked_history(
         agent_tree, monkeypatch):
     """Same conversation, marks removed: the next request is byte-identical,
-    so the prefix cache sees no difference."""
+    so the prefix cache sees no difference.
+
+    Both requests are compared from the same state of the prompt: one
+    request for TYPED_THREE first, so that what depends on the task
+    (shared lessons, memory recall) has settled. Without it the first
+    request carries a "System prompt update" for the sections whose
+    selection changed with the new task and the second does not -- a
+    difference of call order, not of marks, which surfaced once the
+    shared-lessons layer had entries."""
     eng, client, sent = _engine(agent_tree, monkeypatch)
     _conversation(eng, client)
     history = list(eng.messages)
+
+    eng.messages = list(history)
+    eng.stream_response(TYPED_THREE)
 
     eng.messages = list(history)
     eng.stream_response(TYPED_THREE)
