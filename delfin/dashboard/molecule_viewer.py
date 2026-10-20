@@ -6910,7 +6910,7 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
     return view
 
 
-def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
+def render_xyz_in_output(output_widget, xyz_text, width=None, height=None, extra_js=None):
     """Render an XYZ string inside an ipywidgets Output widget.
 
     Honors the global viewer settings (``ui.viewer.enabled`` and
@@ -6932,6 +6932,9 @@ def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
         view = py3Dmol.view(width=eff_width, height=eff_height)
         view.addModel(xyz_text, 'xyz')
         apply_molecule_view_style(view, zoom=profile['zoom'], style=profile['style'])
+        if extra_js:
+            # Raw script on the viewer (``viewer_UNIQUEID``), e.g. atom clicks.
+            view.startjs += extra_js
         view.show()
 
 
