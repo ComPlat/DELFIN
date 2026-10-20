@@ -70,6 +70,8 @@ LITERATURE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE"
 # donor (polyhedra.md_distance with the donor atom), so gate tolerances, legacy pins and every
 # per-element question keep their historic value -- separates a better seat from a moved gate.
 SCOPE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE"
+LEVELS_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LEVELS"
+ALL_LEVELS = ("D", "R", "Re", "Ro", "Roe")
 B_BV = 0.37
 # A complex whose donors of one element get targets further apart than this is not given a
 # per-element target: the callers that ask by element only (the legacy pins and the tolerance
@@ -277,19 +279,34 @@ def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
     return tbl
 
 
+def _levels():
+    v = os.environ.get(LEVELS_ENV, "")
+    return {x.strip() for x in v.split(",") if x.strip()} if v else set(ALL_LEVELS)
+
+
 def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optional[str]):
-    """(target A, level) of one donor, or (None, None)."""
+    """(target A, level) of one donor, or (None, None).
+
+    Levels, in order (DELFIN_FFFREE_ML_TARGETS_BV_LEVELS selects a subset, default all):
+      D    direct median at (ox, CN, class)
+      R    effective R0 at (ox, class), CN through b ln(V/CN)
+      Re   effective R0 at (ox, element)
+      Ro   effective R0 over all ox (class), ox and CN through b ln(V/CN)
+      Roe  the same per element
+      L    literature R0 (only with DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE=1)
+    """
     nmin = _min_n()
-    row = table.get(("D", metal, str(ox), str(cn), element, cls))
-    if row is not None and row[0] >= nmin:
-        return row[1], "D"
+    use = _levels()
+    if "D" in use:
+        row = table.get(("D", metal, str(ox), str(cn), element, cls))
+        if row is not None and row[0] >= nmin:
+            return row[1], "D"
     if ox <= 0 or cn <= 0:
         return None, None
     lns = B_BV * math.log(ox / float(cn))
-    # effective R0 at this oxidation state, then over all oxidation states of the metal (the
-    # bond-valence model carries the oxidation-state dependence through V); per class, then
-    # per element
     for o, c, lev in ((str(ox), cls, "R"), (str(ox), "*", "Re"), ("*", cls, "Ro"), ("*", "*", "Roe")):
+        if lev not in use:
+            continue
         row = table.get(("R", metal, o, "*", element, c))
         if row is not None and row[0] >= nmin:
             return row[1] - lns, lev
