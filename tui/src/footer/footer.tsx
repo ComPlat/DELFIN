@@ -7,6 +7,8 @@
  *             the blocks that finished but are not in the rows yet
  *   status    spinner · what it does · elapsed · tokens · cost · esc
  *   tasks     the session's task list while a task is open (tasks.tsx)
+ *   background  what the session still has out: shells, watched jobs,
+ *             background agents, wake-ups, with their ages (background.tsx)
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above);
  *             "!" in front: a shell line, said on the box's top border.
@@ -40,6 +42,7 @@ import { fenceOf, liveBlocks, liveRows } from "./live"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
 import { PickerView, type Picker } from "./picker"
 import { TasksPanel, taskLines } from "./tasks"
+import { BackgroundPanel, backgroundLines } from "./background"
 
 export { TAIL_MAX } from "./live"
 
@@ -233,6 +236,21 @@ export function Footer(props: FooterProps): JSX.Element {
     }
   })
   onCleanup(() => timer && clearInterval(timer))
+  // The background list's ages: once a second while anything is out.
+  const [bgNow, setBgNow] = createSignal(Date.now())
+  let bgTimer: ReturnType<typeof setInterval> | undefined
+  createEffect(() => {
+    const out = (props.session()?.background?.length ?? 0) > 0
+    if (out && !bgTimer) {
+      setBgNow(Date.now())
+      bgTimer = setInterval(() => setBgNow(Date.now()), 1000)
+      ;(bgTimer as { unref?: () => void }).unref?.()
+    } else if (!out && bgTimer) {
+      clearInterval(bgTimer)
+      bgTimer = undefined
+    }
+  })
+  onCleanup(() => bgTimer && clearInterval(bgTimer))
 
   const style = themedStyle(props.renderer, t)
   const asked = () => props.session()?.pending[0]
@@ -272,6 +290,11 @@ export function Footer(props: FooterProps): JSX.Element {
   const tasks = createMemo(() => viewOpen() ? []
     : taskLines(props.session()?.tasks ?? [], Boolean(props.tasksFolded?.()), cols(), term().height,
                 props.keymap.label("tasks") || "ctrl+t"))
+  /** What is still out: not in the agent view either. */
+  const background = createMemo(() => viewOpen() ? []
+    : backgroundLines(props.session()?.background ?? [], cols(), bgNow()))
+  /** The rows the two lists above the prompt take. */
+  const listRows = () => tasks().length + background().length
   const full = () => Boolean(props.screen)
   createEffect(() => {
     // Full screen has no footer of a height: the window is all of it.
@@ -279,7 +302,7 @@ export function Footer(props: FooterProps): JSX.Element {
     props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
       ? agentFooterRows(term())
       : footerRows(props.session(), term(), note(), props.composer.height(),
-                   props.approval, props.picker?.height() ?? 0, tasks().length)
+                   props.approval, props.picker?.height() ?? 0, listRows())
   })
   /** The agent view's list: its rows less the message, the composer and
    *  its rules, and the hints. */
@@ -305,7 +328,7 @@ export function Footer(props: FooterProps): JSX.Element {
   })
 
   const budget = () => approvalBudget(props.session(), term(), note(), props.composer.height(),
-                                      props.picker?.height() ?? 0, tasks().length)
+                                      props.picker?.height() ?? 0, listRows())
 
   // Nothing in the footer shrinks: what does not fit is cut at the top
   // (the composer and the keys are at the bottom), never drawn over.
@@ -384,6 +407,7 @@ export function Footer(props: FooterProps): JSX.Element {
         )}
       </Show>
       <TasksPanel lines={tasks} theme={t} />
+      <BackgroundPanel lines={background} theme={t} />
       <Show when={asked()} keyed>
         {(a: Asked) => <ApprovalPanel asked={a} ui={props.approval} theme={t} width={cols} maxRows={budget} />}
       </Show>

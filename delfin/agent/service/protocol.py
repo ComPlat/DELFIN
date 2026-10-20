@@ -132,7 +132,7 @@ EVENTS: dict[str, dict[str, str]] = {
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",
                      "bypassBlocked": "string?", "bypassConfirmed": "boolean?",
-                     "auto": "string?"},
+                     "auto": "string?", "background": "[object]?"},
     # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
     # may stop there: the managed policy allows it and isolation holds
     # each command; posture_cycle.bypass_refusal); bypassConfirmed: its
@@ -143,10 +143,16 @@ EVENTS: dict[str, dict[str, str]] = {
     # num, status, label -- sent whole whenever any of it changed.
     # auto: auto mode's one-line state (loop, iteration n/max, last
     # result, how many items need the user); "" while it is off.
+    # background: what this session still has out -- shells, watched
+    # jobs, background agents, wake-ups (background_view.snapshot) -- each
+    # row group, id, kind, label, url, state, and since / at in epoch
+    # seconds; no ages, so it is sent when the set changes, not each
+    # second. The window draws the ages.
     "session.updated": {"approval": "string?", "model": "string?",
                         "effort": "string?", "title": "string?",
                         "tasks": "[object]?", "bypassBlocked": "string?",
-                        "bypassConfirmed": "boolean?", "auto": "string?"},
+                        "bypassConfirmed": "boolean?", "auto": "string?",
+                        "background": "[object]?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},

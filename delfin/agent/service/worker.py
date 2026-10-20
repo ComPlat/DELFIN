@@ -1110,6 +1110,8 @@ class Worker:
         self._seen_lock = threading.Lock()
         self._tasks: list[dict[str, Any]] = []
         self._tasks_key: Any = ()
+        self._background: list[dict[str, Any]] = []
+        self._background_at = -1e9
         #: bypassPermissions was confirmed once in this session (the
         #: window's y): shift+tab passes through it from then on.
         self._bypass_confirmed = False
@@ -1161,7 +1163,8 @@ class Worker:
                 # not) and whether its first step was confirmed already.
                 "bypassBlocked": self._bypass_blocked(),
                 "bypassConfirmed": bool(getattr(self, "_bypass_confirmed", False)),
-                "auto": self._auto_line()}
+                "auto": self._auto_line(),
+                "background": self._background_rows()}
 
     def _bypass_blocked(self) -> str:
         try:
@@ -1212,6 +1215,41 @@ class Worker:
         except Exception:
             pass
         return self._tasks
+
+    #: How often the background list is read again. check_session runs
+    #: every tick (0.25 s); the list reads the job registry, the process
+    #: table and the scheduler, which is a glance every few seconds, not a
+    #: poll (the terminal's status line uses the same 3 s).
+    _BACKGROUND_EVERY_S = 3.0
+    #: Rows sent at most. The window draws three and a count, so a longer
+    #: list only costs event size; a runaway (hundreds of wake-ups) is cut.
+    _BACKGROUND_MAX = 50
+
+    def _background_rows(self) -> list[dict[str, Any]]:
+        """This session's background work (background_view.snapshot), each
+        label one plain line. A list that cannot be read keeps the last one
+        rather than announcing that nothing runs."""
+        now = time.monotonic()
+        if now - self._background_at < self._BACKGROUND_EVERY_S:
+            return self._background
+        self._background_at = now
+        try:
+            from .. import background_view
+
+            sid = str(getattr(self.engine, "session_id", "") or "") or None
+            rows = background_view.snapshot(
+                background_view.collect(self.workspace, session_id=sid))
+            self._background = [
+                {"group": r["group"], "id": protocol.clean_line(r["id"], 64),
+                 "kind": protocol.clean_line(r["kind"], 40),
+                 "label": protocol.clean_line(r["label"], protocol.TASK_LABEL_MAX),
+                 "url": protocol.clean_line(r["url"], 200),
+                 "state": protocol.clean_line(r["state"], 40),
+                 "since": r["since"], "at": r["at"]}
+                for r in rows[:self._BACKGROUND_MAX]]
+        except Exception:
+            pass
+        return self._background
 
     def check_session(self) -> None:
         """Announce the posture, model, effort or task list whenever it

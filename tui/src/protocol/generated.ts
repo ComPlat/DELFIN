@@ -164,6 +164,7 @@ export interface SessionInfoEvent {
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null
+  "background"?: Record<string, unknown>[] | null
   "type": "session.info"
   "session": string
   "ts": number
@@ -178,6 +179,7 @@ export interface SessionUpdatedEvent {
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null
+  "background"?: Record<string, unknown>[] | null
   "type": "session.updated"
   "session": string
   "ts": number
