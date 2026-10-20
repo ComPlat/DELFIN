@@ -66,6 +66,10 @@ FLAG = "DELFIN_FFFREE_ML_TARGETS_BV"
 TABLE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_TABLE"
 MIN_N_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_MIN_N"
 LITERATURE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE"
+# Where the targets act: "all" (default) = every caller; "seat" = only the FF-free seating of a
+# donor (polyhedra.md_distance with the donor atom), so gate tolerances, legacy pins and every
+# per-element question keep their historic value -- separates a better seat from a moved gate.
+SCOPE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE"
 B_BV = 0.37
 # A complex whose donors of one element get targets further apart than this is not given a
 # per-element target: the callers that ask by element only (the legacy pins and the tolerance
@@ -385,6 +389,8 @@ def target_for_donor(metal: str, donor: str, atom=None) -> Optional[float]:
     """
     ctx = _CTX
     if ctx is None or not bv_targets_enabled() or metal != ctx["metal"]:
+        return None
+    if atom is None and os.environ.get(SCOPE_ENV, "all") == "seat":
         return None
     if atom is not None:
         try:

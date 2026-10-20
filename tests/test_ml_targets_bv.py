@@ -16,7 +16,7 @@ CU_ACAC = "CC1=CC(C)=[O+][Cu-2]2([O]1)[O+]=C(C)C=C(C)[O]2"
 
 @pytest.fixture(autouse=True)
 def _bv_env_reset(monkeypatch):
-    for k in (BV.FLAG, BV.TABLE_ENV, BV.MIN_N_ENV, BV.LITERATURE_ENV):
+    for k in (BV.FLAG, BV.TABLE_ENV, BV.MIN_N_ENV, BV.LITERATURE_ENV, BV.SCOPE_ENV):
         monkeypatch.delenv(k, raising=False)
     BV.clear_context()
     BV._TABLE_CACHE.clear()
@@ -144,3 +144,16 @@ def test_the_shipped_cod_table_is_the_default_and_reads():
     assert all(n >= 10 for n, _v in tbl.values())
     t, lev = BV.donor_target(tbl, "Co", 3, 6, "N", "sp3l")
     assert lev is not None and 1.85 < t < 2.05
+
+
+def test_seat_scope_leaves_every_element_question_alone(tmp_path, monkeypatch):
+    path = _write_bv_table(tmp_path, [("D", "Pt", 2, 4, "N", "t3l", 99, 2.051)])
+    monkeypatch.setenv(BV.FLAG, "1")
+    monkeypatch.setenv(BV.TABLE_ENV, path)
+    monkeypatch.setenv(BV.SCOPE_ENV, "seat")
+    before = MT._get_ml_bond_length("Pt", "N")
+    BV.set_context(CISPLATIN)
+    nh3 = Chem.AddHs(Chem.MolFromSmiles("N"))
+    assert PH.md_distance("Pt", "N", atom=nh3.GetAtomWithIdx(0), mol=nh3) == pytest.approx(2.051)
+    assert BV.target_for_donor("Pt", "N") is None
+    assert MT._get_ml_bond_length("Pt", "N") == before
