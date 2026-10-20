@@ -97,3 +97,16 @@ def test_a_list_that_cannot_be_read_keeps_the_last_one(tmp_path, monkeypatch):
 def test_the_protocol_declares_the_field():
     assert protocol.EVENTS["session.info"]["background"] == "[object]?"
     assert protocol.EVENTS["session.updated"]["background"] == "[object]?"
+
+
+def test_the_session_info_a_window_opens_with_carries_the_list(tmp_path):
+    """session.info lists its fields one by one (Worker.info); a field
+    added to the facts only reached session.updated. Found by a probe
+    against a real worker, not by the tests above."""
+    from tui_worker_client import WorkerClient
+
+    with WorkerClient(tmp_path) as w:
+        assert w.init_result["session"]["background"] == []
+        header = w.request("session.replay", {"turns": 1})["events"][0]
+        assert header["type"] == "session.info"
+        assert header["background"] == []
