@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
-import sys
 
 import pytest
 
@@ -63,11 +62,14 @@ def test_tcp_can_be_chosen_and_windows_keeps_it(monkeypatch):
     assert V._kernel_transport_args() == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="no ipc transport on Windows")
 def test_a_kernel_of_the_server_listens_on_no_port(tmp_path, monkeypatch,
                                                    short_runtime):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("DELFIN_KERNEL_TRANSPORT", raising=False)
+    if os.name == "nt":
+        # No ipc transport on Windows: the server is not asked for one.
+        assert V._kernel_transport_args() == []
+        return
     from jupyter_server.serverapp import ServerApp
 
     app = ServerApp()
