@@ -391,7 +391,7 @@ include = ["delfin*"]
 "delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
 "delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
 "delfin.notebooks" = ["*.ipynb"]
-"delfin.manta" = ["*.md"]
+"delfin.manta" = ["*.md", "data/*.tsv"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 
 # Whatever an installer left in the source tree stays out of the wheel even

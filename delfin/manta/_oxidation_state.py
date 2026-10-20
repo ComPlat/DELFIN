@@ -172,6 +172,19 @@ OXSTATE_CUT_FLAG = "DELFIN_OXSTATE_CUT"
 
 def _ox_cut(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
     """(OS, d) by cutting every metal-donor bond of the SMILES as written (#528), or None."""
+    r = _ox_cut_full(mol, metal_idx)
+    return None if r is None else (r[0], r[1])
+
+
+def _ox_cut_full(mol, metal_idx: int):
+    """(OS, d, cut mol, donor indices) of the cut in ``_ox_cut``, or None.
+
+    The cut mol is the complex with every metal-donor bond removed and each donor's open
+    valence closed with electrons: the ligands as closed-shell fragments carrying their
+    ionic charges, the metal left as an isolated atom, atom indices unchanged.  The
+    bond-valence M-D targets (_ml_targets_bv) classify the donors on exactly this mol, so
+    the oxidation state and the donor classes come from one reading of the SMILES.
+    """
     from rdkit import Chem
     m = mol.GetAtomWithIdx(int(metal_idx))
     msym = m.GetSymbol()
@@ -230,7 +243,7 @@ def _ox_cut(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
     d = _OX_GROUP[msym] - os_
     if d < 0 or d > 10:
         return None
-    return os_, d
+    return os_, d, cut, donors
 
 
 def oxidation_state(mol, metal_idx: int) -> Optional[Tuple[int, int]]:

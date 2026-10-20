@@ -857,6 +857,15 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
         _me = _ml_me_band(metal_symbol, donor_symbol)
         if _me is not None:
             return float(_me)
+    # BOND-VALENCE TARGET OF THE COMPLEX BEING BUILT (DELFIN_FFFREE_ML_TARGETS_BV, default OFF
+    # -> byte-identical).  Asked by element only, so it answers only when every donor of this
+    # element in the complex has a target and they agree (see _ml_targets_bv.build_context);
+    # otherwise None and the lookup below as before.
+    if kind == "sigma" and os.environ.get("DELFIN_FFFREE_ML_TARGETS_BV", "0") == "1":
+        from delfin.manta import _ml_targets_bv as _bvt
+        _t = _bvt.target_for_donor(metal_symbol, donor_symbol)
+        if _t is not None:
+            return float(_t)
     # ===== M-C FROM A MEASURED TABLE INSTEAD OF FROM PLACEHOLDERS (24.08.2026) =========
     # A per-metal comparison of this table's M-C values against crystal structures found
     # it right at its core but wrong for three coherent families, each in one direction:

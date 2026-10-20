@@ -685,6 +685,10 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     _det_env_set = False
     if outermost:
         _CONF_COMPLETE_ACTIVE.value = True
+        # Bond-valence M-D targets of this complex (DELFIN_FFFREE_ML_TARGETS_BV, default OFF ->
+        # set_context does nothing, byte-identical); cleared in the finally below.
+        from delfin.manta import _ml_targets_bv as _bvt
+        _bvt.set_context(_smiles_arg(args, kwargs))
         if _det_param:
             _det_env_prev = os.environ.get("DELFIN_DETERMINISTIC")
             _enum_env_prev = os.environ.get("DELFIN_FFFREE_DETERMINISTIC_ENUM")
@@ -755,6 +759,8 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     finally:
         if outermost:
             _CONF_COMPLETE_ACTIVE.value = False
+            from delfin.manta import _ml_targets_bv as _bvt
+            _bvt.clear_context()
             if _det_env_set:
                 if _det_env_prev is None:
                     os.environ.pop("DELFIN_DETERMINISTIC", None)
