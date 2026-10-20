@@ -785,6 +785,11 @@ _JOB_WAKE_INTERVAL_S = 120.0
 # How often the Background panel re-reads what is running. Local files only.
 _BACKGROUND_REFRESH_S = 10.0
 
+# After Stop, how often the stop is sent again until the turn's thread has
+# ended. One stop can miss: a turn that is still starting clears the flag,
+# and a request blocked on its first byte only notices a closed transport.
+_STOP_REPEAT_S = 1.0
+
 
 def _job_wake_prompt(done: list) -> str:
     """The message a finished watched job sends an idle agent; "" for none.
@@ -12408,13 +12413,20 @@ def create_tab(ctx):
             f'</div>'
         )
 
+    def _turn_thread_alive() -> bool:
+        t = state.get("_turn_thread")
+        return bool(t is not None and t.is_alive())
+
     def _update_button_states():
         engine = state["engine"]
         is_streaming = state["streaming"]
         # Keep textarea + send enabled during streaming for message queuing
         send_btn.disabled = False
         input_textarea.disabled = False
-        stop_btn.disabled = not is_streaming
+        # Stop stays a button while the turn's thread runs on after a stop:
+        # pressing it again is the one thing left to do when the first
+        # stop did not take.
+        stop_btn.disabled = not (is_streaming or _turn_thread_alive())
         mode_dropdown.disabled = is_streaming
         model_dropdown.disabled = is_streaming
         effort_dropdown.disabled = is_streaming
@@ -21787,7 +21799,12 @@ def create_tab(ctx):
                     # Stale worker — just save session, don't touch UI
                     _auto_save_session()
 
-        threading.Thread(target=_worker, daemon=True).start()
+        # Kept so Stop can tell whether the turn has really ended: the
+        # "streaming" flag goes off the moment Stop is pressed, the thread
+        # only when the engine lets go.
+        _turn_thread = threading.Thread(target=_worker, daemon=True)
+        state["_turn_thread"] = _turn_thread
+        _turn_thread.start()
 
     def _continue_after_announcement():
         """The engine's follow-up note for a turn that ended announcing work
@@ -21823,6 +21840,53 @@ def create_tab(ctx):
             input_textarea.value = next_msg
             _on_send(None)
 
+    def _send_stop(engine) -> None:
+        if not engine:
+            return
+        try:
+            engine.request_stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(engine.client, "signal_stop"):
+                engine.client.signal_stop()
+        except Exception:
+            pass
+
+    def _hold_stop(engine, thread) -> None:
+        """Send the stop again every _STOP_REPEAT_S until ``thread`` (the
+        stopped turn) has ended, then put the buttons right.
+
+        One stop can miss. A turn still starting clears the flag as it
+        takes the gate, and a request blocked on its first byte is only
+        cut by a closed transport. Either way the turn carried on after
+        the dashboard said "Stop." and had disabled the button. The
+        worker of the terminal service repeats a cancel the same way
+        (worker._look_around)."""
+        if thread is None or not thread.is_alive():
+            return
+        if state.get("_stop_holding") is thread:
+            return
+        state["_stop_holding"] = thread
+        import threading as _threading_stop
+
+        def _repeat():
+            try:
+                while thread.is_alive() and not state.get("_closed"):
+                    thread.join(_STOP_REPEAT_S)
+                    if thread.is_alive():
+                        _send_stop(engine)
+            finally:
+                if state.get("_stop_holding") is thread:
+                    state["_stop_holding"] = None
+                try:
+                    _update_button_states()
+                except Exception:
+                    pass
+
+        _threading_stop.Thread(target=_repeat, daemon=True,
+                               name="delfin-stop-hold").start()
+
     def _on_stop(button):
         # Soft-stop: cooperative end of the running turn so the next Send
         # can continue the same conversation (CLI session_id preserved).
@@ -21830,10 +21894,15 @@ def create_tab(ctx):
         # follow-up prompts. Old behaviour killed the subprocess and wiped
         # the queue, which forced a full re-init on every ESC.
         engine = state["engine"]
-        if engine:
-            engine.request_stop()
-            if hasattr(engine.client, "signal_stop"):
-                engine.client.signal_stop()
+        _send_stop(engine)
+        thread = state.get("_turn_thread")
+        if not state.get("streaming") and _turn_thread_alive():
+            # A second press on a turn already stopped once: stop again and
+            # keep repeating, without a second "Stop." line in the chat.
+            _hold_stop(engine, thread)
+            _update_button_states()
+            return
+        _hold_stop(engine, thread)
         # Bump generation so the old worker's finally block won't touch UI
         state["_generation_id"] = state.get("_generation_id", 0) + 1
         state["streaming"] = False
