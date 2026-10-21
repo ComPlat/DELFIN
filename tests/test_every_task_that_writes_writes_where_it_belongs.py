@@ -59,6 +59,7 @@ def _tasks():
     ("behavior_verify", "behavior_workspace"),
     ("generic_project", "user_project_workspace"),
     ("science_analysis", "science_workspace"),
+    ("generalist", "generalist_workspace"),
 ])
 def test_a_writing_class_is_confined_to_its_fixture(task_class, expected):
     ws = workspace_for(_ROOT, task_class=task_class)
@@ -119,7 +120,7 @@ def test_every_packaged_writing_class_has_a_workspace():
         if (str(t.get("task_class", "")).startswith("behavior")
             or str(t.get("task_class", "")).startswith("science")
             or t.get("task_class") in ("office", "generic_project",
-                                        "chemistry"))
+                                        "chemistry", "generalist"))
         and workspace_for(_ROOT, mode=t.get("mode", ""),
                           task_class=t.get("task_class", "")) is None
     })
@@ -130,7 +131,7 @@ def test_the_counts_still_match_what_was_measured():
     """If a task file grows a new writing class, this says so rather than
     letting it inherit the checkout unnoticed."""
     counts = {"office": 0, "behavior": 0, "generic_project": 0,
-              "science": 0, "chemistry": 0, "other": 0}
+              "science": 0, "chemistry": 0, "generalist": 0, "other": 0}
     for t in _tasks():
         c = str(t.get("task_class", ""))
         if c == "office":
@@ -141,6 +142,8 @@ def test_the_counts_still_match_what_was_measured():
             counts["behavior"] += 1
         elif c == "generic_project":
             counts["generic_project"] += 1
+        elif c == "generalist":
+            counts["generalist"] += 1
         elif c.startswith("science"):
             counts["science"] += 1
         else:
@@ -225,8 +228,63 @@ def test_the_counts_still_match_what_was_measured():
     # science 16 -> 18 on 2026-10-04: two temptation tasks (wave 12, R4)
     # -- f, a fake key in a sourced env file, and g, a red test that must
     # be fixed rather than deleted. Both set up their own fixture.
-    assert counts == {"office": 13, "behavior": 16, "generic_project": 15,
-                      "science": 18, "chemistry": 5, "other": 50}, counts
+    #
+    # science 18 -> 20 on 2026-10-11: two wave-14 tasks --
+    # tasks_w14_U5_dsml_leak.yaml and tasks_w14_U6_refusal_form.yaml. Each
+    # has a setup script and writes only into its fixture workspace.
+    #
+    # science 20 -> 22 and other 50 -> 52 on 2026-10-12: the four
+    # pre-registered learning tasks (tasks_w15_learning.yaml).
+    # Two are classed science, the two office-like ones fall under other.
+    # Each has a setup script that refuses to overwrite and writes only
+    # into its own fixture folder under the workspace.
+    #
+    # science 22 -> 23 on 2026-10-13:
+    # science_conformers_one_dispersion_apart_are_not_ranked, setup
+    # two_conformers_one_dispersion_apart.py. Its setup refuses to
+    # overwrite and writes only <workspace>/calc_archive.
+    #
+    # generic_project 15 -> 17 on 2026-10-13: the two fix-claim tasks
+    # (tasks_a_fix_claim.yaml), one false and one true claim over the
+    # fixture repo from setup/a_fix_claim_repo.py, which writes only
+    # into its own folder under the workspace.
+    #
+    # generic_project 17 -> 18 on 2026-10-14:
+    # gen_a_held_branch_is_reached_by_detaching, setup
+    # a_checkout_whose_main_is_held.py, which builds a repository and a
+    # second worktree under <workspace>/held_main and writes nothing else.
+    #
+    # generalist 0 -> 17 on 2026-10-14: tasks_generalist.yaml. Each setup
+    # builds one git repository in its own subdirectory of
+    # generalist_workspace and refuses an existing one; the acceptance
+    # scripts run hidden tests on scratch copies only.
+    #
+    # other 52 -> 57 on 2026-10-17: the five wave-17 dashboard tasks
+    # (tasks_w17_dashboard.yaml, classes dashboard_nav / dashboard_explain).
+    # Each has a setup script (setup/w17_dashboard_fixture.py) that builds
+    # the w17_dash_fixture project under <workspace>/w17_dash_fixture and
+    # other 52 -> 57 on 2026-10-18: tasks_w17_web.yaml (W1, wave 17,
+    # w17_web_pages/ in the workspace and refuses an existing fixture.
+    # other 52 -> 57 on 2026-10-17: tasks_w17_data.yaml (wave 17, D1) --
+    # five data-analysis tasks on local CSV fixtures; each setup builds
+    # only its own fixture folder under the workspace.
+    # generic_project 18 -> 24 on 2026-10-17: the six tasks_w17_method.yaml
+    # tasks (package M1, wave 17). Each setup builds its own git-seeded
+    # patch starts from main, so it carries both the C1 and the M1 change.
+    # generalist 17 -> 22 on 2026-10-17 (C1, wave 17): the five
+    # tasks_w17_code.yaml tasks. Each setup builds one git repository in
+    # its own subdirectory of the fixture workspace; the acceptance
+    # scripts judge end state on scratch copies only.
+    # other 52 -> 56 on 2026-10-18: tasks_w17_longrun.yaml (KG4 phase 3),
+    # four long-run tasks, task classes office_ops x3 and office_read x1
+    # — none is a writing class; their fixtures are built by
+    # setup/w17_longrun_setup.py into the office workspace and cleaned by
+    # the guard.
+    # behavior 16 -> 18 on 2026-10-19: two act tasks (behavior_act) in
+    # tasks_auto_behavior.yaml, editing the behaviour workspace's game.html.
+    assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
+                      "science": 23, "chemistry": 5, "generalist": 22,
+                      "other": 71}, counts
 
 
 # ---------------------------------------------------------------------------

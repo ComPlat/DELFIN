@@ -11,6 +11,7 @@ import numpy as np
 import os
 
 import delfin.manta._bond_decollapse as _bd
+import delfin.manta._lone_pair_space as _lps
 from delfin.manta.assemble_donor_plane import (
     _donor_follow_weights,
     _donor_plane_relax,
@@ -154,13 +155,13 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
         #
         # beta = angle between the M->D bond and the plane of the donor's OWN conjugated
         # environment (0 deg = metal in plane).  Measured against crystals:
-        #     monodentate 0.9 deg (BETTER than the 3.4 crystals allow)
-        #     bidentate   9.3      tetradentate 15.9   (crystals: 3.7 / 4.8)
+        #     monodentate 0.9 deg (flatter than the crystals themselves)
+        #     bidentate   9.3      tetradentate 15.9   (crystals: a few degrees)
         # The monodentate path is right because it aligns the metal along the lone pair
         # (_donor_and_lp + _rot_align).  THIS path never looks at the donor plane at all --
         # it fits donors rigidly onto ideal vertices, and beta comes out as a by-product.
         # The break is a PATH CHANGE, not physics.  pyramidal_sp2 is our largest INDEPENDENT
-        # defect (15.7 % of our frames vs 1.0 % of crystals; sole hard finding on 37.9 % of
+        # defect (15.7 % of our frames, rare on crystals; sole hard finding on 37.9 % of
         # its firings), and trilatresc2 lost its verdict to exactly this axis (OVAVEO,
         # pyramid_frame_regressed + root_defects_increased).
         #
@@ -374,6 +375,12 @@ def _donor_and_lp(syms, P, mol, donor_idx: int) -> np.ndarray:
     nbrs = [n.GetIdx() for n in mol.GetAtomWithIdx(donor_idx).GetNeighbors()]
     if not nbrs:
         return np.array([1.0, 0, 0])
+    # DELFIN_FFFREE_LONE_PAIR_SPACE (default OFF): a group-16 sp3 donor with one or two
+    # substituents seats the metal on a free tetrahedral vertex (see _lone_pair_space).
+    if _lps.lone_pair_space_enabled():
+        _a = _lps.metal_direction(mol, P, donor_idx)
+        if _a is not None:
+            return _a
     v = np.zeros(3)
     for n in nbrs:
         u = P[n] - P[donor_idx]; v += u / np.linalg.norm(u)
@@ -413,7 +420,7 @@ _PNICTOGENS = frozenset(("N", "P", "As", "Sb"))
 
 # VSEPR ideal M-D-X angles for a SINGLE-substituent donor that keeps its lone
 # pairs (chalcogen 2-coord ether/thioether/selenoether/selenolate ~100 deg; a
-# pyramidal pnictogen ~107 deg).  CCDC-sane: H2Se 91, R2Se ~96-98, R2Te ~95,
+# pyramidal pnictogen ~107 deg).  Textbook values: H2Se 91, R2Se ~96-98, R2Te ~95,
 # H2O 104.5, R2O ~111, R3N/R3P ~107.
 _DONOR_BEND_DEG = {"O": 109.0, "S": 100.0, "Se": 98.0, "Te": 95.0,
                    "N": 107.0, "P": 100.0, "As": 96.0, "Sb": 95.0}
@@ -597,6 +604,14 @@ def _vsepr_reconstruct(lsyms, lP, lmol, di):
         return lP, _donor_and_lp(lsyms, lP, lmol, di)
     lP = _straighten_sp_chain(lsyms, lP, lmol, di)
     atom = lmol.GetAtomWithIdx(di)
+    # LONE PAIRS TAKE UP SPACE (DELFIN_FFFREE_LONE_PAIR_SPACE, default OFF -> byte-identical):
+    # a group-16 donor with one or two substituents keeps two or three lone pairs on the free
+    # vertices of its tetrahedron; the metal takes one of them instead of the in-plane
+    # bisector, so the donor stays pyramidal and the substituents keep their own geometry.
+    if _lps.lone_pair_space_enabled():
+        _a = _lps.metal_direction(lmol, lP, di)
+        if _a is not None:
+            return lP, _a
     nbrs = [n.GetIdx() for n in atom.GetNeighbors()]
     k = len(nbrs)
     if k == 0 or k >= 4 or atom.IsInRing():

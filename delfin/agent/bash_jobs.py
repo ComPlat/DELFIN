@@ -24,7 +24,7 @@ running the same auto-allow / deny / secret-scan checks BEFORE any
 job is started; this module trusts its inputs.
 
 Crash safety: every started job is additionally persisted to
-``<workspace>/.delfin/bash_jobs.json`` (atomic temp-file + ``os.replace``
+the workspace's registry under ``~/.delfin/workspace_state/`` (atomic temp-file + ``os.replace``
 writes, same pattern as ``memory_store._atomic_write``). A dashboard or
 kernel restart used to orphan every running calculation — the setsid
 child survives, but the new process had no record of job ids, output
@@ -82,10 +82,11 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from delfin.agent import proc_identity
 from delfin.agent import process_budget
+from delfin.agent import safe_git
 from delfin.agent import untrusted
 
 
@@ -245,13 +246,12 @@ def _signal_name(num: int) -> str:
         return f"signal {num}"
 
 # --- Persistent registry (crash-safe re-attach + completion events) ------
-_REGISTRY_DIRNAME = ".delfin"        # per-workspace state directory
 _REGISTRY_FILENAME = "bash_jobs.json"
 _REGISTRY_MAX_AGE_S = 7 * 24 * 3600  # prune records older than ~7 days
 _EVENT_TAIL_CHARS = 500              # stdout/stderr tail carried per event
 _RC_UNKNOWN = -257                   # poll() sentinel: finished, code unknown
 # Per-user locator: job_id -> workspace, so a NEW process can find the right
-# <workspace>/.delfin/bash_jobs.json from a bare job_id (bash_status /
+# registry of a workspace from a bare job_id (bash_status /
 # bash_output / bash_kill carry no workspace argument).
 _INDEX_PATH = Path.home() / ".delfin" / "bash_jobs_index.json"
 # Serializes read-modify-write cycles on the registry/index files within
@@ -397,7 +397,7 @@ class BashJob:
                 "finished, but the registry could not be written: "
                 + self.record_error
                 + " A reattach or a restart will read this job as still "
-                  "running. Check the workspace's .delfin directory is "
+                  "running. Check that ~/.delfin/workspace_state is "
                   "writable.")
         return status
 
@@ -408,7 +408,20 @@ class BashJob:
 
 
 def _registry_path(workspace: str | Path) -> Path:
-    return Path(workspace).expanduser() / _REGISTRY_DIRNAME / _REGISTRY_FILENAME
+    """The job registry of ``workspace``: in its state directory under
+    ``~/.delfin/workspace_state/`` (state_paths.workspace_state_dir),
+    never inside the workspace.
+
+    Inside the workspace it was the first change git showed in every
+    pristine repository (the drain's lock sidecar), and it sat in the
+    one folder a cloned repository can ship and the agent can write --
+    a record there names the files whose tail enters the model's
+    context. A ``.delfin/bash_jobs.json`` left by an earlier version is
+    not read: a job started before the upgrade keeps running, and only
+    its completion notice is lost.
+    """
+    from . import state_paths as _state_paths
+    return _state_paths.workspace_state_dir(workspace) / _REGISTRY_FILENAME
 
 
 @contextlib.contextmanager
@@ -657,8 +670,9 @@ _OWN_OUTPUT_NAME = re.compile(r"^kit_bg_[A-Za-z0-9_-]+\.(?:stdout|stderr)$")
 def is_own_output_file(path) -> bool:
     """Whether ``path`` is an output file this module created for a job.
 
-    The registry lives in ``<workspace>/.delfin/bash_jobs.json``, inside
-    the folder the agent may write. A record written there named any file
+    The registry lived in ``<workspace>/.delfin/bash_jobs.json``, inside
+    the folder the agent may write (it is under ``~/.delfin`` now, and
+    this check stays). A record written there named any file
     as a job's output: the next completion notice put the last 500
     characters of it into the model's context (an SSH key, past every
     read gate), and pruning an old record deleted it (review 2026-09-16).
@@ -1208,7 +1222,7 @@ class ReattachedJob:
 
 
 def _reattach(job_id: str, workspace: str | Path | None = None) -> Optional[ReattachedJob]:
-    """Rebuild a job view from ``<workspace>/.delfin/bash_jobs.json``.
+    """Rebuild a job view from the workspace registry (``_registry_path``).
 
     Called for job ids the in-memory registry does not know — i.e. after a
     dashboard/kernel restart orphaned a running calculation. The workspace
@@ -1252,11 +1266,18 @@ class _Registry:
         workspace: str | Path | None = None,
         session_id: str = "",
         argv: Optional[list[str]] = None,
+        on_finish: Optional[Callable[[], Optional[list]]] = None,
     ) -> BashJob:
         """Start ``command``. ``argv`` is what actually runs, when the caller
         wraps the command -- the agent's shell tool puts it in the process
         cage (``api_client._bash_isolation_argv``); ``command`` stays what
-        the job is known, capped and shown by."""
+        the job is known, capped and shown by.
+
+        ``on_finish``: called once in the watcher thread after the job's
+        process has been reaped and before its exit code is recorded (the
+        shell tool journals the files the job changed). Lines it returns
+        are appended to the job's stderr log. Its failure is noted there
+        and does not keep the exit code from being recorded."""
         if not command.strip():
             raise ValueError("command must be non-empty")
         if timeout_s <= 0:
@@ -1485,6 +1506,14 @@ class _Registry:
                     pass
                 if job.finished_at is None:
                     job.finished_at = time.monotonic()
+                if on_finish is not None:
+                    try:
+                        for line in on_finish() or ():
+                            _note_on_the_job(job, str(line))
+                    except Exception as exc:
+                        _note_on_the_job(
+                            job, f"recording the job's file changes "
+                                 f"failed: {exc}")
                 # The wrapper shell exiting is not the work finishing when
                 # the command queued a cluster job: register what it
                 # submitted so the completion is watched by someone.
@@ -1819,6 +1848,265 @@ def running_jobs_for_workspace(workspace: str | Path) -> list[dict]:
         except Exception:
             continue
     return out
+
+
+_CHECKOUT_TOPS: dict = {}
+_IN_USE_NOTES: list = []
+_IN_USE_NOTED: set = set()
+_IN_USE_LOCK = threading.Lock()
+
+
+def _checkout_top(cwd: str) -> str:
+    """The git top directory of *cwd*, cached per directory; "" outside a
+    checkout."""
+    if cwd in _CHECKOUT_TOPS:
+        return _CHECKOUT_TOPS[cwd]
+    top = ""
+    try:
+        r = safe_git.run(["rev-parse", "--show-toplevel"], cwd, timeout=5)
+        if r.returncode == 0:
+            top = os.path.realpath(r.stdout.strip())
+    except Exception:
+        top = ""
+    _CHECKOUT_TOPS[cwd] = top
+    return top
+
+
+def _named_paths(command: str, cwd: str) -> list[str]:
+    """Real paths of the files and directories a command names: its words
+    that exist relative to *cwd*, ``path::node`` test ids by their file,
+    and ``-m pkg.mod`` by the module's file."""
+    import shlex
+    try:
+        words = shlex.split(command or "")
+    except ValueError:
+        words = (command or "").split()
+    out: list[str] = []
+    prev = ""
+    for w in words:
+        cands = []
+        if prev == "-m" and re.fullmatch(r"[A-Za-z_][\w.]*", w):
+            mod = w.replace(".", "/")
+            cands += [mod + ".py", mod + "/__init__.py"]
+        elif not w.startswith("-") and "=" not in w.split("/")[0]:
+            cands.append(w.split("::", 1)[0])
+        prev = w
+        for c in cands:
+            if not c or len(c) > 4096:
+                continue
+            p = Path(c) if os.path.isabs(c) else Path(cwd) / c
+            try:
+                if p.exists():
+                    out.append(os.path.realpath(p))
+            except OSError:
+                continue
+    return out
+
+
+# Static file servers: they read each file per request, so an edit is the
+# point of running them -- the next reload shows it. Nothing they produce
+# can "stand for code that no longer exists".
+_FILE_SERVER_RE = re.compile(
+    r"(?:^|[\s;&|/])(?:"
+    r"python[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:http\.server|SimpleHTTPServer)"
+    r"|(?:npx\s+(?:-y\s+)?)?(?:http-server|live-server|serve)(?:\s|$)"
+    r"|php\s+-S\s"
+    r"|busybox\s+httpd"
+    r")")
+
+
+def serves_files(command: str) -> bool:
+    """Whether *command* is a static file server (``python -m http.server``,
+    ``npx serve``, ``php -S``...).
+
+    Measured 2026-10-19: ``python3 -m http.server 8038 --directory
+    3d-tetris`` held every file of the game it served closed to edit_file
+    for 50 minutes -- named by ``--directory``, so counted as "in use" --
+    and the model, refused each time, told the user it had made the
+    changes instead."""
+    return bool(_FILE_SERVER_RE.search(str(command or "")))
+
+def job_using(path, *, session_id: str = "") -> Optional[dict]:
+    """The running job of this process that uses *path*, or None.
+
+    ``kind`` is ``named`` when the job's command names the file or a
+    directory holding it (the script, the test file, the tests directory,
+    the module of ``-m``), and ``checkout`` when the job runs in the git
+    checkout holding the file. A job of another session (a non-empty
+    session id that differs) is not counted. Never raises."""
+    try:
+        target = os.path.realpath(str(path))
+    except Exception:
+        return None
+    found: Optional[dict] = None
+    try:
+        jobs = get_registry().list_jobs(include_finished=False)
+    except Exception:
+        return None
+    for job in jobs:
+        sid = str(getattr(job, "session_id", "") or "")
+        if session_id and sid and sid != session_id:
+            continue
+        if serves_files(job.command):
+            continue
+        cwd = str(getattr(job, "cwd", "") or "")
+        for named in _named_paths(job.command, cwd):
+            if target == named or target.startswith(named.rstrip("/") + "/"):
+                return {"job_id": job.job_id, "command": job.command,
+                        "kind": "named", "elapsed_s": job.elapsed_s()}
+        top = _checkout_top(cwd) if cwd else ""
+        if found is None and top and target.startswith(top + "/"):
+            found = {"job_id": job.job_id, "command": job.command,
+                     "kind": "checkout", "elapsed_s": job.elapsed_s()}
+    return found
+
+
+def note_checkout_write(use: dict, path) -> None:
+    """Queue one note per job: a write landed in the checkout it runs in."""
+    key = str(use.get("job_id") or "")
+    with _IN_USE_LOCK:
+        if not key or key in _IN_USE_NOTED:
+            return
+        _IN_USE_NOTED.add(key)
+        _IN_USE_NOTES.append(
+            f"[running job] `{path}` is in the checkout background job "
+            f"{key} runs in (`{str(use.get('command') or '')[:80]}`, "
+            f"{int(use.get('elapsed_s') or 0)} s). The job reads code from "
+            "this checkout as it imports it, so its result may mix the old "
+            "and the new code: run it again after the change, or work in a "
+            "worktree while it runs.")
+
+
+def take_in_use_notes() -> list[str]:
+    with _IN_USE_LOCK:
+        out = _IN_USE_NOTES[:]
+        _IN_USE_NOTES.clear()
+        return out
+
+
+def _descendants(root: int) -> set:
+    """``root`` and every process below it, from /proc (Linux); {root}
+    elsewhere."""
+    out = {root}
+    try:
+        parent_of: dict[int, int] = {}
+        for name in os.listdir("/proc"):
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", encoding="latin-1") as fh:
+                    stat = fh.read()
+                parent_of[int(name)] = int(stat.rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+        grew = True
+        while grew:
+            grew = False
+            for pid, ppid in parent_of.items():
+                if ppid in out and pid not in out:
+                    out.add(pid)
+                    grew = True
+    except OSError:
+        pass
+    return out
+
+
+def _listening_ports_of(pids: set) -> set:
+    """The TCP ports the processes ``pids`` listen on (Linux /proc)."""
+    inodes: set[str] = set()
+    for pid in pids:
+        try:
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                try:
+                    link = os.readlink(f"/proc/{pid}/fd/{fd}")
+                except OSError:
+                    continue
+                if link.startswith("socket:["):
+                    inodes.add(link[8:-1])
+        except OSError:
+            continue
+    ports: set[int] = set()
+    if not inodes:
+        return ports
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table, encoding="latin-1") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    # local_address, state 0A = LISTEN, inode at index 9
+                    if len(cols) > 9 and cols[3] == "0A" and cols[9] in inodes:
+                        ports.add(int(cols[1].rsplit(":", 1)[1], 16))
+        except (OSError, ValueError):
+            continue
+    return ports
+
+
+def job_listening_ports(job) -> set:
+    """The TCP ports one job (and every process below it) listens on, read
+    from /proc; empty off Linux or for a job that has ended. Never raises."""
+    try:
+        if job is None or job.poll() is not None:
+            return set()
+        pid = int(getattr(getattr(job, "proc", None), "pid", 0) or 0)
+        return _listening_ports_of(_descendants(pid)) if pid > 0 else set()
+    except Exception:
+        return set()
+
+
+def open_ports(session_id: str = "") -> list[dict]:
+    """Every running background job that listens on a port, with its ports:
+    ``[{"job_id", "ports", "command", "session_id"}]``, for the views that
+    show open ports and close them (the terminal's /ports, the dashboard's
+    Background panel). With ``session_id``, that session's jobs only."""
+    out: list[dict] = []
+    try:
+        jobs = get_registry().list_jobs(include_finished=False)
+    except Exception:
+        return out
+    for job in jobs:
+        sid = str(getattr(job, "session_id", "") or "")
+        if session_id and sid != session_id:
+            continue
+        ports = job_listening_ports(job)
+        if ports:
+            out.append({"job_id": job.job_id, "ports": sorted(ports),
+                        "command": str(job.command or ""),
+                        "session_id": sid})
+    return out
+
+
+def own_listening_ports(session_id: str) -> set:
+    """The ports this session's running background jobs listen on.
+
+    What the egress proxy lets a caged command reach on the loopback:
+    the agent checking the server it started (python -m http.server,
+    vite, flask, node) and nothing else on this machine. Measured
+    2026-10-19: `curl http://127.0.0.1:8324/` from the cage was refused
+    ("port 8324 is not allowed") -- the agent could not see its own game.
+    Read from /proc, so it holds whatever the server is; empty off Linux,
+    for a job of another session, and when nothing is read. Never raises."""
+    sid = str(session_id or "")
+    if not sid:
+        return set()
+    try:
+        jobs = get_registry().list_jobs(include_finished=False)
+    except Exception:
+        return set()
+    pids: set[int] = set()
+    for job in jobs:
+        if str(getattr(job, "session_id", "") or "") != sid:
+            continue
+        try:
+            pid = int(getattr(getattr(job, "proc", None), "pid", 0) or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            pids |= _descendants(pid)
+    try:
+        return _listening_ports_of(pids)
+    except Exception:
+        return set()
 
 
 def live_jobs() -> list[dict]:

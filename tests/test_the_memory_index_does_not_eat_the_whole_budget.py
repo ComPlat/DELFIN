@@ -162,10 +162,10 @@ def test_a_fact_typed_straight_into_the_index_is_not_dropped(
     index_path = ms._delfin_memory_dir(agent_tree) / "MEMORY.md"
     index_path.write_text(
         "# DELFIN Project Memory\n"
-        "- the cluster head node is uc3n990, always use it\n"
+        "- the cluster head node is login01, always use it\n"
         + index_path.read_text().split("\n", 1)[1],
         encoding="utf-8")
 
     out = PromptLoader(agent_tree)._load_external_memory_context(max_chars=6000)
 
-    assert "uc3n990" in out
+    assert "login01" in out

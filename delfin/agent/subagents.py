@@ -110,7 +110,7 @@ def _subagent_limits() -> dict:
     """Resolve per-run subagent limits from settings, with fallbacks.
 
     ``settings["agent"]["subagents"]`` may set ``max_tool_calls``,
-    ``max_wall_s`` and ``max_output_tokens`` — so Jerome can tune how deep and
+    ``max_wall_s`` and ``max_output_tokens`` — so a user can tune how deep and
     how long a delegated subagent may run from the dashboard, without code
     changes. Missing/zero values fall back to the module defaults above.
     """
@@ -149,6 +149,11 @@ _INHERIT_MEMORY_MAX_CHARS = 1500
 # Only these typed-memory kinds are inherited: they encode durable
 # user/project preferences. Task-scoped or auto-distilled kinds stay out.
 _INHERIT_MEMORY_TYPES = ("feedback", "user")
+
+
+#: The share of a delegate's system prompt the repository lessons may take
+#: (knowledge.load_block); the parent's own prompt carries its own.
+_INHERIT_KNOWLEDGE_MAX_CHARS = 800
 
 
 def _inherited_context(workspace, prompt: str) -> str:
@@ -211,6 +216,15 @@ def _inherited_context(workspace, prompt: str) -> str:
             if lines:
                 parts.append("## Standing memory (inherited)\n"
                              + "\n".join(lines))
+    except Exception:
+        pass
+    try:
+        from .knowledge import load_block
+        lessons = load_block(task_text=prompt or "", workspace=workspace,
+                             max_chars=_INHERIT_KNOWLEDGE_MAX_CHARS)
+        if lessons:
+            parts.append("## Shared lessons (repository knowledge, data)\n"
+                         + lessons)
     except Exception:
         pass
     if not parts:
@@ -1182,6 +1196,14 @@ class SubagentPreset:
 # out or persists (subagent, orchestrate, cron_create, remember, task_create,
 # publish_report, the worktree moves). A reader reaching for read_section
 # instead of read_file is not the failure this guards against.
+#
+# Every entry must also pass the plan-mode gate, because these presets run
+# in plan mode and the list is what the delegate is offered: a listed tool
+# the mode refuses is an offer withdrawn on the first call. Hence absent:
+# project_introspect (runs the workspace's interpreter) and web_fetch (an
+# arbitrary host and URL data), both refused in plan mode. web_search and
+# subagent_message pass for a delegate (api_client._PLAN_DELEGATE_TOOLS).
+# Pinned by tests/test_an_explore_child_can_search.py.
 _READ_ONLY_TOOLS: tuple[str, ...] = (
     "calc_summary",
     "check_environment",
@@ -1198,7 +1220,6 @@ _READ_ONLY_TOOLS: tuple[str, ...] = (
     "list_files",
     "list_sections",
     "notebook_read",
-    "project_introspect",
     "read_document",
     "read_file",
     "read_section",
@@ -1208,7 +1229,6 @@ _READ_ONLY_TOOLS: tuple[str, ...] = (
     "task_get",
     "task_list",
     "view_image",
-    "web_fetch",
     "web_search",
 )
 
@@ -1499,9 +1519,11 @@ def mark_delegate_text(text: str) -> str:
         return text or ""
     try:
         from .api_client import _wrap_untrusted
+        from .untrusted import decision_hint
     except Exception:
         return body
-    return _wrap_untrusted(body)
+    hint = decision_hint(body)
+    return (f"[{hint}]\n" if hint else "") + _wrap_untrusted(body)
 
 
 @dataclass
@@ -2648,6 +2670,37 @@ _MODE_RESTRICTIVENESS = {
 }
 
 
+# Tools that read, run a check or report, and change no file through their
+# own arguments. bash and run_tests are here: what bash writes is gated per
+# command (shell_writes_need_a_person), and run_tests runs pytest.
+#
+# An allow-list, not a list of writers: the catalogue has some twenty tools
+# that write a file (create_docx, fill_series, merge_pdfs, worktree_merge,
+# ...), and a writer added later must not turn a preset that lists it into
+# one that "edits no file". A name missing here only keeps a preset a
+# writer, which is the behaviour every preset had before this list.
+_NON_EDITING_TOOLS = frozenset({
+    "read_file", "read_section", "list_sections", "list_files", "list_docs",
+    "grep_file", "find_definition", "find_references", "search_docs",
+    "read_document", "project_introspect", "view_image", "notebook_read",
+    "exit_plan_mode", "ask_user_question", "report_verdict",
+    "subagent_result", "subagent_message", "check_environment",
+    "list_changes_made", "web_search", "web_fetch", "search_calcs",
+    "get_calc_info", "calc_summary", "history_search", "history_get",
+    "bash", "run_tests",
+})
+
+
+def preset_tools_edit_no_file(tools) -> bool:
+    """True when a preset's tool list is non-empty and holds only tools in
+    ``_NON_EDITING_TOOLS``.
+
+    Empty means no preset-level restriction (``SubagentPreset.tools``), so
+    it is False: general-purpose inherits the parent's writers."""
+    names = {str(t).rsplit("__", 1)[-1] for t in (tools or ())}
+    return bool(names) and names <= _NON_EDITING_TOOLS
+
+
 def _clamp_child_mode(parent_mode: str, preset_mode: str) -> str:
     """Return the more restrictive of the parent's and the preset's mode.
 
@@ -2735,6 +2788,18 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
     # depth cap is hit (anti-recursion). Falls back gracefully if the perms
     # type predates the field.
     depth = int(getattr(parent_perms, "subagent_depth", 0)) + 1
+    # The subagents of one session share one swarm store: the parent's run
+    # id, or one named after its session at the first delegation. The
+    # clone below copies it to the child.
+    try:
+        from .swarm_memory import ENV_RUN, current_run_id
+        if not current_run_id(parent_perms) and not os.environ.get(ENV_RUN):
+            sid = str(getattr(parent_perms, "task_session_id", "") or "")
+            parent_perms.swarm_run_id = "s-" + (
+                "".join(c for c in sid if c.isalnum() or c in "-_")[:40]
+                or __import__("uuid").uuid4().hex[:12])
+    except Exception:
+        pass
     # Computed before the replace attempts so both of them can apply it: a
     # fallback that quietly dropped the narrowing would hand the child the
     # parent's full tool surface, which is the one direction this must never
@@ -2743,7 +2808,19 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
     try:
         narrowed = _narrow_allowed_tools(parent_perms, preset_tools)
     except Exception:
-        narrowed = None
+        # A list was given and could not be applied: the child may call
+        # nothing, never everything. Without a list nothing was narrowed.
+        narrowed = (frozenset({_PRESET_ALLOWS_NOTHING})
+                    if tuple(preset_tools or ()) else None)
+    # Plan mode admits web_search for a delegate whose list names it
+    # (api_client._PLAN_DELEGATE_TOOLS). A parent in plan mode may not
+    # search, so its delegate is not handed the search either -- the same
+    # never-more-than-the-parent rule _clamp_child_mode applies to the mode.
+    if (narrowed is not None
+            and (getattr(parent_perms, "mode", "") or "") == "plan"
+            and "web_search" in narrowed):
+        narrowed = (frozenset(narrowed - {"web_search"})
+                    or frozenset({_PRESET_ALLOWS_NOTHING}))
     try:
         extra = {"subagent_depth": depth}
         if narrowed is not None:
@@ -2768,6 +2845,10 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
         # answer the child's own first exit_plan_mode from the parent's
         # pending state -- a plan the user never saw.
         extra["plan_awaiting_approval"] = ""
+        # Only ever switched on: a parent that already refuses unasked
+        # shell writes keeps its child refusing them.
+        if preset_tools_edit_no_file(preset_tools):
+            extra["shell_writes_need_a_person"] = True
         if workspace is not None:
             return dataclasses.replace(
                 parent_perms, mode=mode, workspace=workspace, **extra)
@@ -2779,20 +2860,40 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
         # hole.
         reduced = (
             {"session_allowed_tools": narrowed} if narrowed is not None else {})
+        if (preset_tools_edit_no_file(preset_tools)
+                and hasattr(parent_perms, "shell_writes_need_a_person")):
+            reduced["shell_writes_need_a_person"] = True
         try:
             if workspace is not None:
                 return dataclasses.replace(
                     parent_perms, mode=mode, workspace=workspace, **reduced)
             return dataclasses.replace(parent_perms, mode=mode, **reduced)
-        except Exception:
-            pass
+        except Exception as exc:
+            if reduced:
+                # The restriction cannot be carried by this type. Dropping
+                # it would hand the child the parent's full surface.
+                raise SubagentPermissionsError(
+                    "the sub-agent's permissions could not be built with "
+                    "its role's tool list (" + type(exc).__name__ + "), so "
+                    "it was not started") from exc
         try:
             if workspace is not None:
                 return dataclasses.replace(
                     parent_perms, mode=mode, workspace=workspace)
             return dataclasses.replace(parent_perms, mode=mode)
-        except Exception:
-            return parent_perms
+        except Exception as exc:
+            # Not the parent's own object: it carries the parent's mode,
+            # not the clamped one, and the child would write into it.
+            raise SubagentPermissionsError(
+                "the sub-agent's permissions could not be copied from the "
+                "parent's (" + type(exc).__name__ + "), so it was not "
+                "started") from exc
+
+
+class SubagentPermissionsError(RuntimeError):
+    """``_derive_perms`` could not build a child's permissions that hold
+    the role's tool list and the clamped mode. ``run_subagent`` reports it
+    as the result's error; no child runs."""
 
 
 def _cheap_tier_enabled() -> bool:
@@ -2841,7 +2942,9 @@ def _resolve_subagent_model(
         override = (asked or getattr(preset, "model", "") or "").strip().lower()
         if override == "parent":
             return parent_model, "parent"
-        if is_writer_preset(subagent_type):
+        # Any preset that acts (runs commands or writes) stays on the
+        # parent model, including one that edits no file.
+        if _runs_beyond_plan(subagent_type):
             return parent_model, "parent"
         # Only the CALL may ask for the cheap tier against the user's
         # switch. A definition file that says `model: cheap` is a default,
@@ -3060,9 +3163,20 @@ def run_subagent(
             worktree_info = None
 
     sub_workspace = worktree_info.path if worktree_info else None
-    sub_perms = _derive_perms(
-        parent_perms, preset.mode, workspace=sub_workspace,
-        preset_tools=getattr(preset, "tools", ()) or ())
+    try:
+        sub_perms = _derive_perms(
+            parent_perms, preset.mode, workspace=sub_workspace,
+            preset_tools=getattr(preset, "tools", ()) or ())
+    except SubagentPermissionsError as exc:
+        if worktree_info is not None:
+            try:
+                from .worktree import exit_worktree as _exit_wt
+                _exit_wt(worktree_info, keep_if_changed=True)
+            except Exception:
+                pass
+        return SubagentResult(
+            subagent_type=subagent_type, description=description,
+            final_text="", error=f"refused: {exc}")
 
     # Run against an isolated SHALLOW COPY of the parent client: it shares the
     # same underlying OpenAI client (endpoint/key/model — thread-safe to share)
@@ -3580,9 +3694,24 @@ def _worktree_would_be_voided(parent_perms) -> bool:
 
 
 def is_writer_preset(subagent_type: str) -> bool:
-    """True if a subagent type can WRITE (mutate the workspace) — i.e. its
-    preset is NOT the read-only 'plan' permission profile. Used to auto-isolate
-    parallel writers into separate worktrees so they can't clobber each other."""
+    """True if a subagent type can WRITE (mutate the workspace): its preset
+    is not the read-only 'plan' profile and its tool list is not one of
+    non-editing tools only. Used to auto-isolate parallel and background
+    writers into separate worktrees so they can't clobber each other.
+
+    A preset that edits no file (verifier) is not a writer. Its shell
+    writes are asked, or refused with nobody to ask
+    (``shell_writes_need_a_person``), so it has nothing to clobber; and a
+    worktree of HEAD would hide the uncommitted change it was sent to
+    check. Model routing does not read this predicate
+    (``_runs_beyond_plan``), so such a preset stays on the parent model."""
+    p = SUBAGENT_PRESETS.get((subagent_type or "").strip())
+    return (_runs_beyond_plan(subagent_type)
+            and not preset_tools_edit_no_file(getattr(p, "tools", ())))
+
+
+def _runs_beyond_plan(subagent_type: str) -> bool:
+    """True if a subagent type's preset exists and is not mode 'plan'."""
     p = SUBAGENT_PRESETS.get((subagent_type or "").strip())
     return bool(p) and (p.mode or "").strip().lower() != "plan"
 

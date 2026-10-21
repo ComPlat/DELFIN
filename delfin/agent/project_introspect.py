@@ -197,6 +197,16 @@ def _scan_manifests(workspace: Path) -> dict[str, dict[str, Any]]:
         if not info["present"]:
             out[name] = info
             continue
+        # A manifest linked to a file elsewhere is a second path the read
+        # gate never saw; its lines (requirements packages, pyproject
+        # dependencies) are returned verbatim, so it is not read.
+        if path.is_symlink():
+            try:
+                path.resolve(strict=True).relative_to(workspace)
+            except (OSError, RuntimeError, ValueError):
+                info["outside_workspace"] = True
+                out[name] = info
+                continue
         try:
             stat = path.stat()
             info["size_bytes"] = stat.st_size
@@ -278,52 +288,36 @@ def _detect_source_layout(workspace: Path) -> tuple[str, list[str]]:
 
 
 def _git_state(workspace: Path) -> dict[str, Any]:
+    from . import safe_git
     info: dict[str, Any] = {"is_repo": False}
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            cwd=str(workspace), capture_output=True, text=True, timeout=4,
-        )
-        if out.returncode != 0:
-            return info
-    except (FileNotFoundError, subprocess.SubprocessError):
+
+    def _ok(*args: str) -> "str | None":
+        r = safe_git.run(args, workspace, timeout=4)
+        return r.stdout if r.returncode == 0 else None
+
+    if _ok("rev-parse", "--git-dir") is None:
         return info
     info["is_repo"] = True
-    try:
-        info["branch"] = subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(workspace), text=True, timeout=4,
-        ).strip()
-    except subprocess.SubprocessError:
-        pass
-    try:
-        st = subprocess.check_output(
-            ["git", "status", "--porcelain"],
-            cwd=str(workspace), text=True, timeout=4,
-        )
+    branch = _ok("rev-parse", "--abbrev-ref", "HEAD")
+    if branch is not None:
+        info["branch"] = branch.strip()
+    st = _ok("status", "--porcelain")
+    if st is not None:
         modified = [ln for ln in st.splitlines() if ln.strip()]
         info["dirty"] = bool(modified)
         info["modified_count"] = len(modified)
-    except subprocess.SubprocessError:
-        pass
-    try:
-        info["last_commit"] = subprocess.check_output(
-            ["git", "log", "-1", "--oneline"],
-            cwd=str(workspace), text=True, timeout=4,
-        ).strip()[:120]
-    except subprocess.SubprocessError:
-        pass
-    try:
-        ab = subprocess.check_output(
-            ["git", "rev-list", "--left-right", "--count", "HEAD...@{u}"],
-            cwd=str(workspace), text=True, timeout=4,
-            stderr=subprocess.DEVNULL,
-        ).strip().split()
-        if len(ab) == 2:
-            info["ahead"] = int(ab[0])
-            info["behind"] = int(ab[1])
-    except subprocess.SubprocessError:
-        pass
+    last = _ok("log", "-1", "--oneline")
+    if last is not None:
+        info["last_commit"] = last.strip()[:120]
+    ab = _ok("rev-list", "--left-right", "--count", "HEAD...@{u}")
+    if ab is not None:
+        parts = ab.strip().split()
+        if len(parts) == 2:
+            try:
+                info["ahead"] = int(parts[0])
+                info["behind"] = int(parts[1])
+            except ValueError:
+                pass
     return info
 
 

@@ -150,6 +150,134 @@ def _targets_of(tool: str, args: dict) -> list[str]:
     return []
 
 
+def _command_changes_directory(cmd: str) -> bool:
+    """True when *cmd* contains a cd/pushd segment. A command that does
+    resolves its relative redirect words against a directory this module
+    cannot know, so the quote-aware supplement must not run on it (the
+    supplement only ever ADDS candidates; skipping is always safe)."""
+    return bool(re.search(r"(?:^|[;&|]\s*|\s)(?:cd|pushd|popd)\b", cmd or ""))
+
+
+def _redirect_targets_safe(cmd: str) -> list[str]:
+    """Alias of :func:`_redirect_targets`.
+
+    Kept because the operator-built hook (api_client.py, _bash_named_write_
+    paths) calls it by name. Since the operator ruling of the PR #308 CI
+    red, the guard lives INSIDE _redirect_targets (both the record and the
+    check path get nothing from a cd command), so both names behave
+    identically.
+    """
+    return _redirect_targets(cmd)
+
+
+def _redirect_targets(cmd: str) -> list[str]:
+    """Redirect words a quote-aware reading of ``cmd`` sees.
+
+    ``_bash_write_targets`` reads quotes as text, so a quoted redirect
+    word with a space (``cat x > "my file.txt"``) is split at the space
+    and the refused file is never named. This pass reads the same command
+    with shlex (posix), which keeps a quoted word together, and takes the
+    token after a bare ``>`` / ``>>`` redirection.
+
+    Conservative: on a shlex failure, or whenever the next token could be
+    something else (a number, ``&``, ``&1``, ``-``), nothing is taken.
+    A token here always carries its quotes already stripped, so the
+    space-containing name arrives whole.
+
+    GUARD (operator ruling, PR #308 CI red): when the command changes
+    directory (cd, pushd, popd, a subshell with cd), relative redirect
+    words resolve against a base this module cannot know, so return [] --
+    the pass only ever ADDS candidates, so returning nothing there is
+    always safe. This protects BOTH consumers: the record path in the
+    gate (the operator-built hook folds these targets into the ledger)
+    and same_change's check path.
+    """
+    if _command_changes_directory(cmd):
+        return []
+    targets: list[str] = []
+    try:
+        import shlex as _shlex
+        lx = _shlex.shlex(cmd, posix=True, punctuation_chars="<>")
+        lx.whitespace = " \t\r"
+        lx.whitespace_split = True
+        toks = list(lx)
+    except ValueError:
+        return []
+    for i, tok in enumerate(toks):
+        if tok in (">", ">>") and i + 1 < len(toks):
+            nxt = toks[i + 1]
+            if (nxt and not nxt.startswith(("-", "&"))
+                    and not (len(nxt) == 1 and nxt.isdigit())):
+                targets.append(nxt)
+    return targets
+
+
+def same_change(refusal: Refusal, tool: str, args: object,
+                workspace: object, write_targets=None) -> str | None:
+    """Does this attempt CHANGE (write) the target a person refused?
+
+    Pure module function. Built on :func:`_targets_of` (file tools) and on
+    the gate's own bash write-target tokenizer, which the caller injects as
+    ``write_targets`` (typically ``delfin.agent.api_client._bash_write_targets``)
+    so no second parser lives here.
+
+    Returns None ("no / cannot be judged") or the normalized target this
+    attempt would change. It NEVER allows: None means "no match", not
+    "may proceed" -- the caller still judges the call by its own rules.
+
+    Reading is not changing: ``read_file`` / ``read_document`` never match.
+    A tool that is neither a known file-change tool nor bash is not judged.
+    """
+
+    def _resolved(p: str) -> str:
+        # Refusal targets are recorded as resolved paths (symlinks out);
+        # attempt-side paths must be normalized the same way or a symlinked
+        # home directory would break the comparison.
+        try:
+            p = str(p)
+            if not os.path.isabs(p) and workspace:
+                p = str(Path(workspace) / p)
+            return _norm(str(Path(p).resolve()))
+        except Exception:
+            return _norm(p)
+    CHANGING_TOOLS = ("write_file", "edit_file", "bash")
+    if refusal is None or tool not in CHANGING_TOOLS:
+        return None
+
+    if tool == "bash":
+        if write_targets is None:
+            # Without the gate's own tokenizer we cannot know the write
+            # targets; return None rather than guess.
+            return None
+        if not isinstance(args, dict):
+            return None
+        cmd = str(args.get("command", ""))
+        targets = list(write_targets(cmd))
+        # Quote-aware supplement: quoted redirect words with a space are
+        # split by the tokenizer above (its regex reads quotes as text);
+        # this pass keeps a quoted word whole. A target both passes see
+        # dedupes below; neither pass may lie in the ALLOWING direction.
+        # cd/pushd/popd guard lives INSIDE _redirect_targets now (operator
+        # ruling, PR #308 CI red): a cd command resolves its redirect words
+        # against an unknown base, so the pass returns [] there -- for the
+        # record path (the operator-built hook) and this check path alike.
+        targets += _redirect_targets(cmd)
+    else:
+        targets = _targets_of(tool, args if isinstance(args, dict) else {})
+
+    refusal_target = _resolved(refusal.target)
+    for target in targets:
+        norm = _resolved(target)
+        if not norm:
+            continue
+        if refusal.is_dir:
+            if _contains(refusal_target, norm):
+                return norm
+        elif norm == refusal_target:
+            return norm
+    return None
+
+
 class RefusalMemory:
     """Bounded, serializable per-session record of refusals."""
 
@@ -208,6 +336,37 @@ class RefusalMemory:
                 elif _norm(r.target) == norm:
                     return r
         return None
+
+    def lift(self, path: str) -> int:
+        """Drop the refusals this path is covered by; how many were dropped.
+
+        The person allowed what was refused ("yes, now do it"). A stale
+        entry must not keep handing the session the old reason. A refused
+        directory is lifted together with everything beneath it; a file
+        entry lifts only itself. Returns the number of entries removed
+        (an entry may cover the path without matching it exactly, so a
+        count, not a bool). Never raises.
+        """
+        try:
+            norm = _norm(path)
+            if not norm:
+                return 0
+            keep = []
+            dropped = 0
+            for r in self.entries:
+                if r.is_dir and _contains(r.target, path):
+                    dropped += 1
+                    continue
+                if _norm(r.target) == norm:
+                    dropped += 1
+                    continue
+                keep.append(r)
+            if dropped:
+                self.entries = keep
+                self._save()
+            return dropped
+        except Exception:
+            return 0
 
     def note(self, refusal: Refusal) -> str:
         """The English reminder handed back with a repeated ask."""

@@ -9,6 +9,7 @@ from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
+from delfin.manta._ob_rng import reseed_ob_rng as _reseed_ob_rng
 from delfin.manta.hapto_detect import (
     contains_metal,
 )
@@ -135,6 +136,8 @@ def _openbabel_generate_conformer_xyz(
             errors.append("no usable Open Babel forcefield")
             continue
 
+        # #527: fixed seed for Open Babel's random nudges (DELFIN_OB_DETERMINISTIC_RNG).
+        _reseed_ob_rng(pybel)
         make3d_steps = max(50, min(200, localopt_steps // 2)) if optimize else 0
         try:
             ob_mol.make3D(forcefield=ff_name, steps=make3d_steps)

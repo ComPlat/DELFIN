@@ -30,7 +30,6 @@ what somebody put there deliberately.
 
 from __future__ import annotations
 
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +40,10 @@ from delfin.agent.memory_store import (
     _jaccard,
     _merge_similarity_threshold,
 )
+from delfin.agent import safe_git
+
+#: safe_git codes for "git did not answer" (as opposed to git's own 1/128).
+_NO_ANSWER = (safe_git.TIMED_OUT, safe_git.NOT_STARTED, safe_git.MISSING)
 
 #: Written into a folded file between the two bodies, so a later reader
 #: can see that two notes became one and where the seam is.
@@ -222,18 +225,14 @@ def _default_branch(root: Path) -> str:
     note abandoned at once.
     """
     try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "symbolic-ref", "--quiet",
-             "refs/remotes/origin/HEAD"],
-            capture_output=True, text=True, timeout=5)
+        out = safe_git.run(["symbolic-ref", "--quiet",
+                            "refs/remotes/origin/HEAD"], root, timeout=5)
         ref = (out.stdout or "").strip()
         if out.returncode == 0 and ref:
             return ref
         for name in ("main", "master"):
-            probe = subprocess.run(
-                ["git", "-C", str(root), "rev-parse", "--verify", "--quiet",
-                 f"refs/heads/{name}"],
-                capture_output=True, text=True, timeout=5)
+            probe = safe_git.run(["rev-parse", "--verify", "--quiet",
+                                  f"refs/heads/{name}"], root, timeout=5)
             if probe.returncode == 0 and (probe.stdout or "").strip():
                 return f"refs/heads/{name}"
     except Exception:
@@ -282,13 +281,12 @@ def _unlanded(root: Path, notes: List[Note]) -> set:
             continue
         if commit not in landed:
             try:
-                r = subprocess.run(
-                    ["git", "-C", str(root), "merge-base", "--is-ancestor",
-                     commit, default],
-                    capture_output=True, text=True, timeout=5)
+                r = safe_git.run(["merge-base", "--is-ancestor", commit,
+                                  default], root, timeout=5)
                 # Return code 1 is "not an ancestor"; anything else (128 for
-                # an unknown commit) is a question git could not answer, and
-                # an unanswered question keeps the note.
+                # an unknown commit, safe_git's 124 for a timeout) is a
+                # question git could not answer, and an unanswered question
+                # keeps the note.
                 landed[commit] = r.returncode != 1
             except Exception:
                 landed[commit] = True
@@ -296,11 +294,11 @@ def _unlanded(root: Path, notes: List[Note]) -> set:
             continue
         if branch not in alive:
             try:
-                r = subprocess.run(
-                    ["git", "-C", str(root), "rev-parse", "--verify",
-                     "--quiet", f"refs/heads/{branch}"],
-                    capture_output=True, text=True, timeout=5)
-                alive[branch] = bool((r.stdout or "").strip())
+                r = safe_git.run(["rev-parse", "--verify", "--quiet",
+                                  f"refs/heads/{branch}"], root, timeout=5)
+                # A git that did not answer keeps the note, as before.
+                alive[branch] = bool((r.stdout or "").strip()) or (
+                    r.returncode in _NO_ANSWER)
             except Exception:
                 alive[branch] = True
         if not alive[branch]:

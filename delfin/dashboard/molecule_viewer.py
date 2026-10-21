@@ -2,9 +2,45 @@
 
 import hashlib
 import json
+from html import escape as html_escape
 
 import py3Dmol
 from IPython.display import HTML, clear_output, display
+
+
+def js_string_literal(value):
+    """``helpers.js_string_literal``, imported at call time: this module is
+    also loaded on its own (outside the package) by tests and tools."""
+    from delfin.dashboard.helpers import js_string_literal as _literal
+    return _literal(value)
+
+
+def _harden_py3dmol():
+    """Route py3Dmol's argument encoding through the script-safe rule.
+
+    py3Dmol writes every argument of a viewer call (``addModel(text,
+    'xyz')``, ``addVolumetricData(cube, ...)``) into an inline
+    ``<script>`` with ``json.dumps``, which leaves ``</script>`` in the
+    data intact; an XYZ comment line holding it would end the script
+    element. The replacement writes ``<``, ``>`` and ``&`` as JavaScript
+    unicode escapes, which the script reads back as the same characters.
+    Idempotent; a py3Dmol without ``tostr`` is left alone.
+    """
+    original = getattr(py3Dmol, 'tostr', None)
+    if original is None or getattr(original, '_delfin_script_safe', False):
+        return
+
+    def tostr(arg):
+        return (original(arg)
+                .replace('<', '\\u003c')
+                .replace('>', '\\u003e')
+                .replace('&', '\\u0026'))
+
+    tostr._delfin_script_safe = True
+    py3Dmol.tostr = tostr
+
+
+_harden_py3dmol()
 
 DEFAULT_3DMOL_BACKGROUND = 'white'
 DEFAULT_3DMOL_ZOOM = 0.90
@@ -259,7 +295,9 @@ def vendored_3dmol_js():
 
     Running this once at start-up satisfies *both* guards: the library is
     already defined, and ``$3Dmolpromise`` is an already-resolved promise, so
-    neither loader fetches anything.
+    neither loader fetches anything. The hand-written viewers no longer have
+    a network fallback at all (an unpinned 3Dmol.org build without SRI): they
+    wait for this bundle, and the page CSP refuses any other 3Dmol source.
     """
     global _VENDORED_3DMOL_CACHE
     if _VENDORED_3DMOL_CACHE is not None:
@@ -6872,7 +6910,7 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
     return view
 
 
-def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
+def render_xyz_in_output(output_widget, xyz_text, width=None, height=None, extra_js=None):
     """Render an XYZ string inside an ipywidgets Output widget.
 
     Honors the global viewer settings (``ui.viewer.enabled`` and
@@ -6894,6 +6932,9 @@ def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
         view = py3Dmol.view(width=eff_width, height=eff_height)
         view.addModel(xyz_text, 'xyz')
         apply_molecule_view_style(view, zoom=profile['zoom'], style=profile['style'])
+        if extra_js:
+            # Raw script on the viewer (``viewer_UNIQUEID``), e.g. atom clicks.
+            view.startjs += extra_js
         view.show()
 
 
@@ -7046,9 +7087,8 @@ def fukui_atom_labels_js(xyz_text, values, *, decimals=3, color='black'):
             text = f"{value:+.{decimals}f}"
         else:
             text = str(value)
-        text = text.replace("'", "\\'")
         pieces.append(
-            "viewer.addLabel('" + text + "', {"
+            "viewer.addLabel(" + js_string_literal(text) + ", {"
             "position:{x:" + f"{x:.4f}" + ",y:" + f"{y:.4f}" + ",z:" + f"{z:.4f}" + "},"
             "backgroundColor:'white',backgroundOpacity:0.7,"
             "fontColor:'" + color + "',fontSize:13,"
@@ -7071,8 +7111,7 @@ def fukui_cube_isosurface_js(cube_text, *, isoval=0.02, signed=False):
     """
     if not cube_text:
         return ''
-    import json as _json
-    cube_json = _json.dumps(cube_text)
+    cube_json = js_string_literal(cube_text)
     iso = float(isoval)
     if signed:
         return (
@@ -7107,7 +7146,6 @@ def build_fukui_viewer_html(
     Honors the global viewer settings; returns a placeholder when the viewer
     is disabled and uses quality-preset dimensions/zoom unless overridden.
     """
-    import json as _json
     import random as _random
 
     profile = get_viewer_profile()
@@ -7119,7 +7157,7 @@ def build_fukui_viewer_html(
 
     if viewer_id is None:
         viewer_id = f"fukui_view_{_random.randint(0, 10**9)}"
-    xyz_json = _json.dumps(xyz_text or '')
+    xyz_json = js_string_literal(xyz_text or '')
     label_js = fukui_atom_labels_js(xyz_text, labels) if labels else ''
     cube_js = fukui_cube_isosurface_js(cube_text, isoval=isoval, signed=cube_signed) if cube_text else ''
     style_js = profile['style_js']
@@ -7159,11 +7197,14 @@ def build_fukui_viewer_html(
     }} catch(e) {{}}
 
     function ensureLoaded(cb) {{
-        if (typeof $3Dmol !== 'undefined') {{ cb(); return; }}
-        var s = document.createElement('script');
-        s.src = 'https://3Dmol.org/build/3Dmol-min.js';
-        s.onload = cb;
-        document.head.appendChild(s);
+        // The bundled 3Dmol is defined by the dashboard's start-up script
+        // (vendored_3dmol_js); wait for it instead of fetching a copy from
+        // another origin, which the page CSP refuses.
+        var tries = 0;
+        (function wait() {{
+            if (typeof $3Dmol !== 'undefined') {{ cb(); return; }}
+            if (++tries < 200) setTimeout(wait, 50);
+        }})();
     }}
     ensureLoaded(function() {{
         var el = document.getElementById('{viewer_id}');
@@ -7315,7 +7356,8 @@ def render_fukui_panel(workdir, output_widget=None):
     try:
         result = _json.loads((workdir / 'fukui_result.json').read_text(encoding='utf-8'))
     except Exception as exc:
-        return widgets.HTML(f"<b style='color:#a00'>Failed to load fukui_result.json:</b> {exc}")
+        return widgets.HTML("<b style='color:#a00'>Failed to load fukui_result.json:</b> "
+                            + html_escape(str(exc)))
 
     geom_path = workdir / 'fukui_geom.xyz'
     xyz_text = geom_path.read_text(encoding='utf-8') if geom_path.exists() else ''

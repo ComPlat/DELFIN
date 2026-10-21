@@ -34,12 +34,19 @@ is ANSI dim/bold, and only when ``is_tty``.
 
 from __future__ import annotations
 
+import datetime
+import re
 import sys
 import time
 from typing import Any, Callable, Iterable, Iterator
 
+from delfin.agent.turn_summary import format_turn_summary
+
 # Spinner frames — braille, one frame per tick while a call is open.
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+# ANSI escape sequences, for stripping them out of event text.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 # How much of each argument value to show before ellipsis.
 _ARG_MAX = 40
@@ -102,11 +109,15 @@ def render_tool_call(name: str, args: dict[str, Any] | None,
 
 
 def render_turn_footer(stats: dict[str, Any]) -> str:
-    """The closing line of a turn: tokens, tool calls, duration.
+    """The legacy closing stats line, exactly as before UX1.
 
-    ``stats``: ``{"input_tokens": int?, "output_tokens": int?,
-    "tool_calls": int?, "duration_s": float?, "is_tty": bool?}``.
-    Missing fields are omitted rather than guessed at zero.
+    "→ in=100 · out=20 · tools=3 · 12.3s" — bold head on a TTY, plain
+    in a pipe; the format is a pinned contract for consumers that
+    parse the CLI output. The UX1 summary line ("Surfaced after ...")
+    is rendered separately by the caller as its own line.
+    ``stats``: ``{"input_tokens", "output_tokens", "tool_calls",
+    "duration_s", ...}``; missing fields are omitted rather than
+    guessed at zero.
     """
     is_tty = bool(stats.get("is_tty"))
     parts: list[str] = []
@@ -114,14 +125,39 @@ def render_turn_footer(stats: dict[str, Any]) -> str:
         parts.append(f"in={stats['input_tokens']}")
     if stats.get("output_tokens") is not None:
         parts.append(f"out={stats['output_tokens']}")
-    if stats.get("tool_calls") is not None:
+    if stats.get("tool_calls") is not None and stats["tool_calls"] > 0:
         parts.append(f"tools={stats['tool_calls']}")
     if stats.get("duration_s") is not None:
         parts.append(f"{stats['duration_s']:.1f}s")
     if not parts:
-        parts.append("turn ended")
-    line = "→ " + " · ".join(parts)
-    return _dim(line, is_tty) if not is_tty else f"{_ANSI_BOLD}{line}{_ANSI_RESET}"
+        return "→ turn ended"
+    suffix = " · ".join(parts)
+    head, sep, tail = suffix.partition(" · ")
+    body = f"→ {head}" + (f" · {tail}" if sep else "")
+    return f"\x1b[1m{body}\x1b[0m" if is_tty else body
+
+
+def render_turn_summary_line(stats: dict[str, Any]) -> str:
+    """The UX1 summary line ("Surfaced after 31s · done 11:11").
+
+    Plain text always — no ANSI escapes here, the summary is the
+    person-facing line and pipes must stay verbatim. ``ended_at`` may
+    be a datetime or an ISO string (the turn_end event carries a
+    string; a malformed string renders no time rather than breaking
+    the line).
+    """
+    ended_at = stats.get("ended_at")
+    if isinstance(ended_at, str):
+        try:
+            ended_at = datetime.datetime.fromisoformat(ended_at)
+        except ValueError:
+            ended_at = None
+    return format_turn_summary(
+        duration_s=stats.get("duration_s"),
+        ended_at=ended_at,
+        outcome=stats.get("outcome", "ok"),
+        running_jobs=stats.get("running_jobs"),
+    )
 
 
 class StreamRenderer:
@@ -142,6 +178,9 @@ class StreamRenderer:
                         else bool(is_tty))
         self._now = now
         self._tool_calls = 0
+        # One failure anywhere in the turn marks the outcome the footer
+        # reports: a turn that errored never renders a success verb.
+        self._saw_error = False
 
     @property
     def tool_calls(self) -> int:
@@ -154,6 +193,17 @@ class StreamRenderer:
         waited = False   # a pipe gets the first wait tick only
         for event in self._events:
             kind = event.get("type")
+            if kind == "error":
+                # An error event is a failed turn: the footer must not
+                # call it "Surfaced" later. Rendered as a notice line;
+                # whitespace collapsed and escape characters stripped,
+                # because the text can carry newlines or ANSI from
+                # anything upstream.
+                self._saw_error = True
+                text = " ".join(
+                    _ANSI_RE.sub("", str(event.get("text", ""))).split())
+                if text:
+                    yield f"⚠ {text}"
             if kind == "text":
                 text = str(event.get("text", ""))
                 if text.strip():
@@ -225,6 +275,15 @@ class StreamRenderer:
                         {"is_tty": self._is_tty, "spinner": tick,
                          "elapsed_s": self._now() - started[name]})
             elif kind == "turn_end":
+                # The UX1 summary is its own line BEFORE the legacy
+                # stats footer, so the footer's pinned format and its
+                # one-line-per-event contract stay intact.
+                yield render_turn_summary_line(
+                    {"duration_s": event.get("duration_s"),
+                     "ended_at": event.get("ended_at"),
+                     "running_jobs": event.get("running_jobs"),
+                     "outcome": ("stopped" if self._saw_error
+                                 else event.get("outcome", "ok"))})
                 yield render_turn_footer(
                     {"input_tokens": event.get("input_tokens"),
                      "output_tokens": event.get("output_tokens"),

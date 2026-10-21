@@ -33,8 +33,17 @@ def test_a_watchpost_entry_runs_the_scan_and_no_engine(tmp_path, monkeypatch):
 
     monkeypatch.setattr("delfin.watchpost.scan.run_scan", fake_scan)
     events = []
-    monkeypatch.setattr("delfin.agent.attention.emit_attention",
-                        lambda kind, **kw: events.append(kind))
+
+    def emit(kind, **kw):
+        # As the real one does: a kind the inbox does not take is refused.
+        # A stand-in that took any kind let "watchpost_alert" through, and
+        # the daemon swallowed the real refusal: no alert ever arrived.
+        from delfin.agent.attention import ATTENTION_KINDS
+        if kind not in ATTENTION_KINDS:
+            raise ValueError(f"unknown attention kind {kind!r}")
+        events.append(kind)
+
+    monkeypatch.setattr("delfin.agent.attention.emit_attention", emit)
 
     def no_engine(*a, **k):
         raise AssertionError("a watchpost entry must not build an engine")
@@ -45,4 +54,4 @@ def test_a_watchpost_entry_runs_the_scan_and_no_engine(tmp_path, monkeypatch):
         prompt=f"{sd.WATCHPOST_ENTRY_PREFIX} diff scan of the account")
     fire(entry)
     assert scans == ["diff"]
-    assert "watchpost_alert" in events
+    assert "security_alert" in events

@@ -18,6 +18,8 @@ _HOOKS = {
     "pending_turn_continuation": "announced-work follow-up (wave 12, R1)",
     "pause_key": "delfin-agent pause reaches the session (wave 12, R1)",
     "wake_blocked": "no turn starts on its own while paused (wave 12, R1)",
+    "mark_read": "a message is marked read where it is handed to the model "
+                 "(U7: neither surface may drop the read receipt)",
 }
 
 

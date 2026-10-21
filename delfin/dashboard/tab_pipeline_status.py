@@ -27,6 +27,7 @@ Dashboard tab integration::
 
 from __future__ import annotations
 
+import html as _html
 import time
 from typing import Any, Dict, Optional
 
@@ -100,7 +101,7 @@ class PipelineStatusWidget:
 
     def set_pipeline(self, name: str, n_steps: int) -> None:
         """Initialize the widget for a pipeline with known step count."""
-        self._title.value = f"<h3>Pipeline: {name}</h3>"
+        self._title.value = f"<h3>Pipeline: {_html.escape(str(name))}</h3>"
         self._progress.max = n_steps
         self._progress.value = 0
         self._steps = []
@@ -156,17 +157,17 @@ class PipelineStatusWidget:
             color = STATUS_COLORS.get(s["status"], "#333")
             status_badge = (
                 f'<span style="color: {color}; font-weight: bold;">'
-                f'{s["status"].upper()}</span>'
+                f'{_html.escape(str(s["status"]).upper())}</span>'
             )
             elapsed = f'{s["elapsed"]:.1f}s' if s["elapsed"] else ""
-            error = f' <span style="color: #dc3545; font-size: 0.85em;">{s["error"]}</span>' if s["error"] else ""
-            data_info = ", ".join(s["data_keys"][:5]) if s["data_keys"] else ""
+            error_html = f' <span style="color: #dc3545; font-size: 0.85em;">{_html.escape(str(s["error"]))}</span>' if s["error"] else ""
+            data_info = _html.escape(", ".join(str(k) for k in s["data_keys"][:5])) if s["data_keys"] else ""
 
             rows.append(
                 f"<tr>"
                 f"<td>{i + 1}</td>"
-                f"<td>{s['step_name']}</td>"
-                f"<td>{status_badge}{error}</td>"
+                f"<td>{_html.escape(str(s['step_name']))}</td>"
+                f"<td>{status_badge}{error_html}</td>"
                 f"<td>{elapsed}</td>"
                 f"<td style='font-size: 0.85em; color: #666;'>{data_info}</td>"
                 f"</tr>"

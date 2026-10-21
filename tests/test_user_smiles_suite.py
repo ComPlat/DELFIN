@@ -178,20 +178,26 @@ def _built(smi: str):
 # ---------------------------------------------------------------------------
 # What runs on every push, and what waits for the nightly run
 # ---------------------------------------------------------------------------
-# Seconds for ONE build, measured 2026-08-14. The spread is the whole point:
-# a single entry costs more than eleven minutes while three others cost about
-# a second each.
+# Seconds for ONE build. Re-measured 2026-10-15 (delfin-ci, Python 3.11,
+# local host): one process per entry, covalent radii loaded first (the
+# mendeleev table, 22-28 s, is paid by whichever test needs radii first and
+# is not a build cost), then two builds timed; the first is recorded, the
+# second was within 4 % of it every time. Entries up to 17 s were timed
+# serially, the three Cd entries in parallel. The three Fe(CO)3(NHC)2
+# variants were recorded as 1.2-1.3 s on 2026-08-14; they took ~7 s per
+# build then as now (also at 06ca36c4 and f9cb3c12), so the old figures
+# made the budget test below assert ~8 s against a real ~40 s.
 #
 #   702.1  Fe/Sc(OTf)4(OH)(mu-O) cyclam bimetal   -> own file (see above)
 #   184.9  Ir(ppy)2(acac) CN=6                    -> own file (see above)
-#   157.9  Cd-histidine CN=7
-#    89.2  Cd MA2B2C2 octahedral (five OH isomers)
-#    44.2  Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)
-#    31.0  Fe2 (mu-Cl)2 bimetallic
-#    13.7  Co(en)2Cl2 bidentate
-#     7.6  Zr(H2O)8 CN=8 homoleptic
-#     4.3  Fe(H2O)7 CN=7 homoleptic
-#     1.2  Fe(CO)3(NHC)2 CN=5, all three variants
+#   194.6  Cd-histidine CN=7
+#    46.2  Cd MA2B2C2 octahedral (five OH isomers)
+#    46.1  Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)
+#    16.5  Fe2 (mu-Cl)2 bimetallic
+#     8.4  Co(en)2Cl2 bidentate
+#     5.4  Zr(H2O)8 CN=8 homoleptic
+#     2.9  Fe(H2O)7 CN=7 homoleptic
+#     6.4-6.6  Fe(CO)3(NHC)2 CN=5, the three variants
 #
 # This file was marked slow as a whole, so the one twelve-minute case exiled
 # eleven others with it and the SMILES contract was checked nowhere except a
@@ -202,16 +208,16 @@ def _built(smi: str):
 # gate would quietly shrink on a loaded runner and nobody would be told.
 # Re-measure deliberately when the converter's cost changes.
 _BUILD_SECONDS = {
-    "Cd-histidine CN=7": 157.9,
-    "Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)": 44.2,
-    "Fe(CO)3(NHC)2 CN=5 — neutral C": 1.2,
-    "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-3] variant": 1.2,
-    "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-5] variant": 1.3,
-    "Co(en)2Cl2 bidentate": 13.7,
-    "Fe2 (mu-Cl)2 bimetallic": 31.0,
-    "Fe(H2O)7 CN=7 homoleptic": 4.3,
-    "Zr(H2O)8 CN=8 homoleptic": 7.6,
-    "Cd MA2B2C2 octahedral (five OH isomers)": 89.2,
+    "Cd-histidine CN=7": 194.6,
+    "Cd MA2B2C2 (triazolothiadiazine N4O2Cl2)": 46.1,
+    "Fe(CO)3(NHC)2 CN=5 — neutral C": 6.5,
+    "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-3] variant": 6.6,
+    "Fe(CO)3(NHC)2 CN=5 — [C+]/[Fe-5] variant": 6.4,
+    "Co(en)2Cl2 bidentate": 8.4,
+    "Fe2 (mu-Cl)2 bimetallic": 16.5,
+    "Fe(H2O)7 CN=7 homoleptic": 2.9,
+    "Zr(H2O)8 CN=8 homoleptic": 5.4,
+    "Cd MA2B2C2 octahedral (five OH isomers)": 46.2,
 }
 
 # Per entry, for one build.
@@ -227,10 +233,18 @@ _GATE_BUDGET_S = 10.0
 #
 # Not marked xfail, which would be a claim about how they end. They are held
 # out until somebody fixes them; then deleting a line here is the whole
-# change, and the gate grows from about 8 s to about 31 s.
+# change, and the gate (two builds per entry) grows from about 39 s to
+# about 56 s at the 2026-10-15 figures.
 _GATE_HELD_BACK = {
     "Fe(H2O)7 CN=7 homoleptic",
     "Zr(H2O)8 CN=8 homoleptic",
+}
+
+# Within the 10 s rule at the 2026-10-15 figure (8.4 s) and kept out anyway:
+# the gate set measures 39.0 s without it against a 45 s budget, and 55.8 s
+# with it. Promoting it is a change of the gate set, not of its cost table.
+_GATE_NO_BUDGET_ROOM = {
+    "Co(en)2Cl2 bidentate",
 }
 
 
@@ -241,7 +255,7 @@ def _in_gate(entry) -> bool:
     the safe direction: the cost of being wrong here is a slower merge gate
     for everyone.
     """
-    if entry["name"] in _GATE_HELD_BACK:
+    if entry["name"] in _GATE_HELD_BACK or entry["name"] in _GATE_NO_BUDGET_ROOM:
         return False
     return _BUILD_SECONDS.get(entry["name"], float("inf")) <= _GATE_BUDGET_S
 
@@ -385,7 +399,9 @@ def test_the_gate_actually_gets_some_of_this_suite():
 
 def test_the_gate_set_stays_within_its_budget():
     """Two builds per entry: one shared by the read-only tests, one more for
-    the determinism comparison. Measured at 8.3 s for the current set."""
+    the determinism comparison. 39.0 s for the current set at the
+    2026-10-15 figures (the three Fe(CO)3(NHC)2 variants); the 8.3 s this
+    once said came from build times recorded 5-6x too low."""
     total = 2 * sum(_BUILD_SECONDS[e["name"]] for e in USER_SMILES if _in_gate(e))
 
     assert total <= 45.0, (

@@ -313,6 +313,14 @@ def leaked_tool_call_dominates(text: str) -> tuple[str, dict] | None:
     prose.  No length bound can tell a bare call from a short wrapper, so the
     rule is strict: after removing every complete block, any non-whitespace
     text outside the block makes the answer prose (``None``), never the call.
+
+    One shape beyond the bare call is the leak as it happens in the field
+    (wave 14b, three sessions stalled on it in one morning): the model
+    announces the step and then writes the call -- "Let me commit.\n<invoke
+    ...>...</invoke>" and nothing after it. That is still a call nothing ran.
+    It is told from a quoted example by where the block stands: on a line of
+    its own, the LAST thing in the answer, and outside a code fence. An
+    answer that explains the markup goes on after the block or fences it.
     """
     if not isinstance(text, str):
         return None
@@ -321,7 +329,21 @@ def leaked_tool_call_dominates(text: str) -> tuple[str, dict] | None:
         return None
     leftover = _DSML_INVOKE.sub("", text).strip()
     if leftover:
-        return None
+        blocks = list(_DSML_INVOKE.finditer(text))
+        first, last = blocks[0], blocks[-1]
+        before = text[:first.start()]
+        between = "".join(
+            text[a.end():b.start()] for a, b in zip(blocks, blocks[1:]))
+        announced = (
+            not text[last.end():].strip()           # nothing after the call
+            and not between.strip()                 # calls back to back
+            and before.rstrip(" \t").endswith("\n")  # on a line of its own
+            and before.count("```") % 2 == 0        # not inside a fence
+            and "<invoke" not in before             # no half block quoted
+        )
+        if not announced:
+            return None
+        m = first
     args: dict = {}
     for p in _DSML_PARAM.finditer(m.group(2)):
         args[p.group(1)] = p.group(2)

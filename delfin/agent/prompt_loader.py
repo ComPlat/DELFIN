@@ -157,6 +157,32 @@ _MEMORY_BLOCK_PREAMBLE = (
 _SOURCE_LABELS = {"user": "the user stated", "agent": "the agent noted"}
 
 
+def _fence_notes(source: str, text: str) -> str:
+    """``text`` inside an ``untrusted`` notes fence, or "" for empty text.
+
+    Recalled memory, past-session episodes and the outcome briefing are
+    text earlier sessions wrote, partly after reading files, pages and tool
+    results; a line in them that reads like an instruction must arrive
+    labelled as a note. The nonce is ``project_memory._fence_nonce`` of the
+    content: unknowable to whoever wrote the stored text (a per-process
+    key), and the same for the same content, so the prompt prefix stays
+    byte-stable between builds. Rejected: a random nonce per build (every
+    turn's prompt would differ and the prefix cache would miss); a content
+    hash alone (anyone who can hash could write the matching closer)."""
+    if not (text or "").strip():
+        return ""
+    from . import untrusted
+    from .project_memory import _fence_nonce
+    return untrusted.wrap_as("notes", source, text, nonce=_fence_nonce(text))
+
+
+def _notes_fence_overhead(source: str) -> int:
+    """Characters a notes fence adds around a body (header, closer and the
+    two newlines), for callers that pay it from a fixed budget."""
+    from . import untrusted
+    return len(untrusted.wrap_as("notes", source, "", nonce="0" * 16))
+
+
 def _memory_entry_header(title: str, rel: str, raw: str) -> str:
     """The provenance line that introduces one recalled memory.
 
@@ -188,6 +214,12 @@ def _memory_entry_header(title: str, rel: str, raw: str) -> str:
     written = _stamp("created_at")
     if written:
         parts.append(written)
+    # Where a model's note was learned: the tools whose fenced output the
+    # turn had read before remember() wrote it (memory_store
+    # PROVENANCE_FIELDS). Stable per file, so the prompt prefix is too.
+    read_before = " ".join(str(meta.get("read_before", "")).split())[:120]
+    if source == "agent" and read_before and read_before != "nothing":
+        parts.append(f"after reading {read_before}")
     # No "last recalled <date>". It moved every day a note was recalled,
     # and the prompt head is cached as a prefix: the first byte that
     # differs from yesterday makes everything after it cold. Measured
@@ -205,13 +237,31 @@ def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
     stored body in place, so without surfacing it the fact that a memory
     used to say something else is only visible on disk.
     """
-    chunk = f"{_memory_entry_header(title, rel, raw)}\n{_memory_body_only(raw)}"
+    body = _memory_body_only(raw)
     try:
         from .memory_store import _parse_frontmatter
         meta, _ = _parse_frontmatter(raw)
         superseded = (meta.get("superseded") or "").strip()
     except Exception:
-        superseded = ""
+        meta, superseded = {}, ""
+    # A model's note that carries an instruction channel is not replayed:
+    # written before the write filter existed, past it, or edited by hand.
+    # The user's own words are shown as written. Same test as the write
+    # path (memory_store.memory_instruction_refusals).
+    try:
+        from .memory_store import (
+            _normalise_source, memory_instruction_refusals)
+        if _normalise_source(meta.get("source")) == "agent":
+            reasons = memory_instruction_refusals(
+                body + "\n" + superseded)
+            if reasons:
+                kinds = ", ".join(r.split(":", 1)[0] for r in reasons)
+                body = (f"[withheld at recall: the note carries text shaped "
+                        f"as an instruction ({kinds}); /memories shows it]")
+                superseded = ""
+    except Exception:
+        pass
+    chunk = f"{_memory_entry_header(title, rel, raw)}\n{body}"
     if superseded:
         chunk += f"\n[this replaced an earlier wording: {superseded}]"
     return chunk
@@ -329,6 +379,12 @@ class PromptLoader:
         # False suppresses DELFIN's own product context, which neither
         # applies to nor helps a session working in a user project.
         self.is_delfin_workspace: bool | None = None
+        # The session's optional-tool-group decision (toolsets.
+        # WorkspaceToolsets), shared with the permissions that filter the
+        # tool list, so the prompt never describes a tool that is not
+        # offered. None: no decision (CLI backend, tests) -- every block
+        # is kept, as before.
+        self.toolsets: Any = None
         self._context_tracker: Any = None  # set by AgentEngine
         self._progressive_disclosure: bool = False  # set by AgentEngine
         # Backend statefulness (set by AgentEngine). Only the persistent CLI
@@ -352,6 +408,57 @@ class PromptLoader:
         # belongs to every later session, and this bounds one.
         self.skip_external_memory: bool = False
 
+    def _session_toolsets(self):
+        """The session's WorkspaceToolsets, or None.
+
+        ``self.toolsets`` holds the object or a getter for it (the engine
+        installs a getter). Anything else -- a test double's attribute --
+        counts as no decision, so a stand-in can never put its repr into
+        the prompt.
+        """
+        source = self.toolsets
+        try:
+            value = source() if callable(source) else source
+        except Exception:
+            return None
+        from .toolsets import WorkspaceToolsets
+        return value if isinstance(value, WorkspaceToolsets) else None
+
+    def _hidden_tool_groups_note(self, role_id: str = "") -> str:
+        """The one line naming optional tool groups this session is not
+        offered, or "" (also "" without a toolsets decision)."""
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return ""
+        try:
+            return toolsets.hidden_note(role=role_id)
+        except Exception:
+            return ""
+
+    def _foreign_project_context(self, role_id: str = "") -> str:
+        """Project context for a workspace that is not DELFIN's tree.
+
+        Stable for the session: it changes only when a hidden tool group
+        is enabled, which is a turn-boundary event (toolsets).
+        """
+        text = ("DELFIN is the quantum-chemistry platform hosting this "
+                "agent. You are NOT working on DELFIN's own source here — "
+                "work in the user's workspace shown under Session "
+                "Environment.")
+        toolsets = self._session_toolsets()
+        chemistry_offered = True
+        if toolsets is not None:
+            try:
+                chemistry_offered = toolsets.offered("chemistry",
+                                                     role=role_id)
+            except Exception:
+                chemistry_offered = True
+        if chemistry_offered:
+            text += (" DELFIN's chemistry tooling stays available through "
+                     "your tools.")
+        note = self._hidden_tool_groups_note(role_id)
+        return text + (f" {note}" if note else "")
+
     def reset_session_prompt_state(self, session_key: str) -> None:
         """Forget prompt-injection state for a session.
 
@@ -362,6 +469,32 @@ class PromptLoader:
         stale = [key for key in self._prompt_state if key[0] == session_key]
         for key in stale:
             self._prompt_state.pop(key, None)
+
+    def _user_model_section(self, session_key: str, role_id: str) -> str:
+        """The user-model block for this build, fixed per session.
+
+        What the user said about themselves, at its own 200-token ceiling
+        so it never competes with the memory budget. The selection is
+        taken at the session's first build and kept under
+        ``(session_key, "")`` -- shared by every role of the session and
+        cleared with the rest by ``reset_session_prompt_state`` -- so a
+        line typed mid-session does not move the system prompt (which
+        precedes the whole history) until the next session; a forget or
+        the off switch still drops lines (see ``session_block``). Without
+        a session key the store is read fresh. "" when off, empty,
+        unreadable, or when the "memory" section is skipped.
+        """
+        if self._should_skip_section("memory", role_id):
+            return ""
+        state = (self._prompt_state.setdefault((session_key, ""), {})
+                 if session_key else {})
+        try:
+            from .user_model import session_block
+            block, state["user_model"] = session_block(
+                state.get("user_model"), max_tokens=200)
+        except Exception:
+            return ""
+        return block
 
     def _cached_read(self, path: Path) -> str:
         key = str(path)
@@ -375,7 +508,9 @@ class PromptLoader:
             from delfin.agent.provider_profile import format_profile_context
             provider = getattr(self, "_active_provider", "claude")
             profile_path = getattr(self, "_profile_path", None)
-            return format_profile_context(provider, profile_path, mode_id=mode_id)
+            delfin, _stacks = self._workspace_selection()
+            return format_profile_context(provider, profile_path,
+                                          mode_id=mode_id, domain=delfin)
         except Exception:
             return ""
 
@@ -645,6 +780,8 @@ class PromptLoader:
         # of the same budget rather than added on top of it: ``max_chars``
         # stays the ceiling for everything the block contributes.
         max_chars = max(0, max_chars - len(_MEMORY_BLOCK_PREAMBLE) - 2)
+        # The fence around the recalled text is paid from the same budget.
+        max_chars = max(0, max_chars - _notes_fence_overhead("memory"))
 
         # The index competes for the same characters as the bodies now. Each
         # store's pointer list is capped at a share of the budget so a fat
@@ -755,7 +892,28 @@ class PromptLoader:
             joined = joined[:max(0, room)]
         if notice:
             joined = (joined + "\n\n" + notice) if joined else notice
-        return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
+        return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{_fence_notes('memory', joined)}"
+
+    def _load_knowledge_context(self, task_text: str,
+                                max_chars: int | None = None) -> str:
+        """Repository lessons that match the task (knowledge.load_block):
+        the global pack/knowledge entries, plus the workspace
+        repository's .delfin/knowledge outside the DELFIN tree. Fenced as
+        untrusted data, expired entries and entries carrying a permission
+        instruction left out, "" when nothing matches. Volatile: it
+        depends on the task. A session that switched the external stores
+        off (--bare) reads none."""
+        if self.skip_external_memory:
+            return ""
+        try:
+            from .knowledge import load_block
+            return load_block(
+                task_text=task_text,
+                workspace=self.workspace_root or self.repo_root,
+                is_delfin_workspace=self.is_delfin_workspace,
+                max_chars=max_chars)
+        except Exception:
+            return ""
 
     def _load_episode_recall_context(self, task_text: str = "",
                                      session_id: str = "") -> str:
@@ -781,9 +939,9 @@ class PromptLoader:
             from .episodes import recall_episodes
             # Same root as the memory store, and for the same reason: the
             # writer keys episodes by the workspace.
-            return recall_episodes(
+            return _fence_notes("episodes", recall_episodes(
                 Path(self.workspace_root or self.repo_root), task_text,
-                exclude_session_id=session_id)
+                exclude_session_id=session_id))
         except Exception:
             return ""
 
@@ -873,14 +1031,12 @@ class PromptLoader:
             pass
 
         def _git(*args: str) -> str:
+            from . import safe_git
             try:
-                out = subprocess.run(
-                    ["git", *args], cwd=str(repo),
-                    capture_output=True, text=True, timeout=2.0,
-                )
+                out = safe_git.run(args, repo, timeout=2.0)
                 if out.returncode == 0:
                     return out.stdout.strip()
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            except Exception:
                 pass
             return ""
 
@@ -977,13 +1133,31 @@ class PromptLoader:
         try:
             from . import workspace_trust as _trust
             root = self.workspace_root or self.repo_root
-            notes = _trust.pending_notices(root, short=True)
+            # --bare switches skill discovery off for the session; the
+            # skills kind is then not looked at (and not announced).
+            bare = bool(self.skip_external_memory)
+            notes = _trust.pending_notices(
+                root, short=True,
+                skip=(_trust.KIND_SKILLS,) if bare else ())
         except Exception:
             return ""
+        # A trusted project skill refused for having a built-in's or a
+        # user skill's name is withheld too, and as silently otherwise.
+        if not bare:
+            try:
+                from .skills import shadow_notices
+                notes = list(notes) + shadow_notices(root)
+            except Exception:
+                pass
         return "\n".join(f"- {n}" for n in notes)
 
     def _load_repo_map_context(self, task_text: str) -> str:
-        """Load a compact task-scoped repository map."""
+        """Load a compact task-scoped map of the SESSION'S workspace.
+
+        ``workspace_root`` first, as every neighbouring loader does:
+        ``repo_root`` is the prompt pack's tree, and a map of it pointed
+        every foreign session at DELFIN's own source files.
+        """
         try:
             from delfin.agent.repo_map import format_repo_map_context
 
@@ -991,7 +1165,7 @@ class PromptLoader:
             profile_path = getattr(self, "_profile_path", None)
             playbooks_path = getattr(self, "_playbooks_path", None)
             return format_repo_map_context(
-                self.repo_root,
+                Path(self.workspace_root or self.repo_root),
                 task_text,
                 provider=provider,
                 profile_path=profile_path,
@@ -1005,7 +1179,20 @@ class PromptLoader:
 
         Triggered when the task contains chemistry keywords.  Code-enforced
         rather than prompt-only to ensure compliance.
+
+        Only in a chemistry context: never when ``is_delfin_workspace`` is
+        False, because that is exactly when the tool surface strips
+        ``search_docs`` (``_DELFIN_ONLY_TOOL_NAMES``), and the protocol's
+        first step is to call it. The keyword classifier alone reads
+        "method", "functional", "scan", "spin" and "charge" as chemistry,
+        so on a code repository it fired on ordinary coding wording
+        (4 of 4 foreign probe repos). ``None`` (a caller that never set
+        the flag) keeps the old behaviour.
+        Rejected: tightening the shared classifier, which also keys the
+        outcome-history briefing and would re-bucket recorded history.
         """
+        if self.is_delfin_workspace is False:
+            return ""
         try:
             from delfin.agent.briefing import classify_task
             if classify_task(task_text) != "chemistry":
@@ -1044,7 +1231,8 @@ class PromptLoader:
             from delfin.agent.briefing import generate_briefing
 
             provider = getattr(self, "_active_provider", "claude")
-            return generate_briefing(provider, task_text)
+            return _fence_notes("briefing",
+                                generate_briefing(provider, task_text))
         except Exception:
             return ""
 
@@ -1280,8 +1468,75 @@ class PromptLoader:
         return "\n\n".join(parts)
 
     def load_role_prompt(self, role_id: str) -> str:
-        """Load agents/{role_id}.md."""
-        return self._cached_read(self.agent_dir / "agents" / f"{role_id}.md")
+        """Load agents/{role_id}.md, with its workspace blocks selected."""
+        return self._select_workspace_blocks(
+            self._cached_read(self.agent_dir / "agents" / f"{role_id}.md"))
+
+    # ------- Workspace blocks (DELFIN context, language stack) ------------
+
+    # ``<!-- context:delfin -->`` ... ``<!-- /context -->`` holds text that
+    # only applies where DELFIN's chemistry context does (a DELFIN tree, a
+    # calc folder, chemistry files). ``<!-- stack:X -->`` ... ``<!--
+    # /stack -->`` holds advice for one language stack (python, node,
+    # rust, go, generic). Regions do not nest, and unlike the lazy
+    # modules they may sit anywhere in the file: what selects them is
+    # decided once per session, so their position costs the prefix cache
+    # nothing within a session.
+    _REGION_RE = re.compile(
+        r"^<!--\s*(context|stack):([a-z_]+)\s*-->[ \t]*\n(.*?)"
+        r"^<!--\s*/\1\s*-->[ \t]*\n",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    def _workspace_selection(self) -> tuple[bool, frozenset[str]]:
+        """``(delfin_context, stacks)`` for the block selection.
+
+        Without a toolsets decision (CLI backend, a loader built in a
+        test) every DELFIN block is kept and the Python advice is shown:
+        the text this file carried before the regions existed. With one,
+        the DELFIN context follows the chemistry group (or a DELFIN tree)
+        and the stacks are the workspace's, ``generic`` when none is
+        detected.
+        """
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return True, frozenset({"python"})
+        try:
+            delfin = bool(toolsets.is_delfin_workspace
+                          or toolsets.offered("chemistry"))
+            stacks = frozenset(toolsets.stacks()) or frozenset({"generic"})
+        except Exception:
+            return True, frozenset({"python"})
+        return delfin, stacks
+
+    def _select_workspace_blocks(self, text: str) -> str:
+        if not text or "<!-- " not in text:
+            return text
+        delfin, stacks = self._workspace_selection()
+
+        def _keep(m: "re.Match[str]") -> str:
+            kind, name, body = m.group(1), m.group(2), m.group(3)
+            if kind == "context":
+                return body if (name == "delfin" and delfin) else ""
+            return body if name in stacks else ""
+
+        return self._REGION_RE.sub(_keep, text)
+
+    def _excluded_modules(self, role_id: str = "") -> frozenset[str]:
+        """Lazy modules that describe a tool group this session is not
+        offered: they are dropped whatever the task text says."""
+        toolsets = self._session_toolsets()
+        if toolsets is None:
+            return frozenset()
+        out: set[str] = set()
+        try:
+            if not toolsets.offered("chemistry", role=role_id):
+                out.add("chemistry")
+            if not toolsets.offered("office", role=role_id):
+                out.add("documents")
+        except Exception:
+            return frozenset()
+        return frozenset(out)
 
     # ------- Progressive disclosure (lazy-load heavy prompt modules) ------
 
@@ -1627,7 +1882,8 @@ class PromptLoader:
         except Exception:
             _enabled = True
             _compact_setting = False
-        if not _enabled:
+        excluded = self._excluded_modules(role_id)
+        if not _enabled and not excluded:
             # Just strip the marker comments but keep all content
             return self._MODULE_MARKER_RE.sub("", text)
 
@@ -1671,8 +1927,14 @@ class PromptLoader:
         # a tidiness question. A test keeps them at the tail.
         active = self._detect_active_modules(
             task_text, mode_id, session_key=session_key, role_id=role_id,
-            conversation_text=conversation_text, everything=_everything,
+            conversation_text=conversation_text,
+            everything=_everything or not _enabled,
         )
+        if not _enabled:
+            _compact = False
+        # A module describing a tool group the session is not offered is
+        # out whatever triggered: the tools it names are not in the list.
+        active -= excluded
         lines = text.splitlines(keepends=True)
         out: list[str] = []
         i = 0
@@ -1939,22 +2201,30 @@ class PromptLoader:
                 # nor is free, and naming its internals invites drift into
                 # the source tree.
                 add("project_context", self.LAYER_STABLE,
-                    "--- Project Context ---\nDELFIN is the "
-                    "quantum-chemistry platform hosting this agent. You are "
-                    "NOT working on DELFIN's own source here — work in the "
-                    "user's workspace shown under Session Environment. "
-                    "DELFIN's chemistry tooling stays available through your "
-                    "tools.")
+                    "--- Project Context ---\n"
+                    + self._foreign_project_context(role_id))
             else:
                 ctx_text = _shared("delfin_context.md")
                 if ctx_text:
+                    _note = self._hidden_tool_groups_note(role_id)
                     add("project_context", self.LAYER_STABLE,
-                        f"--- Project Context ---\n{ctx_text}")
+                        f"--- Project Context ---\n{ctx_text}"
+                        + (f"\n{_note}" if _note else ""))
 
             if progressive:
                 # Static menu of on-demand sections — belongs in the head.
                 add("progressive_note", self.LAYER_STABLE,
                     self._build_progressive_disclosure_note())
+
+            # Per-model notes (model_profiles.MODEL_NOTES), each switched
+            # by its own profile field. Fixed for the model, so the last
+            # stable section: a model switch re-sends this tail, nothing
+            # before it. Empty for every profile that switches none on.
+            try:
+                from .model_profiles import model_notes as _model_notes
+                add("model_notes", self.LAYER_STABLE, _model_notes(model))
+            except Exception:
+                pass
 
             # ---- Layer 2: per-turn material ------------------------------
             # Everything below is derived from the current task text, the
@@ -1988,6 +2258,13 @@ class PromptLoader:
                         add("playbook", self.LAYER_VOLATILE,
                             f"--- Relevant Playbook ---\n{relevant_playbook}")
                         injected.append("playbook")
+
+            # User model (see _user_model_section): the Code mode and the
+            # terminal run this branch, the other roles the one below.
+            _user_block = self._user_model_section(session_key, role_id)
+            if _user_block:
+                add("user_model", self.LAYER_VOLATILE, _user_block)
+                injected.append("user_model")
 
             if self._should_inject_memory(role_id, session_key, memory_context):
                 if not self._should_skip_section("memory", role_id):
@@ -2025,6 +2302,14 @@ class PromptLoader:
                 add("episodes", self.LAYER_VOLATILE,
                     f"--- Past Sessions ---\n{episode_ctx}")
                 injected.append("episodes")
+
+            # Shared lessons (repository knowledge), only when one matches.
+            knowledge_ctx = self._load_knowledge_context(task_text)
+            if knowledge_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("knowledge", self.LAYER_VOLATILE,
+                    f"--- Shared lessons ---\n{knowledge_ctx}")
+                injected.append("knowledge")
 
             # How this workspace checks its work (tests/lint from its own
             # CI or config), so the agent calls the right runner instead
@@ -2115,11 +2400,7 @@ class PromptLoader:
                 # Naming DELFIN's internals here also invites the model to
                 # drift into the source tree.
                 add("shared_context", self.LAYER_STABLE,
-                    "DELFIN is the quantum-chemistry platform hosting this "
-                    "agent. You are NOT working on DELFIN's own source here "
-                    "— work in the user's workspace shown under Session "
-                    "Environment. DELFIN's chemistry tooling stays available "
-                    "through your tools.")
+                    self._foreign_project_context(role_id))
             else:
                 # Brief context: short intro only. Detailed guidance comes from
                 # the relevant playbook and repo map to keep prompts cheap.
@@ -2396,6 +2677,25 @@ class PromptLoader:
                 add("external_memory", self.LAYER_VOLATILE,
                     f"--- Folder Conventions (remembered) ---\n{ext_mem}")
                 injected.append("external_memory")
+
+        # Shared lessons for every role but the administrative one, whose
+        # memories are kept apart by domain (above) and whose work the
+        # technical lessons do not describe.
+        if role_id != "office_agent":
+            knowledge_ctx = self._load_knowledge_context(
+                task_text, max_chars=1200 if role_id == "dashboard_agent"
+                else None)
+            if knowledge_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("knowledge", self.LAYER_VOLATILE,
+                    f"--- Shared lessons ---\n{knowledge_ctx}")
+                injected.append("knowledge")
+
+        # User model (see _user_model_section).
+        _user_block = self._user_model_section(session_key, role_id)
+        if _user_block:
+            add("user_model", self.LAYER_VOLATILE, _user_block)
+            injected.append("user_model")
 
         # Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)

@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+
+from . import safe_git
 from pathlib import Path
 
 __all__ = [
@@ -49,11 +51,15 @@ _VALID_MODES: frozenset[str] = frozenset({
     "plan", "default", "acceptEdits", "bypassPermissions",
 })
 
-# What an interactive session starts in when nothing says otherwise. Plan
-# mode is read-only: the first turn in a folder the agent has never seen —
-# exactly when it is most likely to be wrong about what the folder IS —
-# cannot write, cannot shell, and cannot reach an unknown MCP tool.
-DEFAULT_MODE = "plan"
+# What a session starts in when neither --permission-mode nor a settings
+# default_mode names a posture, and what a refused bypass falls back to.
+# ``default`` asks before every write and every shell command off the
+# auto-allow list; with nobody to ask (a headless run without
+# --supervised) such a command is refused, while a write inside the
+# workspace roots is allowed (see _gate_write_path and
+# tests/test_default_mode_asks_or_refuses.py). Plan, read-only, applies
+# only when a flag or a settings default_mode asks for it.
+DEFAULT_MODE = "default"
 
 _GIT_TIMEOUT_S = 5.0
 _DIRTY_SHOWN = 5
@@ -129,10 +135,7 @@ def workspace_refusal_message(path: Path | str) -> str:
 
 def _git(workspace: Path, *args: str) -> str:
     try:
-        proc = subprocess.run(
-            ["git", *args], cwd=str(workspace), capture_output=True,
-            text=True, timeout=_GIT_TIMEOUT_S, check=False,
-        )
+        proc = safe_git.run(args, workspace, timeout=_GIT_TIMEOUT_S)
     except Exception:
         return ""
     # Only the trailing newline. `--porcelain` puts the status in columns
@@ -373,7 +376,7 @@ def resolve_posture(
     ``bypassPermissions`` is NOT inherited. That setting is written once —
     often in a container, often to get through one stubborn task — and it
     then makes every future session on the machine unattended, silently.
-    An interactive session downgrades to plan mode and says where the
+    An interactive session falls back to ``DEFAULT_MODE`` and says where the
     setting lives. Reaching bypass from a terminal takes two flags typed
     together, on purpose.
     """
@@ -384,14 +387,15 @@ def resolve_posture(
         if flag_mode == "bypassPermissions" and not unattended_opt_in:
             return DEFAULT_MODE, (
                 "refused --permission-mode bypassPermissions without "
-                "--unattended; starting in plan")
+                f"--unattended; starting in {DEFAULT_MODE}")
         return flag_mode, "--permission-mode"
 
     if persisted_mode == "bypassPermissions":
         return DEFAULT_MODE, (
             f"{settings_path} sets default_mode = \"bypassPermissions\". An "
             "interactive session will not start unattended; starting in "
-            "plan. Use --permission-mode acceptEdits for this session, or "
+            f"{DEFAULT_MODE}. Use --permission-mode acceptEdits for this "
+            "session, or "
             "--permission-mode bypassPermissions --unattended if you mean it")
 
     if persisted_mode in _VALID_MODES:

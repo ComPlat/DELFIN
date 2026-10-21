@@ -5,7 +5,7 @@ coordination tests don't — keeping parity with what real users run
 on the cluster:
 
   - Classic ORCA pipeline (S0 / redox steps / ESD)
-      Fritz-style: CONTROL.txt with method=classic + ESD_modul=yes
+      ESD-style: CONTROL.txt with method=classic + ESD_modul=yes
       + electrical properties + TDDFT configuration.
 
   - Hyperpol xTB screening
@@ -17,7 +17,7 @@ on the cluster:
   - NMR post-processing
       delfin_NMR CLI that parses ORCA NMR output into the NMR report.
 
-  - Raw ORCA wrapper mode (Tilman-style)
+  - Raw ORCA wrapper mode
       `DELFIN_MODE=orca` — single .inp file, local_runner finds it,
       runs ORCA, local_runner._print_orca_summary reports SUCCESS/FAILED.
       This is the path that the set +e / sync_results_back fixes
@@ -39,7 +39,7 @@ import pytest
 
 
 # ===========================================================================
-# 1. Classic ORCA pipeline (Fritz-style, method=classic + ESD + elprop)
+# 1. Classic ORCA pipeline (ESD-style, method=classic + ESD + elprop)
 # ===========================================================================
 
 _CLASSIC_CONTROL_TEMPLATE = """\
@@ -171,7 +171,7 @@ def test_classic_config_selects_classic_method(classic_config):
 
 
 def test_classic_config_esd_module_enabled(classic_config):
-    """Fritz's CONTROL.txt sets ESD_modul=yes → run_esd_phase must run."""
+    """The ESD-style CONTROL.txt sets ESD_modul=yes → run_esd_phase must run."""
     assert classic_config.get("ESD_modul") == "yes"
     # Parser lower-cases the ESD_modus value
     assert str(classic_config.get("ESD_modus")).lower() == "tddft"
@@ -214,12 +214,12 @@ def test_classic_config_tddft_block_preserved(classic_config):
 
 
 def test_classic_config_calc_initial_disabled(classic_config):
-    """Fritz sets calc_initial=no → run_occuper_phase must skip."""
+    """The ESD-style setup sets calc_initial=no → run_occuper_phase must skip."""
     assert classic_config.get("calc_initial") == "no"
 
 
 def test_classic_config_geom_opt_keyword_composite(classic_config):
-    """Fritz uses a composite geom_opt = 'OPT TIGHTSCF defgrid3' — this
+    """The ESD-style setup uses a composite geom_opt = 'OPT TIGHTSCF defgrid3' — this
     is inlined into ORCA's ! line. Whitespace / capitalisation matters."""
     geom_opt = classic_config.get("geom_opt", "")
     assert "OPT" in geom_opt, f"OPT keyword dropped from geom_opt: {geom_opt!r}"
@@ -478,10 +478,10 @@ def test_nmr_report_generator_module_importable():
 
 
 # ===========================================================================
-# 5. Raw ORCA wrapper mode (Tilman-style DELFIN_MODE=orca)
+# 5. Raw ORCA wrapper mode (DELFIN_MODE=orca)
 # ===========================================================================
 #
-# Tilman's use-case: drop a single .inp file into a directory, set
+# The use-case: drop a single .inp file into a directory, set
 # DELFIN_MODE=orca, run the SLURM wrapper. local_runner has a special
 # code branch for this that picks up the .inp file, runs ORCA, prints
 # a summary. This is the path that the set +e / sync_results_back
@@ -549,7 +549,7 @@ def test_local_runner_orca_mode_uses_env_var_for_inp_file():
         "DELFIN_INP_FILE is no longer referenced in local_runner. The "
         "submit script exports that exact name — losing it here turns "
         "raw-ORCA-mode into a glob-based fallback and mis-selects the "
-        "input file (exactly the issue that hit Tilman once)."
+        "input file (exactly the issue from a field report)."
     )
 
 

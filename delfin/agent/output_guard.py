@@ -190,14 +190,20 @@ def _redact_secrets(text: str, findings: list) -> str:
     return text
 
 
-def scrub_secrets(text: str) -> str:
+def scrub_secrets(text: str, *, exact_only: bool = False) -> str:
     """``text`` without any credential DELFIN holds and without anything
     shaped like one, for text that is KEPT (memory) or PASSED ON (another
     session's inbox, a tool result in the transcript).
 
     Exact values first: a KIT key has no recognisable prefix, so the shape
-    checks alone let it through. Never raises; returns the input when
-    scrubbing itself fails.
+    checks alone let it through.
+
+    ``exact_only`` removes only the exact values of the credentials DELFIN
+    holds and skips the pattern scan. It exists for a caller that must not
+    run the (super-linear) regex scan on a very large text but still cannot
+    let the one value it is certain about through: the exact-value pass is
+    a handful of ``str.replace`` calls and is bounded by the text length.
+    Never raises; returns the input when scrubbing itself fails.
     """
     if not text:
         return text
@@ -208,6 +214,8 @@ def scrub_secrets(text: str) -> str:
                 text = text.replace(secret, "[redacted:credential]")
     except Exception:
         pass
+    if exact_only:
+        return text
     try:
         return _redact_secrets(text, [])
     except Exception:

@@ -122,7 +122,11 @@ def test_delfin_repo_recipe_comes_from_real_ci():
     recipe = vr.discover(REPO_ROOT)
     tests = [s for s in recipe.steps if s.kind == "test"]
     lints = [s for s in recipe.steps if s.kind == "lint"]
-    assert tests and all(s.command.startswith("pytest") for s in tests)
+    # `python -m pytest` lines count too: they were dropped as installs
+    # before the classification ran (test_verify_recipe_keeps_test_
+    # commands_from_ci.py), which is what this assertion used to encode.
+    assert tests and all(
+        s.command.startswith(("pytest", "python -m pytest")) for s in tests)
     assert lints and all("ruff" in s.command for s in lints)
     assert all("ci.yml" in s.origin or ".yml" in s.origin
                for s in recipe.steps)

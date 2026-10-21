@@ -467,23 +467,111 @@ def _create_token_file(token: str) -> Path:
     raise RuntimeError(f"could not create secure token file: {last_error}")
 
 
+#: Set to 1 to accept a DELFIN_VOILA_ROOT_DIR of /, /home, /tmp or $HOME.
+BROAD_ROOT_ENV = "DELFIN_VOILA_ALLOW_BROAD_ROOT"
+
+
+def _broad_roots() -> set:
+    """Directories too wide to serve: every user's files, or all of one's own."""
+    return {
+        Path("/").resolve(),
+        Path("/home").resolve(),
+        Path("/tmp").resolve(),
+        Path.home().resolve(),
+    }
+
+
+def _checked_root_override(raw: str) -> Path | None:
+    """The DELFIN_VOILA_ROOT_DIR override, or None when it is not taken.
+
+    Taken only when it names an existing directory that is not one of
+    :func:`_broad_roots` (unless BROAD_ROOT_ENV=1). A refused override is
+    reported on stderr and the default root is used instead, so the
+    dashboard still starts.
+    """
+    try:
+        path = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError):
+        path = None
+    reason = ""
+    if path is None or not path.is_dir():
+        reason = "is not an existing directory"
+    elif (path in _broad_roots()
+          and os.environ.get(BROAD_ROOT_ENV, "").strip() != "1"):
+        reason = (f"would serve far more than the dashboard needs "
+                  f"(set {BROAD_ROOT_ENV}=1 to allow it)")
+    if reason:
+        print(f"  \u26a0  DELFIN_VOILA_ROOT_DIR={raw!r} {reason}; "
+              "using the default root instead.", file=sys.stderr)
+        return None
+    return path
+
+
 def _default_voila_root() -> Path:
     """Return a narrow default root_dir for files served by Voilà."""
     override = os.environ.get("DELFIN_VOILA_ROOT_DIR", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        checked = _checked_root_override(override)
+        if checked is not None:
+            return checked
 
     cwd = Path.cwd().resolve()
     home = Path.home().resolve()
-    forbidden = {
-        Path("/").resolve(),
-        Path("/home").resolve(),
-        Path("/tmp").resolve(),
-        home,
-    }
-    if cwd not in forbidden and home in cwd.parents:
+    if cwd not in _broad_roots() and home in cwd.parents:
         return cwd
     return _secure_cache_dir("voila-root").resolve()
+
+
+def _kernel_transport_args() -> list:
+    """The server's kernels talk over Unix sockets, not loopback TCP.
+
+    Over TCP every kernel channel is a port on 127.0.0.1, which any user
+    of the machine can connect to. The key in the connection file signs
+    messages, it does not encrypt them, and the IOPub channel publishes to
+    any subscriber: measured 2026-10-20, a client without the key read a
+    kernel's printed output over TCP (ipykernel 7.3, jupyter_client 8.10).
+    With ``ipc`` the sockets are files beside the connection file, in the
+    Jupyter runtime directory, which is the user's own (mode 0700), so no
+    other user can reach them. ipykernel 7 also stops warning about an
+    unencrypted TCP kernel. Windows has no ipc transport and keeps TCP.
+    ``DELFIN_KERNEL_TRANSPORT=tcp`` restores TCP (a kernel on another
+    machine, a remote debugger).
+
+    A socket path is at most 107 bytes on Linux and 103 on macOS
+    (sockaddr_un), and each one is ``<runtime>/kernel-<uuid>-ipc-<port>``;
+    under a deep runtime directory no kernel could start. Then the server
+    keeps TCP and says so, instead of a dashboard that never loads."""
+    if os.name == "nt":
+        return []
+    transport = os.environ.get("DELFIN_KERNEL_TRANSPORT", "ipc").strip().lower()
+    if transport != "ipc":
+        return []
+    try:
+        from jupyter_core.paths import jupyter_runtime_dir
+        runtime = os.path.realpath(jupyter_runtime_dir())
+    except Exception:
+        return []
+    try:
+        import zmq
+        limit = int(getattr(zmq, "IPC_PATH_MAX_LEN", 0) or 0)
+    except Exception:
+        limit = 0
+    limit = limit or (103 if sys.platform == "darwin" else 107)
+    longest = len(os.fsencode(runtime)) + len("/kernel-") + 36 + len("-ipc-") + 5
+    if longest > limit:
+        print(f"Note: kernels talk over loopback TCP, which other users of "
+              f"this machine can reach: the socket path under {runtime} "
+              f"would be {longest} bytes, more than the {limit} a Unix "
+              "socket allows. Set JUPYTER_RUNTIME_DIR to a short private "
+              "directory (mode 0700) to keep them private.", file=sys.stderr)
+        return []
+    return ["--KernelManager.transport=ipc"]
+
+
+def _file_allowlist() -> str:
+    from delfin.dashboard.web_security import FILE_ALLOWLIST
+
+    return FILE_ALLOWLIST
 
 
 def _dashboard_default_url(notebook: str, root_dir: str) -> str:
@@ -520,41 +608,52 @@ def _login_logo_data_uri() -> str:
     return ""
 
 
-def _prepare_login_template_dir() -> str | None:
-    """Materialise the DELFIN-branded ``login.html`` for jupyter_server.
+def _render_login_template(template: str, logo_uri: str) -> str:
+    """``template`` with the DELFIN logo inlined as a ``data:`` URI, or
+    without its logo tile when there is no logo (no broken image)."""
+    if logo_uri:
+        return template.replace("__DELFIN_LOGO_URI__", logo_uri)
+    import re
 
-    Reads the shipped template, inlines the DELFIN logo as a ``data:`` URI, and
-    writes the result into a private 0700 directory that is handed to
-    jupyter_server via ``extra_template_paths`` (searched before the packaged
-    template, so ours wins). Returns the directory path, or ``None`` if the
-    template is unavailable (jupyter_server then falls back to its own page —
-    auth is unaffected either way).
+    return re.sub(
+        r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
+        "",
+        template,
+        flags=re.DOTALL,
+    ).replace("__DELFIN_LOGO_URI__", "")
+
+
+def _prepare_login_template_dir() -> str | None:
+    """Materialise the DELFIN-branded sign-in and sign-out pages for
+    jupyter_server.
+
+    Reads every shipped template in ``voila_assets/login_templates``
+    (``login.html``, ``logout.html`` and the card style they include),
+    inlines the DELFIN logo as a ``data:`` URI, and writes the results into
+    a private 0700 directory that is handed to jupyter_server via
+    ``extra_template_paths`` (searched before the packaged templates, so
+    ours win). Returns the directory path, or ``None`` if ``login.html`` is
+    unavailable (jupyter_server then falls back to its own pages — auth is
+    unaffected either way). ``logout.html`` used to be jupyter_server's own:
+    an unstyled "Successfully logged out. Proceed to the login page."
     """
     try:
-        src = importlib.resources.files("delfin.voila_assets").joinpath(
-            "login_templates", "login.html"
-        )
-        template = src.read_text(encoding="utf-8")
+        folder = importlib.resources.files("delfin.voila_assets").joinpath(
+            "login_templates")
+        templates = {f.name: f.read_text(encoding="utf-8")
+                     for f in folder.iterdir()
+                     if f.name.endswith(".html") and f.is_file()}
     except Exception:
+        return None
+    if "login.html" not in templates:
         return None
 
     logo_uri = _login_logo_data_uri()
-    if logo_uri:
-        rendered = template.replace("__DELFIN_LOGO_URI__", logo_uri)
-    else:
-        # No logo available: drop the whole tile so no broken image shows.
-        import re
-
-        rendered = re.sub(
-            r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
-            "",
-            template,
-            flags=re.DOTALL,
-        ).replace("__DELFIN_LOGO_URI__", "")
-
     try:
         target_dir = _secure_cache_dir("voila-login")
-        (target_dir / "login.html").write_text(rendered, encoding="utf-8")
+        for name, template in templates.items():
+            (target_dir / name).write_text(
+                _render_login_template(template, logo_uri), encoding="utf-8")
         return str(target_dir)
     except Exception:
         return None
@@ -579,9 +678,8 @@ def _prepare_published_dir() -> str | None:
     login page — which is why what is published gets a directory of its own
     rather than a route into ``~/.delfin``, where the credentials and the
     agent's memory live. It holds the editor and nothing else, and the editor
-    is a public open-source bundle. This narrows the surface rather than
-    widening it: ``/voila/files/`` is equally unauthenticated and reaches
-    every .png/.pdf/.html below the launch directory.
+    is a public open-source bundle. ``/voila/files/``, which reaches the
+    launch directory, requires the token (``web_security``).
     """
     try:
         from delfin.dashboard import ketcher
@@ -681,6 +779,13 @@ def _reexec_under_tmux(argv) -> "int | None":
               file=sys.stderr)
         return None
     return int(proc.returncode or 0)
+
+
+def _announces_where(env) -> bool:
+    """False for a branch preview (branch_preview.preview_env sets the
+    markers): the note says where *the* dashboard runs, and a preview
+    closes with its branch."""
+    return not (env.get("DELFIN_PREVIEW_BRANCH") and env.get("DELFIN_PREVIEW_WORKTREE"))
 
 
 def main(argv=None):
@@ -1012,18 +1117,38 @@ def main(argv=None):
         env[_ct.ENABLED_ENV] = "1"
     else:
         env.pop("DELFIN_CLAUDE_TERMINAL", None)
+    import json
+
+    from delfin.dashboard.web_security import NO_TYPESETTING_ROUTE
+
+    # Server-side login sessions (logout, idle timeout) and refused logins
+    # as security events: delfin.dashboard.identity. If it does not import
+    # with this jupyter-server, the server starts with jupyter-server's own
+    # provider and the terminal says what is missing.
+    _identity_args = []
+    try:
+        from delfin.dashboard import identity as _identity
+        _identity_args = [
+            "--ServerApp.identity_provider_class=" + _identity.CLASS_PATH]
+    except Exception as _identity_exc:  # noqa: BLE001
+        print("Warning: dashboard logins have no logout or idle timeout on "
+              f"this server ({_identity_exc}); they end only after "
+              "DELFIN_DASHBOARD_LOGIN_DAYS.", file=sys.stderr)
+
     cmd = [
         sys.executable,
         "-m",
         "jupyter",
         "server",
         f"--ServerApp.jpserver_extensions={_extensions}",
+        *_identity_args,
         *(["--ServerApp.kernel_manager_class="
            + kernel_manager_class] if kernel_manager_class else []),
         # A kernel whose last window closed is ended by the server after
         # a grace, unless the session was kept. The flags switch the
         # culler on; the rule itself lives in the kernel manager above.
         *(_resume.cull_config_args() if kernel_manager_class else []),
+        *_kernel_transport_args(),
         f"--port={args.port}",
         *(["--ServerApp.port_retries=0"] if args.strict_port else []),
         f"--ServerApp.ip={args.ip}",
@@ -1047,7 +1172,11 @@ def main(argv=None):
         # Info-disclosure: never surface Python tracebacks to the browser
         # (they leak paths, usernames, code). Off by default; set explicitly.
         "--VoilaConfiguration.show_tracebacks=False",
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)",
+        # What the UI loads from /voila/files/: images, PDFs and the drawing
+        # editor's launch copy (web_security.FILE_ALLOWLIST). The route itself
+        # is put behind authentication by the server_guard extension, which
+        # also serves anything active from user data as a download.
+        "--VoilaConfiguration.file_allowlist=" + _file_allowlist(),
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
         # Shrink the RCE surface: no server terminals, unless the Claude
@@ -1076,11 +1205,15 @@ def main(argv=None):
         # dashboard shows, and this is a speed fix. The rendered document is
         # identical either way: 7626 elements, 15 script tags.
         #
-        # The trailing // is load-bearing: Voila appends ?config=... and the
-        # comment swallows it. And it goes through tornado_settings because
-        # the dashboard runs Voila as a jupyter-server extension, where the
-        # Voila app's own mathjax_url trait is never read.
-        '--ServerApp.tornado_settings={"mathjax_url": "data:text/javascript,//"}',
+        # The URL is an empty script on the dashboard's own origin
+        # (web_security.NO_TYPESETTING_ROUTE, installed by server_guard), so
+        # the page CSP's script-src needs no data:. Voila appends
+        # ?config=..., which the route ignores. It goes through
+        # tornado_settings because the dashboard runs Voila as a
+        # jupyter-server extension, where the Voila app's own mathjax_url
+        # trait is never read.
+        "--ServerApp.tornado_settings="
+        + json.dumps({"mathjax_url": NO_TYPESETTING_ROUTE}),
         # Frontend extensions the browser fetches, parses and evaluates at
         # every load, for widgets this dashboard never makes.
         #
@@ -1220,6 +1353,8 @@ def main(argv=None):
     try:
         from delfin.agent import where as _where
 
+        if not _announces_where(os.environ):
+            raise RuntimeError("a branch preview leaves the note alone")
         _where.announce_dashboard(
             port=args.port, token=_token, url=dashboard_url,
             resume_path=resume_url_path.split("?")[0] if resume_url_path else "")

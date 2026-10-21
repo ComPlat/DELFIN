@@ -54,10 +54,13 @@ def test_the_result_names_the_file_and_carries_no_figure(tmp_path):
 
 
 def test_make_plot_bad_spec_is_refused_clearly(tmp_path):
-    before = set(tmp_path.rglob("*"))
+    # Its own directory: tmp_path also holds the test HOME, where a
+    # session-presence thread of an earlier test may write meanwhile.
+    out = tmp_path / "plots"
+    out.mkdir()
     with pytest.raises(SpecError):
-        cp.make_plot({"kind": "pie"}, out_dir=str(tmp_path))
-    assert set(tmp_path.rglob("*")) == before, "bad spec must not write files"
+        cp.make_plot({"kind": "pie"}, out_dir=str(out))
+    assert list(out.rglob("*")) == [], "bad spec must not write files"
 
 
 def test_make_plot_filename_cannot_escape_the_workspace(tmp_path):
@@ -82,8 +85,16 @@ def test_the_card_is_the_chats_artifact_preview(tmp_path):
 def test_a_hostile_title_does_not_reach_the_page_raw(tmp_path):
     spec = {**_spec(), "title": '"><img src=x onerror=alert(1)>'}
     card = T._make_plot_card_html(cp.make_plot(spec, out_dir=str(tmp_path)))
-    assert "<img src=x" not in card and '"><img' not in card
-    assert "&lt;img src=x" in card      # inert text in the SVG
+    import base64
+    import re
+    assert "<img src=x" not in card
+    # Every image on the card is a data: URI; the SVG is one of them, and
+    # inside it the title is inert text.
+    sources = re.findall(r'<img src="([^"]*)"', card)
+    assert sources and all(s.startswith("data:image/") for s in sources)
+    svg = [base64.b64decode(s.split(",", 1)[1]).decode("utf-8")
+           for s in sources if s.startswith("data:image/svg+xml;base64,")]
+    assert svg and "&lt;img src=x" in svg[0]
 
 
 def test_a_payload_naming_another_file_type_is_a_text_card(tmp_path):

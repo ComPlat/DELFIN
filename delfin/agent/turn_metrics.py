@@ -519,8 +519,16 @@ def record_request(
     finish_reason: str = "",
     system_hash: str = "",
     prefix_hash: str = "",
+    served_model: str = "",
 ) -> None:
     """Append one request's timing and token counts. Never raises.
+
+    ``model`` is the name DELFIN asked for, ``served_model`` the model id
+    the response reports (OpenAI-compatible ``model`` field), written only
+    when the response carries one. A routing alias such as
+    ``kit.deepseek-v4-flash`` can be pointed at another model on the
+    endpoint's side; this field is where that shows. The value comes from
+    the endpoint and is reduced to printable characters and 120 of them.
 
     ``system_hash`` fingerprints the system prompt, ``prefix_hash`` the
     system prompt plus every message before this turn's rows. A cold
@@ -555,6 +563,10 @@ def record_request(
             entry["system_hash"] = str(system_hash)
         if prefix_hash:
             entry["prefix_hash"] = str(prefix_hash)
+        served = "".join(c for c in str(served_model or "")
+                         if c.isprintable())[:120].strip()
+        if served:
+            entry["served_model"] = served
         with open_append(p) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         secure_file(p)
@@ -607,6 +619,9 @@ def format_requests(entries: list[dict], *, limit: int = 40) -> str:
                 flag += " (system prompt changed)"
             elif e.get("prefix_hash") == prev.get("prefix_hash"):
                 flag += " (same prefix: endpoint cache lost)"
+        served = str(e.get("served_model") or "")
+        if served and served != str(e.get("model") or ""):
+            flag += f"  served={served}"
         rows.append(
             f"ttft={ttft_s}  total={_int(e, 'total_ms') / 1000:.1f}s  "
             f"in={_int(e, 'input_tokens')}  "

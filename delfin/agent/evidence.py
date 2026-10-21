@@ -230,6 +230,11 @@ def verify_evidence(evidence: Any, *,
         ref = _ref_of(evidence)
         if not kind:
             return False, "evidence has no kind"
+        if kind == "shared":
+            # Where an imported skill came from. It says nothing was checked
+            # here, so it can never be the entry that lets a proposal in.
+            return False, ("an imported bundle is provenance, not evidence "
+                           "checked on this machine")
         if kind not in _KINDS:
             return False, (f"unknown evidence kind '{kind}' "
                            f"(expected one of {', '.join(_KINDS)})")

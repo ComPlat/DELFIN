@@ -14,9 +14,9 @@ host, the pid and the branch of every open session). The dashboard
 itself left none — this adds it, and reads both back:
 
     $ delfin-agent where
-    dashboard  uc3n991  port 8867  tmux 'delfin'  started 20:46  (running)
-      come back with:  ssh uc3n991 && tmux attach -t delfin
-    session    uc3n991  'uc3n991-79b8'  branch session/33c1925d  seen 12s ago
+    dashboard  login02  port 8867  tmux 'delfin'  started 20:46  (running)
+      come back with:  ssh login02 && tmux attach -t delfin
+    session    login02  'login02-79b8'  branch session/33c1925d  seen 12s ago
 
 Read-only except for the one record the launcher writes about itself.
 """
@@ -222,22 +222,20 @@ def resume_links(record: dict, rows: list[dict]) -> list[tuple]:
     """(session name, the address that walks back into it).
 
     A session that is kept has a record of its own; the dashboard note
-    has the port and the token. Neither half is enough alone, which is
-    why getting back in meant reading two files and pasting them
-    together by hand.
+    has the port. The link carries no token: the browser that opened the
+    dashboard still holds its login cookie, and any other browser gets
+    the login page, which takes the token (``--token``) and continues to
+    the same link. A token in a URL stays in browser history and in every
+    copy of this terminal's output.
     """
+    from urllib.parse import quote
+
     port = int(record.get("port") or 0)
-    token = str(record.get("token") or "")
     path = str(record.get("resume_path") or "")
     if not (port and path):
         return []
-    out: list[tuple] = []
-    for name in kept_session_names():
-        query = f"?session={name}"
-        if token:
-            query = f"?token={token}&session={name}"
-        out.append((name, f"http://localhost:{port}{path}{query}"))
-    return out
+    return [(name, f"http://localhost:{port}{path}?session={quote(name)}")
+            for name in kept_session_names()]
 
 
 def kept_session_names() -> list[str]:
@@ -305,6 +303,9 @@ def format_text(record: dict, rows: list[dict]) -> str:
             out.append("  walk back into a kept session:")
             for name, url in links:
                 out.append(f"    {name}  {url}")
+            if record.get("token"):
+                out.append("  if the login page asks for a token:  "
+                           "delfin-agent where --token")
     if rows:
         out.append("")
         for row in rows:
@@ -329,6 +330,8 @@ def main(argv: Optional[list] = None) -> int:
         description="Where the dashboard runs and how to get back into it")
     p.add_argument("--attach", action="store_true",
                    help="Walk into the tmux session the note names")
+    p.add_argument("--token", action="store_true",
+                   help="Print the dashboard's login token and nothing else")
     p.add_argument("--ssh-config", action="store_true",
                    help="Print a ready ssh config entry for it")
     p.add_argument("--write", action="store_true",
@@ -336,6 +339,13 @@ def main(argv: Optional[list] = None) -> int:
                         "printing it (refuses to change an existing one)")
     args = p.parse_args(argv)
 
+    if args.token:
+        token = str(dashboard().get("token") or "")
+        if not token:
+            print("No dashboard note with a token.", file=sys.stderr)
+            return 1
+        print(token)
+        return 0
     if args.attach:
         return run_attach(dashboard())
     if args.ssh_config:

@@ -174,6 +174,10 @@ def test_run_subagent_worktree_isolation_gracefully_handles_no_git(
     class _Perms:
         mode: str = "default"
         workspace: Path = tmp_path  # not a git repo
+        # The explore role's tool list lands here; a type that cannot
+        # carry it is refused (test_a_subagent_fallback_never_drops_its_
+        # tool_list.py).
+        session_allowed_tools: frozenset = frozenset()
 
     @dataclass
     class _Ev:

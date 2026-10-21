@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
-import subprocess
 import time
 from pathlib import Path
 
@@ -33,8 +33,8 @@ _last_written: dict[str, tuple[str, float]] = {}
 
 def _git(workspace: str, *args: str) -> str:
     try:
-        out = subprocess.run(["git", "-C", workspace, *args],
-                             capture_output=True, text=True, timeout=5)
+        from . import safe_git
+        out = safe_git.run(args, workspace, timeout=5)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""
@@ -89,7 +89,13 @@ def announce(key: str, *, session_id: str = "", title: str = "",
         "branch": repo["branch"],
         "host": socket.gethostname(),
         "pid": os.getpid(),
+        # The pid alone outlives the process: a crashed kernel's number
+        # handed to a new process read as an open session for the whole
+        # stale window. proc_identity tells one life of a pid from the next.
+        "proc_start": _process_start(os.getpid()),
     }
+    if record["session_id"]:
+        _remember_alias(key, record["session_id"])
     body = json.dumps(record, sort_keys=True)
     last = _last_written.get(key)
     now = time.time()
@@ -102,6 +108,78 @@ def announce(key: str, *, session_id: str = "", title: str = "",
         _last_written[key] = (body, now)
     except Exception:
         pass
+
+
+def _alias_path(key: str) -> Path:
+    # Beside the record directory, not in it: every *.json there is read
+    # as a record and reaped by age.
+    return _DIR.parent / "session_key_aliases" / _safe(key)
+
+
+def _remember_alias(key: str, session_id: str) -> None:
+    """Record which conversation ``key`` addressed. Never raises.
+
+    A session opened before its conversation had an id gets a random key,
+    and a later re-open gets the stable one, so a peer that wrote to it
+    earlier holds an address no open record carries. One small file per
+    key, written only when it changes."""
+    try:
+        p = _alias_path(key)
+        try:
+            if p.read_text(encoding="utf-8") == session_id:
+                return
+        except OSError:
+            pass
+        from .state_paths import ensure_dir, write_text_atomic
+        ensure_dir(p.parent)
+        write_text_atomic(p, session_id)
+    except Exception:
+        pass
+
+
+def session_id_for_key(key: str) -> str:
+    """The conversation ``key`` was last announced for, or ""."""
+    key = str(key or "").strip()
+    if not key:
+        return ""
+    try:
+        return _alias_path(key).read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+#: Separators after which a sender appends a description to a name
+#: ("Session A - denials report").
+_NAME_TAIL_RE = re.compile(r"\s+[—–:|-]\s+|\s*[—–]\s*")
+
+
+def sessions_named_by_part(name: str, rows: list[dict]) -> list[dict]:
+    """Rows whose title and ``name`` contain one another (case-folded).
+
+    Input: the name a sender used, and the open-session rows. Output: the
+    matching rows; the caller delivers only on exactly one. If nothing
+    matches, the part of ``name`` before a dash or colon is tried, so
+    'Session A - denials report' finds 'Hallo Session A'. Names shorter
+    than three characters match nothing. Field shapes: 'Session A' and
+    'Session A - denials report' for a session titled 'Hallo Session A'.
+    """
+    def _match(n: str) -> list[dict]:
+        n = n.strip().casefold()
+        if len(n) < 3:
+            return []
+        out = []
+        for r in rows:
+            t = str(r.get("title", "")).strip().casefold()
+            if t and (n in t or t in n):
+                out.append(r)
+        return out
+
+    found = _match(str(name or ""))
+    if not found:
+        head = _NAME_TAIL_RE.split(str(name or ""), maxsplit=1)[0]
+        if head.strip() != str(name or "").strip():
+            found = _match(head)
+    return found
 
 
 def withdraw(key: str) -> None:
@@ -151,6 +229,7 @@ def touch(key: str) -> bool:
             return False
         record["updated_at"] = now
         record["pid"] = os.getpid()
+        record["proc_start"] = _process_start(os.getpid())
         from .state_paths import write_text_atomic
         write_text_atomic(path, json.dumps(record))
         _last_touched[key] = now
@@ -160,6 +239,44 @@ def touch(key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+_own_start: dict[int, str] = {}
+
+
+def _process_start(pid: int) -> str:
+    """proc_identity's fingerprint of *pid*'s life, "" when unknown.
+
+    Cached per pid: announce runs on every idle poll, and off Linux the
+    answer costs a ``ps`` process. A pid's start time does not change.
+    """
+    if pid in _own_start:
+        return _own_start[pid]
+    try:
+        from . import proc_identity
+        value = proc_identity.process_start(pid)
+    except Exception:
+        value = ""
+    if value:
+        _own_start[pid] = value
+    return value
+
+
+def _same_life(record: dict) -> bool:
+    """False only when the record's pid now names a later process.
+
+    A record written before ``proc_start`` existed, or on a system that
+    does not report a start time, compares nothing and stays open.
+    """
+    written = str(record.get("proc_start") or "")
+    if not written:
+        return True
+    try:
+        from . import proc_identity
+        return proc_identity.alive(record.get("pid"), written,
+                                   str(record.get("host") or "")) is not False
+    except Exception:
+        return True
 
 
 def _alive(record: dict, now: float) -> bool:
@@ -175,6 +292,8 @@ def _alive(record: dict, now: float) -> bool:
             return False
         except Exception:
             pass          # someone else's process: alive
+        if not _same_life(record):
+            return False
     return True
 
 

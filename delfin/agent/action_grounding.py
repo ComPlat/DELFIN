@@ -47,6 +47,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+#: Tools whose ``command`` argument is a shell line (FailureBudget._key).
+_SHELL_TOOLS = frozenset({"bash", "bash_background"})
+
 # Tools whose primary argument is a file path. The path grounding only
 # applies to these, so a harmless "bash" call with a command string is
 # never misread as a missing file.
@@ -277,6 +280,17 @@ class FailureBudget:
         """Short signature key: (tool, sha1 of the NORMALIZED args). The
         readable args are hashed, never stored."""
         t = str(tool).strip()
+        if (isinstance(args, dict) and t.rsplit("__", 1)[-1] in _SHELL_TOOLS
+                and isinstance(args.get("command"), str)):
+            # A shell command is compared as what it computes: `timeout
+            # 540 X`, `timeout 580 X | tail` and `nice X` are one call
+            # (long_runs.strip_command_prefixes), and the waiting knobs
+            # beside it are not part of the call either. Five reruns of
+            # one suite under five timeouts went unseen (2026-09-18).
+            from .long_runs import strip_command_prefixes
+            args = {k: v for k, v in args.items()
+                    if k not in ("timeout_s", "description")}
+            args["command"] = strip_command_prefixes(args["command"])
         digest = hashlib.sha1(normalize_args(args).encode("utf-8")).hexdigest()
         return t, digest
 

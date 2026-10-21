@@ -1,0 +1,53 @@
+# Copyright and licence of every file in this repository, in the format of
+# the REUSE Specification 3.3 (https://reuse.software). `reuse lint` reads it;
+# .github/workflows/packaging.yml runs that check. One bulk annotation covers
+# DELFIN's own files, so no source file needs a header; the entries after it
+# override that for the code of other authors (THIRD_PARTY_NOTICES.md).
+#
+# The copyright line is the one LICENSE states. Contributors other than the
+# named author hold the rights to their contributions; the git history
+# records who they are.
+version = 1
+SPDX-PackageName = "DELFIN"
+SPDX-PackageDownloadLocation = "https://github.com/ComPlat/DELFIN"
+
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = [
+    "2025 Maximilian Hartmann",
+    "DELFIN contributors (see the git history)",
+]
+SPDX-License-Identifier = "LGPL-3.0-or-later"
+
+# 3Dmol.js 2.5.3, vendored minified bundle, and the file with its notices.
+[[annotations]]
+path = [
+    "delfin/dashboard/static/3Dmol-min.js",
+    "delfin/dashboard/static/3Dmol-min.js.LICENSE.txt",
+]
+precedence = "override"
+SPDX-FileCopyrightText = [
+    "2014 University of Pittsburgh and contributors",
+    "2011-2012 biochem_fan",
+    "2010-2012 three.js Authors",
+    "2011 John Resig",
+    "2014-2017 Vitaly Puzrin and Andrei Tuputcyn",
+    "1995-2013 Jean-loup Gailly and Mark Adler",
+    "2017 Photopea",
+    "2015 Michaël Zasso",
+    "2016 cheminfo",
+    "2017 Simon Rodriguez",
+    "2017 Mol* contributors",
+]
+SPDX-License-Identifier = "BSD-3-Clause AND MIT AND Zlib"
+
+# Patches to OpenTUI 0.6.4: OpenTUI's lines (MIT) and DELFIN's changes.
+[[annotations]]
+path = "tui/patches/*.patch"
+precedence = "override"
+SPDX-FileCopyrightText = [
+    "2025 opentui",
+    "2025 Maximilian Hartmann",
+]
+SPDX-License-Identifier = "MIT AND LGPL-3.0-or-later"

@@ -157,6 +157,50 @@ def _detect_make(root: Path) -> dict[str, str]:
 _DETECTORS = (_detect_python, _detect_node, _detect_rust, _detect_go)
 
 
+_STACK_OF_LANGUAGE = {
+    "Python": "python", "JavaScript/TypeScript": "node",
+    "Rust": "rust", "Go": "go",
+}
+
+
+def detect_stacks(repo_root: Path | str | None) -> list[str]:
+    """Every stack the root's manifests name, in detector order.
+
+    Output keys: ``python``, ``node``, ``rust``, ``go``. Unlike
+    ``detect_project`` (first match wins) all detectors run, so a Python
+    package with a ``package.json`` front end reports both. Python also
+    counts on ``requirements.txt``, ``setup.cfg`` or a top-level ``*.py``,
+    which the AGENTS.md detector does not need but a script folder has.
+    ``[]`` when nothing matches or the root is unreadable.
+    """
+    if repo_root is None:
+        return []
+    try:
+        root = Path(repo_root).expanduser().resolve()
+        if not root.is_dir():
+            return []
+    except Exception:
+        return []
+    stacks: list[str] = []
+    for det in _DETECTORS:
+        try:
+            profile = det(root)
+        except Exception:
+            profile = None
+        key = _STACK_OF_LANGUAGE.get(getattr(profile, "language", ""), "")
+        if key and key not in stacks:
+            stacks.append(key)
+    if "python" not in stacks:
+        try:
+            if ((root / "requirements.txt").is_file()
+                    or (root / "setup.cfg").is_file()
+                    or any(root.glob("*.py"))):
+                stacks.insert(0, "python")
+        except OSError:
+            pass
+    return stacks
+
+
 def detect_project(repo_root: Path | str) -> ProjectProfile:
     """Return a populated ``ProjectProfile`` for the given repo root.
 

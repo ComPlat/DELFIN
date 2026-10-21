@@ -83,6 +83,12 @@ ATTENTION_KINDS = (
     "run_finished",
     "run_failed",
     "budget_warning",
+    # UX2 (wave 17): a control stepped in or a session is stuck. Emitted by
+    # session_pause.pause/resume (pause/resume) and by
+    # `delfin-agent ops health --watch` (every other session-state event).
+    # Filterable in /attention <kind> (tab_agent.py matches _sub against
+    # ATTENTION_KINDS).
+    "session_state",
 )
 
 # Kinds that mean "the agent is BLOCKED on the user right now" — a turn
@@ -288,7 +294,9 @@ def prune_inbox() -> dict:
     """
     try:
         now = time.time()
-        with _FILE_LOCK:
+        # The whole cycle under the inbox's lock: a rewrite from a stale
+        # copy drops what another process wrote meanwhile.
+        with _inbox_locked():
             events = _load_events()
             kept = _prune(events, now)
             if len(kept) != len(events):
@@ -496,6 +504,14 @@ def _deliver(event: dict, *, skip: frozenset[str] = frozenset()) -> list[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _hostname() -> str:
+    try:
+        import socket
+        return socket.gethostname()
+    except Exception:
+        return ""
+
+
 def emit_attention(
     kind: str,
     *,
@@ -534,6 +550,8 @@ def emit_attention(
         "detail": str(detail)[:2000],
         "options": ([str(o) for o in options] if options else None),
         "workspace": str(workspace) if workspace else "",
+        # Which machine: on a cluster every login node shares this file.
+        "host": _hostname(),
         "created_at": now,
         "status": "pending",
         "answer": None,
@@ -555,7 +573,11 @@ def _record_delivery(event_id: str, transports: list[str]) -> None:
     """Note on the stored event which transports accepted it. Best-effort:
     a delivery that could not be recorded must not undo the delivery."""
     try:
-        with _FILE_LOCK:
+        # Under the inbox's lock, as every rewrite: with the thread lock
+        # alone, a delivery noted from a stale copy undid what another
+        # process wrote meanwhile -- an event it emitted, an item the
+        # window answered or dismissed.
+        with _inbox_locked():
             events = _load_events()
             for ev in events:
                 if ev.get("id") == event_id:
@@ -658,7 +680,8 @@ def drain_resolved(
     drain_finished_events`` pattern): a new process only sees what no
     previous process drained.
     """
-    want_ws = str(workspace) if workspace else ""
+    # Compared as paths ("/calc/a/" is "/calc/a"), not as spellings.
+    want_ws = os.path.normpath(str(workspace)) if workspace else ""
     want_kinds = frozenset(kinds) if kinds else None
     out: list[dict] = []
     with _inbox_locked():
@@ -670,7 +693,7 @@ def drain_resolved(
             if want_kinds is not None and str(ev.get("kind", "")) not in want_kinds:
                 continue
             ev_ws = str(ev.get("workspace") or "")
-            if want_ws and ev_ws and ev_ws != want_ws:
+            if want_ws and ev_ws and os.path.normpath(ev_ws) != want_ws:
                 continue
             ev["acknowledged"] = True
             changed = True
@@ -689,6 +712,7 @@ def drain_resolved(
 _KIND_ORDER = (
     "confirm_pending", "question_pending", "plan_pending",
     "security_alert", "run_failed", "run_finished", "budget_warning",
+    "session_state",
 )
 _KIND_LABELS = {
     "confirm_pending": "Confirmations waiting",
@@ -698,6 +722,7 @@ _KIND_LABELS = {
     "run_failed": "Failed runs",
     "run_finished": "Finished runs",
     "budget_warning": "Budget warnings",
+    "session_state": "Sessions paused or stuck",
 }
 
 
@@ -899,7 +924,7 @@ def clear_all(kind: Optional[str] = None, *,
         target_ids = {str(ev.get("id", "")) for ev in targets}
         cleared = 0
         now = time.time()
-        with _FILE_LOCK:
+        with _inbox_locked():
             events = _load_events()
             for ev in events:
                 if (ev.get("id") in target_ids
