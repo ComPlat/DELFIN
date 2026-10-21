@@ -124,6 +124,34 @@ def events(monkeypatch):
     return seen
 
 
+#: git's global options that take the next word as their value: what
+#: follows them is not the subcommand.
+_GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                      "--super-prefix", "--config-env", "--exec-path"}
+
+
+def _is_git_credential_call(line: str) -> bool:
+    """A call of any git credential program: ``git credential``, every
+    ``git credential-<helper>`` (store, cache, manager, libsecret,
+    osxkeychain, ...) and a ``git-credential-<helper>`` binary run on its
+    own. Judged by the subcommand, not by a word anywhere in the line: a
+    workspace path that contains "credential" is not a credential call."""
+    try:
+        words = shlex.split(line)
+    except ValueError:
+        words = line.split()
+    if not words:
+        return False
+    if Path(words[0]).name.startswith("git-credential"):
+        return True
+    if Path(words[0]).name != "git":
+        return False
+    i = 1
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] in _GIT_VALUE_OPTIONS else 1
+    return i < len(words) and words[i].startswith("credential")
+
+
 def _ran(mark: Path) -> list:
     """The logged calls that are what these rules refuse."""
     if not mark.exists():
@@ -132,9 +160,7 @@ def _ran(mark: Path) -> list:
             if line.startswith(("gh auth token", "gh auth status -t",
                                 "gh auth status --show", "gh auth git-",
                                 "gh api", "curl"))
-            or (line.startswith("git ") and any(
-                word in {"credential", "credential-store", "credential-cache"}
-                for word in shlex.split(line)[1:]))]
+            or _is_git_credential_call(line)]
 
 
 def _run(cmd: str, ws: Path, mode: str) -> str:
@@ -229,6 +255,15 @@ def test_the_call_spy_distinguishes_credential_commands_from_workspace_names(tmp
         "git -C /tmp/test_credential_read/ws --no-pager config --null --list\n"
         "git -C /tmp/test_credential_read/ws rev-parse --show-toplevel\n"
         "git -c credential.helper= credential fill\n"
-        "git credential-store get\n")
+        "git credential-store get\n"
+        "git credential-manager get\n"
+        "git -C /tmp/credential_ws credential-libsecret get\n"
+        "/usr/lib/git-core/git-credential-store get\n"
+        "git-credential-osxkeychain get\n"
+        "git -C /tmp/credential_ws log --oneline\n")
     assert _ran(mark) == ["git -c credential.helper= credential fill",
-                          "git credential-store get"]
+                          "git credential-store get",
+                          "git credential-manager get",
+                          "git -C /tmp/credential_ws credential-libsecret get",
+                          "/usr/lib/git-core/git-credential-store get",
+                          "git-credential-osxkeychain get"]
