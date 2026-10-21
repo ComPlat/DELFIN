@@ -285,6 +285,7 @@ HEADER_CSS = """
   background: var(--dh-bg); color: var(--dh-fg);
   border: 1px solid var(--dh-border); border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 8px; gap: 6px;
+  display: flex; flex-direction: column; overflow: hidden;
 }
 .delfin-hdr .delfin-pop-head { gap: 6px; align-items: center; flex-wrap: wrap; }
 .delfin-hdr .delfin-branch-search { flex: 1 1 200px; min-width: 160px; width: auto; margin: 0; }
@@ -302,7 +303,8 @@ HEADER_CSS = """
 .delfin-hdr .delfin-views .widget-toggle-button.mod-active {
   background: var(--dh-accent); border-color: var(--dh-accent); color: var(--dh-accent-fg);
 }
-.delfin-branch-rows { overflow-y: auto; max-height: calc(70vh - 110px); gap: 1px; }
+.delfin-branch-rows { overflow-y: auto; max-height: calc(70vh - 110px);
+  min-height: 0; flex: 1 1 auto; gap: 1px; }
 .delfin-hdr .delfin-brow { align-items: center; gap: 4px; border-radius: var(--dh-r); padding: 0 4px; min-height: 32px; }
 .delfin-hdr .delfin-brow:hover, .delfin-hdr .delfin-brow.is-selected { background: var(--dh-bg2); }
 .delfin-hdr .jupyter-button.delfin-brow-main {
