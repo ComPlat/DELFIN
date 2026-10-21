@@ -1029,8 +1029,8 @@ _AGENT_CSS = """\
    approvals, questions -- sits INSIDE the box the reader is looking at,
    and the transcript above it is the part that scrolls. The panels under
    the input fold away (an accordion, closed by default). */
-/* With --claude-terminal the frame shares a row with the Claude Code
-   panel; the row then takes the frame's place in the tab. */
+/* With --agent-terminal the frame shares a row with the terminal panel;
+   the row then takes the frame's place in the tab. */
 .delfin-agent-root > .delfin-agent-chat-row {
     flex: 1 1 0 !important;
     min-height: 45vh;
@@ -1038,23 +1038,23 @@ _AGENT_CSS = """\
     align-items: stretch;
 }
 .delfin-agent-chat-row > .delfin-agent-chat-frame { min-width: 0; }
-.delfin-claude-term-panel {
+.delfin-agent-term-panel {
     flex: 1 1 0 !important; min-width: 0;
     display: flex; flex-direction: column;
     border: 1px solid #333; border-radius: 6px; overflow: hidden;
     background: #1e1e1e;
 }
-.delfin-claude-term-panel > .delfin-claude-term-head {
+.delfin-agent-term-panel > .delfin-agent-term-head {
     flex: 0 0 auto; color: #cbd5e1; background: #111827;
     font-size: 12px; padding: 3px 10px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.delfin-claude-term-panel > .delfin-claude-term-host {
+.delfin-agent-term-panel > .delfin-agent-term-host {
     flex: 1 1 0 !important; min-height: 0;
 }
-.delfin-claude-term-host .widget-html-content,
-.delfin-claude-term-host .delfin-claude-term { height: 100%; width: 100%; }
-.delfin-claude-term { padding: 4px; box-sizing: border-box; }
+.delfin-agent-term-host .widget-html-content,
+.delfin-agent-term-host .delfin-agent-term { height: 100%; width: 100%; }
+.delfin-agent-term { padding: 4px; box-sizing: border-box; }
 .delfin-agent-root > .delfin-agent-chat-frame,
 .delfin-agent-chat-row > .delfin-agent-chat-frame {
     flex: 1 1 0 !important;
@@ -9501,41 +9501,45 @@ def create_tab(ctx):
              ),
          )])
     _input_area.add_class("delfin-agent-input-area")
-    # The Claude Code panel beside the chat (delfin-voila --claude-terminal
-    # only). The page script attaches it to the server's restricted
-    # terminal the first time it is shown; hiding it keeps the session.
+    # The terminal panel beside the chat (delfin-voila --agent-terminal
+    # only): the one program the launcher was given. The page script
+    # attaches it to the server's restricted terminal the first time it is
+    # shown; hiding it keeps the session.
     _chat_area = chat_frame
-    from delfin.dashboard import claude_terminal as _claude_term
-    if _claude_term.enabled():
-        _term_cwd = os.environ.get(_claude_term.CWD_ENV, "") or "~"
+    from delfin.dashboard import agent_terminal as _agent_term
+    if _agent_term.enabled():
+        _term_cwd = os.environ.get(_agent_term.CWD_ENV, "") or "~"
+        _term_argv = _agent_term.configured_argv()
+        _term_name = os.path.basename(_term_argv[0]) if _term_argv else "terminal"
         _home = str(Path.home())
         if _term_cwd == _home or _term_cwd.startswith(_home + os.sep):
             _term_cwd = "~" + _term_cwd[len(_home):]
         _term_head = widgets.HTML(
-            value=(f'<span title="{_html.escape(_term_cwd)}">Claude Code '
+            value=(f'<span title="{_html.escape(_term_cwd)}">'
+                   f'{_html.escape(_term_name)} '
                    f'&middot; {_html.escape(_term_cwd)}</span>'))
-        _term_head.add_class("delfin-claude-term-head")
-        _term_host = widgets.HTML(value='<div class="delfin-claude-term"></div>')
-        _term_host.add_class("delfin-claude-term-host")
-        claude_term_panel = widgets.VBox(
+        _term_head.add_class("delfin-agent-term-head")
+        _term_host = widgets.HTML(value='<div class="delfin-agent-term"></div>')
+        _term_host.add_class("delfin-agent-term-host")
+        agent_term_panel = widgets.VBox(
             [_term_head, _term_host], layout=widgets.Layout(display="none"))
-        claude_term_panel.add_class("delfin-claude-term-panel")
-        claude_term_btn = widgets.Button(
-            description="Claude Code", icon="terminal",
-            tooltip=("Show the Claude Code CLI beside the chat. It keeps "
-                     "running while hidden; a reload reattaches to it."),
+        agent_term_panel.add_class("delfin-agent-term-panel")
+        agent_term_btn = widgets.Button(
+            description="Terminal", icon="terminal",
+            tooltip=(f"Show {_term_name} beside the chat. It keeps running "
+                     "while hidden; a reload reattaches to it."),
             layout=widgets.Layout(width="auto", flex="0 0 auto"))
 
-        def _toggle_claude_term(_b):
-            opening = claude_term_panel.layout.display == "none"
-            claude_term_panel.layout.display = "" if opening else "none"
-            claude_term_btn.button_style = "info" if opening else ""
+        def _toggle_agent_term(_b):
+            opening = agent_term_panel.layout.display == "none"
+            agent_term_panel.layout.display = "" if opening else "none"
+            agent_term_btn.button_style = "info" if opening else ""
 
-        claude_term_btn.on_click(_toggle_claude_term)
-        git_group.children = tuple(git_group.children) + (claude_term_btn,)
-        _chat_area = widgets.HBox([chat_frame, claude_term_panel])
+        agent_term_btn.on_click(_toggle_agent_term)
+        git_group.children = tuple(git_group.children) + (agent_term_btn,)
+        _chat_area = widgets.HBox([chat_frame, agent_term_panel])
         _chat_area.add_class("delfin-agent-chat-row")
-        ctx.add_init_js(_claude_term.init_js())
+        ctx.add_init_js(_agent_term.init_js())
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
