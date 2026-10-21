@@ -21263,7 +21263,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
                      "<span style='color:#888;font-size:90%'>— isomer–conformer ensemble</span>"),
         widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt, manta_spin, manta_det],
-                     layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
+                     layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center', width='100%')),
     ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
 
 
