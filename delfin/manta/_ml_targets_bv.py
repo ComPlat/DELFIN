@@ -70,6 +70,7 @@ LITERATURE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE"
 # donor (polyhedra.md_distance with the donor atom), so gate tolerances, legacy pins and every
 # per-element question keep their historic value -- separates a better seat from a moved gate.
 SCOPE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE"
+HISTORIC_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_HISTORIC"
 LEVELS_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LEVELS"
 ALL_LEVELS = ("N", "D", "R", "Re", "Ro", "Roe")
 DEFAULT_LEVELS = ("N", "D", "R", "Re")
@@ -473,6 +474,20 @@ def build_context(smiles: str, spin: Optional[str] = None) -> Optional[dict]:
     if spin is None and len(spins) == 1:
         spin = spins[0]                                  # a clear spin state: its own rows
     tg = complex_targets(table, metal, ox, donors, spin)
+    # A donor the table has no row for keeps a historic length -- but the better of the two: the
+    # legacy pair table (measured on held-out crystals 0.063 A median error) instead of the FF-free
+    # covalent sum (0.126 A), so that switching a complex onto the FF-free path does not move its
+    # unmeasured donors further from the crystal.  Not for heavy metalloid donors, whose legacy
+    # values are the known overshoot METALLOID_MD_LEN replaces (DELFIN_FFFREE_ML_TARGETS_BV_HISTORIC=0
+    # turns this off).
+    if os.environ.get(HISTORIC_ENV, "1") == "1":
+        from delfin.manta.ml_tables import _METAL_LIGAND_BOND_LENGTHS, _METALLOID_MD_DONORS
+        for i, el, cls in donors:
+            if i in tg or el == "H" or cls is None or el in _METALLOID_MD_DONORS:
+                continue
+            v = _METAL_LIGAND_BOND_LENGTHS.get((metal, el))
+            if v is not None:
+                tg[i] = (float(v), "H")
     if not tg:
         return None
     by_class: Dict[Tuple[str, str], List[float]] = {}
