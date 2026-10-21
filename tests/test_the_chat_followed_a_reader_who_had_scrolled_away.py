@@ -326,6 +326,76 @@ def test_the_script_follows_only_from_the_end():
     assert len(seen) >= 22, f"the driver checked only {len(seen)} things"
 
 
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_refresh_and_late_resize_follow_before_the_next_paint(tmp_path):
+    """Drive the gap between HTML replacement and the delayed onerror/poll.
+
+    A browser delivers mutation/resize observers before painting. Neither
+    the trailing image's onerror nor the polling timer has fired here.
+    """
+    observers = r"""
+let mutationCallback, resizeCallback;
+document.body = {};
+chat.nodeType = 1;
+global.MutationObserver = class {
+  constructor(callback) { mutationCallback = callback; }
+  observe() {}
+};
+global.ResizeObserver = class {
+  constructor(callback) { resizeCallback = callback; }
+  observe() {}
+};
+"""
+    checks = r"""
+const assert = require('node:assert/strict');
+window.__delfinChatToBottom(jump); flush();
+// Replacing the transcript may clamp the old offset before new content
+// is laid out. Repair it before paint, without a timer or image event.
+for (let i = 0; i < 12; i++) {
+  chat._top = 0;
+  chat.scrollHeight += 120;
+  if (mutationCallback) mutationCallback([{target: chat}]);
+  assert.equal(chat.scrollTop, end(), 'replacement painted off the end');
+  flush();
+}
+chat.scrollHeight += 300;
+resizeCallback([{target: chat}]);
+assert.equal(chat.scrollTop, end(), 'late content resize lost the end');
+flush();
+chat.clientHeight -= 40;
+resizeCallback([{target: chat}]);
+assert.equal(chat.scrollTop, end(), 'viewport resize lost the end');
+flush();
+// A fractional browser offset must not cause endless corrective writes.
+chat._top = end() - 0.25;
+const fractionalWrites = scrollWrites;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+tick();
+assert.equal(scrollWrites, fractionalWrites, 'fractional end was rewritten');
+// Neither observer may move someone reading further up the transcript.
+userScroll(100);
+const awayWrites = scrollWrites;
+chat.scrollHeight += 200;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+assert.equal(scrollWrites, awayWrites, 'observer moved a reader');
+assert.equal(chat.scrollTop, 100);
+// Background sessions have no viewport and must not be scrolled either.
+chat.clientHeight = 0;
+const hiddenWrites = scrollWrites;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+assert.equal(scrollWrites, hiddenWrites, 'hidden session was scrolled');
+"""
+    script = _DRIVER.replace("__SCRIPT__", observers + _chat_scroll_js()) + checks
+    path = tmp_path / "chat_before_paint.js"
+    path.write_text(script, encoding="utf-8")
+    done = subprocess.run([_NODE, str(path)], capture_output=True, text=True,
+                          timeout=30)
+    assert done.returncode == 0, done.stderr[-3000:]
+
+
 def test_the_chat_script_is_not_inside_the_keyboard_guard():
     """The keyboard block begins with a guard that returns when the flag
     is already set, and the page bundle sets that flag first on every

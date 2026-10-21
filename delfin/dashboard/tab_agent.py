@@ -7812,7 +7812,9 @@ def create_tab(ctx):
             // Compare the achievable offset. scrollHeight itself is always
             // beyond the end, so comparing it directly writes on every poll.
             top = Math.max(0, Math.min(top, c.scrollHeight - c.clientHeight));
-            if (c.scrollTop === top) return;
+            // Browser zoom can leave a fractional scroll offset at the end.
+            // Do not keep writing the same rounded position on every poll.
+            if (Math.abs(c.scrollTop - top) < 1) return;
             st.auto = true;
             c.scrollTop = top;
             if (st.timer) clearTimeout(st.timer);
@@ -7869,6 +7871,52 @@ def create_tab(ctx):
             }
             paint(c, st);
         };
+        // ipywidgets replaces the HTML before the trailing image's onerror
+        // task runs. Waiting for that task (or the 150 ms poll) lets a frame
+        // paint at the old/clamped offset, then jump to the new end. Mutation
+        // observers run before paint: follow in the same rendering cycle.
+        // ResizeObserver covers images loading later and viewport resizing.
+        // Both use the same per-session decision, including hidden sessions
+        // and readers who have deliberately scrolled away.
+        var watchedChatSizes = new WeakSet();
+        var chatSizes = typeof ResizeObserver === 'undefined' ? null
+            : new ResizeObserver(function(entries) {
+                var hosts = new Set();
+                entries.forEach(function(entry) {
+                    var c = entry.target.closest('.delfin-agent-chat-host');
+                    if (c) hosts.add(c);
+                });
+                hosts.forEach(function(c) { window.__delfinChatSync(c); });
+            });
+        function watchChatSize(c) {
+            if (!chatSizes || !c || watchedChatSizes.has(c)) return;
+            watchedChatSizes.add(c);
+            chatSizes.observe(c);
+            var content = c.querySelector('.widget-html-content');
+            if (content) chatSizes.observe(content);
+        }
+        if (typeof MutationObserver !== 'undefined' && document.body) {
+            new MutationObserver(function(records) {
+                var hosts = new Set();
+                records.forEach(function(record) {
+                    var target = record.target;
+                    if (target.nodeType !== 1) target = target.parentElement;
+                    var c = target && target.closest
+                        ? target.closest('.delfin-agent-chat-host') : null;
+                    if (c) hosts.add(c);
+                });
+                hosts.forEach(function(c) {
+                    watchChatSize(c);
+                    window.__delfinChatSync(c);
+                });
+            }).observe(document.body, {
+                childList: true, characterData: true, subtree: true
+            });
+        }
+        if (chatSizes && document.querySelectorAll) {
+            document.querySelectorAll('.delfin-agent-chat-host')
+                .forEach(watchChatSize);
+        }
         // A cleared or brand-new conversation carries no offset worth keeping.
         window.__delfinChatReset = function(el) {
             var c = (el && el.closest)
