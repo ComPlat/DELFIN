@@ -42,6 +42,12 @@ emit a JSON object on stdout::
 
 to deliver a structured block reason back to the agent.
 
+A hook starts with the environment every bash child gets: no model
+provider key, no GitHub or cloud token, no ``*_TOKEN``/``*_SECRET``/
+``*_API_KEY`` variable (``api_client._configured_child_env``). A hook that
+needs one names it on its command entry: ``"env": ["GH_TOKEN"]`` passes
+it, ``"env": {"NAME": "value or ${PARENT_NAME}"}`` sets it.
+
 Environment variables passed to every hook:
 
     DELFIN_HOOK_EVENT      e.g. "PreToolUse"
@@ -61,7 +67,6 @@ agent, only logs to the audit log.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shlex
 import subprocess
@@ -97,6 +102,10 @@ class HookCommand:
     command: str = ""           # shell command to run
     timeout_s: float = _DEFAULT_TIMEOUT_S
     type: str = "command"
+    # Variables this hook needs beyond the scrubbed environment, as
+    # api_client.env_spec reads them (a list passes names, an object sets
+    # values with ${NAME} from the parent).
+    env: dict = field(default_factory=dict)
     # Absolute path of the settings file this came from. A hook the user
     # wrote and a hook a repository shipped ran identically and printed
     # identically, so the listing could not tell them apart; carrying the
@@ -209,6 +218,14 @@ def _parse_timeout(raw: Any, warn: list[str], where: str) -> float | None:
     return value / 1000.0 if value > 100 else value
 
 
+def _hook_env_spec(raw) -> dict:
+    """A hook command's ``env`` (api_client.env_spec); {} when absent."""
+    if not raw:
+        return {}
+    from .api_client import env_spec
+    return env_spec(raw)
+
+
 def _merge_hooks(into: HooksConfig, raw: dict[str, Any],
                  source: Path | str = "") -> None:
     hooks_obj = raw.get("hooks") if isinstance(raw, dict) else None
@@ -244,6 +261,7 @@ def _merge_hooks(into: HooksConfig, raw: dict[str, Any],
                         timeout_s=timeout_s,
                         type=str(c.get("type", "command")),
                         source=src,
+                        env=_hook_env_spec(c.get("env")),
                     )
                 )
 
@@ -351,11 +369,14 @@ def _build_env(
     arguments: dict[str, Any] | None = None,
     user_prompt: str = "",
     workspace: Path | str | None = None,
+    env_spec: dict | None = None,
 ) -> dict[str, str]:
-    # Hooks run on every tool call; the model provider keys the agent runs
-    # on are not theirs to read.
-    from .mcp_client import _DELFIN_PROVIDER_KEYS
-    env = {k: v for k, v in os.environ.items() if k not in _DELFIN_PROVIDER_KEYS}
+    # Hooks run on every tool call, outside the sandbox: they start with
+    # the environment every bash child gets (no provider key, no GitHub or
+    # cloud token, no *_TOKEN/*_SECRET variable), plus what the hook's own
+    # ``env`` names.
+    from .api_client import _configured_child_env
+    env = _configured_child_env(env_spec)
     env["DELFIN_HOOK_EVENT"] = event
     if tool_name:
         env["DELFIN_TOOL_NAME"] = tool_name
@@ -381,8 +402,8 @@ def _run_command(
     t0 = time.monotonic()
     try:
         from . import contained_run as _contained
-        proc = _contained.run(
-            expanded, shell=True, env=env,
+        proc = _contained.run_shell(
+            expanded, env=env,
             cwd=str(cwd) if cwd else None,
             timeout=max(0.1, cmd.timeout_s),
             # Hooks fire on EVERY tool call: their budget is the tight
@@ -430,7 +451,7 @@ def run_hooks(
     hooks = config.for_event(event)
     if not hooks:
         return []
-    env = _build_env(
+    base_env = _build_env(
         event, tool_name=tool_name, arguments=arguments,
         user_prompt=user_prompt, workspace=workspace,
     )
@@ -444,6 +465,12 @@ def run_hooks(
         if event in ("PreToolUse", "PostToolUse"):
             if pat and tool_name and not pat.search(tool_name):
                 continue
+        env = base_env
+        if hk.env:
+            env = _build_env(
+                event, tool_name=tool_name, arguments=arguments,
+                user_prompt=user_prompt, workspace=workspace,
+                env_spec=hk.env)
         rc, out, err, dur = _run_command(hk, env, cwd, arguments)
         decision, reason = _parse_decision(out)
         results.append(HookResult(

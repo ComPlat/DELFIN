@@ -20,7 +20,9 @@ also permits 3.10, but nothing verifies it — do not rely on it.
 
 ## Before you open a pull request
 
-- **Run the fast suite.** `pytest -q -m "not slow"` is the merge gate.
+- **Run the fast suite.** `pytest -q -m "not slow"` is the core of the merge
+  gate; the full list of required checks is in
+  [docs/MAIN_PROTECTION.md](docs/MAIN_PROTECTION.md).
 - **Prove it against the real thing.** If your change affects how ORCA, xTB or
   CREST are driven, run it. Unit tests do not catch that ORCA looks for a
   restart file in its working directory rather than next to the input, or that

@@ -72,12 +72,12 @@ DEFAULT_SETTINGS = {
         # Above 0.99 risks OOM-SIGKILL (Linux cgroup is unforgiving), below
         # 0.50 wastes resources. Set lower (0.85) for correlation methods
         # (DLPNO-CC, MP2) where ORCA's real RSS may exceed %maxcore. Set
-        # higher (0.95) for pure DFT-OPT setups where Fritz' archive shows
+        # higher (0.95) for pure DFT-OPT setups where a user archive shows
         # real RSS = 80-82 % of promised.
         # Historical context: 5edfb89 (2026-05-05) introduced the cap at
         # 0.85 after JEW-R465 OOM (312 GB / 351 GB SLURM, two parallel
         # OCCUPIER jobs SIGKILL after 48 h). Default raised to 0.90 on
-        # 2026-05-12 after Fritz-archive analysis.
+        # 2026-05-12 after a user-archive analysis.
         "slurm_mem_headroom": 0.90,
     },
     "ui": {
@@ -199,6 +199,12 @@ DEFAULT_SETTINGS = {
         # to main/master is refused. "maintainer": pushes to the default
         # branch are allowed, one per user request.
         "git_role": "contributor",
+        # The role per repository, which wins over git_role in both
+        # directions: {"github.com/<owner>/<repo>": "maintainer"}, keyed by
+        # the normalised remote URL (a repository without a remote: its
+        # absolute top-level path). Set with `/git role maintainer` in the
+        # terminal, inside the repository. delfin/agent/git_role.py.
+        "git_roles": {},
         # The address the agent's Co-Authored-By trailer carries. GitHub
         # attaches a co-author to an account by its email, so an address
         # nobody owns renders a line with no avatar that counts for
@@ -212,6 +218,18 @@ DEFAULT_SETTINGS = {
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
         # overrides this at runtime). NEVER hard-code a site path here.
         "bug_archive_dir": "",
+        # Whether a written bug report is also copied to the shared remote
+        # archive (<transfer.remote_path>/AGENT_BUGS), where its maintainers
+        # read it. The report holds the session's transcript, so this is a
+        # consent of its own, separate from configuring the transfer:
+        #   "ask"    (default) -- only after a yes for that report (the
+        #            dashboard's Send under the named host, the [y/N] of
+        #            /bug and `delfin-agent bug report`); with nobody to ask
+        #            (--yes, unattended) the report stays local.
+        #   "never"  -- every report stays local.
+        #   "always" -- standing opt-in: copied without asking, also in
+        #            unattended runs. delfin/agent/bug_report.py.
+        "bug_upload": "ask",
         # Complexity-based model routing (provider-agnostic, opt-in).
         # enabled=False → exactly today's behaviour (user's model for all).
         # strong_model/cheap_model override the built-in per-provider tier
@@ -254,10 +272,14 @@ DEFAULT_SETTINGS = {
         # Cloud metadata addresses are refused in every mode, attended
         # commands included. allowed_domains ADDS to the built-in list
         # (PyPI, conda, GitHub); "*.example.org" covers subdomains.
+        # upload_domains: hosts that may receive an upload (a write
+        # request, or more than upload_ask_bytes) when nobody can be
+        # asked; every other known host gets reads only in that case.
         "sandbox_network": {
             "mode": "proxy",
             "allowed_domains": [],
             "allowed_ports": [80, 443],
+            "upload_domains": [],
         },
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The
@@ -274,6 +296,12 @@ DEFAULT_SETTINGS = {
         # Narrow by default: too wide puts one project's notes into
         # another's prompt.
         "memory_key": "path",
+        # `delfin-agent tui` on a host with neither the window's binary nor
+        # Bun installs a pinned Bun (SHA-256 checked) and the window's
+        # packages (bun.lock) into ~/.delfin/tools on its first start.
+        # false: it prints the manual commands instead
+        # (DELFIN_TUI_AUTO_INSTALL=0 does the same for one shell).
+        "tui_auto_install": True,
         "auto_memory": {
             "enabled": True,
             "model": "",

@@ -23,7 +23,7 @@ def test_record_and_recent_newest_first():
     S.record("secret_path", "bash", "~/.ssh/id_rsa")
     evs = S.recent()
     assert [e.kind for e in evs] == ["secret_path", "deny_pattern"]   # newest first
-    assert S.counts() == {"total": 2, "blocked": 2}
+    assert S.counts() == {"total": 2, "blocked": 2, "dropped": 0}
 
 
 def test_listener_fires():

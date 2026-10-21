@@ -85,6 +85,62 @@ def _session_test_runs(session_id: str) -> list[dict]:
         return []
 
 
+def _run_verdict(run) -> str:
+    """"green", "red" or "" for one recorded test run of the session."""
+    if not isinstance(run, dict):
+        return ""
+    def _n(key):
+        try:
+            return int(run.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    status = str(run.get("status") or run.get("state")
+                 or run.get("outcome") or "").strip().lower()
+    exit_code = run.get("exit_code")
+    if (_n("failed") or _n("errors") or _n("error")
+            or status in ("failed", "fail", "error", "red")
+            or (isinstance(exit_code, int) and exit_code != 0)):
+        return "red"
+    if _n("passed") or status in ("passed", "ok", "success", "green"):
+        return "green"
+    return ""
+
+
+def resolve_pending_session_uses(session_id: str) -> int:
+    """Give the skills THIS session invoked their outcome. Never raises.
+
+    A skill is recorded as "started" when its text is handed to the agent
+    (api_client._execute_skill); what came of it is known only now.
+    success: at least one green test run and no red one. failure: a red
+    run. Neither: "unverified" -- a session that ran no test proves
+    nothing about the skill, and calling that a failure would be as much
+    an invention as calling it a success. Only rows tagged with this
+    session's id are touched, each "started" row gets one resolving row,
+    and a second end of the same session resolves only what was started
+    after the first. Returns how many uses were resolved.
+
+    Limit: the outcome is the whole session's test record. A skill used
+    for one thing in a session whose unrelated test went red is resolved
+    "failure" all the same; nothing here links a test run to a skill.
+    Cost: one session load plus one bounded read per ledger file.
+    """
+    try:
+        sid = str(session_id or "").strip()
+        if not sid:
+            return 0
+        from delfin.agent import skill_usage as _su
+        names = _su.pending_for_session(sid)
+        if not names:
+            return 0
+        verdicts = {_run_verdict(r) for r in _session_test_runs(sid)}
+        outcome = ("failure" if "red" in verdicts
+                   else "success" if "green" in verdicts else "unverified")
+        return sum(_su.resolve_session(name, sid, outcome)
+                   for name in names)
+    except Exception:
+        return 0
+
+
 def learn_at_session_end(messages, *, session_id: str = "",
                          settings: dict | None = None, llm=None,
                          _propose=None):
@@ -94,6 +150,10 @@ def learn_at_session_end(messages, *, session_id: str = "",
     path has no tool results in them), then delegates to
     skill_learning.learn_from_session. Returns the proposal or None.
     """
+    # The usage record is not learning: it is kept whether or not proposals
+    # are switched on, and here because this is the one hook the CLI run,
+    # the CLI chat and the dashboard all call when a session ends.
+    resolve_pending_session_uses(session_id)
     try:
         cfg = skill_learning_settings(settings)
         if not cfg["enabled"]:

@@ -127,3 +127,68 @@ def test_a_supplied_test_does_not_assert_how_fast_the_machine_is():
     assert "_READ_INTERVAL_S" in text, (
         "the interval must be named, not written as a bare 0.2 in an "
         "assertion")
+
+
+def test_the_suite_never_installs_a_tool_for_a_later_test(monkeypatch):
+    """No test fetches xtb; a test that needs a real one gets it from the
+    machine or skips (conftest.real_xtb).
+
+    Input: the suite's environment as conftest leaves it, no xtb anywhere
+    the resolver looks, and a structure optimize_with_gfn accepts.
+    Output: a refusal that names the switch; the installer is never started.
+
+    Measured 2026-10-15 on PR #278 (the fast suite split into four shards):
+    ensure_binary installs a missing xtb by default. Unsharded, the first
+    test to reach it without an xtb was in
+    test_a_held_value_survives_the_press.py (file 166 of 1778); it ran
+    install_qm_tools.sh, which put xtb 6.7.1 into delfin/qm_tools/.mamba_env
+    (the checkout; ~/.delfin/qm_tools on a machine where that holds
+    anything), and every later file resolved it before the stand-in. That
+    file landed in shard 4. Shards 2 and 3 failed 17 tests that read xtb's
+    results (three by the 300 s timeout); four more passed in shard 2 only
+    because test_what_is_wrong_with_the_structure_is_said_without_xtb
+    installed xtb there mid-shard.
+    """
+    import subprocess as _subprocess
+
+    from delfin.dashboard import gfn_optimize as gfn
+
+    assert not gfn.auto_install_allowed(), (
+        "the suite may install tools: conftest must set "
+        "DELFIN_AUTO_INSTALL_QM_TOOLS=0 for every test")
+
+    gfn._AUTO_TRIED.discard("xtb")
+    gfn._XTB_JUDGED.clear()
+    monkeypatch.setattr(gfn, "find_xtb", lambda: None)
+
+    def no_installer(*args, **kwargs):
+        pytest.fail(f"a test started a process during ensure_binary: {args!r}")
+
+    monkeypatch.setattr(_subprocess, "Popen", no_installer)
+    water = "3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n"
+    outcome = gfn.optimize_with_gfn(water, "gfn2")
+    assert outcome["ok"] is False
+    assert "xtb" in outcome["status"]
+    assert "xtb" not in gfn._AUTO_TRIED, "an install was attempted"
+
+
+def test_the_switch_holds_between_tests_as_well(monkeypatch):
+    """DELFIN_AUTO_INSTALL_QM_TOOLS is 0 in the gaps between tests too.
+
+    Input: this test's monkeypatch undone, which also undoes conftest's
+    autouse ``_no_test_installs_a_tool`` (they share the function-scoped
+    fixture) and leaves os.environ as it is between two tests.
+    Output: the switch still reads 0.
+
+    Measured 2026-10-15, test_gfn_methods_in_the_viewer.py alone with no
+    xtb reachable and only the per-test setting: a structure-editor worker
+    thread (structure_editor._run -> _gfn_topology_dir -> relax_steps ->
+    ensure_binary) left running by one test read the switch while the next
+    test was in setup, found it unset, and started install_qm_tools.sh
+    twice in one run; unrecorded, the same run wrote xtb 6.7.1 into the
+    checkout five seconds after it started.
+    """
+    monkeypatch.undo()
+    assert os.environ.get("DELFIN_AUTO_INSTALL_QM_TOOLS") == "0", (
+        "between tests the switch is unset: a thread outliving its test "
+        "can install a tool")

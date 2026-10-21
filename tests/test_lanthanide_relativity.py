@@ -1,7 +1,7 @@
 """Lanthanides/actinides (4f/5f) must be detected as metals AND routed
 through DELFIN's relativistic path.
 
-Regression for the silent science bug behind Jerome's Dy3+ thread: the
+Regression for the silent science bug behind a user's Dy3+ thread: the
 f-block was absent from _TM_LIST / _TM_D45 / cli.py's local set, so a
 dysprosium (or any 4f/5f) complex was seen as "no transition metal" and ran
 non-relativistically with a non-relativistic basis. The correct recipe

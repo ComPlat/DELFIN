@@ -209,3 +209,8 @@ def test_a_real_invocation_still_returns_the_full_body(tmp_path):
     out = json.loads(client._execute_skill({"name": "full-text"}, perms))
     assert out.get("status") == "ok"
     assert "entire playbook body" in out.get("content", "")
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

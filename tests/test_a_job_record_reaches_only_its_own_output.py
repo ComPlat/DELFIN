@@ -26,7 +26,8 @@ def ws(tmp_path):
 
 
 def _forge(ws, **jobs):
-    (ws / ".delfin" / "bash_jobs.json").write_text(json.dumps({"jobs": jobs}))
+    BJ._registry_path(ws).parent.mkdir(parents=True, exist_ok=True)
+    BJ._registry_path(ws).write_text(json.dumps({"jobs": jobs}))
 
 
 def _rec(jid, path, **over):

@@ -812,6 +812,7 @@ def _gesture(xyz, atom, unit, frames=6, step=0.15, method="gfn2"):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_ring_flip_is_still_a_drag_that_works():
     """The case a rule about ring bonds would have destroyed, driven for real.
 
@@ -4219,6 +4220,7 @@ def _shown(widget):
     return (widget.layout.display or "") != "none"
 
 
+@_needs_real_xtb
 def test_the_budget_goes_with_the_hand_that_pulls():
     """A budget prices what is kept, and a placing hand does not keep it.
 
@@ -4910,6 +4912,7 @@ def _drag_at(part, held, grabbed, toward, step, turns):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_second_grab_carries_on_from_where_the_structure_is():
     """With Auto off a release leaves the structure where the hand put it, and
     the next grab has to continue from there.
@@ -5005,6 +5008,7 @@ def _pull_into_the_wall(part, held, grabbed, root, step=0.80, tries=14):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_refused_drag_starts_no_work_and_writes_no_line():
     """Standing still must not cost a worker and a redraw per mouse move.
 
@@ -5072,6 +5076,7 @@ def test_a_refused_drag_starts_no_work_and_writes_no_line():
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_refusal_reaches_the_page_as_a_stop_the_hand_can_feel():
     """The kernel stops answering, so the picture must stop promising.
 
@@ -5850,6 +5855,7 @@ def _drawn_out(part, begin, grabbed, far, steps):
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_relaxation_stopped_in_the_middle_does_not_price_a_barrier():
     """A step is refused on a finished answer, not on a half-finished one.
 

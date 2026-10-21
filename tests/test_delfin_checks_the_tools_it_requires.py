@@ -39,6 +39,22 @@ from delfin.agent.push_diagnosis import diagnose
 _ROOT = Path(__file__).resolve().parent.parent
 
 
+def _git_through_safe_git(monkeypatch, fake):
+    """The doctor's git reads go through ``safe_git.run``, which builds its
+    own command line; this hands the argv-keyed *fake* the ``git <args>``
+    it means. A raised FileNotFoundError/OSError becomes the code
+    safe_git returns (127/126), since safe_git never raises."""
+    def run(args, cwd, **kw):
+        argv = ["git", *args]
+        try:
+            return fake(argv, cwd=str(cwd))
+        except FileNotFoundError as exc:
+            return subprocess.CompletedProcess(argv, 127, "", str(exc))
+        except OSError as exc:
+            return subprocess.CompletedProcess(argv, 126, "", str(exc))
+    monkeypatch.setattr(D.safe_git, "run", run)
+
+
 # ---------------------------------------------------------------------------
 # The default install ships a test runner
 # ---------------------------------------------------------------------------
@@ -169,6 +185,7 @@ def _rows(monkeypatch, *, git=None, gh=None, identity=True, logged_in=True):
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(D.subprocess, "run", fake_run)
+    _git_through_safe_git(monkeypatch, fake_run)
     return {r["check"]: r for r in D._check_git_tooling({"workspace": "."})}
 
 

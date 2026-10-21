@@ -144,16 +144,12 @@ COV = {
 }
 
 # ===== THE TABLE WAS TRUNCATED, NOT WRONG =============================================
-# Measured 2026-08-18 against 30735 crystals: the radii sum is globally almost unbiased
-# (sigma class, 260172 bonds, mean signed error +0.014 A).  The
-# error does not sit in the ENTRIES but in the GAPS -- md_distance falls back to
-# COV.get(metal, 1.5) for every unknown metal, and the ENTIRE f-block except
-# La is missing:
-#     Dy 2834 bonds -0.232 A | U 2479 -0.239 | Eu 1758 -0.259 | Yb 1690 -0.207
-#     Tb 1687 -0.232 | Gd 1568 -0.251 | Sm 1174 -0.262 | Nd 964 -0.285 | Ce 738 -0.295
-#     Pr 620 -0.303 | Th 313 -0.226 | Np/Pu 187 ~ -0.30
-# Around 18600 crystal bonds are systematically 0.20 to 0.30 A too short, and all from
-# a single dict.get default value.  No model, no mechanism -- a gap.
+# Measured 2026-08-18 against crystal structures: for the metals the table carries, the
+# radii sum is globally almost unbiased.  The error does not sit in the ENTRIES but in
+# the GAPS -- md_distance falls back to COV.get(metal, 1.5) for every unknown metal, and
+# the ENTIRE f-block except La is missing: lanthanoid and actinide M-D bonds came out
+# systematically 0.2 to 0.3 A too short, all from a single dict.get default value.  No
+# model, no mechanism -- a gap.
 #
 # The existing values ARE Cordero et al. (Dalton Trans. 2008, 2832) -- Sc 1.70, Ti 1.60,
 # V 1.53, Zr 1.75, Y 1.90, La 2.07 match digit for digit, and Mn/Fe/Co stand at the
@@ -354,9 +350,9 @@ def _EVIDENCE_MIN_N() -> int:
 def _EVIDENCE_MAX_REL() -> float:
     """Widest band, as (p90-p10)/|p50|, that still says something.
 
-    A five-ring chelate bite measured at 70.6 deg with a 3.2 deg spread has rel 0.045 and
-    is one of the best-defined quantities we have; a macrocycle pair spanning 68-82 deg
-    sits at 0.19 and its p50 is a value no structure actually adopts.  The default sits
+    A five-ring chelate bite, measured with a spread of a few degrees, has rel ~0.05 and
+    is one of the best-defined quantities we have; a macrocycle pair spanning a much wider
+    range sits far above it, and its p50 is a value no structure actually adopts.  The default sits
     between them.
     """
     try:
@@ -522,9 +518,9 @@ def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     # A covalent-radii sum is not where crystals put a metal-donor bond, and this is a
     # SETTING, not an optimisation: the builder places the donor at this distance and
     # that is the end of it -- no weight, no barrier, no gate that can reject it.
-    # Measured basis: over 107 crystals the same radii-sum reference made U_topology score
-    # our own frames FIVE TIMES BETTER than reality (ratio 0.20); swapping it for the
-    # measured band took the crystal force from 52833 to 67.39, a factor of 784.  Here the
+    # Measured basis: on crystal structures the same radii-sum reference made U_topology score
+    # our own frames several times BETTER than reality; swapping it for the
+    # measured band cut the force at crystal geometries by orders of magnitude.  Here the
     # same number is used one step earlier, where it costs nothing to be right.
     # ⚠ READ BOTH SPELLINGS (26.08.2026).  `cli_manta.py:293` sets the champion
     #   as DELFIN_FFFREE_ with THREE F; this switch was written as DELFIN_FFREE_ with TWO
@@ -533,6 +529,15 @@ def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     #   1286 axis files set it -- renaming would make those archives
     #   unreproducible.  Default OFF under BOTH names -> byte-identical.
     #   Same repair as `assemble_complex._ffree_flag`; the derivation is there.
+    # NEUTRAL O-H DONOR AT IONIC CONTACT (DELFIN_FFFREE_LONE_PAIR_MD, default OFF ->
+    # byte-identical): aqua / alcohol O at Shannon r(M^n+, CN) + r(O, CN 3) instead of the
+    # covalent sum; see _lone_pair_space.dative_oh_md.
+    if atom is not None:
+        from delfin.manta import _lone_pair_space as _lps
+        if _lps.lone_pair_md_enabled():
+            _d = _lps.dative_oh_md(metal, atom, cn if cn else _CURRENT_CN)
+            if _d is not None:
+                return float(min(4.0, max(0.8, _d)))
     if (os.environ.get("DELFIN_FFFREE_MD_MEASURED", "0") == "1"
             or os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1"):
         _m = _measured_md(metal, donor, cn=(cn if cn else _CURRENT_CN))

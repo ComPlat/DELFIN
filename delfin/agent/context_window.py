@@ -38,3 +38,26 @@ def capped_window(raw_window: int) -> int:
         except Exception:
             cap = 0
     return min(raw_window, cap) if cap > 0 else raw_window
+
+
+def planning_window(raw_window: int, model: str = "") -> int:
+    """THE single window every trim/compaction/elision decision budgets against.
+
+    The floor (observed_window.at_least — what this backend has actually
+    accepted for *model*) is applied FIRST, then the cap. That order is the
+    engine's own: engine.py:1280-1281 does
+    ``_capped_context_window(_ow.at_least(model, caps.context_window))``, and
+    the in-turn elision budget must read exactly the same number or the two
+    protections of one turn plan against two different windows.
+
+    The floor comes first because a cap is the operator's hard ceiling — it
+    must always win — while the floor is proof the backend held more. Both
+    raise nothing beyond what each allows: a floor above the cap is clamped,
+    a cap without a floor leaves the raw window.
+    """
+    try:
+        from . import observed_window as _ow
+        w = _ow.at_least(str(model or ""), int(raw_window or 0))
+    except Exception:
+        w = int(raw_window or 0)
+    return capped_window(w)

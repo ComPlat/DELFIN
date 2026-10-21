@@ -10,9 +10,10 @@ their request for one push of this branch, now.
 
 ## Steps
 1. `git status` and `git branch --show-current`.
-2. On the default branch (main/master) as a contributor (agent.git_role is
-   not `maintainer`): do not push it. Create a branch first, as in the
-   `new-branch` skill, and push that.
+2. On the default branch (main/master) as a contributor (the repository's
+   git role, set by the user with `/git role`, is not `maintainer`), or
+   after the user asked for a pull request: do not push it. Create a branch
+   first, as in the `new-branch` skill, and push that.
 3. Uncommitted changes of THIS session: commit them with a message that
    says what changed and why. Changes you did not make are not yours to
    commit: list them and ask.

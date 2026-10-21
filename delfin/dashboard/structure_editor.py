@@ -3460,12 +3460,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         held = _journal_mod.how_much_is_held(journal.summary())
         here = _under_home(_journal_mod.resolve_archive_dir())
         target = _journal_mod.remote_target()
+        off = _journal_mod.upload_off() if target is None else ''
         goes = f'→ <code>{html.escape(here)}</code>'
         if target is None:
-            goes += ', and no further -- no transfer host is configured'
+            why = off or 'no transfer host is configured'
+            goes += f', and no further -- {html.escape(why)}'
             submit_bug_send.tooltip = (
-                'Write the report. It stays on this machine: no transfer '
-                'host is configured.')
+                f'Write the report. It stays on this machine: {why}.')
         else:
             goes += (', then <code>'
                      + html.escape(target['shown']) + '</code>')
@@ -3573,9 +3574,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         target = _journal_mod.remote_target()
         if target is None:
+            off = _journal_mod.upload_off()
+            why = (off[0].upper() + off[1:]) if off else (
+                'No transfer host is configured')
             _set_mol_status(
                 f'Reported. {did}',
-                'No transfer host is configured, so it stays on this '
+                f'{why}, so it stays on this '
                 'machine. It can be played back into a viewer to see the '
                 'same thing happen again.' + went + again + empty + wordless)
         else:
@@ -5815,6 +5819,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         far = _gfn.largest_shift(began, current)
         if far is None:
             return False
+        # The yardstick is the wish the wall refused the third time, written
+        # where that refusal is counted.  Taken here instead, from the first
+        # message after it, the message was also skipped -- so a hand that
+        # eased off on the very next move was not answered, and its own
+        # easing became the distance it then had to beat
+        # (test_a_hand_that_eases_off_right_after_the_third_refusal_is_answered).
         stuck = state.get('topology_stuck')
         if stuck is None:
             state['topology_stuck'] = far
@@ -6015,6 +6025,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the median atom moved 0.066 A.
                     current = _gfn.eased_apart(current)
                     began = time.perf_counter()
+                    # As _still_torn sees it, before any budget clamp: the
+                    # bonding wall's yardstick is taken from this wish.
+                    asked_for = current
                     # Once the budget is spent, stand still rather than shake.
                     #
                     # The wall acts and then undoes: the step runs, the price
@@ -7144,6 +7157,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # merely happening.
                         refused = int(state.get('topology_refused') or 0) + 1
                         state['topology_refused'] = refused
+                        if refused == 3:
+                            # How far this hand was when the wall gave up --
+                            # what _still_torn measures the next wish against.
+                            grab = state.get('gfn_topology_source')
+                            shift = (_gfn.largest_shift(grab, asked_for)
+                                     if grab and len(_gfn.atom_lines(grab))
+                                     == len(_gfn.atom_lines(asked_for))
+                                     else None)
+                            if shift is not None:
+                                state['topology_stuck'] = shift
                         if refused >= 3 and pull is None:
                             said = (f'{said} Three steps running -- the hand '
                                     f'is set to move the atom, which is '
@@ -21140,7 +21163,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     manta_button = widgets.Button(
         description='MANTA', button_style='',
         layout=widgets.Layout(width='150px'),
-        tooltip='MANTA: build the complete coordination-isomer manifold from the '
+        tooltip='MANTA: build the isomer–conformer ensemble from the '
                 'SMILES and rank it by GFN2 energy (best isomer/conformer first; '
                 'needs xtb). Results show in the viewer with isomer navigation.',
     )
@@ -21182,9 +21205,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         options=['fast', 'normal', 'max', 'extreme'], value='extreme',
         description='Quality:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='160px'),
-        tooltip='Conformer depth (the main completeness<->speed switch). extreme guarantees the '
-                'GFN2 global minimum is in the manifold (convergence-proven); fast/normal miss it '
-                'by ~2.5 kcal/mol on multi-isomer systems.')
+        tooltip='Construction depth (seeds and conformer counts; the main thoroughness<->speed '
+                'switch). extreme is the most thorough; fast/normal build fewer candidates and can '
+                'miss low-energy frames on multi-isomer systems.')
     manta_seeds = widgets.IntText(
         value=_MANTA_PROFILE_SEEDS['extreme'], description='Seeds:',
         style={'description_width': 'initial'}, layout=widgets.Layout(width='130px'),
@@ -21200,7 +21223,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     manta_max_iso = widgets.IntText(
         value=0, description='Max isomers (0=ALL):', style={'description_width': 'initial'},
         layout=widgets.Layout(width='190px'),
-        tooltip='Cap emitted isomers. 0 = COMPLETE manifold, never cut off (recommended).')
+        tooltip='Cap emitted isomers. 0 = no cap, every isomer the builder realises (recommended).')
     # DEFAULT = No / No -> users get ONLY the manifold (no post-processing).  Rank and Opt are
     # SEPARATE opt-ins: Rank reorders by xtb single-point energy (geometry UNCHANGED); Opt xtb-
     # geometry-optimises structures (changes geometry).  You can Rank without Opt, or Opt without Rank.
@@ -21208,7 +21231,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         options=['No', 'gfn2', 'gfnff', 'gfn1', 'gfn0'], value='No',
         description='Rank:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='150px'),
-        tooltip='Energy-RANK the manifold so the global-minimum isomer/conformer is first — '
+        tooltip='Energy-RANK the ensemble so the lowest-energy frame is first — '
                 'single-point xtb energy, geometry UNCHANGED (pure reordering, no post-processing of '
                 'the structures). No = keep construction order (already best-first by realism). '
                 'gfn2 = standard; gfnff = fast force-field.')
@@ -21217,8 +21240,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         description='Opt:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='140px'),
         tooltip='Geometry-OPTimise structures to a clean final geometry (xtb; method FOLLOWS Rank, or '
-                'gfn2 if Rank=No). No = keep the construction geometry (pure manifold, DEFAULT). '
-                'Top-N = optimise the N best; All = the whole manifold (slowest/best). '
+                'gfn2 if Rank=No). No = keep the construction geometry (pure ensemble, DEFAULT). '
+                'Top-N = optimise the N best; All = the whole ensemble (slowest/best). '
                 'Independent of Rank.')
     manta_spin = widgets.Dropdown(
         options=['auto', '1', '2', '3', '4', '5', '6', '7'], value='auto',
@@ -21232,14 +21255,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         options=['On', 'Off'], value='On',
         description='Determinism:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='160px'),
-        tooltip='DETERMINISTIC construction (DEFAULT On) — byte-identical, reproducible manifold, '
+        tooltip='DETERMINISTIC construction (DEFAULT On) — byte-identical, reproducible ensemble, '
                 'IDENTICAL to what the CLI and the development loop build (ship = validate). '
                 'Off = non-deterministic embedding (racy frame count; only for exploring extra '
-                'ETKDG variety). Keep On for a stable, reproducible isomer x conformer manifold.')
+                'ETKDG variety). Keep On for a stable, reproducible isomer–conformer ensemble.')
     manta_settings_row = widgets.VBox([
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
-                     "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
-                     "&times; conformer manifold</span>"),
+                     "<span style='color:#888;font-size:90%'>— isomer–conformer ensemble</span>"),
         widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt, manta_spin, manta_det],
                      layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
     ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
@@ -22011,7 +22033,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _topn = -1 if opt_topn is None else int(opt_topn)
             _opt_on = _topn >= 0
             if not rank and not _opt_on:
-                _caption = ('MANTA: building the complete coordination-isomer × conformer manifold '
+                _caption = ('MANTA: building the isomer–conformer ensemble '
                             '(no post-processing)...')
             else:
                 _parts = []
@@ -22019,7 +22041,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     _parts.append(f'{_method_lbl} energy-ranking')
                 if _opt_on:
                     _parts.append('optimizing all' if _topn == 0 else f'optimizing top {_topn}')
-                _caption = ('MANTA: building manifold + ' + ' + '.join(_parts) +
+                _caption = ('MANTA: building ensemble + ' + ' + '.join(_parts) +
                             ' (needs xtb; takes a bit)...')
             _show_mol_busy(_caption)
         else:
@@ -22154,7 +22176,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     )
     submit_draw_update_btn = widgets.Button(
         description='Update', icon='refresh',
-        tooltip='Fetch the newest published Ketcher.',
+        tooltip='Fetch the pinned Ketcher build, SHA-256 checked.',
         layout=widgets.Layout(width='100px', display='none'),
     )
     submit_draw_frame = widgets.HTML(value='', layout=widgets.Layout(
@@ -22326,7 +22348,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'from, and this dashboard is not serving one.')
             return
         state['draw_installing'] = True
-        _set_mol_status('Looking up the newest Ketcher...', spinner=True)
+        _set_mol_status('Looking up the Ketcher build...', spinner=True)
 
         def _work():
             newest = _ketcher.latest_release()
@@ -22345,16 +22367,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 _set_mol_status(
                     f'Ketcher {newest["version"]} is not here yet: '
                     f'{newest["size"] / 1e6:.0f} MB from '
-                    'github.com/epam/ketcher, unpacked to about 32 MB beside '
-                    'the dashboard. Press Fetch it to get it.')
+                    'github.com/epam/ketcher, checked against its pinned '
+                    'SHA-256 and unpacked to about 32 MB beside the '
+                    'dashboard. Press Fetch it to get it.')
 
             schedule_ui_update(_ask)
 
-        _start_background(_work, 'The lookup of the newest Ketcher',
+        _start_background(_work, 'The lookup of the Ketcher build',
                           guards={'draw_installing': False})
 
     def on_submit_draw_update(_button=None):
-        """Fetch the newest build -- the first time, or over an older one."""
+        """Fetch the pinned build -- the first time, or over an older one."""
         if state.get('draw_installing'):
             return
         state['draw_installing'] = True

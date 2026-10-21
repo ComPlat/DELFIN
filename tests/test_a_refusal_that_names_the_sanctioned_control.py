@@ -185,8 +185,13 @@ def test_a_refusal_that_writes_nothing_gets_no_write_hint(repo):
     assert "write_file" not in err
 
 
-def test_the_hints_do_not_collide(repo):
-    """Four hints share one branch now. Each command must get its own."""
+def test_the_hints_do_not_collide(repo, monkeypatch):
+    """Four hints share one branch now. Each command must get its own.
+    Where the caged rule does not apply: under it, the `python3 -c` line
+    runs in the cage (test_a_caged_command_runs_without_asking.py)."""
+    import delfin.agent.api_client as _A
+    monkeypatch.setattr(_A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
     assert "enter_worktree" in _err("git worktree add /tmp/x HEAD~1", repo)
     assert "undo_changes" in _err("rm -f scratch.py", repo)
     assert "write_file" in _err("tee out.txt", repo)

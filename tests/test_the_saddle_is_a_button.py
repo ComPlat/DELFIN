@@ -847,6 +847,7 @@ def test_a_run_that_did_not_converge_is_still_told_what_it_reached():
 
 
 @_needs_orca
+@pytest.mark.usefixtures("real_xtb")
 def test_a_flat_climb_that_stops_short_names_the_minimum_it_found():
     """Live, on a start OptTS cannot converge in the one cycle it is given: a
     pyramidal ammonia, whose planar saddle is several umbrella-mode cycles

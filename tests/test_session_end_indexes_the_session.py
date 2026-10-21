@@ -55,11 +55,15 @@ def test_all_three_session_end_doors_call_the_index_stage():
     from delfin.agent import cli
     from delfin.dashboard import tab_agent
 
-    src_cli = inspect.getsource(cli)
-    n_calls = src_cli.count("index_at_session_end(")
-    # cmd_chat's finally AND cmd_run: two CLI doors.
-    assert n_calls >= 2, (
-        f"cli.py should call index_at_session_end on both doors, found {n_calls}")
+    # Both CLI doors end through one stage list (cli._end_session); that
+    # list indexes. cmd_run calls it; cmd_chat's finally (and the agent
+    # service's worker) call _finish_interactive_session, which saves and
+    # then calls it. The order and the stages are driven end to end in
+    # test_every_entry_path_ends_a_session_the_same_way.py.
+    assert "index_at_session_end(" in inspect.getsource(cli._end_session)
+    assert "_end_session(" in inspect.getsource(cli.cmd_run)
+    assert "_finish_interactive_session(" in inspect.getsource(cli.cmd_chat)
+    assert "_end_session(" in inspect.getsource(cli._finish_interactive_session)
     src_tab = inspect.getsource(tab_agent)
     assert "index_at_session_end(" in src_tab, (
         "the dashboard's session-end thread must index the ended session")

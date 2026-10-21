@@ -406,6 +406,20 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         placeholder='local path (empty = ~/.delfin/agent_bugs)',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+    # Whether a written report is also copied to <Remote Path>/AGENT_BUGS
+    # (agent.bug_upload, delfin/agent/bug_report.py). A dropdown, not a
+    # text field: three answers, and a typed fourth would be read as ask.
+    bug_upload_input = widgets.Dropdown(
+        options=[
+            ('ask for each report (default)', 'ask'),
+            ('never upload', 'never'),
+            ('always upload, also unattended', 'always'),
+        ],
+        value='ask',
+        description='Bug upload',
+        layout=widgets.Layout(width='340px', height='28px'),
+        style={'description_width': '90px'},
+    )
     # Proactive job monitoring (headless daemon). OPT-IN: costs tokens when
     # auto-diagnosis is on, so it must be explicitly enabled here.
     jobmon_enabled_toggle = widgets.Checkbox(
@@ -438,10 +452,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         # As listed by the endpoint on 2026-09-07. The KIT-hosted roster
         # changed that day; a suggestion for a model that is gone reads as
         # a recommendation and answers with a 404.
-        'kit': ['azure.gpt-5-nano', 'azure.gpt-5-mini', 'azure.gpt-5.1',
-                'azure.gpt-5.4', 'azure.gpt-5.6-luna',
-                'kit.deepseek-v4-flash', 'kit.glm-5.3',
-                'kit.mistral-small-4-119b-a8b'],
+        'kit': ['kit.glm-5.3-flash', 'kit.glm-5.3', 'kit.deepseek-v4-flash',
+                'kit.mistral-small-4-119b-a8b', 'azure.gpt-5.6-luna',
+                'azure.gpt-5.4', 'azure.gpt-5.1', 'azure.gpt-5-mini',
+                'azure.gpt-5-nano'],
         'claude': ['haiku', 'sonnet', 'opus'],
         'openai': ['gpt-5.4-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
         'ollama': ['qwen2.5-coder:7b', 'qwen2.5-coder:32b',
@@ -519,6 +533,31 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         value=200, min=10, max=5000, step=10,
         description='Window',
         layout=widgets.Layout(width='170px', height='28px'),
+    )
+    # Action classifier (agent.classifier.*): a model's second opinion on
+    # what the rules allow unseen. Rules decide first; the classifier can only
+    # add friction (never allow what a rule refuses). Default on, scope
+    # "unattended"; the second checkbox writes scope "all".
+    classifier_enabled_toggle = widgets.Checkbox(
+        description='Action classifier enabled (model-based second opinion)',
+        value=True, indent=False,
+    )
+    classifier_broad_toggle = widgets.Checkbox(
+        description=('Also judge auto-allowed commands and auto-accepted '
+                     'edits in every mode (one model round trip per action)'),
+        value=False, indent=False,
+    )
+    classifier_model_input = widgets.Combobox(
+        placeholder='Model (default kit.deepseek-v4-flash)',
+        options=sorted({m for opts in _JOBMON_MODEL_SUGGESTIONS.values()
+                        for m in opts}),
+        value='',
+        ensure_option=False,   # free typing stays allowed
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    classifier_rules_input = widgets.Textarea(
+        placeholder="One per line, e.g.:\nnever allow: git push origin main\nalways allow: git push origin my-topic-branch",
+        layout=widgets.Layout(width='100%', min_width='280px', height='64px'),
     )
     # Subagent per-run limits (agent.subagents.*). The fallbacks are READ
     # from the backend instead of repeated here — a copied number silently
@@ -663,6 +702,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 'window': int(evalloop_window_input.value or 200),
             })
             payload['agent']['eval_loop'] = evalloop
+            classifier = dict(payload['agent'].get('classifier') or {})
+            classifier.update({
+                'enabled': bool(classifier_enabled_toggle.value),
+                'scope': ('all' if classifier_broad_toggle.value
+                          else 'unattended'),
+                'model': str(classifier_model_input.value or '').strip(),
+                # Free-text user rules: the classifier can only ADD friction
+                # (an "always allow" rule never lifts a rule refusal). One
+                # statement per line; blank lines ignored.
+                'user_rules': [
+                    ln.strip() for ln in
+                    str(classifier_rules_input.value or '').splitlines()
+                    if ln.strip()],
+            })
+            payload['agent']['classifier'] = classifier
             subs = dict(payload['agent'].get('subagents') or {})
             subs.update({
                 'max_wall_s': int(subagent_wall_input.value or _SA_WALL),
@@ -1227,6 +1281,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         office_path_input.value = str(paths_payload.get('office_dir') or '')
         agent_payload = ((settings_payload or {}).get('agent') or {})
         bug_archive_input.value = str(agent_payload.get('bug_archive_dir') or '')
+        from delfin.agent.bug_report import upload_policy
+        bug_upload_input.value = upload_policy(settings_payload or {})
         jobmon_payload = agent_payload.get('job_monitor') or {}
         jobmon_enabled_toggle.value = bool(jobmon_payload.get('enabled', False))
         jobmon_diag_toggle.value = bool(jobmon_payload.get('auto_diagnose', True))
@@ -1253,6 +1309,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             evalloop_window_input.value = int(evalloop_payload.get('window', 200) or 200)
         except Exception:
             evalloop_window_input.value = 200
+        classifier_payload = agent_payload.get('classifier') or {}
+        classifier_enabled_toggle.value = bool(
+            classifier_payload.get('enabled', True))
+        classifier_broad_toggle.value = (
+            str(classifier_payload.get('scope') or '').strip().lower() == 'all')
+        classifier_model_input.value = str(
+            classifier_payload.get('model') or '').strip()
+        classifier_rules_input.value = '\n'.join(
+            classifier_payload.get('user_rules') or [])
         subagents_payload = agent_payload.get('subagents') or {}
         try:
             subagent_wall_input.value = int(subagents_payload.get('max_wall_s', _SA_WALL) or _SA_WALL)
@@ -2232,14 +2297,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             if shutil.which('micromamba') or shutil.which('conda'):
                 _set_status('micromamba/conda is already available.', color='#2e7d32')
                 return
+            from delfin.runtime_setup import get_packaged_micromamba_fetcher
             local_bin = Path.home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
+            # The installers' shared fetcher: one pinned release per
+            # platform, installed only when its SHA-256 matches. The
+            # retry with TLS verification switched off is gone.
             result = subprocess.run(
-                ['bash', '-c',
-                 'URL=https://micro.mamba.pm/api/micromamba/linux-64/latest; '
-                 'DST="$HOME/.local/bin/"; '
-                 '{ curl -fsSL "$URL" || curl -fsSL --insecure "$URL"; } '
-                 '| tar -xvj -C "$DST" --strip-components=1 bin/micromamba'],
+                ['bash', str(get_packaged_micromamba_fetcher()),
+                 str(local_bin / 'micromamba')],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -2844,7 +2910,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 _set_status(f'{label} installation failed (exit {result.returncode}).', color='#d32f2f')
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+            _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
         # Invalidate cache so next refresh re-checks
         _outdated_cache.clear()
         refresh_fn()
@@ -2876,7 +2942,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     _set_status(f'{label} installation failed; the log says why.', color='#d32f2f')
             except Exception as exc:
                 tool_install_log.value += f'\nError: {exc}'
-                _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+                _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
             refresh_fn()
 
         threading.Thread(target=work, daemon=True).start()
@@ -2901,7 +2967,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 _set_status(f'{label} update failed (exit {result.returncode}).', color='#d32f2f')
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+            _set_status(f'{label} update error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -2943,7 +3009,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 )
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+            _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -2985,7 +3051,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 )
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+            _set_status(f'{label} update error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -3522,6 +3588,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
             settings_payload.setdefault('agent', {})
             settings_payload['agent']['bug_archive_dir'] = _bug_archive or ''
+            settings_payload['agent']['bug_upload'] = (
+                bug_upload_input.value or 'ask')
             # Job monitoring (opt-in; costs tokens only when auto_diagnose).
             settings_payload['agent']['job_monitor'] = {
                 'enabled': bool(jobmon_enabled_toggle.value),
@@ -3658,7 +3726,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         viewer_ambient_occlusion_toggle,
         # Agent blocks — without these the GLOBAL Save Settings button
         # stays disabled when only these change ("settings disappeared").
-        bug_archive_input,
+        bug_archive_input, bug_upload_input,
         jobmon_enabled_toggle, jobmon_diag_toggle, jobmon_interval_input,
         jobmon_webhook_input, jobmon_provider_input, jobmon_model_input,
         automem_enabled_toggle, automem_model_input, automem_maxfacts_input,
@@ -3836,6 +3904,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 [widgets.HTML('<b>Bug-report archive</b>'), bug_archive_input],
                 layout=_row_layout,
             ),
+            bug_upload_input,
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 '<b>Local</b> staging dir for the 🐞 bug-report button '
@@ -3843,7 +3912,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 '<code>DELFIN_BUG_ARCHIVE</code> takes precedence). When a '
                 '<b>Remote Path</b> + host is configured above, the report is '
                 'also uploaded via SSH (rsync) to <code>&lt;Remote Path&gt;/AGENT_BUGS</code> '
-                '— the local copy is kept.'
+                'when you press Send under that host — the local copy is kept. '
+                '<b>Bug upload</b> (<code>agent.bug_upload</code>) decides the '
+                'rest: <i>ask</i> (default; the terminal and CLI ask per '
+                'report, <code>--yes</code> keeps it local), <i>never</i>, '
+                '<i>always</i> (also unattended).'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
@@ -3884,6 +3957,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             widgets.HBox(
                 [widgets.HTML('<b>Model</b>'), automem_model_input],
                 layout=_row_layout,
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🛡 Action classifier (second opinion)</b>'),
+            widgets.HBox(
+                [classifier_enabled_toggle], layout=_row_layout,
+            ),
+            widgets.HBox(
+                [classifier_broad_toggle], layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Model</b>'), classifier_model_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [classifier_rules_input], layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'Rules decide first; the classifier only adds friction, never '
+                'allows what a rule refuses. By default it judges what runs '
+                'under Bypass, messages to other agents and network calls. '
+                'User rules, one per line, start with "never allow" or '
+                '"always allow".'
+                '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
                          '🤖 Subagent limits (per delegated run)</b>'),
@@ -4723,6 +4820,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             payload['agent']['backend'] = agent_backend_input.value
             payload['agent']['model'] = agent_model_input.value
             payload['agent']['role_models'] = _save_role_model_settings()
+            if _ros is not None:
+                _ros.read_only_shapes_into_payload(
+                    payload, _save_ros_settings()
+                )
             save_settings(payload, settings_path)
             agent_status_html.value = (
                 '<span style="color:#2e7d32;">&#x2714; Agent settings saved. '
@@ -4735,19 +4836,103 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     agent_save_btn.on_click(_save_agent_settings_with_roles)
 
+    # -- Read-only command shapes (approval by rule) -----------------------
+    # Rendered and persisted through the helpers in delfin.agent.
+    # read_only_shapes so the gate (api_client.py, protected) and this tab
+    # share one stored contract: agent.read_only_shapes = {enabled,
+    # enabled_shapes}. Lazy import like _subagent_caps_now: the helper module
+    # imports only the stdlib and stays importable anywhere.
+    try:
+        from delfin.agent import read_only_shapes as _ros
+    except Exception:
+        _ros = None
+
+    _ros_enabled = widgets.Checkbox(
+        value=True,
+        description='Approve these command forms by rule',
+        layout=widgets.Layout(width='340px'),
+    )
+    _ros_shape_checks: dict[str, widgets.Checkbox] = {}
+    _ros_shape_rows = []
+    for _name in (_ros.SHAPE_NAMES if _ros else []):
+        _cb = widgets.Checkbox(
+            value=True,
+            description=_ros.SHAPE_SPELLINGS.get(_name, _name),
+            layout=widgets.Layout(width='380px'),
+        )
+        _ros_shape_checks[_name] = _cb
+        _ros_shape_rows.append(
+            widgets.HBox([_cb], layout=widgets.Layout(gap='8px'))
+        )
+
+    _ros_header = widgets.HTML(
+        value=(
+            '<b style="font-size:13px;">Command shapes approved by rule</b><br>'
+            '<span style="color:#757575;font-size:12px;">'
+            'A command that is exactly one of these forms runs without an '
+            'approval dialog: '
+            + html.escape(', '.join(
+                (_ros.SHAPE_SPELLINGS if _ros else {}).values()))
+            + '. No options; &lt;path&gt; must resolve inside the '
+            'workspace. The switch creates a local branch. git still runs '
+            'the filters and hooks the repository configures, inside the '
+            'shell sandbox.</span>'
+        ),
+    )
+    _ros_box = widgets.VBox(
+        [_ros_header, _ros_enabled] + _ros_shape_rows,
+        layout=widgets.Layout(
+            padding='8px',
+            gap='4px',
+            border='1px solid #e0e0e0',
+            border_radius='4px',
+        ),
+    )
+
+    def _load_ros_settings():
+        if _ros is None:
+            return
+        try:
+            block = _ros.read_only_shapes_from_payload(load_settings())
+            _ros_enabled.value = bool(block.get('enabled', True))
+            active = set(block.get('enabled_shapes', []))
+            for _name, _cb in _ros_shape_checks.items():
+                _cb.value = _name in active
+        except Exception:
+            pass
+
+    def _save_ros_settings():
+        """Return the dict to store under agent.read_only_shapes."""
+        # Every box unticked means no shape, not all of them.
+        shapes = [
+            n for n, cb in _ros_shape_checks.items() if cb.value
+        ]
+        return {'enabled': bool(_ros_enabled.value), 'enabled_shapes': shapes}
+
     agent_section = widgets.VBox(
         [
             agent_backend_input,
             agent_cli_status,
             agent_model_input,
             role_models_box,
+            _ros_box,
             widgets.HBox([agent_save_btn, agent_status_html]),
             agent_env_hint,
         ],
         layout=widgets.Layout(padding='8px', gap='6px'),
     )
+    # The user model: visible, editable, forgettable. A tree or a kernel
+    # that cannot build the panel keeps the rest of the section.
+    try:
+        from delfin.dashboard.user_model_panel import (
+            build_widget as _build_user_model_panel)
+        agent_section.children = tuple(agent_section.children) + (
+            _build_user_model_panel(),)
+    except Exception:
+        pass
     _load_agent_settings()
     _load_role_model_settings()
+    _load_ros_settings()
 
     # ══════════════════════════════════════════════════════════════════════
     # Section: Scheduling (SLURM memory headroom)

@@ -32,6 +32,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from delfin.manta._unshipped_tables import scalar_table
+
 # ---------------------------------------------------------------------------
 # Numerical constants
 # ---------------------------------------------------------------------------
@@ -52,10 +54,9 @@ _THETA_SP3 = math.radians(109.47)  # tetrahedral
 # ⚠️ This is a GLOBAL factor applied to every element pair, and measurement says that is the defect.
 # Pyykkö & Atsumi published single, DOUBLE and TRIPLE covalent radii per ELEMENT; collapsing all of
 # them into one ratio per bond order is a simplification the data does not support.  Measured against
-# CCDC clean_v2 (25.8 M bonds, signature-resolved bands): terminal multiply-bonded heteroatoms on
-# high-coordination centres come out at SINGLE-bond length -- ClO4- Cl-O +0.55 A (100 % outside the
-# band), N=N=N +0.295, S=O +0.20, coordinated C#N +0.18 across 472 systems, C#S +0.17 -- while P=O
-# (+0.055) and N-O (-0.025) are fine.  A single ratio cannot be right for both groups at once.
+# crystal structures, terminal multiply-bonded heteroatoms on high-coordination centres (perchlorate
+# Cl-O, azide N=N=N, S=O, coordinated C#N and C#S) come out near SINGLE-bond length, while P=O and
+# N-O are fine.  A single ratio cannot be right for both groups at once.
 # Kept as the FALLBACK for elements Pyykkö has no order-specific radius for; _pyykko_order_radius
 # below is consulted first.
 _BOND_ORDER_SCALE: Dict[float, float] = {
@@ -206,10 +207,10 @@ def _ideal_bond_length(mol, i: int, j: int, order: float) -> float:
 # Signature-resolved ideal angle (measured, atom- and bond-specific)
 # --------------------------------------------------------------------------
 # WHY.  ``_hybridization_theta`` below reads RDKit's hybridization LABEL, which offers
-# three numbers for the whole periodic table and is decided WITHOUT the metal.  Measured
-# against the CSD that is wrong in two ways that matter:
-#   * the X-D-X angle at a saturated donor follows the atom's PERIOD, not one 109.47 for
-#     every element (2:109.5  3:104.0  4:101.5  5:100.5  6:99.0);
+# three numbers for the whole periodic table and is decided WITHOUT the metal.  Against
+# crystal structures that is wrong in two ways that matter:
+#   * the X-D-X angle at a saturated donor follows the atom's PERIOD, closing below the
+#     tetrahedral 109.47 as the row goes down;
 #   * a donor whose lone pair joins a neighbouring pi system is TRIGONAL PLANAR with the
 #     metal IN that plane -- RDKit calls the same nitrogen sp3 and asks for 109.5.  That
 #     second case is AFOMEO frame 4: R2N-M pulled out of the pi plane.
@@ -217,14 +218,41 @@ def _ideal_bond_length(mol, i: int, j: int, order: float) -> float:
 # WITH the metal counted, pi activity, ring membership and ring size).  No functional
 # group is named anywhere -- "not every nitrogen is the same" is expressed as the bonding
 # situation at that one nitrogen.
-_THETA_BY_PERIOD: Dict[int, float] = {2: 109.5, 3: 104.0, 4: 101.5, 5: 100.5, 6: 99.0}
-# Ring angles: crystal-measured where we have them, else the regular polygon
-# (internal = 180 - 360/n, exocyclic = (360 - internal)/2).
-_RING_INTERNAL_MEAS: Dict[int, float] = {5: 106.0, 6: 118.0}
-_RING_EXOCYCLIC_MEAS: Dict[int, float] = {5: 126.5, 6: 120.75}
-# M-D-X at a SATURATED donor: as the two substituents close down, the metal is pushed to a
-# wider angle.  Measured slope, not fitted here.
-_PHI_MD_SLOPE = 0.87
+#
+# THE MEASURED ANGLES ARE NOT SHIPPED.  The per-period angles, the measured 5- and 6-ring
+# angles and the M-D-X slope were taken from a structure statistic that is not
+# redistributed here, so they come from the file named by DELFIN_FFREE_THETA_TABLE (see
+# _unshipped_tables) with the keys ``period_<p>``, ``ring_internal_<n>``,
+# ``ring_exocyclic_<n>`` and ``phi_md_slope``.  Without it every period takes the
+# tetrahedral angle, every ring the regular polygon (internal = 180 - 360/n, exocyclic =
+# (360 - internal)/2) and the slope is zero.  The switch DELFIN_FFREE_THETA_SIGNATURE is
+# off in the shipped configuration either way.
+_THETA_TABLE_ENV = "DELFIN_FFREE_THETA_TABLE"
+_THETA_TETRAHEDRAL_DEG = 109.5
+
+
+def _period_theta(period: int, fallback: float = _THETA_TETRAHEDRAL_DEG) -> float:
+    """X-D-X angle (deg) at a saturated donor of this period; ``fallback`` without a value."""
+    return scalar_table(_THETA_TABLE_ENV).get(f"period_{period}", fallback)
+
+
+def _ring_internal_deg(n: int) -> float:
+    """Ring-internal angle (deg) of an ``n``-ring: measured value if supplied, else polygon."""
+    return scalar_table(_THETA_TABLE_ENV).get(f"ring_internal_{n}", 180.0 - 360.0 / n)
+
+
+def _ring_exocyclic_deg(n: int, internal: float) -> float:
+    """Exocyclic angle (deg) at an ``n``-ring atom: measured if supplied, else the split rest."""
+    return scalar_table(_THETA_TABLE_ENV).get(f"ring_exocyclic_{n}",
+                                              (360.0 - internal) / 2.0)
+
+
+def _phi_md_slope() -> float:
+    """M-D-X at a SATURATED donor: as the two substituents close down, the metal is pushed
+    to a wider angle by this slope.  Zero without a supplied value."""
+    return scalar_table(_THETA_TABLE_ENV).get("phi_md_slope", 0.0)
+
+
 _THETA_PLANAR = 120.0
 _THETA_LINEAR = 180.0
 
@@ -289,7 +317,7 @@ def _signature_theta(mol, i: int, j: int, k: int) -> float:
     Order of the rules is chemistry, not convenience:
       1. ring-internal / ring-exocyclic -- a ring fixes the angle geometrically, and for a
          planar ring donor the metal simply IS the exocyclic substituent (pyridine N->M
-         lands on ~121 deg, which the period rule would have got wrong);
+         lands on the exocyclic angle, which the period rule would have got wrong);
       2. trigonal-planar centre -- 3 sigma partners (metal counted) plus pi character or a
          conjugated lone pair.  Applies to EVERY triple at ``j`` including M-D-X, which is
          precisely "metal in the pi plane";
@@ -311,19 +339,17 @@ def _signature_theta(mol, i: int, j: int, k: int) -> float:
     # POLYGON ONLY UP TO SIX (DELFIN_FFREE_POLY6=1, default OFF -> byte-identical).
     #
     # 180 - 360/n is the internal angle of a REGULAR PLANAR polygon.  A seven- or
-    # nine-membered ring is neither: it puckers, and its sides are not equal.  Measured
-    # against the CSD angle table, the formula over-predicts by +16.3 deg at ring 7,
-    # +11.5 at ring 8 and +10.0 above eight, while at ring 6 -- which carries 3.06 M of
-    # the 4.67 M measured angles -- it is right to 5 deg.  A CH2 in a macrocycle is set by
-    # its own hybridisation, not by the ring's perimeter.
-    #
-    # Judged alone against 1900 measured bins: 180 bins improve, 23 worsen; RMS 15.51 ->
-    # 13.70, median |residual| 3.62 -> 2.88, bins inside their own sigma 39.6 -> 44.6 %.
+    # nine-membered ring is neither: it puckers, and its sides are not equal.  Against
+    # measured ring angles the formula over-predicts strongly from ring 7 upwards, while
+    # at ring 6 -- by far the most frequent ring -- it is close.  A CH2 in a macrocycle is
+    # set by its own hybridisation, not by the ring's perimeter.  Capping the polygon at
+    # six improved the agreement with the measured angles clearly more often than it
+    # worsened it.
     #
     # NOT changed, and measured as the wrong idea: letting a metal in the triple outrank
-    # the ring rule.  That looked compelling -- M-D-X is the best branch in the law, 86.8 %
-    # of its bins inside sigma, and the ring branch blocks it for every chelate donor --
-    # but it scores 135 bins better against 188 worse.  A donor inside a chelate ring obeys
+    # the ring rule.  That looked compelling -- M-D-X is the best branch in the law, and
+    # the ring branch blocks it for every chelate donor -- but it made more angles worse
+    # than better.  A donor inside a chelate ring obeys
     # RING CLOSURE, not the period rule; the ring branch is right there and merely has the
     # wrong closure (a polygon instead of the actual geometry).  That case cannot be fixed
     # in a signature table at all -- it needs the 1,3 distances, i.e. the seating.
@@ -331,16 +357,16 @@ def _signature_theta(mol, i: int, j: int, k: int) -> float:
     common = _ring_sizes_containing(mol, i, j, k)
     if common and common[0] <= _poly_max:
         n = common[0]
-        return math.radians(_RING_INTERNAL_MEAS.get(n, 180.0 - 360.0 / n))
+        return math.radians(_ring_internal_deg(n))
     j_rings = _ring_sizes_containing(mol, j)
     if j_rings and j_rings[0] <= _poly_max:
         # Exocyclic only if exactly one of i/k shares a ring with j.
         in_ring = sum(1 for x in (i, k) if _ring_sizes_containing(mol, j, x))
         if in_ring == 1:
             n = j_rings[0]
-            internal = _RING_INTERNAL_MEAS.get(n, 180.0 - 360.0 / n)
+            internal = _ring_internal_deg(n)
             return math.radians(
-                _RING_EXOCYCLIC_MEAS.get(n, (360.0 - internal) / 2.0))
+                _ring_exocyclic_deg(n, internal))
 
     # --- sigma partners, WITH the metal counted --------------------------------
     try:
@@ -361,11 +387,11 @@ def _signature_theta(mol, i: int, j: int, k: int) -> float:
     if n_sigma == 2 and (max_order >= 2.5 or n_double >= 2):
         return math.radians(_THETA_LINEAR)
 
-    theta_base = _THETA_BY_PERIOD.get(_period_of(z_j), 109.5)
+    theta_base = _period_theta(_period_of(z_j))
 
     # --- 4. M-D-X at a saturated donor ----------------------------------------
     if i_is_m != k_is_m:
-        return math.radians(109.5 - _PHI_MD_SLOPE * (theta_base - 109.5))
+        return math.radians(109.5 - _phi_md_slope() * (theta_base - 109.5))
 
     # --- 5. X-D-X at a saturated donor ----------------------------------------
     return math.radians(theta_base)
@@ -544,8 +570,8 @@ def angle_signature_keys(mol, i: int, j: int, k: int) -> List[str]:
     decides an angle -- and the two outer signatures are sorted so the key is symmetric.
 
     Measured need: rebuilding crystals with rule-based theta (period / pi / ring polygon)
-    costs 0.20 A RMSD, the largest single contribution of any target class, while measured
-    bond lengths cost 0.018 A.  The rule was a good first approximation; a measured p50
+    is the largest single contribution of any target class, far above measured
+    bond lengths.  The rule was a good first approximation; a measured p50
     per bin should beat it exactly as it did for lengths.
     """
     try:
@@ -700,7 +726,7 @@ def _flat_bottom(d: float, target: float, half_width: float) -> Tuple[float, flo
 
     A harmonic term ``(d - d_ideal)^2`` has ONE zero-force point, so it is a restraint to
     a single length, not a statement about what is realistic.  Measured consequence: at
-    107 real crystals U_bond pulls HARDER than on our own frames (ratio 0.79) -- our
+    real crystals U_bond pulls HARDER than on our own frames -- our
     builder places bonds at exactly d_ideal, so we sit in the term's minimum while reality,
     which is a distribution, does not.  A flat bottom makes every length inside the
     tolerated band cost nothing, so a crystal is stationary by construction and only
@@ -1081,7 +1107,7 @@ def _build_torsion_targets(coords: np.ndarray, mol
         weight = 1.0 / (math.sin(math.radians(thr)) ** 2)
         # sin^2 of the tolerance: with DELFIN_FFREE_TORSION_TOL the term costs NOTHING
         # while the dihedral stays inside thr and only bites beyond it.  Measured need:
-        # snapping conjugated torsions to exactly planar costs 0.20 A RMSD against real
+        # snapping conjugated torsions to exactly planar costs RMSD against real
         # crystals -- biaryls twist 20-40 deg, amides ~10 deg, and the eye's own law calls
         # thr(s) a TOLERANCE of 20-60 deg, not zero.  Forcing zero is over-planarising,
         # the same defect the eye already caught on ring puckers.
@@ -1336,7 +1362,7 @@ def U_topology(coords: np.ndarray, mol, k_topology: float = 10000.0,
         # gradient vanishes ONLY at the band centre, i.e. at 0.975 x our reference M-D:
         # it is not a barrier, it is a stiff restraint to one length.  Measured at 107
         # real crystals it outweighs every other term ~1000x and scores OUR OWN FRAMES
-        # FIVE TIMES BETTER THAN REALITY (RMS force 10786 vs 52833) -- because the builder
+        # SEVERAL TIMES BETTER THAN REALITY -- because the builder
         # places M-D at exactly that reference, so we start in its minimum and crystals,
         # being a distribution, do not.  Packing forces explain excess force at a crystal;
         # they cannot explain a ratio below 1.  Flat bottom over the WHOLE band with
@@ -1346,8 +1372,8 @@ def U_topology(coords: np.ndarray, mol, k_topology: float = 10000.0,
             # MEASURED M-D band first, for exactly the reason it worked on U_bond: with the
             # radii/table reference the flat bottom is centred on OUR number, which the
             # builder already hits, so we sit at zero cost and reality does not.  Feeding
-            # U_bond the measured centre took its crystal force from 195.85 to 16.03 and
-            # its discrimination from 0.79 to 14.49; this is the same change on the term
+            # U_bond the measured centre cut its force at crystal geometries by an order of
+            # magnitude and made it discriminate; this is the same change on the term
             # that carries ~1000x the weight.
             _mb = _measured_bond_band(mol, m_idx, d_idx)
             if _mb is not None:
@@ -2105,26 +2131,29 @@ if __name__ == "__main__":  # pragma: no cover
     # Signature-angle cases.  These are the bonding situations the RDKit
     # hybridization label gets wrong; each names an ATOM and its BONDS, never a
     # functional group.  Run unconditionally so a regression shows up without a flag.
+    # The expected values are those WITHOUT a DELFIN_FFREE_THETA_TABLE (regular polygon,
+    # tetrahedral period angle, zero slope); with a table supplied the ring and
+    # saturated-donor cases follow its values instead.
     # ------------------------------------------------------------------
-    print("\nSignature angle (_signature_theta) — measured targets:")
+    print("\nSignature angle (_signature_theta) — targets without a supplied table:")
     _cases = [
         # smiles, triple kind ("MDX" = metal-donor-X, "XDX" = X-donor-X), want deg, what
-        ("[Cu][N+]1=CC=CC=C1", "MDX", 120.75,
+        ("[Cu][N+]1=CC=CC=C1", "MDX", 120.0,
          "pyridine N->M: planar 6-ring donor, metal IS the exocyclic substituent"),
-        ("[Cu][N+]1=CC=CC=C1", "XDX", 118.0,
-         "same N, ring-internal C-N-C: the 6-ring's measured internal angle"),
+        ("[Cu][N+]1=CC=CC=C1", "XDX", 120.0,
+         "same N, ring-internal C-N-C: the 6-ring's internal angle"),
         ("C=C[N]([Cu])C=C", "MDX", 120.0,
          "amido R2N-M conjugated: trigonal planar, METAL IN THE PI PLANE (AFOMEO)"),
         ("C=C[N]([Cu])C=C", "XDX", 120.0,
          "same N, C-N-C: planar too -- one signature, every triple at that atom"),
         ("CN(C)[Cu]", "XDX", 109.5,
          "saturated amine C-N-C: period-2 rule, no pi neighbour"),
-        ("CS(C)[Cu]", "XDX", 104.0,
-         "period-3 donor, C-S-C closes to the period value (NOT 109.47)"),
-        ("CS(C)[Cu]", "MDX", 114.28,
-         "same S, M-S-C opens as the substituents close (measured slope 0.87)"),
-        ("C[Se](C)[Cu]", "XDX", 101.5,
-         "period-4 donor Se: the row keeps closing -- universal, not per-element"),
+        ("CS(C)[Cu]", "XDX", 109.5,
+         "period-3 donor C-S-C: the period value (tetrahedral without a table)"),
+        ("CS(C)[Cu]", "MDX", 109.5,
+         "same S, M-S-C: the period value through the slope (zero without a table)"),
+        ("C[Se](C)[Cu]", "XDX", 109.5,
+         "period-4 donor Se: the period value (tetrahedral without a table)"),
     ]
     for smi_c, _kind, expect, what in _cases:
         m = Chem.MolFromSmiles(smi_c)

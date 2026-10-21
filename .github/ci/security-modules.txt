@@ -1,0 +1,35 @@
+# The modules the nightly coverage summary reports on their own
+# (.github/workflows/ci.yml, job `coverage`): the permission gate, the
+# isolation layers, the egress proxy, the approval channel, the stores of
+# secrets and audit records, the dashboard server's login, and the code
+# that fetches and serves third-party files. One repository path per line;
+# tests/test_the_coverage_report_covers_the_whole_suite.py fails for a path
+# that does not exist, so a rename cannot drop a module from the report.
+delfin/agent/action_classifier.py
+delfin/agent/api_client.py
+delfin/agent/approval_answers.py
+delfin/agent/approval_code.py
+delfin/agent/approval_guard.py
+delfin/agent/audit_log.py
+delfin/agent/auto_guard.py
+delfin/agent/caged_test_runners.py
+delfin/agent/container_exec.py
+delfin/agent/credentials.py
+delfin/agent/egress_proxy.py
+delfin/agent/isolation_posture.py
+delfin/agent/landlock_exec.py
+delfin/agent/launch_guard.py
+delfin/agent/managed_policy.py
+delfin/agent/mcp_isolation.py
+delfin/agent/output_guard.py
+delfin/agent/permission_rules.py
+delfin/agent/process_guard.py
+delfin/agent/sandbox.py
+delfin/agent/seatbelt.py
+delfin/agent/security_events.py
+delfin/agent/socket_guard.py
+delfin/agent/untrusted.py
+delfin/agent/web_tools.py
+delfin/agent/workspace_trust.py
+delfin/cli_voila.py
+delfin/dashboard/ketcher.py

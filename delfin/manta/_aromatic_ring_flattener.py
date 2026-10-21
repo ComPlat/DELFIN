@@ -114,7 +114,7 @@ def _detect_aromatic_rings(
         if not bond_lens:
             continue
         # ONE SOURCE (see import above): switch OFF = old comparison
-        # ``mean >= 1.46``, switch ON = mean of d/(r_i+r_j) >= 0.939.
+        # ``mean >= 1.46``, switch ON = mean of d/(r_i+r_j) >= the supplied ratio threshold.
         if ring_rejected_by_length(syms, bond_edges, bond_lens):
             continue  # saturated ring — leave its (correct) pucker alone
         if _sp3_veto and _has_sp3(syms, nbrs, ring):

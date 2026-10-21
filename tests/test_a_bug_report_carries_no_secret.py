@@ -55,3 +55,30 @@ def test_the_report_carries_no_other_sessions_prompts():
     import inspect
     src = inspect.getsource(br)
     assert '"recent_outcomes": recent_outcomes()' not in src
+
+
+def test_a_binary_file_is_listed_not_copied(tmp_path):
+    """Text goes through the redactor; a binary file cannot, so it was
+    copied as it was (a keyring blob, an sqlite store, a pickled session,
+    a core file with a key in memory). It is not copied: the report names
+    it with its size and sha256, enough to ask the reporter for it or to
+    check that a copy received later is the same file."""
+    import hashlib
+    ws = _ws(tmp_path)
+    blob = b"\x00\x01SQLite format 3\x00" + b"api_key=sk-proj-" + b"B" * 40
+    (ws / "state.db").write_bytes(blob)
+    d = br.write_bug_report(chat_messages=[], settings={},
+                            archive_dir=tmp_path / "archive",
+                            session_id="sess1234",
+                            referenced_files=["state.db", "run.py"],
+                            workspace=ws)
+    meta = json.loads((d / "report.json").read_text(encoding="utf-8"))
+    rec = {r["original"]: r for r in meta["referenced_files"]}["state.db"]
+    assert rec["status"] == "excluded-binary"
+    assert rec["bundled"] == ""
+    assert rec["bytes"] == len(blob)
+    assert rec["sha256"] == hashlib.sha256(blob).hexdigest()
+    copied = [p for p in (d / "workspace").iterdir()]
+    assert all(p.read_bytes() != blob for p in copied)
+    assert not any(b"SQLite format 3" in p.read_bytes() for p in copied)
+    assert rec["sha256"] in (d / "report.md").read_text(encoding="utf-8")

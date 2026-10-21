@@ -86,7 +86,7 @@ class _Engine:
     def request_stop(self):
         pass
 
-    def steer(self, text):
+    def steer(self, text, on_delivered=None):
         if not self._supports:
             return False
         self.steered.append(text)

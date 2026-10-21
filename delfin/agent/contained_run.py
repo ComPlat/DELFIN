@@ -77,7 +77,7 @@ _POLL_S = 0.25
 
 
 def run(
-    args: Union[str, Sequence[str]],
+    args: Sequence[str],
     *,
     cwd: Optional[str] = None,
     env: Optional[dict] = None,
@@ -89,7 +89,14 @@ def run(
     budget: bool = False,
     budget_profile: str | None = None,
 ) -> subprocess.CompletedProcess:
-    """Like ``subprocess.run(..., capture_output=True)``, contained.
+    """Like ``subprocess.run(argv, capture_output=True)``, contained.
+
+    ``args`` is an argv list and is executed as given, never through a
+    shell: a command line goes to :func:`run_shell`. ``shell`` is kept
+    only to refuse ``True``, which with a list made ``/bin/sh -c`` run
+    ``args[0]`` alone and turned every later element into a positional
+    parameter of that script. ``/bin/bash -c <command>`` in ``args`` is
+    the agent's own, already gated shell command, run deliberately.
 
     Returns when the command's own process exits; whatever it left running
     in its group is ended then. Raises ``subprocess.TimeoutExpired`` (with
@@ -110,12 +117,71 @@ def run(
     single gate run once fanned out into ~75 nested login shells on a
     shared login node (2026-09-25), and only an outside watcher saw it.
     """
+    if shell:
+        raise TypeError("contained_run.run executes an argv list; a shell "
+                        "command line goes to contained_run.run_shell")
+    if isinstance(args, (str, bytes)):
+        raise TypeError("contained_run.run takes an argv list, not a "
+                        "command line; use contained_run.run_shell for one")
     proc = subprocess.Popen(
-        args, cwd=cwd, env=env, shell=shell,
+        list(args), cwd=cwd, env=env, shell=False,
         stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,
     )
+    return _supervise(proc, args, timeout=timeout, input=input, text=text,
+                      should_stop=should_stop, budget=budget,
+                      budget_profile=budget_profile)
+
+
+def run_shell(
+    command: str,
+    *,
+    cwd: Optional[str] = None,
+    env: Optional[dict] = None,
+    timeout: Optional[float] = None,
+    input: Optional[str] = None,
+    text: bool = True,
+    should_stop: Optional[Callable[[], bool]] = None,
+    budget: bool = False,
+    budget_profile: str | None = None,
+) -> subprocess.CompletedProcess:
+    """:func:`run` for one command line interpreted by ``/bin/sh``.
+
+    For text that is a shell command by construction: a hook command
+    the user configured, whose substituted values ``hooks._expand`` has
+    quoted. Containment, budget, stop and timeout are those of
+    :func:`run`. A list is refused: Popen would run its first element
+    as the script and pass the rest as positional parameters.
+    """
+    if not isinstance(command, str):
+        raise TypeError("contained_run.run_shell takes one command line "
+                        "(str); an argv list goes to contained_run.run")
+    proc = subprocess.Popen(
+        command, cwd=cwd, env=env, shell=True,
+        stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    return _supervise(proc, command, timeout=timeout, input=input, text=text,
+                      should_stop=should_stop, budget=budget,
+                      budget_profile=budget_profile)
+
+
+def _supervise(
+    proc: subprocess.Popen,
+    args: Union[str, Sequence[str]],
+    *,
+    timeout: Optional[float],
+    input: Optional[str],
+    text: bool,
+    should_stop: Optional[Callable[[], bool]],
+    budget: bool,
+    budget_profile: str | None,
+) -> subprocess.CompletedProcess:
+    """The wait of :func:`run` and :func:`run_shell` on a started ``proc``
+    that leads its own session: input, budget, stop, timeout, and the end
+    of its whole process group."""
     pgid = proc.pid
     guard = None
     if budget or budget_profile is not None:

@@ -323,8 +323,70 @@ def _outcome_of(completed, exit_code) -> str:
 
 
 
-def _extract_from_control_txt(text: str) -> dict[str, Any]:
-    """Extract searchable fields from a CONTROL.txt file."""
+# The CONTROL.txt keys read below, as delfin.define.TEMPLATE writes them
+# (pinned against TEMPLATE in
+# tests/test_the_calc_index_reads_the_control_template_keys.py).
+CONTROL_TEMPLATE_KEYS = (
+    "input_file", "NAME", "SMILES", "charge", "multiplicity_0",
+    "implicit_solvation_model", "solvent", "functional", "disp_corr",
+    "relativity", "main_basisset", "main_basisset_rel",
+    "metal_basisset", "metal_basisset_rel",
+)
+
+
+# A geometry file larger than this is not read: 16 MiB is ~300k atoms of
+# XYZ, far above any DFT input, and bounds the scan on a stray dump.
+_GEOMETRY_MAX_BYTES = 16 * 1024 * 1024
+
+# First line of a geometry: an XYZ atom count, or an atom line (element
+# token, then a number). DELFIN's input.txt has no atom count
+# (define.convert_xyz_to_input_txt drops it), so the count alone misses it.
+_GEOMETRY_FIRST_LINE = re.compile(r"^(\d+$|[A-Za-z]{1,2}\S*\s+[-+]?\.?\d)")
+
+
+def _metals_in(folder: Path | None, kv: dict) -> list[str] | None:
+    """The transition metals of the structure, as delfin.utils.
+    search_transition_metals reads them from a geometry (input.txt
+    coordinates or XYZ), or from the bracket atoms of a SMILES; None when
+    no structure is readable (no SMILES in CONTROL, no geometry file
+    inside *folder*, or one above _GEOMETRY_MAX_BYTES)."""
+    from delfin.utils import _TM_LIST, search_transition_metals
+    smiles = [kv.get("SMILES", "")]
+    if folder is not None:
+        geom = folder / (kv.get("input_file") or "input.txt")
+        try:
+            if geom.is_file() and geom.resolve().is_relative_to(folder.resolve()):
+                if geom.stat().st_size > _GEOMETRY_MAX_BYTES:
+                    return None
+                lines = [ln.strip() for ln in geom.read_text(
+                    encoding="utf-8", errors="replace").splitlines()
+                    if ln.strip() and not ln.strip().startswith("*")]
+                if lines and _GEOMETRY_FIRST_LINE.match(lines[0]):
+                    return search_transition_metals(str(geom))
+                if lines:
+                    smiles.append(lines[0])
+        except OSError:
+            pass
+    smiles = [s for s in smiles if s.strip()]
+    if not smiles:
+        return None
+    return sorted({m for s in smiles
+                   for m in re.findall(r"\[\d*([A-Z][a-z]?)", s) if m in _TM_LIST})
+
+
+def _extract_from_control_txt(text: str, folder: Path | None = None) -> dict[str, Any]:
+    """Extract searchable fields from a CONTROL.txt file.
+
+    Level of theory from the define.TEMPLATE keys: ``functional``,
+    ``disp_corr``, ``main_basisset``, ``metal_basisset``; for a structure
+    with a 4d/5d/4f/5f metal the ``*_rel`` basis values and the
+    ``relativity`` Hamiltonian, chosen as delfin.utils.set_main_basisset
+    and select_rel_and_aux choose them (``relativity`` alone does not
+    switch the basis). The atoms come from ``SMILES`` or the geometry file
+    ``input_file`` inside *folder*; with neither, the template basis stays
+    empty and the .inp header supplies it. The non-template ``basis_set``
+    key remains the fallback (the benchmark fixtures write it).
+    """
     rec: dict[str, Any] = {}
     kv: dict[str, str] = {}
     for line in text.splitlines():
@@ -342,7 +404,22 @@ def _extract_from_control_txt(text: str) -> dict[str, Any]:
     # CONTROL.txt "method" is the DELFIN workflow method (classic/OCCUPIER/...),
     # NOT the DFT functional.  We store it separately.
     rec["workflow_method"] = kv.get("method", "")
-    rec["basis_set"] = kv.get("basis_set", "")
+    rec["functional"] = kv.get("functional", "")
+    rec["dispersion"] = _clean_dispersion(kv.get("disp_corr")) or ""
+    rec["multiplicity"] = kv.get("multiplicity_0", "")
+    metals = _metals_in(folder, kv)
+    main, metal, relativity = "", "", ""
+    if metals is not None and ("main_basisset" in kv or "main_basisset_rel" in kv):
+        # DELFIN's own choice, defaults for an empty key included
+        # (def2-SVP / ZORA-def2-SVP); a CONTROL without the template keys
+        # keeps the basis_set fallback below.
+        from delfin.utils import select_rel_and_aux, set_main_basisset
+        main, metal = set_main_basisset(metals, kv)
+        metal = metal or ""
+        relativity = select_rel_and_aux(metals, kv)[0]
+    rec["basis_set"] = main or kv.get("basis_set", "")
+    rec["metal_basis"] = metal
+    rec["relativity"] = relativity
 
     modules = []
     if _is_yes(kv.get("IMAG")):
@@ -387,7 +464,28 @@ _KNOWN_FUNCTIONALS = {
     "b2plyp", "ri-b2plyp", "dlpno-ccsd(t)", "ccsd(t)",
     "r2scan", "r2scan-3c", "b97-3c",
     "revpbe", "blyp", "pw6b95",
+    "b97m-v", "b97m-d3bj", "b97m-d4", "wb97x-d", "wb97x-d4", "wb97m-d4",
+    "pbeh-3c", "hf-3c",
 }
+# Dispersion written into the functional token (B3LYP-D3BJ, PBE0-D4).
+_KNOWN_FUNCTIONALS |= {
+    f"{base}-{disp}"
+    for base in ("b3lyp", "pbe", "pbe0", "bp86", "blyp", "tpss", "tpssh",
+                 "revpbe", "r2scan", "b2plyp", "cam-b3lyp", "m06-2x", "pw6b95")
+    for disp in ("d3", "d3bj", "d3zero", "d4")
+}
+# Semiempirical tight-binding methods; ORCA's keywords and the xtb names.
+# A header naming one of these is DELFIN's pre-optimisation (XTB.inp,
+# XTB_GOAT.inp), not the run's DFT method: it fills a functional nothing
+# else states and replaces none.
+_XTB_METHODS = frozenset({"xtb", "xtb0", "xtb1", "xtb2", "gfn0-xtb",
+                          "gfn1-xtb", "gfn2-xtb", "gfn-ff", "gfnff"})
+_KNOWN_FUNCTIONALS |= _XTB_METHODS
+
+
+def _is_xtb(header: dict) -> bool:
+    """Whether an .inp header's method is a tight-binding one (_XTB_METHODS)."""
+    return str(header.get("inp_functional", "")).lower() in _XTB_METHODS
 
 _KNOWN_BASIS = {
     "def2-svp", "def2-tzvp", "def2-tzvpp", "def2-qzvp", "def2-qzvpp",
@@ -396,6 +494,7 @@ _KNOWN_BASIS = {
     "6-31g*", "6-31g**", "6-311g**", "6-31+g*", "6-311+g(2d,p)",
     "sto-3g", "def2-svp(d)",
     "sarc-dkh-tzvp", "sarc-zora-tzvp", "x2c-tzvp", "x2c-svp",
+    "zora-def2-svp", "zora-def2-tzvp", "zora-def2-tzvpp",
     "vdzp",
 }
 
@@ -429,6 +528,11 @@ def _extract_from_inp_header(text: str) -> dict[str, Any]:
     return rec
 
 
+# Record field -> .inp header field that, when present, overrides the
+# CONTROL.txt value (not a DELFIN_Data.json one).
+_INP_STATED = {"functional": "inp_functional", "basis_set": "inp_basis",
+               "dispersion": "inp_dispersion"}
+
 _KNOWN_DISPERSION = frozenset({"d2", "d3", "d3bj", "d3zero", "d4", "d3(bj)", "d3(zero)"})
 _NO_SOLVENT = frozenset({"", "none", "no", "gas", "gasphase", "gas phase", "vacuum", "vac", "false", "off"})
 
@@ -449,8 +553,9 @@ def method_parts_of_folder(d) -> dict:
     """functional, basis, dispersion and solvent from what the folder holds.
 
     The four a total energy is only comparable within. Read in the order
-    the index uses -- DELFIN_Data.json, CONTROL.txt, the .inp header --
-    and each field from the first source that has it. A solvent of
+    the index uses: DELFIN_Data.json first; functional, basis and
+    dispersion then from the .inp header (what ran) before CONTROL.txt;
+    the solvent from CONTROL.txt before the .inp. A solvent of
     "none" is the gas phase and comes back as None, so two gas-phase
     runs compare and a CPCM run compares with neither.
     """
@@ -460,6 +565,8 @@ def method_parts_of_folder(d) -> dict:
     parts: dict = {"functional": None, "basis": None, "solvent": None,
                    "dispersion": None, "solvation": None}
     seen_solvent = False
+    ctrl: dict = {}
+    xtb = None  # a tight-binding header's method: fills only, after CONTROL
     try:
         if (d / "DELFIN_Data.json").is_file():
             rec = _extract_from_delfin_data(_json.loads((d / "DELFIN_Data.json").read_text(encoding="utf-8")))
@@ -475,19 +582,20 @@ def method_parts_of_folder(d) -> dict:
     try:
         if (d / "CONTROL.txt").is_file():
             text = (d / "CONTROL.txt").read_text(encoding="utf-8")
-            rec = _extract_from_control_txt(text)
+            rec = _extract_from_control_txt(text, d)
             kv: dict = {}
             for line in text.splitlines():
                 line = line.strip()
                 if "=" in line and not line.startswith("#") and not line.startswith("-"):
                     k, _, v = line.partition("=")
                     kv[k.strip()] = v.strip()
-            parts["basis"] = parts["basis"] or rec.get("basis_set") or None
-            parts["functional"] = parts["functional"] or rec.get("functional") or None
+            ctrl = {"basis": rec.get("basis_set") or None,
+                    "functional": rec.get("functional") or None,
+                    "dispersion": (rec.get("dispersion")
+                                   or _clean_dispersion(kv.get("dispersion_correction")))}
             if not seen_solvent and "solvent" in kv:
                 parts["solvent"] = _clean_solvent(kv.get("solvent"))
                 seen_solvent = True
-            parts["dispersion"] = parts["dispersion"] or _clean_dispersion(kv.get("dispersion_correction"))
             parts["solvation"] = parts["solvation"] or (rec.get("solvation") or None)
     except Exception:
         pass
@@ -495,7 +603,10 @@ def method_parts_of_folder(d) -> dict:
         if not parts["functional"] or not parts["basis"] or not seen_solvent or not parts["dispersion"]:
             for inp in sorted(d.glob("*.inp")):
                 rec = _extract_from_inp_header(inp.read_text(encoding="utf-8", errors="replace"))
-                parts["functional"] = parts["functional"] or rec.get("inp_functional") or None
+                if _is_xtb(rec):
+                    xtb = xtb or rec["inp_functional"]
+                else:
+                    parts["functional"] = parts["functional"] or rec.get("inp_functional") or None
                 parts["basis"] = parts["basis"] or rec.get("inp_basis") or None
                 if not seen_solvent and ("inp_solvent" in rec or "inp_solvation" in rec):
                     parts["solvent"] = _clean_solvent(rec.get("inp_solvent"))
@@ -506,6 +617,9 @@ def method_parts_of_folder(d) -> dict:
                     break
     except Exception:
         pass
+    for key, value in ctrl.items():
+        parts[key] = parts[key] or value
+    parts["functional"] = parts["functional"] or xtb
     return parts
 
 
@@ -559,7 +673,7 @@ def _scan_calc_dir(
 
     Each immediate subdirectory that contains CONTROL.txt, DELFIN_Data.json,
     or .inp files is treated as a calculation.  Also recurses one level for
-    archive structures like ``archive/Fritz/calc_name/``.
+    archive structures like ``archive/<user>/calc_name/``.
 
     Directories still holding subdirectories at the depth limit are appended
     to *truncated* — a calculation deeper than the limit is silently outside
@@ -605,10 +719,12 @@ def _scan_calc_dir(
                     print(f"  [warn] {d.name}/DELFIN_Data.json: {exc}",
                           file=sys.stderr)
 
+        from_json = {k for k in _INP_STATED if rec.get(k)}
+
         if has_control and "index_source" not in rec:
             try:
                 text = (d / "CONTROL.txt").read_text(encoding="utf-8")
-                rec.update(_extract_from_control_txt(text))
+                rec.update(_extract_from_control_txt(text, d))
                 rec["index_source"] = "CONTROL.txt"
             except Exception:
                 pass
@@ -616,7 +732,7 @@ def _scan_calc_dir(
             # Supplement from CONTROL if DELFIN_Data didn't have metadata
             try:
                 text = (d / "CONTROL.txt").read_text(encoding="utf-8")
-                ctrl_rec = _extract_from_control_txt(text)
+                ctrl_rec = _extract_from_control_txt(text, d)
                 for k, v in ctrl_rec.items():
                     if k not in rec or not rec[k]:
                         rec[k] = v
@@ -624,19 +740,30 @@ def _scan_calc_dir(
                 pass
 
         if has_inp and not rec.get("orca_keywords"):
-            # Read first .inp for ORCA keywords
-            for inp_file in sorted(d.glob("*.inp"))[:1]:
+            # ORCA keywords from the first .inp whose header names a DFT
+            # functional (XTB.inp, XTB_GOAT.inp sort before initial.inp),
+            # else from the first .inp, as method_parts_of_folder reads them.
+            first = None
+            for inp_file in sorted(d.glob("*.inp")):
                 try:
-                    text = inp_file.read_text(encoding="utf-8")[:500]
-                    rec.update(_extract_from_inp_header(text))
+                    header = _extract_from_inp_header(
+                        inp_file.read_text(encoding="utf-8", errors="replace")[:500])
                 except Exception:
-                    pass
+                    continue
+                first = first or header
+                if header.get("inp_functional") and not _is_xtb(header):
+                    first = header
+                    break
+            rec.update(first or {})
 
-        # Fill functional/basis from .inp if still missing
-        if not rec.get("functional") and rec.get("inp_functional"):
-            rec["functional"] = rec["inp_functional"]
-        if not rec.get("basis_set") and rec.get("inp_basis"):
-            rec["basis_set"] = rec["inp_basis"]
+        # What the .inp header states wins over CONTROL.txt: DELFIN
+        # rewrites every .inp from CONTROL at run time, so they differ only
+        # when CONTROL was edited after the run, and the .inp is then what
+        # produced the outputs here. DELFIN_Data.json still wins.
+        for field, inp_key in _INP_STATED.items():
+            if rec.get(inp_key) and field not in from_json and not (
+                    _is_xtb(rec) and rec.get(field)):
+                rec[field] = rec[inp_key]
 
         # List .out files present
         out_files = sorted(p.name for p in d.glob("*.out")
@@ -802,6 +929,8 @@ def _build_search_text(rec: dict[str, Any]) -> str:
         rec.get("aux_basis", ""),
         rec.get("ri_method", ""),
         rec.get("dispersion", ""),
+        rec.get("metal_basis", ""),
+        rec.get("relativity", ""),
         rec.get("solvation", ""),
         rec.get("solvent", ""),
         rec.get("xtb_method", ""),
