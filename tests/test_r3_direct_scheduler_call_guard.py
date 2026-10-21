@@ -34,6 +34,10 @@ _COMMANDS = {"squeue", "sacct", "scontrol", "sbatch", "sinfo"}
 # Files that are allowed to run a scheduler command directly. Every detected
 # file MUST be in here; a file without a detected call must NOT be here.
 ALLOWED = {
+    # A standalone workflow script (standard library only, copied next to
+    # its run and executed on the cluster): three sbatch submissions, once
+    # per run, no polling -- nothing for the query throttle to protect.
+    "delfin/analysis_tools/pre_gxtb_sp_workflow/prescreen.py",
     "delfin/agent/job_monitor.py",
     "delfin/agent/pack/benchmark/accept/chem_opt_is_a_minimum.py",
     "delfin/cluster_utils.py",

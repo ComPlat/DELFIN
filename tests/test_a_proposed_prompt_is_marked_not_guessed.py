@@ -146,3 +146,17 @@ def test_the_marker_is_in_the_role_prompt():
     text = (pack / "solo_agent.md").read_text(encoding="utf-8")
     assert "PROMPT:" in text, (
         "the model cannot use a marker nobody told it about")
+
+
+def test_marked_shell_escape_drops_presentation_backticks():
+    assert proposed_prompt("PROMPT: `! git push origin topic`") == "! git push origin topic"
+
+
+def test_shell_unquoting_preserves_prose_and_command_substitution():
+    from delfin.dashboard.tab_agent import _unquote_shell_offer
+    for text in ("explain `! ls`", "`git status`", "! echo `pwd`"):
+        assert _unquote_shell_offer(text) == text
+
+
+def test_shell_offer_keeps_whitespace_inside_quoted_arguments():
+    assert proposed_prompt("PROMPT: `! echo 'two  spaces'`") == "! echo 'two  spaces'"
