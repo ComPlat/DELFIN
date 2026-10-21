@@ -102,6 +102,15 @@ def collect_gibbs_energies_from_dir(
 
 FLOAT_RE = r'([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)'
 
+#: How far after its keyword a value may stand.  ``.*?`` under DOTALL let
+#: every keyword occurrence scan to the end of the text, which made a
+#: reader quadratic in the number of keywords without a value after them
+#: (16000 'Gibbs free energy' lines: 181 s) and took any number further down
+#: the file as the energy.  ORCA prints the value on the keyword's own line,
+#: 20-60 characters after it; 200 keeps every output in the tests, including
+#: a value on the following line, and bounds the scan per keyword.
+_GAP = r'.{0,200}?'
+
 def _read_text(path: str) -> Optional[str]:
     """Read text content from file with error handling.
 
@@ -227,11 +236,22 @@ def find_gibbs_energy(filename: str) -> Optional[float]:
         Gibbs free energy in Hartree, or None if not found
     """
 
-    patterns = [
-        rf"Final\s+Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-        rf"Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-    ]
-    return _search_last_float(filename, patterns)
+    text = _read_text(filename)
+    if text is None:
+        return None
+    return gibbs_energy_in_text(text, filename)
+
+
+_GIBBS_PATTERNS = (
+    rf"Final\s+Gibbs\s+free\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+    rf"Gibbs\s+free\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+)
+
+
+def gibbs_energy_in_text(text: str, path: str = "") -> Optional[float]:
+    """:func:`find_gibbs_energy` on an output already read (*path* names it
+    in the log) -- for a caller whose read went through its own gate."""
+    return _last_float_in_text(text, _GIBBS_PATTERNS, path)
 
 def find_ZPE(filename: str) -> Optional[float]:
     """Extract zero-point energy from ORCA output file.
@@ -245,8 +265,8 @@ def find_ZPE(filename: str) -> Optional[float]:
         Zero-point energy in Hartree, or None if not found
     """
     patterns = [
-        rf"Zero[\s-]?point\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-        rf"Zero[\s-]?point\s+correction.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+        rf"Zero[\s-]?point\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+        rf"Zero[\s-]?point\s+correction{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
     ]
     return _search_last_float(filename, patterns)
 
@@ -268,13 +288,21 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     text = _read_text(filename)
     if text is None:
         return None
+    return electronic_energy_in_text(text, filename)
 
-    patterns = [
-        rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
-        rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
-        rf"Electronic\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-    ]
-    return _last_float_in_text(own_job_text(text, filename), patterns, filename)
+
+_ELECTRONIC_PATTERNS = (
+    rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
+    rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
+    rf"Electronic\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+)
+
+
+def electronic_energy_in_text(text: str, path: str = "") -> Optional[float]:
+    """:func:`find_electronic_energy` on an output already read; *path* is
+    the output's name, which picks its own job out of a ``$new_job`` file."""
+    return _last_float_in_text(own_job_text(text, path or "x"),
+                               _ELECTRONIC_PATTERNS, path)
 
 
 def _extract_excited_state_energy(filename: str, state_number: int = 1, use_soc: bool = False) -> Optional[float]:

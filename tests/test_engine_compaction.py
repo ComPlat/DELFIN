@@ -15,6 +15,28 @@ import pytest
 from delfin.agent.engine import AgentEngine
 
 
+@pytest.fixture(autouse=True)
+def _no_background_window_probe(monkeypatch, request):
+    """These tests set context_window_tokens by hand after building an
+    engine. The construction-time window probe runs on a daemon thread and,
+    landing after that assignment, replaced the test's window with the
+    resolved one (a compaction then never became due). Only the probe's
+    background start is switched off; a test that checks the probe keeps it.
+    """
+    if "probe_runs_in_background" in request.node.name:
+        return
+    from delfin.agent.engine import AgentEngine
+    original = AgentEngine._refresh_context_window
+
+    def _refresh(self, *, background=False):
+        if background:
+            return None
+        return original(self, background=background)
+
+    monkeypatch.setattr(AgentEngine, "_refresh_context_window", _refresh)
+
+
+
 @pytest.fixture
 def agent_tree(tmp_path):
     """Minimal pack tree so AgentEngine can boot.
@@ -154,7 +176,7 @@ def test_prior_summary_survives_second_compaction():
         eng.messages.append({"role": "user", "content": f"step {i}: " + "work " * 18})
         eng.messages.append({"role": "assistant", "content": f"did {i}: " + "done " * 18})
     eng.messages.append({"role": "user",
-                         "content": "DEEP_CONSTRAINT: bug reports group-readable to qmchem_shared only"})
+                         "content": "DEEP_CONSTRAINT: bug reports group-readable to the maintainer group only"})
     for i in range(5, 8):
         eng.messages.append({"role": "user", "content": f"step {i}: " + "work " * 18})
         eng.messages.append({"role": "assistant", "content": f"did {i}: " + "done " * 18})

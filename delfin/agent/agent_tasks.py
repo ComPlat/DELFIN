@@ -1,7 +1,7 @@
 """Persistent task list for the KIT-Toolbox coding agent.
 
 Implements TaskCreate/Update/List planning tools so a
-multi-day project (Jerome's Bayesian-opt integration, an iterative
+multi-day project (a user's Bayesian-opt integration, an iterative
 refactor across files) keeps a structured to-do that survives session
 restarts. State lives in ``<workspace>/.delfin/session_tasks.json`` by
 default — staying with the project rather than the user account so

@@ -23,6 +23,28 @@ from delfin.agent import mcp_client as M
 from delfin.agent import model_capabilities as mc
 
 
+@pytest.fixture(autouse=True)
+def _no_background_window_probe(monkeypatch, request):
+    """These tests set context_window_tokens by hand after building an
+    engine. The construction-time window probe runs on a daemon thread and,
+    landing after that assignment, replaced the test's window with the
+    resolved one (a compaction then never became due). Only the probe's
+    background start is switched off; a test that checks the probe keeps it.
+    """
+    if "probe_runs_in_background" in request.node.name:
+        return
+    from delfin.agent.engine import AgentEngine
+    original = AgentEngine._refresh_context_window
+
+    def _refresh(self, *, background=False):
+        if background:
+            return None
+        return original(self, background=background)
+
+    monkeypatch.setattr(AgentEngine, "_refresh_context_window", _refresh)
+
+
+
 @pytest.fixture
 def agent_tree(tmp_path):
     lite_dir = tmp_path / "pack_lite"

@@ -74,13 +74,20 @@ def test_a_real_run_in_the_cage_still_reports_its_result(tmp_path, monkeypatch, 
     assert out["summary"].get("passed") == 2, out
 
 
-def test_a_root_that_does_not_exist_yet_does_not_stop_the_sandbox(tmp_path):
+def test_a_root_that_does_not_exist_yet_does_not_stop_the_sandbox(
+        tmp_path, monkeypatch):
     """The repository's handover directory is a root from the start but is
     created on first write. A plain --bind of it made bwrap refuse to start,
-    so every shell command of the session failed (2026-10-09)."""
-    from pathlib import Path
-
-    from delfin.agent import api_client as ac
-    src = Path(ac.__file__).read_text()
-    i = src.index("for r in roots + [str(Path(p).resolve()) for p in extra_write]:")
-    assert '"--bind-try", r, r' in src[i:i + 200]
+    so every shell command of the session failed (2026-10-09). Measured on
+    the argv: every writable root, existing or not, is a --bind-try."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    missing = (tmp_path / "not-yet").resolve()
+    monkeypatch.setattr(A, "_bash_isolation_decision",
+                        lambda perms, mode=None: ("bwrap", "bwrap"))
+    argv = A._bash_isolation_argv("true", ws, _perms(ws),
+                                  extra_write=(missing,))
+    for root in (str(ws.resolve()), str(missing)):
+        hits = [argv[i - 1] for i, a in enumerate(argv)
+                if a == root and argv[i + 1] == root]
+        assert hits == ["--bind-try"], (root, hits)

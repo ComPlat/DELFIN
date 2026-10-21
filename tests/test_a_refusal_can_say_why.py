@@ -170,7 +170,7 @@ def test_the_cli_passes_the_reason(monkeypatch):
     seen = {}
     monkeypatch.setattr(fc, "answer", lambda *a, **k: False)
     monkeypatch.setattr(tc, "answer_waiting",
-                        lambda rid, d, by="", reason="": seen.update(
+                        lambda rid, d, by="", reason="", code=None: seen.update(
                             rid=rid, d=d, reason=reason) or True)
     args = cli.build_parser().parse_args(
         ["approvals", "deny", "1-a", "--reason", REASON])

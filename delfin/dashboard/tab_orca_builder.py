@@ -18,6 +18,7 @@ import uuid
 import numpy as np
 
 from . import structure_editor as _structure_editor
+from . import upload_limits as _upload_limits
 
 from IPython import get_ipython
 from IPython.display import clear_output, display, HTML
@@ -29,6 +30,7 @@ from delfin.user_settings import (
     load_orca_templates, save_orca_template, delete_orca_template,
 )
 
+from .helpers import js_string_literal
 from .molecule_viewer import (
     strip_xyz_header,
     DEFAULT_3DMOL_ZOOM,
@@ -1048,8 +1050,15 @@ def create_tab(ctx):
                 content = f['content'] if isinstance(f, dict) else f.content
                 files_to_save[name] = content
         for filename, content in files_to_save.items():
-            (job_dir / filename).write_bytes(content)
-            saved.append(filename)
+            # A browser-sent name is reduced to a file name, and the file is
+            # written owner-only and never through a link at that name.
+            try:
+                name = _upload_limits.upload_name(filename)
+                _upload_limits.write_replacing(job_dir / name, content)
+            except (_upload_limits.UploadRefused, OSError) as exc:
+                print(f'Warning: {filename!r} not saved: {exc}')
+                continue
+            saved.append(name)
         for line in orca_path_files.value.strip().splitlines():
             p = Path(line.strip())
             if not p.name:
@@ -1110,11 +1119,6 @@ def create_tab(ctx):
     _VIEWER_JS_TMPL = (
         '<div id="__DIV__" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
         '<script>\n'
-        'if(typeof $3Dmol==="undefined"){\n'
-        '  var _s=document.createElement("script");\n'
-        '  _s.src="https://3Dmol.org/build/3Dmol-min.js";\n'
-        '  document.head.appendChild(_s);\n'
-        '}\n'
         '(function(){\n'
         '  var tries=0;\n'
         '  function init(){\n'
@@ -1416,7 +1420,7 @@ def create_tab(ctx):
             .replace('__RESET__', reset_js)
             .replace('__RESETFLAG__', 'true' if reset_view else 'false')
             .replace('__MOUSE__', mouse_js)
-            .replace('__XYZ__', json.dumps(xyz_data))
+            .replace('__XYZ__', js_string_literal(xyz_data))
             .replace('__STYLE__', profile['style_js'])
             .replace('__VIEWER_CONFIG__', profile['viewer_config_js'])
             .replace('__LABELS__', label_js)
@@ -1440,11 +1444,6 @@ def create_tab(ctx):
         return (
             '<div id="' + div_id + '" style="width:100%;height:560px;position:relative;margin:0;padding:0;"></div>\n'
             '<script>\n'
-            'if(typeof $3Dmol==="undefined"){\n'
-            '  var _s=document.createElement("script");\n'
-            '  _s.src="https://3Dmol.org/build/3Dmol-min.js";\n'
-            '  document.head.appendChild(_s);\n'
-            '}\n'
             '(function(){\n'
             '  var tries=0;\n'
             '  function init(){\n'
@@ -1462,9 +1461,9 @@ def create_tab(ctx):
             '    if(prev&&window.__delfinDisposeViewer){window.__delfinDisposeViewer(prev);}\n'
             f'    var viewer=window.__delfinCreateViewer(el,{profile["viewer_config_js"]});\n'
             f'    {mouse_js}\n'
-            f'    viewer.addModel({json.dumps(target_xyz)},"xyz");\n'
+            f'    viewer.addModel({js_string_literal(target_xyz)},"xyz");\n'
             f'    viewer.setStyle({{model:0}},{target_style_js});\n'
-            f'    viewer.addModel({json.dumps(reference_xyz)},"xyz");\n'
+            f'    viewer.addModel({js_string_literal(reference_xyz)},"xyz");\n'
             f'    viewer.setStyle({{model:1}},{reference_style_js});\n'
             '    if(saved&&typeof viewer.setView==="function"){\n'
             '      try{viewer.setView(saved);}catch(_e){viewer.zoomTo();viewer.center();viewer.zoom(' + zoom + ');}\n'
@@ -1510,8 +1509,8 @@ def create_tab(ctx):
             target = (blocks[block_idx][0]
                       if 0 <= block_idx < len(blocks) else 'target')
             reference = blocks[0][0] if blocks else 'reference'
-            red = f'<b style="color:{_OVERLAY_REFERENCE_COLOUR};">{reference}</b>'
-            blue = f'<b style="color:{_OVERLAY_TARGET_COLOUR};">{target}</b>'
+            red = f'<b style="color:{_OVERLAY_REFERENCE_COLOUR};">{html.escape(str(reference))}</b>'
+            blue = f'<b style="color:{_OVERLAY_TARGET_COLOUR};">{html.escape(str(target))}</b>'
             labels = [
                 f'Overlay: {red} over {blue}',
                 f'Aligned reference: {red}, turned to lie over {blue}',
@@ -1532,7 +1531,7 @@ def create_tab(ctx):
             idx = state['xyz_view_idx']
             orca_mol_nav_label.value = (
                 f'<span style="font-size:12px;">'
-                f'{idx + 1}&thinsp;/&thinsp;{n}: {blocks[idx][0]}'
+                f'{idx + 1}&thinsp;/&thinsp;{n}: {html.escape(str(blocks[idx][0]))}'
                 f'</span>'
             )
             orca_mol_prev_btn.layout.display = ''
@@ -2349,8 +2348,8 @@ def create_tab(ctx):
             (room / filename).write_text(xyz_content)
         for name, content in (state.get('extra_files') or {}).items():
             try:
-                (room / name).write_bytes(
-                    content if isinstance(content, bytes) else bytes(content))
+                _upload_limits.write_replacing(
+                    room / _upload_limits.upload_name(name), bytes(content))
             except Exception:                           # noqa: BLE001
                 pass
 
@@ -2555,16 +2554,32 @@ def create_tab(ctx):
                 print(submit_result.stderr or submit_result.stdout)
 
     def update_uploaded_files_label(change=None):
+        refused = []
         if orca_file_upload.value:
             for f in orca_file_upload.value:
                 name = f['name'] if isinstance(f, dict) else f.name
                 content = f['content'] if isinstance(f, dict) else f.content
+                # Held in the kernel until SAVE/SUBMIT: bounded here, by the
+                # same limit the write applies.
+                try:
+                    name = _upload_limits.upload_name(name)
+                    _upload_limits.check_upload_size(len(content), name)
+                except _upload_limits.UploadRefused as exc:
+                    refused.append(str(exc))
+                    continue
                 state['extra_files'][name] = content
+        note = ''
+        if refused:
+            note = ('<br><span style="color:#d32f2f;">Not taken: '
+                    + html.escape(' '.join(refused)) + '</span>')
         if state['extra_files']:
             filenames = list(state['extra_files'].keys())
-            orca_uploaded_files_label.value = f"<b>Files to upload:</b> {', '.join(filenames)}"
+            orca_uploaded_files_label.value = (
+                f"<b>Files to upload:</b> {html.escape(', '.join(filenames))}"
+                + note)
         else:
-            orca_uploaded_files_label.value = '<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>'
+            orca_uploaded_files_label.value = (
+                '<i>Drag & drop files here (e.g. .gbw, .xyz, .hess)</i>' + note)
 
     # -- wiring ---------------------------------------------------------
     orca_save_btn.on_click(handle_orca_save)

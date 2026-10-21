@@ -14,6 +14,7 @@ with no ipywidgets dependency, so it is testable without a display.
 
 from __future__ import annotations
 
+import html as _html
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -163,8 +164,9 @@ class ApplicationFormPanel:
         if app is None:
             self._form_box.children = ()
             return
-        outs = ", ".join(o.name for o in app.outputs) or "—"
-        self._desc.value = f"<small>{app.description}<br>outputs: {outs}</small>"
+        outs_html = _html.escape(", ".join(o.name for o in app.outputs) or "—")
+        self._desc.value = (f"<small>{_html.escape(str(app.description))}"
+                            f"<br>outputs: {outs_html}</small>")
         self._fields = form_field_specs(app.inputs)
         self._field_widgets = {f["name"]: _make_field_widget(f) for f in self._fields}
         self._form_box.children = tuple(self._field_widgets.values())
@@ -186,7 +188,7 @@ class ApplicationFormPanel:
         if missing:
             self._status.value = (
                 f"<p style='color:#dc3545'>missing required input(s): "
-                f"{', '.join(missing)}</p>"
+                f"{_html.escape(', '.join(missing))}</p>"
             )
             return
 
@@ -207,19 +209,21 @@ class ApplicationFormPanel:
                 if rec is None:
                     self._status.value = "<p style='color:#dc3545'>run vanished.</p>"
                 elif rec.status == "success":
-                    outs = "".join(f"<li><b>{k}</b>: {v}</li>"
-                                   for k, v in (rec.outputs or {}).items())
+                    outs_html = "".join(
+                        f"<li><b>{_html.escape(str(k))}</b>: "
+                        f"{_html.escape(str(v))}</li>"
+                        for k, v in (rec.outputs or {}).items())
                     self._status.value = (
-                        f"<p style='color:#28a745'>Done (run {rec.id}).</p>"
-                        f"<ul>{outs or '<li>(no named outputs)</li>'}</ul>"
+                        f"<p style='color:#28a745'>Done (run {_html.escape(str(rec.id))}).</p>"
+                        f"<ul>{outs_html or '<li>(no named outputs)</li>'}</ul>"
                     )
                 else:
                     self._status.value = (
-                        f"<p style='color:#dc3545'>{rec.status}: "
-                        f"{rec.error or ''}</p>"
+                        f"<p style='color:#dc3545'>{_html.escape(str(rec.status))}: "
+                        f"{_html.escape(str(rec.error or ''))}</p>"
                     )
             except Exception as exc:  # noqa: BLE001
-                self._status.value = f"<p style='color:#dc3545'>run failed: {exc}</p>"
+                self._status.value = f"<p style='color:#dc3545'>run failed: {_html.escape(str(exc))}</p>"
             finally:
                 self._run_btn.disabled = False
 

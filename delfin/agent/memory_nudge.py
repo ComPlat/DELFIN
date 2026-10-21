@@ -92,6 +92,8 @@ def maybe_nudge(
     chars: int = 0,
     turn: Optional[int] = None,
     settings: Optional[dict[str, Any]] = None,
+    writes_left: Optional[int] = None,
+    plan_mode: bool = False,
 ) -> str:
     """Decide whether to nudge the agent to keep what it learned.
 
@@ -107,6 +109,14 @@ def maybe_nudge(
     setting. Failures reading settings degrade to the nudge being ON —
     a broken settings file must not silently disable behaviour the user
     never asked to switch off.
+
+    ``writes_left`` is how many memory writes the per-turn limit still
+    admits (None: no limit applies); ``plan_mode`` whether writes are
+    refused outright. In either refusing state the nudge stays silent and
+    the work keeps accumulating: a nudge that asks for a write the next
+    check refuses costs the round it provokes (field data: 9 of 60
+    remember/forget calls refused by the limit, 4 by plan mode, after 41
+    nudges of which 17 were answered by an immediate remember).
     """
     state.tool_calls_since_nudge += max(0, int(tool_calls or 0))
     state.chars_since_nudge += max(0, int(chars or 0))
@@ -116,6 +126,9 @@ def maybe_nudge(
         state.last_nudge_turn = turn
 
     if state.nudged_this_turn:
+        return ""
+
+    if plan_mode or (writes_left is not None and writes_left <= 0):
         return ""
 
     if not _enabled(settings):

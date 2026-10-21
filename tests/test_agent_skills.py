@@ -321,3 +321,8 @@ def test_the_packaged_playbooks_are_discoverable():
     were undiscoverable by the tool that offers them."""
     names = {s.name for s in skills.discover_skills()}
     assert "tune-control" in names, sorted(names)
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

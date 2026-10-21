@@ -99,7 +99,12 @@ class TestDelivery:
         assert "stop searching in the home directory" in shown
 
     def test_a_session_without_a_key_takes_nothing(self, inbox):
-        msgs.send("", "nowhere")
+        # Old pin: send("", ...) silently wrote a stem-less '.jsonl' and
+        # the empty-key session took none of it. The empty ADDRESS is now
+        # refused (tests/test_zz_kg1_empty_send.py control), so the intent
+        # is pinned on its real subject: mail exists, but a session whose
+        # presence key is empty takes nothing of it.
+        msgs.send("runde2-s1", "somewhere")
         a = _agent(name="", session_id="")
         assert a._operator_messages("") == ""
 

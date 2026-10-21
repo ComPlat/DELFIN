@@ -1,6 +1,6 @@
 """The top row drives git through workflows; the bug report keeps a copy.
 
-Requested by Tilmann (2026-10-09): Merge / Branch / Push / PR buttons at
+Requested in a user's feedback (2026-10-09): Merge / Branch / Push / PR buttons at
 the top, so a person can tell the agent what to do by pressing one. Each
 button sends a slash command, and the shipped skill of that name is the
 playbook the model follows -- the same text works typed in the terminal.

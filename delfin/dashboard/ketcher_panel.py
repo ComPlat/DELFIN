@@ -253,7 +253,7 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
 
     install_btn = widgets.Button(
         description='FETCH KETCHER', icon='download', button_style='warning',
-        tooltip='Fetch the newest published Ketcher (about 32 MB).',
+        tooltip='Fetch the pinned Ketcher build, SHA-256 checked (about 32 MB).',
         layout=widgets.Layout(width='180px'),
     )
 

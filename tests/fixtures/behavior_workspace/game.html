@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Field</title>
+</head>
+<body>
+<canvas id="view" width="400" height="400"></canvas>
+<script>
+'use strict';
+const BX = 4, BY = 16, BZ = 4;
+const cv = document.getElementById('view');
+const g = cv.getContext('2d');
+function draw() {
+  g.clearRect(0, 0, cv.width, cv.height);
+  const cell = Math.min(cv.width / BX, cv.height / BY);
+  g.strokeStyle = '#888';
+  for (let x = 0; x <= BX; x++) {
+    g.beginPath(); g.moveTo(x * cell, 0); g.lineTo(x * cell, BY * cell); g.stroke();
+  }
+}
+draw();
+</script>
+</body>
+</html>

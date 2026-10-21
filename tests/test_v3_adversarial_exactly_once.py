@@ -43,13 +43,13 @@ def workspace(tmp_path) -> Path:
 
 
 def _write_registry(ws: Path, records: dict) -> None:
-    reg = ws / ".delfin" / "bash_jobs.json"
+    reg = BJ._registry_path(ws)
     reg.parent.mkdir(parents=True, exist_ok=True)
     reg.write_text(json.dumps({"jobs": records}))
 
 
 def _read_record(ws: Path, job_id: str) -> dict:
-    data = json.loads((ws / ".delfin" / "bash_jobs.json").read_text())
+    data = json.loads(BJ._registry_path(ws).read_text())
     return data["jobs"][job_id]
 
 

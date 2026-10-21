@@ -63,9 +63,17 @@ class TestMerge:
         assert out and out.startswith("blocked:"), out
         assert "has not asked" in out
 
-    def test_a_maintainer_with_the_grant_may(self, gate):
+    def test_a_maintainer_with_the_grant_may(self, gate, monkeypatch):
+        """Pinned to a head whose checks are green (gh stubbed); the
+        unpinned form is refused (test_the_git_role_is_set_per_repository)."""
+        sha = "a" * 40
+        monkeypatch.setattr(A, "_gh_pr_view", lambda *a: {
+            "headRefOid": sha, "statusCheckRollup": [
+                {"name": "tests", "status": "COMPLETED",
+                 "conclusion": "SUCCESS"}]})
         run = gate(role="maintainer", mode="bypassPermissions", grant=True)
-        assert run("gh pr merge 12") is None
+        assert run(f"gh pr merge 12 --match-head-commit {sha}") is None
+        assert "--match-head-commit" in run("gh pr merge 12")
 
 
 class TestCreate:

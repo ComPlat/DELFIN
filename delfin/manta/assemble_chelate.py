@@ -283,9 +283,9 @@ def bite_close(u, v, theta_deg):
     them is ``theta_deg``, keeping their bisector fixed.
 
     WHY.  An ideal octahedron puts two cis vertices 90 deg apart, and a five-membered
-    chelate ring measured over real crystals bites at 70.6 deg (p10 69.4, p90 72.6 -- a
-    3 deg wide band, one of the best defined quantities we have).  So every five-ring
-    chelate is seated 19.4 deg too open, and chelates are most of our systems.  This is the
+    chelate ring measured over real crystals bites well below that, in a narrow band (one
+    of the best defined quantities we have).  So every five-ring
+    chelate is seated far too open, and chelates are most of our systems.  This is the
     quantified form of the earthquake root, "rigid polydentates forced onto ideal vertices",
     and of poly_cshm_vs_ccdc being the worst axis in all seven UFF-constraint A/Bs.
 
@@ -335,7 +335,7 @@ def _chelate_ring_size(lmol, d1, d2):
 def _measured_bite(metal, cn, ring_size, e1, e2):
     """Measured p50 bite angle (deg) for this chelate, or None.
 
-    Only for SMALL rings: shared rings of 11-14 come out 68-82 deg WIDE, because two
+    Only for SMALL rings: shared rings of 11-14 spread very WIDE, because two
     donors of a macrocycle can sit cis or trans while still sharing a ring.  Beyond
     _BITE_MAX_RING there is no single bite to aim at, and forcing one would be the
     bimodal-p50 mistake this table was designed to avoid.
@@ -373,7 +373,7 @@ def assemble_multichelate(metal: str, geometry: str, chelate_specs):
         u2 = ref[verts[1]] / np.linalg.norm(ref[verts[1]])
         # MEASURED BITE (DELFIN_FFREE_BITE_MEASURED, default OFF -> byte-identical).
         # The ideal polyhedron separates two cis vertices by 90 deg; a five-membered
-        # chelate measured over real crystals bites at 70.6 deg with a 3 deg wide band.
+        # chelate measured over real crystals bites well below that, in a narrow band.
         # Closing the pair onto the measured angle -- bisector fixed, so the ligand keeps
         # the very edge the isomer enumeration assigned it -- is a pure SETTING: no weight,
         # no gate, no minimiser.
@@ -389,11 +389,11 @@ def assemble_multichelate(metal: str, geometry: str, chelate_specs):
         #     cos(bite) = (r1^2 + r2^2 - d_DD^2) / (2 r1 r2)
         #
         # with d_DD the donor-donor distance the LIGAND ALREADY HAS, read straight off its
-        # own FF-free 3D construction.  Verified against 131769 crystals without building
-        # anything: inverting this on the measured D-M-D table returns chemically exact
-        # donor-donor distances (1.402 A for an eta2 C=C, 2.614 A for an en/bipy 5-ring)
-        # and reproduces the measured bite to 0.24 deg across 18 metals.  Nine of eleven
-        # ligand types sit at or below the precision of the M-D input itself.
+        # own FF-free 3D construction.  Verified against crystal structures without building
+        # anything: inverting this on a measured D-M-D table returns chemically sensible
+        # donor-donor distances and reproduces the measured bite to a fraction of a degree
+        # across many metals, for most ligand types at or below the precision of the M-D
+        # input itself.
         #
         # WHY THIS AND NOT THE TABLE.  Not precision -- the error in r enters either way.
         # COUPLING.  mdAB measured what happens when they are set independently: the M-D
@@ -419,8 +419,8 @@ def assemble_multichelate(metal: str, geometry: str, chelate_specs):
                     u1, u2 = bite_close(u1, u2, math.degrees(math.acos(_c)))
         elif os.environ.get("DELFIN_FFREE_BITE_MEASURED", "0") == "1":
             # MEASURED BITE.  The ideal polyhedron separates two cis vertices by 90 deg; a
-            # five-membered chelate measured over real crystals bites at 70.6 deg with a
-            # 3 deg wide band.  Closing the pair onto the measured angle -- bisector fixed,
+            # five-membered chelate measured over real crystals bites well below that, in a
+            # narrow band.  Closing the pair onto the measured angle -- bisector fixed,
             # so the ligand keeps the very edge the isomer enumeration assigned it -- is a
             # pure SETTING: no weight, no gate, no minimiser.
             _ring = _chelate_ring_size(lmol, d1, d2)

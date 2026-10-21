@@ -113,14 +113,62 @@ def _default_engine_factory(workspace: str, settings: dict | None = None):
     model = str(agent_cfg.get("model", "") or "")
     provider, api_key = _jm._resolve_provider_and_key(
         model, str(agent_cfg.get("provider", "") or ""))
-    return AgentEngine(
+    engine = AgentEngine(
         repo_dir=Path(workspace).expanduser().resolve(),
         backend=str(agent_cfg.get("backend", "api") or "api"),
         provider=provider,
         api_key=api_key,
         model=model,
         mode="solo",
+        permission_mode=scheduled_permission_mode(settings),
     )
+    # The start check `delfin-agent run` makes (isolation_posture): bypass
+    # on a host where no layer isolates a command is lowered to default,
+    # since nobody can confirm it here.
+    try:
+        from .isolation_posture import apply_at_start
+        apply_at_start(engine, can_ask=False)
+    except Exception:
+        pass
+    return engine
+
+
+_SCHEDULED_MODES = ("plan", "default", "acceptEdits", "bypassPermissions")
+
+
+def scheduled_permission_mode(settings: dict | None) -> str:
+    """The permission mode a scheduled run starts in.
+
+    Input: the user settings (``~/.delfin_settings.json``, which no agent
+    tool or command may write). Read: ``agent.scheduler.permission_mode``
+    and ``agent.scheduler.unattended``. Output:
+
+    * ``bypassPermissions`` only when ``permission_mode`` names it AND
+      ``unattended`` is the boolean ``true`` -- the scheduler's counterpart
+      of ``--permission-mode bypassPermissions --unattended``;
+    * ``plan`` / ``default`` / ``acceptEdits`` when named;
+    * ``default`` otherwise (missing, unknown, bypass without the opt-in).
+
+    The managed policy's ``disallowed_modes`` is applied last
+    (``managed_policy.coerce_mode``); a policy that cannot be consulted
+    leaves bypass at ``default``. The persisted ``kit.default_mode`` is not
+    read: a bypass written there once for an interactive task must not
+    become every scheduled run's mode (``api_client._persisted_start_mode``).
+    Never raises."""
+    try:
+        cfg = (((settings or {}).get("agent") or {}).get("scheduler") or {})
+        mode = str(cfg.get("permission_mode") or "").strip()
+        if mode not in _SCHEDULED_MODES:
+            mode = "default"
+        if mode == "bypassPermissions" and cfg.get("unattended") is not True:
+            mode = "default"
+    except Exception:
+        return "default"
+    try:
+        from . import managed_policy as _mp
+        return _mp.coerce_mode(mode)
+    except Exception:
+        return "default" if mode == "bypassPermissions" else mode
 
 
 def run_entry(
@@ -140,6 +188,22 @@ def run_entry(
     workspace = Path(str(entry.workspace)).expanduser()
     factory = engine_factory or _default_engine_factory
     engine = factory(str(workspace), settings)
+    # An entry's own budget is the run's USD ceiling (one scheduled run is
+    # one turn, so it is the per-turn cap below as well); set first, so the
+    # unattended default does not replace it.
+    try:
+        _entry_usd = float(getattr(entry, "budget_usd", 0.0) or 0.0)
+        if _entry_usd > 0:
+            engine.run_budget_usd = _entry_usd
+    except Exception:
+        pass
+    # Nobody watches a scheduled run: the ceilings the entry and the
+    # settings leave at 0 get their unattended defaults (run_limits).
+    try:
+        from .run_limits import apply_unattended
+        apply_unattended(engine)
+    except Exception:
+        pass
 
     # Optional per-entry budget → the engine's per-turn runaway cost cap.
     # AgentEngine reads ``self._cost_hard_cap()`` at turn start; an
@@ -293,8 +357,11 @@ def run_watchpost_entry(entry: ScheduleEntry) -> dict:
     if alerts:
         try:
             from .attention import emit_attention
+            # A security alert: "watchpost_alert" is no kind the inbox
+            # takes -- emit_attention refused it, and the refusal was
+            # swallowed below, so no watchpost alert ever arrived.
             emit_attention(
-                "watchpost_alert", title="watchpost: new alert",
+                "security_alert", title="watchpost: new alert",
                 detail="; ".join(f"{a.check}: {a.what}" for a in alerts)[:400],
                 workspace=str(entry.workspace or home))
         except Exception:

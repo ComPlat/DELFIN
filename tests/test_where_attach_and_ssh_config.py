@@ -113,8 +113,8 @@ def test_attach_with_no_tmux_in_the_note_refuses(tmp_path, capsys):
 # -- ssh-config ----------------------------------------------------------------
 
 def test_the_entry_names_the_node_the_session_and_the_port(tmp_path):
-    entry = where.ssh_config_entry(_note(tmp_path, host="uc3n991"))
-    assert "HostName uc3n991" in entry
+    entry = where.ssh_config_entry(_note(tmp_path, host="login02"))
+    assert "HostName login02" in entry
     assert "RemoteCommand tmux new -A -s delfin" in entry
     assert "LocalForward 8867 localhost:8867" in entry
     assert "RequestTTY" in entry
@@ -132,12 +132,12 @@ def test_write_appends_when_the_alias_is_new(tmp_path, monkeypatch, capsys):
     (home / ".ssh" / "config").write_text("Host other\n    HostName x\n")
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
-    rc = where.write_ssh_config(_note(tmp_path, host="uc3n991"))
+    rc = where.write_ssh_config(_note(tmp_path, host="login02"))
 
     assert rc == 0
     text = (home / ".ssh" / "config").read_text()
     assert "Host other" in text, "the existing config was clobbered"
-    assert "HostName uc3n991" in text
+    assert "HostName login02" in text
 
 
 def test_write_refuses_an_existing_entry_and_says_what_would_change(
@@ -148,13 +148,13 @@ def test_write_refuses_an_existing_entry_and_says_what_would_change(
         "Host delfin\n    HostName old-node\n")
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
-    rc = where.write_ssh_config(_note(tmp_path, host="uc3n991"))
+    rc = where.write_ssh_config(_note(tmp_path, host="login02"))
 
     assert rc == 1
     text = (home / ".ssh" / "config").read_text()
     assert "old-node" in text, "an existing entry was changed"
     out = capsys.readouterr().out
-    assert "old-node" in out and "uc3n991" in out, (
+    assert "old-node" in out and "login02" in out, (
         "the refusal does not show what would change")
 
 

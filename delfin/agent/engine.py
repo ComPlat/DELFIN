@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-import subprocess
 import threading
 import time as _time
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
+from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText, is_harness_row
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -374,6 +374,94 @@ def _capped_context_window(window: int) -> int:
     return capped_window(window)
 
 
+def _content_parts(content) -> list:
+    if isinstance(content, list):
+        return list(content)
+    text = "" if content is None else str(content)
+    return [{"type": "text", "text": text}] if text else []
+
+
+def _merge_user_rows(older: dict, newer: dict) -> dict:
+    """One user row holding ``older`` then ``newer``, both intact.
+
+    Input: two consecutive ``user`` rows of the same author, both typed
+    or both harness (``harness_rows.is_harness_row``); the caller keeps a
+    typed and a harness row apart. Output: a new plain dict; the inputs
+    are not modified. String contents are joined with a blank line (an
+    empty part adds nothing); when either content is a list of parts
+    (text + image), the result is the concatenated part list with a
+    string side wrapped as one text part. Keys of ``newer`` win over keys
+    of ``older``. Two harness rows give a row with ``HARNESS_KEY`` set,
+    whichever carrier marked them (``HarnessRow``, ``HarnessText``
+    content, ``origin == "event"``): the history keeps the key form,
+    which survives a JSON save.
+
+    Rejected: keeping the newer row (lost the typed steer that a
+    harness note followed in the same drain); keeping both separate in
+    the history (strict chat templates refuse two user turns in a row).
+    """
+    merged = {**older, **newer}
+    a, b = older.get("content"), newer.get("content")
+    if isinstance(a, list) or isinstance(b, list):
+        merged["content"] = _content_parts(a) + _content_parts(b)
+    else:
+        merged["content"] = "\n\n".join(
+            s for s in ("" if a is None else str(a),
+                        "" if b is None else str(b)) if s)
+    if is_harness_row(older):
+        merged[HARNESS_KEY] = True
+    return merged
+
+
+def _added_lines(old: str, new: str) -> str:
+    """The lines ``new`` adds to ``old`` when it only adds; "" otherwise.
+
+    A role prompt that gains a lazy module keeps every line it had, so
+    the module's lines are the whole update; a section that also lost or
+    rewrote a line is sent whole by the caller."""
+    import difflib
+    a, b = old.splitlines(), new.splitlines()
+    added: list[str] = []
+    for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(
+            None, a, b, autojunk=False).get_opcodes():
+        if tag == "insert":
+            added.extend(b[j1:j2])
+        elif tag != "equal":
+            return ""
+    return "\n".join(added).strip("\n")
+
+
+def _ends_announcing(answer: str) -> bool:
+    """Whether *answer* closes by announcing a step it does not show done.
+
+    Either detector of an announcement (turn_continuation for the engine's
+    follow-up, api_client for the tool loop's), or a last paragraph that
+    speaks in the first person and ends on a colon -- "Ich lese die Imports
+    (Z.1-50) und den _build-Bereich, um meine Edits anzusetzen:" escaped
+    both, the line reference read as a sentence end. Used only to TELL the
+    user nothing runs, never to start a round, so a wider net costs a line
+    at most."""
+    import re as _re
+    text = str(answer or "").rstrip().rstrip("*_`").rstrip()
+    if not text:
+        return False
+    try:
+        from delfin.agent.turn_continuation import announced_action
+        if announced_action(text):
+            return True
+    except Exception:
+        pass
+    try:
+        from delfin.agent.api_client import _announces_an_action
+        if _announces_an_action(text):
+            return True
+    except Exception:
+        pass
+    last = _re.split(r"\n\s*\n", text)[-1]
+    return (last.endswith(":") and bool(_re.search(
+        r"(?i)\b(?:ich|wir|i|we|let me|lass mich|lasst uns)\b", last)))
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -402,6 +490,23 @@ class AgentEngine:
     #: The address `delfin-agent pause <session>` uses (the -n name, set by
     #: the terminal). Empty: this engine cannot be paused by name.
     pause_key: str = ""
+    #: Context window state behind the ``context_window_tokens`` and
+    #: ``_active_capabilities`` properties. Class defaults, so an engine
+    #: built with ``object.__new__`` reads the 100k fallback and no
+    #: capabilities instead of raising. ``_window_generation`` counts every
+    #: write that is not a background probe's (direct assignment, the
+    #: synchronous refresh); a probe applies its result only if the count
+    #: did not move while it ran. ``_window_assigned``: the current state
+    #: was assigned directly, so no background probe replaces it -- only a
+    #: synchronous refresh (a model switch) does.
+    _window_tokens: int = 100_000
+    _window_caps: Any = None
+    _window_generation: int = 0
+    _window_assigned: bool = False
+    #: One lock for every engine: the check-and-apply of a probe and an
+    #: assignment from another thread must not interleave. Held for a few
+    #: attribute writes only, so sharing it costs nothing measurable.
+    _WINDOW_LOCK = threading.Lock()
 
 
     def __init__(
@@ -469,6 +574,11 @@ class AgentEngine:
             _ws = getattr(self.kit_permissions, "workspace", None)
             self.loader.workspace_root = Path(_ws) if _ws else Path(self.repo_dir)
             self.loader.is_delfin_workspace = self._is_delfin_workspace
+            # A getter, not the object: the permissions can be replaced
+            # after construction, and the prompt must follow the ones the
+            # tool list is filtered by.
+            self.loader.toolsets = lambda: getattr(
+                self.kit_permissions, "toolsets", None)
         except Exception:
             self.loader.workspace_root = None
         # Inject-once gating of stable prompt sections is only sound on the
@@ -481,6 +591,16 @@ class AgentEngine:
         # line, a bug report) names a mode nobody can select.
         self.mode = _migrate_mode(mode)
         self._agent_workspace_dir = agent_workspace_dir
+        # Name the configured agent workspace on the permissions, when it
+        # is one of their writable roots (never $HOME): under Bypass a
+        # write there is screened without the classifier model, like one
+        # in the session workspace. It grants nothing by itself.
+        if agent_workspace_dir:
+            try:
+                from .api_client import bind_agent_workspace
+                bind_agent_workspace(self.kit_permissions, agent_workspace_dir)
+            except Exception:
+                pass
         self.route: list[str] = []
         self.mode_description: str = ""
         self.current_role_index: int = 0
@@ -547,7 +667,11 @@ class AgentEngine:
         # re-build its own work. 0.95 keeps the full thread until the
         # context is almost full, trading a bit more API cost for far
         # fewer context-loss double-work cycles.
-        self.context_window_tokens: int = 100_000
+        #
+        # The window itself (``context_window_tokens``, a property): the
+        # 100k default, written to the store directly so it does not count
+        # as an assignment and the construction probe below may replace it.
+        self._window_tokens: int = 100_000
         # Last authoritative input-token count the provider reported for a full
         # request (from message_start). Used as the ground-truth floor of the
         # compaction estimate so system prompt + tool schemas are never missed.
@@ -571,7 +695,9 @@ class AgentEngine:
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
-        self._active_capabilities = None
+        # (``_active_capabilities`` is a property over this store.)
+        self._window_caps = None
+        self._window_assigned: bool = False
         # Background: the cold-cache KIT probe (~5s) must not block the first
         # turn. The window upgrades from the 100k default once the probe lands.
         self._refresh_context_window(background=True)
@@ -650,6 +776,24 @@ class AgentEngine:
         # around the nested call, reset in ``finally``; while it is set, no
         # re-arm and no second DSML check happens.
         self._dsml_guard_active: bool = False
+        # One stall guard per engine (per conversation), fed with how each
+        # turn ended; `agent.stall_guard.repeats` identical dead endings in a
+        # row (default 3) stop the session. StallGuard parses the setting
+        # itself, so a corrupt value falls back to the default instead of
+        # switching the guard off.
+        from delfin.agent.stall_guard import StallGuard
+        _sg_repeats = None
+        try:
+            from delfin import user_settings
+            _sg_repeats = (((user_settings.load_settings().get("agent", {}) or {})
+                            .get("stall_guard", {}) or {}).get("repeats"))
+        except Exception:
+            pass
+        self._stall_guard = StallGuard(
+            repeats=3 if _sg_repeats in (None, "") else _sg_repeats)
+        # Non-empty once the guard has stopped the session: the sentence that
+        # said so. _note_turn_continuation records no follow-up while it is set.
+        self._stall_guard_stopped: str = ""
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
@@ -770,14 +914,20 @@ class AgentEngine:
         Returns the tool result string. Raises RuntimeError when this
         backend carries no permissions object, because on those the shell
         tool is unavailable to the model too.
+
+        The output is kept up to ``api_client.PERSON_OUTPUT_CHARS`` per
+        stream instead of the model's ``max_output_chars``: every caller
+        (`!`, /git) shows it to a person, who has no context window to
+        protect. The gate decides exactly as before.
         """
         perms = self.kit_permissions
         if perms is None:
             raise RuntimeError(
                 "this backend has no permission gate, so it has no shell")
-        from .api_client import _doc_executor
-        return _doc_executor.execute("bash", {"command": str(command or "")},
-                                     perms)
+        from .api_client import _doc_executor, output_for_a_person
+        with output_for_a_person():
+            return _doc_executor.execute(
+                "bash", {"command": str(command or "")}, perms)
 
     # -- what a turn delegated ---------------------------------------------
 
@@ -954,18 +1104,35 @@ class AgentEngine:
             return False
         return bool(getattr(client, "EFFORT_PER_REQUEST", False))
 
-    def set_kit_permission_mode(self, mode: str) -> bool:
+    def set_kit_permission_mode(self, mode: str, *,
+                                announce: bool = True) -> bool:
         """Switch the KIT permission mode at runtime.
 
         Accepts 'plan', 'default', 'acceptEdits', 'bypassPermissions'.
         Returns True on success, False if no KIT permissions are bound or
         the mode is unknown.
+
+        ``announce=False`` sets the mode without the mid-turn note. For
+        the posture a launch resolves before any turn: the first turn's
+        prompt already states it, and the note told the model the USER
+        had switched it mid-turn, which also cost the first turn a
+        second model request (measured on the pty, one typed line, two
+        requests).
         """
         perms = self.kit_permissions
         if perms is None:
             return False
         if mode not in {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}:
             return False
+        # A mode the administrator's managed policy disallows is refused
+        # here, so no caller reports a switch that the permissions object
+        # (which coerces it) did not make.
+        try:
+            from . import managed_policy as _mp
+            if _mp.mode_refusal(mode):
+                return False
+        except Exception:
+            pass
         previous = str(getattr(perms, "mode", "") or "")
         perms.mode = mode
         # A turn already in flight is working to the rules it was told at
@@ -977,7 +1144,7 @@ class AgentEngine:
         # Delivered on the same rail as steering and finished jobs, so it
         # lands between tool rounds and again if the turn ends without
         # one.
-        if previous and previous != mode:
+        if announce and previous and previous != mode:
             self._tell_the_running_turn(
                     f"[permissions] The user switched this session from "
                     f"'{previous}' to '{mode}' just now, mid-turn. That is "
@@ -1089,22 +1256,26 @@ class AgentEngine:
         except Exception as exc:
             return False, f"persist failed: {exc}"
         # Apply to live perms so the next call benefits without restart.
+        # The running turn is told only about a rule that is new: a grant
+        # repeated for a rule already in force changed nothing, and saying
+        # it again (field report 20261020-140059, twice in one turn) told
+        # the agent that something had opened when nothing had.
         if kind == "allow":
             if pattern not in perms.bash_auto_allow_patterns:
                 perms.bash_auto_allow_patterns = (
                     perms.bash_auto_allow_patterns + (pattern,)
                 )
-            self._tell_the_running_turn(
-                f"[permissions] The user just allowed {pattern!r} for good, "
-                f"mid-turn. It no longer needs a confirmation. If you gave "
-                f"up on something because that command was refused, it is "
-                f"available now.")
+                self._tell_the_running_turn(
+                    f"[permissions] The user just allowed {pattern!r} for "
+                    f"good, mid-turn. It no longer needs a confirmation. If "
+                    f"you gave up on something because that command was "
+                    f"refused, it is available now.")
         else:
-            self._tell_the_running_turn(
-                f"[permissions] The user just denied {pattern!r} for good, "
-                f"mid-turn. Do not attempt it again; find another route or "
-                f"say what you cannot do without it.")
             if pattern not in perms.bash_deny_patterns:
+                self._tell_the_running_turn(
+                    f"[permissions] The user just denied {pattern!r} for "
+                    f"good, mid-turn. Do not attempt it again; find another "
+                    f"route or say what you cannot do without it.")
                 perms.bash_deny_patterns = (
                     perms.bash_deny_patterns + (pattern,)
                 )
@@ -1229,7 +1400,118 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The model second opinion: switch, model, scope, last failure.
+            "watcher": self._watcher_status(),
         }
+
+    def _watcher_status(self) -> str:
+        """``api_client.watcher_status_line`` for this session, or ""."""
+        try:
+            perms = self.kit_permissions
+            if perms is None:
+                return ""
+            from .api_client import watcher_status_line
+            return watcher_status_line(perms)
+        except Exception:
+            return ""
+
+    # -- the context window and the capabilities it came with ---------------
+    #
+    # Both are properties over one store so that every write which is not a
+    # background probe's can be counted: a probe started at construction (or
+    # by a turn whose capabilities are still a guess) finishes on a daemon
+    # thread, and used to assign whatever it resolved whenever it finished --
+    # the previous model's window after a quick switch, the resolved window
+    # over one a caller had just set. Rejected: a test-side switch that turns
+    # the background start off (it hides the race from the tests and leaves
+    # it in the product), and joining the probe before every write (a cold
+    # KIT probe takes ~5 s, and the model-switch path would wait for it).
+
+    @property
+    def context_window_tokens(self) -> int:
+        """The window compaction sizes its budgets from (tokens)."""
+        return self._window_tokens
+
+    @context_window_tokens.setter
+    def context_window_tokens(self, value: int) -> None:
+        self._write_window(tokens=value)
+
+    @context_window_tokens.deleter
+    def context_window_tokens(self) -> None:
+        # ``mock.patch`` restores an attribute it did not find in the
+        # instance by deleting it; back to the class default then.
+        with AgentEngine._WINDOW_LOCK:
+            self.__dict__.pop("_window_tokens", None)
+            self._window_generation = self._window_generation + 1
+
+    @property
+    def _active_capabilities(self):
+        """The ModelCapabilities the window was resolved with, or None."""
+        return self._window_caps
+
+    @_active_capabilities.setter
+    def _active_capabilities(self, value) -> None:
+        self._write_window(caps=value)
+
+    @_active_capabilities.deleter
+    def _active_capabilities(self) -> None:
+        with AgentEngine._WINDOW_LOCK:
+            self.__dict__.pop("_window_caps", None)
+            self._window_generation = self._window_generation + 1
+
+    _UNSET = object()
+
+    def _write_window(self, *, tokens=_UNSET, caps=_UNSET,
+                      assigned: bool = True) -> None:
+        """Every write of the window state that is not a background probe.
+
+        Bumps ``_window_generation``, which discards any probe in flight.
+        ``assigned=True`` (a direct attribute assignment) additionally keeps
+        later background probes from replacing the value; the synchronous
+        refresh writes with ``assigned=False``, so the per-turn re-probe may
+        still upgrade a guess it produced.
+        """
+        with AgentEngine._WINDOW_LOCK:
+            self._window_generation = self._window_generation + 1
+            self._window_assigned = assigned
+            if tokens is not AgentEngine._UNSET:
+                self._window_tokens = tokens
+            if caps is not AgentEngine._UNSET:
+                self._window_caps = caps
+
+    def _window_probe_key(self) -> tuple:
+        """What a probe's answer is about: the provider and the model the
+        client talks to now."""
+        return (str(getattr(self, "provider", "") or ""),
+                getattr(getattr(self, "client", None), "model", "") or "")
+
+    def _resolve_window(self, model) -> "tuple[int, Any] | None":
+        """(capped window, capabilities) for *model*, or None when the
+        resolver has no positive window. Network I/O on a cold cache."""
+        base_url = ""
+        inner = getattr(self.client, "client", None)
+        if inner is not None:
+            try:
+                base_url = str(getattr(inner, "base_url", "") or "")
+            except Exception:
+                base_url = ""
+        from .model_capabilities import resolve as _resolve_caps
+        # Pass the provider key so the KIT/vLLM /v1/models probe authenticates
+        # (else it 401s → static window). Doing it HERE — at construction /
+        # switch_model, off the per-turn hot path — also warms the (authed)
+        # capability cache, so the first stream_message turn reads it instantly
+        # instead of paying a ~5s synchronous probe before its first token.
+        api_key = getattr(self.client, "_api_key", "") or ""
+        caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
+        if not (caps and caps.context_window > 0):
+            return None
+        # Raised to what this backend has already accepted for the
+        # model: the table understates (131k against a 166k
+        # request that went through), and every protection fires
+        # at a share of this number. The cap still applies after.
+        from . import observed_window as _ow
+        return (_capped_context_window(
+            _ow.at_least(model, int(caps.context_window))), caps)
 
     def _refresh_context_window(self, *, background: bool = False) -> None:
         """Size the compaction budget to the ACTIVE model's real context.
@@ -1238,7 +1520,8 @@ class AgentEngine:
         KIT/vLLM ``/v1/models`` ``max_model_len``, else a curated static
         table) and stashes the capabilities for tool/vision decisions. Falls
         back to the legacy 100k on any error so behaviour never regresses.
-        Call after construction and after every ``client.switch_model(...)``.
+        Runs after construction and, through ``_on_model_switched``, after
+        every ``client.switch_model(...)``.
 
         With ``background=True`` the (one-time, ~5s on a cold KIT cache) live
         probe runs on a daemon thread, so engine construction never blocks the
@@ -1247,42 +1530,84 @@ class AgentEngine:
         cache makes every later construction instant regardless. A first turn
         that races the probe just uses the safe 100k window + name-regex tool/
         vision fallback for that one turn — strictly better than a 5s stall.
+
+        A background result is applied only when ``_window_generation`` did
+        not move while it ran, the client still talks to the model it was
+        resolved for, and the window was not assigned directly; otherwise
+        the window AND the capabilities are discarded (debug log). Not
+        started at all while a directly assigned window is in force.
         """
         if background:
-            import threading
+            if self._window_assigned:
+                return
+            started = (self._window_generation, self._window_probe_key())
             threading.Thread(
-                target=self._refresh_context_window,
+                target=self._probe_window_in_background, args=(started,),
                 daemon=True, name="caps-prewarm").start()
             return
+        # Newer than any probe in flight, whether or not it resolves.
+        with AgentEngine._WINDOW_LOCK:
+            self._window_generation = self._window_generation + 1
         try:
-            model = getattr(self.client, "model", "") or ""
-            base_url = ""
-            inner = getattr(self.client, "client", None)
-            if inner is not None:
-                try:
-                    base_url = str(getattr(inner, "base_url", "") or "")
-                except Exception:
-                    base_url = ""
-            from .model_capabilities import resolve as _resolve_caps
-            # Pass the provider key so the KIT/vLLM /v1/models probe authenticates
-            # (else it 401s → static window). Doing it HERE — at construction /
-            # switch_model, off the per-turn hot path — also warms the (authed)
-            # capability cache, so the first stream_message turn reads it instantly
-            # instead of paying a ~5s synchronous probe before its first token.
-            api_key = getattr(self.client, "_api_key", "") or ""
-            caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
-            if caps and caps.context_window > 0:
-                # Raised to what this backend has already accepted for the
-                # model: the table understates (131k against a 166k
-                # request that went through), and every protection fires
-                # at a share of this number. The cap still applies after.
-                from . import observed_window as _ow
-                self.context_window_tokens = _capped_context_window(
-                    _ow.at_least(model, int(caps.context_window)))
-                self._active_capabilities = caps
+            resolved = self._resolve_window(self._window_probe_key()[1])
+            if resolved is not None:
+                self._write_window(tokens=resolved[0], caps=resolved[1],
+                                   assigned=False)
         except Exception:
             # Keep whatever window is already set (100k default).
             pass
+
+    def _probe_window_in_background(self, started: tuple) -> None:
+        """The daemon thread's body: resolve for the model named in
+        *started* and apply only if nothing newer was written meanwhile."""
+        generation, key = started
+        try:
+            resolved = self._resolve_window(key[1])
+        except Exception:
+            return
+        if resolved is None:
+            return
+        with AgentEngine._WINDOW_LOCK:
+            reason = ""
+            if self._window_assigned:
+                reason = "the window was assigned directly"
+            elif self._window_generation != generation:
+                reason = "the window was written while the probe ran"
+            elif self._window_probe_key() != key:
+                reason = "the client switched model while the probe ran"
+            if not reason:
+                self._window_tokens, self._window_caps = resolved
+                return
+        import logging
+        logging.getLogger(__name__).debug(
+            "background window probe for %r discarded (%s): %s tokens",
+            key[1], reason, resolved[0])
+
+    def _capture_floor(self, input_tokens: int) -> None:
+        """Record an accepted request as the model's observed floor.
+
+        An accepted request is proof of the window, whether or not it stayed
+        within the static table window: the table understates by design, and a
+        request the backend actually counted is the ground truth for how big a
+        window *model* can hold (observed_window.py holds 131072 -> 166379 as
+        exactly that example). So the floor is learned unconditionally; what is
+        BOUNDED is not the learning but the raise itself -- observed_window.note
+        stores only the new maximum actually accepted and never extrapolates, so
+        no single request can push the floor past a number the backend really
+        held (measured 2026-10-08: one 190k request raised the floor
+        model-wide, but that 190k genuinely was accepted).
+        """
+        self._floor_captured_this_turn = True
+        self._last_input_tokens = int(input_tokens)
+        try:
+            from . import observed_window as _ow
+            _ow.note(getattr(self.client, "model", "") or "",
+                     int(input_tokens))
+        except Exception:
+            pass
+        # Fresh provider count -> trims applied since the previous floor are
+        # already reflected in it.
+        self._trimmed_chars_since_floor = 0
 
     def _compaction_status_line(self) -> str:
         """What the last compaction actually did, including when it did
@@ -1385,8 +1710,8 @@ class AgentEngine:
 
     def _build_open_tasks_block(self) -> str:
         """Per-turn reminder of OPEN tasks so the agent doesn't forget to mark
-        finished steps ``completed`` (Jerome 2026-06-13: "sometimes forgets to
-        actually check off done tasks"). Read-only; empty string when there are
+        finished steps ``completed`` (field report 2026-06-13: finished
+        tasks were left open). Read-only; empty string when there are
         no open tasks. Mirrors the session filter of the ``task_list`` tool so
         the agent sees exactly the list it manages. The rendered list is capped
         so a long backlog can't bloat the prompt (the remainder count still
@@ -1870,12 +2195,17 @@ class AgentEngine:
         try:
             perms = self.kit_permissions
             sid = str(getattr(perms, "task_session_id", "") or "") if perms else ""
+            # The folder the questions were parked with (api_client parks
+            # them with perms.workspace): an answer about one project is
+            # not for a session working in another. Unscoped, the next
+            # session anywhere took it -- told to "act on them now".
+            ws = str(getattr(perms, "workspace", "") or "") if perms else ""
         except Exception:
-            sid = ""
+            sid, ws = "", ""
         lines: list[str] = []
         try:
             from delfin.agent.attention import drain_resolved
-            for ev in drain_resolved(sid) or []:
+            for ev in drain_resolved(sid, workspace=ws or None) or []:
                 ans = ev.get("answer")
                 ans_txt = ", ".join(map(str, ans)) if isinstance(ans, list) \
                     else str(ans or "").strip()
@@ -1940,6 +2270,190 @@ class AgentEngine:
                 or name.endswith("_test.py") or name == "conftest.py"):
             return True
         return any(p in ("tests", "test") for p in parts)
+
+    # --- a skill improves while it is used ---------------------------------
+
+    _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+    def _stall_progress(self) -> None:
+        """Real progress: a tool ran, a turn ended on an answer, a person
+        sent a message, or a conversation began. The streak of identical
+        turn endings starts over and a stop is lifted."""
+        self._stall_guard_stopped = ""
+        guard = getattr(self, "_stall_guard", None)
+        if guard is not None:
+            guard.note_progress()
+
+    def note_person_message(self) -> None:
+        """A person sent the message that starts the next turn.
+
+        Lifts a stall stop and restarts the dead-turn count. The dashboard
+        reaches it through :meth:`note_typed`; the terminal calls it for
+        every line it read off the keyboard, without :meth:`note_typed`,
+        which also arms skill correction and is wired on the dashboard only.
+        """
+        self._stall_progress()
+
+    def note_typed(self, text: str) -> None:
+        """What a person just typed into this session's input box.
+
+        Called by the surface from the one place the text comes off the
+        keyboard, and read once by the turn it starts. The turn entry
+        point cannot tell by itself: it is also called with job notices,
+        canned replies, the harness's own follow-ups and other sessions'
+        messages, and none of those may count as the user correcting a
+        skill.
+        """
+        self._typed_now = text if isinstance(text, str) else ""
+        self.note_person_message()
+
+    def _forget_skill_turn(self) -> None:
+        """Drop the skills the last turn loaded and any correction of them.
+
+        Called where one conversation ends and another begins on this
+        engine (a new cycle, a restored session). The per-turn reset in
+        :meth:`_note_skill_correction` only runs at the next turn, which
+        is then already the other conversation's: without this, a
+        correction typed there was put on record against a skill only the
+        previous conversation had used.
+        """
+        self._typed_now = ""
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and hasattr(perms, "skill_corrections"):
+            perms.skill_corrections = {}
+
+    def _note_skill_use(self, tool_name: str, tool_input: Any) -> None:
+        """Remember which skills this turn loaded (the ``skill`` tool)."""
+        if str(tool_name or "").rsplit("__", 1)[-1] != "skill":
+            return
+        try:
+            args = (json.loads(tool_input) if isinstance(tool_input, str)
+                    else tool_input)
+            name = str((args or {}).get("name") or "")
+        except Exception:
+            return
+        # What _execute_skill accepts as the same name.
+        name = name.strip().lstrip("/").strip()
+        if name.lower().endswith(".md"):
+            name = name[:-3].strip()
+        if not self._SKILL_NAME_RE.fullmatch(name):
+            return
+        used = getattr(self, "_skills_used_turn", None)
+        if not isinstance(used, list):
+            used = self._skills_used_turn = []
+        if name not in used:
+            used.append(name)
+            del used[:-8]
+
+    def _note_skill_correction(self, user_message: str) -> None:
+        """Decide whether this turn opens with a correction of a skill.
+
+        Yes only when all of it holds: a person typed this turn's message
+        (:meth:`note_typed`) and it arrived as typed; it is their own
+        words under the narrow reading the action classifier uses; the
+        turn before loaded a skill that exists; and
+        ``skill_feedback.feedback`` reads the words as a correction.
+        Everything is forgotten first, so a turn nobody typed carries no
+        correction over from the one before.
+        """
+        typed = str(getattr(self, "_typed_now", "") or "").strip()
+        self._typed_now = ""
+        used = list(getattr(self, "_skills_used_turn", None) or [])
+        self._skills_used_turn = []
+        self._skill_correction = None
+        perms = self.kit_permissions
+        if perms is not None:
+            perms.skill_corrections = {}
+        if not typed or not used or typed not in (user_message or ""):
+            return
+        from .api_client import _classifier_user_texts
+        from .skill_feedback import feedback
+        from . import skills as _skills
+        if _classifier_user_texts(
+                [{"role": "user", "content": typed}]) != [typed]:
+            return
+        workspace = getattr(perms, "workspace", None) if perms else None
+        for name in reversed(used):
+            if _skills.get_skill(name, workspace) is None:
+                continue
+            verdict = feedback(name, typed, source="user")
+            if not verdict.get("corrects"):
+                continue
+            self._skill_correction = (name, verdict["user_words"])
+            if perms is not None:
+                # The patch tool reads this: the reason it puts on record
+                # is the user's words, not the model's account of them.
+                perms.skill_corrections = {name: verdict["user_words"]}
+            return
+
+    def _build_skill_correction_block(self) -> str:
+        """Tell the model, once, that its skill was just corrected."""
+        pair = getattr(self, "_skill_correction", None)
+        if not pair:
+            return ""
+        name = pair[0]
+        return (
+            "[Skill correction] The user's message reads as a correction, "
+            f"and the skill '{name}' was used in the turn before it. If "
+            "the correction is about what that skill says to do, propose "
+            f"the fix with skill_propose_patch(name='{name}', old, new, "
+            "evidence). That creates a proposal the user sees as a diff "
+            "and has to accept; the active skill stays as it is, and the "
+            "reason put on record is the user's own words. If the "
+            "correction is about something else, do what the user asked "
+            "and leave the skill alone.")
+
+    def _note_repo_errors(self, user_message: str) -> None:
+        """Set this turn's pointer to the git-errors skill, or clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_repo_errors_block`` returns for this turn. Empty unless
+        the message names one of the skill's error texts or asks about
+        checkouts, worktrees, the dashboard's branch or ports, or a pull
+        request (``repo_error_hints.user_hint``), and empty in a session
+        that reads no skills. Cost: about 60 tokens in the turn's tail,
+        only in a turn that matched.
+        """
+        self._repo_errors_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .repo_error_hints import user_hint
+            self._repo_errors_hint = user_hint(user_message or "")
+        except Exception:
+            self._repo_errors_hint = ""
+
+    def _build_repo_errors_block(self) -> str:
+        """This turn's pointer to the git-errors skill (may be empty)."""
+        return str(getattr(self, "_repo_errors_hint", "") or "")
+
+    def _note_experiment_task(self, user_message: str) -> None:
+        """Set this turn's pointer to the experiment-discipline skill, or
+        clear it.
+
+        Input: the message that opens the turn. Output: none; the text
+        ``_build_experiment_block`` returns for this turn. Empty unless the
+        message asks for, or acts on, a measured comparison
+        (``experiment_hints.user_hint``), and empty in a session that
+        reads no skills. Cost: 71 tokens in the turn's tail, only in a
+        turn that matched.
+        """
+        self._experiment_hint = ""
+        perms = getattr(self, "kit_permissions", None)
+        if perms is not None and getattr(perms, "skip_skill_discovery", False):
+            return
+        try:
+            from .experiment_hints import user_hint
+            self._experiment_hint = user_hint(user_message or "")
+        except Exception:
+            self._experiment_hint = ""
+
+    def _build_experiment_block(self) -> str:
+        """This turn's pointer to the experiment-discipline skill."""
+        return str(getattr(self, "_experiment_hint", "") or "")
 
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
@@ -2094,6 +2608,10 @@ class AgentEngine:
                       self._build_finished_subagents_block()))
         pairs.append(("budget", self._build_budget_block()))
         pairs.append(("answered", self._build_answered_attention_block()))
+        pairs.append(("skill_correction",
+                      self._build_skill_correction_block()))
+        pairs.append(("repo_errors", self._build_repo_errors_block()))
+        pairs.append(("experiment", self._build_experiment_block()))
         # One-time backend capability notice: reduced surfaces (no tool
         # loop, no verify enforcement, ...) are stated at session start
         # instead of failing silently mid-task. Best-effort — a missing
@@ -2326,7 +2844,9 @@ class AgentEngine:
         # tail as a private key so every later request repeats the bytes
         # the endpoint already holds.
         volatile = extra_blocks + ([dashboard_state] if dashboard_state else [])
-        if volatile and not self._attach_turn_tail("\n\n".join(volatile)):
+        _last = self.messages[-1] if self.messages else None
+        _has_turn = isinstance(_last, dict) and _last.get("role") == "user"
+        if volatile and not _has_turn:
             # A prompt built with no user message to carry the tail (a
             # build outside a turn): the system prompt is the only place.
             live_state = "\n\n".join(
@@ -2337,7 +2857,40 @@ class AgentEngine:
             _perm_mode = getattr(self.kit_permissions, "mode", "") or ""
         except Exception:
             _perm_mode = ""
+        if _has_turn:
+            # The same rule for the prompt's own per-turn sections: the
+            # system prompt keeps the bytes it had on the session's first
+            # turn, and what changed since rides in this turn's tail.
+            try:
+                sections = self.loader.compose_sections(
+                    **self._prompt_build_args(
+                        role, memory_context, task_text, live_state,
+                        _perm_mode))
+                prompt, updates = self._held_system_prompt(
+                    role, sections,
+                    can_update="_steer" not in _last)
+                # Updates first: the permission classifier cuts a user
+                # row at "[System prompt update", so nothing after it in
+                # the tail is ever read as the user's own words.
+                tail = updates + volatile
+                if tail:
+                    text = "\n\n".join(tail)
+                    self._attach_turn_tail(text)
+                    if updates:
+                        self._held_prompt["carriers"].append(text)
+                return prompt
+            except Exception:
+                if volatile:
+                    self._attach_turn_tail("\n\n".join(volatile))
         return self.loader.build_system_prompt(
+            **self._prompt_build_args(
+                role, memory_context, task_text, live_state, _perm_mode))
+
+    def _prompt_build_args(self, role: str, memory_context: str,
+                           task_text: str, live_state: str,
+                           permission_mode: str) -> dict:
+        """The keyword arguments of one system-prompt build."""
+        return dict(
             role_id=role,
             mode_id=self.mode,
             mode_description=self.mode_description,
@@ -2352,7 +2905,7 @@ class AgentEngine:
             model=getattr(self, "model", "") or "",
             # Plan is a permission profile now (not a mode): inject the plan
             # addendum whenever the active permission profile is "plan".
-            permission_mode=_perm_mode,
+            permission_mode=permission_mode,
             # One authority for the question. The critical anchor claims
             # to override any conflicting prior instruction, so a fixed
             # language there outranks the session pin — and a live GLM
@@ -2363,10 +2916,80 @@ class AgentEngine:
             session_id=str(getattr(self, "session_id", "") or ""),
         )
 
-    #: An unattributed request older than this is somebody else's. Long
-    #: enough for a user who stepped away from their own session, short
-    #: enough that yesterday's inbox is not read as today's work.
-    _APPROVAL_REMINDER_MAX_AGE_S = 3600.0
+    def _held_system_prompt(self, role: str, sections: list,
+                            *, can_update: bool) -> tuple[str, list[str]]:
+        """The system prompt to send, and the updates for this turn's tail.
+
+        Input: the role and the freshly composed prompt sections.
+        Output: ``(prompt, updates)``. The prompt is the one built on the
+        session's first turn (held per role); ``updates`` holds, for every
+        section whose text differs from what the model was last given, the
+        section again under a one-line label (a section that grew, such as
+        the role prompt gaining a module, sends only its added lines), and
+        a one-line withdrawal for a section that is gone.
+
+        Semantics: the endpoint caches the longest common prefix of system
+        prompt and messages, so any byte that moves in the system prompt
+        makes the whole history behind it cold. The archived sessions show
+        193 system-prompt changes, 107 followed by a cold request (about
+        140 minutes of GLM time to first token); the moving sections were
+        the briefing (outcome history), memory, past sessions, session
+        environment (git status, commits), the task-selected playbook,
+        decomposition and repo map, and the plan addendum.
+
+        The held prompt is rebuilt whole when the role changes, or when a
+        message that carried an update has lost its tail or left the
+        history (a trim or compaction rewrote the prefix, so the cache is
+        cold anyway and the updates would otherwise be lost).
+        ``can_update`` is False when the turn's message already has its
+        tail: nothing is recorded as delivered then, so the change goes
+        out on the next turn.
+
+        Rejected: rebuilding on a permission-mode switch (one cold start
+        per switch for a section the tail carries as well); sending every
+        per-turn section on every turn (the tails stay in the history, so
+        that would add the whole memory and environment blocks per turn).
+        """
+        cur: dict[str, str] = {}
+        for s in sections:
+            cur[s.name] = (cur[s.name] + "\n\n" + s.content
+                           if s.name in cur else s.content)
+        held = getattr(self, "_held_prompt", None)
+        # A carrier is the tail text that delivered an update; it is intact
+        # while some user message still holds that tail (compared by text:
+        # a history handed back as copies is the same history).
+        tails = {str(m.get("_steer")) for m in self.messages
+                 if isinstance(m, dict) and m.get("_steer")}
+        intact = held is not None and held.get("role") == role and all(
+            c in tails for c in held.get("carriers", ()))
+        if not intact:
+            prompt = "\n\n".join(s.content for s in sections)
+            self._held_prompt = {"role": role, "prompt": prompt,
+                                 "sections": dict(cur), "carriers": []}
+            return prompt, []
+        if not can_update:
+            return held["prompt"], []
+        given = held["sections"]
+        updates: list[str] = []
+        for name, text in cur.items():
+            old = given.get(name)
+            if old == text:
+                continue
+            added = _added_lines(old, text) if old else ""
+            if added:
+                updates.append(
+                    f"[System prompt update: section '{name}', added]\n{added}")
+            else:
+                updates.append(
+                    f"[System prompt update: section '{name}', replaces the "
+                    f"version above]\n{text}")
+        for name in given:
+            if name not in cur:
+                updates.append(
+                    f"[System prompt update: section '{name}' no longer "
+                    f"applies; disregard it]")
+        held["sections"] = dict(cur)
+        return held["prompt"], updates
 
     def _remind_of_waiting_approvals(self) -> None:
         """Tell the turn about an approval that expired while nobody was there.
@@ -2389,25 +3012,18 @@ class AgentEngine:
             pending = _att.list_pending("confirm_pending") or []
         except Exception:
             return
-        # Only what this turn could act on. An entry names its session
-        # since 2026-09-18; one that predates that says nothing, so it
-        # counts only while it is recent. Without this a fresh session
-        # that had said "Hallo" was told seven requests were waiting for
-        # it, all from sessions that had ended hours before, and spent a
-        # turn working that out.
-        import time as _time
+        # Only what this turn could act on: entries naming this session.
+        # An unattributed entry is not this session's -- it stays in the
+        # user's inbox (/attention) and is not shown to the model. Every
+        # broker stamps its session now; an entry without one comes from
+        # an older build or a request raised with no engine, and cannot be
+        # shown to be ours. Counting recent ones as ours (the earlier
+        # rule, 1 h) told one dashboard session another's expired
+        # edit_file dialog was waiting for it, and it acted on it.
         mine = str(getattr(self, "session_id", "") or "")
-        now = _time.time()
 
         def _is_mine(ev: dict) -> bool:
-            owner = str(ev.get("session_id") or "")
-            if owner:
-                return owner == mine
-            try:
-                age = now - float(ev.get("created_at") or 0.0)
-            except (TypeError, ValueError):
-                return False
-            return 0 <= age <= self._APPROVAL_REMINDER_MAX_AGE_S
+            return bool(mine) and str(ev.get("session_id") or "") == mine
 
         pending = [e for e in pending if _is_mine(e)]
         seen = self.__dict__.setdefault("_reminded_approvals", set())
@@ -2524,6 +3140,12 @@ class AgentEngine:
         # drop the very evidence ledgers the retry is judged against.
         _is_guard_feedback = str(
             user_message or "").lstrip().startswith("[Verify]")
+        # Who wrote this turn's row (harness_rows): a surface hands a turn
+        # it starts on its own as HarnessText; a correction turn is the
+        # engine's own.
+        _harness_turn = (isinstance(user_message, HarnessText)
+                         or _is_guard_feedback or self._claim_guard_active
+                         or self._dsml_guard_active)
         if (not self._claim_guard_active and not self._dsml_guard_active
                 and not _is_guard_feedback):
             self._claim_guard_corrected = False
@@ -2544,6 +3166,10 @@ class AgentEngine:
             # grounded, and flagging it would be the fastest way to teach
             # somebody to ignore the guard.
             self._last_user_message = user_message or ""
+            # Epoch seconds of this message: the task ticker reads a block
+            # set before it as stale. Not the session's save time, which
+            # every turn end advances past the block that turn set.
+            self.last_user_message_at = _time.time()
             # Per turn, like every other one-shot above it: the model is
             # told once that it is answering in the wrong language, and
             # the next turn gets to be told again if it happens again.
@@ -2551,9 +3177,38 @@ class AgentEngine:
             # Per SESSION, and only the first time: what language this
             # conversation runs in. See _note_session_language.
             self._note_session_language(user_message or "")
+            # A refused shell write the user names again in their own
+            # message is theirs to have: lifted here, at the start of the
+            # turn the message opens, from the text as typed (the turn's
+            # volatile tail is not part of it). A refusal recorded later in
+            # this turn is not lifted by the message that preceded it.
+            try:
+                from .api_client import _lift_shell_write_refusals
+                _lift_shell_write_refusals(
+                    self.kit_permissions, user_message or "")
+            except Exception:
+                pass
             # Per turn: the stray-write note is said once and the next
             # turn may say it again if the work drifts again.
             self._stray_write_noted = False
+            # Per turn: does what was just typed correct a skill the turn
+            # before it used? Judged here, where a real turn begins.
+            self._note_skill_correction(user_message or "")
+            # Per turn: does the message name a repository error or ask
+            # about DELFIN's checkouts? Then the turn points at git-errors.
+            self._note_repo_errors(user_message or "")
+            # Per turn: does the message measure, compare or land a
+            # change? Then the turn points at experiment-discipline.
+            self._note_experiment_task(user_message or "")
+            # Per turn: what this turn's changes do to the measure and to
+            # the object (edit_signals), judged against this message.
+            self._turn_request = str(user_message or "")
+            self._exists_first_turn = {"noted": False, "index": None}
+            try:
+                from . import edit_signals as _es
+                _es.reset_turn(self._edit_signal_key())
+            except Exception:
+                pass
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -2624,15 +3279,27 @@ class AgentEngine:
         try:
             _bfrac, _, _bdim = self._run_budget_detail()
             if _bfrac >= 1.1:
+                try:
+                    from .run_limits import resume_hint as _rh
+                    _resume = " To continue: " + _rh(
+                        self, _bdim or "agent.run_budget_usd") + "."
+                except Exception:
+                    _resume = ""
                 _msg = (
                     "🛑 Run budget exhausted (>110%). No further turns will "
                     "run in this session. State is saved — raise "
                     f"{_bdim or 'agent.run_budget_usd'} or start a new run "
-                    "to continue.")
+                    "to continue." + _resume)
                 self._emit_budget_attention(
                     "hard_stop",
                     "Run stopped: budget ceiling reached",
                     _msg)
+                # The setting that stopped it, as the turn's stop reason
+                # (run_budget_usd / run_budget_s / run_budget_turns). Set
+                # here because this return precedes the per-turn reset
+                # below, so the previous turn's reason would stand.
+                self.last_turn_stop_reason = (
+                    (_bdim or "agent.run_budget_usd").rsplit(".", 1)[-1])
                 _notice(_msg)
                 return _msg
         except Exception:
@@ -2689,7 +3356,10 @@ class AgentEngine:
         # has to be captured here.
         self._turn_is_bare_greeting = self.is_bare_greeting(user_message)
 
-        self.messages.append(self._build_user_message(user_message, images))
+        _row = self._build_user_message(user_message, images)
+        if _harness_turn:
+            _row[HARNESS_KEY] = True
+        self.messages.append(_row)
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
@@ -2706,8 +3376,16 @@ class AgentEngine:
         # One-shot: the flag clears so the next turn resumes a normal (now
         # tiny) history; it never assembles state from model text and never
         # needs a model call.
+        # What a fresh start below cuts, held for THIS turn only: a turn
+        # that ends without an answer gives it back (_take_back_turn_row).
+        self._fresh_cut_this_turn = None
         if getattr(self, "start_fresh", False):
             self.start_fresh = False
+            self._fresh_cut_this_turn = (
+                list(self.messages[:-1]),
+                getattr(self, "_last_input_tokens", 0),
+                getattr(self, "_trimmed_chars_since_floor", 0),
+            )
             # Archive everything BEFORE this turn's message so the cut
             # history stays recoverable (the session record is never
             # silently dropped) - the same append-only store compaction
@@ -2805,6 +3483,13 @@ class AgentEngine:
             perms = getattr(self.client, "kit_permissions", None)
             if perms is not None:
                 perms.should_stop = lambda: bool(self._stop_requested)
+                # And whether the user has typed something the running
+                # turn has not read yet: a long foreground run is ended
+                # for it (USER_INTERRUPT_AFTER_S), so a message sent during
+                # a 30-minute suite is answered now, not after it.
+                if callable(getattr(self.client, "_user_steer_waiting", None)):
+                    perms.user_message_waiting = (
+                        lambda: bool(self.client._user_steer_waiting()))
         except Exception:
             pass
 
@@ -2815,6 +3500,13 @@ class AgentEngine:
         try:
             self.client.turn_cost_cap = lambda: float(
                 getattr(self, "_cost_cap_value", 0.0) or 0.0)
+        except Exception:
+            pass
+        # ...and the RUN's wall-clock and spend ceilings, for the same
+        # reason one level up: the gate above runs before a turn, and a
+        # one-turn unattended run is a single turn of many rounds.
+        try:
+            self.client.run_ceiling = self._run_ceiling_hit
         except Exception:
             pass
 
@@ -2891,6 +3583,9 @@ class AgentEngine:
         # identically.
         _turn_error = ""
         _turn_tool_calls = 0
+        # len(chunks) at the latest tool call: the text after it is what
+        # the turn ENDS with, judged by the continuation detector.
+        _chunks_at_last_tool = 0
         # Tool NAMES this turn — evidence input for the claim-grounding
         # guard (a lookup tool used this turn grounds quantity claims).
         _turn_tool_names: list[str] = []
@@ -2911,6 +3606,11 @@ class AgentEngine:
         self._turn_start_cost = self.cost_usd
         self._cost_cap_hit = False
         self._cost_cap_value = self._cost_hard_cap()   # read once per turn
+        # The live phase both indicators read (activity.py). Begun here,
+        # immediately before the try whose finally ends it, so no exit
+        # path leaves a surface showing a turn that is over.
+        _activity = self.activity
+        _activity.begin_turn(str(getattr(self.client, "model", "") or ""))
         try:
             # Pass no_tools only to a client that accepts it. Adding a
             # parameter must not break a caller built against the older
@@ -2991,6 +3691,7 @@ class AgentEngine:
                 if event.type == "text_delta" and event.text:
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    _activity.output()
                     chunks.append(event.text)
                     if on_token:
                         on_token(event.text)
@@ -3050,6 +3751,7 @@ class AgentEngine:
                     # the question the health report actually asks.
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    _activity.output()
                     _thinking_chars += len(event.text)
                     if on_thinking:
                         on_thinking(event.text)
@@ -3084,7 +3786,14 @@ class AgentEngine:
                     # Trace: stash this call until its result arrives.
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
+                    # Before on_tool_use, so a surface that repaints from
+                    # that callback already reads the running call. On the
+                    # OpenAI-compatible path the call executes after this
+                    # event; on the CLI backend it already ran, and the
+                    # phase is then a moment long.
+                    _activity.tool_start(event.tool_name, event.tool_input)
                     _turn_tool_calls += 1
+                    _chunks_at_last_tool = len(chunks)
                     _turn_tool_names.append(event.tool_name)
                     # Evidence for the functional-claim guard: record WHAT
                     # was executed, not just that some tool ran. Held here
@@ -3103,6 +3812,7 @@ class AgentEngine:
                     # Order matters: the stray check reads the pin, so it
                     # must see the pin as it was BEFORE this write set it.
                     self._note_stray_write(event.tool_name, event.tool_input)
+                    self._note_skill_use(event.tool_name, event.tool_input)
                     self._maybe_pin_project_dir(
                         event.tool_name, event.tool_input)
                     if on_tool_use:
@@ -3114,11 +3824,18 @@ class AgentEngine:
                     self._honour_pause()
 
                 elif event.type == "tool_result":
+                    # A tool ran: the dead-turn count starts over.
+                    self._stall_progress()
+                    _activity.tool_end(event.tool_name)
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
                     # Commit the held command only if it actually ran.
                     self._commit_exec_command(
                         event.tool_name, event.tool_output or "")
+                    # A function this write added that exists elsewhere.
+                    self._note_new_definitions()
+                    # A write into the checkout a running job uses.
+                    self._note_running_job_writes()
                     # Evidence for the ambiguous-column guard: which columns
                     # a reader said it could not decide. Taken from the
                     # reader's own note rather than re-derived, so the two
@@ -3289,18 +4006,7 @@ class AgentEngine:
                         # context plus ephemeral tool results, so the code
                         # contradicted its own contract.
                         if event.input_tokens and not self._floor_captured_this_turn:
-                            self._floor_captured_this_turn = True
-                            self._last_input_tokens = int(event.input_tokens)
-                            # An accepted request is proof of the window.
-                            try:
-                                from . import observed_window as _ow
-                                _ow.note(getattr(self.client, "model", "") or "",
-                                         int(event.input_tokens))
-                            except Exception:
-                                pass
-                            # Fresh provider count -> trims applied since the
-                            # previous floor are already reflected in it.
-                            self._trimmed_chars_since_floor = 0
+                            self._capture_floor(int(event.input_tokens))
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.
@@ -3375,7 +4081,7 @@ class AgentEngine:
             # if the classification below fails.
             _turn_error = f"{type(_turn_exc).__name__}: {_turn_exc}"
             if not chunks:
-                self.messages.pop()
+                self._take_back_turn_row(require_user=False)
             else:
                 # Text streamed and then the turn died. Re-raising here
                 # skips the append below, so the history ended on a user
@@ -3440,6 +4146,11 @@ class AgentEngine:
             # that left it set would make the engine refuse work forever.
             with self._turn_gate:
                 self._turn_in_flight = False
+            try:
+                _activity.end_turn(error=_turn_error,
+                                   stopped=bool(self._stop_requested))
+            except Exception:
+                pass
             # Stop hooks — fire after the stream finishes (success or
             # exception). Failures are silenced so a misconfigured hook
             # never bubbles up.
@@ -3532,6 +4243,20 @@ class AgentEngine:
                 self.client, "_last_structured_verdict", None)
             self._last_test_evidence = list(
                 getattr(self.client, "_test_evidence", None) or [])
+            # What the turn verified (turn_verification): the account the
+            # test-claim caveat judges the answer against.
+            # A claim-correction turn runs nested inside the turn it
+            # corrects; its account continues that turn's instead of
+            # replacing it, or the edits being judged would vanish.
+            _tv_new = getattr(self.client, "_turn_verification", None)
+            _tv_old = getattr(self, "_last_turn_verification", None)
+            if (getattr(self, "_claim_guard_active", False)
+                    and hasattr(_tv_old, "extend")
+                    and hasattr(_tv_new, "events")
+                    and _tv_new is not _tv_old):
+                _tv_old.extend(_tv_new)
+            else:
+                self._last_turn_verification = _tv_new
             # Observed-files ledger (session-cumulative) for the code-claim
             # citation check — files the model actually read/grepped. The
             # availability flag distinguishes "backend keeps no ledger"
@@ -3639,6 +4364,7 @@ class AgentEngine:
             self._record_context_usage(full_response)
 
             # Progressive disclosure: NEED_CONTEXT detection (Feature 1)
+            _answer_streamed = full_response
             if self._progressive_disclosure:
                 full_response = self._handle_need_context(
                     full_response, user_message, memory_context,
@@ -3658,7 +4384,18 @@ class AgentEngine:
             # latch, re-armed only by clear_turn_continuation(), so this
             # block alone can never loop; the caller additionally caps how
             # many follow-ups run in a row.
-            self._note_turn_continuation(full_response)
+            #
+            # Judged on the text after the turn's last tool call: narration
+            # written before a call ("Let me first verify ...") is joined
+            # into full_response, and judging it drew 8 false notes in 10
+            # (report 20261012-082746). A NEED_CONTEXT re-answer replaces
+            # the text, so then the replacement is judged.
+            _judged_answer = ("".join(chunks[_chunks_at_last_tool:])
+                              if _turn_tool_calls
+                              and full_response is _answer_streamed
+                              else full_response)
+            self._note_turn_continuation(_judged_answer)
+            self._say_nothing_runs(_judged_answer, on_token)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has
@@ -3678,8 +4415,7 @@ class AgentEngine:
             #
             # Same repair as the empty-turn branch below, which already
             # names what it took out.
-            if self.messages and self.messages[-1].get("role") == "user":
-                self.messages.pop()
+            if self._take_back_turn_row():
                 full_response = (
                     "[stopped] Stopped before any answer text. Nothing was "
                     "added to the history and your message is not in it "
@@ -3707,8 +4443,7 @@ class AgentEngine:
             # message back out, and say what was observed instead of
             # returning "" for the caller to interpret as an answer.
             _empty_turn = True
-            if self.messages and self.messages[-1].get("role") == "user":
-                self.messages.pop()
+            self._take_back_turn_row()
             _empty_elapsed = _time.monotonic() - _turn_t0
             if _sanitised_to_nothing:
                 full_response = (
@@ -3812,20 +4547,89 @@ class AgentEngine:
             except Exception:
                 _dsml_name = None
             if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
-                full_response = self._enforce_dsml_rerun(
-                    full_response, _dsml_name, _dsml_args,
-                    memory_context=memory_context,
-                    on_token=on_token,
-                    on_tool_use=on_tool_use,
-                    on_tool_result=on_tool_result,
-                    on_permission_denied=on_permission_denied,
-                    on_thinking=on_thinking,
-                    thinking_budget=thinking_budget,
-                    max_tokens=max_tokens,
-                    on_notice=on_notice,
-                    on_tool_result_meta=on_tool_result_meta,
-                    on_wait=on_wait,
-                )
+                # Every leak feeds the stall guard. The fingerprint is the
+                # tool, not the wording: the sentences around a leaked call
+                # differ every time, the call that never runs is the same.
+                # On a stop the re-request is skipped; otherwise the turn is
+                # re-requested once as before.
+                _reran = None
+                _guard = getattr(self, "_stall_guard", None)
+                if (_guard is not None and _guard.advance(
+                        "dsml_leak", str(_dsml_name)) == "stop"):
+                    _stopped = (
+                        f"A call to {_dsml_name} was written as text "
+                        f"instead of being made, repeated in "
+                        f"{_guard.repeats} turns in a row; "
+                        "nothing ran. This session stops asking again "
+                        "and sends no further follow-up. To go on, "
+                        "send a message; the call must then be made as "
+                        "a real tool call.")
+                    self._stall_guard_stopped = _stopped
+                    _tail = "\n\n⚠ " + _stopped
+                    _reran = full_response.strip() + _tail
+                    # The note was recorded above, before this check: the
+                    # turn that stops must not leave a follow-up behind.
+                    self.clear_turn_continuation()
+                    # The screen shows what streamed; the next turn's model
+                    # reads the history. The sentence goes to both.
+                    try:
+                        if on_token:
+                            on_token(_tail)
+                    except Exception:
+                        pass
+                    _row = self.messages[-1] if self.messages else None
+                    if (isinstance(_row, dict)
+                            and _row.get("role") == "assistant"
+                            and _row.get("content") == full_response):
+                        _row["content"] = _reran
+                if _reran is None:
+                    _reran = self._enforce_dsml_rerun(
+                        full_response, _dsml_name, _dsml_args,
+                        memory_context=memory_context,
+                        on_token=on_token,
+                        on_tool_use=on_tool_use,
+                        on_tool_result=on_tool_result,
+                        on_permission_denied=on_permission_denied,
+                        on_thinking=on_thinking,
+                        thinking_budget=thinking_budget,
+                        max_tokens=max_tokens,
+                        on_notice=on_notice,
+                        on_tool_result_meta=on_tool_result_meta,
+                        on_wait=on_wait,
+                    )
+                    # A turn is dead only when the re-requested answer was
+                    # the call written as text AGAIN. An answer that came
+                    # back as a real one is how the turn ended, and it ends
+                    # the streak.
+                    try:
+                        from delfin.agent.text_sanitize import (
+                            leaked_tool_call as _still_leaked)
+                        if not _still_leaked(_reran or ""):
+                            self._stall_progress()
+                    except Exception:
+                        pass
+                full_response = _reran
+            elif not _dsml_name:
+                # The turn ended on a real answer: whatever repeated before
+                # it is over.
+                #
+                # W2: EXCEPT one that only ANNOUNCES open work it did not do
+                # (a should_continue "announced-but-not-done" ending). That is
+                # not progress, so it must not reset the W2 streak: otherwise
+                # _note_turn_continuation (which advances it at :4358 for the
+                # open-work-no-question dead turn) runs first and the reset
+                # here would wipe it every turn, so the streak could never
+                # pass 1. The dsml_leak branch above is untouched.
+                _announced = False
+                try:
+                    from delfin.agent.turn_continuation import (
+                        should_continue as _sc)
+                    _announced, _note = _sc(
+                        full_response, self._open_task_count())
+                except Exception:
+                    _announced = False
+                if not _announced:
+                    self._stall_progress()
 
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
@@ -4029,6 +4833,160 @@ class AgentEngine:
     _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
                                re.IGNORECASE)
 
+    def _edit_signal_key(self) -> str:
+        """The key edit_signals files this session's changes under: the
+        permissions' task session id, which the write path also reads."""
+        perms = getattr(self, "kit_permissions", None)
+        return str(getattr(perms, "task_session_id", "") or "")
+
+    def _note_check_run(self, tool_name: str, tool_input: Any,
+                        tool_output: str) -> None:
+        """Hand a test run, red or green, to edit_signals. A run_tests
+        result is JSON; its summary is rendered as runner text. Never
+        raises."""
+        try:
+            from . import edit_signals as _es
+            from . import verify_guard as _vg
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            out = tool_output or ""
+            if isinstance(tool_input, str) and tool_input.lstrip().startswith("{"):
+                try:
+                    tool_input = json.loads(tool_input)
+                except ValueError:
+                    pass
+            if name == "run_tests":
+                data = json.loads(out) if out.lstrip().startswith("{") else {}
+                summary = (data or {}).get("summary") or {}
+                out = (f"{int(summary.get('passed', 0) or 0)} passed, "
+                       f"{int(summary.get('failed', 0) or 0)} failed")
+                cmd = "pytest " + str((tool_input or {}).get("target", "")
+                                      if isinstance(tool_input, dict) else "")
+            else:
+                cmd = _vg.extract_exec_command(tool_name, tool_input)
+                cmd = cmd.split(" ", 1)[1] if " " in cmd else ""
+            if cmd:
+                _es.note_command(self._edit_signal_key(), cmd, out)
+                # A CI run read through gh: a failing check is a red check
+                # the turn may set out to make pass.
+                if (self._GH_CHECKS_RE.search(cmd)
+                        and self._GH_FAILED_RE.search(out)):
+                    _es.note_red_check(self._edit_signal_key())
+        except Exception:
+            pass
+
+    _GH_CHECKS_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:view|watch|list))\b")
+    _GH_FAILED_RE = re.compile(r"\bfail(?:ure|ed|ing)?\b|\bX\s", re.IGNORECASE)
+
+    def _note_running_job_writes(self) -> None:
+        """Hand the write gate's running-job notes to the run-note rail
+        (bash_jobs.take_in_use_notes; one per job). Never raises."""
+        try:
+            from . import bash_jobs as _bj
+            for text in _bj.take_in_use_notes():
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _note_new_definitions(self) -> None:
+        """Say it mid-turn when a write defined a function whose name, or
+        nearly its name, is already defined in another file
+        (exists_first). Once per turn, at most five names judged, test
+        files skipped; the definition index is built once per turn.
+        Advises; a second definition can be deliberate. Never raises."""
+        try:
+            from . import edit_signals as _es
+            defs = _es.take_new_defs(self._edit_signal_key())
+            state = getattr(self, "_exists_first_turn", None)
+            if state is None:
+                state = self._exists_first_turn = {"noted": False,
+                                                   "index": None}
+            if not defs or state.get("noted"):
+                return
+            defs = [(p, n) for p, n in defs if _es.role(p) != "test"][:5]
+            if not defs:
+                return
+            from . import exists_first as _xf
+            if not _xf.enabled():
+                return
+            perms = getattr(self, "kit_permissions", None)
+            ws = str(getattr(perms, "workspace", "") or "")
+            if not ws:
+                return
+            if state.get("index") is None:
+                state["index"] = _xf.build_index(ws)
+            text = _xf.note(defs, state["index"], workspace=ws)
+            if text:
+                state["noted"] = True
+                self.client.push_run_note(text)
+        except Exception:
+            pass
+
+    def _append_comparison_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Mark a comparative figure ("12 % faster", "from 6/10 to 9/10")
+        that no paired comparison of this session backs
+        (comparison_claims). Caveat, not correction: a retry could only
+        restate the figure. Never raises."""
+        try:
+            from . import comparison_claims as _cc
+            claims = _cc.scan(source if source is not None else text,
+                              getattr(self, "_exec_commands_session", None))
+            caveat = _cc.caveat(claims)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
+    def _append_edit_signal_caveat(
+        self, text: str, on_token: Callable[[str], None] | None = None,
+        *, source: str | None = None,
+    ) -> str:
+        """Name, in the answer, a check changed to make it pass and a
+        failure silenced rather than removed (edit_signals.turn_caveat).
+
+        Caveat, not correction: the change may be right, and only the
+        model can say why the old check was wrong or why the workaround
+        is the right fix there; a retry would rewrite the sentence, not
+        the change. It enters the transcript, so the next turn sees it."""
+        try:
+            from . import edit_signals as _es
+            request = str(getattr(self, "_turn_request", "") or "")
+            caveat = _es.turn_caveat(
+                self._edit_signal_key(), request,
+                source if source is not None else text)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
     def _commit_exec_command(self, tool_name: str, tool_output: str) -> None:
         """Record a held command, but only if its result shows it ran.
 
@@ -4056,6 +5014,8 @@ class AgentEngine:
                     break
             else:
                 return
+            # Red runs too: what the turn set out to make pass.
+            self._note_check_run(name, tool_input, tool_output)
             out = (tool_output or "").strip()
             if out.lstrip().startswith('{"error"'):
                 return
@@ -4088,12 +5048,83 @@ class AgentEngine:
             cmd = _vg.extract_exec_command(tool_name, tool_input)
             if not cmd:
                 return
+            self._note_repeated_sequence(tool_name, tool_input)
             ledger = self._exec_commands_session
             if cmd in ledger:
                 return
             ledger.append(cmd)
             if len(ledger) > 200:
                 del ledger[:len(ledger) - 200]
+        except Exception:
+            pass
+
+    #: Segments that only look around; a sequence of them is no check.
+    _LOOK_SEGMENT_RE = re.compile(
+        r"^\s*(?:cd|ls|pwd|echo|cat|head|tail|wc|true|printf|clear|sleep|"
+        r"sed\s+-n|grep|rg|find|git\s+(?:status|log|diff|show|branch|"
+        r"rev-parse))\b")
+
+    @classmethod
+    def repeated_sequence_key(cls, command: str) -> str:
+        """The key a multi-step command is counted under, or "".
+
+        Its segments (split at ``&&``, ``||``, ``;``, ``|`` outside
+        quotes) without the ones that only look around; fewer than two
+        left is no sequence. Quoted strings, hex ids and numbers are
+        normalised away: the repetitions that matter are the same check
+        with another number, commit or inline script, not the same text."""
+        try:
+            from .api_client import _split_shell_segments
+            segs = [" ".join(x.split()) for x in _split_shell_segments(command)
+                    if not cls._LOOK_SEGMENT_RE.match(x)]
+        except Exception:
+            return ""
+        if len(segs) < 2:
+            return ""
+        key = " && ".join(segs)
+        key = re.sub(r"'[^']*'|\"[^\"]*\"", "Q", key)
+        key = re.sub(r"\b[0-9a-f]{7,40}\b", "H", key)
+        return re.sub(r"\d+", "N", key)
+
+    def _note_repeated_sequence(self, tool_name: str, tool_input: Any) -> None:
+        """The third run of one multi-step shell command in a session gets
+        one run note: a check repeated by hand belongs in a script or a
+        hook. Counted only for commands that ran; said once per sequence.
+
+        Measured on 94 archived sessions (read only): 5 notes in 3
+        sessions, each on a command a script would carry -- an environment
+        plus interpreter incantation run with three inline scripts, and two
+        hand-built push commands repeated. Rejected: counting identical
+        text only (the field repetitions were the same check with another
+        number or inline script); a hook written by the harness (hooks run commands,
+        and only the user installs one). Never raises."""
+        try:
+            name = str(tool_name or "").rsplit("__", 1)[-1]
+            if name not in ("bash", "bash_background"):
+                return
+            data = tool_input
+            if isinstance(data, str) and data.lstrip().startswith("{"):
+                data = json.loads(data)
+            cmd = (str(data.get("command") or "") if isinstance(data, dict)
+                   else str(data or ""))
+            key = self.repeated_sequence_key(cmd)
+            if not key:
+                return
+            counts = getattr(self, "_repeated_sequences", None)
+            if counts is None:
+                counts = self._repeated_sequences = {}
+            if key not in counts and len(counts) >= 300:
+                return
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] != 3:
+                return
+            shown = " ".join(cmd.split())[:100]
+            self.client.push_run_note(
+                "[repeat] This multi-step command has now run three times "
+                f"in this session: `{shown}`. A check repeated by hand "
+                "belongs in a script in the repository (or a hook the user "
+                "installs in .delfin/settings.json): write it once and call "
+                "it.")
         except Exception:
             pass
 
@@ -4334,9 +5365,128 @@ class AgentEngine:
         out = self._append_functional_caveat(text, functional, on_token)
         out = self._append_ambiguous_column_caveat(out, ambiguous, on_token)
         out = self._append_truncated_count_caveat(out, on_token, source=source)
+        out = self._append_edit_signal_caveat(out, on_token, source=source)
+        out = self._append_comparison_caveat(out, on_token, source=source)
         out = self._append_self_consistency_caveat(out, on_token, source=source)
         out = self._append_figure_coverage_caveat(out, on_token, source=source)
+        out = self._append_test_claim_caveat(out, on_token, source=source)
+        out = self._append_change_claim_caveat(out, on_token, source=source)
+        if out != text:
+            try:
+                from . import channels as _channels
+                _channels.fire("answer_caveat")
+            except Exception:
+                pass
         return out
+
+    def _append_test_claim_caveat(
+        self, text: str, on_token: Callable[[str], None] | None,
+        *, source: str,
+    ) -> str:
+        """Name a verification claim no run of this turn backs.
+
+        Input: the model's own text (``source``) and the turn's account
+        (``_last_turn_verification``, from the client). A claim ("tests
+        pass", "5 passed", "alle Tests grün"; "verified", "funktioniert
+        jetzt" in a turn that edited code) is unbacked when no executed,
+        fresh, relevant, non-gamed run backs it
+        (verification_claims.judge); a pass after an edit to the failing
+        test backs nothing. A caveat, not a correction turn: a retry
+        cannot run what the gate refused, and the caveat costs no round.
+        Behaviour claims stand down where the functional-claim caveat
+        already spoke. Plan turns propose and are not judged.
+
+        Measured before wiring (benchmark corpus 1,063 answers: 3 flagged,
+        3 true; field reports, 249 aligned turns: 5 flagged, 2 true)."""
+        tv_acc = getattr(self, "_last_turn_verification", None)
+        try:
+            from . import turn_verification as _tvm
+        except Exception:
+            return text
+        # Only a real account: a client without one (the CLI backend, a
+        # test double) has nothing to judge against.
+        if not isinstance(tv_acc, _tvm.TurnVerification) \
+                or self._turn_describes_intent():
+            return text
+        try:
+            from . import verification_claims as _vcl
+            verdicts = tv_acc.unbacked_claims(source)
+            if "the following was NOT checked in this session" in text:
+                verdicts = [v for v in verdicts if v.claim.kind == "test"]
+            # The measure-edit caveat (edit_signals.turn_caveat) already
+            # names a check changed to pass: the same fact is not said twice.
+            if ("the check was changed in a turn that set out to make it"
+                    in text.lower()):
+                verdicts = [v for v in verdicts if v.reason != "gamed"]
+            caveat = _vcl.caveat(verdicts)
+        except Exception:
+            return text
+        if not caveat:
+            return text
+        try:
+            from . import channels as _channels
+            _channels.fire("test_claim_flagged", len(verdicts))
+        except Exception:
+            pass
+        if on_token:
+            try:
+                on_token(caveat)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += caveat
+        except Exception:
+            pass
+        return text + caveat
+
+    def _append_change_claim_caveat(
+        self, text: str, on_token: Callable[[str], None] | None,
+        *, source: str,
+    ) -> str:
+        """Name a change reported as made in a turn where none landed.
+
+        Input: the model's own text (``source``) and the turn's account
+        (``_last_turn_verification``). A caveat, like the test-claim one:
+        the user must not test a change that is not on disk believing it
+        is. See change_claims for the session that made it necessary."""
+        tv_acc = getattr(self, "_last_turn_verification", None)
+        try:
+            from . import turn_verification as _tvm
+            from . import change_claims as _cc
+        except Exception:
+            return text
+        if not isinstance(tv_acc, _tvm.TurnVerification) \
+                or self._turn_describes_intent():
+            return text
+        try:
+            note = _cc.caveat(_cc.find(source),
+                              landed=tv_acc.landed_edits(),
+                              failed=tv_acc.failed_writes)
+        except Exception:
+            return text
+        if not note:
+            return text
+        try:
+            from . import channels as _channels
+            _channels.fire("change_claim_flagged")
+        except Exception:
+            pass
+        if on_token:
+            try:
+                on_token(note)
+            except Exception:
+                pass
+        try:
+            if (self.messages
+                    and self.messages[-1].get("role") == "assistant"
+                    and isinstance(self.messages[-1].get("content"), str)):
+                self.messages[-1]["content"] += note
+        except Exception:
+            pass
+        return text + note
 
     def _append_figure_coverage_caveat(
         self, text: str, on_token: Callable[[str], None] | None,
@@ -4519,6 +5669,11 @@ class AgentEngine:
             parts.append(_vg.language_mismatch_feedback(wrong_language)
                          .replace("[Verify] ", "", 1))
         feedback = "[Verify] " + " ".join(parts)
+        try:
+            from . import channels as _channels
+            _channels.fire("claim_correction_turn")
+        except Exception:
+            pass
         # What the session had observed BEFORE the retry. The retry either
         # reads something new or it does not, and that is the only thing
         # that can turn an unverified claim into a verified one.
@@ -4826,6 +5981,38 @@ class AgentEngine:
         except Exception:
             return {"role": "user", "content": text}
 
+    def _take_back_turn_row(self, *, require_user: bool = True) -> bool:
+        """Remove this turn's own user row from a turn that produced no
+        answer, and give back the history a fresh start cut for it.
+
+        Input: the history as the unanswered turn left it. Output: True
+        when a row was removed. Semantics: the turn did not happen, so the
+        history is the one it started from. After a fresh start that is
+        the cut history, not an empty list -- the fused row was the only
+        thing standing in for it, and taking that out alone left the
+        engine with nothing, which the next save wrote to disk
+        (engine_messages: [] beside the full transcript). Restored only
+        when nothing but the fused row was there: a turn whose tool rounds
+        were already appended did work against the fresh block.
+
+        ``require_user=False`` is the exception path's unconditional pop.
+        Rejected: re-deciding the fresh start lazily after the first token
+        -- every transport would then need to see the cut, and a turn that
+        is answered must start from the same history either way.
+        """
+        msgs = self.messages
+        if not msgs or (require_user and msgs[-1].get("role") != "user"):
+            return False
+        msgs.pop()
+        cut = getattr(self, "_fresh_cut_this_turn", None)
+        self._fresh_cut_this_turn = None
+        if cut is not None and not self.messages:
+            history, floor, trimmed = cut
+            self.messages = list(history)
+            self._last_input_tokens = floor
+            self._trimmed_chars_since_floor = trimmed
+        return True
+
     def _take_turn_rows(self) -> list:
         """The rows the client's tool loop added this turn, as history.
 
@@ -4857,10 +6044,23 @@ class AgentEngine:
         structural issues.  This removes duplicates and ensures the
         conversation can be sent to the API without errors.
 
+        Consecutive user rows are never dropped: a steer typed into a
+        running turn is followed by harness rows (job notes, run notes,
+        steering blocks) from the same drain, and keeping only the newer
+        row removed the typed text from every later request and saved
+        session. Two typed or two harness rows are merged into one
+        (``_merge_user_rows``; a harness merge keeps the mark). A typed
+        and a harness row are kept apart with an assistant filler, each
+        with its own mark (harness_rows), so the harness part never reads
+        as the user's words. Consecutive assistant rows keep the newer one. A history without consecutive same-role rows
+        is left as the same list of the same objects, so its request bytes
+        (and the prefix cache) do not change.
+
         Pinned messages (``msg["_pinned"]``) are never merged away: when a
-        pinned message would be replaced by a newer same-role message, a
-        short opposite-role filler is inserted instead so BOTH survive
-        verbatim and alternation still holds for strict chat templates.
+        pinned message would be replaced by a newer same-role message, or
+        a user row meets a pinned user row, a short opposite-role filler
+        is inserted instead so BOTH survive verbatim and alternation still
+        holds for strict chat templates.
         """
         if len(self.messages) < 2:
             return
@@ -4878,18 +6078,34 @@ class AgentEngine:
         for msg in self.messages[1:]:
             role = msg.get("role")
             if role == cleaned[-1].get("role") and role in ("user", "assistant"):
-                if cleaned[-1].get("_pinned"):
-                    # The older message is pinned — keep it verbatim and
-                    # restore alternation with a filler instead of merging.
+                older_pinned = bool(cleaned[-1].get("_pinned"))
+                if older_pinned or (role == "user" and msg.get("_pinned")):
+                    # A pinned message is kept verbatim: alternation is
+                    # restored with a filler instead of merging.
                     filler_role = "assistant" if role == "user" else "user"
                     cleaned.append({
                         "role": filler_role,
                         "content": "[alternation filler - pinned message "
-                                   "above kept verbatim]",
+                                   + ("above" if older_pinned else "below")
+                                   + " kept verbatim]",
                     })
                     cleaned.append(msg)
+                elif role == "user" and (
+                        is_harness_row(cleaned[-1]) != is_harness_row(msg)):
+                    # Typed and harness text are not merged: one plain
+                    # row would hand the harness part to every reader
+                    # of the user's words, one marked row would hide the
+                    # typed part from them. Both stay, each with its mark.
+                    cleaned.append({
+                        "role": "assistant",
+                        "content": "[alternation filler - the user's message "
+                                   "and the harness note are kept apart]",
+                    })
+                    cleaned.append(msg)
+                elif role == "user":
+                    cleaned[-1] = _merge_user_rows(cleaned[-1], msg)
                 else:
-                    # Consecutive same-role messages: keep the latest
+                    # Consecutive assistant messages: keep the latest
                     # (also keeps a pinned NEWER message automatically).
                     cleaned[-1] = msg
             else:
@@ -5018,7 +6234,9 @@ class AgentEngine:
         stripped (same length and indices, so ``live:<i>`` refs stay valid).
         A ``_steer`` key is the turn's steering tail (_attach_turn_tail):
         rendered at the end of that message's content, the same bytes on
-        every request that carries the message.
+        every request that carries the message. A row with the harness key
+        is copied as a ``HarnessRow``: the mark stays readable to the
+        action classifier, which reads this list, without a key on the wire.
         """
         msgs = self.messages
         if not any(
@@ -5031,10 +6249,21 @@ class AgentEngine:
             if isinstance(m, dict) and any(str(k).startswith("_") for k in m):
                 row = {k: v for k, v in m.items()
                        if not str(k).startswith("_")}
+                # Any mark, not only the key: a HarnessText content loses
+                # its type when the tail is appended below, and with it the
+                # only sign that the harness, not the user, wrote the row.
+                if is_harness_row(m):
+                    row = HarnessRow(row)
                 tail = m.get("_steer")
                 if tail:
                     row["content"] = self._with_turn_tail(
                         row.get("content"), str(tail))
+                    # The text type is a mark too, and the one that
+                    # survives a consumer copying the row into a plain
+                    # dict (the client's tool-loop request list does).
+                    if (isinstance(row, HarnessRow)
+                            and isinstance(row["content"], str)):
+                        row["content"] = HarnessText(row["content"])
                 out.append(row)
             else:
                 out.append(m)
@@ -5594,8 +6823,9 @@ class AgentEngine:
         # Full compaction is driven by CONTEXT PRESSURE (token budget), never
         # by raw message count alone: a dozen short messages can sit at ~15%
         # of the window, and summarising there throws away the live working
-        # context — forcing the agent to re-discover its own work (Jerome
-        # 2026-06-13: "compacted at 15% full → agent confused"). This was the
+        # context — forcing the agent to re-discover its own work (field
+        # report 2026-06-13: compaction at 15% full lost the working
+        # context). This was the
         # legacy ``msg_count >= 12 OR tokens > 95%`` trigger; the OR meant the
         # 0.95 token threshold (raised precisely to avoid early compaction)
         # was undermined by the message count.
@@ -5793,7 +7023,7 @@ class AgentEngine:
         if _state_block:
             _summary_msg = f"{_state_block}\n{_summary_msg}"
         self.messages = [
-            {"role": "user", "content": _summary_msg},
+            {"role": "user", "content": _summary_msg, HARNESS_KEY: True},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + pinned_old + recent
         # `recent` starts with an assistant turn whenever compaction fires right
@@ -5913,7 +7143,8 @@ class AgentEngine:
 
             # Inject as a user message and continue the conversation
             context_msg = "\n\n".join(injected_parts)
-            self.messages.append({"role": "user", "content": context_msg})
+            self.messages.append(
+                {"role": "user", "content": context_msg, HARNESS_KEY: True})
 
             # Stream continuation
             chunks: list[str] = []
@@ -6144,6 +7375,28 @@ class AgentEngine:
                 )
                 return
 
+    @property
+    def activity(self):
+        """What the running turn is doing now (``activity.Activity``).
+
+        Written by ``stream_response`` at each stream event and by the
+        surface that asks the person; read by the terminal status row and
+        the dashboard working line from their own timers. Created on first
+        use so an engine built without ``__init__`` (test doubles) has one.
+        """
+        got = self.__dict__.get("_activity")
+        if got is None:
+            from .activity import Activity
+            got = self.__dict__.setdefault("_activity", Activity())
+        return got
+
+    @property
+    def turn_in_flight(self) -> bool:
+        """True while a turn holds this engine's one-turn gate. Read by
+        the mode cycles (mode_cycle.next_in_cycle), which pass over plan
+        while a turn runs."""
+        return bool(getattr(self, "_turn_in_flight", False))
+
     def request_stop(self) -> None:
         """Request the current streaming response to stop.
 
@@ -6215,7 +7468,12 @@ class AgentEngine:
         turn drains them at its first round.
         """
         try:
-            pending = self.client._drain_steer()
+            # Not delivered: the steers' on_delivered callbacks (a session
+            # message's read receipt) must not run for text handed back.
+            try:
+                pending = self.client._drain_steer(delivered=False)
+            except TypeError:
+                pending = self.client._drain_steer()
         except Exception:
             return ""
         # Only a list of real strings is handed back. A client whose drain
@@ -6232,14 +7490,20 @@ class AgentEngine:
         return (" Not delivered, because the turn stopped first: "
                 + quoted + more + " — send it again if it still applies.")
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, *, on_delivered=None) -> bool:
         """Inject a user message into the RUNNING tool loop (mid-loop steering).
         The model reacts to it on the next round, without ending the turn.
-        Returns True if the active client supports it (API/KIT/Ollama engine)."""
+        Returns True if the active client supports it (API/KIT/Ollama engine).
+
+        True means queued, not delivered: ``on_delivered`` runs when the
+        client puts the text into a request (see ``push_steer``)."""
         client = getattr(self, "client", None)
         if client is not None and hasattr(client, "push_steer"):
             try:
-                client.push_steer(text)
+                if on_delivered is None:
+                    client.push_steer(text)
+                else:
+                    client.push_steer(text, on_delivered=on_delivered)
                 # Kept for the turn's guards: a steer is the user's latest
                 # word, and "antworte auf Englisch" in it is a language
                 # request the language guard must honour.
@@ -6320,6 +7584,49 @@ class AgentEngine:
             except Exception:
                 pass
         return usd, secs
+
+    def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
+        """The run ceiling a RUNNING turn has reached, or "".
+
+        Input: what the running turn has spent so far (the client's
+        estimate; ``cost_usd`` holds the finished turns). Output: the
+        stop reason the turn ends with -- ``run_budget_s`` once the wall
+        clock since ``_run_started_at`` reaches ``run_budget_s``,
+        ``run_budget_usd`` once finished plus running spend reaches
+        ``run_budget_usd`` -- else "". The turn ceiling is not checked
+        here: it counts finished turns, which do not change mid-turn.
+        Consulted by the client between tool rounds (``run_ceiling``);
+        the 110 % gate before a turn stays. Never raises.
+        """
+        hit = ""
+        try:
+            usd, secs = self._run_budget()
+            if secs > 0:
+                import time as _t
+                started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
+                if started > 0 and _t.time() - started >= secs:
+                    hit = "run_budget_s"
+            if not hit and usd > 0:
+                spent = (float(getattr(self, "cost_usd", 0.0) or 0.0)
+                         + max(0.0, float(spent_this_turn or 0.0)))
+                if spent >= usd:
+                    hit = "run_budget_usd"
+        except Exception:
+            return ""
+        if hit:
+            # Once per run (the level dedups): the turn's own notice goes
+            # to the stream, this one to whoever is not watching it.
+            try:
+                from .run_limits import resume_hint
+                self._emit_budget_attention(
+                    "ceiling", "Run stopped: budget ceiling reached",
+                    f"agent.{hit} was reached inside a turn; the turn "
+                    "stopped between two tool rounds, its work is kept and "
+                    "the session is saved. To continue: "
+                    + resume_hint(self, hit))
+            except Exception:
+                pass
+        return hit
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.
@@ -6665,8 +7972,10 @@ class AgentEngine:
     def _note_turn_continuation(self, answer: str) -> None:
         """Record one follow-up note when *answer* announces work that it did
         not do while tasks stay open. Never raises; the latch keeps it to one
-        pending note until the caller calls clear_turn_continuation()."""
-        if not answer or self._continuation_fired:
+        pending note until the caller calls clear_turn_continuation(). No note
+        while the stall guard has stopped the session."""
+        if (not answer or self._continuation_fired
+                or getattr(self, "_stall_guard_stopped", "")):
             return
         try:
             from delfin.agent.turn_continuation import should_continue
@@ -6676,6 +7985,61 @@ class AgentEngine:
         if cont and note:
             self._continuation_fired = True
             self.pending_turn_continuation = note
+            # W2: this turn ends with open work and no question pending — the
+            # answer announced work (matches should_continue) it did not do,
+            # and no tool call asked the person anything. Feed the stall guard
+            # a dead-ending kind so repeated such turns stop, just as repeated
+            # dsml_leak turns do. The fingerprint is the open-task count, so
+            # the three turns are the same dead ending regardless of wording.
+            # EXACTLY ONE advance per turn: a dsml_leak turn (whose answer IS
+            # a leaked tool call) is fed its own kind near :4521, so this
+            # kind is skipped there — two different keys in a row would reset
+            # the streak and neither stop ever fires (operator build v3).
+            _this_is_a_leak = False
+            try:
+                from delfin.agent.text_sanitize import leaked_tool_call_dominates
+                _this_is_a_leak = bool(leaked_tool_call_dominates(answer))
+            except Exception:
+                _this_is_a_leak = False
+            if not _this_is_a_leak:
+                _guard = getattr(self, "_stall_guard", None)
+                if (_guard is not None and _guard.advance(
+                        "open_work_no_question",
+                        str(self._open_task_count())) == "stop"):
+                    _stopped = (
+                        f"This session has ended {_guard.repeats} turns in a row "
+                        "on open work with no question pending and nothing that "
+                        "ran; it stops sending further follow-ups. To go on, "
+                        "send a message or resolve the open work.")
+                    self._stall_guard_stopped = _stopped
+                    self.clear_turn_continuation()
+
+    #: Shown when a turn ends on an announced step and no follow-up is
+    #: queued: the turn is over, nothing works in the background.
+    NOTHING_RUNS_NOTICE = (
+        "\n\n⏸ Nothing is running now: this turn ended on a step the agent "
+        "announced but did not take. Send \"weiter\" (or say what to change) "
+        "to continue.")
+
+    def _say_nothing_runs(self, answer: str, on_token) -> None:
+        """Tell the user the turn is over when *answer* closes by announcing
+        a next step and no follow-up turn is queued.
+
+        Bug report davh 414e5a17 (2026-10-20): "he says he is solving it now,
+        and then there is no feedback at all -- no progress bar, no sign; I
+        cannot tell whether he works or the model hangs". The turn had ended
+        on "Ich speichere zuerst ..., dann implementiere ich:"; the indicator
+        went out, correctly, and nothing said why. Not shown when a
+        follow-up is pending (it will run), nor when the stall guard stopped
+        follow-ups (its own message says so). Never raises."""
+        try:
+            if (not answer or self.pending_turn_continuation
+                    or getattr(self, "_stall_guard_stopped", "")):
+                return
+            if callable(on_token) and _ends_announcing(answer):
+                on_token(self.NOTHING_RUNS_NOTICE)
+        except Exception:
+            pass
 
     def _honour_pause(self) -> bool:
         """Request a stop when ``delfin-agent pause`` flagged this session.
@@ -6728,6 +8092,8 @@ class AgentEngine:
             # satisfied — which suppressed the delegation reminder for work
             # that had never delegated anything.
             self._reset_session_fields()
+            self._forget_skill_turn()
+            self._stall_progress()   # the count belongs to the old conversation
             self.session_id = self._fresh_session_id()  # fresh session for new cycle
             self._sync_task_session()
             self._foreign_tasks_shown = False  # new session → notice re-armed
@@ -7041,6 +8407,14 @@ class AgentEngine:
                                      for k, v in dict(actions).items()}
         except Exception:
             out["denied_actions"] = {}
+        # The pull-request route the user asked for (pr_route_repos) is a
+        # restriction like a denial, not a grant: a resumed session that
+        # dropped it would push onto the default branch the user ruled out.
+        try:
+            routes = getattr(perms, "pr_route_repos", None) or set()
+            out["pr_route_repos"] = sorted(str(k) for k in routes)
+        except Exception:
+            out["pr_route_repos"] = []
         mem = getattr(perms, "refusal_memory", None)
         if mem is not None:
             try:
@@ -7186,6 +8560,10 @@ class AgentEngine:
         restored: list[str] = []
         missing: list[str] = []
         drifted: list[str] = []
+        # Not carried, and not left over from whatever this engine held
+        # before: the restored session has no turn behind it.
+        self._forget_skill_turn()
+        self._stall_progress()
 
         if data.get("mode"):
             restored.append("mode")
@@ -7240,6 +8618,12 @@ class AgentEngine:
         # from outside afterwards; the headless path did not, so a headless
         # resume filtered tasks on a throwaway id and saw zero open tasks.
         self._sync_task_session()
+        # The compaction record the session was saved with. The save guard
+        # treats a record that differs from the stored one as the
+        # explanation for a shorter history, so a resumed engine holding
+        # None against a stored record would let any shorter save pass.
+        _lci = data.get("last_compaction_info")
+        self.last_compaction_info = dict(_lci) if isinstance(_lci, dict) else None
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")
@@ -7281,7 +8665,8 @@ class AgentEngine:
             from . import session_store as _ss_ckpt
             _note = _ss_ckpt.consume_crash_recovery_note(self.session_id)
             if _note:
-                self.messages.append({"role": "user", "content": _note})
+                self.messages.append(
+                    {"role": "user", "content": _note, HARNESS_KEY: True})
                 self.messages.append({
                     "role": "assistant",
                     "content": "Understood. I will verify the workspace "
@@ -7324,6 +8709,13 @@ class AgentEngine:
                 perms.denied_actions.update({str(k): str(v) for k, v in
                                              actions.items()})
                 names.append("denied_actions")
+            except Exception:
+                pass
+        routes = blob.get("pr_route_repos")
+        if isinstance(routes, list):
+            try:
+                perms.pr_route_repos.update(str(k) for k in routes if k)
+                names.append("pr_route_repos")
             except Exception:
                 pass
         mem_blob = blob.get("refusal_memory")
@@ -8402,11 +9794,8 @@ class AgentEngine:
     def git_diff_stat(self) -> str:
         """Run ``git diff --stat`` in the repo and return the output."""
         try:
-            result = subprocess.run(
-                ["git", "diff", "--stat"],
-                cwd=str(self.repo_dir),
-                capture_output=True, text=True, timeout=10,
-            )
+            from . import safe_git
+            result = safe_git.run(["diff", "--stat"], self.repo_dir, timeout=10)
             return result.stdout.strip()
         except Exception:
             return ""

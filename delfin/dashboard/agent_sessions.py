@@ -16,7 +16,6 @@ import html
 import json
 import os
 import re
-import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -39,6 +38,32 @@ _STOP_ARM_S = 8.0
 #: tab on the same context; without the guard the drag script would be
 #: emitted twice into the one keep_js() payload.
 _REGISTERED_INIT_JS = set()
+
+#: The stop of every running refresh loop, keyed by ``id(ctx)`` of the
+#: context whose session list started it. A list rebuilt on the same
+#: context stops the previous loop; ``stop_refresh_loops`` stops them all.
+_REFRESH_LOOPS: dict[int, Callable[[], None]] = {}
+_REFRESH_LOOPS_LOCK = threading.Lock()
+
+
+def stop_refresh_loops() -> int:
+    """Stop every session list's refresh loop in this process.
+
+    Output: how many loops were stopped. Each stop cancels the pending
+    timer and waits for a tick already running to finish, so nothing a
+    loop writes lands after this returns. Used at the end of a test, where
+    a loop started by one test would otherwise keep writing presence
+    records and the open-sessions file into the next test's redirected
+    home; a dashboard kernel ends its loops by ending."""
+    with _REFRESH_LOOPS_LOCK:
+        stops = list(_REFRESH_LOOPS.values())
+        _REFRESH_LOOPS.clear()
+    for stop in stops:
+        try:
+            stop()
+        except Exception:
+            pass
+    return len(stops)
 
 
 def _register_init_js(ctx: Any, script: str) -> None:
@@ -683,9 +708,9 @@ def _exclude_locally(root: str, common_dir: str, pattern: str = ".delfin/") -> N
     """Keep ``pattern`` out of ``git status`` in this clone only: an entry
     in its info/exclude, nothing committed. Skipped when already ignored."""
     try:
-        probe = subprocess.run(
-            ["git", "-C", root, "check-ignore", "-q", ".delfin/worktrees/probe"],
-            capture_output=True, timeout=5)
+        from delfin.agent import safe_git
+        probe = safe_git.run(["check-ignore", "-q", ".delfin/worktrees/probe"],
+                             root, timeout=5)
         if probe.returncode == 0:
             return
         exclude = Path(common_dir) / "info" / "exclude"
@@ -1350,8 +1375,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if view["restoring"]:
             return
         save_open_sessions([
-            {"session_id": _session_id(rec), "workspace": rec["workspace"]}
-            for rec in sessions if _session_id(rec)])
+            {"session_id": sid, "workspace": rec["workspace"]}
+            for rec in sessions for sid in [_remembered_id(rec)] if sid])
+
+    def _remembered_id(rec: dict) -> str:
+        """The conversation this session stands for in the open list.
+
+        Its own id once it has one. Before that, the conversation it was
+        asked to open, while a live writer still holds it: that one is
+        open in another view, and leaving it out of the list meant the
+        next start did not reopen it anywhere."""
+        sid = _session_id(rec)
+        if sid:
+            return sid
+        wanted = str(getattr(rec["ctx"], "initial_session_id", "") or "")
+        if not wanted:
+            return ""
+        try:
+            from delfin.agent.session_store import session_lock_holder
+            return wanted if session_lock_holder(wanted) else ""
+        except Exception:
+            return ""
 
     def _refresh_resume_options() -> None:
         try:
@@ -1530,21 +1574,52 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                 f"{n} on {h}" for h, n in sorted(counts.items())))
             if counts else "")
 
+    # The loop's state. ``tick_lock`` is held for a whole tick and by the
+    # stop, so a stop either precedes a tick (which then does nothing) or
+    # waits for it, and no tick reschedules after a stop. Reentrant: a stop
+    # called from inside a tick (a refresh that closes the panel) must not
+    # wait for itself.
+    loop = {"stopped": False, "timer": None,
+            "tick_lock": threading.RLock()}
+
     def _tick() -> None:
-        try:
-            refresh()
-            import time as _time
-            if _time.monotonic() >= view["resume_at"]:
-                view["resume_at"] = _time.monotonic() + _RESUME_REFRESH_S
-                _refresh_resume_options()
-                _refresh_elsewhere()
-        except Exception:
+        with loop["tick_lock"]:
+            if loop["stopped"]:
+                return
+            try:
+                refresh()
+                import time as _time
+                if _time.monotonic() >= view["resume_at"]:
+                    view["resume_at"] = _time.monotonic() + _RESUME_REFRESH_S
+                    _refresh_resume_options()
+                    _refresh_elsewhere()
+            except Exception:
+                pass
+            finally:
+                if not loop["stopped"]:
+                    timer = threading.Timer(_REFRESH_S, _tick)
+                    timer.daemon = True
+                    timer.start()
+                    loop["timer"] = view["timer"] = timer
+
+    def stop_refresh() -> None:
+        """End this list's refresh loop: no tick runs after it returns.
+        Idempotent; called from inside a tick it marks the stop and the
+        tick does not reschedule."""
+        loop["stopped"] = True
+        timer = loop["timer"]
+        if timer is not None:
+            timer.cancel()
+        with loop["tick_lock"]:
             pass
-        finally:
-            timer = threading.Timer(_REFRESH_S, _tick)
-            timer.daemon = True
-            timer.start()
-            view["timer"] = timer
+        # A timer that fired before the cancel returns at once (stopped);
+        # joined so no thread of this loop is left when the stop returns.
+        timer = loop["timer"]
+        if timer is not None and timer is not threading.current_thread():
+            timer.join(timeout=5.0)
+        with _REFRESH_LOOPS_LOCK:
+            if _REFRESH_LOOPS.get(id(ctx)) is stop_refresh:
+                del _REFRESH_LOOPS[id(ctx)]
 
     # -- controls ---------------------------------------------------------------
 
@@ -1741,6 +1816,12 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                  f"sessions that are gone.")
     except Exception:
         pass
+    with _REFRESH_LOOPS_LOCK:
+        previous = _REFRESH_LOOPS.pop(id(ctx), None)
+    if previous is not None:
+        previous()
+    with _REFRESH_LOOPS_LOCK:
+        _REFRESH_LOOPS[id(ctx)] = stop_refresh
     _tick()
 
     return widget, {
@@ -1750,6 +1831,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         "sessions": lambda: list(sessions),
         "active": lambda: _find(view["active"]),
         "refresh": refresh,
+        "stop_refresh": stop_refresh,
         "form": {"new": new_btn, "workdir": workdir_box,
                  "own_worktree": own_worktree_box, "start": start_btn},
         # Exported so the reclamation can be driven in a test; a pass that

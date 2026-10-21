@@ -118,6 +118,33 @@ Two carriers with a deliberate split:
   compaction) run every turn; on-demand layers (skills, `session_search`,
   `history_search`) run only when invoked — the agent must know to ask.
 
+## What a memory may carry
+
+A memory is recalled into every later session of its project (the
+user-wide store into every project), so it is the one route by which a
+sentence read once -- in a fetched page, a file, a tool result -- could
+speak with standing authority later. Three rules hold:
+
+- **No instruction channel in a model's note.** Every agent-sourced
+  write (`remember`, the distill pass) is checked by
+  `memory_store.memory_instruction_refusals`: a note carrying a role
+  marker, a fence marker, tool-call syntax, an override of earlier
+  instructions, a standing consent that skips the user, or concealment
+  from the user is refused with the kind named. Plain imperatives and
+  facts about commands, sandboxes and approvals are stored as before.
+  The user's own words are not filtered. An agent note that carries a
+  shape anyway (older than the check, or edited by hand) is withheld at
+  recall.
+- **Provenance.** A note `remember` writes records `written_by`,
+  `session` and `read_before` (the tools whose fenced output the turn
+  had read before the write, `nothing` when none); recall names
+  `read_before` in the note's header.
+- **Recalled as notes.** The External Memory, Past Sessions and Task
+  Briefing blocks reach the prompt inside an untrusted "notes" fence
+  (background, no permission, no approval) with a content-keyed nonce.
+  The stores are protected paths for the agent's write tools: a write is
+  asked in every mode (`docs/SECURITY_MODEL.md`).
+
 ## What decides whether a fact reaches a prompt
 
 The layer table above says *when* each layer is retrieved. Five fields on
@@ -132,6 +159,7 @@ written and never seen again.
 | `learned_at` | at save, re-stamped when the body changes | `<branch>@<commit12>` — where the body was measured. Untouched by recall: recall says a note was useful, not that it was measured again. Absent on notes written before the field existed, and an absent stamp is never read as a defect. |
 | `use_count` / `updated_at` | bumped on recall | Which notes survive the per-type cap. Recall is what keeps a note alive; a note nobody pulls into a prompt is the one that goes. |
 | `stale_hits` | bumped when a recalled note cited dead code | Breaks the tie between two equally fresh notes. |
+| `written_by` / `session` / `read_before` | at save by `remember` | Shown, not filtered on: recall names `read_before` in the note's header so a note learned after reading a web page says so. |
 
 ## Which store a checkout reads
 

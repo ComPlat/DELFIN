@@ -768,13 +768,14 @@ def test_external_memory_records_only_files_inside_prompt_limit(
     # exists for would never be reached. The qualifying preamble is charged
     # to the same budget, so it is part of the sum.
     from delfin.agent.prompt_loader import (
-        _MEMORY_BLOCK_PREAMBLE, _memory_entry_chunk,
+        _MEMORY_BLOCK_PREAMBLE, _memory_entry_chunk, _notes_fence_overhead,
     )
     first_chunk = _memory_entry_chunk(
         "First", first.name, first.read_text(encoding="utf-8"))
 
     out = loader._load_external_memory_context(
         max_chars=(len(_MEMORY_BLOCK_PREAMBLE) + 2
+                   + _notes_fence_overhead("memory")
                    + len(index_chunk) + 2 + len(first_chunk)),
     )
 
@@ -811,13 +812,14 @@ def test_external_memory_ranks_task_relevant_files_first(
     )
     index_chunk = f"# MEMORY.md\n{index.read_text(encoding='utf-8').strip()}"
     from delfin.agent.prompt_loader import (
-        _MEMORY_BLOCK_PREAMBLE, _memory_entry_chunk,
+        _MEMORY_BLOCK_PREAMBLE, _memory_entry_chunk, _notes_fence_overhead,
     )
     orca_chunk = _memory_entry_chunk(
         "Orca", orca.name, orca.read_text(encoding="utf-8"))
 
     out = loader._load_external_memory_context(
         max_chars=(len(_MEMORY_BLOCK_PREAMBLE) + 2
+                   + _notes_fence_overhead("memory")
                    + len(index_chunk) + 2 + len(orca_chunk)),
         task_text="fix the orca geometry convergence failure in the run",
     )
@@ -1084,7 +1086,9 @@ def test_recall_without_global_store_unchanged(
     # The block opens with its qualifier; the project index follows it.
     from delfin.agent.prompt_loader import _MEMORY_BLOCK_PREAMBLE
     assert out.startswith(_MEMORY_BLOCK_PREAMBLE)
-    assert "\n\n# MEMORY.md" in out
+    # ...inside the notes fence that follows it.
+    assert "\n\n[UNTRUSTED EXTERNAL CONTENT — notes" in out
+    assert "]\n# MEMORY.md" in out
     assert "port 8050" in out
 
 

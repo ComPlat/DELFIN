@@ -255,6 +255,31 @@ def _benchmark_drift_lines() -> list[str]:
         return []
 
 
+def _benchmark_learning_lines() -> list[str]:
+    """"Learning" note: did the second arm of the latest learning
+    measurement do better than the first on the pre-registered learning
+    tasks (:func:`benchmark.latest_learning_pair`, PREREG_W15.md)? Empty
+    when no two run files share a learning state for one of those tasks,
+    or when anything fails (best-effort)."""
+    try:
+        from delfin.agent import benchmark as bm
+        ids = bm.learning_task_ids()
+        pair = bm.latest_learning_pair(bm.list_runs(), only=ids)
+        if pair is None:
+            return []
+        first, second = pair
+        lc = bm.compare_learning(str(first), str(second))
+        note = bm.format_learning_note(lc, only=ids)
+        if not note:
+            return []
+        lines = ["## Learning (second run vs first, PREREG_W15)"]
+        lines.append(f"- runs: `{first.name}` → `{second.name}`")
+        lines += [f"- {ln}" for ln in note.splitlines() if ln.strip()]
+        return lines
+    except Exception:
+        return []
+
+
 def build_report(
     *,
     outcomes: list[Any] | None = None,
@@ -319,6 +344,9 @@ def build_report(
     drift = _benchmark_drift_lines()
     if drift:
         lines += drift + [""]
+    learning = _benchmark_learning_lines()
+    if learning:
+        lines += learning + [""]
     if drafts:
         lines.append("## Draft tasks scaffolded (review before committing)")
         lines += [f"- `{d}`" for d in drafts]

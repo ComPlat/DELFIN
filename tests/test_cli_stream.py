@@ -112,18 +112,22 @@ def test_renderer_tty_yields_text_calls_and_bold_footer():
     assert "grep_file pattern=stream" in lines[3]
     assert "(0.5s)" in lines[4]
     assert lines[5] == "Found it at cli.py:288."
-    assert lines[6].startswith("\x1b[1m→ in=512 · out=64 · tools=2 · 9.0s")
+    # UX1: turn_end now yields the summary line first, then the legacy
+    # stats footer (whose format and bold head are unchanged).
+    assert lines[6] == "Surfaced after 9s"
+    assert lines[7].startswith("\x1b[1m→ in=512 · out=64 · tools=2 · 9.0s")
 
 
 def test_renderer_not_a_tty_no_spinner_no_ansi_one_line_per_event():
     lines = list(StreamRenderer(_events(), is_tty=False))
-    assert len(lines) == 7  # one per non-tick event
+    assert len(lines) == 8  # one per non-tick event (+ UX1 summary line)
     for line in lines:
         assert "\x1b" not in line
     assert not any(l.startswith("⠋") for l in lines)
     assert lines[1] == "· read_file path=delfin/agent/cli.py"
     assert lines[2] == "· read_file (1.5s)"
-    assert lines[6] == "→ in=512 · out=64 · tools=2 · 9.0s"
+    assert lines[6] == "Surfaced after 9s"
+    assert lines[7] == "→ in=512 · out=64 · tools=2 · 9.0s"
 
 
 def test_renderer_counts_tool_calls_for_footer_fallback():
@@ -131,6 +135,7 @@ def test_renderer_counts_tool_calls_for_footer_fallback():
     events[-1] = {"type": "turn_end", "duration_s": 5.0}
     lines = list(StreamRenderer(events, is_tty=False))
     assert lines[-1] == "→ tools=2 · 5.0s"
+    assert lines[-2] == "Surfaced after 5s"
 
 
 def test_renderer_tick_spins_only_while_a_call_is_open():
@@ -150,8 +155,9 @@ def test_renderer_tick_spins_only_while_a_call_is_open():
     assert lines[1].startswith(f"{SPINNER_FRAMES[1]} \x1b[1mbash")
     assert lines[2].startswith(f"{SPINNER_FRAMES[2]} \x1b[1mbash")
     assert "(3.0s)" in lines[3]
-    assert lines[4].startswith("\x1b[1m→ tools=1 · 4.0s")
-    assert len(lines) == 5
+    assert lines[4] == "Surfaced after 4s"
+    assert lines[5].startswith("\x1b[1m→ tools=1 · 4.0s")
+    assert len(lines) == 6
     assert spinner_lines  # a spinner that is not a lie: frames did advance
 
 
@@ -164,7 +170,8 @@ def test_renderer_tty_tick_hidden_when_not_tty():
     ]
     lines = list(StreamRenderer(events, is_tty=False,
                                 now=lambda: 0.0))
-    assert lines == ["· bash", "· bash (1.0s)", "→ tools=1 · 1.0s"]
+    assert lines == ["· bash", "· bash (1.0s)", "Surfaced after 1s",
+                     "→ tools=1 · 1.0s"]
 
 
 def test_renderer_empty_stream_yields_nothing():

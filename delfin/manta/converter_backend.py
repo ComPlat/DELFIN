@@ -1489,7 +1489,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
     # flags them as "collapsed", which drops an otherwise-clean geometry isomer to the
     # legacy fallback (measured: AFOWOH's trans-Cl isomer rejected over 2 aryl C-H at
     # 0.81/0.87 A — 0.01 A under threshold).  When enabled, H-involving bonds use a
-    # lower floor (XH_FRAC*ideal, default 0.55 ~= the CCDC X-H metric floor) so a real
+    # lower floor (XH_FRAC*ideal, hand-set default 0.55) so a real
     # H-on-atom collapse (< ~0.6 A) is still caught while X-ray-short H pass.  Heavy-
     # heavy bonds keep the 0.82 floor unchanged.  Env-gated, default OFF => byte-id
     # (floor is 0.82*ideal for every bond, exactly the historic _count_collapsed /
@@ -2717,6 +2717,29 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
         _PLY.set_current_cn(d.get("cn"))
     except Exception:
         pass
+    # Oxidation state for the ionic O-H donor length (DELFIN_FFFREE_LONE_PAIR_MD, default
+    # OFF -> never computed, byte-identical).  Ligand balance of the whole complex; None
+    # (unknown) leaves every distance on its covalent sum.
+    try:
+        from delfin.manta import _lone_pair_space as _LPS
+        if _LPS.lone_pair_md_enabled():
+            from rdkit import Chem as _ChemOS
+            from delfin.manta._oxidation_state import _ox_cut as _oxs  # #528: the cut, not the donor table
+            _om = _ChemOS.MolFromSmiles(smiles)
+            if _om is None:
+                _om = _ChemOS.MolFromSmiles(smiles, sanitize=False)
+            _ox = None
+            if _om is not None:
+                _mi = [a.GetIdx() for a in _om.GetAtoms() if a.GetSymbol() == d.get("metal")]
+                if len(_mi) == 1:
+                    _r = _oxs(_om, _mi[0])
+                    _ox = _r[0] if _r else None
+            _LPS.set_current_os(_ox)
+    except Exception:
+        try:
+            _LPS.set_current_os(None)
+        except Exception:
+            pass
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
         return _scope_no("GEOM_NOT_IN_POLYA",
