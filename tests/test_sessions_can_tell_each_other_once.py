@@ -75,10 +75,28 @@ def test_a_single_key_still_works(wired):
 
 
 def test_an_unknown_name_is_answered_with_the_roster(wired):
-    out = _call({"to": "Session B — rendering", "message": "hi"})
+    """The name used here is one NO peer carries.
+
+    It used to be b2's own title, because a title was not an address at
+    all and any title therefore refused. An exact title that exactly one
+    open session carries is now delivered (see
+    tests/test_a_session_can_be_addressed_by_the_name_you_see.py), which
+    continues what this file is about -- not spending a round on an
+    address the sender was handed -- so the case this test is for needs a
+    name that really is unknown.
+    """
+    out = _call({"to": "Session Q — nobody", "message": "hi"})
     assert "error" in out
     assert [s["key"] for s in out["sessions"]] == ["b2", "c3"]
     assert wired.sent == []
+
+
+def test_a_peers_own_title_is_delivered(wired):
+    """The other half of the same goal, pinned here beside the refusal so
+    the two contracts are read together."""
+    out = _call({"to": "Session B — rendering", "message": "hi"})
+    assert out["status"] == "sent" and out["to"] == "b2"
+    assert wired.sent == [("b2", "hi")]
 
 
 def test_a_broadcast_with_nothing_to_say_sends_nothing(wired):

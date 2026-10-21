@@ -212,7 +212,8 @@ def test_a_fresh_session_is_the_default():
 
 def test_forking_leaves_the_original_alone(monkeypatch, tmp_path, capsys):
     from delfin.agent import session_store as ss
-    monkeypatch.setattr(ss, "fork_session", lambda sid: {"session_id": "copy-1"})
+    # What session_store.fork_session returns: the copy's id.
+    monkeypatch.setattr(ss, "fork_session", lambda sid, new_id=None: "copy-1")
     monkeypatch.setattr(ss, "acquire_session_lock", lambda sid: None)
     monkeypatch.setattr(ss, "consume_crash_recovery_note", lambda sid: None)
     monkeypatch.setattr(agent_cli, "_resume_or_create", lambda e, a: "")
@@ -227,6 +228,42 @@ def test_forking_leaves_the_original_alone(monkeypatch, tmp_path, capsys):
     assert agent_cli._open_session(_Engine(), args, tmp_path) is True
     assert args.session == "copy-1"
     assert "untouched" in capsys.readouterr().err
+
+
+def test_a_fork_is_a_copy_in_the_store_and_the_original_stays(monkeypatch, tmp_path, capsys):
+    """Against the store itself, not a stand-in: the stand-in above once
+    returned a record where the store returns an id, and --fork-session
+    resumed the original for as long as it did."""
+    from delfin.agent import session_store as ss
+    from delfin.agent import state_paths
+    with state_paths.RedirectedUserState(tmp_path):
+        ss.save_session(session_id="orig-2", workspace=str(tmp_path), title="the scan",
+                        chat_messages=[{"role": "user", "content": "scan it"}],
+                        messages=[{"role": "user", "content": "scan it"}])
+        monkeypatch.setattr(ss, "acquire_session_lock", lambda sid: None)
+        monkeypatch.setattr(ss, "consume_crash_recovery_note", lambda sid: None)
+        resumed = []
+        monkeypatch.setattr(agent_cli, "_resume_or_create", lambda e, a: resumed.append(a.session) or "")
+
+        class _Engine:
+            session_id = ""
+
+        args = argparse.Namespace(resume="orig-2", continue_session=False,
+                                  new_session=False, fork_session=True,
+                                  session="", mode="solo", cwd=str(tmp_path),
+                                  verbose=False)
+        assert agent_cli._open_session(_Engine(), args, tmp_path) is True
+        err = capsys.readouterr().err
+        assert "fork failed" not in err
+        assert resumed and resumed[0] != "orig-2" and args.session == resumed[0]
+        copy = ss.load_session(resumed[0])
+        assert copy["title"] == "the scan (fork)" and copy.get("forked_from") == "orig-2"
+        assert ss.load_session("orig-2")["title"] == "the scan"
+        # A second copy at once is a copy of its own (the store's default
+        # id has one-second steps: the two shared a file).
+        args.session = ""
+        assert agent_cli._open_session(_Engine(), args, tmp_path) is True
+        assert len(set(resumed)) == 2
 
 
 def test_a_crash_note_from_last_time_is_handed_over(monkeypatch, tmp_path,
@@ -280,7 +317,8 @@ def test_the_first_changed_file_keeps_its_first_letter(monkeypatch, tmp_path):
                          "?? notes.txt\n")
         return _Proc("")
 
-    monkeypatch.setattr("subprocess.run", _run)
+    monkeypatch.setattr(lg.safe_git, "run",
+                        lambda args, cwd, **kw: _run(["git", *args], **kw))
     info = lg._git_info(tmp_path)
     assert info.dirty == ("delfin/agent/cli.py", "delfin/agent/repl.py",
                           "notes.txt")
@@ -301,5 +339,6 @@ def test_a_renamed_file_is_named_by_where_it_ended_up(monkeypatch, tmp_path):
             return _Proc("R  old_name.py -> new_name.py\n")
         return _Proc("")
 
-    monkeypatch.setattr("subprocess.run", _run)
+    monkeypatch.setattr(lg.safe_git, "run",
+                        lambda args, cwd, **kw: _run(["git", *args], **kw))
     assert lg._git_info(tmp_path).dirty == ("new_name.py",)

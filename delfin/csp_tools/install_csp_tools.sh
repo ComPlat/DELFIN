@@ -32,7 +32,7 @@ set -euo pipefail
 #
 # Environment variables:
 #   GENARRIS_REPO          Git clone URL   (default: GitHub Yi5817/Genarris)
-#   GENARRIS_BRANCH        Branch to clone (default: the repository's own)
+#   GENARRIS_REF           Commit to build (default: the pinned one below)
 #   FORCE_REINSTALL        Set to 1 to reinstall even if already present
 #   MPICC                  MPI C compiler  (default: auto-detect)
 #   DELFIN_CSP_TOOLS_ROOT  Override install root
@@ -43,9 +43,12 @@ BIN_DIR="${ROOT}/bin"
 BUILD_DIR="${ROOT}/.build"
 LOG_DIR="${ROOT}/logs"
 GENARRIS_REPO="${GENARRIS_REPO:-https://github.com/Yi5817/Genarris.git}"
-# Empty means the repository's default branch. It was "main", and Genarris's
-# default is master: "Remote branch main not found", and no Genarris.
-GENARRIS_BRANCH="${GENARRIS_BRANCH:-}"
+# The commit that is built: the head of the default branch (master) on
+# 2026-10-04, read 2026-10-16. A branch moves under the same name, so the
+# checkout is compared with this id after it is made; the submodules
+# (cgenarris) are the commits this one records. Another commit, or a fork
+# that has it, through GENARRIS_REF and GENARRIS_REPO.
+GENARRIS_REF="${GENARRIS_REF:-707f514171d847456e27f591cef732e8888176e4}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 MPICC="${MPICC:-}"
 
@@ -311,7 +314,7 @@ install_genarris() {
   verify_mpi_consistency "${python_bin}" "${mpicc_bin}"
 
   # -- clone / update repo ------------------------------------------------
-  log "cloning Genarris from ${GENARRIS_REPO} (branch: ${GENARRIS_BRANCH:-default})..."
+  log "cloning Genarris from ${GENARRIS_REPO} at ${GENARRIS_REF}..."
   mkdir -p "${BUILD_DIR}" "${LOG_DIR}"
   local genarris_dir="${BUILD_DIR}/Genarris"
 
@@ -319,20 +322,14 @@ install_genarris() {
     log "updating existing clone..."
     cd "${genarris_dir}"
     git fetch origin
-    if [ -n "${GENARRIS_BRANCH}" ]; then
-      git checkout "${GENARRIS_BRANCH}"
-      git pull --ff-only origin "${GENARRIS_BRANCH}"
-    else
-      git pull --ff-only
-    fi
   else
-    if [ -n "${GENARRIS_BRANCH}" ]; then
-      git clone --branch "${GENARRIS_BRANCH}" "${GENARRIS_REPO}" "${genarris_dir}"
-    else
-      git clone "${GENARRIS_REPO}" "${genarris_dir}"
-    fi
+    git clone "${GENARRIS_REPO}" "${genarris_dir}"
     cd "${genarris_dir}"
   fi
+  git -c advice.detachedHead=false checkout -q "${GENARRIS_REF}" \
+    || die "commit ${GENARRIS_REF} is not in ${GENARRIS_REPO}; set GENARRIS_REF to a commit it has"
+  [ "$(git rev-parse HEAD)" = "${GENARRIS_REF}" ] \
+    || die "the Genarris checkout is $(git rev-parse HEAD), not ${GENARRIS_REF}; GENARRIS_REF must be a full commit id"
 
   log "initializing submodules (cgenarris)..."
   git submodule update --init --recursive

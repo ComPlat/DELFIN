@@ -1,6 +1,6 @@
 """Regression: slash-command arguments must preserve case.
 
-Jerome's bug (2026-06-11): ``/grant /pfs/.../Porpoise always`` failed
+A field report (2026-06-11): ``/grant /pfs/.../Porpoise always`` failed
 with "path does not exist: /pfs/.../porpoise" — the dashboard slash
 dispatcher lowercased the ENTIRE command line (``cmd = text.lower()``)
 and parsed the path argument out of that, so a case-sensitive Linux
@@ -27,7 +27,7 @@ def test_add_extra_dir_is_case_sensitive(tmp_path):
     resolved = perms.add_extra_dir(str(real))
     assert resolved == real.resolve()
 
-    # Lowercased case does not exist -> ValueError (Jerome's symptom).
+    # Lowercased case does not exist -> ValueError (the reported symptom).
     with pytest.raises(ValueError, match="does not exist"):
         perms.add_extra_dir(str(tmp_path / "porpoise"))
 
@@ -63,7 +63,7 @@ def test_watch_parses_folder_from_original_text():
     assert "parts[0].lower()" in src[w:w + 200]
 
 
-# --- Error-detection self-correction (Jerome's "where is the error?" bug) ---
+# --- Error-detection self-correction (the "where is the error?" field report) ---
 
 def test_missing_file_hint_lists_real_outputs(tmp_path):
     """A guessed name like orca.out must surface the REAL output files."""

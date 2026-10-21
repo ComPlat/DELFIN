@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
 
+from . import safe_git
+
 
 class WorktreeError(RuntimeError):
     pass
@@ -87,13 +89,9 @@ def _held_message(path: Path | str, jobs: list) -> str:
 
 
 def _run_git(repo: Path, *args: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", *args], cwd=str(repo),
-            capture_output=True, text=True, timeout=30,
-        )
-    except FileNotFoundError as exc:
-        raise WorktreeError("git is not installed") from exc
+    result = safe_git.run(args, repo, timeout=30)
+    if result.returncode == 127:
+        raise WorktreeError("git is not installed")
     if result.returncode != 0:
         raise WorktreeError(
             f"git {' '.join(args)} failed: {result.stderr.strip()}"
@@ -103,12 +101,9 @@ def _run_git(repo: Path, *args: str) -> str:
 
 def _is_git_repo(path: Path) -> bool:
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--git-dir"], cwd=str(path),
-            capture_output=True, text=True, timeout=10,
-        )
-        return out.returncode == 0
-    except (FileNotFoundError, subprocess.SubprocessError):
+        return safe_git.run(["rev-parse", "--git-dir"], path,
+                            timeout=10).returncode == 0
+    except Exception:
         return False
 
 
@@ -174,9 +169,10 @@ def _default_parent(repo: Path) -> Path:
 def _inside_a_work_tree(path: Path) -> bool:
     """True when *path* lies inside some git checkout. Fails safe (True)."""
     try:
-        out = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=5)
+        out = safe_git.run(["rev-parse", "--is-inside-work-tree"], path,
+                           timeout=5)
+        if out.returncode == 127:
+            return True
         return out.returncode == 0 and out.stdout.strip() == "true"
     except Exception:
         return True
@@ -314,17 +310,13 @@ def _changed_files(wt: Path, base_ref: str) -> list:
 
 def _git_apply(repo: Path, patch: str, *, check: bool) -> tuple[bool, str]:
     """Run `git apply` reading the patch from stdin. Returns (ok, stderr)."""
-    args = ["git", "apply", "--whitespace=nowarn"]
+    args = ["apply", "--whitespace=nowarn"]
     if check:
         args.append("--check")
     args.append("-")
-    try:
-        proc = subprocess.run(
-            args, cwd=str(repo), input=patch,
-            capture_output=True, text=True, timeout=60,
-        )
-    except FileNotFoundError as exc:
-        raise WorktreeError("git is not installed") from exc
+    proc = safe_git.run(args, repo, input=patch, timeout=60)
+    if proc.returncode == 127:
+        raise WorktreeError("git is not installed")
     return proc.returncode == 0, proc.stderr.strip()
 
 
@@ -361,6 +353,7 @@ def merge_worktree(
     *,
     target_repo: Path | str | None = None,
     cleanup: bool = True,
+    gate=None,
 ) -> MergeResult:
     """Bring a worktree's changes (vs its ``base_ref``) into the target repo's
     working tree — but ONLY if they apply cleanly. Never forces, never leaves a
@@ -370,6 +363,14 @@ def merge_worktree(
     Completes the fan-out-writers → review (``diff_summary``) → merge flow.
     ``target_repo`` defaults to ``info.repo_dir`` (the source). Changes land in
     the working tree *uncommitted* so the parent can review and commit them.
+
+    ``gate(paths)`` -- every path the merge would add, change, delete or
+    rename (both names), relative to the target -- returns a refusal string
+    or None. It runs BEFORE anything is applied; a refusal leaves the target
+    untouched. Without it the merge was a way around the write gate: a file
+    the session may not write (a protected one, one outside its write scope)
+    was edited in the worktree and applied back by git, file by file
+    unchecked (found running wave 14, 2026-10-09).
     """
     repo = Path(target_repo).resolve() if target_repo else info.repo_dir
     wt = info.final_path or info.path
@@ -384,6 +385,25 @@ def merge_worktree(
     if not patch.strip():
         return MergeResult(True, False, [], "no changes to merge")
     files = _changed_files(wt, info.base_ref)
+    if gate is not None:
+        # NUL-separated and unquoted (-z): the gate must see the names git
+        # will write. Split on whitespace, a rename of "a b/c" (outside the
+        # scope) to "b/d" was checked as "a" and "b/c" -- both allowed by a
+        # scope of ("a", "b/*") -- and the merge deleted "a b/c" (measured on
+        # #143's code). Without -z git also quotes non-ASCII names, which
+        # the gate cannot match. --no-renames lists both sides of a rename.
+        try:
+            touched = [name for name in _run_git(
+                wt, "diff", "--cached", "--name-only", "--no-renames", "-z",
+                info.base_ref).split("\0") if name]
+        except WorktreeError as exc:
+            return MergeResult(False, False, files,
+                               f"could not list the changed files: {exc}")
+        refusal = gate(sorted(set(touched)))
+        if refusal:
+            return MergeResult(
+                False, False, files,
+                f"merge refused, nothing applied to {repo}: {refusal}"[:800])
     ok, err = _git_apply(repo, patch, check=True)
     if not ok:
         return MergeResult(

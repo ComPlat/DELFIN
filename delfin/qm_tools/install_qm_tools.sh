@@ -25,9 +25,38 @@ ORCA_LOCAL_DIR="${ROOT}/third_party/orca"
 GXTB_TAG="${GXTB_TAG:-v2.0.1}"
 GXTB_ASSET="${GXTB_ASSET:-xtb-6.7.1-gxtb-140526-linux-x86_64.tar.xz}"
 GXTB_URL="${GXTB_URL:-https://github.com/grimme-lab/g-xtb/releases/download/${GXTB_TAG}/${GXTB_ASSET}}"
+# The SHA-256 of each v2.0.1 asset, read 2026-10-16 from the release's
+# <asset>.sha256 files and equal to the digest GitHub records for the
+# asset. It used to be fetched beside the tarball from the same place --
+# which detects a truncated download, not a replaced one -- and a host
+# without sha256sum installed it unchecked. Another asset or tag needs
+# GXTB_SHA256.
+gxtb_sha256() {
+  case "$1" in
+    xtb-6.7.1-gxtb-140526-linux-x86_64.tar.xz) printf '%s\n' cdfb81164f8d3300fc451dbbf2414528b533e71f7a30ec824b564cd30d6d9e5c ;;
+    xtb-6.7.1-gxtb-140526-macos-arm64.tar.gz) printf '%s\n' 035a37f241a24067eb854177ea0dd3e1d1b48aca2155cf934aae315351e098af ;;
+    xtb-6.7.1-gxtb-140526-macos-x86_64.tar.gz) printf '%s\n' 3f5f7ee80a66bce911cd51dcca894fa087e7039b51e8c2e036ba74208a8e3b62 ;;
+    *) return 1 ;;
+  esac
+}
+GXTB_SHA256="${GXTB_SHA256:-$(gxtb_sha256 "${GXTB_ASSET}" || true)}"
+# xtb4stda and stda_v1.6.1: the two binaries of the xtb4stda v1.0 release
+# and the runtime parameter files at the commit that tag names
+# (e72e89bc...). Each file is held to its SHA-256 and nothing that fails
+# the check is installed. The runtime files used to come from the moving
+# master branch; the 15 files are byte-identical at v1.0 and at master
+# 238db6c7 (git blob ids compared, 2026-10-15), so pinning the tag changes
+# no byte that is installed. The binary digests were computed from the
+# release downloads on 2026-10-15 and agree with the RECORD of the
+# delfin_complat 1.1.12 wheel on PyPI (2026-03-27), which shipped the same
+# two files. Override a URL to use a mirror; the digests still apply. Move
+# a digest only after checking the new file.
+XTB4STDA_REF="${XTB4STDA_REF:-e72e89bc797a0d04a4436e970370490cce354e75}"
 XTB4STDA_URL="${XTB4STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/xtb4stda}"
 STDA_URL="${STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/stda_v1.6.1}"
-XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubusercontent.com/grimme-lab/xtb4stda/master}"
+XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubusercontent.com/grimme-lab/xtb4stda/${XTB4STDA_REF}}"
+XTB4STDA_SHA256="${XTB4STDA_SHA256:-7ece5b7b8959a8a4067709f6df23480eb302c48e57a20b1d77367c76336d302b}"
+STDA_SHA256="${STDA_SHA256:-3875e203acafa7c2fdb23fb1f2a410a28afccba7f915839b4b2dda8c7fe5bb7e}"
 # The v2.0.1 tag this used to fetch is gone from GitHub (404, with no tags left
 # at all), so a fresh install could not build std2. A commit of master is
 # pinned instead: the same source every time, until STD2_REF is moved on
@@ -35,6 +64,11 @@ XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubuserco
 STD2_REF="${STD2_REF:-8d50f9f2a4b66b534e19bb8a99524be6b7153a47}"
 STD2_TAG="${STD2_TAG:-${STD2_REF:0:12}}"
 STD2_SRC_URL="${STD2_SRC_URL:-https://codeload.github.com/grimme-lab/std2/tar.gz/${STD2_REF}}"
+# The SHA-256 of that archive, computed 2026-10-16 from two downloads that
+# agreed byte for byte. GitHub generates the archive; if it ever changes
+# the compression the check fails closed and names both digests -- verify
+# the new archive against the commit and set STD2_SHA256.
+STD2_SHA256="${STD2_SHA256:-c1ad90fcac3d87654f73b10225d27aef5ede4ff435b28b33167e66e53bcf856b}"
 
 # Whether a tool already on this system may stand in for one of ours at all.
 USE_SYSTEM_TOOLS="${USE_SYSTEM_TOOLS:-1}"
@@ -122,6 +156,65 @@ download_file() {
   have curl || die "curl not found"
   log "download ${url}"
   curl -fL --retry 3 --retry-delay 2 -o "${dest}" "${url}"
+}
+
+sha256_of() {
+  # The digest alone on stdout; status 1 when no tool can compute one.
+  if have sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  elif have shasum; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif have python3; then
+    python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  else
+    return 1
+  fi
+}
+
+fetch_verified() {
+  # download_file, then the SHA-256 check; fails closed. A download kept
+  # from an earlier run that does not match is fetched once more (a
+  # truncated file from an interrupted run is the ordinary cause); a fresh
+  # download that does not match is removed and the tool is not installed.
+  # A fourth argument names the file in the message of a failed download.
+  local url="$1" dest="$2" want="$3" label="${4:-$(basename "$2")}" got reused=0
+  [[ -f "${dest}" && "${FORCE_REDOWNLOAD}" != "1" ]] && reused=1
+  download_file "${url}" "${dest}" || { rm -f "${dest}"; die "${label} could not be downloaded from ${url}"; }
+  got="$(sha256_of "${dest}")" \
+    || die "no sha256sum, shasum or python3 to verify $(basename "${dest}"); an unchecked download is not installed"
+  if [[ "${got}" != "${want}" && "${reused}" == "1" ]]; then
+    log "the kept download $(basename "${dest}") does not match its checksum; fetching it again"
+    rm -f "${dest}"
+    download_file "${url}" "${dest}" || { rm -f "${dest}"; die "${label} could not be downloaded from ${url}"; }
+    got="$(sha256_of "${dest}")"
+  fi
+  if [[ "${got}" != "${want}" ]]; then
+    rm -f "${dest}"
+    die "checksum mismatch for $(basename "${dest}") from ${url}: expected ${want}, got ${got}. The file was removed and nothing was installed from it. If upstream replaced the file on purpose, check the new one and set the matching *_SHA256 variable at the top of install_qm_tools.sh."
+  fi
+  log "checksum verified: $(basename "${dest}")"
+}
+
+xtb4stda_runtime_sha256() {
+  # A case rather than an associative array: bash 3.2 (macOS) has none.
+  case "$1" in
+    .xtb4stdarc)               echo 2807a07a2eb793bb782c8fd3bfcce36efba54b932bbcb1c2a781414f08c71019 ;;
+    .param_stda1.xtb)          echo 51932398d21887a846b5e3d8c7b0039594db0f2ee0bf9846313a3440fe0856e3 ;;
+    .param_stda2.xtb)          echo 070c732715329a961780e6e3f14bc316db8a25b9579bf2605d47efa8917b8323 ;;
+    .param_gbsa_acetone)       echo ba83a1f806023d4389e190ff852a9e5f3c7903f53b6dae52dcb7fb823bbd9d35 ;;
+    .param_gbsa_acetonitrile)  echo 0988753566d38e09c7920ea6988605bd6073d9649015d083b282bc4d9ea0dc66 ;;
+    .param_gbsa_benzene)       echo 4759f26883e92bf98cd3e06ab6429bee1c644151deef4bf4fb7feb52b1a64afa ;;
+    .param_gbsa_ch2cl2)        echo 5be38f01c79e894086d2a8d20cb8bc3c2472e32cc671001b6f2a91a0872783cb ;;
+    .param_gbsa_chcl3)         echo 5be38f01c79e894086d2a8d20cb8bc3c2472e32cc671001b6f2a91a0872783cb ;;
+    .param_gbsa_cs2)           echo 37f42196f1e49b5670f139cb3851ab26e8a49cb631392697d29e335a5e15fe42 ;;
+    .param_gbsa_dmso)          echo 4d03df68c4a0a9cca4428ccbf304ccd5c2b17835753b78fb3a2b87f0a443d1f8 ;;
+    .param_gbsa_ether)         echo e037323e0fa4d0a616e19d3007b703a07c4f81b136bd8361dcafea8db61739f2 ;;
+    .param_gbsa_h2o)           echo 7a7287fad9b85ee7a9022ac56107298a7a0e994ff9afed590a6ca151cd2c4274 ;;
+    .param_gbsa_methanol)      echo 0c9c9c7f94dea948efb8e66e6dc8a672c2424a4d290dec5835bcf1379ebfadf1 ;;
+    .param_gbsa_thf)           echo 2e55dc9be60a3b6a8792d498b8c5c3101e5f68d9ada316b5aa9a948bd6824112 ;;
+    .param_gbsa_toluene)       echo 4759f26883e92bf98cd3e06ab6429bee1c644151deef4bf4fb7feb52b1a64afa ;;
+    *) return 1 ;;
+  esac
 }
 
 link_into_bin() {
@@ -317,11 +410,26 @@ install_conda_stack() {
 # Fetch micromamba itself, when there is none and one is needed.
 #
 # Telling a user that Settings can install it, and then not installing it, is
-# the shape of problem this whole layer exists to remove. It is ten megabytes
-# and one file; it goes into the tool directory beside everything else rather
+# the shape of problem this whole layer exists to remove. It is one file of
+# about 18 MB; it goes into the tool directory beside everything else rather
 # than into the home directory, so it is as removable as the tools it builds.
-MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
 AUTO_MICROMAMBA="${AUTO_MICROMAMBA:-1}"
+
+# The shared micromamba fetcher (delfin/installers/fetch_micromamba.sh): one
+# pinned release per platform, held to its SHA-256. Beside this script when
+# the installer was staged into a tool directory, one level up in a checkout
+# or an installed package.
+micromamba_fetcher() {
+  local here candidate
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for candidate in "${here}/fetch_micromamba.sh" "${here}/../installers/fetch_micromamba.sh"; do
+    if [ -f "${candidate}" ]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 bootstrap_micromamba() {
   # Whatever this function prints to stdout is its answer -- the path. Every
@@ -329,23 +437,20 @@ bootstrap_micromamba() {
   # measured, "[qm_tools] no micromamba on this machine; fetching one" was
   # captured into the variable and then executed as a command.
   [[ "${AUTO_MICROMAMBA}" == "1" ]] || return 1
-  have curl || { log >&2 "no curl, so micromamba cannot be fetched either"; return 1; }
-  local target="${ROOT}/bin/micromamba"
+  local target="${ROOT}/bin/micromamba" fetcher
   if [[ -x "${target}" ]]; then
     printf "%s\n" "${target}"
     return 0
   fi
-  log >&2 "no micromamba on this machine; fetching one (about 10 MB)"
-  local work="${ROOT}/downloads/micromamba-$$"
-  mkdir -p "${work}" "${ROOT}/bin"
-  if ! curl -fsSL "${MICROMAMBA_URL}" | tar -xj -C "${work}" bin/micromamba 2>/dev/null; then
-    rm -rf "${work}"
-    log >&2 "micromamba could not be fetched"
+  if ! fetcher="$(micromamba_fetcher)"; then
+    log >&2 "fetch_micromamba.sh is missing beside this installer, so micromamba is not fetched"
     return 1
   fi
-  install -m 755 "${work}/bin/micromamba" "${target}"
-  rm -rf "${work}"
-  log >&2 "micromamba is at ${target}"
+  log >&2 "no micromamba on this machine; fetching the pinned release"
+  if ! bash "${fetcher}" "${target}" >&2; then
+    log >&2 "micromamba could not be fetched and verified"
+    return 1
+  fi
   printf "%s\n" "${target}"
   return 0
 }
@@ -398,7 +503,6 @@ install_mopac() {
 
 install_gxtb() {
   local archive="${DOWNLOAD_DIR}/${GXTB_ASSET}"
-  local sums="${archive}.sha256"
   local target="${ROOT}/third_party/gxtb"
 
   if [[ -x "${target}/bin/xtb" && "${FORCE_REDOWNLOAD}" != "1" ]]; then
@@ -407,20 +511,9 @@ install_gxtb() {
     return
   fi
 
-  download_file "${GXTB_URL}" "${archive}"
-  # The release publishes a checksum beside the tarball.  A binary fetched
-  # from the network and run on a user's structures is worth the one line it
-  # costs to check that it is the one that was published.
-  download_file "${GXTB_URL}.sha256" "${sums}"
-  if have sha256sum; then
-    local want got
-    want="$(awk '{print $1}' "${sums}")"
-    got="$(sha256sum "${archive}" | awk '{print $1}')"
-    [[ "${want}" == "${got}" ]] || die "g-xTB checksum mismatch: expected ${want}, got ${got}"
-    log "g-xTB checksum verified"
-  else
-    warn "sha256sum not found; the g-xTB download could not be verified"
-  fi
+  [[ -n "${GXTB_SHA256}" ]] \
+    || die "no SHA-256 is pinned for ${GXTB_ASSET}; set GXTB_SHA256 to the digest of the file, checked against the release"
+  fetch_verified "${GXTB_URL}" "${archive}" "${GXTB_SHA256}"
 
   rm -rf "${target}"
   mkdir -p "${target}"
@@ -477,10 +570,11 @@ install_xtb4stda_bundle() {
   )
   local runtime_file
 
-  download_file "${XTB4STDA_URL}" "${xtb4stda_dl}"
-  download_file "${STDA_URL}" "${stda_dl}"
+  fetch_verified "${XTB4STDA_URL}" "${xtb4stda_dl}" "${XTB4STDA_SHA256}"
+  fetch_verified "${STDA_URL}" "${stda_dl}" "${STDA_SHA256}"
   for runtime_file in "${runtime_files[@]}"; do
-    download_file "${XTB4STDA_RUNTIME_BASE_URL}/${runtime_file}" "${XTB4STDA_SHARE_DIR}/${runtime_file}"
+    fetch_verified "${XTB4STDA_RUNTIME_BASE_URL}/${runtime_file}" "${XTB4STDA_SHARE_DIR}/${runtime_file}" \
+      "$(xtb4stda_runtime_sha256 "${runtime_file}")"
   done
 
   install_file_into_bin "${xtb4stda_dl}" xtb4stda
@@ -500,9 +594,7 @@ build_std2_from_source() {
 
   # A failed download used to go on into tar and meson, which then reported
   # errors about directories that were never there instead of the cause.
-  download_file "${STD2_SRC_URL}" "${std2_tar}" \
-    || die "std2 source could not be downloaded from ${STD2_SRC_URL}"
-  [[ -s "${std2_tar}" ]] || die "std2 source could not be downloaded from ${STD2_SRC_URL}"
+  fetch_verified "${STD2_SRC_URL}" "${std2_tar}" "${STD2_SHA256}" "std2 source"
   rm -rf "${src_dir}"
   mkdir -p "${src_dir}"
   tar -xzf "${std2_tar}" -C "${src_dir}" --strip-components=1

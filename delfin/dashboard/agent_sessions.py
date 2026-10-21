@@ -15,7 +15,7 @@ from __future__ import annotations
 import html
 import json
 import os
-import subprocess
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -33,6 +33,54 @@ _RESUME_REFRESH_S = 60.0
 # How long the first click on "Stop all agents" waits for the second.
 _STOP_ARM_S = 8.0
 
+#: Ids of contexts whose splitter init script is already registered. The
+#: dashboard builds the agent tab once, but a settings change can rebuild a
+#: tab on the same context; without the guard the drag script would be
+#: emitted twice into the one keep_js() payload.
+_REGISTERED_INIT_JS = set()
+
+#: The stop of every running refresh loop, keyed by ``id(ctx)`` of the
+#: context whose session list started it. A list rebuilt on the same
+#: context stops the previous loop; ``stop_refresh_loops`` stops them all.
+_REFRESH_LOOPS: dict[int, Callable[[], None]] = {}
+_REFRESH_LOOPS_LOCK = threading.Lock()
+
+
+def stop_refresh_loops() -> int:
+    """Stop every session list's refresh loop in this process.
+
+    Output: how many loops were stopped. Each stop cancels the pending
+    timer and waits for a tick already running to finish, so nothing a
+    loop writes lands after this returns. Used at the end of a test, where
+    a loop started by one test would otherwise keep writing presence
+    records and the open-sessions file into the next test's redirected
+    home; a dashboard kernel ends its loops by ending."""
+    with _REFRESH_LOOPS_LOCK:
+        stops = list(_REFRESH_LOOPS.values())
+        _REFRESH_LOOPS.clear()
+    for stop in stops:
+        try:
+            stop()
+        except Exception:
+            pass
+    return len(stops)
+
+
+def _register_init_js(ctx: Any, script: str) -> None:
+    """Add ``script`` to a context's init-js payload, at most once."""
+    add = getattr(ctx, "add_init_js", None)
+    if not callable(add):
+        return
+    key = id(ctx)
+    if key in _REGISTERED_INIT_JS:
+        return
+    _REGISTERED_INIT_JS.add(key)
+    try:
+        add(script)
+    except Exception:
+        _REGISTERED_INIT_JS.discard(key)
+
+
 # The session list, in the agent tab's own palette (tab_agent._AGENT_CSS):
 # system font, slate greys, the chat's light blue for the session on screen.
 # Everything is border-box and the column clips horizontally -- widgets set
@@ -44,8 +92,17 @@ _SIDEBAR_CSS = """<style>
        The shell clips with `clip`, not `hidden` -- `hidden` makes the
        shell a scroll box and a sticky child sticks to that, not the page. */
     position: sticky; top: 8px; align-self: flex-start;
-    box-sizing: border-box; flex: 0 0 236px !important; width: 236px;
-    max-width: 236px; margin: 0 12px 0 0; padding: 8px 8px 10px; gap: 6px;
+    /* The drag writes --delfin-sessions-w on the shell and this rule
+       reads it. It cannot write `flex` directly: the declaration below is
+       `!important` (widget stylesheets override a plain one), and a
+       stylesheet !important beats an inline declaration -- so the handler
+       on this branch set sidebar.style.flex on every move and the column
+       never changed width. A custom property is read by the !important
+       rule itself, so the drag wins without the rule being weakened. */
+    box-sizing: border-box;
+    flex: 0 0 var(--delfin-sessions-w, 236px) !important;
+    width: var(--delfin-sessions-w, 236px);
+    margin: 0; padding: 8px 8px 10px; gap: 6px;
     background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 10px;
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -85,6 +142,12 @@ _SIDEBAR_CSS = """<style>
     border-radius: 50%; background: #16a34a; vertical-align: middle;
     animation: delfin-session-pulse 1.4s ease-in-out infinite; }
 @keyframes delfin-session-pulse { 50% { opacity: 0.35; } }
+.delfin-session-needs .delfin-session-title::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #f97316; vertical-align: middle; }
+.delfin-session-unseen .delfin-session-title::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #9ca3af; vertical-align: middle; }
 @media (prefers-reduced-motion: reduce) {
     .delfin-session-busy .delfin-session-title::before { animation: none; } }
 .delfin-session-close { flex: 0 0 22px; width: 22px !important;
@@ -125,8 +188,285 @@ _SIDEBAR_CSS = """<style>
     border: 1px solid #fca5a5 !important; border-radius: 6px; font-size: 12px; }
 .delfin-session-stopall.delfin-armed { background: #b91c1c !important;
     color: #ffffff !important; }
+/* Draggable divide between the sidebar and the chat, mirroring the calc
+   browser's .calc-splitter. The shell aligns items at flex-start, so a
+   height:100% strip would collapse to zero -- the splitter is sticky too,
+   tracking the same 100vh column the sidebar sticks to. */
+.delfin-session-shell { align-items: flex-start; }
+/* The gap belongs to the SPLITTER, equally on both sides, and not to the
+   sidebar. It was the sidebar's `margin-right: 12px`, which put the whole
+   gap on one side: 12px between column and bar, nothing between bar and
+   chat, so the handle sat flush against the chat with a wide empty strip
+   behind it. One margin here is symmetric by construction -- there is no
+   second number that can drift away from the first. */
+.delfin-splitter-host { align-self: flex-start; display: flex;
+    flex-direction: column; position: sticky; top: 8px;
+    margin: 0 var(--delfin-splitter-gap, 10px); }
+/* Height ends at the Send row, not at the bottom of the page. The JS
+   below measures it; this is what shows until then and if the measure
+   fails -- the chat's own height (tab_agent: 100vh - 460px) plus the
+   composer, so the first paint is already close. */
+.delfin-session-splitter { width: 8px;
+    height: calc(100vh - 400px); min-height: 160px;
+    cursor: col-resize; touch-action: none;
+    background: linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);
+    border-radius: 4px; z-index: 10; pointer-events: auto; }
+.delfin-session-splitter:hover { background: linear-gradient(
+    to right, #b0b0b0, #e0e0e0, #b0b0b0); }
 </style>"""
 
+#: Drag the sessions column to a width. Runs once per shell (data-bound
+#: guard) after the page is assembled, along every tab's init script in the
+#: one keep_js() call from the dashboard. The widths it writes override the
+#: 236px CSS default on the sidebar, so a drag sticks and a refresh keeps
+#: the choice. Mirrors the calc browser's .calc-splitter handler.
+_SPLITTER_INIT_JS = """\
+(function () {
+    // The agent tab's DOM may not exist when this runs. ipywidgets Tab
+    // renders the SELECTED child only, and the dashboard sends every
+    // tab's init script once the page is assembled -- so if the agent tab
+    // is not the one in front, querySelectorAll finds no shell, the loop
+    // body never executes, and nothing is ever bound. That is why the
+    // handle could not be dragged even after the width was made
+    // overridable: the handler was never attached in the first place.
+    //
+    // Every other tab with a splitter retries (tab_literature: 40 tries;
+    // tab_calculations_browser: 400). This one ran once. It now retries
+    // AND keeps watching, because a session opened minutes later brings
+    // its own shell, and a bounded retry that has already expired would
+    // leave that one dead.
+    function bindAll() {
+        var shells = document.querySelectorAll('.delfin-session-shell');
+        var bound = 0;
+        for (var i = 0; i < shells.length; i++) {
+            if (bind(shells[i])) bound += 1;
+        }
+        return bound;
+    }
+    function bind(shell) {
+            var bound = false;
+            if (!shell || shell.dataset.delfinSplitterBound) return false;
+            var splitter = shell.querySelector('.delfin-session-splitter');
+            var sidebar = shell.querySelector('.delfin-sessions');
+            var host = shell.querySelector('.delfin-splitter-host');
+            // Not marked until the parts are really there. Marking first
+            // meant a shell seen half-built was written off for good.
+            if (!splitter || !sidebar || !host) return false;
+            shell.dataset.delfinSplitterBound = '1';
+            var MIN = 170, MAX = 420;
+            // Read and write the one custom property the stylesheet's
+            // !important rule consumes. Writing sidebar.style.flex cannot
+            // work against that rule, and writing it anyway is what made
+            // the drag look dead on the real page while a DOM test that
+            // models no cascade reported it working.
+            function current() {
+                var v = shell.style.getPropertyValue('--delfin-sessions-w');
+                var n = parseFloat(v);
+                return isNaN(n) ? 236 : n;
+            }
+            function apply(w) {
+                w = Math.max(MIN, Math.min(MAX, Math.round(w)));
+                if (Math.abs(w - current()) < 1) return;
+                shell.style.setProperty('--delfin-sessions-w', w + 'px');
+            }
+            function onMove(e) {
+                var box = host.parentElement.getBoundingClientRect();
+                apply(e.clientX - box.left);
+            }
+            function onUp(e) {
+                if (e && e.pointerId != null) {
+                    try { splitter.releasePointerCapture(e.pointerId); }
+                    catch (err) { /* already released */ }
+                }
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
+            }
+            splitter.addEventListener('pointerdown', function (e) {
+                e.preventDefault();
+                try { splitter.setPointerCapture(e.pointerId); }
+                catch (err) { /* document listeners carry it */ }
+                document.addEventListener('pointermove', onMove);
+                document.addEventListener('pointerup', onUp);
+                document.addEventListener('pointercancel', onUp);
+            });
+            bound = true;
+
+            // The bar reaches down to the Send row and stops there. Run to
+            // the bottom of the column it looked like a page divider and
+            // kept growing with the transcript; the composer is where the
+            // conversation ends, so that is where the handle ends.
+            //
+            // Measured rather than computed from a CSS expression: the
+            // composer's height depends on the textarea, which the user can
+            // grow, and on whether the quick-cycle button is shown. The
+            // stylesheet carries an approximation for the first paint.
+            // Three guards, and each one is here because the first version
+            // without it made the window jitter visibly -- reported from a
+            // real session where the chat could not be read.
+            //
+            // The loop it closes: fit() writes the height of a CHILD of
+            // `shell`, and the observer watched `shell` itself. Every write
+            // could change the parent's measurement, which fired the
+            // observer, which wrote again.
+            var lastH = 0;
+            var pending = false;
+            function fit() {
+                var send = shell.querySelector('.delfin-agent-send-row');
+                if (!send) return;          // no composer yet: keep the CSS
+                var top = shell.getBoundingClientRect().top;
+                var bottom = send.getBoundingClientRect().bottom;
+                var h = Math.round(bottom - top);
+                if (h < 160) return;        // laid out but collapsed
+                // 1. A tolerance, not equality. Equality stops a repeat of
+                //    the SAME value but not an alternation between two that
+                //    differ by a pixel, which is what sub-pixel layout
+                //    produces and what oscillates forever.
+                if (Math.abs(h - lastH) <= 2) return;
+                lastH = h;
+                splitter.style.height = h + 'px';
+            }
+            // 2. One measurement per frame. A burst of observer callbacks
+            //    during a drag or a reflow collapses into a single write
+            //    instead of a write per callback.
+            function schedule() {
+                if (pending) return;
+                pending = true;
+                var run = function () { pending = false; fit(); };
+                if (typeof requestAnimationFrame === 'function') {
+                    requestAnimationFrame(run);
+                } else {
+                    setTimeout(run, 16);
+                }
+            }
+            fit();
+            // The composer changes height when the textarea is dragged or a
+            // long line wraps, and the window changes it too. A one-shot
+            // measure was right for one layout and wrong after the first
+            // resize.
+            window.addEventListener('resize', schedule);
+            try {
+                // 3. Watch the ROW that decides the height, not the
+                //    container the splitter lives in. The row's size does
+                //    not depend on the splitter's, so writing the splitter
+                //    cannot feed back into what is being measured.
+                var watched = shell.querySelector('.delfin-agent-send-row');
+                new ResizeObserver(schedule).observe(watched || shell);
+            } catch (err) { /* older browser: resize alone */ }
+            return bound;
+    }
+
+    // Try now, then keep trying: the tab may be rendered later, and a
+    // session opened later brings a shell of its own. Bounded polling
+    // first (fast, for the ordinary "tab not in front yet" case), then a
+    // MutationObserver, which costs nothing while nothing changes and
+    // catches a shell that appears long after the polling gave up.
+    bindAll();
+    var tries = 0;
+    (function poll() {
+        tries += 1;
+        bindAll();
+        if (tries < 60) setTimeout(poll, tries < 20 ? 100 : 500);
+    })();
+    try {
+        var seen = new MutationObserver(function () { bindAll(); });
+        seen.observe(document.body, {childList: true, subtree: true});
+    } catch (err) { /* no observer: the polling above did what it could */ }
+})();
+"""
+
+
+
+#: The row class for each dot; at most one is set at a time.
+_DOT_CLASSES = {
+    "needs": "delfin-session-needs",
+    "busy": "delfin-session-busy",
+    "unseen": "delfin-session-unseen",
+}
+
+
+#: Markup a title may open with that says nothing about the session.
+_LABEL_STRIP = re.compile(r"^[\s>#*`\-=|)\]]+")
+#: Only backticks and asterisks. NOT `_` or `~`: markdown uses them for
+#: emphasis, and this domain uses them in names -- stripping `_` turned
+#: the title "test_calc.py schlaegt fehl" into "testcalc.py", a file
+#: that does not exist. An emphasis mark lost is cosmetic; a filename
+#: altered is a wrong answer.
+_LABEL_MARKS = re.compile(r"[`*]+")
+
+#: How long a label may be before it is cut. Wide enough for a sentence
+#: a person wrote, short enough that three of them fit the hint.
+_LABEL_MAX = 40
+
+
+def session_label(title: Any, session_id: Any = "") -> str:
+    """A readable name for a session, from the text it opened with.
+
+    Input: the stored ``title`` (the user's first message) and the
+    session id. Output: a single line, at most ~40 characters plus an
+    ellipsis, never empty.
+
+    A title is a prompt, not a name. Of the 52 sessions on the machine
+    this was written on, 38 were unusable as a label: multi-line,
+    markdown headings, code fences, cut off mid-word. They are shown in
+    the Resume dropdown and in the hint warning that another session
+    already works in this repository -- so the control that exists to
+    keep two sessions out of one checkout was unreadable exactly where
+    it had to be read.
+
+    Truncation alone does not help: the first 40 characters of a
+    handover briefing are "# Übergabe: Sechs Arbeitszweige prüfen, z".
+    The FIRST LINE, with its markup removed and cut on a word boundary,
+    is a name. Falls back to a short form of the id, because a row with
+    no label cannot be told from the row above it.
+    """
+    for raw in str(title or "").splitlines():
+        line = _LABEL_MARKS.sub("", _LABEL_STRIP.sub("", raw)).strip()
+        line = " ".join(line.split())
+        if not line:
+            continue
+        if len(line) <= _LABEL_MAX:
+            return line
+        # Cut on a word boundary: a label that ends mid-word reads as a
+        # different word, and three of them in one sentence read as noise.
+        cut = line[:_LABEL_MAX].rsplit(" ", 1)[0].rstrip(" ,;:.")
+        # ...unless that leaves almost nothing. A title that opens with a
+        # long path ("Bau in tests/fixtures/user_project_workspace/ ein
+        # kleines Modul ...") has no space inside the budget, and the
+        # word boundary reduces it to "Bau in" -- which names no session.
+        # Below half the budget the character cut says more.
+        if len(cut) < _LABEL_MAX // 2:
+            cut = line[:_LABEL_MAX].rstrip()
+        return cut + "\u2026"
+    sid = str(session_id or "").strip()
+    return f"Session {sid[:8]}" if sid else "Untitled session"
+
+
+def needs_you(state: dict) -> bool:
+    """Whether a session is waiting for the user: an approval dialog, an
+    open question, or a plan to accept. Never raises."""
+    try:
+        broker = state.get("_kit_confirm_broker")
+        if broker is not None and getattr(broker, "_pending", None):
+            return True
+        ev = state.get("_ask_user_event")
+        if ev is not None and not ev.is_set():
+            return True
+        return bool(state.get("_pending_plan_body"))
+    except Exception:
+        return False
+
+
+def session_dot(*, busy: bool, needs: bool, unseen: bool) -> str:
+    """The row class for one session: orange when it needs you, green while
+    it works, grey when it finished while you were in another chat."""
+    if needs:
+        return _DOT_CLASSES["needs"]
+    if busy:
+        return _DOT_CLASSES["busy"]
+    if unseen:
+        return _DOT_CLASSES["unseen"]
+    return ""
 
 def _give_emergency_stop() -> None:
     """Give the emergency stop from a process of its own.
@@ -277,15 +617,50 @@ def workspace_choices(ctx: Any, typed: str = "") -> list[str]:
     that start with what was typed. Hidden folders only when the typed
     name starts with a dot. Asked on every keystroke, so bounded and
     never raising.
+
+    A directory inside a session worktree that is held -- see
+    ``_worktree_hold_reason`` -- is NOT offered: starting there nests a
+    worktree-of-a-worktree. A worktree whose session is gone stays offered.
+    When the typed path is a held tree, ``_suggest_worktree`` says why it
+    is missing from the list.
+
+    Cost: the presence directory is read at most once per call, and the
+    decision is made once per sidecar -- the subfolders of one worktree all
+    find the same record (measured before: 199 presence reads for 200
+    entries, 200 ms per keystroke).
     """
+    rows: list = []
+    decided: dict = {}
+
+    def _offer(text: str) -> bool:
+        text = str(text or "").strip()
+        if not text:
+            return False
+        try:
+            side = read_worktree_sidecar(text)
+        except Exception:
+            return True
+        if side is None:
+            return True
+        key = str(side.get("path") or text)
+        if key not in decided:
+            if not rows:
+                rows.append(_open_session_rows())
+            try:
+                decided[key] = not _worktree_hold_reason(
+                    key, side, sessions=rows[0])
+            except Exception:
+                decided[key] = True
+        return decided[key]
+
     out: list[str] = []
     for d in (default_workspace(ctx), getattr(ctx, "agent_dir", None),
               getattr(ctx, "calc_dir", None), getattr(ctx, "repo_dir", None)):
         text = str(d or "").strip()
-        if text and text not in out:
+        if _offer(text) and text not in out:
             out.append(text)
     for text in _folders_like(typed):
-        if text not in out:
+        if _offer(text) and text not in out:
             out.append(text)
         if len(out) >= _PICKER_MAX:
             break
@@ -333,9 +708,9 @@ def _exclude_locally(root: str, common_dir: str, pattern: str = ".delfin/") -> N
     """Keep ``pattern`` out of ``git status`` in this clone only: an entry
     in its info/exclude, nothing committed. Skipped when already ignored."""
     try:
-        probe = subprocess.run(
-            ["git", "-C", root, "check-ignore", "-q", ".delfin/worktrees/probe"],
-            capture_output=True, timeout=5)
+        from delfin.agent import safe_git
+        probe = safe_git.run(["check-ignore", "-q", ".delfin/worktrees/probe"],
+                             root, timeout=5)
         if probe.returncode == 0:
             return
         exclude = Path(common_dir) / "info" / "exclude"
@@ -365,11 +740,422 @@ def session_worktree(workspace: str) -> str:
     _exclude_locally(repo["root"], repo["common_dir"])
     info = _wt.enter_worktree(repo["root"], branch_prefix="session",
                               parent=Path(repo["root"]) / ".delfin" / "worktrees")
+    # What a release will need, written INSIDE the tree so it goes away
+    # with it. Nothing kept the WorktreeInfo: this function returned a path
+    # string and dropped the rest on the floor, so no caller COULD release
+    # the tree -- neither close_session nor the tab's shutdown had a
+    # worktree step, and every "Own worktree" session left a checkout and
+    # an orphan session/<hex> branch behind for good.
+    #
+    # pid and host are recorded so a later reader can tell a tree whose
+    # session is gone from one that is still being worked in, without
+    # judging another node's pid.
+    _write_worktree_sidecar(info)
     try:
         inside = Path(workspace).resolve().relative_to(Path(repo["root"]))
     except ValueError:
         inside = Path(".")
     return str((info.path / inside).resolve())
+
+
+#: Beside the worktree's own git metadata, not in a central registry: the
+#: record and the thing it describes are then removed by the same act, so
+#: there is no list that can outlive its entries.
+_WORKTREE_SIDECAR = ".delfin/session_worktree.json"
+
+
+def _write_worktree_sidecar(info) -> None:
+    """Record repo, branch and owner for a session worktree. Never raises."""
+    import json
+    import os
+    import socket
+    from delfin.agent import proc_identity as _proc_identity
+    try:
+        path = Path(info.path) / _WORKTREE_SIDECAR
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "repo_dir": str(info.repo_dir),
+            "path": str(info.path),
+            "branch": str(info.branch),
+            "base_ref": str(info.base_ref),
+            "created_at": float(info.created_at),
+            "pid": os.getpid(),
+            # With the pid: a number handed out again later names a
+            # different process (proc_identity).
+            "proc_start": _proc_identity.process_start(os.getpid()),
+            "host": (socket.gethostname() or "").strip(),
+        }), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def read_worktree_sidecar(workspace) -> dict | None:
+    """The sidecar for the session worktree ``workspace`` is in, or None.
+
+    ``workspace`` may be a directory inside the worktree rather than its
+    root -- session_worktree returns the path at the same place inside the
+    tree as the original workspace was inside the repository -- so the
+    search walks upwards. It stops at the first sidecar found: a worktree
+    nested inside another would otherwise be released by its parent's
+    record.
+    """
+    import json
+    try:
+        here = Path(workspace).expanduser().resolve()
+    except Exception:
+        return None
+    for candidate in (here, *here.parents):
+        side = candidate / _WORKTREE_SIDECAR
+        try:
+            if side.is_file():
+                data = json.loads(side.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+#: How many trees one sweep may remove. A pass that walks a whole
+#: worktrees directory after a crash should not turn into an unbounded
+#: amount of git work at startup; what is left over is picked up by the
+#: next one.
+_SWEEP_LIMIT = 12
+
+
+def _sweep_candidates(worktrees_dir) -> list[dict]:
+    """Sidecars under ``worktrees_dir`` that THIS host wrote, newest last.
+
+    Only our own host: the sidecar records a pid, and a pid written on
+    another login node names nothing here, so a tree belonging to one
+    cannot be judged from this side. Each host reclaims its own.
+    """
+    import socket
+    here = (socket.gethostname() or "").strip()
+    out: list[dict] = []
+    try:
+        entries = sorted(Path(worktrees_dir).iterdir())
+    except OSError:
+        return out
+    for tree in entries:
+        if not tree.is_dir():
+            continue
+        side = read_worktree_sidecar(tree)
+        if not side:
+            continue
+        if str(side.get("host") or "").strip() != here:
+            continue
+        out.append(side)
+    return out
+
+
+def _worktree_is_orphaned(side: dict, *, saved_workspaces=()) -> str:
+    """"" if the tree in ``side`` may be reclaimed, else why it may not.
+
+    Three questions this function owns, and it answers none that
+    ``exit_worktree`` already answers -- uncommitted changes and running
+    background jobs are its decision, asked afterwards by the caller, so
+    there is one answer to "is this tree spare" rather than two.
+
+      * is its owning process still alive on this host
+      * is a live session working in it
+      * would a saved session be reopened into it
+
+    The third matters because a reopened session reuses its tree: the
+    session list remembers the workspace, so removing it would turn a
+    resume into a session that starts somewhere else without saying so.
+    """
+    import socket
+    tree = str(side.get("path") or "")
+    if not tree:
+        return "the record names no path"
+    here = (socket.gethostname() or "").strip()
+    if str(side.get("host") or "").strip() != here:
+        return "it belongs to another host"
+    owner = _worktree_owner_alive(side)
+    if owner is None:
+        return f"its owning process ({side.get('pid')}) may still be running"
+    if owner:
+        return f"its owning process ({side.get('pid')}) is still running"
+    holder = _live_session_in(tree)
+    if holder:
+        return f"a live session is working in it ({holder})"
+    try:
+        root = Path(tree).resolve()
+    except Exception:
+        return "its path cannot be resolved"
+    for ws in saved_workspaces:
+        try:
+            candidate = Path(str(ws)).expanduser().resolve()
+        except Exception:
+            continue
+        if candidate == root or root in candidate.parents:
+            return "a saved session would be reopened into it"
+    return ""
+
+
+def _saved_session_workspaces() -> list[str]:
+    """Workspaces of the sessions that can still be resumed."""
+    try:
+        from delfin.agent import session_store as _store
+        return [str(row.get("workspace") or "")
+                for row in (_store.list_sessions() or ())
+                if row.get("workspace")]
+    except Exception:
+        return []
+
+
+def reclaim_orphaned_worktrees(workspace, *, limit: int = _SWEEP_LIMIT) -> dict:
+    """Remove session worktrees nobody is in. Returns a short report.
+
+    ``{"released": [paths], "kept": {path: why}}``. Never raises: this
+    runs while a dashboard is starting, and a directory that could not be
+    tidied must not stop a session from opening.
+
+    A session that crashes -- a killed kernel, a lost node -- never
+    reaches close_session, so its tree and its session/<hex> branch stay.
+    Nothing collected them: measured on this installation before the
+    sidecar existed, there was no record to collect them BY.
+
+    Five conditions, and a tree is removed only when all five hold: it
+    carries a sidecar this host wrote, its owning process is gone, no live
+    session is working in it, no saved session would be reopened into it,
+    and -- asked by exit_worktree, not here -- it has no uncommitted
+    changes and no background jobs running inside it.
+
+    Deliberately NOT a general cleaner. It touches only directories whose
+    sidecar says DELFIN created them for a session on this host, so a
+    worktree a person made by hand, and anything else that happens to sit
+    in that directory, is not its business.
+    """
+    report: dict = {"released": [], "kept": {}}
+    try:
+        from delfin.agent import session_presence as _presence
+        repo = _presence.repository_of(str(workspace or ""))
+        root = repo.get("root") or ""
+        if not root:
+            return report
+        worktrees_dir = Path(root) / ".delfin" / "worktrees"
+        if not worktrees_dir.is_dir():
+            return report
+        saved = _saved_session_workspaces()
+        for side in _sweep_candidates(worktrees_dir)[:max(0, int(limit))]:
+            tree = str(side.get("path") or "")
+            why = _worktree_is_orphaned(side, saved_workspaces=saved)
+            if why:
+                report["kept"][tree] = why
+                continue
+            out = release_session_worktree(tree)
+            if out.get("released"):
+                report["released"].append(tree)
+            else:
+                report["kept"][tree] = out.get("kept") or "git kept it"
+        # Administrative entries for trees whose directories are gone.
+        if report["released"]:
+            try:
+                from delfin.agent import worktree as _wt
+                _wt._run_git(Path(root), "worktree", "prune")
+            except Exception:
+                pass
+    except Exception:
+        return report
+    return report
+
+
+def _worktree_owner_alive(side: dict):
+    """Whether the process that made the worktree in ``side`` still runs.
+
+    True / False, or None when it cannot be asked. ``proc_identity.alive``
+    with the recorded pid, start time and host: a pid written on another
+    host is None (it names nothing here), and a pid whose start time
+    differs is a later process, so False. A sidecar written before the
+    start time was recorded degrades to the plain pid check.
+    """
+    from delfin.agent import proc_identity as _proc_identity
+    try:
+        return _proc_identity.alive(
+            int(side.get("pid") or 0), str(side.get("proc_start") or ""),
+            str(side.get("host") or "").strip())
+    except (TypeError, ValueError):
+        return False
+
+
+def _open_session_rows() -> list:
+    """session_presence's open sessions, or [] when they cannot be read."""
+    try:
+        from delfin.agent import session_presence as _presence
+        return list(_presence.open_sessions() or ())
+    except Exception:
+        return []
+
+
+def _worktree_hold_reason(workspace, side: dict | None = None, *,
+                          sessions=None) -> str:
+    """Why the session worktree ``workspace`` is in may not be started in,
+    or "" when it may (or when ``workspace`` is not in a session worktree).
+
+    Two holders: a live session working in the tree (session_presence),
+    and the process that made it, still running on this host. The second
+    covers a live session whose presence record went stale. An owner on
+    another host cannot be asked and does not hide the tree; a live session
+    there is found by the first check, which trusts other hosts' records.
+
+    ``sessions`` is a prefetched ``open_sessions()`` list so a caller that
+    asks about many paths reads the presence directory once.
+    """
+    if side is None:
+        side = read_worktree_sidecar(workspace)
+    if side is None:
+        return ""
+    tree = str(side.get("path") or workspace)
+    # inside=True: session_worktree hands a session the path at the same
+    # place inside the tree as its workspace was inside the repository, so
+    # a session working in tree/sub holds the tree.
+    holder = _live_session_in(tree, rows=sessions, inside=True)
+    if holder:
+        return f"a live session is working in it ({holder})"
+    if _worktree_owner_alive(side) is True:
+        return ("the dashboard process that created it is still running "
+                f"(pid {side.get('pid')})")
+    return ""
+
+
+def _live_session_in(workspace, rows=None, *, inside: bool = False) -> str:
+    """A label for the live session whose workspace is ``workspace``, or "".
+
+    ``inside=True`` also counts a session whose workspace lies below
+    ``workspace``. ``rows`` is a prefetched ``open_sessions()`` list.
+
+    Liveness is session_presence's answer, not a second one: its records
+    carry pid and host and its reader already drops the stale ones. A
+    record from another host is trusted as live -- a pid from another login
+    node names nothing here, so it cannot be checked and must not be
+    assumed dead.
+    """
+    try:
+        here = Path(workspace).expanduser().resolve()
+    except Exception:
+        return ""
+    if rows is None:
+        rows = _open_session_rows()
+    for row in rows or ():
+        try:
+            ws = Path(str(row.get("workspace") or "")).resolve()
+            if ws != here and not (inside and here in ws.parents):
+                continue
+        except Exception:
+            continue
+        title = str(row.get("title") or "").strip()
+        key = str(row.get("key") or "").strip()
+        host = str(row.get("host") or "").strip()
+        label = title or key or "unnamed"
+        return f"{label} on {host}" if host else label
+    return ""
+
+
+def session_worktree_state(workspace, *, hold_fn=None) -> dict:
+    """Classify a directory as a session worktree: its holding state.
+
+    Returns ``{"is_worktree": bool, "holder": str, "why": str,
+    "releasable": bool}``.
+
+      - ``is_worktree`` — the path carries a ``.delfin/session_worktree.json``
+        sidecar, so it is a session worktree on disk (or a session is started
+        inside one).
+      - ``holder`` — the label of a LIVE session working in it; empty when no
+        live session is in it (its owning session has gone, or the path is
+        not a worktree at all).
+      - ``why`` — ``_worktree_hold_reason``: why the picker does not offer
+        it, "" when it does. Set also when no session holds it but the
+        process that created it still runs, so the start form can say why
+        the entry is missing.
+      - ``releasable`` — a worktree spare enough to hand back: it is a
+        session worktree and ``_worktree_is_orphaned`` says it may be
+        reclaimed (owning process dead on this host, no live session, no
+        saved session that would reopen it). Releasing never deletes a
+        checkout; that decision is ``exit_worktree``'s. A worktree whose
+        owning process is still alive is never releasable, even when its
+        session has left the presence file.
+
+    ``hold_fn`` is the liveness probe (default module ``_live_session_in``).
+    It is injectable so the picker -- and tests -- can drive the held/gone
+    decision without touching the presence files. Never raises: a directory
+    that cannot be classified is simply "not a worktree".
+    """
+    if hold_fn is None:
+        hold_fn = _live_session_in
+    side = read_worktree_sidecar(workspace)
+    is_worktree = side is not None
+    holder = ""
+    why = ""
+    releasable = False
+    if is_worktree:
+        try:
+            holder = str(hold_fn(workspace) or "")
+        except Exception:
+            holder = ""
+        try:
+            why = (f"a live session is working in it ({holder})" if holder
+                   else _worktree_hold_reason(workspace, side))
+        except Exception:
+            why = ""
+        # Releasing must agree with the orphan check: an alive owning process
+        # is not releasable even when the session has gone from the presence
+        # file, and a worktree a SAVED session would reopen is not releasable
+        # either (the same saved-workspaces the reclaim sweep passes, so the
+        # spare answer never disagrees with the release path). ``_worktree_is_
+        # orphaned`` owns all of this.
+        try:
+            releasable = (_worktree_is_orphaned(
+                side, saved_workspaces=_saved_session_workspaces()) == "")
+        except Exception:
+            releasable = False
+    return {
+        "is_worktree": is_worktree,
+        "holder": holder,
+        "why": why,
+        "releasable": releasable,
+    }
+
+
+def release_session_worktree(workspace) -> dict:
+    """Release the session worktree ``workspace`` is in, if it is spare.
+
+    Returns ``{"released": bool, "kept": str}`` -- ``kept`` says why, and
+    is empty when there was nothing to release.
+
+    The decision is ``worktree.exit_worktree(keep_if_changed=True)``, which
+    already keeps a tree that has changes and one that background jobs are
+    still running inside. That is the whole rule and it is not restated
+    here: a second copy of "is this tree spare" would be a second answer
+    that can disagree with the one the subagent teardown path uses.
+
+    Never raises: closing a session must not fail because a directory
+    could not be tidied.
+    """
+    from delfin.agent import worktree as _wt
+    side = read_worktree_sidecar(workspace)
+    if not side:
+        return {"released": False, "kept": ""}
+    try:
+        info = _wt.WorktreeInfo(
+            repo_dir=Path(side["repo_dir"]),
+            path=Path(side["path"]),
+            branch=str(side.get("branch") or ""),
+            base_ref=str(side.get("base_ref") or ""),
+            created_at=float(side.get("created_at") or 0.0),
+        )
+    except (KeyError, TypeError, ValueError):
+        return {"released": False, "kept": "the worktree record is unreadable"}
+    try:
+        done = _wt.exit_worktree(info, keep_if_changed=True)
+    except Exception as exc:
+        return {"released": False, "kept": f"git refused the teardown: {exc}"}
+    if done.held_by_jobs:
+        return {"released": False,
+                "kept": "background jobs are still running in it"}
+    if done.had_changes:
+        return {"released": False, "kept": "it has uncommitted changes"}
+    return {"released": bool(done.cleaned_up), "kept": ""}
 
 
 def _short_path(path: str) -> str:
@@ -471,7 +1257,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
          resume_dropdown, elsewhere_note, stop_all_btn]), "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
-    widget = _classed(widgets.HBox([sidebar, stage]), "delfin-session-shell")
+    splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
+                             "delfin-splitter-host")
+    splitter = _classed(widgets.HTML(""), "delfin-session-splitter")
+    splitter_host.children = (splitter,)
+    widget = _classed(widgets.HBox([sidebar, splitter_host, stage]),
+                      "delfin-session-shell")
+    # Bind the drag once per shell when the whole page is assembled. The
+    # init scripts are gathered by the dashboard into one keep_js() call, so
+    # this runs after the shell is really on the page (the sidebar HTML
+    # alone would render too early to find it).
+    _register_init_js(ctx, _SPLITTER_INIT_JS)
 
     # -- lookup -------------------------------------------------------------
 
@@ -480,6 +1276,53 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
 
     def _state(rec: dict) -> dict:
         return rec["refs"].get("state") or {}
+
+    def _mark(rec: dict) -> None:
+        """One dot per row: what the session needs from you beats that it
+        is working, which beats that it finished while you looked away."""
+        state = _state(rec)
+        busy = bool(state.get("streaming"))
+        if rec.get("_was_busy") and not busy and view["active"] != rec["key"]:
+            rec["unseen"] = True
+        rec["_was_busy"] = busy
+        wanted = session_dot(busy=busy, needs=needs_you(state),
+                             unseen=bool(rec.get("unseen")))
+        for cls in _DOT_CLASSES.values():
+            if cls == wanted:
+                rec["row"].add_class(cls)
+            else:
+                rec["row"].remove_class(cls)
+
+    def _address_for(session_id: str) -> str:
+        """The key this session is known by, to a person and to a peer.
+
+        Input: the session id being resumed, or "". Output: an eight-hex
+        address. Semantics: the SAME address every time a given saved
+        conversation is opened, and a fresh one for a conversation that
+        does not have an id yet.
+
+        It was `uuid.uuid4().hex[:8]` unconditionally -- a new address per
+        TAB, not per session. A peer that had been told an address kept
+        writing to it after the session was re-opened, and was answered
+        "no other open session": observed between three sessions working
+        together, which recovered by reading the roster out of the
+        refusal and sending again, a round each time. Anything still
+        unread in the old mailbox stays there.
+
+        The head of the session id is what `cli._presence_key_for` already
+        uses for a terminal session, so the two surfaces now mean the same
+        session by the same word instead of holding two schemes for one
+        idea.
+
+        A collision with a session already open takes a random address
+        rather than two tabs sharing one inbox; eight hex digits make that
+        vanishingly rare, and being wrong in the other direction would
+        deliver one session's messages to another.
+        """
+        head = str(session_id or "").strip()[:8]
+        if head and not any(rec["key"] == head for rec in sessions):
+            return head
+        return uuid.uuid4().hex[:8]
 
     def _session_id(rec: dict) -> str:
         return str(_state(rec).get("active_session_id") or "")
@@ -515,6 +1358,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if rec is None:
             return
         view["active"] = key
+        rec["unseen"] = False
+        _mark(rec)
         for other in sessions:
             other["tab"].layout.display = "" if other["key"] == key else "none"
         state = _state(rec)
@@ -530,8 +1375,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if view["restoring"]:
             return
         save_open_sessions([
-            {"session_id": _session_id(rec), "workspace": rec["workspace"]}
-            for rec in sessions if _session_id(rec)])
+            {"session_id": sid, "workspace": rec["workspace"]}
+            for rec in sessions for sid in [_remembered_id(rec)] if sid])
+
+    def _remembered_id(rec: dict) -> str:
+        """The conversation this session stands for in the open list.
+
+        Its own id once it has one. Before that, the conversation it was
+        asked to open, while a live writer still holds it: that one is
+        open in another view, and leaving it out of the list meant the
+        next start did not reopen it anywhere."""
+        sid = _session_id(rec)
+        if sid:
+            return sid
+        wanted = str(getattr(rec["ctx"], "initial_session_id", "") or "")
+        if not wanted:
+            return ""
+        try:
+            from delfin.agent.session_store import session_lock_holder
+            return wanted if session_lock_holder(wanted) else ""
+        except Exception:
+            return ""
 
     def _refresh_resume_options() -> None:
         try:
@@ -545,7 +1409,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             sid = str(row.get("session_id") or "")
             if not sid or sid in open_ids:
                 continue
-            title = str(row.get("title") or "Untitled")[:40]
+            title = session_label(row.get("title"), sid)
             where = _short_path(str(row.get("workspace") or ""))
             options.append((f"{title} — {where}" if where else title, sid))
         resume_dropdown.options = options
@@ -566,7 +1430,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             _say(f"{_MAX_OPEN} sessions are open — close one first.")
             return None
         _say("")
-        key = uuid.uuid4().hex[:8]
+        key = _address_for(sid)
         where = str(workspace or "").strip() or default_workspace(ctx)
         session_ctx = _SessionContext(
             ctx,
@@ -626,6 +1490,18 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             _presence.withdraw(key)
         except Exception:
             pass
+        # Release the session's own worktree if it is spare. After the
+        # shutdown above, so a background job that was holding the tree has
+        # been asked to stop first; and after withdraw, so the presence
+        # record is already gone when the decision is made. A tree with
+        # changes or with jobs still in it is kept and said so -- the
+        # decision is exit_worktree's, not this function's.
+        try:
+            _rel = release_session_worktree(rec.get("workspace") or "")
+            if _rel.get("kept"):
+                _say(f"The worktree was kept: {_rel['kept']}")
+        except Exception:
+            pass
         sessions.remove(rec)
         stage.children = tuple(r["tab"] for r in sessions)
         if not sessions:
@@ -648,10 +1524,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             label = _session_title(state)
             if rec["title_btn"].description != label:
                 rec["title_btn"].description = label
-            if state.get("streaming"):
-                rec["row"].add_class("delfin-session-busy")
-            else:
-                rec["row"].remove_class("delfin-session-busy")
+            _mark(rec)
             sid = _session_id(rec)
             if sid != rec.get("remembered_id"):
                 rec["remembered_id"] = sid
@@ -701,21 +1574,52 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                 f"{n} on {h}" for h, n in sorted(counts.items())))
             if counts else "")
 
+    # The loop's state. ``tick_lock`` is held for a whole tick and by the
+    # stop, so a stop either precedes a tick (which then does nothing) or
+    # waits for it, and no tick reschedules after a stop. Reentrant: a stop
+    # called from inside a tick (a refresh that closes the panel) must not
+    # wait for itself.
+    loop = {"stopped": False, "timer": None,
+            "tick_lock": threading.RLock()}
+
     def _tick() -> None:
-        try:
-            refresh()
-            import time as _time
-            if _time.monotonic() >= view["resume_at"]:
-                view["resume_at"] = _time.monotonic() + _RESUME_REFRESH_S
-                _refresh_resume_options()
-                _refresh_elsewhere()
-        except Exception:
+        with loop["tick_lock"]:
+            if loop["stopped"]:
+                return
+            try:
+                refresh()
+                import time as _time
+                if _time.monotonic() >= view["resume_at"]:
+                    view["resume_at"] = _time.monotonic() + _RESUME_REFRESH_S
+                    _refresh_resume_options()
+                    _refresh_elsewhere()
+            except Exception:
+                pass
+            finally:
+                if not loop["stopped"]:
+                    timer = threading.Timer(_REFRESH_S, _tick)
+                    timer.daemon = True
+                    timer.start()
+                    loop["timer"] = view["timer"] = timer
+
+    def stop_refresh() -> None:
+        """End this list's refresh loop: no tick runs after it returns.
+        Idempotent; called from inside a tick it marks the stop and the
+        tick does not reschedule."""
+        loop["stopped"] = True
+        timer = loop["timer"]
+        if timer is not None:
+            timer.cancel()
+        with loop["tick_lock"]:
             pass
-        finally:
-            timer = threading.Timer(_REFRESH_S, _tick)
-            timer.daemon = True
-            timer.start()
-            view["timer"] = timer
+        # A timer that fired before the cancel returns at once (stopped);
+        # joined so no thread of this loop is left when the stop returns.
+        timer = loop["timer"]
+        if timer is not None and timer is not threading.current_thread():
+            timer.join(timeout=5.0)
+        with _REFRESH_LOOPS_LOCK:
+            if _REFRESH_LOOPS.get(id(ctx)) is stop_refresh:
+                del _REFRESH_LOOPS[id(ctx)]
 
     # -- controls ---------------------------------------------------------------
 
@@ -723,6 +1627,21 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         """Offer a worktree inside a git repository, and pre-select it when
         another open session already works in that repository."""
         where = str(workdir_box.value or "").strip()
+        # A held session worktree is left out of workspace_choices; typed
+        # here, it is named with the reason, so the missing entry is not a
+        # silent one.
+        try:
+            held = session_worktree_state(where)
+        except Exception:
+            held = {"is_worktree": False, "holder": "", "why": ""}
+        if held.get("is_worktree") and held.get("why"):
+            own_worktree_box.layout.display = "none"
+            own_worktree_box.value = False
+            worktree_hint.value = (
+                "<div style='font-size:10px;color:#546e7a'>Not offered as a "
+                "start folder: this session worktree is held -- "
+                f"{html.escape(held['why'])}. Choose another directory.</div>")
+            return
         try:
             from delfin.agent import session_presence as _presence
             in_repo = bool(where) and bool(_presence.repository_of(where)["root"])
@@ -732,7 +1651,9 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         own_worktree_box.layout.display = "" if in_repo else "none"
         own_worktree_box.value = bool(busy)
         if busy:
-            names = ", ".join(str(r.get("title") or "a session") for r in busy[:3])
+            names = ", ".join(
+                session_label(r.get("title"), r.get("session_id"))
+                for r in busy[:3])
             worktree_hint.value = (
                 "<div style='font-size:10px;color:#546e7a'>Also working in "
                 f"this repository: {html.escape(names)}. A worktree of its "
@@ -756,6 +1677,26 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             _say(f"Not a directory: {where}")
             return
         target = str(Path(where).expanduser()) if where else ""
+        # A directory another LIVE session is working in is refused, not
+        # silently shared. The picker is a plain filesystem listing, so a
+        # worktree belonging to a running session was offered and typeable;
+        # starting there makes repository_of() resolve the worktree as the
+        # root and nests a worktree-of-a-worktree under it. The hint
+        # already existed -- _suggest_worktree says "also working in this
+        # repository" and pre-ticks the box -- but nothing refused.
+        #
+        # Only when no fresh worktree is being made: ticking the box means
+        # a tree of one's own, which is the answer to this, not the problem.
+        _fresh = (own_worktree_box.value
+                  and own_worktree_box.layout.display != "none")
+        if target and not _fresh:
+            _holder = _live_session_in(target)
+            if _holder:
+                _say(f"{_short_path(target)} is already being worked in by "
+                     f"an open session ({_holder}). Tick \u201cOwn "
+                     f"worktree\u201d to get a checkout of your own, or "
+                     f"pick another directory.")
+                return
         if own_worktree_box.value and own_worktree_box.layout.display != "none":
             try:
                 target = session_worktree(target or default_workspace(ctx))
@@ -857,6 +1798,30 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                 activate(rec["key"])
     view["restoring"] = False
     _persist()
+    # Reclaim session worktrees nobody is in. AFTER the open sessions are
+    # restored, so their presence records exist and a tree one of them is
+    # working in reads as live -- the saved-workspace check would catch it
+    # anyway, and two independent reasons to keep a tree is the right
+    # number for a pass that removes directories.
+    #
+    # Said out loud rather than done quietly: this removes a checkout, and
+    # a reader who sees a folder disappear should be able to find out from
+    # the session list why.
+    try:
+        _swept = reclaim_orphaned_worktrees(
+            (sessions[0]["workspace"] if sessions else "")
+            or default_workspace(ctx))
+        if _swept["released"]:
+            _say(f"Reclaimed {len(_swept['released'])} worktree(s) left by "
+                 f"sessions that are gone.")
+    except Exception:
+        pass
+    with _REFRESH_LOOPS_LOCK:
+        previous = _REFRESH_LOOPS.pop(id(ctx), None)
+    if previous is not None:
+        previous()
+    with _REFRESH_LOOPS_LOCK:
+        _REFRESH_LOOPS[id(ctx)] = stop_refresh
     _tick()
 
     return widget, {
@@ -866,6 +1831,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         "sessions": lambda: list(sessions),
         "active": lambda: _find(view["active"]),
         "refresh": refresh,
+        "stop_refresh": stop_refresh,
         "form": {"new": new_btn, "workdir": workdir_box,
                  "own_worktree": own_worktree_box, "start": start_btn},
+        # Exported so the reclamation can be driven in a test; a pass that
+        # removes directories should not be reachable only at startup.
+        "reclaim_worktrees": reclaim_orphaned_worktrees,
+        "notice": notice,
     }

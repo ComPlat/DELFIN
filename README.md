@@ -7,24 +7,22 @@
   <a href="https://github.com/ComPlat/DELFIN/graphs/commit-activity"><img src="https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=for-the-badge" alt="Maintenance"></a>
   <a href="https://github.com/ComPlat/DELFIN/issues"><img src="https://img.shields.io/github/issues/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub issues"></a>
   <a href="https://github.com/ComPlat/DELFIN/graphs/contributors"><img src="https://img.shields.io/github/contributors/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub contributors"></a>
-  <a href="https://doi.org/10.5281/zenodo.21508364"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21508364-blue.svg?style=for-the-badge" alt="DOI"></a>
+  <a href="https://doi.org/10.5281/zenodo.17208144"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17208144-blue.svg?style=for-the-badge" alt="DOI"></a>
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
-
-> 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256 · https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 **DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
 **DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
-Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike, so the platform can be run entirely on-premises. Their shell is sandboxed, their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents).
+Hosted models (Claude, OpenAI, KIT Toolbox) and local open-source models (Ollama, vLLM, LM Studio) are supported alike. With a local model server the model calls stay on your own hardware; what else reaches the network, and how to run without outside access, is listed under [Network access and offline use](#network-access-and-offline-use). The agents' shell commands run under bubblewrap or Landlock on Linux, or Seatbelt on macOS, where the host supports one of them; on a host where none works they are not confined, and DELFIN says so at start ([Tools, MCP and safety](#tools-mcp-and-safety)). Their permissions are explicit, and what they may do is described under [AI agents](#-ai-agents). Every agent prompt opens with the same [operating principles](#operating-principles), which put the protection of people and the environment ahead of any single instruction.
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
 Three ways to use it:
 - **CLI** — `delfin` runs workflows from a `CONTROL.txt` configuration file
 - **Dashboard** — browser UI for job setup, result analysis, and configuration
-- **Agent** — an autonomous AI coding agent (model-agnostic: Claude, OpenAI, or local via Ollama) that operates the dashboard, runs and interprets workflows, and implements code itself — extending DELFIN and carrying multi-step projects through to completion (sandboxed bash, subagents, persistent memory)
+- **Agent** — an autonomous AI coding agent (model-agnostic: Claude, OpenAI, or local via Ollama) that operates the dashboard, runs and interprets workflows, and implements code itself — extending DELFIN and carrying multi-step projects through to completion (shell commands isolated where the host supports it, subagents, persistent memory)
 
 ### Design principles
 
@@ -48,7 +46,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 | **Spectroscopy** | 🔬 both | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
 | **Ensemble NMR** | 🧪 organic | CREST → CENSO → c2anmr → ANMR Boltzmann-weighted ensemble shieldings/couplings |
 | **Hyperpolarizability** | 🔬 both | Static and frequency-dependent β tensors for NLO materials (organic and organometallic) |
-| **Structure Generation** | 🔬 both | SMILES→3D for organics (RDKit/Open Babel) AND metal complexes (MANTA, DELFIN's own force-field-free coordination builder; Architector; stepwise ORCA/xTB `%DOCKER` assembly) |
+| **Structure Generation** | 🔬 both | SMILES→3D for organics (RDKit/Open Babel) AND metal complexes (MANTA, DELFIN's own deterministic coordination constructor; Architector; stepwise ORCA/xTB `%DOCKER` assembly) |
 | **Conformer Sampling** | 🔬 both | MANTA multi-start sampling with energy ranking, CREST conformer search, XTB-GOAT global optimization |
 | **ML Potentials** | 🔬 both | 8 backends (ANI-2x, AIMNet2, MACE, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) for fast energy/force evaluation |
 | **Crystal Structure Generation** | 🧱 solid state | Genarris integration for random organic crystal generation with configurable space groups (generation, not lattice-energy ranking) |
@@ -56,7 +54,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 | **Imaginary-Mode Elimination** | 🔬 both | Iterative saddle escape: displaced single points on both sides of the imaginary mode, re-optimisation and frequency per round. ESD rates are refused on a structure still at a saddle |
 | **CO₂ Coordination** | 🧲 metal | Automated CO₂ placement around metal centers, distance/rotation scans |
 | **Reporting** | 🔬 both | Auto-generated DOCX combining all visualized output — spectra plots (UV-Vis, IR, AFP), ESD rate tables (ISC / RISC / IC, ΔE(S-T), E₀₀), redox-potential summaries, free energies, and full method provenance; JSON export and text summaries also available |
-| **AI Agent** | 🔬 both | Conversational coding agent on any tool-capable model (Claude / OpenAI / KIT / local Ollama) — sandboxed bash, subagents, MCP, persistent memory, dashboard control, literature research, result analysis |
+| **AI Agent** | 🔬 both | Conversational coding agent on any tool-capable model (Claude / OpenAI / KIT / local Ollama) — bash isolated where the host supports it, subagents, MCP, persistent memory, dashboard control, literature research, result analysis |
 | **Structure Enumeration** | 🔬 both | ChemDarwin morphs a seed molecule with user-supplied reaction SMARTS over N iterations — forbidden/protected substructure filters, ligand-wise mutation for metal complexes, results drawn and mapped in chemical space. Candidates are submitted to a DELFIN workflow by hand; there is no automated fitness loop |
 
 ### Use cases
@@ -165,7 +163,7 @@ source .venv/bin/activate
 pip install -e ".[agent,docs,dev]" -c env/reference-environment.lock
 ```
 
-A byte-identical rebuild of published structures is only to be expected in this environment. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there. The lock also pins `pymol-open-source`; as a constraint that only takes effect when the `pymol` extra is requested, so the command above does not ask for it and resolves on glibc 2.34 systems (RHEL 9) as well. The construction does not use PyMOL, so the rebuild is the same with or without it.
+A byte-identical rebuild of published structures is only to be expected in this environment. The C math library belongs to it as well: the structures are built with the `libm` of glibc 2.34 (RHEL 9); another glibc rounds a few transcendental functions differently in the last digit at rare arguments, so a handful of systems can come out different. CI installs it on every push (job *reference environment* in `.github/workflows/ci.yml`) and runs the MANTA tests in it, so the file keeps resolving and the construction keeps passing there. The lock also pins `pymol-open-source`; as a constraint that only takes effect when the `pymol` extra is requested, so the command above does not ask for it and resolves on glibc 2.34 systems (RHEL 9) as well. The construction does not use PyMOL, so the rebuild is the same with or without it.
 
 External QM binaries are not installed by `pip`. For the local binary-based setup of `xtb`, `crest`, `xtb4stda`, `stda`, `std2` and the `xtb4stda` runtime bundle, see `delfin/qm_tools/README.txt`.
 
@@ -201,7 +199,7 @@ The usual way to run DELFIN. Start it as a standalone web app:
 delfin-voila                 # starts on 127.0.0.1:8866
 ```
 
-Voila prints a URL containing an access token — token authentication is mandatory and cannot be switched off. Open that URL, go to **Submit Job**, paste a SMILES or load an XYZ, choose the workflow settings, and submit. **Job Status** follows the queue; **Calculations** browses the results.
+`delfin-voila` prints a URL containing an access token. The token cannot be switched off: the dashboard, its files and its kernels all require it (only the server's own static assets, such as the login page's, are served without it); see the dashboard section of [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#the-dashboard-server). Open that URL, go to **Submit Job**, paste a SMILES or load an XYZ, choose the workflow settings, and submit. **Job Status** follows the queue; **Calculations** browses the results.
 
 ### The command line
 
@@ -245,7 +243,7 @@ ctx = create_dashboard(backend="auto")   # SLURM when available, else local
 | **ORCA Builder** | Interactive ORCA input generation with geometry preview |
 | **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
 | **ChemDarwin** | Reaction-SMARTS structure enumeration and chemical-space map (off by default) |
-| **DELFIN Agent** | The AI agent: subagents, MCP, sandboxed bash, dashboard control, result analysis, persistent memory |
+| **DELFIN Agent** | The AI agent: subagents, MCP, bash isolated where the host supports it, dashboard control, result analysis, persistent memory |
 | **Agent Activity** | Running and recent agent and subagent work |
 | **Job Status** | Queue monitoring (local/SLURM), resource usage, fairshare and limits, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc CENSO/ANMR` |
@@ -274,6 +272,9 @@ delfin-voila --resume SID    # reopen a previous agent session
 # A direct network bind needs an explicit override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
+
+Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
+[Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.
 
 Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
@@ -408,7 +409,7 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 |-------|--------------|----------|
 | `QUICK` | One ETKDGv3 embedding; for metals it tries stk → RDKit → unsanitised → Open Babel and returns on the first success. One structure. | Quick previews |
 | `NORMAL` | RDKit ETKDG with multi-seed embedding and optional UFF refinement (RDKit / Open Babel). One structure. **This is the default when nothing is set.** | Organic molecules |
-| `MANTA` | DELFIN's own coordination builder: the enumerated coordination-isomer × conformer manifold, then screening, optimisation and refinement down to one geometry. | Metal complexes |
+| `MANTA` | DELFIN's own deterministic constructor: the isomer–conformer ensemble of the complex, then screening, optimisation and refinement down to one geometry. | Metal complexes |
 | `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation; needs a metal-containing SMILES. | Metal complexes, instant preview |
 | `MOLSIMPLIFY` | [molSimplify](https://molsimplify.mit.edu/), one structure per geometry of the coordination number; needs a metal-containing SMILES. | Metal complexes |
 | `MACE` | [epic-MACE](https://github.com/EPiCs-group/epic-mace) (Chernyshov & Pidko, JCTC 2024): every stereomer of the geometries that fit the donor sites, ten conformers each; runs in its own Python 3.7 environment. | Metal complexes, hapto ligands |
@@ -421,19 +422,19 @@ For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousa
 
 ### MANTA
 
-MANTA is DELFIN's force-field-free coordination-structure engine — *construct, don't search*. From a transition-metal SMILES it enumerates the coordination isomers by Burnside–Pólya counting over the donor set and the coordination polyhedron, seats each isomer on an ideal polyhedron with metal–donor distances from covalent radii, and expands each into conformers. **No force field touches the metal**: UFF and MMFF have no transition-metal parameters, which is what systematically distorts M–D lengths and L–M–L angles in conventional builders.
+MANTA is DELFIN's deterministic constructor for metal complexes — *construct, don't search*. From a transition-metal SMILES it enumerates the coordination isomers as symmetry orbits (Burnside–Pólya counting over the donor arms and the coordination polyhedron), seats each isomer on an ideal polyhedron with metal–donor distances from covalent radii, and adds ring-pucker, pose and mirror siblings. The frames emitted for one SMILES form its **isomer–conformer ensemble**. **No force field acts on a free metal centre** on this path: universal force fields have only generic parameters for the metal, which is what distorts M–D lengths and L–M–L angles in conventional builders; force fields relax only free ligands and, with metal and donors fixed, ring puckers. Inputs outside the constructor's scope, or whose isomers all fail its self-gate, are built by a legacy path that minimises UFF over the whole complex. See [delfin/manta/README.md](delfin/manta/README.md).
 
-The manifold then goes through a funnel that `CONTROL.txt` steers:
+The ensemble then goes through a funnel that `CONTROL.txt` steers:
 
 <!-- recipe: not-runnable — prose diagram of the MANTA funnel, not a command -->
 ```
-build manifold → screen (one single point per frame and multiplicity)
+build ensemble → screen (one single point per frame and multiplicity)
                → optimise (xTB per survivor)
                → refine (GOAT or CREST on the best)
                → winner written to start.txt
 ```
 
-The ranked unit is a (frame, multiplicity) pair, not a frame. The `MANTA_*` block in `CONTROL.txt` steers how thorough the construction is, which gates filter the manifold, what the screen and the optimisation use, whether GOAT or CREST refines the winner, and how long the whole thing may take. `delfin --define` writes the block with its defaults. `delfin-manta` runs the builder on its own.
+The ranked unit is a (frame, multiplicity) pair, not a frame. The `MANTA_*` block in `CONTROL.txt` steers how thorough the construction is, which gates filter the ensemble, what the screen and the optimisation use, whether GOAT or CREST refines the winner, and how long the whole thing may take. `delfin --define` writes the block with its defaults. `delfin-manta` runs the builder on its own.
 
 **What MANTA is for:** starting geometries, not production geometries. The output is a constructive geometry of roughly force-field quality — correct in topology and coordination, not xTB- or DFT-accurate.
 
@@ -443,7 +444,7 @@ The ranked unit is a (frame, multiplicity) pair, not a frame. The `MANTA_*` bloc
 
 - **CREST** — conformer-rotamer ensemble generation and sorting
 - **xTB-GOAT** — gradient-based global optimisation
-- **MANTA sampling** — multi-start sampling with parallel xTB optimisation and energy-ranked trajectories (`delfin-guppy`, `delfin-guppy-batch` for a batch of SMILES)
+- **GUPPY sampling (MANTA ensemble + xTB ranking)** — the MANTA ensemble optimised in parallel with xTB and ranked by energy (`delfin-guppy`, `delfin-guppy-batch` for a batch of SMILES)
 
 ---
 
@@ -488,7 +489,27 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 
 ## 🤖 AI agents
 
-DELFIN ships a conversational AI agent: it reads and edits code, runs sandboxed shell commands, drives the dashboard, researches methods, analyses results and delegates self-contained work to subagents. It runs in the **DELFIN Agent** dashboard tab and as the standalone terminal program `delfin-agent`. It is a single, direct agent — there is no fixed review pipeline; when work benefits from extra hands it spins up subagents on demand.
+DELFIN ships a conversational AI agent: it reads and edits code, runs shell commands (isolated where the host supports it; see [Tools, MCP and safety](#tools-mcp-and-safety)), drives the dashboard, researches methods, analyses results and delegates self-contained work to subagents. It runs in the **DELFIN Agent** dashboard tab and as the standalone terminal program `delfin-agent`. It is a single, direct agent — there is no fixed review pipeline; when work benefits from extra hands it spins up subagents on demand.
+
+### Operating principles
+
+Every role prompt opens with the same principles, ahead of any instruction
+about tools, modes or permissions:
+[`delfin/agent/pack/shared/principles_addendum.md`](delfin/agent/pack/shared/principles_addendum.md).
+The stated highest objective is
+
+> to advance science so that the great problems of our time can be solved, and
+> to contribute to the long-term well-being of humanity and the planet.
+
+The rest covers human dignity, safety and self-determination, a refusal to
+assist with serious harm or coercion, and precedence for human life and the
+environment when objectives conflict.
+
+`tests/test_the_principles_come_first.py` checks that the file exists, that it
+has not been emptied to a heading, that the principles come first in every
+role's composed prompt, and that the sentence above reaches the model. The
+agent may not edit the file unasked, and the prompt token budget exempts it
+from trimming.
 
 ### Modes
 
@@ -499,7 +520,7 @@ A mode decides which role prompt and which surface the agent gets:
 | `dashboard` (default) | dashboard, terminal | Operating DELFIN: settings, submissions, results |
 | `solo`, shown as **Code** | dashboard, terminal | Reading and writing code |
 | `office` | dashboard, terminal | Documents and spreadsheets, without the chemistry tools |
-| `research` | terminal only | Literature and method research |
+| `research` | dashboard, terminal | Literature and method research: web search and code reading, read-only — no file changes, no shell commands |
 
 `plan` is **not** a mode but a permission profile — see below.
 
@@ -518,6 +539,19 @@ A model-capability layer detects each model's real context window and its tool, 
 
 Available providers are auto-detected from environment variables and PATH. DELFIN treats each LLM the way it treats ORCA, xTB or CREST: a dependency that you install and authenticate yourself. DELFIN bundles no LLM and redistributes none; it calls each provider's official API, OpenAI-compatible endpoint or CLI binary. Hosted usage runs under your own account and billing; local models run on your own hardware at no per-token cost.
 
+### Network access and offline use
+
+DELFIN's workflows (ORCA, xTB, CREST and the other engines) run on your machines and need no network. With a local model server (Ollama, vLLM, LM Studio via `OLLAMA_HOST`) the agent's model calls stay on your network as well. The following parts connect to outside hosts:
+
+| Part | Connects to | Without outside network |
+|------|-------------|-------------------------|
+| Hosted model providers | the provider's API; the KIT Toolbox provider uses the fixed endpoint `https://ki-toolbox.scc.kit.edu/api/v1` | choose a local model server |
+| Agent tools `web_search` and `web_fetch` | a fixed set of public search services (`delfin/agent/web_tools.py`) and the URL fetched | not available; the other tools are unaffected |
+| CLI terminal tab (`delfin-voila --claude-terminal`) | the browser loads xterm.js from `cdn.jsdelivr.net` (pinned version, SRI hash); the CLI it runs talks to its own provider | not available; no local copy of xterm.js is supported yet |
+| Diagrams in the agent chat | mermaid from `cdn.jsdelivr.net` (pinned version, SRI hash), fetched only when a diagram appears | place `mermaid.min.js` in `delfin/dashboard/static/`; without it the diagram is shown as source text |
+| 3D structure viewers | none: the bundled `delfin/dashboard/static/3Dmol-min.js` is loaded at start, and no viewer fetches a copy from elsewhere (the page's Content-Security-Policy would refuse it) | works with the bundled copy |
+| Ketcher editor, xtb and g-xTB installers | GitHub, once, on first use and after confirmation (Ketcher and every binary or source archive an installer fetches itself: one pinned version, refused unless its SHA-256 matches; packages installed through conda or pip: see docs/RELEASING.md) | install on a machine with network access and copy the files |
+
 ### Subagents
 
 For parallel research, read-only audits or planning that must not edit, the agent delegates to isolated subagents — each with its own tool loop and usually tighter permissions:
@@ -531,10 +565,12 @@ Your own presets can be added as markdown files in `~/.delfin/subagents/`. Subag
 
 ### Tools, MCP and safety
 
-- **Built-in tools**: read/edit/write files, grep, sandboxed bash with long-running background jobs, code navigation, test runner, notebooks, documents and spreadsheets, web search and fetch, task tracking, scheduling, git worktrees, delegation, plus DELFIN-specific calculation and manual search.
+- **Built-in tools**: read/edit/write files, grep, bash with long-running background jobs (isolation as below), code navigation, test runner, notebooks, documents and spreadsheets, web search and fetch, task tracking, scheduling, git worktrees, delegation, plus DELFIN-specific calculation and manual search.
 - **MCP (Model Context Protocol)**: connect external MCP servers over stdio or Streamable HTTP — their tools, resources and prompts join the agent's surface (configured in `~/.delfin/mcp_servers.json`). A tool reached through MCP runs in a process DELFIN did not launch a command line for, so the shell sandbox is not around it: give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it starts inside a namespace holding only those paths. Servers that declare neither run uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all say so. DELFIN's own servers can take their roots from your settings instead — `agent.mcp_isolation: "builtin"` binds the calculations, office, workspace and state folders read-write and the archive and runtime trees read-only; it is off by default because the roots are inferred.
-- **Sandboxed execution**: every shell command goes through a layered defence — allow-list, then bubblewrap or firejail — with credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) masked, network denied by default, and every command appended to `~/.cache/delfin/agent-audit.jsonl`. Configurable with `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
-- **Permission modes**: `plan` (read-only) · `default` (destructive actions ask) · `diff_approval` (writes stage a diff for `/approve`) · `acceptEdits` (writes allowed, bash still asks) · `bypassPermissions` (no prompts; the sandbox and the deny lists still apply). Per-pattern allow-list rules can be remembered across sessions. Files that define the agent's own permissions always require confirmation, in every mode.
+- **Shell isolation**: every shell command passes the permission gate first, then runs under the first layer that works on the host — bubblewrap, else Landlock (both Linux), else Seatbelt (macOS). Under these layers writes are confined to the workspace roots, credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are unreadable, and terminal and SSH-agent sockets are not reachable. The network goes only through an egress proxy with a domain allow-list under bubblewrap, Seatbelt, and Landlock with seccomp user notification; Landlock without seccomp user notification restricts TCP by port only (ABI 4) or not at all (older ABI). Where no layer works (for example on Windows, or on Linux with neither bubblewrap nor Landlock) a command is **not confined**: the gate's reading of its text is the only check, and the start banner and `/status` say `NOT isolated`. An attended session then still runs commands (those off the auto-allow list are asked), `bypassPermissions` asks once at start or, unattended, starts in `default`, and a locked session or `--isolate` refuses each command unless you approve that one command unconfined. `delfin-agent capabilities` prints which layer holds on the current host; the guarantees per host are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#what-each-layer-guarantees-on-which-host). `--no-isolate` turns isolation off.
+- **Dashboard CLI-backend runner**: the dashboard's approval of a CLI-backend `Bash` call goes through a separate runner (`delfin/agent/sandbox.py`, `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`). `auto` uses bubblewrap or firejail where available, else `allowlist`. `allowlist` is a command allow-list, not a sandbox: it admits `python`, `awk`, `sed`, `find` and `tee`, which can run any program; `git` and `pip` pass only with a read-only sub-command, in every spelling (`pip3`, `python -m pip`), and `env`, `nohup` and `xargs` are judged by the command they run. In that mode the command runs under Landlock (writes only in the repository) where the kernel has it, with the network denied unless `DELFIN_AGENT_SANDBOX_NETWORK=1`: fully where seccomp user notification exists (`net=off`), TCP only on Landlock ABI 4 (`net=off-tcp`), and not at all on older kernels (`net=open`). Where the kernel has no Landlock the command runs unconfined. The line printed for each approved command names what was applied (`mode=…, fs=…, net=…`) and what is missing.
+- **Security model**: what the containment protects, against whom, what each layer guarantees on which host and the residual risks are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md); vulnerabilities are reported privately as described in [SECURITY.md](SECURITY.md).
+- **Permission modes**: `plan` (read-only) · `default` (destructive actions ask) · `diff_approval` (writes stage a diff for `/approve`) · `acceptEdits` (writes allowed, bash still asks) · `bypassPermissions` (no prompts; the deny lists and, where the host has one, the isolation layer still apply). Per-pattern allow-list rules can be remembered across sessions. Files that define the agent's own permissions always require confirmation, in every mode.
 - **Workspace trust**: settings, hook commands and MCP servers that come from a checked-out repository are ignored until you trust that directory (`/trust`).
 
 ### Slash commands
@@ -625,7 +661,7 @@ Excited-state dynamics has no subcommand of its own: set `ESD_modul=yes` in `CON
 |---------|--------------|
 | `delfin-voila` | Launch the dashboard as a standalone web app |
 | `delfin-agent` | The AI agent in the terminal (`chat`, `run`, `init`, `doctor`, `session`, `approvals`, `scheduler`, …) |
-| `delfin-manta` | MANTA: the coordination-isomer × conformer manifold from a metal SMILES |
+| `delfin-manta` | MANTA: the isomer–conformer ensemble of a metal SMILES |
 | `delfin-guppy [input.txt]` | Multi-start sampling with repeated xTB optimisation and ranked trajectories (`--runs`, `--parallel-jobs`, `--pal`, `--refine`, `--screen`, `--max-isomers`, …) |
 | `delfin-guppy-batch` | The same over every SMILES in a batch file (`--row` for SLURM arrays) |
 | `delfin-build [input.txt]` | Build metal complexes stepwise from SMILES using ORCA's `%DOCKER` (`--goat`, `--no-ligand-goat`, `--dry-run`, …) |
@@ -679,7 +715,7 @@ delfin/
   co2/                     # CO2 coordinator
 
   # ── Structure generation ──
-  manta/                   # the coordination-structure engine (~90 modules)
+  manta/                   # the coordination-structure engine (~120 modules)
   cli_manta.py             # the delfin-manta CLI
   smiles_converter.py      # SMILES→3D entry points, orchestrates delfin.manta
   guppy_sampling.py        # multi-start sampling, ranking and refinement funnel
@@ -936,7 +972,7 @@ Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **
 * Format: `black .` · Lint: `ruff check .`
 * Build a wheel: `pip wheel .`
 
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security problems are reported privately, not as issues — see [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -973,23 +1009,31 @@ https://www.faccts.de/
 - Redistribution of ORCA is prohibited
 - Each user must obtain their own license
 - DELFIN does not include or distribute ORCA
-- ORCA is proprietary software owned by the Max Planck Institute for Coal Research
+- ORCA is proprietary software, developed at the Max-Planck-Institut für Kohlenforschung (Max Planck Institute for Coal Research) together with FACCTs GmbH (ORCA 6.1 manual, title page); its terms are those of the ORCA End User License Agreement
 - End users must comply with ORCA's terms of service and usage restrictions
 - DELFIN authors are not affiliated with or endorsed by the ORCA development team
 
 ## xTB Requirements
-***xTB is free for academic use under the GNU General Public License (GPLv3).***
-The code and license information are available here: https://github.com/grimme-lab/xtb
-- Commercial use may require different licensing terms
-- DELFIN does not include or distribute xTB
+***xTB is free software under the GNU Lesser General Public License, version 3 or later (LGPL-3.0-or-later).***
+The code and license are available here: https://github.com/grimme-lab/xtb (files `COPYING` and `COPYING.LESSER`)
+- The LGPL places no restriction on academic or commercial use; its conditions apply to modifying and redistributing xTB
+- DELFIN does not include or distribute xTB: it uses an xtb found on `PATH`, or `delfin/qm_tools/install_qm_tools.sh` installs one from conda-forge
 
 ## CREST Requirements
-***CREST is free for academic use under the GNU General Public License (GPLv3).***
-The code and license information are available here: https://github.com/crest-lab/crest
-- Commercial use may require different licensing terms
-- DELFIN does not include or distribute CREST
+***CREST is free software under the GNU Lesser General Public License, version 3 or later (LGPL-3.0-or-later).***
+The code and license are available here: https://github.com/crest-lab/crest (files `COPYING` and `COPYING.LESSER`)
+- The LGPL places no restriction on academic or commercial use; its conditions apply to modifying and redistributing CREST
+- DELFIN does not include or distribute CREST: it uses a crest found on `PATH`, or `install_qm_tools.sh` installs one from conda-forge
 
-**Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, or CREST. Users must comply with the individual license terms of each external software package.
+## Other programs the installers download
+`install_qm_tools.sh` and the terminal-window setup can also fetch xtb4stda and stda, std2, DFTB+ (LGPL-3.0-or-later), g-xTB (GPL-3.0), MOPAC (Apache-2.0) and Bun (MIT, with JavaScriptCore under LGPL-2.0) from their upstream. None of them is part of a DELFIN wheel or sdist. Their licences, and the notices of the code DELFIN does ship from other authors (3Dmol.js, the OpenTUI patches), are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Whoever redistributes a prepared installation that contains these programs (a container image, an environment archive, a cluster module) conveys them under their own licences.
+
+## Python dependencies with copyleft licences
+- **Open Babel** (`openbabel-wheel`, a core dependency) is licensed GPL-2.0-only. That does not restrict your own installation. It does mean that a bundle shipping DELFIN together with Open Babel (a container image, an environment archive, a cluster module) cannot meet both licences at once, so such a bundle should not be redistributed; let the target environment install Open Babel itself.
+- **PyMuPDF** is licensed AGPL-3.0 (or commercially by Artifex) and is therefore not installed by default. The file browser's PDF viewer, OCR page images and PDF previews in the chat need it: `pip install "delfin-complat[pdf]"`. Without it the viewer and the OCR check say that PyMuPDF is missing and a chat card shows the file without a preview; PDF text, forms and merging keep working through pypdf.
+- The full list, with the reasoning, is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) section 3.
+
+**Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, CREST or any other external program. Users must comply with the individual license terms of each external software package.
 
 ## Warranty and Liability
 DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim all warranties, express or implied, including but not limited to implied warranties of merchantability and fitness for a particular purpose. In no event shall the authors be liable for any damages arising from the use of this software.
@@ -998,30 +1042,32 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 ## Please cite
 
-If you use DELFIN in a scientific publication, please cite:
+If you use DELFIN in a scientific publication, please cite the article and the software version you used. The same metadata are in [CITATION.cff](CITATION.cff).
 
-- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.21508364
-- Hartmann, M. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv. https://doi.org/10.26434/chemrxiv-2025-4c256
+- Hartmann, M.; Schoenle, F.; Wagner, J.; Herrmann, D.; Hodapp, P.; Jung, N.; Bräse, S. (2025). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials*. ChemRxiv (preprint). https://doi.org/10.26434/chemrxiv-2025-4c256 · [article page](https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a)
+- Hartmann, M. (2026). *DELFIN: Automated prediction of preferred spin states and associated redox potentials* (v1.3.3). Zenodo. https://doi.org/10.5281/zenodo.17208144
+
+The concept DOI [10.5281/zenodo.17208144](https://doi.org/10.5281/zenodo.17208144) stands for all versions and resolves to the latest; each release has its own version DOI on Zenodo.
 
 ### BibTeX
 ```bibtex
-@software{hartmann2025delfin,
-  author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.2.0},
-  year    = {2026},
-  publisher = {Zenodo},
-  doi     = {10.5281/zenodo.21508364},
-  url     = {https://doi.org/10.5281/zenodo.21508364}
-}
-
 @article{hartmann2025chemrxiv,
-  author  = {Hartmann, Maximilian},
+  author  = {Hartmann, Maximilian and Schoenle, Fabian and Wagner, Jérome and Herrmann, David and Hodapp, Patrick and Jung, Nicole and Bräse, Stefan},
   title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
   journal = {ChemRxiv},
   year    = {2025},
   doi     = {10.26434/chemrxiv-2025-4c256},
   url     = {https://www.cambridge.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a}
+}
+
+@software{hartmann2026delfin,
+  author    = {Hartmann, Maximilian},
+  title     = {DELFIN: Automated prediction of preferred spin states and associated redox potentials},
+  version   = {1.3.3},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.17208144},
+  url       = {https://doi.org/10.5281/zenodo.17208144}
 }
 ```
 
@@ -1031,8 +1077,7 @@ If you use DELFIN in a scientific publication, please cite:
 
 This project is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
 
-You should have received a copy of the GNU Lesser General Public License along with this repository in the file [LICENSE](LICENSE).
-If not, see <https://www.gnu.org/licenses/>.
+The licence notice is in [LICENSE](LICENSE). The full text of the GNU Lesser General Public License version 3 is in [COPYING.LESSER](COPYING.LESSER); it supplements the GNU General Public License version 3, whose full text is in [COPYING](COPYING). Both files are also inside every wheel (`*.dist-info/licenses/`) and sdist. The texts are also published at <https://www.gnu.org/licenses/>.
 
 Non-binding citation request:
 If you use this software in research, please cite the associated paper (see [CITATION.cff](./CITATION.cff)).

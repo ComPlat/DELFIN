@@ -46,6 +46,7 @@ def _run_a_climb(part, from_release):
     part.state["gfn_run"] = 3
 
 
+@pytest.mark.usefixtures("xtb_on_path")
 def test_a_release_started_climb_stops_with_the_switch():
     part = _a_part()
     _run_a_climb(part, from_release=True)
@@ -59,6 +60,7 @@ def test_a_release_started_climb_stops_with_the_switch():
     assert part.submit_climb_btn.value is False or part.submit_climb_btn.value
 
 
+@pytest.mark.usefixtures("xtb_on_path")
 def test_a_climb_the_user_pressed_for_keeps_running():
     part = _a_part()
     _run_a_climb(part, from_release=False)
@@ -69,6 +71,7 @@ def test_a_climb_the_user_pressed_for_keeps_running():
     assert "its own button is what stops that" in said
 
 
+@pytest.mark.usefixtures("xtb_on_path")
 def test_a_release_started_minimise_stops_with_the_switch():
     part = _a_part()
     part.submit_ff_dd.value = "gfn2"

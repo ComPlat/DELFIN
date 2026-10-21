@@ -18,6 +18,7 @@ from pathlib import Path
 import ipywidgets as widgets
 
 from . import text_view as _text_view
+from . import upload_limits as _upload_limits
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +621,7 @@ def create_tab(ctx):
             return lit_dir
 
     def _set_status(msg: str, color: str = '#666') -> None:
-        lit_status.value = f'<span style="font-size:12px;color:{color}">{msg}</span>'
+        lit_status.value = f'<span style="font-size:12px;color:{color}">{_html.escape(str(msg))}</span>'
 
     def _run_js(script: str) -> None:
         ctx.run_js(script)
@@ -967,8 +968,9 @@ def create_tab(ctx):
                 continue
             try:
                 safe_name = _safe_literature_entry_name(name)
+                _upload_limits.check_upload_size(len(content), safe_name)
                 dest = _resolve_literature_path(lit_dir, target / safe_name)
-            except ValueError as exc:
+            except ValueError as exc:      # UploadRefused is a ValueError
                 _set_status(f'Upload skipped: {exc}', '#d32f2f')
                 continue
             if dest.exists():
@@ -978,7 +980,13 @@ def create_tab(ctx):
                     dest = _resolve_literature_path(lit_dir, target / f'{stem}_{c}{sfx}')
                     c += 1
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(bytes(content))
+            # A new owner-only file; a name that appeared meanwhile, or a
+            # link planted there, is not written through.
+            try:
+                _upload_limits.write_new_bytes(dest, bytes(content))
+            except OSError as exc:
+                _set_status(f'Upload skipped: {exc}', '#d32f2f')
+                continue
             saved += 1
         if saved:
             _set_status(f'Uploaded {saved} file(s) — re-indexing...', '#2e7d32')
@@ -1100,13 +1108,25 @@ def create_tab(ctx):
             batch = upload_bridge_state['batches'].setdefault(
                 batch_id, {'expected': batch_total, 'completed': set(), 'saved': []},
             )
+            _upload_limits.check_chunk_plan(chunk_total, 0, name)
             file_state = upload_bridge_state['files'].setdefault(
                 upload_id, {'chunks': [None] * chunk_total, 'name': name, 'batch_id': batch_id},
             )
+            if not 0 <= chunk_index < len(file_state['chunks']):
+                raise ValueError('Invalid upload chunk index.')
+            previous = file_state['chunks'][chunk_index]
+            file_state['received'] = (file_state.get('received', 0)
+                                      - len(previous or '') + len(chunk_data))
+            try:
+                _upload_limits.check_chunk_plan(chunk_total, file_state['received'], name)
+            except ValueError:
+                upload_bridge_state['files'].pop(upload_id, None)
+                raise
             file_state['chunks'][chunk_index] = chunk_data
 
             if all(part is not None for part in file_state['chunks']):
                 payload = base64.b64decode(''.join(file_state['chunks']))
+                _upload_limits.check_upload_size(len(payload), name)
                 dest = _resolve_literature_path(lit_dir, _cur_dir() / name)
                 if dest.exists():
                     stem, sfx = dest.stem, dest.suffix
@@ -1116,7 +1136,7 @@ def create_tab(ctx):
                             lit_dir, _cur_dir() / f'{stem}_{c}{sfx}'
                         )
                         c += 1
-                dest.write_bytes(payload)
+                _upload_limits.write_new_bytes(dest, payload)
                 batch['saved'].append(dest.name)
                 batch['completed'].add(upload_id)
                 upload_bridge_state['files'].pop(upload_id, None)

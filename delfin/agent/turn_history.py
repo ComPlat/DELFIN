@@ -24,7 +24,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-_API_KEYS = ("role", "content", "tool_calls", "tool_call_id", "name")
+from .harness_rows import history_mark
+
+#: The fields of one chat-API message that the history keeps (dictionary
+#: keys of a message row; no credential is involved).
+_MESSAGE_FIELDS = ("role", "content", "tool_calls", "tool_call_id", "name")
 
 
 def _as_text(value: Any) -> str:
@@ -47,9 +51,10 @@ def _cut(text: str, limit: int, what: str) -> str:
 
 
 def _api_row(row: dict) -> dict:
-    out = {k: row[k] for k in _API_KEYS if k in row and row[k] is not None}
+    out = {k: row[k] for k in _MESSAGE_FIELDS if k in row and row[k] is not None}
     out["content"] = _as_text(out.get("content"))
-    return out
+    # A row the harness wrote stays marked in the history (harness_rows).
+    return history_mark(out, row)
 
 
 def _call_ids(row: dict) -> list[str]:

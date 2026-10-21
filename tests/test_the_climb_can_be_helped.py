@@ -414,8 +414,17 @@ def test_gfn_ff_is_not_allowed_to_write_into_the_directory_it_is_run_from(tmp_pa
     """
     import os
 
+    # A directory of its own, not tmp_path itself: conftest's
+    # _isolate_user_state points every user-state sink at
+    # tmp_path / "user_home", so anything under the run that saves a
+    # setting or records a security event creates that directory BESIDE
+    # the working directory. Listing tmp_path therefore answered "what
+    # did GFN-FF leave" with "what the whole test wrote", and in a full
+    # run this failed with ['user_home'] while passing on its own.
+    run = tmp_path / 'run'
+    run.mkdir()
     was = os.getcwd()
-    os.chdir(tmp_path)
+    os.chdir(run)
     try:
         walk = climb.Climb(_COMPLEX, 'gfnff')
         try:
@@ -424,10 +433,15 @@ def test_gfn_ff_is_not_allowed_to_write_into_the_directory_it_is_run_from(tmp_pa
             walk.step()
         finally:
             walk.close()
-        left = sorted(p.name for p in tmp_path.iterdir())
+        left = sorted(p.name for p in run.iterdir())
     finally:
         os.chdir(was)
     assert left == [], left
+    # And the hazard the directory is for, stated rather than implied:
+    # tmp_path is shared with the user-state fallback, so a list of
+    # tmp_path is a list of what the whole test wrote.
+    assert run.parent == tmp_path
+    assert not (run / 'user_home').exists(), sorted(p.name for p in run.iterdir())
     # GFN2 has no such file and keeps the faster engine.
     quick = climb.Climb(_COMPLEX, 'gfn2')
     try:
@@ -1639,9 +1653,19 @@ def test_xtbs_own_hessian_carries_the_shapes_as_well_as_the_numbers():
         # against one of them a number between nought and one.
         overlaps = got['shape'].T @ got['shape']
         assert np.abs(overlaps - np.eye(overlaps.shape[0])).max() < 1e-8
-        # And the frequencies are the same object the older accessor returns.
+        # And the frequencies are the ones the older accessor returns. It runs
+        # xtb --hess a second time, so this compares two independent runs,
+        # and the bound is set by their reproducibility. Measured 2026-10-15
+        # on this structure, 20 pairs each under pytest: the conda-forge build
+        # (6.7.1 gfortran_ha02e54d_5) gave identical numbers 20/20; the
+        # release binary (xtb-6.7.1-linux-x86_64) differed on 6/20 pairs, each
+        # time by 1.055e-6 cm-1 on mode 1 (119.3 cm-1, relative 8.8e-9). The
+        # former bound, 1e-9 cm-1, failed that binary 7 of 10 runs. 1e-4 is
+        # about 100 times the measured spread and 1000 times below the
+        # 0.11 cm-1 by which the printout and the hessian file are said to
+        # agree above.
         assert np.abs(np.asarray(walk.frequencies_from_xtb())
-                      - got['cm']).max() < 1e-9
+                      - got['cm']).max() < 1e-4
     finally:
         walk.close()
 
@@ -1956,6 +1980,7 @@ def test_the_last_rung_is_orca_and_it_reaches_what_no_climb_here_does():
     assert 'softest mode' in said[0] and 'ORCA' in said[1], said
 
 
+@pytest.mark.usefixtures("real_xtb")
 def test_a_stop_does_not_pay_for_a_hessian_nobody_asked_for():
     """What a Stop is about is the frame on screen, not where the walk stood.
 

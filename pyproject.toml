@@ -9,7 +9,14 @@ description = "DELFIN is a modular computational chemistry platform that automat
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10,<3.13"
 authors = [{ name = "Maximilian Hartmann" }]
-license = {text = "LGPL-3.0-or-later"}
+# PEP 639: an SPDX expression and the files that carry the texts.
+# LGPL-3.0 is a set of additional permissions on top of GPL-3.0, and a
+# conveyed copy carries both texts (GPL-3.0 section 4, LGPL-3.0 section
+# 4(b)), so both land in the wheel's .dist-info/licenses/ and the sdist.
+license = "LGPL-3.0-or-later"
+# THIRD_PARTY_NOTICES.md carries the notices of the bundled 3Dmol.js and the
+# OpenTUI patches, and the licences of what the installers download.
+license-files = ["LICENSE", "COPYING", "COPYING.LESSER", "THIRD_PARTY_NOTICES.md"]
 urls = { "Homepage" = "https://github.com/ComPlat/DELFIN", "Repository" = "https://github.com/ComPlat/DELFIN" }
 keywords = ["quantum-chemistry", "orca", "xtb", "redox", "spin-state", "workflow", "dashboard", "smiles"]
 classifiers = [
@@ -67,7 +74,17 @@ dependencies = [
     # the one release restores the signal; it does not fix the chemistry,
     # and the code has to be made to work with the new series before this
     # line can go.
-    "rdkit>=2023.3.1,!=2026.3.6,<2027",
+    #
+    # The 2026.9 series is held back the same way, dated for the same
+    # reason. Between two slow-tests runs on 2026-10-09 nothing changed
+    # but rdkit, 2026.3.5 -> 2026.9.1, and ten builder tests failed
+    # (chelate backbone, metalloid donors, isomer benchmark and
+    # determinism, multihapto, UFF determinism). Measured on the same
+    # checkout: 2026.9.1 -> 4 failed / 12 passed over three of those
+    # files; 2026.3.5 -> 14 passed, 2 xfailed. The fast gate passes on
+    # 2026.9.1; only the construction tests notice. Lift this when they
+    # pass on 2026.9.
+    "rdkit>=2023.3.1,!=2026.3.6,<2026.10",
     "stk>=2024.1,<2027",
     "openbabel-wheel>=3.1.0,<4",
     "ipykernel>=6.0,<8",
@@ -83,17 +100,36 @@ dependencies = [
     # under that name, so pip still looks for it on the index. PyMOL renders
     # report pictures (ESP, dipole and orbital PNGs); nothing in the
     # construction needs it.
-    "voila>=0.5,<0.6",
+    # voila serves the dashboard over HTTP through jupyter-server and
+    # tornado, which it requires with floors from 2022. The floors here are
+    # the first releases that fix every advisory known on 2026-10-16
+    # (GHSA ids in tests/test_the_dashboard_server_requires_patched_releases.py):
+    # voila 0.5.6 (local file inclusion), jupyter-server 2.20.0 (stored XSS
+    # in the nbconvert handlers; 2.18.0 path traversal, CORS, open redirect),
+    # tornado 6.5.9 (StaticFileHandler following symlinks out of its root,
+    # request-size limits).
+    "voila>=0.5.6,<0.6",
+    "jupyter-server>=2.20.0,<3",
+    "tornado>=6.5.9,<7",
     "Pillow>=10,<13",
-    # Page rendering and in-document search for the file browser's PDF
-    # viewer. A dashboard feature, so it belongs with the other core
-    # dashboard dependencies rather than in an extra.
-    "pymupdf>=1.24,<2",
+    # PyMuPDF (the PDF viewer) is the [pdf] extra below, not a core
+    # dependency: it is AGPL-3.0, stronger copyleft than DELFIN's own
+    # licence.
     "mammoth>=1.6,<2",
     "openpyxl>=3.1,<4",
     "pexpect>=4.8,<5",
     "umap-learn>=0.5,<0.7",
     "scikit-learn>=1.3,<2",
+    # Reads the outputs of programs other than ORCA (Gaussian, xtb, Psi4,
+    # GAMESS, Molpro, ...) for the agent's energy profiles; ORCA stays on
+    # DELFIN's own parser, which cclib 1.8.1 cannot replace (it stops with
+    # an IndexError on ORCA 6 outputs). Core rather than [analysis] so a
+    # profile from a Gaussian run works where the agent runs. Capped below
+    # 1.9 because what energy_profile corrects was measured on 1.8.1 against
+    # real outputs: xtb's free energy arrives in eV, Psi4's energies not at
+    # all. Its own requirements (numpy, scipy, packaging, periodictable)
+    # move nothing DELFIN pins.
+    "cclib>=1.8.1,<1.9",
 ]
 
 [project.optional-dependencies]
@@ -106,6 +142,36 @@ dependencies = [
 # The reference lock still pins its version for whoever can install it.
 pymol = [
     "pymol-open-source>=2.5,<4",
+]
+# Page rendering, in-document search and form-field geometry for the file
+# browser's PDF viewer (delfin/dashboard/pdf_view.py), page images for OCR
+# and chat previews (delfin/agent/office.py, tab_agent.py). PyMuPDF is
+# "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License". AGPL
+# section 13 adds a source offer to users of a modified version over a
+# network, and whether a dashboard served to other users (the multi-user
+# login deployment) is such a use is a legal question, not a packaging one.
+# An extra, so whoever installs it takes that on by choice.
+# Without it every import site degrades: the viewer says why it cannot show
+# the page, the OCR check names the missing renderer, a chat card shows no
+# preview, and PDF text, forms and merging keep working through pypdf.
+pdf = [
+    "pymupdf>=1.24,<2",
+]
+# API keys in the operating system's credential store (macOS Keychain,
+# Secret Service, Windows Credential Manager) instead of the 0600 file
+# ~/.delfin/credentials.json (delfin/agent/credentials.py). Optional: on a
+# headless cluster node there is usually no usable backend, and without
+# the package DELFIN keeps using the file.
+keyring = [
+    "keyring>=24",
+]
+# A page the agent edits is also loaded in a headless browser by the
+# turn-end check (delfin/agent/artifact_check.py), which then reports its
+# uncaught errors and console errors. Optional: without it the page's
+# scripts and references are still checked; `playwright install chromium`
+# fetches the browser once.
+browser = [
+    "playwright>=1.40,<2",
 ]
 csp = [
     "mpi4py",
@@ -131,6 +197,19 @@ analysis = [
     "cclib",
     "nglview",
     "plotly",
+]
+# ORCA's own Python interface, OPI (github.com/faccts/opi; on PyPI as
+# orca-pi -- "opi" finds nothing). An extra, not core, measured 2026-09-25
+# and again 2026-10-15 on 2.0.0: it requires numpy>=2.2.6,<3 and
+# rdkit>=2025.3.2,<2026, and the core runs CI on numpy 1.26 and admits
+# rdkit 2026.x on purpose, so a hard requirement would move the chemistry
+# stack. Two limits it brings: it reads ORCA >= 6.1.1 only (6.0.1 and
+# 6.1.0 outputs are refused), and orca_2json from 6.1.1 writes a 6.0.1
+# property file's JSON WITHOUT its energies and without a word, so
+# get_final_energy() returns None for an energy that exists. DELFIN's
+# text parser stays the reader of record; OPI is the structured witness.
+orca = [
+    "orca-pi>=2,<3",
 ]
 ai-foundation = [
     "transformers",
@@ -212,9 +291,15 @@ office = [
     # Reading only — writing ODF is refused rather than approximated.
     "odfpy>=1.4",
 ]
-dev = [
+# What it takes to RUN the suite, and nothing else. Separate from `dev`
+# because the agent's own test tool needs exactly this and has no use for
+# the formatters: pytest was declared only inside `dev`, which the default
+# install does not select, so the agent's `run_tests` landed in an
+# environment with no pytest. It was told "no report file produced" and
+# reached for a runner of its own -- a venv or a wrapper script in the home
+# directory. Shipping the runner removes the reason.
+test = [
     "pytest>=6.0",
-    "pytest-cov",
     # A per-TEST deadline. The slow suite contains a call that waits on a
     # thread with no timeout of its own, and without this the whole job
     # sits behind it until the runner's limit — which is why the slow
@@ -222,6 +307,26 @@ dev = [
     # It was installed in one developer's environment and declared
     # nowhere, so the same command measured different things per machine.
     "pytest-timeout",
+]
+dev = [
+    # The two from `test`, written out rather than pulled in as
+    # "delfin-complat[test]": a self-referential extra resolves against
+    # PyPI and installs the released wheel beside the editable checkout
+    # (see tests/test_packaging_selfreference.py, which asserts this).
+    # The duplication is the price of that, and it is pinned by a test.
+    "pytest>=6.0",
+    "pytest-timeout",
+    "pytest-cov",
+    # Property-based tests of the parsers of outside input
+    # (tests/test_outside_input_parsers_hold_on_any_text.py). Exact: a new
+    # hypothesis release changes which inputs a derandomized run generates,
+    # and a test of "any text" should not change verdict with the tool.
+    # 6.168.3 is the newest that still supports Python 3.10 (6.169 needs
+    # 3.11) and was more than two weeks old on 2026-10-16.
+    "hypothesis==6.168.3",
+    # The [pdf] extra, written out for the same reason, so the PDF tests
+    # run in CI (which installs dev) instead of skipping.
+    "pymupdf>=1.24,<2",
     "black",
     "flake8",
     "ruff",
@@ -263,11 +368,15 @@ include = ["delfin*"]
     # animations out of the wheel loses the viewer's loading animation with
     # no error anywhere.
     "logo/*.gif",
+    # The installer scripts and notes only. The programs and parameter
+    # files they fetch (xtb4stda, stda, xtb, crest, ...) are third-party
+    # software under their own licences and are downloaded from upstream
+    # by install_qm_tools.sh into qm_tools/bin and qm_tools/share, or
+    # ~/.delfin/qm_tools; qm_runtime searches both. Shipping them would
+    # convey LGPL object code without its licence text and Corresponding
+    # Source. scripts/check_distribution.py fails a build that does.
     "qm_tools/*.txt",
     "qm_tools/*.sh",
-    "qm_tools/bin/stda_v1.6.1",
-    "qm_tools/bin/xtb4stda",
-    "qm_tools/share/xtb4stda/*",
     "csp_tools/*.sh",
     "mlp_tools/*.sh",
     "analysis_tools/*.sh",
@@ -285,14 +394,22 @@ include = ["delfin*"]
 "delfin.manta" = ["*.md"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 
+# Whatever an installer left in the source tree stays out of the wheel even
+# when MANIFEST.in would let it in (MANIFEST.in prunes the same directories
+# for the sdist).
 [tool.setuptools.exclude-package-data]
 "delfin" = [
-    "qm_tools/bin/crest",
-    "qm_tools/bin/dftb+",
-    "qm_tools/bin/std2",
-    "qm_tools/bin/stda",
-    "qm_tools/bin/xtb",
+    "qm_tools/bin/*",
+    "qm_tools/share/*",
+    "qm_tools/share/*/*",
     "qm_tools/downloads/*",
+    "qm_tools/build/*",
+    "qm_tools/third_party/*",
+    "qm_tools/logs/*",
+    "csp_tools/bin/*",
+    "mlp_tools/bin/*",
+    "analysis_tools/bin/*",
+    "ai_tools/bin/*",
 ]
 
 [tool.black]

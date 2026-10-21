@@ -1593,6 +1593,10 @@ def main(argv: list[str] | None = None) -> int:
         from delfin.cluster_bench.cli import main as _cluster_main
 
         return _cluster_main(arg_list[1:])
+    if arg_list and arg_list[0] == "review":
+        from delfin.review import main as _review_main
+
+        return _review_main(arg_list[1:])
     if arg_list and arg_list[0] == "doctor":
         return _run_doctor_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_check":

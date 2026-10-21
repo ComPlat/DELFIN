@@ -58,6 +58,7 @@ def collect(workspace: Any, *, now: Optional[float] = None,
                 "id": str(jid),
                 "label": str(rec.get("description") or rec.get("command") or "")[:90],
                 "since": float(rec.get("started_at") or now),
+                **_ports_and_url(str(jid), str(rec.get("command") or "")),
             })
     except Exception as _exc:
         _failed("shells", _exc)
@@ -121,6 +122,68 @@ def collect(workspace: Any, *, now: Optional[float] = None,
     return view
 
 
+def _ports_and_url(job_id: str, command: str) -> dict:
+    """``{"ports", "url"}`` of a running shell: the ports its processes
+    really listen on (bash_jobs.job_listening_ports, any server: vite,
+    flask, node), and the address to open -- the one its command names,
+    else the loopback at its lowest port."""
+    ports: list[int] = []
+    try:
+        from . import bash_jobs as _bj
+        ports = sorted(_bj.job_listening_ports(_bj.get_registry().get(job_id)))
+    except Exception:
+        ports = []
+    url = served_url(command)
+    if not url and ports:
+        url = f"http://127.0.0.1:{ports[0]}/"
+    return {"ports": ports, "url": url}
+
+
+def served_url(command: str) -> str:
+    """The address a static file server in *command* answers on, or "".
+
+    Measured 2026-10-19: a session started eight ``python3 -m http.server``
+    jobs on different ports to let the user play a browser game; the panel
+    said "running · 50m" for the one still up, and which address to open
+    was in nobody's view. A server row now names it."""
+    try:
+        import re
+        import shlex
+        from . import bash_jobs as _bj
+        if not _bj.serves_files(command):
+            return ""
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            words = command.split()
+        host, port = "localhost", ""
+
+        def _after(*flags: str) -> str:
+            for i, w in enumerate(words[:-1]):
+                if w in flags:
+                    return words[i + 1]
+            return ""
+
+        if "http.server" in words or "SimpleHTTPServer" in words:
+            mod = "http.server" if "http.server" in words else "SimpleHTTPServer"
+            rest = words[words.index(mod) + 1:]
+            port = next((w for w in rest if w.isdigit()), "8000")
+            host = _after("--bind", "-b") or host
+        elif "-S" in words:
+            host, _, port = _after("-S").rpartition(":")
+        else:
+            port = _after("-p", "--port", "-l", "--listen") or (
+                "3000" if "serve" in words else "8080")
+            m = re.match(r"(?:tcp://)?(?:(.+):)?(\d+)$", port)
+            if m:
+                host, port = m.group(1) or host, m.group(2)
+        if host in ("", "0.0.0.0", "::"):
+            host = "localhost"
+        return f"http://{host}:{port}/" if port.isdigit() else ""
+    except Exception:
+        return ""
+
+
 def _duration(seconds: float) -> str:
     s = max(0, int(seconds))
     if s < 60:
@@ -132,7 +195,7 @@ def _duration(seconds: float) -> str:
 
 # What the × on a row does, said where the user can read it first.
 _STOP_TIPS = {
-    "shells": "Stop this command",
+    "shells": "Stop this command (and close the ports it holds)",
     "watches": "Stop watching — the job itself keeps running",
     "agents": "Stop this background agent",
     "wakeups": "Cancel this wake-up",
@@ -146,30 +209,63 @@ def rows(view: dict, *, now: Optional[float] = None) -> list[dict]:
     now = time.time() if now is None else float(now)
     out: list[dict] = []
 
-    def _add(group: str, item_id: str, kind: str, label: str, detail: str):
+    def _add(group: str, item_id: str, kind: str, label: str, detail: str,
+             url: str = ""):
         out.append({"group": group, "id": str(item_id), "kind": kind,
                     "label": label, "detail": detail,
-                    "tip": _STOP_TIPS[group]})
+                    "tip": _STOP_TIPS[group], "url": url})
 
     for row in view.get("shells", []):
-        _add("shells", row["id"], "Shell", row["label"] or row["id"],
-             f"running · {_duration(now - row['since'])}")
+        url = str(row.get("url") or "")
+        ports = [int(p) for p in (row.get("ports") or [])]
+        port_text = " ".join(f":{p}" for p in ports)
+        _add("shells", row["id"], "Server" if (url or ports) else "Shell",
+             row["label"] or row["id"],
+             f"running · {_duration(now - row['since'])}"
+             + (f" · port {port_text}" if port_text else "")
+             + (f" · {url}" if url else ""), url)
+        out[-1]["ports"] = ports
+        out[-1]["since"] = row["since"]
     for row in view.get("watches", []):
         kind = row["kind"].upper() if row["kind"] in ("ci", "slurm") else row["kind"]
         _add("watches", row["id"], f"Watch · {kind}", row["label"] or row["id"],
              f"{row['state'].lower()} · {_duration(now - row['since'])}")
+        out[-1]["since"] = row["since"]
+        out[-1]["state"] = row["state"].lower()
     for row in view.get("agents", []):
         detail = f"running · {_duration(now - row['since'])}"
         if row.get("last"):
             detail += f" · {row['last']}"
         _add("agents", row["id"], "Agent", row["label"], detail)
+        out[-1]["since"] = row["since"]
     for row in view.get("wakeups", []):
         label = "Loop" if row["kind"] == "interval" else "Wake-up"
         when = (f"in {_duration(row['at'] - now)}" if row["at"] > now else "due")
         _add("wakeups", row["id"], label, row["label"] or row["id"], when)
+        out[-1]["at"] = row["at"]
     for n, row in enumerate(view.get("errors", [])):
         _add("errors", f"error-{n}", "⚠ Not read",
              f"{row['group']}: could not be listed", row["error"])
+    return out
+
+
+def snapshot(view: dict) -> list[dict]:
+    """The rows without anything that changes with the clock.
+
+    For a window that draws the ages itself (the terminal UI): each row
+    is ``group``, ``id``, ``kind``, ``label``, ``url``, ``state``, and
+    ``since`` (when it started) or ``at`` (when a wake-up fires), epoch
+    seconds or None. ``detail`` is left out because it holds "running ·
+    2m10s", and a list that changes every second would be sent every
+    second. Same rows as :func:`rows`, so the panel and the window cannot
+    disagree about what is out.
+    """
+    out = []
+    for r in rows(view):
+        out.append({"group": r["group"], "id": r["id"], "kind": r["kind"],
+                    "label": r["label"], "url": r.get("url") or "",
+                    "state": r.get("state") or "",
+                    "since": r.get("since"), "at": r.get("at")})
     return out
 
 
@@ -203,7 +299,8 @@ def status_line(view: dict, *, now: Optional[float] = None,
         return ""
     parts = []
     for r in live[:max(1, int(limit))]:
-        label = str(r.get("label") or r.get("id") or "?")[:28]
+        # A server is reached by its address, so that is its name here.
+        label = str(r.get("url") or r.get("label") or r.get("id") or "?")[:28]
         # "running · 6m 40s · reading repl.py" -> the duration. How long
         # it has been out is the fact a glance is looking for; what it is
         # doing right now belongs in the panel that has room for it.
@@ -247,14 +344,23 @@ def selected_id(view: dict, index: int, *, now: Optional[float] = None,
 
 
 def row_html(row: dict) -> str:
+    url = str(row.get("url") or "")
+    if url.startswith(("http://localhost:", "http://127.0.0.1:")):
+        # Only a local server's own address becomes a link: the URL is
+        # built from the command, never taken from a job's output.
+        link = (f" <a href='{html.escape(url, quote=True)}' target='_blank' "
+                f"style='color:#1565c0;'>{html.escape(url)}</a>")
+    else:
+        link = ""
+    detail = row["detail"].replace(f" · {url}", "") if link else row["detail"]
     return ("<div style='display:flex; gap:8px; align-items:baseline; "
             "font-size:11px; color:#546e7a;'>"
             f"<span style='min-width:7.5em; color:#37474f; font-weight:600;'>"
             f"{html.escape(row['kind'])}</span>"
             f"<span style='flex:1; min-width:0; overflow-wrap:anywhere;'>"
-            f"{html.escape(row['label'])}</span>"
+            f"{html.escape(row['label'])}{link}</span>"
             f"<span style='color:#78909c; white-space:nowrap;'>"
-            f"{html.escape(row['detail'])}</span></div>")
+            f"{html.escape(detail)}</span></div>")
 
 
 def header_html(count: int) -> str:

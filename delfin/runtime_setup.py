@@ -410,6 +410,29 @@ def get_packaged_submit_templates_dir() -> Path:
     return (Path(__file__).resolve().parent / "submit_templates").resolve()
 
 
+def get_packaged_micromamba_fetcher() -> Path:
+    """delfin/installers/fetch_micromamba.sh: the one pinned micromamba
+    release and its SHA-256 per platform, shared by every installer."""
+    return (Path(__file__).resolve().parent / "installers" / "fetch_micromamba.sh").resolve()
+
+
+def _stage_micromamba_fetcher(target: Path) -> None:
+    """Put the shared fetcher beside a staged installer.
+
+    A staged installer runs from the tool directory, where the package's
+    ``installers/`` is not one level up, so it finds the fetcher beside
+    itself instead. Nothing is copied when the target IS the packaged
+    directory (an install into the checkout): there ``../installers``
+    already holds it.
+    """
+    source = get_packaged_micromamba_fetcher()
+    if not source.is_file():
+        raise FileNotFoundError(f"Packaged micromamba fetcher not found: {source}")
+    if (target.parent / "installers" / source.name).resolve() == source:
+        return
+    shutil.copy2(source, target / source.name)
+
+
 def get_packaged_qm_tools_dir() -> Path:
     return (Path(__file__).resolve().parent / "qm_tools").resolve()
 
@@ -1134,6 +1157,7 @@ def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
         target,
         shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
     )
+    _stage_micromamba_fetcher(target)
     return target
 
 
@@ -1293,6 +1317,7 @@ def stage_packaged_analysis_tools(target_dir: str | Path | None = None) -> Path:
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
+    _stage_micromamba_fetcher(target)
     return target
 
 
@@ -1344,6 +1369,7 @@ def stage_packaged_ai_tools(target_dir: str | Path | None = None) -> Path:
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
+    _stage_micromamba_fetcher(target)
     return target
 
 
@@ -1486,6 +1512,11 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
 
     # Suppress noisy but harmless third-party warnings in the dashboard
     os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
+
+    # The environment the resolver walks just changed: a cached "not
+    # found" from before this call would hide a freshly installed tool.
+    from delfin.qm_runtime import clear_resolver_cache
+    clear_resolver_cache()
 
 
 @contextmanager

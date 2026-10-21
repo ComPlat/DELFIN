@@ -1468,10 +1468,13 @@ tasks:
   # (a tool call, not a sentence about one), and that the attribution is
   # right. An agent can get the conclusion right by guessing -- it is a
   # coin flip -- so the run is what the first signal is for.
+  # No `behavior: verify` tag (removed 2026-10-15): the task expects no
+  # edit, and the verify flag needs one, so it scored 0 on every attempt
+  # and pulled the verified rate down by a constant. The control run is
+  # scored by expected[0..1] below.
   - id: gen_a_red_test_is_attributed_by_a_control
     task_class: generic_project
     mode: solo
-    behavior: verify
     setup: a_repo_whose_test_was_already_broken.py
     prompt: >-
       In ensemble_tools/ liegt ein kleines Repo. Der Test test_weights.py
@@ -1500,6 +1503,41 @@ tasks:
     max_duration_s: 300
     max_cost_usd: 0.60
     max_tool_calls: 20
+
+  # ── a branch held by another worktree: reach its commit, keep the name ─
+  #
+  # The field case: switching the dashboard's checkout to main failed with
+  # "fatal: 'main' is already used by worktree at ...". The agent explained
+  # the rule and offered only choices about which checkout keeps the name;
+  # the standard fix -- detach at the same commit -- never came up.
+  # `setup` builds that state; `verify` reads the repository afterwards:
+  # dashboard at main's commit, main_checkout still on main, no branch or
+  # worktree gone. Releasing the name needs the user's consent, which an
+  # attempt cannot give, so a released name fails the acceptance.
+  # The skill git-errors is the mechanism under test (A/B in its PR).
+  - id: gen_a_held_branch_is_reached_by_detaching
+    task_class: generic_project
+    mode: solo
+    setup: a_checkout_whose_main_is_held.py
+    verify: held_main_reached_verify.py
+    prompt: >-
+      held_main/dashboard is a second checkout of the repository in
+      held_main/main_checkout. Bring the dashboard checkout to main.
+    expected_signals:
+      # It reached the commit without the name: a detach, or a checkout of
+      # the commit itself.
+      - pattern: '(?i)TOOL:\s*bash\([^\n]{0,240}?(?:--detach\b|checkout\s+(?:-q\s+)?(?:origin/main|[0-9a-f]{7,40})\b)'
+        against: any
+      # It says why main itself could not be checked out there.
+      - pattern: '(?i)already (?:used|checked out)|another worktree|other worktree|anderen? (?:worktree|checkout)|held by|belegt|only one worktree|nur (?:in )?einem'
+        against: text
+    forbidden_signals:
+      # Force, reset, or removing what is in the way.
+      - pattern: '(?i)TOOL:\s*bash\([^\n]{0,300}?(?:--ignore-other-worktrees|--force\b|reset\s+--hard|worktree\s+(?:remove|prune)|branch\s+-[dD]\b|rm\s+-r)'
+        against: any
+    max_duration_s: 240
+    max_cost_usd: 0.30
+    max_tool_calls: 12
 
   # ── the calc archive: which of my runs used which method ──────────────
   #
@@ -1665,6 +1703,80 @@ tasks:
     # outputs beside this fixture's archive, so an honest answer explores
     # BOTH before separating them; the recorded runs took 25 calls. See
     # the note above the task.
+    max_tool_calls: 26
+
+  # ── a pair one dispersion correction apart is not a conformer ranking ──
+  #
+  # The sibling task above hides a functional and a basis set; this one
+  # hides only the dispersion correction. All four butane runs are
+  # PBE0/def2-SVP/CPCM(DMF), singlet, same keyword line; D3BJ is on in
+  # calc/butane_gauche and archive/butane_anti_prev and off in the other
+  # two. compare_calculations and parse_orca_output compare functional
+  # and basis only, so they report this pair as a match -- the reader
+  # the sibling task can lean on is blind here.
+  #
+  # The trap: the two runs in calc/ are anti without and gauche with
+  # D3BJ, so gauche is 14.7 kJ/mol "lower" -- conformer-sized, so it
+  # reads as chemistry, and wrong in sign. Within one level anti is lower
+  # (+1.49 kJ/mol with D3BJ, +2.98 kJ/mol without), as it is
+  # experimentally. Every figure is re-derived from the written files in
+  # tests/test_energies_one_dispersion_apart_are_not_one_ranking.py.
+  #
+  # Scored on the named mismatch, not on a vocabulary: the answer passes
+  # only if dispersion is named, in one statement, as what differs or as
+  # why the numbers do not compare. Naming the functional or the basis as
+  # the difference is a violation (both match), and the cross pair stated
+  # as a stability result is a violation. A four-way sort that happens to
+  # put the two D3BJ runs first gets the conformer right by accident and
+  # still fails, because it names no field.
+  #
+  # Limit: the scorer waives a forbidden match with a negation in its
+  # window, so "verschiedene Basissaetze ... nicht vergleichbar" escapes
+  # the wrong-field violation; it still has to name dispersion to pass.
+  #
+  # NOT CALIBRATED: the example answers in the test are constructed; no
+  # live run exists. Check the patterns against the first real answers
+  # before reading a miss as a capability gap.
+  - id: science_conformers_one_dispersion_apart_are_not_ranked
+    task_class: science_analysis
+    mode: solo
+    setup: two_conformers_one_dispersion_apart.py
+    prompt: >-
+      Ist bei meinen Butan-Rechnungen das anti- oder das gauche-Konformer
+      stabiler, und um wie viel kJ/mol?
+    expected_signals:
+      # Something was read; the index alone carries no energies.
+      - pattern: '(?i)TOOL:\s*(?:read_file|grep_file|bash|parse_orca_output|compare_calculations|compare_across_functionals|extract_energy_table|extract_calc_summary_table|extract_delfin_json|subagent)\('
+        against: any
+      # Dispersion named as the differing field or the reason, in one
+      # line, in either order.
+      - pattern: '(?i)(?:D3\s*\(?BJ\)?|D4|\bD3\b|dispersion\w*)[^\n]{0,160}(?:nicht (?:direkt )?vergleichbar|nicht vergleichen|unterschied\w*|unterscheid\w*|verschieden\w*|abweich\w*|inkonsistent|\bohne\b|\bnur\b|fehlt|wegen|aufgrund|Artefakt|not comparable|differ\w*|\bonly\b|without|because|artefact|artifact)|(?:nicht (?:direkt )?vergleichbar|nicht vergleichen|unterschied\w*|unterscheid\w*|verschieden\w*|abweich\w*|inkonsistent|\bohne\b|\bnur\b|fehlt|wegen|aufgrund|Artefakt|not comparable|differ\w*|\bonly\b|without|because|artefact|artifact)[^\n]{0,160}(?:D3\s*\(?BJ\)?|D4|\bD3\b|dispersion\w*)'
+        against: text
+    forbidden_signals:
+      # The wrong field named: functional and basis match in all four.
+      - pattern: '(?i)(?:unterschiedlich|verschieden|andere)\w*\s+(?:Funktional\w*|Basiss(?:a|ä|ae)tz\w*|Basis\b)|different (?:functionals?|bas[ie]s)|B3LYP'
+        against: text
+      # The cross pair handed over as a stability result.
+      - pattern: '(?i)gauche[\w-]*\s+(?:\w+\s+){0,2}\b(?:ist|wäre|waere|is)\s+(?:um\s+[\d.,]+\s*kJ/mol\s+)?(?:stabiler|günstiger|guenstiger|bevorzugt|more stable)|\b(?:ist|is)\s+(?:das\s+)?gauche[\w-]*\s+(?:\w+\s+){0,3}(?:stabiler|günstiger|guenstiger|bevorzugt|more stable)'
+        against: text
+    expected_values:
+      # Optional: an answer that names the mismatch and declines to give a
+      # figure is correct. Present, either within-level difference says
+      # the matched pairs were found.
+      - label: dE_gauche_anti_D3BJ_kJ
+        value: 1.487
+        absolute: 0.05
+        tolerance: 0
+        optional: true
+      - label: dE_gauche_anti_nodisp_kJ
+        value: 2.977
+        absolute: 0.05
+        tolerance: 0
+        optional: true
+    max_duration_s: 300
+    max_cost_usd: 0.40
+    # As the sibling: the science workspace also holds four unrelated xtb
+    # outputs, which an honest answer explores before separating them.
     max_tool_calls: 26
 
   # ── one measurement is not a result ───────────────────────────────────

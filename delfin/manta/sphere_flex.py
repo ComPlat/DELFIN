@@ -4,9 +4,9 @@ Why this exists (data-driven, 2026-06-29 clash forensik)
 --------------------------------------------------------
 The rigid ideal-polyhedron placement seats every donor EXACTLY on its vertex at
 the ideal M-D distance and then ``refine`` relieves clashes with the metal + ALL
-donors FROZEN.  Measured against real CCDC crystals, the FF-free build has a
+donors FROZEN.  Measured against real crystal structures, the FF-free build has a
 residual inter-ligand heavy-heavy clash gap: ~48% of structures carry a worst
-overlap > 0.5 A vs ~17% for real crystals (mean 0.48 vs 0.28 A) — MOSTLY MILD
+overlap > 0.5 A, far more often than real crystals do — MOSTLY MILD
 (only ~6% gross > 1.0 A).  A whole-body M-D-axis rotation CANNOT relieve these
 (empirically de-risked: rotating a crowded ligand body just spins the clash
 around — the overlap is intrinsic to the rigid sphere, not the body orientation).
@@ -54,10 +54,10 @@ def _is_center(sym: str) -> bool:
 
 
 # inter-ligand heavy-heavy clash factor.  The license-free detector flags only
-# < 0.65*vdwsum, but REAL CSD crystals keep inter-ligand contacts >= ~0.85*vdwsum
+# < 0.65*vdwsum, but real crystal structures keep inter-ligand contacts well apart
 # (the 0.65 gate is deliberately permissive to keep FP=0).  Visual "clashes" the eye
 # catches live in the 0.70-0.85 band — too close for a real crystal but passing the
-# detector.  So we relax toward the REAL-crystal separation (0.85) to remove them.
+# detector.  So we relax toward a hand-set separation (0.85) to remove them.
 _CLASH_F = float(os.environ.get("DELFIN_FFFREE_FLEX_CLASH_F", "0.85"))
 _DEF_MAX_DISP = 0.30     # A, hard cap on per-donor displacement from its ideal vertex
 _DEF_K = 1.5             # harmonic restoring strength (toward ideal vertex + ideal M-D)

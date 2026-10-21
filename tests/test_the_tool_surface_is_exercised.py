@@ -69,10 +69,13 @@ _NOT_EXERCISED_HERE = {
     "session_message": "tests/test_sessions_can_write_to_each_other.py — "
                        "needs a second open session",
     "run_tests": "would run the suite inside the suite",
+    "make_plot": "renders a plot card; covered by tests/test_v2_*.py",
     # Exercised through the real executor in their own files, each with
     # the store it needs set up under a redirected HOME.
     "skill_propose_patch": "tests/test_skill_patch_tool.py — needs an "
                            "active skill and the proposal store",
+    "skill_share": "tests/test_zz_l6_a_shared_skill_arrives_as_a_proposal.py "
+                   "— needs an accepted skill and the proposal store",
     "session_search": "tests/test_session_search_end_to_end.py — needs an "
                       "indexed session archive",
     # Side effects that leave the machine.
@@ -117,6 +120,7 @@ _NOT_EXERCISED_HERE = {
     "notebook_read": "tests covering notebook editing",
     "notebook_edit": "needs an .ipynb fixture with outputs",
     "view_image": "needs an image and a vision-capable route",
+    "show_molecule": "renders a viewer card; covered by tests/test_zz_show_molecule.py",
     # Chemistry data: needs an indexed corpus and a calc archive.
     "search_docs": "needs the indexed doc corpus",
     "read_section": "needs the indexed doc corpus",
@@ -131,6 +135,8 @@ _NOT_EXERCISED_HERE = {
     "history_get": "needs a populated history store",
     "apply_patch": "tests/test_apply_patch_gate.py",
     "skill": "tests covering skills",
+    "subagent_message":
+        "tests/test_a_message_reaches_a_delegate_that_is_working.py",
 }
 
 

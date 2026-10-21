@@ -236,6 +236,7 @@ def test_code_mode_still_works_where_it_was_started():
         "str(_fb)",                       # home-launch fallback
         "_office_p",                      # Office
         "_dash_ws",                       # Dashboard
+        "_research_ws",                   # Research — its own branch, mode-checked
     }
     found = re.findall(r"^\s*repo_dir = (.+)$", tab, re.MULTILINE)
     assert found, "the agent workspace is no longer assigned"
@@ -248,7 +249,19 @@ def test_the_office_role_is_stamped_before_the_first_turn():
     """Otherwise a directory could be granted in the window between
     constructing the engine and the first turn."""
     source = _tab_agent_source()
-    assert '_kp.agent_role = "office_agent"' in source
+    # The stamp is mode-conditional now: each single-agent mode gets its
+    # own role before the first turn. The guarantee is unchanged — office
+    # is stamped "office_agent", research "research_agent", neither
+    # defaulting to the code role.
+    assert '_kp.agent_role = (' in source
+    assert '"research_agent"' in source and '"office_agent"' in source
+    block = source.split('_kp.agent_role = (', 1)[1][:200]
+    assert 'mode_dropdown.value == "research"' in block
+    # research_agent is only reachable through the research mode, and
+    # office_agent only through office.
+    assign = "_kp.agent_role = (" + block.split(")", 1)[0] + ")"
+    assert 'if mode_dropdown.value == "research"' in assign
+    assert 'else "office_agent"' in assign
 
 
 def test_the_mode_restore_calls_a_helper_that_exists():
@@ -272,7 +285,7 @@ def test_the_single_agent_modes_are_defined_once():
     forgotten in the other, and the inspector appeared in a mode that has
     no role route to inspect."""
     source = _tab_agent_source()
-    assert '_SINGLE_AGENT_MODES = ("dashboard", "solo", "office")' in source
+    assert '_SINGLE_AGENT_MODES = ("dashboard", "solo", "office", "research")' in source
     # Neither consumer may reintroduce a literal list of its own.
     assert '_is_pipeline = mode_dropdown.value not in _SINGLE_AGENT_MODES' in source
     assert '_is_minimal = new_mode in _SINGLE_AGENT_MODES' in source
@@ -294,7 +307,7 @@ def test_office_and_dashboard_sessions_are_listed_by_mode():
     either. Scoping them by folder made a conversation disappear the
     moment the dashboard was started somewhere else."""
     source = _tab_agent_source()
-    assert '_LAUNCH_INDEPENDENT_MODES = ("dashboard", "office")' in source
+    assert '_LAUNCH_INDEPENDENT_MODES = ("dashboard", "office", "research")' in source
     block = source.split("def _refresh_session_dropdown", 1)[1][:1400]
     assert "mode_dropdown.value in _LAUNCH_INDEPENDENT_MODES" in block
     assert 's.get("mode") == mode_dropdown.value' in block

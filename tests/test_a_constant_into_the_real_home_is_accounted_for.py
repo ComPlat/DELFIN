@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+import _package_ast
 from delfin.agent import state_paths
 
 # The package root this file's assertions walk. Resolved from the imported
@@ -86,7 +87,7 @@ def _module_constants_into_delfin() -> list[tuple[str, str]]:
         mod_name = rel.with_suffix("").as_posix().replace("/", ".")
         if mod_name.endswith(".__init__"):
             mod_name = mod_name[: -len(".__init__")]
-        tree = ast.parse(py.read_text(encoding="utf-8"))
+        tree = _package_ast.parse(py)
         for node in tree.body:
             if not isinstance(node, ast.Assign):
                 continue

@@ -1,7 +1,7 @@
 """read_file/grep_file/list_files must work WITHOUT a doc index.
 
 Regression for a bug found by the live KIT test: in an un-indexed workspace
-(Jerome's own project, a fresh dir) the doc-index gate ("Doc index not
+(a user's own project, a fresh dir) the doc-index gate ("Doc index not
 available") wrongly blocked the workspace file-access tools, breaking
 read-only subagents (explore/plan) that can't fall back to bash.
 """

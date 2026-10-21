@@ -36,16 +36,28 @@ import pytest
 from delfin.agent import mcp_client, mcp_isolation
 
 
-def _try_import_fastmcp():
+def _server_class_resolves() -> bool:
+    """Can a server class be resolved on the installed SDK.
+
+    Named for what it asks. The previous version imported ``mcp`` under
+    the name ``_try_import_fastmcp``, which answers a neighbouring
+    question: with mcp 2.x the package imports while
+    ``mcp.server.fastmcp`` is gone. It did not bite here -- this file
+    starts no probe server of its own -- and it did in
+    tests/test_a_tool_reached_over_mcp_cannot_read_outside.py, where
+    three containment tests reported FAILURE instead of skipping.
+    """
     try:
-        import mcp  # noqa: F401
+        from delfin.mcp_compat import load_server_class
+        load_server_class()
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
 pytestmark = [
-    pytest.mark.skipif(not _try_import_fastmcp(), reason="no mcp package"),
+    pytest.mark.skipif(not _server_class_resolves(),
+                       reason="no usable MCP server class"),
 ]
 
 

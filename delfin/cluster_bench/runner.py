@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 from delfin.cluster_bench.prepare import cbatch_chunk_dir, cbatch_load_manifest, cbatch_shard_rows
@@ -40,6 +41,58 @@ _SANITISE_PREFIXES = ("DELFIN_",)
 _SANITISE_KEYS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                   "NUMEXPR_NUM_THREADS", "PYTHONHASHSEED", "PYTHONPATH", "PYTHONSTARTUP")
 MANTA_STATUSES = ("ok", "empty", "timeout", "fail")
+
+
+def cbatch_tool_python(man) -> str:
+    """The interpreter a tool child runs: the job's staged copy when the sbatch staged one onto
+    node-local disk (``DELFIN_CLUSTER_TOOL_PYTHON``), else the interpreter the manifest names.
+    The staged copy is unpacked from a cached tar of the same venv, so it matches the provenance
+    recorded for the manifest interpreter (provenance still probes the original)."""
+    return os.environ.get("DELFIN_CLUSTER_TOOL_PYTHON") or man["settings"]["tool_python"]
+
+
+def cbatch_copy_system(archive_ws: Path, archive_build: Path, rid: str,
+                       log_build: Path | None = None, log_ws: Path | None = None) -> None:
+    """Place one finished system's result (xyz + final meta) into the workspace archive.
+    The meta is written atomically (temp + ``os.replace``), so a reader never sees a partial
+    record.  Finished systems are copied back in batches -- the workspace archive keeps the exact
+    layout resume and ``cbatch_collect`` read, without the per-system intermediate files.
+    A system that did not end ``ok`` also takes its log along: on node-local disk the log is
+    the only diagnosis and would vanish with the node.  Logs of ok systems stay local."""
+    src_xyz = archive_build / f"{rid}.xyz"
+    if src_xyz.exists():
+        shutil.copyfile(src_xyz, archive_ws / f"{rid}.xyz")
+    src_meta = archive_build / "_meta" / f"{rid}.json"
+    if src_meta.exists():
+        text = src_meta.read_text()
+        dst = archive_ws / "_meta" / f"{rid}.json"
+        tmp = dst.with_name(f".{rid}.json.part")
+        tmp.write_text(text)
+        os.replace(tmp, dst)
+        try:
+            status = str(json.loads(text).get("status", ""))
+        except ValueError:
+            status = ""
+        src_log = (log_build / f"{rid}.log") if log_build else None
+        if status != "ok" and src_log is not None and log_ws is not None and src_log.exists():
+            log_ws.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src_log, log_ws / f"{rid}.log")
+
+
+def cbatch_sync_size() -> int:
+    """How many finished systems are copied back to the workspace archive in one batch.
+    Bounded (never one file op per system in real time) and tunable via the environment, so
+    a job nearing its wall time or losing its node loses at most one unsynced batch on resubmit."""
+    try:
+        return max(1, int(os.environ.get("DELFIN_CLUSTER_SYNC_SIZE", "32")))
+    except ValueError:
+        return 32
+
+
+def cbatch_flush_requested(local_root: str | None) -> bool:
+    """True when the sbatch trap's USR1 handler asked the runner to flush finished systems now,
+    before the node is reaped at the job's wall time (SLURM sends USR1 600 s early)."""
+    return bool(local_root) and (Path(local_root) / ".usr1").exists()
 
 
 def cbatch_manta_env() -> dict:
@@ -125,7 +178,7 @@ def _manta_shard(man, rows, chunk: Path, workers, timeout, log) -> dict:
     def _build_one_system(rid, smi):
         t0 = time.time()
         rec = {"rid": rid, "status": "fail"}
-        cmd = [s["tool_python"], child, str(REPO_ROOT), rid, smi, str(archive), s["mode"],
+        cmd = [cbatch_tool_python(man), child, str(REPO_ROOT), rid, smi, str(archive), s["mode"],
                str(s["threads"])]
         try:
             rc, so, se, to = cbatch_run_child(cmd, env, timeout)
@@ -190,10 +243,10 @@ def cbatch_tool_one(man, rid, specs, archive: Path, workroot: Path, logroot: Pat
     tool = man["tool"]
     work = workroot / rid
     if tool == "mace":
-        cmd = [s["tool_python"], str(WORKERS_DIR / "mace_worker.py"), rid, str(specs), str(archive),
-               str(work), "--geoms", s["mode"]]
+        cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "mace_worker.py"), rid, str(specs),
+               str(archive), str(work), "--geoms", s["mode"]]
     else:
-        cmd = [s["tool_python"], str(WORKERS_DIR / "bench_worker.py"), tool, rid, str(specs),
+        cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "bench_worker.py"), tool, rid, str(specs),
                str(archive), str(work), "--mode", s["mode"]]
     env = cbatch_tool_child_env({})
     t0 = time.time()
@@ -254,14 +307,19 @@ def cbatch_read_final_metas(archive: Path, ids) -> dict:
 
 
 def _tool_shard(man, rows, specs: Path, chunk: Path, workers, timeout, log) -> dict:
-    archive = chunk / "archive"
-    (archive / "_meta").mkdir(parents=True, exist_ok=True)
-    workroot = Path(os.environ.get("DELFIN_CLUSTER_WORK_ROOT") or (chunk / "work"))
+    archive_ws = chunk / "archive"                       # workspace archive (resume + collect)
+    (archive_ws / "_meta").mkdir(parents=True, exist_ok=True)
+    local = os.environ.get("DELFIN_CLUSTER_LOCAL_ROOT")
+    archive_build = (Path(local) / "archive") if local else archive_ws
+    if archive_build != archive_ws:
+        (archive_build / "_meta").mkdir(parents=True, exist_ok=True)
+    workroot = Path(os.environ.get("DELFIN_CLUSTER_WORK_ROOT")
+                    or ((Path(local) / "work") if local else chunk / "work"))
     workroot.mkdir(parents=True, exist_ok=True)
-    logroot = chunk / "logs"
+    logroot = (Path(local) / "logs") if local else chunk / "logs"
     logroot.mkdir(exist_ok=True)
     ids = [r for r, _ in rows]
-    finished = cbatch_read_final_metas(archive, ids)
+    finished = cbatch_read_final_metas(archive_ws, ids)
     cn = {}
     for ln in specs.read_text().splitlines():
         if ln.strip():
@@ -269,17 +327,50 @@ def _tool_shard(man, rows, specs: Path, chunk: Path, workers, timeout, log) -> d
             cn[rec["refcode"]] = int(rec.get("cn") or 0)
     todo = [r for r in ids if r not in finished]
     todo.sort(key=lambda r: -cn.get(r, 0))
+    sync_size = cbatch_sync_size()
+    pending: list = []
+    log_ws = chunk / "logs"
+    if archive_build == archive_ws:
+        def _sync():
+            pending.clear()
+
+        def _flush_all():
+            pass
+    else:
+        def _sync():
+            for rid in pending:
+                cbatch_copy_system(archive_ws, archive_build, rid, logroot, log_ws)
+            pending.clear()
+
+        def _flush_all():
+            # USR1: copy every system whose final record already exists locally -- also
+            # those whose child has not exited yet -- since the node is reaped soon.
+            for meta in (archive_build / "_meta").glob("*.json"):
+                rid = meta.stem
+                if not (archive_ws / "_meta" / meta.name).exists():
+                    cbatch_copy_system(archive_ws, archive_build, rid, logroot, log_ws)
+            pending.clear()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex, \
             open(chunk / "run_summary.jsonl", "a") as summ:
-        futs = [ex.submit(cbatch_tool_one, man, r, specs, archive, workroot, logroot, timeout)
-                for r in todo]
-        for f in as_completed(futs):
-            m = f.result()
-            summ.write(json.dumps(m) + "\n")
-            summ.flush()
-            finished[m["refcode"]] = m
-            log(f"{m['refcode']:<12} {str(m['status'])[:40]:<40} frames={m['n_frames']:<4} "
-                f"wall={m['wall_total_s']:8.1f}s rss={m['rss_gb']:.2f}G")
+        not_done = {ex.submit(cbatch_tool_one, man, r, specs, archive_build, workroot, logroot,
+                              timeout) for r in todo}
+        while not_done:
+            # Poll instead of blocking on the next completion: the USR1 flag must be honoured
+            # even when no further system finishes before the wall time.
+            done, not_done = wait(not_done, timeout=2.0, return_when=FIRST_COMPLETED)
+            for f in done:
+                m = f.result()
+                summ.write(json.dumps(m) + "\n")
+                summ.flush()
+                finished[m["refcode"]] = m
+                pending.append(m["refcode"])
+                log(f"{m['refcode']:<12} {str(m['status'])[:40]:<40} frames={m['n_frames']:<4} "
+                    f"wall={m['wall_total_s']:8.1f}s rss={m['rss_gb']:.2f}G")
+            if cbatch_flush_requested(local):
+                _flush_all()
+            elif len(pending) >= sync_size:
+                _sync()
+    _sync()   # final copy-back of whatever the last pending batch could not reach
     return {r: finished[r].get("status") for r in ids if r in finished}
 
 

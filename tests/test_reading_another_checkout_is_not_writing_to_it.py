@@ -91,3 +91,22 @@ def test_the_subcommand_is_found_past_gits_own_options(args, expected):
 def test_a_value_that_looks_like_a_subcommand_is_not_one():
     """`-c log=1` carries a value; the value is not the subcommand."""
     assert _git_subcommand(["-c", "log", "commit"]) == "commit"
+
+
+# -- subcommands that read only in some spellings (wave 13) -----------------
+
+@pytest.mark.parametrize("sub", [
+    "branch --show-current", "branch -a", "branch --list",
+    "symbolic-ref --short HEAD", "symbolic-ref HEAD", "reflog", "reflog show",
+])
+def test_a_reading_spelling_is_not_a_write(sub):
+    assert _bash_write_targets(f"git -C {ELSEWHERE} {sub}") == []
+
+
+@pytest.mark.parametrize("sub", [
+    "branch newname", "branch -d old", "branch -m a b", "branch",
+    "symbolic-ref HEAD refs/heads/x", "reflog expire --all",
+    "reflog delete HEAD@{1}",
+])
+def test_a_writing_spelling_still_names_the_repository(sub):
+    assert ELSEWHERE in _bash_write_targets(f"git -C {ELSEWHERE} {sub}")

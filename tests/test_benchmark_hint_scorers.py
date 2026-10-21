@@ -267,18 +267,18 @@ class _FakeEngine:
 
 def test_run_once_carries_tool_results_from_the_engine(tmp_path):
     """The public path: the benchmark runner asks _run_once for results
-    via the on_tool_result callback (the return contract stays five
-    keys), then threads them into trajectory_from_run."""
+    via the on_tool_result callback (the return contract stays
+    repl.TURN_KEYS), then threads them into trajectory_from_run."""
     from delfin.agent.cli import _run_once
+    from delfin.agent.repl import TURN_KEYS
     results: list[str] = []
     raw = _run_once(_FakeEngine(), "probe it",
                     on_tool_result=lambda n, o: results.append(o))
     assert raw["tool_calls"] == [
         {"name": "bash", "input": {"command": "python3 tools/probe.py"}}]
-    assert set(raw) == {"text", "tool_calls", "input_tokens",
-                        "output_tokens", "error"}, (
-        "_run_once's return contract is pinned by the JSON tests; a "
-        "sixth key breaks them")
+    assert set(raw) == set(TURN_KEYS), (
+        "_run_once's return contract is repl.TURN_KEYS, pinned by the "
+        "JSON tests; a key outside it breaks them")
     assert results == [
         "[Shell] this script runs from tools/, so ..."], (
         "_run_once never forwarded the engine's tool results; the hint "

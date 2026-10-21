@@ -809,8 +809,11 @@ def _fitz():
     ``pymupdf`` is the module's own name; ``fitz`` is the historical one, which
     1.28 deprecates with a warning on every import and will remove. Asking for
     the new name first keeps the warning out of the log now and the viewer
-    working when the old name goes.
+    working when the old name goes. The interpreter's C++ runtime is
+    mapped first (``delfin.agent.native_libs``).
     """
+    from delfin.agent.native_libs import prefer_own_libstdcxx
+    prefer_own_libstdcxx()
     try:
         import pymupdf  # noqa: PLC0415 -- optional at import time by design
         return pymupdf
@@ -821,7 +824,8 @@ def _fitz():
     except Exception as exc:                     # pragma: no cover - env specific
         raise PdfError(
             'PDF viewing is unavailable: PyMuPDF is not installed '
-            f'({exc}).'
+            f'({exc}). It is the optional extra [pdf] because PyMuPDF is '
+            "licensed AGPL-3.0: pip install 'delfin-complat[pdf]'."
         ) from exc
     return fitz
 
@@ -1547,7 +1551,8 @@ class PdfPanel:
             from delfin.agent import office
             from . import spreadsheet_view as _sheet
         except Exception as exc:  # pragma: no cover - depends on the install
-            self.form_status.value = f'<span style="color:#d32f2f;">{exc}</span>'
+            self.form_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
             return
 
         source = self._path

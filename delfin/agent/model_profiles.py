@@ -21,6 +21,7 @@ something useful turns up, not preemptively.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -44,7 +45,11 @@ class ModelProfile:
 
     # Hard cap on auto-continuation rounds in the dashboard's
     # ACTION-execute loop. Weak models hallucinate longer chains.
-    max_tool_rounds: int = 50
+    # 50 -> 100 on 2026-10-06. The dataclass default is what a profile
+    # that does not mention the field gets -- _SONNET among them -- so
+    # it is the third place the same number had to be changed. One
+    # figure everywhere a user can reach: see the note on _GLM_5_3.
+    max_tool_rounds: int = 100
 
     # Tool-result truncation cap in KB. Weak models choke on 5KB.
     tool_result_cap_kb: int = 5
@@ -112,6 +117,31 @@ class ModelProfile:
     # carries a level above it.
     max_effort: str = ""
 
+    # Add MODEL_NOTES["terse_tool_rounds"] to the solo prompt: at most one
+    # short line beside a tool call. For a model whose decode, not its
+    # prefill, is the cost. Archive 2026-09-16 .. 10-14: kit.deepseek-v4-
+    # flash wrote prose beside 38 of 38 tool calls, p50 593 characters,
+    # at ~6 s per 100 output tokens -- about 11 s per tool round. GLM-flash
+    # decodes at ~0.9 s per 100 and stays off.
+    terse_tool_rounds: bool = False
+
+    # Add MODEL_NOTES["concise_answers"]: lead with the result, no recap of
+    # the steps. Benchmark store, 950 kit.deepseek-v4-flash attempts: within
+    # a task, answers longer than the task median passed 0.79 (n=406) and
+    # shorter ones 0.75 (n=399), at a duration p50 of 55 s against 40 s;
+    # passing answers p50 2146 characters against 710 on kit.glm-5.3.
+    concise_answers: bool = False
+
+    # Send the OpenAI ``user`` field with an opaque per-session value
+    # (``session_route_key``), so a router that keys sticky routes on it
+    # sends a session's requests to the replica that holds its prefix.
+    # Archive 2026-09-16 .. 10-14, kit.glm-5.3: 408 of 2066 requests cold
+    # (cached/input < 0.2) with system prompt and turn prefix unchanged and
+    # under 300 s since the previous request, ~740 min of time to first
+    # token. The KIT endpoint accepts the field (HTTP 200, 2026-10-14);
+    # whether it routes on it is unmeasured -- the A/B decides.
+    session_affinity: bool = False
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -123,7 +153,13 @@ STRONG_DEFAULT = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="medium",
-    max_tool_rounds=50,
+    # 50 -> 100 with the KIT profiles on 2026-10-06, and for the same
+    # reason: this is the budget every installation had before the
+    # profile branch became reachable, and it is what the fallback in
+    # _resolve_max_tool_rounds already documents. It also covers a
+    # model nobody has measured, which is what a fresh install on an
+    # unlisted endpoint gets.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
@@ -177,7 +213,26 @@ _GLM_5_3 = ModelProfile(
     # arm's first sample meant what it appeared to. The safety task
     # leans low (4/4 against 2/3) on numbers too small to carry a claim.
     effort_default="low",
-    max_tool_rounds=20,
+    # 20 -> 100 on 2026-10-06. The 20 was measured as loop protection for
+    # a small model, and it cost a user every long task: a fresh install
+    # stopped after 20 tool calls on real coding work, and the dashboard's
+    # own help text said "Default 500" while 20 was in force. 500 is the
+    # figure this file already documents as the fallback and the figure
+    # every installation ran on until 2026-08-05, when `None` made the
+    # profile branch reachable for the first time.
+    #
+    # What still stops a degenerate loop: the per-turn cost circuit-breaker
+    # and the consecutive-failure abort. This module's own comments call
+    # those "the real safety nets", and they are the ones that bound cost
+    # rather than bounding honest multi-file work.
+    #
+    # Not measured, and said so rather than implied: the 413 recorded turns
+    # available here were all collected UNDER the 20-round cap, so their
+    # distribution is censored at exactly the point this number sets
+    # (median 2, max 21). They cannot support 500 and are not offered as
+    # support for it. The evidence is one user's repeated reports plus the
+    # note left by whoever raised the default to 500 in the first place.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     # A cold prompt head measured at 266s. 120s would kill a turn that was
@@ -203,6 +258,13 @@ _GLM_5_3 = ModelProfile(
     # before a single tool call, on a 45-line change -- and the arms above
     # showed no answer that low did not give.
     max_effort="low",
+    # Off by default, decided by the A/B of 2026-10-15/16 (5 rounds per arm,
+    # 68 tasks): with a stable `user` on 94% of requests the cache-hit share
+    # (0.624 vs 0.627), the cold share after the first request (0.274 vs
+    # 0.265) and TTFT did not move, and wall time per attempt was if anything
+    # higher (+9 s, p=0.068). The KIT gateway does not appear to route on
+    # `user`. The mechanism stays; `kit.glm.session_affinity: true` turns it on.
+    session_affinity=False,
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "
@@ -219,10 +281,13 @@ _DEEPSEEK_V4_FLASH = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="medium",
-    max_tool_rounds=20,
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
+    terse_tool_rounds=True,
+    concise_answers=True,
     notes=(
         "KIT DeepSeek V4 Flash — fast on this deployment, cold and warm "
         "alike. Coding line, native function calling."
@@ -241,7 +306,8 @@ _QWEN35_397B = ModelProfile(
     compact_prompt=False,        # full 7.5k slim prompt is fine
     core_tools_only=False,       # handles the 45-tool surface cleanly
     effort_default="medium",     # MoE doesn't need high; medium is sharp
-    max_tool_rounds=20,          # rarely needs more than 6-8 in practice
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,  # accept fault-tolerant form anyway
     stale_kill_after_s=90.0,     # responsive — fail fast if hung
@@ -289,7 +355,8 @@ _AZURE_GPT5 = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="low",         # critical — see api_client reasoning detector
-    max_tool_rounds=20,
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=180.0,    # reasoning legitimately takes time
@@ -383,7 +450,79 @@ _COERCE: dict[str, type] = {
     "stale_kill_after_s": float,
     "all_prompt_modules": bool,
     "max_effort": str,
+    "terse_tool_rounds": bool,
+    "concise_answers": bool,
+    "session_affinity": bool,
 }
+
+
+# The prompt text behind each note-type knob, by field name. English, one
+# or two sentences: it rides in the stable head of every solo request for
+# the model that has the knob on, and nowhere else.
+MODEL_NOTES: dict[str, str] = {
+    "terse_tool_rounds": (
+        "Beside a tool call write one short line or nothing. Do not restate "
+        "the task, the plan or the previous result before each call; the "
+        "call says what you are doing."),
+    "concise_answers": (
+        "Final answer: lead with the result -- file:line, figures, verdict. "
+        "No recap of the steps taken, no restated question. Write at length "
+        "only when a plan, document or report was asked for."),
+}
+
+
+_ROUTE_IDS: dict[str, str] = {}
+_ROUTE_IDS_MAX = 4096
+_ROUTE_IDS_LOCK = threading.Lock()
+
+
+def session_route_key(model: str, session: str) -> str:
+    """The ``user`` value for *model*'s requests in *session*, or "".
+
+    Input: a model name and the engine's per-session key (its trace
+    session). Output: ``delfin-`` plus 16 random hex characters, drawn
+    once per key and process and the same for every later request of the
+    session; "" when the profile has session_affinity off or there is no
+    key. Nothing is derived from the key, so neither it nor any digest of
+    it leaves the machine (a hash of the key was rejected: it is a value
+    computed from session data, and code scanning flags it). Cost: a
+    session resumed in a new process gets a new id, so its first request
+    misses the backend's prefix cache once. Never raises.
+    """
+    key = str(session or "").strip()
+    if not key:
+        return ""
+    try:
+        if not bool(get_profile(model).session_affinity):
+            return ""
+    except Exception:
+        return ""
+    with _ROUTE_IDS_LOCK:
+        rid = _ROUTE_IDS.get(key)
+        if rid is None:
+            if len(_ROUTE_IDS) >= _ROUTE_IDS_MAX:
+                _ROUTE_IDS.pop(next(iter(_ROUTE_IDS)))
+            import secrets
+            rid = _ROUTE_IDS[key] = "delfin-" + secrets.token_hex(8)
+    return rid
+
+
+def model_notes(model: str) -> str:
+    """The notes *model*'s profile switches on, joined, or "".
+
+    Input: a model name. Output: a block headed ``--- Model notes ---``
+    with one line per enabled note, in MODEL_NOTES order, so the bytes are
+    the same on every turn for the same profile. Never raises.
+    """
+    try:
+        prof = get_profile(model)
+    except Exception:
+        return ""
+    lines = [text for name, text in MODEL_NOTES.items()
+             if bool(getattr(prof, name, False))]
+    if not lines:
+        return ""
+    return "--- Model notes ---\n" + "\n".join(f"- {t}" for t in lines)
 
 _OVERRIDES_CACHE: tuple[float, dict] | None = None
 

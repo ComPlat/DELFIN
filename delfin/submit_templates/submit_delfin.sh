@@ -29,11 +29,14 @@ set -euo pipefail
 # guppy_batch expects GUPPY_BATCH_CSV pointing to a CSV/txt of SMILES; under
 # `sbatch --array=...` each task runs one row via SLURM_ARRAY_TASK_ID.
 #
-# SITE-SPECIFIC FEATURES (all off by default):
+# SITE-SPECIFIC FEATURES:
 #   DELFIN_AUTO_RESOURCES=1  Parse CONTROL.txt to derive sbatch args
 #   DELFIN_MODULES="mod1 mod2"  Modules to load (module purge + load)
 #   DELFIN_STAGE_ORCA=1      Stage ORCA + OpenMPI to node-local SSD
-#   DELFIN_STAGE_VENV=1      Run the venv from node-local disk (cached tar)
+#   DELFIN_STAGE_VENV=1      Run the venv from node-local disk (cached tar;
+#                            DEFAULT on: falls back to the venv where it is
+#                            when the local disk has no room or no tar can be
+#                            packed. DELFIN_STAGE_VENV=0 runs from HOME)
 #   DELFIN_RUNTIME_CACHE=1   Build/use runtime wheel cache
 #
 # RESOURCE PARAMETERS (via sbatch command-line overrides):
@@ -377,7 +380,7 @@ elif [ -n "$DELFIN_DIR" ] && [ -x "$DELFIN_DIR/.venv/bin/python" ]; then
     VENV_SRC="$DELFIN_DIR/.venv"
 fi
 
-if [ "${DELFIN_STAGE_VENV:-0}" = "1" ] && [ -n "$VENV_SRC" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
+if [ "${DELFIN_STAGE_VENV:-1}" = "1" ] && [ -n "$VENV_SRC" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
     VENV_TAR="${DELFIN_VENV_TAR:-}"
     if [ -z "$VENV_TAR" ]; then
         VENV_TAR="$(ensure_venv_tar "$VENV_SRC")" || VENV_TAR=""

@@ -1,10 +1,10 @@
-"""Command-line interface for MANTA — the deterministic, complete
-coordination-isomer × conformer manifold generator.
+"""Command-line interface for MANTA — the deterministic constructor of the
+isomer–conformer ensemble of a metal complex.
 
     delfin-manta "SMILES" -o out/ [--rank] [--method gfn2|gfnff] ...
 
-From a (metal) SMILES it constructs the coordination-isomer manifold and writes
-one XYZ per emitted isomer/conformer plus a ``manifest.json``.
+From a (metal) SMILES it constructs the isomer–conformer ensemble and writes
+one XYZ per emitted frame plus a ``manifest.json``.
 
 Energy ranking (GFN2/GFN-FF, requires ``xtb`` on PATH) is **OFF by default**, so
 the output is byte-identical to the library default; pass ``--rank`` to enable it.
@@ -111,9 +111,9 @@ _CHAMPION_FLAGS = (
                           # its 'realisation' was on a broken frame; firing-side kept -- FONKOL still fires).
                           # Env DELFIN_FFFREE_CN6_OH_ADD; impl smiles_converter energy-outlier-cut root (keep
                           # inf-energy topo-valid isomer primaries; VOYWUD 6->5->6).
-    "AROM_SEAT",          # #21: construction-time FREE-aromatic bond-length seat toward the CCDC delocalised
-                          # targets (C-C 1.387 / C-N 1.349 / C-O 1.369 / C-S 1.732 / N-N 1.364 = the eye's
-                          # org_prior "ar" mu).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
+    "AROM_SEAT",          # #21: construction-time FREE-aromatic bond-length seat toward the delocalised
+                          # targets of delfin.fffree.aromatic_bond_targets (COD-derived since landing 8,
+                          # see delfin/manta/PROVENANCE.md).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
                           # coordination byte-identical, never-worse by construction) + UFF AddDistanceConstraint
                           # on the metal-free path + bond_decollapse target.  landed 2026-07-17 (night):
                           # class:sigma_coord:100 never-worse (n=3 affected, cap_LOST=0, mean -13.5) + full:120
@@ -254,9 +254,9 @@ _CHAMPION_FLAGS = (
                           #
                           # SCOPE, and why it does not come from the code comment: the lever fired on
                           # EVERY CN6 system.  Its rationale names "early-TM Mo/W", but the CRYSTALS
-                          # say otherwise -- of 210 CN6 crystals in the 1000-pool, 8 are
-                          # trigonal-prismatic, and their metals are Zr 2, Co 2, Zn 1, Ti 1, Fe 1,
-                          # Cu 1.  The prism is forced by the LIGAND (clathrochelates, dithiolenes),
+                          # say otherwise -- only a few CN6 crystals in the 1000-pool are
+                          # trigonal-prismatic, and their metals are mixed (Zr, Co, Zn, Ti, Fe,
+                          # Cu).  The prism is forced by the LIGAND (clathrochelates, dithiolenes),
                           # not by the metal.  TPR6_EARLY_TM nevertheless restricts to d0-d2 of
                           # groups 3-7: element-based, universal, no SMILES and no refcode -- and
                           # MEASURED better than without (without the restriction tier2 broke on 2
@@ -322,6 +322,19 @@ _CHAMPION_FLAGS = (
     # severity profile (0.70 x vdW, lone-pair cones) may not get worse or the frame falls
     # back; H_SP3_ONLY = the rotor turns only tetrahedral / pyramidal centres.
     "H_PLACEMENT", "H_CONTACT_GATE", "H_PARENT_REGAIN", "H_EYE_GATE", "H_SP3_ONLY",
+    # LANDING 7 (2026-10-14, AB:lonepair6k3, #525): the lone pairs of a coordinating sp3
+    # group-16 donor (aqua, alcohol, hydroxo, thiol) sit on free tetrahedral corners and the
+    # metal takes one of them, instead of the bisector in the substituent plane; the M-O(H)
+    # length is the ionic one for the oxidation state read by cutting the M-D bonds of the
+    # SMILES (Zn-OH2 1.88 -> 2.04 A, Cu 1.98 -> 2.09 A).  6000-pool A/B: 5850 byte-identical,
+    # 63 affected, every never-worse term 0, absolute hard frames 485 -> 446 and no system with
+    # more hard frames.  Impl delfin/manta/_lone_pair_space.py, _oxidation_state.py.
+    "LONE_PAIR_SPACE", "LONE_PAIR_MD",
+    # LANDING 8 (2026-10-19, AB:codwerte6k): no new switch -- the five aromatic bond targets
+    # (delfin/fffree/aromatic_bond_targets.py) and the donor-plane tolerance _BETA_BAND
+    # (4.8 -> 5.2 deg, assemble_donor_plane.py) are now COD (CC0) statistics.  6000-pool A/B:
+    # 5866 byte-identical, 51 affected, every never-worse term 0, existing frames intact;
+    # absolute hard frames 829 -> 832, all three in 11 added frames (8 of them clean).
                           # #31: ring-pucker symmetry reduction WITH the add guard in front of it --
                           # landed 2026-09-07, label symmfoldadd6k, pool_6000, both historic floors.
                           #   n_compared 5819, affected 123, judged intersection 107,
@@ -380,11 +393,17 @@ _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 # the stereo gate; the stereocentre enumerator no longer counts a mirror frame as a built fold.
 # 6000-pool A/B: never-worse, landing gate open, 1665 affected + 4150 byte-identical,
 # capability 0/0, every loss term 0.
+# LANDING 6 (2026-10-14, AB:detrng6k): Open Babel's contact and angle nudges draw from a fixed
+# seed per call instead of a clock-seeded rand() (#527), so a minimisation that passes through
+# such a contact gives the same geometry in every run.  6000-pool A/B: 5894 byte-identical,
+# 7 changed, every never-worse term 0, absolute hard frames 175 -> 173; the five previously
+# non-reproducible systems byte-identical in seven builds.
 _CHAMPION_EXTRA_ENV = {
     "DELFIN_MIRROR_ENUM": "1",
     "DELFIN_MIRROR_ONE_PER_SYSTEM": "1",
     "DELFIN_MIRROR_STEREO_GATE": "1",
     "DELFIN_STEREOCENTER_SKIP_MIRROR": "1",
+    "DELFIN_OB_DETERMINISTIC_RNG": "1",
 }
 
 
@@ -457,9 +476,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="delfin-manta",
         description=(
-            "MANTA: construct the complete coordination-isomer × conformer "
-            "manifold from a (metal) SMILES. Deterministic, force-field-free at "
-            "the metal, license-clean. Output is a UFF-quality STARTING geometry "
+            "MANTA: construct the isomer–conformer ensemble (coordination isomers "
+            "with ring-pucker, pose and mirror siblings) from a (metal) SMILES. "
+            "Deterministic, no force field on a free metal centre, "
+            "license-clean. Output is a UFF-quality STARTING geometry "
             "— relax with xTB/DFT before production calculations."
         ),
     )
@@ -467,7 +487,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("-o", "--out", default=Path("manta_out"), type=Path,
                    help="output directory (default: ./manta_out)")
     p.add_argument("--rank", action="store_true",
-                   help="energy-rank the manifold with xtb (default: off / byte-identical). "
+                   help="energy-rank the ensemble with xtb (default: off / byte-identical). "
                         "Same as the dashboard's Rank: the builder's own GFN conformer ranking "
                         "is switched on AND the emitted frames are reordered best-first by xtb "
                         "single-point energy (geometry unchanged).")
@@ -475,9 +495,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="ranking/opt Hamiltonian when --rank/--opt is set (default: gfn2)")
     p.add_argument("--opt", type=int, default=None, metavar="N",
                    help="POST-PROCESSING (opt-in): xtb geometry-optimise the top-N emitted "
-                        "structures (0 = the whole manifold), as the dashboard's Opt: the "
+                        "structures (0 = the whole ensemble), as the dashboard's Opt: the "
                         "optimised head is re-sorted by its optimised energy and its labels get "
-                        "an '[METHOD-opt E kcal]' tag. Default: off — the manifold is "
+                        "an '[METHOD-opt E kcal]' tag. Default: off — the ensemble is "
                         "emitted with its construction geometry, unchanged. Independent of --rank.")
     p.add_argument("--spin", default="auto",
                    help="spin multiplicity for --rank/--opt: auto (default; parity-correct "

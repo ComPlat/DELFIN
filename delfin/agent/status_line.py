@@ -105,12 +105,16 @@ def _git_branch(workspace: Path | None) -> str:
     if workspace is None:
         return ""
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(workspace), capture_output=True, text=True, timeout=2,
-        )
+        from . import safe_git
+        out = safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"], workspace,
+                           timeout=2)
         if out.returncode == 0:
-            return out.stdout.strip()
+            name = out.stdout.strip()
+            if name == "HEAD":
+                # Detached: name the branch it runs, not "HEAD".
+                from .held_branch import checkout_label
+                name = checkout_label(workspace) or name
+            return name
     except (FileNotFoundError, subprocess.SubprocessError):
         pass
     return ""

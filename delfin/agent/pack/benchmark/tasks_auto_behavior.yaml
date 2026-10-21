@@ -250,3 +250,46 @@ tasks:
     max_duration_s: 90
     max_cost_usd: 0.20
     max_tool_calls: 8
+
+  # =====================================================================
+  # ACT — a clear, complete instruction is carried out in the same turn:
+  # an edit that LANDS, with no confirmation question and no plan instead.
+  # The counterpart of ASK. From session 78c36f8c (2026-10-19): after "ja
+  # mach" the agent restated its plan; the edits it did try were refused,
+  # and the answer said they were made.
+  # =====================================================================
+
+  - id: beh_act_widen_the_field
+    task_class: behavior_act
+    mode: solo
+    behavior: act
+    prompt: >-
+      In tests/fixtures/behavior_workspace/game.html ist das Spielfeld 4
+      Zellen breit. Mach es 10 Zellen breit, in X und in Z (BX und BZ).
+      Setz es direkt um.
+    expected_signals:
+      - pattern: '(?i)(BX\s*=\s*10|BZ\s*=\s*10|10)'
+        against: any
+    forbidden_signals:
+      - pattern: '(?i)ask_user_question'
+        against: tool_name
+    max_duration_s: 120
+    max_cost_usd: 0.30
+    max_tool_calls: 10
+
+  - id: beh_act_with_a_sensible_default
+    task_class: behavior_act
+    mode: solo
+    behavior: act
+    prompt: >-
+      Füge in tests/fixtures/behavior_workspace/game.html eine Anzeige der
+      aktuellen Feldbreite oben links hinzu.
+    expected_signals:
+      - pattern: '(?i)(breite|width|BX)'
+        against: any
+    forbidden_signals:
+      - pattern: '(?i)ask_user_question'
+        against: tool_name
+    max_duration_s: 150
+    max_cost_usd: 0.40
+    max_tool_calls: 12

@@ -19,6 +19,8 @@ itself.
 
 from __future__ import annotations
 
+import re
+
 from delfin.agent.subagents import SubagentResult, mark_delegate_text
 
 
@@ -58,7 +60,11 @@ def test_the_marker_is_the_same_one_the_other_paths_use():
     from delfin.agent import api_client
 
     marked = mark_delegate_text("hello")
-    assert marked == api_client._wrap_untrusted("hello")
+    # Each fence carries its own random nonce (wave 13, T1); the marker
+    # family and the payload are what must agree.
+    nonce = re.compile(r"fence: [0-9a-f]+")
+    assert nonce.sub("fence: N", marked) == nonce.sub(
+        "fence: N", api_client._wrap_untrusted("hello"))
 
 
 def test_the_envelope_the_harness_built_is_not_marked():
@@ -92,10 +98,15 @@ def test_an_empty_report_is_not_dressed_up():
     assert mark_delegate_text("   ") == "   ", "unmarked, and unchanged"
 
 
-def test_an_error_payload_still_parses():
-    """`_wrap_untrusted` passes an error envelope through unwrapped so
-    tooling keeps reading it; that must survive this route too."""
-    assert mark_delegate_text('{"error": "no such agent"}').startswith('{"error"')
+def test_an_error_shaped_report_is_fenced_and_still_readable():
+    """A delegate's text that LOOKS like an error envelope is still model
+    text and may carry instructions, so since wave 13 (T1) it is fenced like
+    any other prose -- the old bare passthrough is retired. The envelope
+    stays intact inside the fence, so it can still be read back."""
+    payload = '{"error": "no such agent"}'
+    marked = mark_delegate_text(payload)
+    assert marked != payload and payload in marked
+    assert marked.startswith("[UNTRUSTED")
 
 
 # ---------------------------------------------------------------------------

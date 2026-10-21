@@ -150,20 +150,25 @@ _DRIVER = r"""
 const docListeners = {};
 let intervalFn = null;
 let pendingScroll = [];
+let scrollWrites = 0;
 
-const jump = {hidden: true, textContent: '',
-              closest: (s) => (s === '.delfin-agent-chat' ? chat : null)};
+const jump = {closest: (s) => (s === '.delfin-agent-chat-host' ? chat : null)};
+// The control's state is read off the host (the element that survives a
+// refresh), never written to the button, so the stand-in records the marks.
 const chat = {
   scrollHeight: 1000,
   clientHeight: 400,
   _top: 0,
-  classList: {contains: (c) => c === 'delfin-agent-chat'},
+  attrs: {},
+  setAttribute(k, v) { chat.attrs[k] = String(v); },
+  classList: {contains: (c) => c === 'delfin-agent-chat-host'},
   querySelector: (s) => (s === '.delfin-chat-jump' ? jump : null),
-  closest: (s) => (s === '.delfin-agent-chat' ? chat : null),
+  closest: (s) => (s === '.delfin-agent-chat-host' ? chat : null),
 };
 Object.defineProperty(chat, 'scrollTop', {
   get() { return chat._top; },
   set(v) {
+    scrollWrites++;
     const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
     const clamped = Math.max(0, Math.min(max, v));
     if (clamped === chat._top) return;
@@ -177,7 +182,7 @@ const sendBtn = {closest: (s) => (s === 'button' ? sendBtn : null)};
 global.window = {};
 global.document = {
   querySelector(s) {
-    if (s === '.delfin-agent-chat') return chat;
+    if (s === '.delfin-agent-chat-host') return chat;
     if (s === '.delfin-agent-working') return working;
     if (s === '.delfin-agent-send-row button') return sendBtn;
     return null;
@@ -215,13 +220,15 @@ const seen = {};
 // A reader at the end is carried along by new output.
 sync();
 seen.followed_to_the_end = chat.scrollTop === end();
-seen.control_hidden_at_the_end = jump.hidden === true;
+const shown = () => chat.attrs['data-delfin-follow'] === '0';
+const unseen = () => chat.attrs['data-delfin-unseen'] === '1';
+seen.control_hidden_at_the_end = !shown();
 
 // The reader scrolls up to re-read something.
 working = {working: true};
 userScroll(100);
 seen.scrolling_up_stops_following = S().follow === false;
-seen.control_shown_when_away = jump.hidden === false;
+seen.control_shown_when_away = shown();
 
 // The agent keeps writing: the poll must leave the viewport alone.
 chat.scrollHeight = 1600;
@@ -232,7 +239,33 @@ seen.poll_left_the_viewport = chat.scrollTop === 100;
 chat.scrollHeight = 2200;
 sync();
 seen.refresh_left_the_viewport = chat.scrollTop === 100;
-seen.control_reports_new_output = /New/.test(jump.textContent);
+seen.control_reports_new_output = unseen();
+
+// Reported 2026-10-07: "ich will das in ruhe lesen koennen, nicht wandern".
+// Leaving the offset at the right NUMBER is not enough -- writing scrollTop
+// at the streaming rate is itself what made the text wander under the
+// reader. While the reader is away from the end, an update must write
+// NOTHING. It can afford not to: the scrollport is the widget host now, and
+// the host survives a value reassignment, so the offset is already where it
+// was left and there is nothing to restore.
+const awayBefore = scrollWrites;
+for (let i = 0; i < 12; i++) {
+  chat.scrollHeight += 120;      // the agent keeps generating below
+  tick();
+  sync();
+}
+seen.reading_up_top_is_never_written_to = scrollWrites === awayBefore;
+seen.reading_up_top_stays_put = chat.scrollTop === 100;
+seen.output_below_is_still_announced = shown();
+
+// Back at the end, following resumes and IS written -- the half the user
+// wants kept.
+userScroll(end());
+const followBefore = scrollWrites;
+chat.scrollHeight += 300;
+tick();
+seen.at_the_end_it_follows_again = scrollWrites > followBefore
+  && chat.scrollTop === end();
 
 // Nearly at the end still counts as at the end; well above it does not.
 userScroll(end() - 50);
@@ -244,13 +277,16 @@ seen.far_above_the_end_does_not = S().follow === false;
 window.__delfinChatToBottom(jump); flush();
 seen.jump_reached_the_end = chat.scrollTop === end();
 seen.jump_resumed_following = S().follow === true;
-seen.jump_hid_the_control = jump.hidden === true;
+seen.jump_hid_the_control = !shown() && !unseen();
 
 // The script's own scroll must not read as the reader leaving.
 chat.scrollHeight = 3000;
 tick();
 seen.own_scroll_kept_following = S().follow === true;
 seen.poll_reached_the_new_end = chat.scrollTop === end();
+const writesAtEnd = scrollWrites;
+tick();
+seen.idle_poll_does_not_write_scroll_again = scrollWrites === writesAtEnd;
 
 // An offset past the end of what is now shown belongs to another
 // conversation, so the reader is put at the end rather than mid-history.
@@ -287,7 +323,7 @@ def test_the_script_follows_only_from_the_end():
     seen = json.loads(done.stdout.strip().splitlines()[-1])
     wrong = sorted(name for name, ok in seen.items() if not ok)
     assert not wrong, f"the chat scroll misbehaved: {', '.join(wrong)}"
-    assert len(seen) == 17, f"the driver checked {len(seen)} things, not 17"
+    assert len(seen) >= 22, f"the driver checked only {len(seen)} things"
 
 
 def test_the_chat_script_is_not_inside_the_keyboard_guard():
@@ -312,3 +348,63 @@ def test_the_chat_script_is_not_inside_the_keyboard_guard():
     assert "__delfinInputGrow" not in keyboard_block
     # And the chat script still has a guard of its own.
     assert "if (window.__delfinChatScroll) return;" in block
+
+
+def test_the_scrollport_is_the_element_that_survives_an_update():
+    """The jitter's root cause, pinned where it is visible.
+
+    `chat_html.value` is reassigned about four times a second while the
+    agent streams, and ipywidgets replaces everything inside the widget
+    when it is. Until 2026-10-07 the scrolling box itself was inside that
+    replaced HTML (`_CHAT_OPEN` opens `.delfin-agent-chat`), so each
+    update destroyed it; a fresh box starts at scrollTop 0 and the script
+    put the reader back a frame later. Four times a second that is a
+    chat nobody can read while it generates.
+
+    The host (`.delfin-agent-chat-host`) is the widget's own element.
+    ipywidgets replaces the CONTENT inside it, never the host, so an
+    offset on the host is not touched by an update.
+
+    Asserted on the source and not through the node driver on purpose:
+    the driver models the scrollport as a persistent object, so it cannot
+    see a DOM node being destroyed -- which is exactly why the behavioural
+    assertions in this file passed both before and after the fix. The
+    distinguishing property is WHICH element scrolls, and that is here.
+    """
+    src = _module_source()
+
+    host = src[src.index(".delfin-agent-chat-host {"):]
+    host = host[:host.index("}")]
+    for prop in ("overflow-y: auto", "height:", "scrollbar-gutter"):
+        assert prop in host, f"the host is not the scrollport: {prop} missing"
+
+    content = src[src.index("\n.delfin-agent-chat {"):]
+    content = content[:content.index("}")]
+    for prop in ("overflow-y", "height:"):
+        assert prop not in content, (
+            f"{prop} is back on .delfin-agent-chat — the replaced element is "
+            "a scrollport again, and it dies on every streaming update")
+
+    assert "function chatEl() { return q('.delfin-agent-chat-host'); }" in src, (
+        "the scroll logic must resolve the element that survives an update")
+    assert "this.closest('.delfin-agent-chat-host')" in src, (
+        "the restore hook must find the host, not the replaced content")
+
+
+def test_nothing_is_written_back_while_the_reader_is_away():
+    """Reported as "ich will das in ruhe lesen können, nicht wandern".
+
+    With a surviving scrollport there is nothing to restore, so the
+    not-following branch must not write scrollTop at all. Writing it at
+    the streaming rate is what moved the text under the reader even when
+    the value was correct.
+    """
+    src = _module_source()
+    i = src.index("window.__delfinChatSync = function(c)")
+    block = src[i:src.index("window.__delfinChatReset", i)]
+    away = block[block.index("} else {"):]
+    assert "setTop(" not in away, (
+        "the not-following branch writes scrollTop again; with a surviving "
+        "scrollport that write is unnecessary and is what makes the text "
+        "wander")
+    assert "st.unseen = true" in away, "unseen output must still be announced"

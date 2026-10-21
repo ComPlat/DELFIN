@@ -164,8 +164,8 @@ def test_the_wall_lets_go_when_the_hand_does_and_says_that_it_held():
     part._begin_gfn_follow()
 
     ran, said, box = [], [], []
-    # Out until the wall gives up, then back in again.
-    for far in (0.4, 0.9, 1.5, 2.1, 2.7, 3.3, 3.9, 0.4, 0.3, 0.2, 0.1):
+
+    def _reach(far):
         was = int(part.state.get('gfn_follow_steps') or 0)
         part.submit_manip_sync.value = helper._drag_message(
             helper._shifted(begin, methyl, far),
@@ -175,18 +175,102 @@ def test_the_wall_lets_go_when_the_hand_does_and_says_that_it_held():
         said.append(str(part.state.get('gfn_last_status') or ''))
         box.append(helper._apart(part.coords_widget.value, 0, 1))
 
+    # Out until the wall gives up -- the first message it does not compute --
+    # then back in again.  How far out that is is xtb's to say, not the
+    # test's: the wall gives up after three refused answers in a row, and
+    # whether an answer is refused depends on where ten constrained cycles
+    # land, which differs between runs of the same input when xtb has more
+    # than one thread (DELFIN_GFN_CORES; four for an ethane).
+    #
+    # Measured 2026-10-15.  The walk used to stop at 3.9 A, and refusals
+    # began anywhere from 1.5 to 3.3 A, so the third one came inside the
+    # walk on some runs and not on others (with one thread and the
+    # conda-forge h8876d29_4 build, never: 3 failures of 3).  What the test
+    # then read as the wall giving up was mostly the standstill swallowing
+    # the first message back in (test_a_hand_that_eases_off_right_after_
+    # the_third_refusal_is_answered).  Walking out until the skip, over 18
+    # runs (three xtb builds, one or four threads): the third refusal came
+    # at 3.4 to 5.2 A and the first skipped message at 4.0 to 5.8 A.  The
+    # walk goes to 7.6 A.
+    gave_up = None
+    for step in range(13):
+        _reach(0.4 + 0.6 * step)
+        if not ran[-1]:
+            gave_up = len(ran) - 1
+            break
+    assert gave_up is not None, (
+        f'the wall never gave up out to 7.6 A, so nothing is being tested: '
+        f'ran={ran}')
+    for far in (0.4, 0.3, 0.2, 0.1):
+        _reach(far)
+
     # Which individual answers run is not the claim and cannot be: a loaded
     # machine coalesces wishes, so the pattern moves about while the behaviour
     # does not.  What is asserted is the behaviour -- the wall gave up, and
     # the hand coming back in brought the drag back to life.
-    assert not all(ran), 'the wall never gave up, so nothing is being tested'
     assert any(ran[-4:]), (
         f'the hand came back in and the drag never restarted: ran={ran}')
-    assert abs(box[-1] - box[6]) > 0.05, (
+    assert abs(box[-1] - box[gave_up - 1]) > 0.05, (
         f'the drag restarted and the box never moved: {box}')
 
     spoke = sum(1 for one in said if 'bonding' in one)
     assert spoke, f'the wall held a step and never said so: {said[-1]!r}'
+
+
+@_needs_xtb
+def test_a_hand_that_eases_off_right_after_the_third_refusal_is_answered():
+    """The standstill measures the hand against the wish it gave up on.
+
+    Input: an ethane under the rigid hand with Keep bonds on, the far methyl
+    drawn out in 0.6 A steps until the wall has refused three answers in a
+    row, then one message 0.6 A nearer than the last refused one.
+    Output: that message is computed (gfn_follow_steps goes up).
+
+    _still_torn recorded the yardstick -- how far the hand was when the wall
+    gave up -- from the first message it was asked about AFTER the third
+    refusal, and skipped that message unconditionally. A hand easing off on
+    the very next mouse move was therefore not answered: the easing-off move
+    became the yardstick, and only a move nearer still restarted the drag.
+    Measured 2026-10-15: in 8 of 10 runs of the drag in
+    test_the_wall_lets_go_when_the_hand_does_and_says_that_it_held, the
+    message the standstill skipped was the first one back in (0.4 A), not
+    one further out.
+    """
+    helper = pytest.importorskip('test_the_budget_prices_a_relaxed_path')
+
+    start = gfn.optimize_with_gfn(_ETHANE, 'gfn2', max_steps=400, timeout=300)
+    assert start.get('ok'), start.get('status')
+    begin = start['xyz']
+    methyl = {1, 5, 6, 7}
+
+    part = helper._a_part(begin)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.value = 'move'
+    part.submit_topology_btn.value = True
+    part._begin_gfn_follow()
+
+    def _send(far):
+        was = int(part.state.get('gfn_follow_steps') or 0)
+        part.submit_manip_sync.value = helper._drag_message(
+            helper._shifted(begin, methyl, far),
+            'DELFIN drag-follow held=1,5,6,7')
+        helper._quiet(part.state, seconds=300)
+        return int(part.state.get('gfn_follow_steps') or 0) > was
+
+    last = None
+    for step in range(13):
+        far = 0.4 + 0.6 * step
+        assert _send(far), f'a message at {far:.1f} A was skipped before ' \
+            f'three refusals: {part.state.get("topology_refused")}'
+        if int(part.state.get('topology_refused') or 0) >= 3:
+            last = far
+            break
+    assert last is not None, 'three refusals in a row never came'
+
+    assert _send(last - 0.6), (
+        'the hand eased off right after the third refusal and the message '
+        'was not computed')
 
 
 @_needs_xtb

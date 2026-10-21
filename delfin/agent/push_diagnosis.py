@@ -42,6 +42,34 @@ class Diagnosis(NamedTuple):
 #: specific messages come before the generic "could not read from remote",
 #: which git prints on top of most of them.
 _PATTERNS: tuple[tuple[str, str, str, str], ...] = (
+    # The tool itself is absent or logged out. Both arrived raw -- bash
+    # exit 127, or gh's own stderr -- with nothing here mapping them, while
+    # the write gate routes changes to the default branch through gh. The
+    # first two patterns before the transport ones: a missing binary is not
+    # a network problem, and the generic matches below would not fire on it
+    # at all.
+    (r"\bgh: (?:command )?not found|command not found: gh|"
+     r"\bgh\b.*No such file or directory",
+     "the GitHub CLI is not installed on this host",
+     "host",
+     "install gh (https://cli.github.com), or hand the user a compare URL "
+     "to open the pull request themselves"),
+    (r"gh auth login|not logged in(?:to| to) |"
+     r"To get started with GitHub CLI, please run",
+     "the GitHub CLI has no active login",
+     "host",
+     "the user runs 'gh auth login'; an agent cannot hold the credential "
+     "for them"),
+    (r"\bgit: (?:command )?not found|command not found: git",
+     "git is not installed on this host",
+     "host",
+     "install git; nothing about branching, committing or pushing works "
+     "without it"),
+    (r"Please tell me who you are|empty ident name|"
+     r"unable to auto-detect email address",
+     "git has no commit identity on this host",
+     "repo",
+     "git config user.name and user.email, then commit again"),
     (r"Bad owner or permissions on .*ssh",
      "the host's SSH config is rejected by ssh itself",
      "host",

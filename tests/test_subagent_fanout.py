@@ -335,13 +335,30 @@ def test_explicit_user_request_for_subagents_is_binding():
 
 
 def test_wall_clock_is_the_raised_budget_and_the_others_are_not():
-    """Evidence-based budget (2026-07-29 delegation round): the runs that
-    died at the cap had made 10 and 3 tool calls — ~30 s per call on that
-    endpoint — and nothing was ever truncated. So wall-clock is the one
-    that binds; raising call count or output size would not have helped."""
+    """Two measurements, and they bind different things.
+
+    2026-07-29 delegation round: the runs that died at the cap had made 10
+    and 3 tool calls — ~30 s per call on that endpoint — and nothing was
+    ever truncated. So for explore-shaped work wall-clock is the one that
+    binds, and raising call count or output size would not have helped.
+    That is why output size has never moved.
+
+    2026-10-08: the presets became specialists, and two of them have a
+    method the old numbers cannot hold. `verifier` runs the covering tests
+    and then the same tests on the base as a control, and the full suite
+    takes 2520 s on this installation — more than the whole 900 s budget
+    for one of its two runs. Both wall-clock and call count moved for
+    that, which does not contradict the 2026-07 finding: 40 calls was
+    never the limit that bit explore, and is not the limit being raised
+    for explore's sake.
+
+    Asserted as floors against the constants rather than as literals: a
+    budget written down twice is a budget that drifts, which is what the
+    sibling assertion below was fixed for.
+    """
     import delfin.agent.subagents as sa
-    assert sa._MAX_WALL_S >= 900.0
-    assert sa._MAX_TOOL_CALLS == 40
+    assert sa._MAX_WALL_S >= 3600.0
+    assert sa._MAX_TOOL_CALLS >= 120
     assert sa._MAX_OUTPUT_TOKENS == 16000
 
 
@@ -349,8 +366,11 @@ def test_subagent_budgets_are_tunable_from_settings():
     from delfin.user_settings import DEFAULT_SETTINGS
     cfg = (DEFAULT_SETTINGS.get("agent") or {}).get("subagents")
     assert cfg, "budgets must be discoverable in the settings defaults"
-    assert cfg["max_wall_s"] == 900
     import delfin.agent.subagents as sa
+    # Read from the constant, not typed. This literal said 900 and had to
+    # be found by a failing test when the constant moved -- the same
+    # "written down twice" defect FILE_BUDGETS carries a comment about.
+    assert cfg["max_wall_s"] == int(sa._MAX_WALL_S)
     assert cfg["max_tool_calls"] == sa._MAX_TOOL_CALLS
     assert cfg["max_output_tokens"] == sa._MAX_OUTPUT_TOKENS
 

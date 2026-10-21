@@ -36,6 +36,8 @@ from __future__ import annotations
 _CONSENT_KINDS: frozenset = frozenset({
     "push_unrequested",       # publishing to a shared remote, unasked
     "git_role",               # an installation role the agent does not hold
+    "pr_create_unrequested",  # opening a pull request, unasked
+    "pr_merge_unrequested",   # a maintainer merging, unasked
 })
 
 #: Refusals about the command itself. Never handed over, and named here
@@ -46,7 +48,12 @@ _CONTENT_KINDS: frozenset = frozenset({
     "path_escape",            # out of the workspace
     "workspace_stray",        # a path belonging to somebody else
     "filesystem_walk",        # a walk over a shared file system
+    "pr_merge_contributor",   # the installation's role is not a merger's, and neither is its user's
     "data_egress",            # the user's content leaving the machine
+    "gh_credential_print",    # the account's GitHub login, printed
+    "gh_api_write",           # a GitHub write past the push/PR/merge checks
+    "gh_alias_refused",       # an alias that would hide one of those two
+    "gh_extension_refused",   # a program gh runs with the login
     # These two read as consent -- both refusals say a human would make
     # them fine -- and are deliberately NOT handed over. A push names a
     # branch on the project's own remote and is bounded by that. A

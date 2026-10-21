@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+import _package_ast
 from delfin.agent.api_client import KitToolPermissions
 
 
@@ -136,8 +137,7 @@ def test_nothing_claims_a_caller_it_does_not_have():
     called: set[str] = set()
     for path in root.joinpath("delfin").rglob("*.py"):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8",
-                                            errors="replace"))
+            tree = _package_ast.parse(path, errors="replace")
         except SyntaxError:
             continue
         for node in ast.walk(tree):
@@ -153,8 +153,7 @@ def test_nothing_claims_a_caller_it_does_not_have():
     for sub in ("agent", "dashboard"):
         for path in root.joinpath("delfin", sub).rglob("*.py"):
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8",
-                                                errors="replace"))
+                tree = _package_ast.parse(path, errors="replace")
             except SyntaxError:
                 continue
             for node in ast.walk(tree):
@@ -204,7 +203,7 @@ def test_cost_soft_limit_default_present():
 
 # ---------------------------------------------------------------------------
 # Out-of-workspace access is refused with an actionable message
-# (the Jerome case: project in another user's home, outside the sandbox)
+# (the field-report case: project in another user's home, outside the sandbox)
 # ---------------------------------------------------------------------------
 
 def test_outside_workspace_path_rejected_with_grant_hint(tmp_path):

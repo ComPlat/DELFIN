@@ -76,14 +76,23 @@ _CACHE_VERSION = 2
 # actually lists; the constant below is only what is said when the listing
 # cannot be reached.
 _KIT_PREFERENCE: tuple[str, ...] = (
-    # Fast: the endpoint rates it 6/6 for speed and 4/6 for intelligence, and
-    # a 15k-token prompt answers in ~5s cold. For an agent that spends its
-    # day on many short tool rounds, that is the axis that decides.
-    "kit.deepseek-v4-flash",
     # Strongest of the three (the endpoint calls it the best open-source
     # model, 6/6 intelligence) but rated 2/6 for speed, and measured at ~200s
     # for a 15k-token prompt whose prefix the endpoint cannot serve warm.
+    # First since 2026-10-19 by the user's choice: the best model drives the
+    # agent, and when KIT does not serve it the session continues on the
+    # next one here (api_client._kit_fallback_model) with a notice. The
+    # flash line is the one KIT serves: on 2026-10-20 kit.glm-5.3-flash
+    # answered and kit.glm-5.3 returned "400 - Model not found" (bug report
+    # davh 414e5a17, 08:30 and 08:44); the plain name stays as the next
+    # candidate in case it returns.
+    "kit.glm-5.3-flash",
     "kit.glm-5.3",
+    # Fast: the endpoint rates it 6/6 for speed and 4/6 for intelligence, and
+    # a 15k-token prompt answers in ~5s cold. The fallback for GLM, and the
+    # cheap tier (model_routing), the action watcher and the dashboard's
+    # cheap default.
+    "kit.deepseek-v4-flash",
     # Multimodal MoE, the base model behind the ``standard-local`` alias.
     "kit.mistral-small-4-119b-a8b",
 )
@@ -197,6 +206,12 @@ _STATIC: dict[str, dict[str, Any]] = {
                             "— spends the completion budget on hidden "
                             "reasoning before any content, so it needs the "
                             "thinking token floor; listing says 512k"},
+    # The flash line of glm-5.3, which is what the long-running sessions
+    # run on. It had no entry, so it fell to the 32,768 heuristic while
+    # the endpoint accepted 85,535-token requests from it (2026-10-08).
+    "kit.glm-5.3-flash": {"context_window": 131_072, "is_reasoning": True,
+                          "note": "same family as kit.glm-5.3; listing "
+                                  "says 512k; observed >= 85k accepted"},
     "kit.deepseek-v4-flash": {"context_window": 131_072,
                               "note": "endpoint-verified 2026-09-07; V4 chat "
                                       "line, native function calling; "
@@ -1041,6 +1056,44 @@ def kit_recommendation(model: str, caps: "ModelCapabilities",
     )
 
 
+# The tier markers hosted vendors put in the name of their smallest model:
+# gpt-5-nano, gemini-2.5-flash-lite, *-tiny, *-micro. A provider prefix
+# (``azure.``, ``kit.``) does not hide them. "mini" is deliberately not
+# here: several "mini" models are sound agents, and a wrong warning teaches
+# the user to ignore the right ones.
+_TINY_TIER_RE = _re.compile(r"(?:^|[-_.:/])(?:nano|tiny|micro|lite)(?:$|[-_.:/\d])",
+                            _re.IGNORECASE)
+_AGENT_MIN_WINDOW = _KIT_MIN_WINDOW
+
+
+def agent_fitness(provider: str, model: str,
+                  caps: "ModelCapabilities") -> str:
+    """Why *model* is a poor driver for multi-step agent work, or "".
+
+    For every provider, not only KIT: measured 2026-10-19, a coding session
+    on ``azure.gpt-5-nano`` (served through the KIT endpoint, so the KIT
+    check never looked at it) mixed up tool formats for an hour and
+    reported changes it never made. The reasons are facts about the model
+    -- no tools, a small window, the vendor's smallest tier, a small
+    parameter count -- and the message names them and a better choice."""
+    reasons: list[str] = []
+    if not caps.supports_tools:
+        reasons.append("no tool support")
+    if 0 < int(caps.context_window or 0) < _AGENT_MIN_WINDOW:
+        reasons.append(f"small context window ({caps.context_window})")
+    if _TINY_TIER_RE.search(model or ""):
+        reasons.append("the vendor's smallest tier")
+    elif _is_weak(model):
+        reasons.append("weak/small model")
+    if not reasons:
+        return ""
+    better = (f"`{KIT_BEST_MODEL}`" if (provider or "").lower() == "kit"
+              else "the strongest model your endpoint serves")
+    return (f"`{model}` is a weak driver for agent work "
+            f"({', '.join(reasons)}): expect tool-call mistakes and work "
+            f"reported but not done on longer tasks. Better: {better}.")
+
+
 def preflight(
     provider: str,
     model: str,
@@ -1089,11 +1142,12 @@ def preflight(
             f"this model in pure chat mode."
         )
 
-    # Soft warning: a KIT model that works but isn't worth the agent.
-    if provider == "kit":
-        warn = kit_recommendation(model, caps)
-        if warn:
-            return True, warn
+    # Soft warning: a KIT model that works but isn't worth the agent, and
+    # for every provider a model too small to drive one.
+    warn = kit_recommendation(model, caps) if provider == "kit" else ""
+    warn = warn or agent_fitness(provider, model, caps)
+    if warn:
+        return True, warn
 
     return True, ""
 
@@ -1103,6 +1157,7 @@ __all__ = [
     "resolve",
     "preflight",
     "kit_recommendation",
+    "agent_fitness",
     "register_static",
     "clear_cache",
     "nonchat_reason",
