@@ -3860,6 +3860,51 @@ def _mol3d_card_html(path, name_html: str,
     label = _html.escape(payload["label"])
     kind = ("trajectory" if payload["frames"] > 1
             else "orbital" if payload["fmt"] == "cube" else "structure")
+    # A trajectory card gets a control bar so it can be stepped through by
+    # button instead of only auto-animated: play/pause, one frame back, the
+    # frame counter, one forward, back to the first frame, and a fullscreen
+    # view (the Calculations tab already shows a structure full-size; make
+    # the chat card feel as capable). The stage fills the viewport rather
+    # than a fixed 260px box so a close inspection is actually possible;
+    # `min(68vh, 1000px)` keeps it large without swallowing the chat.
+    is_traj = payload["frames"] > 1
+    # A nav bar under every card: the Fullscreen button (right-aligned) lets
+    # any structure/trajectory/orbital fill the viewport, and a trajectory
+    # (frames > 1) additionally gets the play / step / reset controls. The
+    # frame buttons are only emitted for trajectories; the JS already
+    # guards on their absence, so a single structure keeps the card minimal.
+    nav = ('<div class="delfin-mol3d-nav" '
+           'style="display:flex;align-items:center;gap:6px;padding:6px 0 0 0;">')
+    if is_traj:
+        nav += (
+            '<button type="button" class="delfin-mol3d-play" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 10px;cursor:pointer;">'
+            '&#9654;</button>'
+            '<button type="button" class="delfin-mol3d-prev" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 8px;cursor:pointer;">'
+            '&#9664;</button>'
+            '<span class="delfin-mol3d-frame" data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;color:#1f2937;font-family:monospace;'
+            'min-width:64px;text-align:center;">1 / ' + str(payload["frames"])
+            + '</span>'
+            '<button type="button" class="delfin-mol3d-next" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 8px;cursor:pointer;">'
+            '&#9654;</button>'
+            '<button type="button" class="delfin-mol3d-reset" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 8px;cursor:pointer;">'
+            '&#8617; Reset</button>'
+        )
+    nav += (
+        '<button type="button" class="delfin-mol3d-fullscreen" '
+        'data-mol3d-id="' + view_id + '" '
+        'style="font-size:12px;padding:3px 8px;cursor:pointer;'
+        'margin-left:auto;">&#9732; Fullscreen</button>'
+        '</div>'
+    )
     return (
         f'<div class="delfin-artifact delfin-chat-mol3d" '
         f'data-mol3d-fmt="{payload["fmt"]}" '
@@ -3872,8 +3917,11 @@ def _mol3d_card_html(path, name_html: str,
         f'\u269b\ufe0f <code>{name_html}</code> '
         f'<span style="color:#9ca3af;">({kind})</span></div>'
         f'<div id="{view_id}" class="delfin-mol3d-stage" '
-        f'style="width:100%;height:260px;position:relative;'
-        f'border-radius:4px;overflow:hidden;"></div>'
+        f'style="width:100%;height:min(68vh,1000px);min-height:320px;'
+        f'position:relative;border-radius:4px;overflow:hidden;">'
+        f'<div class="delfin-mol3d-scope" style="width:100%;height:100%;'
+        f'position:relative;"></div></div>'
+        f'{nav}'
         f'<div style="font-size:12px;color:#1f2937;font-family:monospace;'
         f'padding:4px 0 0 0;">{label}</div>'
         f'<img src="" onerror="'
@@ -7680,22 +7728,131 @@ def create_tab(ctx):
             } else if (frames > 1) {
                 viewer.addModelsAsFrames(data, fmt);
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
-                // Looped, because a trajectory that plays once and stops
-                // on the last frame reads as a still picture to anybody
-                // who looked away while it ran.
-                viewer.animate({loop: 'forward', reps: 0, interval: 120});
+                // Stepped by hand instead of auto-animated: the card's
+                // control bar (play, one back, one forward, reset) drives
+                // setFrame so the trajectory can be inspected frame by
+                // frame. Play advances once per ~10 fps and stops at the
+                // last frame; the bar shows the current one.
+                viewer.setFrame(0);
+                wireTrajectory(card, stage, viewer, frames);
             } else {
                 viewer.addModel(data, fmt);
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
             }
             viewer.zoomTo();
             viewer.render();
-            // The data is on screen now; drop the copy in the attribute so
-            // a long transcript does not hold every trajectory twice.
+            // Keep one in-memory copy of the source text for the fullscreen
+            // lightbox (wireFullscreen rebuilds from it), then drop the copy
+            // in the attribute so a long transcript does not hold every
+            // molecule twice.
+            card.__delfinMol3DData = data;
             card.removeAttribute('data-mol3d');
             card.__delfinViewer = viewer;
+            wireFullscreen(card, viewer, frames, iso);
             return true;
         }
+
+        function wireTrajectory(card, stage, viewer, nFrames) {
+            var btnPlay = card.querySelector('.delfin-mol3d-play');
+            var btnPrev = card.querySelector('.delfin-mol3d-prev');
+            var btnNext = card.querySelector('.delfin-mol3d-next');
+            var btnReset = card.querySelector('.delfin-mol3d-reset');
+            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
+            var counter = card.querySelector('.delfin-mol3d-frame');
+            var playing = false, timer = null;
+            function setCounter() {
+                if (counter) counter.textContent =
+                    (viewer.getFrame() + 1) + ' / ' + nFrames;
+            }
+            function stop() {
+                playing = false;
+                if (timer) { clearInterval(timer); timer = null; }
+                if (btnPlay) btnPlay.textContent = '\u25b6';
+            }
+            function step(delta) {
+                var f = viewer.getFrame() + delta;
+                if (f < 0) f = 0;
+                if (f >= nFrames) f = nFrames - 1;
+                viewer.setFrame(f);
+                viewer.render();
+                setCounter();
+                return f;
+            }
+            function play() {
+                if (playing) { stop(); return; }
+                playing = true;
+                if (btnPlay) btnPlay.textContent = '\u23f8';
+                timer = setInterval(function() {
+                    var last = step(1);
+                    if (last === nFrames - 1) stop();
+                }, 100);
+            }
+            if (btnPlay) btnPlay.onclick = play;
+            if (btnPrev) btnPrev.onclick = function() { stop(); step(-1); };
+            if (btnNext) btnNext.onclick = function() { stop(); step(1); };
+            if (btnReset) btnReset.onclick = function() {
+                stop(); viewer.setFrame(0);
+                viewer.zoomTo(); viewer.render(); setCounter();
+            };
+        }
+
+        function wireFullscreen(card, viewer, nFrames, iso) {
+            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
+            if (!btnFs) return;
+            var fs = null;
+            btnFs.onclick = function() {
+                if (fs) { closeFs(); return; }
+                var txt = card.__delfinMol3DData;
+                if (!txt) return;
+                fs = document.createElement('div');
+                fs.className = 'delfin-mol3d-fs';
+                fs.style.cssText = 'position:fixed;inset:0;z-index:20000;'
+                    + 'background:#0b0f14;display:flex;flex-direction:column;'
+                    + 'align-items:center;justify-content:center;';
+                var head = document.createElement('div');
+                head.style.cssText = 'position:absolute;top:0;right:0;'
+                    + 'padding:8px 14px;color:#fff;font:13px sans-serif;'
+                    + 'cursor:pointer;z-index:20001;';
+                head.textContent = 'Close \u2715';
+                head.onclick = closeFs;
+                var big = document.createElement('div');
+                big.style.cssText =
+                    'width:94vw;height:90vh;position:relative;';
+                // A lightbox fullscreen re-creates the viewer rather than
+                // moving the DOM node: 3Dmol renders into the stage's box
+                // it was created with, and moving the node leaves a blank
+                // canvas. Rebuilding from the saved text is cheap and the
+                // trajectory frame index is copied back.
+                var f = viewer.getFrame();
+                var v2 = $3Dmol.createViewer(big);
+                v2.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                fs.appendChild(big);
+                fs.appendChild(head);
+                document.body.appendChild(fs);
+                var f2 = card.getAttribute('data-mol3d-fmt');
+                if (f2 === 'cube') {
+                    v2.addModel(txt, 'cube');
+                    v2.addVolumetricData(txt, 'cube',
+                        {isoval: iso, color: '#0026ff', opacity: 0.85});
+                    v2.addVolumetricData(txt, 'cube',
+                        {isoval: -iso, color: '#b00010', opacity: 0.85});
+                } else if (nFrames > 1) {
+                    v2.addModelsAsFrames(txt, 'xyz');
+                    v2.setFrame(f);
+                } else {
+                    v2.addModel(txt, f2 || 'xyz');
+                }
+                v2.zoomTo();
+                v2.render();
+            };
+            function closeFs() {
+                if (!fs) return;
+                var p = document.body;
+                try { p.removeChild(fs); } catch (e) {}
+                fs = null;
+            }
+        }
+
 
         window.__delfinMol3D = function(el) {
             var card = el.closest ? el.closest('.delfin-chat-mol3d') : null;
@@ -7723,7 +7880,18 @@ def create_tab(ctx):
                 }
                 card.__delfinMol3DDone = true;
                 try {
+                    // Keep a copy of the coordinates for the fullscreen
+                    // lightbox, which rebuilds the viewer at screen size.
+                    card.__delfinViewerData =
+                        card.getAttribute('data-mol3d') || '';
                     build(card, stage);
+                    // The small build removes the attribute; fullscreen
+                    // needs the text again -- restore it from the copy.
+                    if (card.querySelector('.delfin-mol3d-fullscreen')
+                            && card.__delfinViewerData) {
+                        card.setAttribute('data-mol3d',
+                            card.__delfinViewerData);
+                    }
                 } catch (e) {
                     // A malformed cube or a truncated frame must not take
                     // the chat with it. The text line stays.
