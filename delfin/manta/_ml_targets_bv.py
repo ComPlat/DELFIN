@@ -71,7 +71,8 @@ LITERATURE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE"
 # per-element question keep their historic value -- separates a better seat from a moved gate.
 SCOPE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE"
 LEVELS_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LEVELS"
-ALL_LEVELS = ("D", "R", "Re", "Ro", "Roe")
+ALL_LEVELS = ("N", "D", "R", "Re", "Ro", "Roe")
+DEFAULT_LEVELS = ("N", "D", "R", "Re")
 B_BV = 0.37
 # A complex whose donors of one element get targets further apart than this is not given a
 # per-element target: the callers that ask by element only (the legacy pins and the tolerance
@@ -256,7 +257,10 @@ def table_path() -> str:
 
 
 def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
-    """``(kind, metal, ox, cn, element, class) -> (n, value)``; cn/class '*' where pooled."""
+    """``(kind, metal, ox, cn, element, class) -> (n, value)``; cn/class '*' where pooled.
+
+    Kinds N (cn column 'cn/nx'), D, R, and P (bond-valence parameters: ('P', name) -> (0, value)).
+    """
     tbl = _TABLE_CACHE.get(path)
     if tbl is not None:
         return tbl
@@ -267,10 +271,13 @@ def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
                 if not ln.strip() or ln.startswith("#"):
                     continue
                 p = ln.rstrip("\n").split("\t")
-                if len(p) < 8 or p[0] not in ("D", "R"):
+                if len(p) < 8 or p[0] not in ("N", "D", "R", "P"):
                     continue
                 try:
-                    tbl[(p[0], p[1], p[2], p[3], p[4], p[5])] = (int(p[6]), float(p[7]))
+                    if p[0] == "P":
+                        tbl[("P", p[1])] = (0, float(p[7]))
+                    else:
+                        tbl[(p[0], p[1], p[2], p[3], p[4], p[5])] = (int(p[6]), float(p[7]))
                 except ValueError:
                     continue
     except OSError:
@@ -281,29 +288,60 @@ def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
 
 def _levels():
     v = os.environ.get(LEVELS_ENV, "")
-    return {x.strip() for x in v.split(",") if x.strip()} if v else set(ALL_LEVELS)
+    return {x.strip() for x in v.split(",") if x.strip()} if v else set(DEFAULT_LEVELS)
 
 
-def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optional[str]):
+def bv_params(table) -> Tuple[float, float]:
+    """(b, rho) of the table's R rows; the literature (0.37, equal valence) when it names none."""
+    b = table.get(("P", "b"), (0, B_BV))[1]
+    rho = table.get(("P", "rho"), (0, 1.0))[1]
+    return float(b), float(rho)
+
+
+def n_x_donors(donors) -> int:
+    """Number of X-type donors (class ...x, and hydrides) of a (idx, element, class) list."""
+    return sum(1 for _i, el, c in donors if el == "H" or (c is not None and c.endswith("x")))
+
+
+def donor_valence(ox: int, cn: int, nx: int, cls: Optional[str], rho: float) -> Optional[float]:
+    """Bond valence of one donor: V w / sum w, w = rho for an X-type donor, 1 for an L-type one."""
+    tot = rho * nx + (cn - nx)
+    if ox <= 0 or tot <= 0:
+        return None
+    return ox * (rho if (cls is not None and cls.endswith("x")) else 1.0) / tot
+
+
+def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optional[str],
+                 nx: Optional[int] = None):
     """(target A, level) of one donor, or (None, None).
 
-    Levels, in order (DELFIN_FFFREE_ML_TARGETS_BV_LEVELS selects a subset, default all):
+    Levels, in order (DELFIN_FFFREE_ML_TARGETS_BV_LEVELS selects a subset; default N, D, R, Re):
+      N    direct median at (ox, CN, nx, class); nx = number of X-type donors of the complex,
+           so [ZnBr4]2- (nx 4) and ZnBr2L2 (nx 2) are different rows
       D    direct median at (ox, CN, class)
-      R    effective R0 at (ox, class), CN through b ln(V/CN)
+      R    effective R0 at (ox, class), r = R0 - b ln(s), s from the X/L valence split (table P rows)
       Re   effective R0 at (ox, element)
-      Ro   effective R0 over all ox (class), ox and CN through b ln(V/CN)
-      Roe  the same per element
+      Ro   effective R0 over all ox (class), Roe per element -- measured worse than the
+           historic covalent sum (0.12-0.34 A median error), off unless named
       L    literature R0 (only with DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE=1)
     """
     nmin = _min_n()
     use = _levels()
+    if "N" in use and nx is not None:
+        row = table.get(("N", metal, str(ox), f"{cn}/{nx}", element, cls))
+        if row is not None and row[0] >= nmin:
+            return row[1], "N"
     if "D" in use:
         row = table.get(("D", metal, str(ox), str(cn), element, cls))
         if row is not None and row[0] >= nmin:
             return row[1], "D"
     if ox <= 0 or cn <= 0:
         return None, None
-    lns = B_BV * math.log(ox / float(cn))
+    b, rho = bv_params(table)
+    s = donor_valence(ox, cn, nx if nx is not None else 0, cls, rho if nx is not None else 1.0)
+    if s is None:
+        return None, None
+    lns = b * math.log(s)
     for o, c, lev in ((str(ox), cls, "R"), (str(ox), "*", "Re"), ("*", cls, "Ro"), ("*", "*", "Roe")):
         if lev not in use:
             continue
@@ -313,18 +351,19 @@ def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optiona
     if os.environ.get(LITERATURE_ENV, "0") == "1":
         r0 = r0_literature(metal, element)
         if r0 is not None:
-            return r0 - lns, "L"
+            return r0 - B_BV * math.log(ox / float(cn)), "L"
     return None, None
 
 
 def complex_targets(table, metal: str, ox: int, donors) -> Dict[int, Tuple[float, str]]:
     """``donor idx -> (target, level)`` for the donors that get one."""
     cn = len(donors)
+    nx = n_x_donors(donors)
     out = {}
     for i, el, cls in donors:
         if el == "H" or cls is None:
             continue
-        t, lev = donor_target(table, metal, ox, cn, el, cls)
+        t, lev = donor_target(table, metal, ox, cn, el, cls, nx)
         if t is not None:
             out[i] = (float(t), lev)
     return out

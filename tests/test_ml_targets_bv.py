@@ -141,8 +141,9 @@ def test_the_shipped_cod_table_is_the_default_and_reads():
     tbl = BV.load_table(BV.SHIPPED_TABLE)
     assert len(tbl) > 100
     # every row is a COD aggregate with its sample size
-    assert all(n >= 10 for n, _v in tbl.values())
-    t, lev = BV.donor_target(tbl, "Co", 3, 6, "N", "sp3l")
+    assert all(n >= 10 for k, (n, _v) in tbl.items() if k[0] != "P")
+    assert 0.05 <= BV.bv_params(tbl)[0] <= 0.45
+    t, lev = BV.donor_target(tbl, "Co", 3, 6, "N", "sp3l", 0)
     assert lev is not None and 1.85 < t < 2.05
 
 
