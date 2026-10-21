@@ -683,12 +683,21 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     _det_param = _arg_deterministic(args, kwargs)
     _det_env_prev = _enum_env_prev = None
     _det_env_set = False
+    _bv_two_spins = False
     if outermost:
         _CONF_COMPLETE_ACTIVE.value = True
         # Bond-valence M-D targets of this complex (DELFIN_FFFREE_ML_TARGETS_BV, default OFF ->
         # set_context does nothing, byte-identical); cleared in the finally below.
         from delfin.manta import _ml_targets_bv as _bvt
         _bvt.set_context(_smiles_arg(args, kwargs))
+        # Both spin states (DELFIN_FFFREE_ML_TARGETS_BV_SPIN_BOTH, default OFF -> never entered):
+        # where the measured crystals of this metal, oxidation state, CN and donor field are not
+        # clearly one spin state, the first pass builds low-spin lengths and a second one below
+        # high-spin lengths.
+        _bv_ctx = _bvt.current_context()
+        _bv_two_spins = bool(_bv_ctx and len(_bv_ctx.get("spins") or []) == 2)
+        if _bv_two_spins:
+            _bvt.set_context(_smiles_arg(args, kwargs), "ls")
         if _det_param:
             _det_env_prev = os.environ.get("DELFIN_DETERMINISTIC")
             _enum_env_prev = os.environ.get("DELFIN_FFFREE_DETERMINISTIC_ENUM")
@@ -697,6 +706,20 @@ def smiles_to_xyz_isomers(*args, **kwargs):
             _det_env_set = True
     try:
         r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+        if (outermost and _bv_two_spins and isinstance(r, tuple) and len(r) == 2
+                and isinstance(r[0], list)):
+            # The high-spin pass, appended exactly like the metalloid short-distance pass below:
+            # the same finalisation chain judges both sets, a frame is kept on its own merit.
+            _bvt.set_context(_smiles_arg(args, kwargs), "hs")
+            try:
+                r_hs = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+            finally:
+                _bvt.set_context(_smiles_arg(args, kwargs), "ls")
+            _ls = [(xyz, (f"{lbl}-ls" if lbl else "ls")) for xyz, lbl in r[0]]
+            _hs = []
+            if isinstance(r_hs, tuple) and len(r_hs) == 2 and isinstance(r_hs[0], list):
+                _hs = [(xyz, (f"{lbl}-hs" if lbl else "hs")) for xyz, lbl in r_hs[0]]
+            r = (_ls + _hs, r[1] if _ls else (r_hs[1] if isinstance(r_hs, tuple) else r[1]))
         # --- Metalloid dual-M-D-distance pass (DELFIN_FFFREE_METALLOID_MD_BOTH; default OFF) ------
         # For systems with a metalloid donor, ALSO build the manifold at the SHORT covalent-sum
         # M-metalloid distance and APPEND it (never drops the offset frames).  The eye's gate is

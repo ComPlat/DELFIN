@@ -685,3 +685,121 @@ def write_target_table(path, rows, b, rho, header_lines: Sequence[str]):
         for r in rows:
             fh.write("\t".join([r[0], r[1], r[2], r[3], r[4], r[5], str(r[6])]
                                + [f"{x:.4f}" for x in r[7:12]] + [str(r[12])]) + "\n")
+
+
+# ------------------------------------------------------------------------------------------------
+# spin labels (phase 2): two-component split of the per-structure mean M-D deviation
+# ------------------------------------------------------------------------------------------------
+SPIN_POSTERIOR = 0.90      # a structure is labelled only when its spin component is this certain
+SPIN_MIN_SEPARATION = 0.08  # A between the two component means of a bin, else it is unimodal
+
+
+def _two_gaussians(x, iters=200):
+    """1-D two-component Gaussian mixture by EM: (means, sds, weights, posterior of component 1)."""
+    x = np.asarray(x, float)
+    mu = np.array([np.percentile(x, 15), np.percentile(x, 85)])
+    sd = np.array([x.std() / 2 + 1e-3] * 2)
+    w = np.array([0.5, 0.5])
+    for _ in range(iters):
+        pdf = np.stack([w[k] / (sd[k] * math.sqrt(2 * math.pi))
+                        * np.exp(-0.5 * ((x - mu[k]) / sd[k]) ** 2) for k in (0, 1)])
+        post = pdf / np.maximum(pdf.sum(axis=0), 1e-300)
+        nk = post.sum(axis=1)
+        w = nk / nk.sum()
+        mu = (post * x).sum(axis=1) / np.maximum(nk, 1e-12)
+        sd = np.sqrt((post * (x - mu[:, None]) ** 2).sum(axis=1) / np.maximum(nk, 1e-12)) + 1e-3
+    return mu, sd, w, post[1]
+
+
+def label_spins(recs, min_n: int = 30):
+    """Set rec['spin'] = 'ls' / 'hs' for spin-candidate structures (3d, d4-d7, CN >= 5).
+
+    Per bin (metal, ox, CN, element, class) the per-structure mean distance is split into two
+    Gaussians.  A bin is BIMODAL when the means lie >= SPIN_MIN_SEPARATION apart and the smaller
+    component holds >= 10 %; there the lower component is low spin, the upper high spin, and a
+    structure is labelled when its component is >= SPIN_POSTERIOR certain.  A structure whose
+    donors sit only in unimodal bins takes the ligand-field rule (``BV.spin_by_rule``: Co(III)
+    low spin; Mn(II)/Co(II) low spin only with a C/P/H majority; otherwise low spin with a
+    strong-field majority).  Conflicting labels of one structure -> no label.
+    Returns a per-(metal, ox) summary (aggregates)."""
+    bins = defaultdict(lambda: defaultdict(list))
+    cand = []
+    for r in recs:
+        if not BV.spin_candidate(r["metal"], int(r["ox"]), int(r["cn"])):
+            continue
+        cand.append(r)
+        for e, c, d, *_t in r["donors"]:
+            if c is not None:
+                bins[(r["metal"], int(r["ox"]), int(r["cn"]), e, c)][r["id"]].append(d)
+    votes = defaultdict(set)
+    bimodal = set()
+    for key, per in bins.items():
+        if len(per) < min_n:
+            continue
+        ids = list(per)
+        x = [float(np.mean(per[i])) for i in ids]
+        mu, _sd, w, p_hi = _two_gaussians(x)
+        if abs(mu[1] - mu[0]) < SPIN_MIN_SEPARATION or min(w) < 0.10:
+            continue
+        bimodal.add(key)
+        hs = 1 if mu[1] > mu[0] else 0
+        for i, ph in zip(ids, p_hi):
+            p_hs = ph if hs == 1 else 1.0 - ph
+            if p_hs >= SPIN_POSTERIOR:
+                votes[i].add("hs")
+            elif p_hs <= 1.0 - SPIN_POSTERIOR:
+                votes[i].add("ls")
+    summary = defaultdict(lambda: {"n": 0, "ls": 0, "hs": 0, "rule": 0, "bimodal_bins": 0})
+    for key in bimodal:
+        summary[(key[0], key[1])]["bimodal_bins"] += 1
+    for r in cand:
+        s = summary[(r["metal"], int(r["ox"]))]
+        s["n"] += 1
+        in_bimodal = any((r["metal"], int(r["ox"]), int(r["cn"]), e, c) in bimodal
+                         for e, c, *_t in r["donors"])
+        v = votes.get(r["id"], set())
+        if in_bimodal:
+            if len(v) == 1:
+                r["spin"] = v.pop()
+        else:
+            nh = int(r["cn"]) - len(r["donors"])
+            r["spin"] = BV.spin_by_rule(r["metal"], int(r["ox"]), [(e, c) for e, c, *_t in r["donors"]], nh)
+            s["rule"] += 1
+        if r.get("spin"):
+            s[r["spin"]] += 1
+    return dict(summary)
+
+
+def spin_rows(recs, min_n: int = 10, boot: int = 200):
+    """N/D rows per spin (class suffixed ':ls' / ':hs') and F rows (low-spin share per metal, ox,
+    CN and number of strong-field donors) from spin-labelled records."""
+    tbl = {k: defaultdict(lambda: defaultdict(list)) for k in ("N", "D")}
+    frac = defaultdict(lambda: [0, 0])
+    for r in recs:
+        sp = r.get("spin")
+        if sp is None:
+            continue
+        m, ox, cn, nx = r["metal"], int(r["ox"]), int(r["cn"]), int(r.get("nx", 0))
+        ns = BV.n_strong_field([(e, c) for e, c, *_t in r["donors"]], cn - len(r["donors"]))
+        frac[(m, str(ox), f"{cn}/{ns}")][0 if sp == "ls" else 1] += 1
+        for e, c, d, *_t in r["donors"]:
+            if c is None:
+                continue
+            tbl["N"][(m, str(ox), f"{cn}/{nx}", e, f"{c}:{sp}")][r["id"]].append(d)
+            tbl["D"][(m, str(ox), str(cn), e, f"{c}:{sp}")][r["id"]].append(d)
+    rows = []
+    for kind in ("N", "D"):
+        for key in sorted(tbl[kind]):
+            g = list(tbl[kind][key].values())
+            if len(g) < min_n:
+                continue
+            v = [x for gg in g for x in gg]
+            lo, hi = _boot_ci(g, boot)
+            rows.append((kind,) + key + (len(g), float(np.median(v)), lo, hi,
+                                         float(np.percentile(v, 25)), float(np.percentile(v, 75)), len(v)))
+    for key in sorted(frac):
+        ls, hs = frac[key]
+        if ls + hs >= min_n:
+            rows.append(("F",) + key + ("*", "*", ls + hs, ls / (ls + hs), float("nan"), float("nan"),
+                                         float("nan"), float("nan"), ls + hs))
+    return rows

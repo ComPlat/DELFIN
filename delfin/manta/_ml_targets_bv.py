@@ -271,7 +271,7 @@ def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
                 if not ln.strip() or ln.startswith("#"):
                     continue
                 p = ln.rstrip("\n").split("\t")
-                if len(p) < 8 or p[0] not in ("N", "D", "R", "P"):
+                if len(p) < 8 or p[0] not in ("N", "D", "R", "P", "F"):
                     continue
                 try:
                     if p[0] == "P":
@@ -312,7 +312,7 @@ def donor_valence(ox: int, cn: int, nx: int, cls: Optional[str], rho: float) -> 
 
 
 def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optional[str],
-                 nx: Optional[int] = None):
+                 nx: Optional[int] = None, spin: Optional[str] = None):
     """(target A, level) of one donor, or (None, None).
 
     Levels, in order (DELFIN_FFFREE_ML_TARGETS_BV_LEVELS selects a subset; default N, D, R, Re):
@@ -327,6 +327,14 @@ def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optiona
     """
     nmin = _min_n()
     use = _levels()
+    if spin is not None and cls is not None:
+        # the spin state's own rows first (phase 2, DELFIN_FFFREE_ML_TARGETS_BV_SPIN_BOTH)
+        for kind, cnk, lev in (("N", f"{cn}/{nx}", "Ns"), ("D", str(cn), "Ds")):
+            if kind == "N" and nx is None:
+                continue
+            row = table.get((kind, metal, str(ox), cnk, element, f"{cls}:{spin}"))
+            if row is not None and row[0] >= nmin:
+                return row[1], lev
     if "N" in use and nx is not None:
         row = table.get(("N", metal, str(ox), f"{cn}/{nx}", element, cls))
         if row is not None and row[0] >= nmin:
@@ -355,7 +363,7 @@ def donor_target(table, metal: str, ox: int, cn: int, element: str, cls: Optiona
     return None, None
 
 
-def complex_targets(table, metal: str, ox: int, donors) -> Dict[int, Tuple[float, str]]:
+def complex_targets(table, metal: str, ox: int, donors, spin: Optional[str] = None) -> Dict[int, Tuple[float, str]]:
     """``donor idx -> (target, level)`` for the donors that get one."""
     cn = len(donors)
     nx = n_x_donors(donors)
@@ -363,10 +371,76 @@ def complex_targets(table, metal: str, ox: int, donors) -> Dict[int, Tuple[float
     for i, el, cls in donors:
         if el == "H" or cls is None:
             continue
-        t, lev = donor_target(table, metal, ox, cn, el, cls, nx)
+        t, lev = donor_target(table, metal, ox, cn, el, cls, nx, spin)
         if t is not None:
             out[i] = (float(t), lev)
     return out
+
+
+# ---------------------------------------------------------------------------------------------
+# spin state (phase 2, DELFIN_FFFREE_ML_TARGETS_BV_SPIN_BOTH, default OFF)
+# ---------------------------------------------------------------------------------------------
+SPIN_BOTH_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SPIN_BOTH"
+# A spin state is "clear" when the crystals of this metal, oxidation state, CN and number of
+# strong-field donors are at least this share in it; between the two shares both states are built.
+SPIN_CLEAR_SHARE = 0.85
+_3D_METALS = frozenset("Sc Ti V Cr Mn Fe Co Ni Cu Zn".split())
+_CPH = frozenset("C P As Sb Si Ge Sn B H".split())
+
+
+def spin_both_enabled() -> bool:
+    return os.environ.get(SPIN_BOTH_ENV, "0") == "1"
+
+
+def spin_candidate(metal: str, ox: int, cn: int) -> bool:
+    """3d metal with d4-d7 at CN >= 5: high and low spin both exist in octahedral fields."""
+    from delfin.manta._oxidation_state import _OX_GROUP
+    if metal not in _3D_METALS or metal not in _OX_GROUP:
+        return False
+    d = _OX_GROUP[metal] - int(ox)
+    return 4 <= d <= 7 and int(cn) >= 5
+
+
+def n_strong_field(pairs, n_hydride: int = 0) -> int:
+    """Strong-field donors of (element, class) pairs: C/P/H-type and pi-accepting N (spectrochemical
+    series, as in the spin rule of the xtb step); hydrides count as strong."""
+    n = n_hydride
+    for el, c in pairs:
+        if el in _CPH or (el == "N" and c is not None and c.startswith("pi")):
+            n += 1
+    return n
+
+
+def spin_by_rule(metal: str, ox: int, pairs, n_hydride: int = 0) -> str:
+    """Ligand-field rule for an octahedral-type 3d d4-d7 centre (the spin rule of the xtb step,
+    branch work/2026-09-29-spin-rule): Co(III) low spin; Mn(II) and Co(II) low spin only with a
+    C/P/H-type majority (largest pairing energy / Delta_o ratio); otherwise low spin with a
+    strong-field majority (spectrochemical series)."""
+    n = len(pairs) + n_hydride
+    if metal == "Co" and int(ox) == 3:
+        return "ls"
+    if metal in ("Mn", "Co") and int(ox) == 2:
+        n_cph = n_hydride + sum(1 for el, _c in pairs if el in _CPH)
+        return "ls" if 2 * n_cph > n else "hs"
+    return "ls" if 2 * n_strong_field(pairs, n_hydride) > n else "hs"
+
+
+def spins_for(table, metal: str, ox: int, donors) -> List[str]:
+    """['ls'], ['hs'], ['ls', 'hs'] (both built) or [] (no spin choice / no measured share)."""
+    cn = len(donors)
+    if not spin_candidate(metal, ox, cn):
+        return []
+    ns = n_strong_field([(el, c) for _i, el, c in donors if el != "H"],
+                        sum(1 for _i, el, _c in donors if el == "H"))
+    row = table.get(("F", metal, str(ox), f"{cn}/{ns}", "*", "*"))
+    if row is None or row[0] < _min_n():
+        return []
+    ls = row[1]
+    if ls >= SPIN_CLEAR_SHARE:
+        return ["ls"]
+    if ls <= 1.0 - SPIN_CLEAR_SHARE:
+        return ["hs"]
+    return ["ls", "hs"]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -380,8 +454,9 @@ def _mol_from_smiles(smiles: str):
     return m
 
 
-def build_context(smiles: str) -> Optional[dict]:
-    """Targets of one complex: ``{"metal", "ox", "cn", "by_class", "by_element"}`` or None."""
+def build_context(smiles: str, spin: Optional[str] = None) -> Optional[dict]:
+    """Targets of one complex: ``{"metal", "ox", "cn", "by_class", "by_element", "spins", "spin"}``
+    or None.  ``spin`` (ls/hs) selects that spin state's rows where the table has them."""
     from delfin.manta._oxidation_state import _OX_GROUP
     mol = _mol_from_smiles(smiles)
     if mol is None:
@@ -393,7 +468,11 @@ def build_context(smiles: str) -> Optional[dict]:
     if cd is None:
         return None
     metal, ox, donors = cd
-    tg = complex_targets(load_table(table_path()), metal, ox, donors)
+    table = load_table(table_path())
+    spins = spins_for(table, metal, ox, donors) if spin_both_enabled() else []
+    if spin is None and len(spins) == 1:
+        spin = spins[0]                                  # a clear spin state: its own rows
+    tg = complex_targets(table, metal, ox, donors, spin)
     if not tg:
         return None
     by_class: Dict[Tuple[str, str], List[float]] = {}
@@ -413,17 +492,18 @@ def build_context(smiles: str) -> Optional[dict]:
         if len(v) == n_el.get(el, 0) and max(v) - min(v) <= ELEMENT_SPREAD_MAX:
             by_element[el] = sum(v) / len(v)
     return {"metal": metal, "ox": ox, "cn": len(donors), "by_class": by_class_t,
-            "by_element": by_element, "levels": sorted({lv for _t, lv in tg.values()})}
+            "by_element": by_element, "levels": sorted({lv for _t, lv in tg.values()}),
+            "spins": spins, "spin": spin}
 
 
-def set_context(smiles) -> None:
+def set_context(smiles, spin: Optional[str] = None) -> None:
     """Record the targets of the complex about to be built (no-op when the switch is off)."""
     global _CTX
     _CTX = None
     if not bv_targets_enabled() or not smiles:
         return
     try:
-        _CTX = build_context(str(smiles))
+        _CTX = build_context(str(smiles), spin)
     except Exception:
         _CTX = None
 

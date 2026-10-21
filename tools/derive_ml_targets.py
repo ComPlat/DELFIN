@@ -205,6 +205,8 @@ def main(argv=None):
     p.add_argument("--rho", type=float, default=1.0)
     p.add_argument("--min-n", type=int, default=10)
     p.add_argument("--boot", type=int, default=200)
+    p.add_argument("--spin", action="store_true",
+                   help="label spin states (3d d4-d7, CN >= 5) and add per-spin rows and low-spin shares")
     a = ap.parse_args(argv)
 
     if a.cmd == "records-pairs":
@@ -235,6 +237,13 @@ def main(argv=None):
                         f"b = 0.37, rho = 1: {f['literature_score']:.4f} A (n = {f['literature_n']})")
             print("# fit", {k: v for k, v in f.items() if k != "grid"}, flush=True)
         rows = MD.build_table(recs, b, rho, a.min_n, a.boot)
+        if a.spin:
+            summ = MD.label_spins(recs)
+            nl = Counter(r.get("spin") for r in recs if r.get("spin"))
+            head.append(f"spin labels (two-component split, posterior >= {MD.SPIN_POSTERIOR}): {dict(nl)}")
+            for k in sorted(summ):
+                head.append(f"  spin split {k[0]}({k[1]}): {summ[k]}")
+            rows += MD.spin_rows(recs, a.min_n, a.boot)
         MD.write_target_table(a.out, rows, b, rho, head)
         print(f"# {len(recs)} structures -> {len(rows)} rows -> {a.out}", flush=True)
 
