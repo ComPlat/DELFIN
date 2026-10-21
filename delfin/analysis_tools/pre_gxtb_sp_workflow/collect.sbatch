@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pre_SP_report
 #SBATCH --partition=cpu
-#SBATCH --account=ka
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1

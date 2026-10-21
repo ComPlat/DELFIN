@@ -17,7 +17,6 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 
 EH_TO_KCAL = 627.509474
 DEFAULT_GXTB = Path.home() / "software/gxtb-v2.0.1/xtb-6.7.1/bin/xtb"
@@ -172,7 +171,10 @@ def prepare(args):
         "sp_optimize": False,
         "sp_freq": False,
         "partition": "cpu",
-        "account": "ka",
+        # The Slurm account comes from --account or the environment
+        # (SBATCH_ACCOUNT), never from the shipped scripts: it names the
+        # submitting group and differs per site.
+        "account": args.account or os.environ.get("SBATCH_ACCOUNT") or None,
         "concurrency_cap": None,
     }
     (root / "settings.json").write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
@@ -240,21 +242,22 @@ def submit(args):
     for name in ("run_gxtb.sbatch", "run_sp.sbatch", "collect.sbatch"):
         run_capture(["bash", "-n", name], root)
     array = f"0-{n-1}"
-    g = run_capture(["sbatch", "--parsable", f"--array={array}", "run_gxtb.sbatch"], root).split(";")[0]
+    account = [f"--account={st['account']}"] if st.get("account") else []
+    g = run_capture(["sbatch", "--parsable", *account, f"--array={array}", "run_gxtb.sbatch"], root).split(";")[0]
     if not re.fullmatch(r"\d+", g):
         die(f"Unexpected sbatch ID: {g}")
     ids = {"gxtb_array": g, "sp_array": None, "collect_job": None}
     subfile = root / "submission.json"
     subfile.write_text(json.dumps(ids, indent=2) + "\n")
     print(f"Submitted g-xTB array {g} ({n} tasks, no concurrency limit)")
-    s = run_capture(["sbatch", "--parsable", f"--array={array}",
+    s = run_capture(["sbatch", "--parsable", *account, f"--array={array}",
                      f"--dependency=afterok:{g}", "run_sp.sbatch"], root).split(";")[0]
     if not re.fullmatch(r"\d+", s):
         die(f"Unexpected sbatch ID: {s}")
     ids["sp_array"] = s
     subfile.write_text(json.dumps(ids, indent=2) + "\n")
     print(f"Submitted ORCA SP array {s} ({n} tasks, afterok:{g})")
-    c = run_capture(["sbatch", "--parsable", f"--dependency=afterany:{s}",
+    c = run_capture(["sbatch", "--parsable", *account, f"--dependency=afterany:{s}",
                      "collect.sbatch"], root).split(";")[0]
     if not re.fullmatch(r"\d+", c):
         die(f"Unexpected sbatch ID: {c}")
@@ -376,6 +379,8 @@ def parser():
     a.add_argument("--orca", default=str(DEFAULT_ORCA), help="Absolute ORCA executable")
     a.add_argument("--charge", type=int, default=0)
     a.add_argument("--multiplicity", type=int, default=1)
+    a.add_argument("--account", default="",
+                   help="Slurm account for all three stages (default: $SBATCH_ACCOUNT, else the site default)")
     a.add_argument("--submit", action="store_true", help="Submit after preparing (otherwise dry preparation)")
     a.set_defaults(func=prepare)
     a = subs.add_parser("submit", help="Submit both arrays and collector (only once)")

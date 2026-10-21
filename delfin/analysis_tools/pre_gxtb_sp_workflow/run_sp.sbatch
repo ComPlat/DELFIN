@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pre_DFT_SP
 #SBATCH --partition=cpu
-#SBATCH --account=ka
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=8

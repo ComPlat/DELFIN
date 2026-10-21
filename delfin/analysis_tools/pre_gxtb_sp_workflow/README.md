@@ -11,29 +11,30 @@
 
 **Scientific caveat:** This ranks single-point energies evaluated at **g-xTB minima**, not fully relaxed DFT energies or DFT Gibbs energies; selecting a few candidates for DFT Opt/Freq is a subsequent, separate workflow.
 
-## On KIT UC3
+## On a Slurm cluster
 
-The user already has g-xTB v2.0.1 under `~/software/gxtb-v2.0.1/xtb-6.7.1/bin/xtb`, plus ORCA 6.1.1 under `~/software/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2/orca`.
+The defaults expect g-xTB v2.0.1 at `~/software/gxtb-v2.0.1/xtb-6.7.1/bin/xtb` and ORCA 6.1.1 at `~/software/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2/orca`; point `--gxtb PATH --orca PATH` at your own installation otherwise.
 
 ```bash
 # Once this zip has been unpacked on the HPC:
 cd ~/DELFIN_pre_gxtb_sp_workflow
 python3 prescreen.py prepare \
   --ensemble /path/to/GOAT_run/molecule.finalensemble.xyz \
+  --account <your-slurm-account> \
   --submit
 ```
 
 The script prints a **new unique** `pre_gxtb_sp_*` folder next to the given ensemble. `--submit` immediately queues both arrays and an automatic collector. Omit `--submit` for preparation only. The same scripts work for any positive number of conformers sharing the same atom order (not hardcoded to 34 or 38).
 
-Default charge/multiplicity: `0 1`; override with `--charge N --multiplicity M` if necessary. Paths to binaries can be overridden using `--gxtb PATH --orca PATH`.
+Default charge/multiplicity: `0 1`; override with `--charge N --multiplicity M` if necessary. Paths to binaries can be overridden using `--gxtb PATH --orca PATH`. The Slurm account is taken from `--account`, else from `$SBATCH_ACCOUNT`, else the site's default; the shipped scripts name none.
 
-## Array configuration, consistent with `cluster_specs(3).md`
+## Array configuration
 
 | Stage | Slurm | CPU/task | RAM/task | Walltime | Parallelism |
 |---|---|---:|---:|---|---|
-| g-xTB geometry opt | `cpu`, account `ka`, `ntasks=1` | 4 | 4 GB | 2 h | Entire array; **no `%` limit** |
-| ORCA DFT SP | `cpu`, account `ka`, `ntasks=8`, `ntasks-per-node=8`, `cpus-per-task=1` | 8 MPI ranks | 40 GB | 24 h | Entire array; **no `%` limit** |
-| Postprocessor | `cpu`, account `ka` | 1 | 1 GB | 15 min | 1 |
+| g-xTB geometry opt | `cpu`, `ntasks=1` | 4 | 4 GB | 2 h | Entire array; **no `%` limit** |
+| ORCA DFT SP | `cpu`, `ntasks=8`, `ntasks-per-node=8`, `cpus-per-task=1` | 8 MPI ranks | 40 GB | 24 h | Entire array; **no `%` limit** |
+| Postprocessor | `cpu` | 1 | 1 GB | 15 min | 1 |
 
 `%pal nprocs 8` matches `--ntasks=8`; `%maxcore 4000`. ORCA runs by its full binary path without a prepended `srun`/`mpirun`. Compute jobs use node-local scratch and copy results back on exit. A read-only output-log snapshot is attempted before walltime if a job lasts that long. Each job has a lock, separate working directory, exit code and log; no existing run directory is overwritten. A frozen `jobs.<stage>.submission.txt` defines the array bounds.
 
@@ -63,7 +64,7 @@ head -n 12 results/single_point_energies.csv
 ## Test (without HPC)
 
 ```bash
-python3 -m unittest discover -s tests -v
+python -m pytest tests/test_the_goat_prescreen_prepares_and_submits.py
 ```
 
-Tests use fake `xtb`, `orca` and `sbatch` binaries to validate staging, controls, submission dependencies, geometry preservation, error detection, both SLURM wrappers, and final result generation. These tests do **not** establish chemistry or actual MPI usability on UC3; that is confirmed by the preceding real 34/34 benchmark.
+The test uses fake `xtb`, `orca` and `sbatch` programs. It checks staging (one folder per conformer, original frames and indices kept, the source folder untouched), the refusal of an existing run folder and of a changed atom order, and the three submissions with their array bounds, dependencies and optional account, submitted once only. It does **not** establish the chemistry or the MPI behaviour of ORCA on a cluster.
