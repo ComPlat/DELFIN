@@ -799,12 +799,14 @@ def main(argv=None):
         help="Fail if the requested port is occupied instead of choosing another (SSH launchers).",
     )
     parser.add_argument(
-        "--claude-terminal",
-        action="store_true",
+        "--agent-terminal",
+        metavar="COMMAND",
+        default="",
         help=(
-            "Offer the Claude Code CLI in a terminal panel of the Agent tab. "
-            "Loopback only; the terminal runs the claude command and nothing "
-            "else."
+            "Offer COMMAND (a coding-agent CLI, by name on PATH or as a "
+            "path) in a terminal panel of the Agent tab. Loopback only; the "
+            "terminal runs that program and nothing else, and never a shell "
+            "or an interpreter."
         ),
     )
     parser.add_argument(
@@ -971,25 +973,31 @@ def main(argv=None):
         )
         sys.exit(2)
 
-    # -- Claude terminal (opt-in) ---------------------------------------------
+    # -- Agent terminal (opt-in) ----------------------------------------------
     # A terminal is a process under the user's account, outside the agent's
     # sandbox. Only on a loopback bind -- never with --allow-remote-bind --
-    # and only when the CLI exists: no command, no terminal, never a shell.
-    _claude_argv: list[str] = []
-    if args.claude_terminal:
+    # only when the program exists, and never a shell or an interpreter
+    # (agent_terminal.refusal): no command, no terminal.
+    _term_argv: list[str] = []
+    if args.agent_terminal:
+        from delfin.dashboard import agent_terminal as _at
         if not _is_loopback_bind(args.ip):
-            print("Error: --claude-terminal is only offered on a loopback "
+            print("Error: --agent-terminal is only offered on a loopback "
                   f"bind, not on {args.ip}.", file=sys.stderr)
             sys.exit(2)
-        _claude = shutil.which("claude") or next(
-            (str(p) for p in (Path.home() / ".local/bin/claude",
-                              Path.home() / ".claude/local/claude")
-             if p.is_file() and os.access(p, os.X_OK)), "")
-        if not _claude:
-            print("Error: --claude-terminal needs the claude command on PATH "
-                  "(or in ~/.local/bin).", file=sys.stderr)
+        _wanted = os.path.expanduser(args.agent_terminal)
+        _found = (_wanted if os.path.isfile(_wanted)
+                  and os.access(_wanted, os.X_OK) else shutil.which(_wanted))
+        if not _found:
+            print(f"Error: --agent-terminal: {args.agent_terminal!r} is not "
+                  "an executable on PATH or a path to one.", file=sys.stderr)
             sys.exit(2)
-        _claude_argv = [os.path.abspath(_claude)]
+        _found = os.path.realpath(os.path.abspath(_found))
+        _why = _at.refusal(_found) or _at.refusal(args.agent_terminal)
+        if _why:
+            print(f"Error: --agent-terminal: {_why}.", file=sys.stderr)
+            sys.exit(2)
+        _term_argv = [_found]
 
     # -- Token-based authentication ----------------------------------------
     # Auto-generate a token by default. On shared multi-user hosts (HPC login
@@ -1106,17 +1114,17 @@ def main(argv=None):
     _extensions = (
         "{'voila': True, 'jupyterlab': False, 'notebook': False, "
         "'jupyter_lsp': False, 'jupyter_server_terminals': "
-        + ("True" if _claude_argv else "False") + ", "
+        + ("True" if _term_argv else "False") + ", "
         "'delfin.dashboard.server_guard': True}"
     )
-    if _claude_argv:
+    if _term_argv:
         import json as _json
-        from delfin.dashboard import claude_terminal as _ct
-        env[_ct.ARGV_ENV] = _json.dumps(_claude_argv)
+        from delfin.dashboard import agent_terminal as _ct
+        env[_ct.ARGV_ENV] = _json.dumps(_term_argv)
         env[_ct.CWD_ENV] = os.environ.get("DELFIN_LAUNCH_CWD") or os.getcwd()
         env[_ct.ENABLED_ENV] = "1"
     else:
-        env.pop("DELFIN_CLAUDE_TERMINAL", None)
+        env.pop("DELFIN_AGENT_TERMINAL", None)
     import json
 
     from delfin.dashboard.web_security import NO_TYPESETTING_ROUTE
@@ -1179,13 +1187,14 @@ def main(argv=None):
         "--VoilaConfiguration.file_allowlist=" + _file_allowlist(),
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
-        # Shrink the RCE surface: no server terminals, unless the Claude
+        # Shrink the RCE surface: no server terminals, unless the agent
         # terminal was asked for -- and then only through the manager that
-        # runs the claude command and nothing else (claude_terminal.py).
+        # runs the one configured program and nothing else
+        # (agent_terminal.py).
         *(["--ServerApp.terminals_enabled=True",
             "--TerminalsExtensionApp.terminal_manager_class="
-            "delfin.dashboard.claude_terminal.ClaudeOnlyTerminalManager"]
-          if _claude_argv else ["--ServerApp.terminals_enabled=False"]),
+            "delfin.dashboard.agent_terminal.OneCommandTerminalManager"]
+          if _term_argv else ["--ServerApp.terminals_enabled=False"]),
         # Ctrl+C stops immediately instead of prompting "Shut down (y/[n])?".
         "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
