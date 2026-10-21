@@ -78,6 +78,14 @@ _PLACEHOLDER_WIDTH = 96
 _PROMPT_MARKER = re.compile(r"^[ \t>*_-]*PROMPT:[ \t]*(\S.*?)[ \t]*$", re.M)
 
 
+def _unquote_shell_offer(text: str) -> str:
+    """Accept a copied inline-code shell escape, without interpreting prose."""
+    if (text.startswith("`!") and text.endswith("`")
+            and text.count("`") == 2 and "\n" not in text):
+        return text[1:-1].strip()
+    return text
+
+
 def proposed_prompt(text: str):
     """The message the agent marked as an offer, or None.
 
@@ -93,7 +101,8 @@ def proposed_prompt(text: str):
     except Exception:
         return None
     for line in reversed(found):
-        cleaned = " ".join(str(line).split())
+        candidate = _unquote_shell_offer(str(line).strip())
+        cleaned = candidate if candidate.startswith("!") else " ".join(candidate.split())
         if cleaned:
             return cleaned
     return None
@@ -18786,7 +18795,7 @@ def create_tab(ctx):
     # -- main event handlers -----------------------------------------------
 
     def _on_send(button):
-        user_text = input_textarea.value.strip()
+        user_text = _unquote_shell_offer(input_textarea.value.strip())
         if not user_text:
             return
         # `!cmd`: the terminal's shell escape, on this surface too. It

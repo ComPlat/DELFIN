@@ -70,6 +70,8 @@ _UPSTREAM = textwrap.dedent('''
             self.set_header("Content-Type", "application/json")
             self.write({"path": self.request.path, "query": self.request.query})
 
+        post = get
+
     class WS(websocket.WebSocketHandler):
         def check_origin(self, origin):
             return True
@@ -157,11 +159,11 @@ def servers(tmp_path, monkeypatch):
             proc.wait(timeout=10)
 
 
-def _get(port, path, *, auth=True, headers=None):
+def _get(port, path, *, auth=True, headers=None, method="GET"):
     h = dict(headers or {})
     if auth:
         h["Authorization"] = f"token {MAIN_TOKEN}"
-    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=h)
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=h, method=method)
 
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **k):
@@ -266,3 +268,33 @@ def test_a_preview_is_started_under_the_proxy_base_url(tmp_path, monkeypatch):
     assert cfg["ServerApp"]["base_url"] == "/delfin-preview/feat/"
     monkeypatch.delenv(BP.PROXY_ENV)
     assert BP.proxy_env({"A": "1"}, "feat") == {"A": "1"}
+
+
+@pytest.mark.parametrize("auth, expected", [(True, 200), (False, 403)])
+def test_post_authentication_is_ready_before_xsrf_check(servers, auth, expected):
+    status, body, _ = _get(servers["main"],
+                          "/delfin-preview/feat/voila/api/shutdown/kernel",
+                          auth=auth, method="POST")
+    assert status == expected, body
+    assert bool(_seen(servers["log"])) == auth
+
+
+def test_cookie_login_still_requires_a_matching_xsrf_token(servers):
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    with opener.open(f"http://127.0.0.1:{servers['main']}/api?token={MAIN_TOKEN}",
+                     timeout=20) as response:
+        assert response.status == 200
+    login = "; ".join(f"{c.name}={c.value}" for c in jar)
+    assert "username-" in login
+    path = "/delfin-preview/feat/delfin-api/window-closing"
+    token = "a" * 32
+    headers = {"Cookie": login + "; _xsrf=" + token}
+    for sent, expected in ((None, 403), ("b" * 32, 403), (token, 200)):
+        if sent:
+            headers["X-Xsrftoken"] = sent
+        status, body, _ = _get(servers["main"], path, auth=False,
+                              headers=headers, method="POST")
+        assert status == expected, body
+    assert len(_seen(servers["log"])) == 1
