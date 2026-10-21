@@ -298,3 +298,22 @@ def test_cookie_login_still_requires_a_matching_xsrf_token(servers):
                               headers=headers, method="POST")
         assert status == expected, body
     assert len(_seen(servers["log"])) == 1
+
+
+def test_an_exited_preview_is_not_proxied_while_waiting_to_be_reaped(servers):
+    import signal
+    pid = servers["preview"].pid
+    stat_path = Path(f"/proc/{pid}/stat")
+    if not stat_path.exists():
+        pytest.skip("Linux process state required")
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        stat = stat_path.read_text()
+        if stat[stat.rindex(")") + 1:].split()[0] == "Z":
+            break
+        time.sleep(.01)
+    else:
+        pytest.fail("preview never exited")
+    status, body, _ = _get(servers["main"], "/delfin-preview/feat/api/kernels")
+    assert status == 404, body
