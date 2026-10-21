@@ -1736,10 +1736,51 @@ def create_tab(ctx):
     # it costs nothing to carry; filled, it is the reason the viewer is open.
     calc_fukui_panel_container.add_class('delfin-structure-fs-member')
     calc_fukui_panel_container.add_class('delfin-structure-fs-panel')
+    # DELFIN_PRE_GXTB_SP_GUI_V1: controls
+    calc_prescreen_btn = widgets.Button(
+        description='Pre-g-xTB + DFT-SP', button_style='info',
+        tooltip='Start g-xTB optimizations and ORCA single-points for ALL GOAT frames',
+        layout=widgets.Layout(width='185px'),
+    )
+    calc_prescreen_submit_cb = widgets.Checkbox(
+        value=True, description='Submit SLURM jobs', indent=False,
+        tooltip='When checked, clicking Pre-g-xTB + DFT-SP submits the full arrays',
+        layout=widgets.Layout(width='170px'),
+    )
+    calc_prescreen_charge = widgets.IntText(
+        value=0, description='Charge',
+        layout=widgets.Layout(width='135px'),
+    )
+    calc_prescreen_mult = widgets.BoundedIntText(
+        value=1, min=1, max=20, description='Multiplicity',
+        layout=widgets.Layout(width='165px'),
+    )
+    calc_prescreen_refresh_btn = widgets.Button(
+        description='Load SP ranking', disabled=False,
+        tooltip='Check the finished run and load the SP-sorted g-xTB geometries into the viewer',
+        layout=widgets.Layout(width='150px'),
+    )
+    calc_prescreen_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='auto'),
+    )
+    calc_prescreen_controls = widgets.HBox(
+        [calc_prescreen_submit_cb, calc_prescreen_charge,
+         calc_prescreen_mult, calc_prescreen_refresh_btn],
+        layout=widgets.Layout(width='100%', align_items='center',
+                              flex_flow='row wrap', gap='8px'),
+    )
+
+    calc_prescreen_toolbar = widgets.VBox([
+        widgets.HBox([calc_prescreen_btn], layout=widgets.Layout(gap='8px')),
+        calc_prescreen_controls,
+        calc_prescreen_status,
+    ], layout=widgets.Layout(display='none', width='100%', margin='5px 0', gap='6px'))
+
     calc_mol_container = widgets.VBox(
         [
             calc_mol_header,
             calc_rmsd_controls,
+            calc_prescreen_toolbar,
             calc_mol_view_row,
             calc_fukui_panel_container,
         ],
@@ -6156,6 +6197,8 @@ def create_tab(ctx):
         calc_pdf_container.layout.display = 'none'
         show_mol = calc_view_toggle.value
         if show_mol:
+            selected_goat = str(state.get('selected_file_path') or '').lower().endswith('finalensemble.xyz')
+            calc_prescreen_toolbar.layout.display = 'flex' if selected_goat else 'none'
             calc_mol_container.layout.display = 'block'
             calc_content_area.layout.display = 'none'
             calc_edit_area.layout.display = 'none'
@@ -9758,6 +9801,6060 @@ def create_tab(ctx):
             _calc_preselect_show(False)
             _calc_show_xyz_batch_panel(False)
             calc_content_area.layout.display = 'block'
+
+    # DELFIN_PRE_GXTB_SP_GUI_V1: callbacks
+    def _calc_on_prescreen_click(_button=None):
+        """Start standalone pre-screen on all frames of the selected GOAT ensemble."""
+        source = state.get('selected_file_path')
+        if source is None or not Path(source).is_file():
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Open a GOAT finalensemble.xyz first.</span>'
+            )
+            return
+        source = Path(source).resolve()
+        if not source.name.lower().endswith('finalensemble.xyz'):
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Select a GOAT finalensemble.xyz file, '
+                'not a representative/single-frame XYZ.</span>'
+            )
+            return
+        if state.get('prescreen_running'):
+            return
+        workflow_cli = (
+            Path(__file__).resolve().parents[1]
+            / 'analysis_tools' / 'pre_gxtb_sp_workflow' / 'prescreen.py'
+        )
+        if not workflow_cli.is_file():
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Pre-screening backend missing: '
+                f'{_html.escape(str(workflow_cli))}</span>'
+            )
+            return
+
+        charge = int(calc_prescreen_charge.value)
+        multiplicity = int(calc_prescreen_mult.value)
+        submit_jobs = bool(calc_prescreen_submit_cb.value)
+        cmd = [
+            sys.executable, str(workflow_cli), 'prepare', '--ensemble', str(source),
+            '--charge', str(charge), '--multiplicity', str(multiplicity),
+        ]
+        if submit_jobs:
+            cmd.append('--submit')
+
+        state['prescreen_running'] = True
+        calc_prescreen_btn.disabled = True
+        calc_prescreen_status.value = (
+            '<span style="color:#1565c0;">Preparing all GOAT frames'
+            + (' and submitting the parallel SLURM arrays...' if submit_jobs
+               else ' (no jobs submitted)...')
+            + '</span>'
+        )
+
+        def _prescreen_worker():
+            try:
+                p = subprocess.run(
+                    cmd, text=True, capture_output=True, timeout=240,
+                    check=False,
+                )
+                stdout = p.stdout or ''
+                stderr = p.stderr or ''
+                match = re.search(r'^Prepared\s+(\d+)\s+conformers\s+at\s+(.+)
+        selected_option = calc_options_dropdown.value
+        is_recalc = selected_option in ('Recalc', 'Smart Recalc')
+        is_smart_recalc = selected_option == 'Smart Recalc'
+        _ovr_labels = _calc_selected_labels()
+        selected_name = _calc_label_to_name(_ovr_labels[0]) if _ovr_labels else ''
+        is_inp_recalc = bool(is_recalc and selected_name.lower().endswith('.inp'))
+
+        if not is_recalc:
+            override_value = calc_override_input.value.strip()
+            if not override_value or '=' not in override_value:
+                calc_override_status.value = (
+                    '<span style="color:#d32f2f;">Enter STAGE=INDEX (e.g., red_step_2=1)</span>'
+                )
+                return
+
+        # ORCA recalc for .inp selection
+        if is_inp_recalc:
+            inp_path = None
+            if state['selected_inp_path'] and Path(state['selected_inp_path']).exists():
+                inp_path = Path(state['selected_inp_path'])
+            elif selected_name:
+                inp_path = (
+                    (_calc_dir() / state['current_path'] / selected_name)
+                    if state['current_path']
+                    else (_calc_dir() / selected_name)
+                )
+                if not inp_path.exists():
+                    inp_path = None
+            if inp_path is None:
+                calc_override_status.value = '<span style="color:#d32f2f;">No .inp file selected.</span>'
+                return
+
+            inp_content = calc_edit_area.value or inp_path.read_text()
+            if not inp_content.strip():
+                calc_override_status.value = '<span style="color:#d32f2f;">Input content is empty.</span>'
+                return
+
+            job_dir = inp_path.parent
+            base_stem = inp_path.stem
+            base_name = calc_get_recalc_base_name(base_stem)
+            next_idx = calc_next_recalc_index(job_dir, base_name)
+            job_name = f"{base_name}_recalc_{next_idx}"
+
+            try:
+                new_inp = job_dir / f"{job_name}.inp"
+                new_inp.write_text(inp_content)
+
+                slurm_time = calc_override_time.value.strip() or '24:00:00'
+                pal_used, maxcore_used = parse_inp_resources(inp_content)
+                if pal_used is None and ctx.orca_pal_widget is not None:
+                    pal_used = ctx.orca_pal_widget.value
+                if maxcore_used is None and ctx.orca_maxcore_widget is not None:
+                    maxcore_used = ctx.orca_maxcore_widget.value
+
+                result = ctx.backend.submit_orca(
+                    job_dir=job_dir,
+                    job_name=job_name,
+                    inp_file=f'{job_name}.inp',
+                    time_limit=slurm_time,
+                    pal=pal_used or 40,
+                    maxcore=maxcore_used or 6000,
+                )
+            except Exception as exc:
+                calc_override_status.value = (
+                    f'<span style="color:#d32f2f;">Error: {_html.escape(str(exc))}</span>'
+                )
+                return
+
+            if result.returncode == 0:
+                job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                calc_override_status.value = (
+                    f'<span style="color:#2e7d32;">Submitted {_html.escape(job_name)}'
+                    f' (ID: {_html.escape(job_id)})</span>'
+                )
+            else:
+                msg = result.stderr or result.stdout or 'Unknown error'
+                calc_override_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
+            return
+
+        # Find workspace root (where CONTROL.txt is located)
+        if not state['current_path']:
+            calc_override_status.value = '<span style="color:#d32f2f;">No folder selected</span>'
+            return
+
+        workspace_root = calc_find_workspace_root(state['current_path'])
+        if not workspace_root:
+            calc_override_status.value = (
+                '<span style="color:#d32f2f;">No CONTROL.txt found in parent directories</span>'
+            )
+            return
+
+        workspace_path = _calc_dir() / workspace_root
+
+        # For Recalc: save edited CONTROL.txt first
+        if is_recalc:
+            try:
+                control_path = workspace_path / 'CONTROL.txt'
+                control_path.write_text(calc_edit_area.value)
+                state['file_content'] = calc_edit_area.value
+                calc_render_content(scroll_to='top')
+            except Exception as e:
+                calc_override_status.value = (
+                    f'<span style="color:#d32f2f;">Error saving CONTROL.txt: {_html.escape(str(e))}</span>'
+                )
+                return
+
+        calc_override_status.value = '<span style="color:#1976d2;">Submitting job...</span>'
+
+        try:
+            # Derive PAL/maxcore
+            pal_used = None
+            maxcore_used = None
+            control_path = workspace_path / 'CONTROL.txt'
+            if control_path.exists():
+                pal_used, maxcore_used = parse_resource_settings(control_path.read_text())
+
+            if pal_used is None or maxcore_used is None:
+                inp_candidate = None
+                try:
+                    if state['selected_inp_path'] and Path(state['selected_inp_path']).exists():
+                        inp_candidate = Path(state['selected_inp_path'])
+                except Exception:
+                    inp_candidate = None
+
+                if inp_candidate is None:
+                    inp_files = sorted(workspace_path.glob('*.inp'))
+                    inp_candidate = inp_files[0] if inp_files else None
+
+                if inp_candidate is not None and inp_candidate.exists():
+                    pal_inp, maxcore_inp = parse_inp_resources(inp_candidate.read_text())
+                    if pal_used is None:
+                        pal_used = pal_inp
+                    if maxcore_used is None:
+                        maxcore_used = maxcore_inp
+
+            if pal_used is None or maxcore_used is None:
+                calc_override_status.value = (
+                    '<span style="color:#d32f2f;">PAL/maxcore not found in CONTROL.txt or .inp</span>'
+                )
+                return
+
+            if is_recalc:
+                job_name = f'recalc_{workspace_root.replace("/", "_")}'
+                recalc_mode = 'delfin-recalc' if is_smart_recalc else 'delfin-recalc-classic'
+                result = ctx.backend.submit_delfin(
+                    job_dir=workspace_path,
+                    job_name=job_name,
+                    mode=recalc_mode,
+                    time_limit=calc_override_time.value,
+                    pal=pal_used,
+                    maxcore=maxcore_used,
+                )
+            else:
+                override_value = calc_override_input.value.strip()
+                job_name = f'occ_{override_value.replace("=", "_")}'
+                result = ctx.backend.submit_delfin(
+                    job_dir=workspace_path,
+                    job_name=job_name,
+                    mode='delfin-recalc-override',
+                    time_limit=calc_override_time.value,
+                    pal=pal_used,
+                    maxcore=maxcore_used,
+                    override=override_value,
+                )
+
+            if result.returncode == 0:
+                if not is_recalc:
+                    calc_override_status.value = (
+                        f'<span style="color:#388e3c;">Submitted from {_html.escape(str(workspace_root))} '
+                        f'(Override: {_html.escape(override_value)}): '
+                        f'{_html.escape(result.stdout.strip())}</span>'
+                    )
+                else:
+                    recalc_label = 'Smart Recalc' if is_smart_recalc else 'Recalc'
+                    calc_override_status.value = (
+                        f'<span style="color:#388e3c;">Submitted {recalc_label} from {_html.escape(str(workspace_root))}: '
+                        f'{_html.escape(result.stdout.strip())}</span>'
+                    )
+            else:
+                calc_override_status.value = (
+                    f'<span style="color:#d32f2f;">Error: {_html.escape(result.stderr.strip())}</span>'
+                )
+        except Exception as e:
+            calc_override_status.value = f'<span style="color:#d32f2f;">Error: {_html.escape(str(e))}</span>'
+
+    def calc_on_recalc_click(button):
+        if not state['selected_inp_path'] or not state['selected_inp_path'].exists():
+            calc_recalc_status.value = '<span style="color:#d32f2f;">No .inp file selected.</span>'
+            return
+        try:
+            content = state['selected_inp_path'].read_text()
+        except Exception as exc:
+            calc_recalc_status.value = (
+                f'<span style="color:#d32f2f;">Error reading file: {_html.escape(str(exc))}</span>'
+            )
+            return
+        calc_edit_area.value = content
+        state['recalc_active'] = True
+        calc_submit_recalc_btn.disabled = False
+        _set_view_toggle(False, False)
+        calc_content_label.value = '<b>📄 File Content (editable):</b>'
+        calc_update_view()
+
+    def calc_on_submit_recalc(button):
+        if not state['selected_inp_path'] or not state['selected_inp_path'].exists():
+            calc_recalc_status.value = '<span style="color:#d32f2f;">No .inp file selected.</span>'
+            return
+        inp_content = calc_edit_area.value
+        if not inp_content.strip():
+            calc_recalc_status.value = '<span style="color:#d32f2f;">Input content is empty.</span>'
+            return
+
+        job_dir = state['selected_inp_path'].parent
+        base_stem = state['selected_inp_path'].stem
+        base_name = calc_get_recalc_base_name(base_stem)
+        next_idx = calc_next_recalc_index(job_dir, base_name)
+        job_name = f"{base_name}_recalc_{next_idx}"
+
+        try:
+            inp_path = job_dir / f"{job_name}.inp"
+            inp_path.write_text(inp_content)
+
+            slurm_time = calc_recalc_time.value.strip() or '24:00:00'
+            pal_used, maxcore_used = parse_inp_resources(inp_content)
+            if pal_used is None and ctx.orca_pal_widget is not None:
+                pal_used = ctx.orca_pal_widget.value
+            if maxcore_used is None and ctx.orca_maxcore_widget is not None:
+                maxcore_used = ctx.orca_maxcore_widget.value
+
+            result = ctx.backend.submit_orca(
+                job_dir=job_dir,
+                job_name=job_name,
+                inp_file=f'{job_name}.inp',
+                time_limit=slurm_time,
+                pal=pal_used or 40,
+                maxcore=maxcore_used or 6000,
+            )
+        except Exception as exc:
+            calc_recalc_status.value = (
+                f'<span style="color:#d32f2f;">Error: {_html.escape(str(exc))}</span>'
+            )
+            return
+
+        if result.returncode == 0:
+            job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+            calc_recalc_status.value = (
+                f'<span style="color:#2e7d32;">Submitted {_html.escape(job_name)}'
+                f' (ID: {_html.escape(job_id)})</span>'
+            )
+        else:
+            msg = result.stderr or result.stdout or 'Unknown error'
+            calc_recalc_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
+
+    def calc_on_delete_click(button=None):
+        real = _calc_selected_labels()
+        if real:
+            names = [_calc_label_to_name(s) for s in real]
+            label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
+            calc_delete_label.value = f'<b>Delete {len(names)} item(s)?</b> {label_str}'
+            state['delete_current'] = False
+            calc_delete_confirm.layout.display = 'flex'
+            return
+        if state['current_path']:
+            calc_delete_label.value = (
+                f'<b>Delete current folder?</b> '
+                f'<code>{_html.escape(state["current_path"])}</code>'
+            )
+            state['delete_current'] = True
+            calc_delete_confirm.layout.display = 'flex'
+        else:
+            calc_delete_status.value = '<span style="color:#d32f2f;">No item selected.</span>'
+
+    def calc_on_delete_yes(button):
+        if not state.get('delete_current', False):
+            real = _calc_selected_labels()
+            if not real:
+                calc_delete_status.value = '<span style="color:#d32f2f;">Nothing to delete.</span>'
+                calc_delete_confirm.layout.display = 'none'
+                return
+            errors, deleted = [], []
+            for label in real:
+                name = _calc_label_to_name(label)
+                full_path = (
+                    (_calc_dir() / state['current_path'] / name)
+                    if state['current_path']
+                    else (_calc_dir() / name)
+                )
+                try:
+                    if full_path.is_dir():
+                        shutil.rmtree(full_path)
+                    else:
+                        full_path.unlink()
+                    deleted.append(name)
+                except Exception as exc:
+                    errors.append(f'{_html.escape(name)}: {_html.escape(str(exc))}')
+            calc_delete_confirm.layout.display = 'none'
+            if deleted and not errors:
+                calc_delete_status.value = (
+                    f'<span style="color:#2e7d32;">Deleted {len(deleted)} item(s).</span>'
+                )
+            elif deleted and errors:
+                calc_delete_status.value = (
+                    f'<span style="color:#e65100;">Deleted {len(deleted)}, '
+                    f'failed: {"; ".join(errors)}</span>'
+                )
+            else:
+                calc_delete_status.value = (
+                    f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
+                )
+            calc_file_list.value = ()
+            _calc_refresh_related_explorers()
+            return
+        # delete_current fallback (delete the folder we are inside)
+        if not state['current_path']:
+            calc_delete_status.value = '<span style="color:#d32f2f;">No current folder.</span>'
+            calc_delete_confirm.layout.display = 'none'
+            state['delete_current'] = False
+            return
+        full_path = _calc_dir() / state['current_path']
+        name = state['current_path']
+        try:
+            if full_path.is_dir():
+                shutil.rmtree(full_path)
+            else:
+                full_path.unlink()
+            calc_delete_status.value = f'<span style="color:#2e7d32;">Deleted: {_html.escape(name)}</span>'
+        except Exception as exc:
+            calc_delete_status.value = (
+                f'<span style="color:#d32f2f;">Delete failed: {_html.escape(str(exc))}</span>'
+            )
+        calc_delete_confirm.layout.display = 'none'
+        # This code path IS the "delete current folder" fallback (see comment
+        # above at line 9191), so after successful deletion we always move up
+        # to the parent directory. Previously this guarded on an undefined
+        # local `delete_current` (a leftover after a state-dict refactor);
+        # the state-dict flag was cleared before the guard ran, so the guard
+        # body never executed and the parent-navigation was silently dead.
+        state['delete_current'] = False
+        cp = state['current_path']
+        state['current_path'] = cp.rsplit('/', 1)[0] if '/' in cp else ''
+        calc_file_list.value = ()
+        _calc_refresh_related_explorers()
+
+    def calc_on_delete_no(button):
+        calc_delete_hide_confirm()
+
+    def _calc_collect_archive_toggle_sources():
+        labels = _calc_selected_labels()
+        current_dir = _calc_current_dir()
+        sources = []
+        for label in labels:
+            name = _calc_label_to_name(label)
+            if not name:
+                continue
+            src = current_dir / name
+            if src.exists():
+                sources.append(src)
+        if sources:
+            return sources
+        # Fallback requested by users: when nothing is selected, move current folder.
+        if state['current_path']:
+            cur = _calc_current_dir()
+            if cur.exists() and cur.resolve() != _calc_dir().resolve():
+                return [cur]
+        return []
+
+    def _calc_archive_toggle_destination():
+        if _is_archive_tab:
+            calc_root = getattr(ctx, 'primary_calc_dir', None)
+            if not calc_root:
+                calc_root = ctx.archive_dir.parent / 'calc'
+            return Path(calc_root), 'Calculations'
+        return ctx.archive_dir, 'Archive'
+
+    def calc_on_move_archive_click(button):
+        sources = _calc_collect_archive_toggle_sources()
+        if not sources:
+            calc_move_archive_status.value = (
+                '<span style="color:#d32f2f;">No items selected and no current folder to move.</span>'
+            )
+            return
+        dest_dir, dest_label = _calc_archive_toggle_destination()
+        names = [src.name for src in sources]
+        label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
+        calc_move_archive_label.value = (
+            f'<b>Move {len(names)} item(s) to {dest_label}?</b> {label_str}'
+        )
+        calc_move_archive_confirm.layout.display = 'flex'
+
+    def calc_on_move_archive_yes(button):
+        sources = _calc_collect_archive_toggle_sources()
+        calc_move_archive_confirm.layout.display = 'none'
+        if not sources:
+            calc_move_archive_status.value = (
+                '<span style="color:#d32f2f;">No items selected and no current folder to move.</span>'
+            )
+            return
+
+        dest_dir, dest_label = _calc_archive_toggle_destination()
+        dest_dir = Path(dest_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_resolved = dest_dir.resolve()
+
+        errors, moved = [], []
+        current_before = _calc_current_dir().resolve()
+        moved_current_folder = False
+
+        for src in sources:
+            name = src.name
+            try:
+                src_resolved = _calc_resolve_within_root(src)
+                dst = dest_resolved / src_resolved.name
+                if dst.exists():
+                    raise ValueError(f'Target already exists: {src_resolved.name}')
+                shutil.move(str(src_resolved), str(dst))
+                moved.append(src_resolved.name)
+                if src_resolved == current_before:
+                    moved_current_folder = True
+            except Exception as exc:
+                errors.append(f'{_html.escape(name)}: {_html.escape(str(exc))}')
+
+        if moved_current_folder:
+            cp = state.get('current_path', '')
+            state['current_path'] = cp.rsplit('/', 1)[0] if '/' in cp else ''
+
+        if moved and not errors:
+            calc_move_archive_status.value = (
+                f'<span style="color:#2e7d32;">Moved {len(moved)} item(s) to {dest_label}.</span>'
+            )
+        elif moved and errors:
+            calc_move_archive_status.value = (
+                f'<span style="color:#e65100;">Moved {len(moved)} to {dest_label}, '
+                f'failed: {"; ".join(errors)}</span>'
+            )
+        else:
+            calc_move_archive_status.value = (
+                f'<span style="color:#d32f2f;">{"; ".join(errors)}</span>'
+            )
+
+        calc_file_list.value = ()
+        calc_file_list.value = ()
+        _calc_refresh_related_explorers()
+
+    def calc_on_move_archive_no(button):
+        calc_move_archive_confirm.layout.display = 'none'
+
+    def _calc_start_ssh_transfer_with_config(sources, config_payload):
+        if state.get('ssh_transfer_running', False):
+            return
+        resolved_sources = [_calc_resolve_within_root(src) for src in sources]
+        host, user, remote_path, port = normalize_ssh_transfer_settings(
+            config_payload.get('host', ''),
+            config_payload.get('user', ''),
+            config_payload.get('remote_path', ''),
+            config_payload.get('port', 22),
+        )
+        job = create_transfer_job(
+            resolved_sources,
+            host,
+            user,
+            remote_path,
+            port,
+            delete_local_on_success=True,
+        )
+        source_count = len(resolved_sources)
+        target_label = _html.escape(f'{user}@{host}:{remote_path}')
+        _calc_set_ssh_transfer_running(True)
+        try:
+            pid = launch_transfer_job(job, python_executable=sys.executable)
+            calc_transfer_jobs_panel.layout.display = 'flex'
+            _calc_update_transfer_jobs_visibility()
+            _calc_render_transfer_jobs()
+            _calc_set_ops_status(
+                f'Started resumable transfer job <code>{_html.escape(job["job_id"])}</code> '
+                f'for {source_count} item(s) to <code>{target_label}</code>. '
+                'Local sources will be removed only after rsync finishes successfully. '
+                f'PID: <code>{int(pid)}</code>. Log: <code>{_html.escape(job["log_path"])}</code>.',
+                color='#2e7d32',
+            )
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'SSH transfer failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+        finally:
+            _calc_set_ssh_transfer_running(False)
+
+    def calc_on_ssh_transfer_click(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_collect_selected_sources_only()
+        if not sources:
+            _calc_update_explorer_action_state()
+            _calc_set_ops_status('Select item(s) first.', color='#d32f2f')
+            return
+
+        config_payload = _calc_load_transfer_config()
+        if config_payload is False:
+            return
+        if not config_payload:
+            ctx.select_tab('Settings')
+            _calc_set_ops_status(
+                (
+                    f'No transfer target saved yet. Opened <b>Settings</b>. '
+                    f'Save host, user, port and target once in '
+                    f'<code>{_html.escape(str(_calc_settings_path()))}</code>, '
+                    'then the SSH Transfer button can start directly.'
+                ),
+                color='#ef6c00',
+            )
+            return
+        _calc_start_ssh_transfer_with_config(sources, config_payload)
+
+    def calc_on_transfer_jobs_toggle(button=None):
+        if calc_transfer_jobs_panel.layout.display == 'none':
+            _calc_hide_rename_prompt()
+            _calc_render_transfer_jobs()
+            calc_transfer_jobs_panel.layout.display = 'flex'
+        else:
+            calc_transfer_jobs_panel.layout.display = 'none'
+        _calc_update_transfer_jobs_visibility()
+
+    def calc_on_transfer_jobs_refresh(button=None):
+        _calc_render_transfer_jobs()
+
+    def _calc_parse_move_target_dir(raw_target):
+        target = str(raw_target or '').strip()
+        if not target:
+            raise ValueError('Provide destination folder path.')
+        if target.startswith('/'):
+            rel = target.lstrip('/')
+            target_path = (_calc_dir() / rel) if rel else _calc_dir()
+        else:
+            target_path = _calc_current_dir() / target
+        target_path = _calc_resolve_within_root(target_path)
+        if not target_path.exists() or not target_path.is_dir():
+            raise ValueError(f'Destination folder not found: {target}')
+        return target_path
+
+    def calc_on_new_folder(button=None):
+        try:
+            raw_name = str(calc_new_folder_input.value or '').strip()
+            folder_name = (
+                _calc_clean_item_name(raw_name)
+                if raw_name
+                else _calc_next_available_folder_name('New Folder')
+            )
+            target = _calc_resolve_within_root(_calc_current_dir() / folder_name)
+            if target.exists():
+                raise ValueError(f'Folder already exists: {folder_name}')
+            target.mkdir(parents=False, exist_ok=False)
+            calc_new_folder_input.value = ''
+            _calc_set_ops_status(
+                f'Folder created: <code>{_html.escape(folder_name)}</code>',
+                color='#2e7d32',
+            )
+            calc_file_list.value = ()
+            _calc_refresh_related_explorers()
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Create folder failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_rename(button=None):
+        try:
+            src = _calc_collect_rename_source()
+            src_resolved = _calc_resolve_within_root(src)
+            current_before = _calc_current_dir().resolve()
+            root = _calc_dir().resolve()
+            new_name = _calc_clean_item_name(calc_rename_input.value)
+            if src_resolved.name == new_name:
+                raise ValueError('New name is identical to current name.')
+            dst = _calc_resolve_within_root(src_resolved.parent / new_name)
+            if dst.exists():
+                raise ValueError(f'Target already exists: {new_name}')
+            src_resolved.rename(dst)
+            if state['current_path'] and current_before == src_resolved:
+                state['current_path'] = dst.relative_to(root).as_posix()
+            calc_rename_input.value = ''
+            _calc_set_ops_status(
+                f'Renamed to <code>{_html.escape(new_name)}</code>',
+                color='#2e7d32',
+            )
+            calc_file_list.value = ()
+            calc_file_list.value = ()
+            _calc_refresh_related_explorers()
+            return True
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Rename failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+            return False
+
+    def calc_on_move_items(button=None):
+        sources = _calc_collect_move_sources()
+        if not sources:
+            _calc_set_ops_status(
+                'No source selected. Use Select mode or navigate into a folder.',
+                color='#d32f2f',
+            )
+            return
+        try:
+            target_dir = _calc_parse_move_target_dir(calc_move_target_input.value)
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Move failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+            return
+
+        current_before = _calc_current_dir().resolve()
+        root = _calc_dir().resolve()
+        moved, errors = [], []
+        moved_current_to = None
+        for src in sources:
+            try:
+                src_resolved = _calc_resolve_within_root(src)
+                if src_resolved == target_dir or _calc_is_relative_to(target_dir, src_resolved):
+                    raise ValueError('Cannot move a folder into itself.')
+                dst = _calc_resolve_within_root(target_dir / src_resolved.name)
+                if dst.exists():
+                    raise ValueError(f'Target already exists: {src_resolved.name}')
+                shutil.move(str(src_resolved), str(dst))
+                moved.append(src_resolved.name)
+                if state['current_path'] and current_before == src_resolved:
+                    moved_current_to = dst
+            except Exception as exc:
+                errors.append(
+                    f'{_html.escape(getattr(src, "name", str(src)))}: {_html.escape(str(exc))}'
+                )
+
+        if moved_current_to is not None:
+            try:
+                state['current_path'] = moved_current_to.resolve().relative_to(root).as_posix()
+            except Exception:
+                state['current_path'] = ''
+
+        try:
+            rel_target = target_dir.resolve().relative_to(root).as_posix()
+            target_label = '/' if not rel_target else f'/{rel_target}'
+        except Exception:
+            target_label = str(target_dir)
+
+        if moved and not errors:
+            _calc_set_ops_status(
+                f'Moved {len(moved)} item(s) to <code>{_html.escape(target_label)}</code>.',
+                color='#2e7d32',
+            )
+        elif moved and errors:
+            _calc_set_ops_status(
+                (
+                    f'Moved {len(moved)} item(s), failed: '
+                    f'{"; ".join(errors)}'
+                ),
+                color='#e65100',
+            )
+        else:
+            _calc_set_ops_status('; '.join(errors), color='#d32f2f')
+        calc_move_target_input.value = ''
+        calc_file_list.value = ()
+        calc_file_list.value = ()
+        _calc_refresh_related_explorers()
+
+    def calc_on_explorer_new_folder(button=None):
+        _calc_hide_rename_prompt()
+        calc_new_folder_prompt_input.value = ''
+        calc_new_folder_prompt_row.layout.display = 'flex'
+        _calc_set_ops_status('Enter folder name and confirm with Create.', color='#555')
+
+    def calc_on_new_folder_prompt_ok(button=None):
+        raw_name = str(calc_new_folder_prompt_input.value or '').strip()
+        calc_new_folder_prompt_row.layout.display = 'none'
+        if not raw_name:
+            _calc_set_ops_status('Folder name cannot be empty.', color='#d32f2f')
+            return
+        calc_new_folder_input.value = raw_name
+        calc_on_new_folder()
+
+    def calc_on_new_folder_prompt_cancel(button=None):
+        _calc_hide_rename_prompt()
+        _calc_set_ops_status('New folder canceled.', color='#555')
+
+    def calc_on_explorer_start_rename(button=None):
+        try:
+            _calc_hide_rename_prompt()
+            src = _calc_collect_rename_source()
+            src_resolved = _calc_resolve_within_root(src)
+            state['rename_source_path'] = str(src_resolved)
+            calc_rename_prompt_input.value = src_resolved.name
+            calc_rename_prompt_row.layout.display = 'flex'
+            _calc_set_ops_status('Enter new name and confirm with OK.', color='#555')
+        except Exception as exc:
+            _calc_hide_rename_prompt()
+            _calc_set_ops_status(
+                f'Rename failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_explorer_start_duplicate(button=None):
+        try:
+            _calc_hide_rename_prompt()
+            src_resolved = _calc_collect_duplicate_source()
+            state['duplicate_source_path'] = str(src_resolved)
+            calc_duplicate_prompt_input.value = src_resolved.name
+            calc_duplicate_prompt_row.layout.display = 'flex'
+            _calc_set_ops_status('Adjust folder name and confirm with Yes.', color='#555')
+        except Exception as exc:
+            _calc_hide_rename_prompt()
+            _calc_set_ops_status(
+                f'Duplicate failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_explorer_rename_ok(button=None):
+        src_raw = str(state.get('rename_source_path') or '').strip()
+        if not src_raw:
+            _calc_set_ops_status('No item prepared for rename.', color='#d32f2f')
+            return
+        try:
+            src_path = _calc_resolve_within_root(Path(src_raw))
+            current_dir = _calc_current_dir().resolve()
+            source_parent = src_path.parent.resolve()
+            source_is_current_dir = src_path.resolve() == current_dir
+            if source_parent != current_dir and not source_is_current_dir:
+                raise ValueError('Open the source folder before confirming rename.')
+            calc_action_source_input.value = src_path.name
+            calc_rename_input.value = calc_rename_prompt_input.value
+            success = calc_on_rename()
+            if success:
+                _calc_hide_rename_prompt()
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Rename failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_explorer_duplicate_yes(button=None):
+        src_raw = str(state.get('duplicate_source_path') or '').strip()
+        if not src_raw:
+            _calc_set_ops_status('No folder prepared for duplicate.', color='#d32f2f')
+            return
+        try:
+            src_path = _calc_resolve_within_root(Path(src_raw))
+            if not src_path.is_dir():
+                raise ValueError('Duplicate works only for folders.')
+            current_dir = _calc_current_dir().resolve()
+            source_parent = src_path.parent.resolve()
+            source_is_current_dir = src_path.resolve() == current_dir
+            if source_parent != current_dir and not source_is_current_dir:
+                raise ValueError('Open the source folder before confirming duplicate.')
+            new_name = _calc_clean_item_name(calc_duplicate_prompt_input.value)
+            dst = _calc_resolve_within_root(src_path.parent / new_name)
+            if dst.exists():
+                raise ValueError(f'Target already exists: {new_name}')
+            shutil.copytree(str(src_path), str(dst))
+            calc_file_list.value = ()
+            calc_file_list.value = ()
+            _calc_hide_rename_prompt()
+            if source_is_current_dir:
+                message = (
+                    f'Duplicated to <code>{_html.escape(new_name)}</code>. '
+                    'Go up one level to see it.'
+                )
+            else:
+                message = f'Duplicated to <code>{_html.escape(new_name)}</code>.'
+            _calc_set_ops_status(message, color='#2e7d32')
+            _calc_refresh_related_explorers()
+        except Exception as exc:
+            _calc_set_ops_status(
+                f'Duplicate failed: {_html.escape(str(exc))}',
+                color='#d32f2f',
+            )
+
+    def calc_on_explorer_duplicate_cancel(button=None):
+        _calc_hide_rename_prompt()
+        _calc_set_ops_status('Duplicate canceled.', color='#555')
+
+    def calc_on_explorer_rename_cancel(button=None):
+        _calc_hide_rename_prompt()
+        _calc_set_ops_status('Rename canceled.', color='#555')
+
+    def _calc_clipboard_set(sources, mode):
+        """Put *sources* on the shared clipboard with the given *mode* ('cut'/'copy')."""
+        resolved_sources = []
+        errors = []
+        for src in sources:
+            try:
+                resolved_sources.append(src.resolve())
+            except Exception as exc:
+                errors.append(_html.escape(str(exc)))
+        if not resolved_sources:
+            _calc_set_ops_status(
+                f'{mode.title()} failed: {"; ".join(errors) if errors else "No valid source selected."}',
+                color='#d32f2f',
+            )
+            return
+        normalized = [str(p) for p in resolved_sources]
+        store = _calc_clipboard_store()
+        store['paths'] = normalized
+        store['mode'] = mode
+        ctx.clipboard_paths = normalized
+        ctx.clipboard_mode = mode
+        _calc_update_explorer_action_state()
+        verb = 'Cut' if mode == 'cut' else 'Copied'
+        _calc_set_ops_status(
+            f'{verb} {len(resolved_sources)} item(s). Open target folder and press Ctrl+V.',
+            color='#1976d2',
+        )
+
+    def calc_on_explorer_cut(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_collect_selected_sources_only()
+        if not sources:
+            _calc_set_ops_status('Select item(s) first.', color='#d32f2f')
+            return
+        _calc_clipboard_set(sources, 'cut')
+
+    def calc_on_explorer_copy(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_collect_selected_sources_only()
+        if not sources:
+            _calc_set_ops_status('Select item(s) first.', color='#d32f2f')
+            return
+        _calc_clipboard_set(sources, 'copy')
+
+    def calc_on_explorer_paste(button=None):
+        _calc_hide_rename_prompt()
+        sources = _calc_clipboard_paths()
+        if not sources:
+            _calc_update_explorer_action_state()
+            _calc_set_ops_status('Clipboard is empty. Use Ctrl+X or Ctrl+C first.', color='#d32f2f')
+            return
+        mode = _calc_clipboard_mode() or 'cut'
+        target_dir = _calc_current_dir().resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        root = _calc_dir().resolve()
+        done, errors = [], []
+        remaining = []
+        moved_current_to = None
+        current_before = _calc_current_dir().resolve()
+        for src in sources:
+            try:
+                src_resolved = src.resolve()
+                if src_resolved == target_dir or _calc_is_relative_to(target_dir, src_resolved):
+                    raise ValueError('Cannot paste a folder into itself.')
+                dst = target_dir / src_resolved.name
+                if dst.exists():
+                    # Auto-number: name_2, name_3, ...
+                    stem = dst.stem
+                    suffix = dst.suffix
+                    counter = 2
+                    while dst.exists():
+                        dst = target_dir / f'{stem}_{counter}{suffix}'
+                        counter += 1
+                if mode == 'copy':
+                    if src_resolved.is_dir():
+                        shutil.copytree(str(src_resolved), str(dst))
+                    else:
+                        shutil.copy2(str(src_resolved), str(dst))
+                else:
+                    shutil.move(str(src_resolved), str(dst))
+                    if state['current_path'] and current_before == src_resolved:
+                        moved_current_to = dst
+                done.append(src_resolved.name)
+            except Exception as exc:
+                remaining.append(src)
+                errors.append(
+                    f'{_html.escape(getattr(src, "name", str(src)))}: {_html.escape(str(exc))}'
+                )
+        if mode == 'cut':
+            normalized = [str(p) for p in remaining]
+            store = _calc_clipboard_store()
+            store['paths'] = normalized
+            ctx.clipboard_paths = normalized
+        # copy keeps clipboard intact
+        _calc_update_explorer_action_state()
+
+        if moved_current_to is not None:
+            try:
+                state['current_path'] = moved_current_to.resolve().relative_to(root).as_posix()
+            except Exception:
+                state['current_path'] = ''
+
+        try:
+            rel_target = target_dir.resolve().relative_to(root).as_posix()
+            target_label = '/' if not rel_target else f'/{rel_target}'
+        except Exception:
+            target_label = str(target_dir)
+
+        verb = 'Moved' if mode == 'cut' else 'Copied'
+        if done and not errors:
+            _calc_set_ops_status(
+                f'{verb} {len(done)} item(s) to <code>{_html.escape(target_label)}</code>.',
+                color='#2e7d32',
+            )
+        elif done and errors:
+            _calc_set_ops_status(
+                f'{verb} {len(done)} item(s), failed: {"; ".join(errors)}',
+                color='#e65100',
+            )
+        else:
+            _calc_set_ops_status('; '.join(errors), color='#d32f2f')
+        calc_file_list.value = ()
+        calc_file_list.value = ()
+        _calc_refresh_related_explorers()
+
+    # -- table extraction ---------------------------------------------------
+    _CALC_TABLE_PRESET_SUFFIX = '.delfin-table.json'
+
+    def _default_table_col_defs():
+        return [{'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'}]
+
+    def _normalize_table_preset_col_defs(columns):
+        normalized = []
+        for col in columns or []:
+            if not isinstance(col, dict):
+                continue
+            col_type = str(col.get('type', 'text') or 'text').strip().lower()
+            if col_type not in ('text', 'regex', 'json'):
+                col_type = 'text'
+            occ = str(col.get('occ', 'last') or 'last').strip().lower()
+            if occ not in ('last', 'first', 'all'):
+                occ = 'last'
+            normalized.append({
+                'name': str(col.get('name', '') or '').strip(),
+                'type': col_type,
+                'pattern': str(col.get('pattern', '') or '').strip(),
+                'occ': occ,
+            })
+        return normalized or _default_table_col_defs()
+
+    def _set_calc_table_preset_status(message='', color='#555'):
+        if not message:
+            calc_table_preset_status.value = ''
+            return
+        calc_table_preset_status.value = (
+            f'<span style="color:{color};">{_html.escape(str(message))}</span>'
+        )
+
+    def _calc_is_table_preset_path(path):
+        try:
+            name = Path(path).name
+        except Exception:
+            name = str(path or '')
+        return str(name or '').lower().endswith(_CALC_TABLE_PRESET_SUFFIX)
+
+    def _normalize_calc_table_preset_name(raw_name=''):
+        name = str(raw_name or '').strip()
+        if not name:
+            name = f'extract_table{_CALC_TABLE_PRESET_SUFFIX}'
+        if '/' in name or '\\' in name:
+            raise ValueError('Use only a file name, not a path.')
+        if not name.lower().endswith(_CALC_TABLE_PRESET_SUFFIX):
+            name += _CALC_TABLE_PRESET_SUFFIX
+        return name
+
+    def _table_preset_payload_from_ui():
+        _collect_table_col_values()
+        scope = str(calc_table_scope_dd.value or 'all').strip().lower()
+        if scope not in ('all', 'selected'):
+            scope = 'all'
+        return {
+            'kind': 'delfin_extract_table_preset',
+            'version': 1,
+            'file': str(calc_table_file_input.value or '').strip(),
+            'scope': scope,
+            'recursive': bool(calc_table_recursive_cb.value),
+            'decimal_comma': bool(calc_table_decimal_comma_btn.value),
+            'columns': _normalize_table_preset_col_defs(state.get('table_col_defs')),
+        }
+
+    def _apply_table_preset_payload(preset_payload, preset_name=''):
+        payload = preset_payload if isinstance(preset_payload, dict) else {}
+        scope = str(payload.get('scope', 'all') or 'all').strip().lower()
+        if scope not in ('all', 'selected'):
+            scope = 'all'
+        calc_table_file_input.value = str(payload.get('file', '') or '').strip()
+        calc_table_scope_dd.value = scope
+        calc_table_recursive_cb.value = bool(payload.get('recursive', False))
+        calc_table_decimal_comma_btn.value = bool(payload.get('decimal_comma', False))
+        state['table_col_defs'] = _normalize_table_preset_col_defs(payload.get('columns'))
+        _rebuild_table_col_rows()
+
+        if preset_name:
+            calc_table_preset_name.value = str(preset_name or '').strip()
+
+    def _parse_calc_table_preset_text(raw_text, source_label=''):
+        try:
+            payload = json.loads(raw_text)
+        except Exception as exc:
+            raise ValueError(f'Invalid preset JSON: {exc}') from exc
+        if not isinstance(payload, dict):
+            raise ValueError('Preset file must contain a JSON object.')
+        kind = str(payload.get('kind', '') or '').strip()
+        if kind and kind != 'delfin_extract_table_preset':
+            raise ValueError('Not a DELFIN extract-table preset file.')
+        payload = dict(payload)
+        payload['columns'] = _normalize_table_preset_col_defs(payload.get('columns'))
+        payload['scope'] = str(payload.get('scope', 'all') or 'all').strip().lower()
+        if payload['scope'] not in ('all', 'selected'):
+            payload['scope'] = 'all'
+        payload['recursive'] = bool(payload.get('recursive', False))
+        payload['decimal_comma'] = bool(payload.get('decimal_comma', False))
+        payload['file'] = str(payload.get('file', '') or '').strip()
+        if not payload['file']:
+            raise ValueError('Preset file is missing the table target file.')
+        return payload
+
+    def _open_calc_table_preset_file(full_path):
+        raw_text = Path(full_path).read_text(encoding='utf-8')
+        payload = _parse_calc_table_preset_text(raw_text, source_label=Path(full_path).name)
+        calc_table_panel.layout.display = ''
+        state['table_panel_active'] = True
+        _apply_table_preset_payload(payload, preset_name=Path(full_path).name)
+        _set_calc_table_preset_status(
+            f'Loaded preset file {Path(full_path).name}. Click Run to extract the table.',
+            color='#2e7d32',
+        )
+        calc_update_view()
+
+    def _collect_table_col_values():
+        for i, rw in enumerate(state['table_col_widgets']):
+            if i < len(state['table_col_defs']):
+                state['table_col_defs'][i]['name'] = rw['name'].value
+                state['table_col_defs'][i]['type'] = rw['type_dd'].value
+                state['table_col_defs'][i]['occ'] = rw['occ_dd'].value
+                state['table_col_defs'][i]['pattern'] = rw['pattern'].value
+
+    def _rebuild_table_col_rows():
+        rows = []
+        state['table_col_widgets'] = []
+        for i, col in enumerate(state['table_col_defs']):
+            name_w = widgets.Text(
+                value=col.get('name', ''),
+                placeholder='Column name',
+                layout=widgets.Layout(width='100px', height='26px'),
+            )
+            type_dd = widgets.Dropdown(
+                options=[('Text', 'text'), ('Regex', 'regex'), ('JSON path', 'json')],
+                value=col.get('type', 'text'),
+                layout=widgets.Layout(width='92px', height='26px'),
+            )
+            occ_dd = widgets.Dropdown(
+                options=[('last', 'last'), ('first', 'first'), ('all', 'all')],
+                value=col.get('occ', 'last'),
+                layout=widgets.Layout(width='66px', height='26px'),
+            )
+            _pat_placeholders = {'regex': 'regex pattern', 'json': 'key.path', 'text': 'literal text'}
+            pat_w = widgets.Text(
+                value=col.get('pattern', ''),
+                placeholder=_pat_placeholders.get(col.get('type', 'text'), 'literal text'),
+                layout=widgets.Layout(flex='1 1 0', min_width='0', width='1px', height='26px'),
+            )
+            pat_w.add_class('calc-table-pattern-input')
+            preset_dd = widgets.Dropdown(
+                options=_tp_labels,
+                value=_tp_labels[0],
+                layout=widgets.Layout(width='180px', height='26px'),
+            )
+            rm_btn = widgets.Button(
+                description='✕',
+                layout=widgets.Layout(width='32px', height='26px'),
+            )
+
+            def _on_type_change(change, pw=pat_w):
+                _ph = {'regex': 'regex pattern', 'json': 'key.path', 'text': 'literal text'}
+                pw.placeholder = _ph.get(change['new'], 'literal text')
+
+            def _on_preset(change, idx=i):
+                label = change['new']
+                if label == _tp_labels[0]:
+                    return
+                pi = _tp_labels.index(label)
+                _collect_table_col_values()
+                state['table_col_defs'][idx].update({
+                    'name': _tp_names[pi],
+                    'type': _tp_types[pi],
+                    'pattern': _tp_pats[pi],
+                    'occ': _tp_occs[pi],
+                })
+                if _tp_types[pi] == 'json' and not calc_table_file_input.value.strip():
+                    calc_table_file_input.value = 'DELFIN_Data.json'
+                _rebuild_table_col_rows()
+
+            def _on_remove(b, idx=i):
+                _collect_table_col_values()
+                if len(state['table_col_defs']) > 1:
+                    state['table_col_defs'].pop(idx)
+                _rebuild_table_col_rows()
+
+            type_dd.observe(_on_type_change, names='value')
+            preset_dd.observe(_on_preset, names='value')
+            rm_btn.on_click(_on_remove)
+
+            row_box = widgets.HBox(
+                [name_w, type_dd, occ_dd, pat_w, preset_dd, rm_btn],
+                layout=widgets.Layout(gap='4px', align_items='center', width='100%'),
+            )
+            row_box.add_class('calc-table-col-row')
+            rows.append(row_box)
+            state['table_col_widgets'].append({
+                'name': name_w, 'type_dd': type_dd, 'occ_dd': occ_dd,
+                'pattern': pat_w, 'preset_dd': preset_dd,
+            })
+        calc_table_cols_box.children = tuple(rows)
+
+    def _json_collect_key_values(node, key):
+        matches = []
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                if key in current:
+                    matches.append(current[key])
+                values = list(current.values())
+                for value in reversed(values):
+                    stack.append(value)
+            elif isinstance(current, list):
+                for item in reversed(current):
+                    stack.append(item)
+        return matches
+
+    def _normalize_json_path(path):
+        """Normalize common JSONPath-like prefixes to the local dot syntax."""
+        normalized = str(path or '').strip()
+        if not normalized:
+            return ''
+        if normalized.startswith('$'):
+            normalized = normalized[1:]
+        return normalized.lstrip('.')
+
+    def _json_split_path(path):
+        """Split JSON path by dots while preserving bracket expressions."""
+        parts = []
+        buf = []
+        bracket_depth = 0
+        quote = None
+        escaped = False
+        for ch in path:
+            if quote is not None:
+                buf.append(ch)
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\':
+                    escaped = True
+                elif ch == quote:
+                    quote = None
+                continue
+            if ch in ("'", '"') and bracket_depth > 0:
+                quote = ch
+                buf.append(ch)
+                continue
+            if ch == '[':
+                bracket_depth += 1
+                buf.append(ch)
+                continue
+            if ch == ']':
+                if bracket_depth > 0:
+                    bracket_depth -= 1
+                buf.append(ch)
+                continue
+            if ch == '.' and bracket_depth == 0:
+                token = ''.join(buf).strip()
+                if token:
+                    parts.append(token)
+                buf = []
+                continue
+            buf.append(ch)
+        tail = ''.join(buf).strip()
+        if tail:
+            parts.append(tail)
+        return parts
+
+    def _json_parse_value(raw):
+        token = str(raw).strip()
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in ('"', "'"):
+            return token[1:-1]
+        low = token.lower()
+        if low == 'true':
+            return True
+        if low == 'false':
+            return False
+        if low == 'null':
+            return None
+        try:
+            if any(ch in token for ch in ('.', 'e', 'E')):
+                return float(token)
+            return int(token)
+        except Exception:
+            return token
+
+    def _json_compare_values(lhs, op, rhs):
+        if op in ('==', '!='):
+            equal = (lhs == rhs)
+            if not equal:
+                try:
+                    equal = (float(lhs) == float(rhs))
+                except Exception:
+                    equal = (str(lhs) == str(rhs))
+            return equal if op == '==' else (not equal)
+        try:
+            lval = float(lhs)
+            rval = float(rhs)
+        except Exception:
+            lval = str(lhs)
+            rval = str(rhs)
+        if op == '>':
+            return lval > rval
+        if op == '>=':
+            return lval >= rval
+        if op == '<':
+            return lval < rval
+        if op == '<=':
+            return lval <= rval
+        return False
+
+    def _json_item_matches_filter(item, expression):
+        if not isinstance(item, dict):
+            return False
+        clauses = [
+            c.strip()
+            for c in re.split(r'\s*(?:&&|\band\b)\s*', expression)
+            if c.strip()
+        ]
+        if not clauses:
+            return False
+        for clause in clauses:
+            m = re.match(r'^@\.(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)$', clause)
+            if not m:
+                return False
+            key, op, raw_rhs = m.groups()
+            rhs = _json_parse_value(raw_rhs)
+            lhs = item.get(key)
+            if not _json_compare_values(lhs, op, rhs):
+                return False
+        return True
+
+    def _json_parse_part(part):
+        """
+        Parse one path part and return (key, selector_kind, selector_value).
+        Supported selectors: [*], [index], [?(...)].
+        """
+        text = part.strip()
+        if not text:
+            return '', None, None
+        if '[' not in text or not text.endswith(']'):
+            return text, None, None
+        bracket_pos = text.find('[')
+        key = text[:bracket_pos].strip()
+        selector = text[bracket_pos + 1:-1].strip()
+        if selector == '*':
+            return key, 'wildcard', None
+        if re.fullmatch(r'-?\d+', selector):
+            return key, 'index', int(selector)
+        if selector.startswith('?(') and selector.endswith(')'):
+            return key, 'filter', selector[2:-1].strip()
+        return key, None, None
+
+    def _json_apply_selector(values, selector_kind, selector_value):
+        if selector_kind is None:
+            return values
+        selected = []
+        for value in values:
+            if selector_kind == 'wildcard':
+                if isinstance(value, list):
+                    selected.extend(value)
+                elif isinstance(value, dict):
+                    selected.extend(value.values())
+            elif selector_kind == 'index':
+                if isinstance(value, list):
+                    try:
+                        selected.append(value[selector_value])
+                    except Exception:
+                        pass
+            elif selector_kind == 'filter':
+                if isinstance(value, list):
+                    for item in value:
+                        if _json_item_matches_filter(item, selector_value):
+                            selected.append(item)
+                elif _json_item_matches_filter(value, selector_value):
+                    selected.append(value)
+        return selected
+
+    def _json_step(node, part):
+        key, selector_kind, selector_value = _json_parse_part(part)
+        lower_key = key.lower()
+        if isinstance(node, dict):
+            if key == '*':
+                matches = list(node.values())
+            elif key in node:
+                matches = [node[key]]
+            else:
+                # Convenience fallback: search this key recursively.
+                matches = _json_collect_key_values(node, key)
+            return _json_apply_selector(matches, selector_kind, selector_value)
+        if isinstance(node, list):
+            if key in ('*', '[]'):
+                matches = list(node)
+            elif lower_key == 'last':
+                matches = [node[-1]] if node else []
+            elif lower_key == 'first':
+                matches = [node[0]] if node else []
+            elif key == '':
+                matches = [node]
+            else:
+                try:
+                    matches = [node[int(key)]]
+                except Exception:
+                    matches = []
+                    for item in node:
+                        if isinstance(item, dict) and key in item:
+                            matches.append(item[key])
+                    if not matches:
+                        for item in node:
+                            if isinstance(item, (dict, list)):
+                                matches.extend(_json_step(item, key))
+            return _json_apply_selector(matches, selector_kind, selector_value)
+        return []
+
+    def _json_extract_path_values(json_data, path):
+        path = _normalize_json_path(path)
+        parts = _json_split_path(path)
+        if not parts:
+            return []
+        nodes = [json_data]
+        for part in parts:
+            next_nodes = []
+            for node in nodes:
+                next_nodes.extend(_json_step(node, part))
+            if not next_nodes:
+                return []
+            nodes = next_nodes
+        flat_nodes = []
+        for node in nodes:
+            if isinstance(node, list):
+                flat_nodes.extend(node)
+            else:
+                flat_nodes.append(node)
+        return flat_nodes
+
+    def _extract_values(col_def, text, json_data):
+        typ = col_def.get('type', 'regex')
+        pat = col_def.get('pattern', '').strip()
+        occ = col_def.get('occ', 'last')
+        if not pat:
+            return ['—']
+        try:
+            if typ in ('regex', 'text'):
+                rx = re.compile(re.escape(pat) if typ == 'text' else pat)
+                if rx.groups > 0:
+                    # explicit capture group — no line tracking possible
+                    raw_matches = rx.finditer(text)
+                    values = []  # list of (value_str, line_num_or_None)
+                    for m in raw_matches:
+                        g = m.group(1)
+                        val = str(g).strip() if g is not None else '—'
+                        line_num = text[:m.start()].count('\n') + 1
+                        values.append((val, line_num))
+                    if not values:
+                        return ['—']
+                else:
+                    values = []  # list of (value_str, line_num)
+                    for m in rx.finditer(text):
+                        line_num = text[:m.start()].count('\n') + 1
+                        line_end = text.find('\n', m.end())
+                        if line_end == -1:
+                            line_end = len(text)
+                        tail = text[m.end():line_end]
+                        nums = [nm.group(0) for nm in _table_number_re.finditer(tail)]
+                        if nums:
+                            values.append((_normalize_table_number(nums[0]), line_num))
+                            continue
+                        # wrapped lines: inspect a short window after the match
+                        near = text[m.end():min(len(text), m.end() + 240)]
+                        near_nums = [nm.group(0) for nm in _table_number_re.finditer(near)]
+                        if near_nums:
+                            values.append((_normalize_table_number(near_nums[0]), line_num))
+                            continue
+                        # fallback: keep old behavior if no number follows
+                        values.append((m.group(0).strip(), line_num))
+                    if not values:
+                        return ['—']
+                if occ == 'all':
+                    return values  # list of (value_str, line_num)
+                if occ == 'first':
+                    return [values[0][0]]
+                return [values[-1][0]]
+            elif typ == 'json':
+                if json_data is None:
+                    return ['—']
+                values = _json_extract_path_values(json_data, pat)
+                if not values:
+                    return ['—']
+                rendered = [str(v) for v in values]
+                if occ == 'all':
+                    return rendered
+                if occ == 'first':
+                    return [rendered[0]]
+                return [rendered[-1]]
+        except Exception as exc:
+            return [f'err:{exc}']
+        return ['—']
+
+    def _format_table_output_value(raw_value):
+        value = str(raw_value)
+        if not calc_table_decimal_comma_btn.value:
+            return value
+        if not _table_number_full_re.fullmatch(value.strip()):
+            return value
+        return value.replace('.', ',')
+
+    def _render_extract_table_html(headers, rows):
+        th = ''.join(
+            f'<th style="padding:4px 10px;border:1px solid #ddd;'
+            f'background:#f0f4f8;white-space:nowrap;text-align:left">'
+            f'{_html.escape(str(h))}</th>'
+            for h in headers
+        )
+        trs = ''
+        for i, row in enumerate(rows):
+            bg = '#ffffff' if i % 2 == 0 else '#f7f9fc'
+            tds = ''.join(
+                f'<td style="padding:4px 10px;border:1px solid #ddd;'
+                f'white-space:nowrap">{_html.escape(str(v))}</td>'
+                for v in row
+            )
+            trs += f'<tr style="background:{bg}">{tds}</tr>'
+        return (
+            '<div style="overflow-x:auto">'
+            '<table style="border-collapse:collapse;font-size:12px;width:auto">'
+            f'<thead><tr>{th}</tr></thead>'
+            f'<tbody>{trs}</tbody>'
+            '</table></div>'
+        )
+
+    def calc_on_table_toggle(button):
+        if calc_table_panel.layout.display == 'none':
+            calc_table_panel.layout.display = ''
+            state['table_panel_active'] = True
+            if not str(calc_table_preset_name.value or '').strip():
+                calc_table_preset_name.value = f'extract_table{_CALC_TABLE_PRESET_SUFFIX}'
+            _rebuild_table_col_rows()
+        else:
+            calc_table_panel.layout.display = 'none'
+            state['table_panel_active'] = False
+        calc_update_view()
+
+    def calc_on_table_close(button):
+        calc_table_panel.layout.display = 'none'
+        state['table_panel_active'] = False
+        calc_update_view()
+
+    def calc_on_table_add_col(button):
+        _collect_table_col_values()
+        n = len(state['table_col_defs']) + 1
+        state['table_col_defs'].append(
+            {'name': f'Value {n}', 'type': 'regex', 'pattern': '', 'occ': 'last'}
+        )
+        _rebuild_table_col_rows()
+
+    def calc_on_table_preset_save(button=None):
+        try:
+            preset_name = _normalize_calc_table_preset_name(calc_table_preset_name.value)
+        except Exception as exc:
+            _set_calc_table_preset_status(str(exc), color='#d32f2f')
+            return
+        base_dir = (
+            _calc_dir() / state['current_path']
+            if state['current_path'] else _calc_dir()
+        )
+        preset_path = base_dir / preset_name
+        try:
+            preset_path.write_text(
+                json.dumps(_table_preset_payload_from_ui(), indent=2, ensure_ascii=True) + '\n',
+                encoding='utf-8',
+            )
+        except Exception as exc:
+            _set_calc_table_preset_status(f'Could not save preset file: {exc}', color='#d32f2f')
+            return
+        calc_table_preset_name.value = preset_name
+        calc_list_directory()
+        _set_calc_table_preset_status(
+            f'Saved preset file {preset_name} in {base_dir}.',
+            color='#2e7d32',
+        )
+
+    def calc_on_table_run(button):
+        _collect_table_col_values()
+        target_file = calc_table_file_input.value.strip()
+        if not target_file:
+            calc_table_status.value = '<span style="color:#d32f2f;">Please enter a filename.</span>'
+            return
+        base_dir = (
+            _calc_dir() / state['current_path']
+            if state['current_path'] else _calc_dir()
+        )
+        scope = calc_table_scope_dd.value
+        if scope == 'selected':
+            real = _calc_selected_labels()
+            if not real:
+                calc_table_status.value = (
+                    '<span style="color:#d32f2f;">No folders selected.</span>'
+                )
+                return
+            folders = []
+            for label in real:
+                p = base_dir / _calc_label_to_name(label)
+                if p.is_dir():
+                    folders.append(p)
+        else:
+            try:
+                folders = sorted(
+                    [e for e in base_dir.iterdir() if e.is_dir()],
+                    key=lambda x: x.name.lower(),
+                )
+            except Exception:
+                folders = []
+        if not folders:
+            calc_table_status.value = '<span style="color:#d32f2f;">No folders found.</span>'
+            return
+        cols = state['table_col_defs']
+        headers = ['Job']
+        for i, c in enumerate(cols):
+            headers.append(c.get('name', f'Col {i+1}'))
+            if c.get('occ') == 'all':
+                headers.append(c.get('name', f'Col {i+1}') + ' (Line)')
+        _n_header_cols = len(headers) - 1  # excluding Job
+        rows = []
+        missing = 0
+        for folder in folders:
+            direct = folder / target_file
+            if direct.is_file():
+                file_paths = [direct]
+            elif calc_table_recursive_cb.value:
+                try:
+                    file_paths = sorted(folder.rglob(target_file))
+                except Exception:
+                    file_paths = []
+            else:
+                file_paths = []
+            if not file_paths:
+                rows.append([folder.name] + ['—'] * _n_header_cols)
+                missing += 1
+                continue
+            for file_path in file_paths:
+                try:
+                    job_label = str(file_path.parent.relative_to(base_dir))
+                except ValueError:
+                    job_label = folder.name
+                try:
+                    content = file_path.read_text(errors='replace')
+                except Exception:
+                    rows.append([job_label] + ['err'] * _n_header_cols)
+                    continue
+                json_data = None
+                if file_path.suffix.lower() == '.json':
+                    try:
+                        json_data = json.loads(content)
+                    except Exception:
+                        pass
+                col_values = [_extract_values(c, content, json_data) for c in cols]
+                row_count = max((len(vs) for vs in col_values), default=1)
+                for row_idx in range(row_count):
+                    row = [job_label]
+                    for c, values in zip(cols, col_values):
+                        is_all = c.get('occ') == 'all'
+                        if not values or values == ['—']:
+                            row.append('—')
+                            if is_all:
+                                row.append('—')
+                        elif row_idx < len(values):
+                            v = values[row_idx]
+                            if isinstance(v, tuple):
+                                row.append(_format_table_output_value(v[0]))
+                                if is_all:
+                                    row.append(str(v[1]) if v[1] is not None else '—')
+                            else:
+                                row.append(_format_table_output_value(v))
+                                if is_all:
+                                    row.append('—')
+                        else:
+                            row.append('—')
+                            if is_all:
+                                row.append('—')
+                    rows.append(row)
+        calc_table_output.value = _render_extract_table_html(headers, rows)
+        import io, csv as _csv
+        buf = io.StringIO()
+        csv_rows = [['' if c == '—' else c for c in row] for row in rows]
+        _csv.writer(buf, delimiter=';').writerows([headers] + csv_rows)
+        state['table_csv_data'] = buf.getvalue()
+        calc_table_csv_btn.layout.display = 'inline-flex'
+        folder_count = len(folders)
+        row_count = len(rows)
+        msg = f'<span style="color:#2e7d32;">{folder_count} folder(s) processed'
+        if row_count != folder_count:
+            msg += f', {row_count} row(s) generated'
+        if missing:
+            msg += f', {missing} without {_html.escape(target_file)}'
+        calc_table_status.value = msg + '.</span>'
+
+    def calc_on_table_csv_download(button):
+        data = state.get('table_csv_data', '')
+        if not data:
+            return
+        import base64 as _b64
+        b64 = _b64.b64encode(data.encode('utf-8-sig')).decode()
+        _js = (
+            'var a=document.createElement("a");'
+            f'a.href="data:text/csv;charset=utf-8;base64,{b64}";'
+            'a.download="extract_table.csv";'
+            'document.body.appendChild(a);a.click();document.body.removeChild(a);'
+        )
+        from IPython.display import Javascript as _JS
+        with ctx.js_output:
+            display(_JS(_js))
+
+    def calc_on_dotfiles_change(change):
+        calc_dotfiles_btn.description = (
+            'Hide .files' if calc_dotfiles_btn.value else 'Show .files')
+        saved_filter = calc_folder_search.value
+        calc_list_directory()
+        if saved_filter:
+            calc_folder_search.value = saved_filter
+            calc_filter_file_list()
+
+    def calc_on_sort_change(change):
+        saved_filter = calc_folder_search.value
+        calc_list_directory()
+        if saved_filter:
+            calc_folder_search.value = saved_filter
+            calc_filter_file_list()
+
+    # -- Plain-text editing -------------------------------------------------
+
+    def _calc_text_reset_buttons():
+        calc_text_save_btn.description = 'Save'
+        calc_text_cancel_btn.description = 'Discard'
+
+    def _calc_text_sync_controls():
+        info = state['text_edit']
+        path_str = info.get('path') or ''
+        active = bool(info.get('active'))
+        can_edit = bool(info.get('editable'))
+        has_pending = path_str in state['text_pending']
+
+        calc_text_edit_btn.layout.display = '' if (can_edit and not active) else 'none'
+        calc_text_save_btn.layout.display = '' if active else 'none'
+        calc_text_cancel_btn.layout.display = '' if active else 'none'
+
+        if active:
+            dirty = calc_text_area.value != (info.get('original') or '')
+            calc_text_save_btn.disabled = not dirty
+            if not dirty:
+                _calc_text_reset_buttons()
+            calc_text_status.value = (
+                '<span style="color:#b26a00; font-weight:600;">● not saved</span>'
+                if dirty else '<span style="color:#666;">Editing</span>'
+            )
+            calc_text_status.layout.display = ''
+        elif has_pending:
+            calc_text_status.value = (
+                '<span style="color:#b26a00; font-weight:600;">'
+                '● unsaved changes</span>'
+            )
+            calc_text_status.layout.display = ''
+        else:
+            calc_text_status.value = ''
+            calc_text_status.layout.display = 'none'
+
+    def _calc_text_prepare(path, editable):
+        """Remember which file the read-only text view is showing."""
+        state['text_edit'] = {
+            'path': str(path),
+            'editable': bool(editable),
+            'active': False,
+        }
+        _calc_text_reset_buttons()
+        _calc_text_sync_controls()
+
+    def calc_on_text_edit(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_edit()
+            return
+        info = state['text_edit']
+        path_str = info.get('path')
+        if not path_str or not info.get('editable') or info.get('active'):
+            return
+        path = Path(path_str)
+        try:
+            original = path.read_text(encoding='utf-8', errors='replace')
+        except Exception as exc:
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">Error: {_html.escape(str(exc))}</span>'
+            )
+            calc_text_status.layout.display = ''
+            return
+        info['original'] = original
+        info['active'] = True
+        info['force'] = False
+        # A buffer left over from an earlier visit to this file wins over disk.
+        calc_text_area.value = state['text_pending'].get(path_str, original)
+        _calc_text_reset_buttons()
+        _calc_text_sync_controls()
+        calc_update_view()
+
+    def calc_on_text_area_change(change):
+        info = state['text_edit']
+        if not info.get('active'):
+            return
+        path_str = info.get('path')
+        if not path_str:
+            return
+        if change['new'] != (info.get('original') or ''):
+            state['text_pending'][path_str] = change['new']
+        else:
+            state['text_pending'].pop(path_str, None)
+        info['force'] = False
+        _calc_text_sync_controls()
+
+    def calc_on_text_save(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_save()
+            return
+        info = state['text_edit']
+        path_str = info.get('path')
+        if not info.get('active') or not path_str:
+            return
+        path = Path(path_str)
+        new_text = calc_text_area.value
+        try:
+            on_disk = path.read_text(encoding='utf-8', errors='replace')
+        except FileNotFoundError:
+            on_disk = None
+        except Exception as exc:
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">Could not read: {_html.escape(str(exc))}</span>'
+            )
+            return
+        # Somebody (or a running job) changed the file while it was open here.
+        # Never overwrite that silently -- make the second click deliberate.
+        if on_disk is not None and on_disk != (info.get('original') or '') and not info.get('force'):
+            info['force'] = True
+            calc_text_save_btn.description = 'Overwrite?'
+            calc_text_status.value = (
+                '<span style="color:#d32f2f; font-weight:600;">'
+                'The file changed on disk meanwhile - click again to overwrite.'
+                '</span>'
+            )
+            calc_text_status.layout.display = ''
+            return
+        try:
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path),
+                                         versioned=_OFFICE_DOC_FEEL)
+                      if path.exists() else None)
+            _sheet.write_text_atomic(path, new_text)
+        except Exception as exc:
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">Saving failed: {_html.escape(str(exc))}</span>'
+            )
+            calc_text_status.layout.display = ''
+            return
+        info['original'] = new_text
+        info['force'] = False
+        state['text_pending'].pop(path_str, None)
+        state['file_content'] = new_text
+        state['selected_file_size'] = len(new_text.encode('utf-8'))
+        _calc_text_reset_buttons()
+        _calc_text_sync_controls()
+        saved = 'saved'
+        if backup is not None:
+            saved += f' · backup: {backup.name}'
+        calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
+        calc_text_status.layout.display = ''
+
+    def calc_on_text_cancel(button=None):
+        if state.get('search_kind') == 'docx':
+            _calc_docx_cancel()
+            return
+        info = state['text_edit']
+        path_str = info.get('path') or ''
+        if not info.get('active'):
+            return
+        if path_str in state['text_pending'] and not info.get('confirm_cancel'):
+            info['confirm_cancel'] = True
+            calc_text_cancel_btn.description = 'Really discard?'
+            return
+        info['confirm_cancel'] = False
+        info['active'] = False
+        info['force'] = False
+        state['text_pending'].pop(path_str, None)
+        calc_text_area.value = ''
+        _calc_text_reset_buttons()
+        _calc_text_sync_controls()
+        calc_update_view()
+
+    # -- Spreadsheet grid ---------------------------------------------------
+
+    def _calc_sheet_size_str(size):
+        if size > 1024 * 1024:
+            return f'{size / (1024 * 1024):.2f} MB'
+        if size > 1024:
+            return f'{size / 1024:.2f} KB'
+        return f'{size} B'
+
+    def _calc_sheet_pending_ops(path_str, sheet_name):
+        return state['sheet_pending'].get((path_str, sheet_name), [])
+
+    def _calc_sheet_has_pending(path_str):
+        return any(key[0] == path_str and ops for key, ops in state['sheet_pending'].items())
+
+    # -- Word ---------------------------------------------------------------
+
+    def _calc_render_docx(path, document, name, size_str):
+        """Put a Word document on screen, read-only until Edit is pressed."""
+        state['docx_doc'] = document
+        state['docx_path'] = str(path)
+        state['docx_hits'] = []
+        state['search_kind'] = 'docx'
+        editable = _docx.is_editable(document) and bool(state['docx_edit'].get('active'))
+        calc_content_area.value = (
+            f'<style>{_docx.DOC_CSS}</style>'
+            "<div class='calc-content-box' style='height:100%;"
+            " overflow-y:auto; overflow-x:hidden; border:1px solid #ddd;"
+            " background:#e9e9e9; padding:14px 0; width:100%;"
+            " box-sizing:border-box;'>"
+            + _docx.render_html(document, editable=editable)
+            + '</div>'
+        )
+        # For the Copy button and for anything that wants the plain text.
+        state['file_content'] = document.text
+        state['file_is_preview'] = False
+        state['file_preview_note'] = ''
+        state['chunk_dom_initialized'] = False
+        state['selected_file_path'] = str(path)
+
+        detail = size_str
+        if document.tables:
+            detail += f', {document.tables} table{"" if document.tables == 1 else "s"}'
+        if document.images:
+            detail += f', {len(document.images)} image{"" if len(document.images) == 1 else "s"}'
+        note = ' · '.join(document.notes)
+        calc_file_info.value = (
+            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+            f' ({detail})'
+            + (f' <span style="color:#b26a00;">{_html.escape(note)}</span>'
+               if note else '')
+        )
+        calc_copy_btn.disabled = False
+        calc_copy_path_btn.disabled = False
+        _calc_docx_sync_controls()
+        calc_update_view()
+        if editable:
+            _run_js(_docx.edit_js(calc_scope_id))
+
+    def _calc_docx_sync_controls():
+        """Show the edit controls a Word document can actually use."""
+        info = state['docx_edit']
+        document = state.get('docx_doc')
+        can_edit = document is not None and _docx.is_editable(document)
+        active = bool(info.get('active'))
+        pending = bool(state.get('docx_pending'))
+        calc_text_edit_btn.layout.display = (
+            '' if (can_edit and not active) else 'none')
+        calc_text_save_btn.layout.display = '' if active else 'none'
+        calc_text_cancel_btn.layout.display = '' if active else 'none'
+        calc_text_save_btn.disabled = not pending
+        if active:
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                '<span style="color:#b26a00;">● not saved</span>'
+                if pending else
+                '<span style="color:#555;">Editing</span>')
+        elif not calc_text_status.value:
+            calc_text_status.layout.display = 'none'
+
+    def _calc_docx_edit(_button=None):
+        document = state.get('docx_doc')
+        if document is None or not _docx.is_editable(document):
+            return
+        state['docx_edit'] = {'active': True}
+        state['docx_pending'] = {}
+        path = Path(state['docx_path'])
+        _calc_render_docx(path, document, path.name,
+                          _calc_sheet_size_str(path.stat().st_size))
+
+    def _calc_docx_cancel(_button=None):
+        if not state['docx_edit'].get('active'):
+            return
+        if state.get('docx_pending') and not state['docx_edit'].get('confirm'):
+            state['docx_edit']['confirm'] = True
+            calc_text_cancel_btn.description = 'Really discard?'
+            return
+        state['docx_edit'] = {}
+        state['docx_pending'] = {}
+        _calc_text_reset_buttons()
+        path = Path(state['docx_path'])
+        # Re-read: the blocks on screen hold the discarded text.
+        document = _docx.read_document(path)
+        _calc_render_docx(path, document, path.name,
+                          _calc_sheet_size_str(path.stat().st_size))
+
+    def _calc_docx_save(_button=None):
+        edits = state.get('docx_pending') or {}
+        inserts = state.get('docx_inserts') or []
+        drops = state.get('docx_drops') or []
+        if not state['docx_edit'].get('active') or not (edits or inserts or drops):
+            return
+        path = Path(state['docx_path'])
+        try:
+            if edits:
+                result = _docx.apply_edits(path, edits)
+            else:
+                result = {'document': _docx.open_document(path), 'written': 0}
+            document = result['document']
+            # Paragraphs made in this session, in the order they were made.  A
+            # new one may follow another new one -- Enter pressed twice -- so
+            # the anchor is looked up among the ones already inserted.
+            made = {}
+            for entry in inserts:
+                anchor = entry['after']
+                if anchor.startswith('new:'):
+                    previous = made.get(anchor)
+                    if previous is None:
+                        continue
+                    fresh = _docx.insert_paragraph_after(
+                        document, previous, entry.get('text') or '')
+                else:
+                    fresh = _docx.insert_paragraph(
+                        document, anchor, entry.get('text') or '')
+                made[entry['address']] = fresh
+            # Deletions last and from the bottom, so an address is not moved
+            # by a deletion above it before it is used.
+            for address in sorted(set(drops), key=_docx.address_order, reverse=True):
+                try:
+                    _docx.delete_paragraph(document, address)
+                except _docx.DocxError:
+                    pass          # already gone; nothing to take out
+            result['written'] += len(made) + len(set(drops))
+            backup = (_sheet.make_backup(path, folder=_calc_backup_dir(path),
+                                         versioned=_OFFICE_DOC_FEEL)
+                      if path.exists() else None)
+            _docx.save(document, path)
+        except _docx.DocxError as exc:
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+            return
+        except Exception as exc:  # noqa: BLE001
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#d32f2f;">Saving failed: '
+                f'{_html.escape(str(exc))}</span>')
+            return
+        count = result['written']
+        # A style or an alignment changes how the paragraph looks, and only
+        # a re-read shows that; text and emphasis are already on screen.
+        restyled = any(isinstance(v, dict) and (v.get('style') or v.get('align'))
+                       for v in edits.values()) or bool(inserts or drops)
+        state['docx_pending'] = {}
+        state['docx_inserts'] = []
+        state['docx_drops'] = []
+        state['docx_doc'] = _docx.read_document(path)
+        state['file_content'] = state['docx_doc'].text
+        saved = f'{count} paragraph{"" if count == 1 else "s"} saved'
+        if backup is not None:
+            saved += f' · backup: {backup.name}'
+        calc_text_status.layout.display = ''
+        calc_text_status.value = f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>'
+        calc_text_save_btn.disabled = True
+        if restyled:
+            # A paragraph that became a heading looks different, and only a
+            # re-read shows that. Text and emphasis are already on screen.
+            _calc_render_docx(path, state['docx_doc'], path.name,
+                              _calc_sheet_size_str(path.stat().st_size))
+            calc_text_status.layout.display = ''
+            calc_text_status.value = (
+                f'<span style="color:#2e7d32;">{_html.escape(saved)}</span>')
+            return
+        # Nothing is re-rendered: the blocks on screen already hold what was
+        # written, and rebuilding them would take the cursor out of the
+        # paragraph the user is still typing in.
+        _run_js(_docx.mark_saved_js(calc_scope_id))
+
+    def _calc_on_docx_block_edit(_button=None):
+        """One edited block, reported by the browser as it is left."""
+        raw = calc_sheet_payload_input.value or ''
+        calc_sheet_payload_input.value = ''
+        if not raw:
+            return
+        try:
+            message = json.loads(raw)
+        except Exception:
+            return
+        if message.get('kind') != 'docx':
+            return
+        if message.get('zen'):
+            _calc_toggle_doc_zen()
+            return
+        address = str(message.get('address') or '')
+        if not address:
+            return
+        if message.get('drop'):
+            # A paragraph folded into the one above it.  One made in this
+            # session never reached the file, so it just goes away again.
+            made = state.setdefault('docx_inserts', [])
+            state['docx_inserts'] = [e for e in made if e['address'] != address]
+            state.setdefault('docx_pending', {}).pop(address, None)
+            if not address.startswith('new:'):
+                state.setdefault('docx_drops', []).append(address)
+            _calc_docx_sync_controls()
+            return
+        if message.get('after'):
+            state.setdefault('docx_inserts', []).append({
+                'address': address,
+                'after': str(message.get('after')),
+                'text': ''.join(str(r.get('t') or '')
+                                for r in (message.get('runs') or [])),
+            })
+            _calc_docx_sync_controls()
+            return
+        if address.startswith('new:'):
+            # Typing in a paragraph that is not in the file yet: it is the
+            # insert that has to carry the text, not an edit to an address
+            # the document does not have.
+            for entry in state.get('docx_inserts') or []:
+                if entry['address'] == address:
+                    entry['text'] = ''.join(
+                        str(r.get('t') or '') for r in (message.get('runs') or []))
+                    break
+            _calc_docx_sync_controls()
+            return
+        # Three shapes arrive: the runs of a block, a paragraph style, or
+        # plain text. They are merged per address, so setting a style and
+        # then typing in the same paragraph keeps both.
+        pending = state.setdefault('docx_pending', {})
+        change = pending.get(address)
+        if not isinstance(change, dict):
+            change = {} if change is None else {'text': change}
+        if 'runs' in message and isinstance(message.get('runs'), list):
+            # The size and the font travel with the run.  They used to be
+            # dropped here, so the size control changed the page and nothing
+            # else -- the file came back in the size it had.
+            change['runs'] = [
+                {'t': str(r.get('t') or ''), 'b': bool(r.get('b')),
+                 'i': bool(r.get('i')), 'u': bool(r.get('u')),
+                 's': r.get('s') or 0, 'f': str(r.get('f') or '')}
+                for r in message['runs'] if isinstance(r, dict)
+            ]
+            change.pop('text', None)
+        elif 'text' in message:
+            change['text'] = str(message.get('text') or '')
+        if message.get('align'):
+            try:
+                change['align'] = _docx.check_alignment(message.get('align'))
+            except _docx.DocxError as exc:
+                calc_text_status.layout.display = ''
+                calc_text_status.value = (
+                    f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+                return
+        if message.get('style'):
+            try:
+                change['style'] = _docx.check_style(message.get('style'))
+            except _docx.DocxError as exc:
+                calc_text_status.layout.display = ''
+                calc_text_status.value = (
+                    f'<span style="color:#d32f2f;">{_html.escape(str(exc))}</span>')
+                return
+        if not change:
+            return
+        pending[address] = change
+        _calc_docx_sync_controls()
+
+    def _calc_formula_results(path):
+        """What this workbook's formulas work out to, worked out once.
+
+        Kept against the file's modification time: evaluating builds a graph
+        of every cell, so doing it on each paging step would make moving
+        through a workbook feel like waiting for one.
+        """
+        path = Path(path)
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return _sheet.FormulaResults()
+        cached = state.get('formula_results')
+        if cached and cached[0] == (str(path), stamp):
+            return cached[1]
+        results = _sheet.evaluate_workbook(path)
+        state['formula_results'] = ((str(path), stamp), results)
+        if results.note:
+            state['formula_note'] = results.note
+        else:
+            state['formula_note'] = ''
+        return results
+
+    def _calc_sheet_live_formulas(path, sheet_name, view):
+        """Work out the formulas as they are typed, edits and all.
+
+        The workbook-wide engine runs on the *file* and takes seconds, so a
+        formula only produced a number after saving.  This works the sheet out
+        from what is on screen -- including the changes that have not been
+        saved -- and pushes the results of the visible rows back in.  Nothing is
+        marked as an edit by it: a result is not something the user typed.
+        """
+        if view.get('kind') != 'xlsx':
+            return                      # a csv holds text, not formulas
+        try:
+            grids = _sheet.sheet_grids_for_formulas(Path(path), sheet_name)
+        except Exception:
+            grids = None
+        if grids is None:
+            return                      # too large to hold: saving still works
+        values = [list(row) for row in grids[0]]
+        formulas = [list(row) for row in grids[1]]
+
+        def _place(row0, col0, text):
+            while len(values) <= row0:
+                values.append([])
+                formulas.append([])
+            for grid in (values, formulas):
+                while len(grid[row0]) <= col0:
+                    grid[row0].append('')
+            if _formula_engine.is_formula(text):
+                formulas[row0][col0], values[row0][col0] = text, ''
+            else:
+                formulas[row0][col0], values[row0][col0] = '', text
+
+        for op in _calc_sheet_pending_ops(str(path), sheet_name):
+            if op.get('op') == 'set':
+                _place(int(op['row']) - 1, int(op['col']) - 1, op.get('text', ''))
+
+        try:
+            results = _formula_engine.evaluate_grid(formulas, values)
+        except Exception:
+            return
+        first = int(view.get('row_offset') or 0)
+        last = first + int(view.get('page_rows') or 0) - 1
+        cells = [
+            [row0 + 1, col0 + 1, _sheet.format_result(value)]
+            for (row0, col0), value in results.items()
+            if first <= row0 <= last
+        ]
+        cells.extend(_calc_sheet_reformatted(path, sheet_name, view, values, results))
+        if cells:
+            _calc_sheet_show_cells(view['token'], cells)
+
+    def _calc_sheet_reformatted(path, sheet_name, view, values, results):
+        """The cells whose number format was just changed, written out again.
+
+        Choosing a format changes how a number reads, and the browser cannot
+        work that out for itself -- which is why there was no control for it.
+        The kernel can: it writes the cell out in the chosen format and pushes
+        the text in, so the choice is visible before saving instead of after
+        saving and re-opening.
+        """
+        first = int(view.get('row_offset') or 0)
+        last = first + int(view.get('page_rows') or 0) - 1
+        out = []
+        for op in _calc_sheet_pending_ops(str(path), sheet_name):
+            if op.get('op') != 'format' or 'number_format' not in op:
+                continue
+            code = op.get('number_format') or 'General'
+            for row in range(int(op['r1']), int(op['r2']) + 1):
+                row0 = row - 1
+                if not first <= row0 <= last:
+                    continue
+                for col in range(int(op['c1']), int(op['c2']) + 1):
+                    col0 = col - 1
+                    if (row0, col0) in results:
+                        continue          # a formula's result owns that cell
+                    text = ''
+                    if row0 < len(values) and col0 < len(values[row0]):
+                        text = values[row0][col0]
+                    if text == '':
+                        continue
+                    try:
+                        number = float(str(text).replace(',', '.'))
+                    except (TypeError, ValueError):
+                        continue          # text has no number format to read
+                    out.append([row, col, _sheet.display_value(number, code)])
+        return out
+
+    def _calc_sheet_push_results(path, view):
+        """Show what the formulas work out to after the file was written."""
+        results = _calc_formula_results(path)
+        if not results:
+            return
+        window = state.get('sheet_view') or view
+        first = int(window.get('row_offset') or 0) + 1
+        last = first + int(window.get('page_rows') or 0) - 1
+        cells = []
+        for (row, col), value in results.values.get(
+                str(window.get('sheet') or '').upper(), {}).items():
+            if first <= row <= last:
+                cells.append([row, col, _sheet.format_result(value)])
+        if cells:
+            _calc_sheet_show_cells(view['token'], cells)
+
+    def _calc_sheet_show_cells(token, cells):
+        """Put worked-out values on screen without calling them edits.
+
+        A result is not something the user typed: it must not mark the cell
+        changed, and undo must not offer to take it back.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetShow !== 'function') return;
+            wrap.__dsheetShow({json.dumps(cells)});
+        }})();
+        """)
+
+    def _calc_sheet_apply_cells(token, cells):
+        """Write worked-out values into the grid on screen.
+
+        The grid records them as one step, so one undo takes a whole fill
+        back rather than one cell of it.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetApply !== 'function') return;
+            wrap.__dsheetApply({json.dumps(cells)});
+        }})();
+        """)
+
+    def _calc_sheet_mark_saved(token, message):
+        """Tell the grid on screen that its edits are on disk.
+
+        Nothing is re-rendered: the grid clears its own dirty marks, disables
+        its buttons and shows the message. Selection, scroll position, active
+        cell and column widths are never touched, which is the whole point --
+        pressing save in a spreadsheet does not move the spreadsheet.
+        """
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            var wrap = root && root.querySelector(
+                '.dsheet-root[data-token={json.dumps(token)}]');
+            if (!wrap || typeof wrap.__dsheetSaved !== 'function') return;
+            wrap.__dsheetSaved({json.dumps(message)});
+        }})();
+        """)
+
+    def _calc_render_sheet(path, *, sheet_name=None, row_offset=None, scroll_top=0,
+                           cursor=None, status=''):
+        """Read one window of a spreadsheet and put the editable grid on screen."""
+        path = Path(path)
+        path_str = str(path)
+        suffix = path.suffix.lower()
+        is_workbook = suffix in _sheet.WORKBOOK_SUFFIXES
+        prev = state['sheet_view'] if state['sheet_view'].get('path') == path_str else {}
+        if sheet_name is None:
+            sheet_name = prev.get('sheet')
+        if row_offset is None:
+            row_offset = prev.get('row_offset', 0) if prev.get('sheet') == sheet_name else 0
+
+        if is_workbook:
+            names, sheet = _sheet.read_xlsx(path, sheet_name, row_offset=row_offset)
+            delimiter = ''
+            lossy = _sheet.describe_lossy_features(_sheet.inspect_workbook_features(path))
+            _sheet.apply_results(sheet, _calc_formula_results(path))
+        else:
+            sheet, delimiter = _sheet.read_delimited(path, row_offset=row_offset)
+            names = []
+            lossy = ''
+
+        ops = _calc_sheet_pending_ops(path_str, sheet.name)
+        dirty = _sheet.replay_ops(sheet, ops) if ops else set()
+
+        state['sheet_render'] += 1
+        token = f'dsheet-{abs(id(state))}-{state["sheet_render"]}'
+        keep_widths = prev.get('col_px') if prev.get('sheet') == sheet.name else None
+        state['sheet_view'] = {
+            'path': path_str,
+            'sheet': sheet.name,
+            'row_offset': sheet.row_offset,
+            'page_rows': max(1, sheet.n_rows),
+            'total_rows': sheet.total_rows,
+            'kind': 'xlsx' if is_workbook else 'csv',
+            'delimiter': delimiter,
+            'names': names,
+            'token': token,
+            'col_px': keep_widths,
+        }
+
+        calc_content_area.value = _sheet.render_grid_html(
+            sheet,
+            sheet_names=names,
+            token=token,
+            kind='xlsx' if is_workbook else 'csv',
+            path=path_str,
+            delimiter=delimiter,
+            editable=True,
+            dirty=dirty,
+            pending=len(ops),
+            col_px=keep_widths,
+            lossy_note=lossy,
+            scroll_top=scroll_top,
+            cursor=cursor,
+            office=_DOC_VIEW_FEEL,
+        )
+        # Plain-text fallback for the tab's search box and the Copy button.
+        state['search_kind'] = 'sheet' if _DOC_VIEW_FEEL else 'text'
+        state['file_content'] = _sheet.grid_to_tsv(sheet)
+        state['file_is_preview'] = False
+        state['file_preview_note'] = ''
+        state['chunk_dom_initialized'] = False
+        state['selected_file_path'] = path_str
+        state['selected_file_size'] = int(path.stat().st_size)
+
+        label = _html.escape(path.name)
+        detail = _calc_sheet_size_str(path.stat().st_size)
+        if is_workbook and sheet.name:
+            detail += f', sheet "{_html.escape(sheet.name)}"'
+        note_text = state.get('formula_note') or ''
+        calc_file_info.value = (
+            f'<b><span style="word-break:break-all;">{label}</span></b> ({detail})'
+            + (f' <span style="color:#2e7d32;">{_html.escape(status)}</span>' if status else '')
+            + (f' <span style="color:#8a6d00;">{_html.escape(note_text)}</span>'
+               if note_text else '')
+        )
+        calc_copy_btn.disabled = False
+        calc_copy_path_btn.disabled = False
+        calc_update_view()
+        # Inline <script> never runs inside an HTML widget, so the controller
+        # has to go through the dashboard's JS channel after the markup lands.
+        _run_js(_sheet.grid_js(calc_scope_id, token))
+
+    def _calc_sheet_note(message, color='#d32f2f'):
+        current = calc_file_info.value or ''
+        calc_file_info.value = (
+            f'{current} <span style="color:{color};">{_html.escape(message)}</span>'
+        )
+
+    def calc_on_sheet_action(button=None):
+        """Handle one message from the document on screen in the browser."""
+        if (calc_sheet_payload_input.value or '').find('"docx"') >= 0:
+            _calc_on_docx_block_edit()
+            return
+        raw = calc_sheet_payload_input.value or ''
+        calc_sheet_payload_input.value = ''
+        if not raw:
+            return
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return
+
+        view = state['sheet_view']
+        if not view or payload.get('token') != view.get('token'):
+            # The grid was re-rendered (other file, other sheet) after the
+            # browser built this payload; applying it would hit the wrong file.
+            return
+
+        path = Path(view['path'])
+        sheet_name = view['sheet']
+        key = (view['path'], sheet_name)
+        action = payload.get('action')
+        scroll_top = int(payload.get('scroll') or 0)
+        cursor = payload.get('cur')
+        if isinstance(cursor, list) and len(cursor) == 2:
+            try:
+                cursor = (int(cursor[0]), int(cursor[1]))
+            except (TypeError, ValueError):
+                cursor = None
+        else:
+            cursor = None
+        cols = payload.get('cols')
+        if isinstance(cols, list) and cols:
+            try:
+                view['col_px'] = [max(20, int(c)) for c in cols]
+            except (TypeError, ValueError):
+                pass
+
+        if action == 'edit':
+            try:
+                ops = _sheet.validate_ops(payload.get('ops'))
+            except (ValueError, TypeError) as exc:
+                _calc_sheet_note(f'Change rejected: {exc}')
+                return
+            if ops:
+                state['sheet_pending'].setdefault(key, []).extend(ops)
+                # The browser has already painted what was typed.  What it
+                # cannot know is what the formulas now work out to.
+                _calc_sheet_live_formulas(path, sheet_name, view)
+            return
+
+        if action == 'zen':
+            _calc_toggle_doc_zen()
+            return
+
+        if action == 'replace':
+            term = str(payload.get('find') or '')
+            if not term:
+                _calc_sheet_note('Type what to find first.')
+                return
+            grids = None
+            if view.get('kind') == 'xlsx':
+                try:
+                    grids = _sheet.sheet_grids_for_formulas(path, sheet_name)
+                except Exception:
+                    grids = None
+            else:
+                window = _sheet.read_delimited(path, row_offset=0)[0]
+                grids = (window.values, window.formulas or
+                         [[''] * len(row) for row in window.values])
+            if grids is None:
+                _calc_sheet_note(
+                    'This sheet is too large to replace across in one step; '
+                    'edit the cells directly.')
+                return
+            values = [list(row) for row in grids[0]]
+            formulas = [list(row) for row in grids[1]]
+            # Cells changed but not saved yet are part of the sheet too.
+            for pending_op in _calc_sheet_pending_ops(str(path), sheet_name):
+                if pending_op.get('op') != 'set':
+                    continue
+                row0, col0 = int(pending_op['row']) - 1, int(pending_op['col']) - 1
+                while len(values) <= row0:
+                    values.append([])
+                    formulas.append([])
+                while len(values[row0]) <= col0:
+                    values[row0].append('')
+                while len(formulas[row0]) <= col0:
+                    formulas[row0].append('')
+                text = pending_op.get('text', '')
+                if str(text).startswith('='):
+                    formulas[row0][col0], values[row0][col0] = text, ''
+                else:
+                    formulas[row0][col0], values[row0][col0] = '', text
+            try:
+                ops = _sheet.replace_ops(
+                    values, formulas, term=term,
+                    replacement=str(payload.get('repl') or ''),
+                    match_case=bool(payload.get('match_case')),
+                    whole_cell=bool(payload.get('whole_cell')),
+                )
+            except _sheet.SpreadsheetError as exc:
+                _calc_sheet_note(str(exc))
+                return
+            if not ops:
+                _calc_sheet_note(f'{term!r} is not in this sheet.', color='#4a525c')
+                return
+            state['sheet_pending'].setdefault(key, []).extend(ops)
+            # A replacement is an edit like any other: it shows as unsaved and
+            # is written by the same code that writes a typed cell.
+            _calc_sheet_apply_cells(
+                view['token'],
+                [[op['row'], op['col'], op['text']] for op in ops],
+            )
+            _calc_sheet_live_formulas(path, sheet_name, view)
+            count = len(ops)
+            _calc_sheet_note(
+                f'{count} cell{"" if count == 1 else "s"} replaced · not saved yet',
+                color='#2e7d32')
+            return
+
+        if action == 'save':
+            ops = state['sheet_pending'].get(key) or []
+            if not ops:
+                return
+            if not path.exists():
+                _calc_sheet_note('The file is gone.')
+                return
+            try:
+                where = _calc_backup_dir(path)
+                if view['kind'] == 'xlsx':
+                    backup = _sheet.apply_ops_xlsx(path, sheet_name, ops,
+                                                   backup_dir=where)
+                else:
+                    backup = _sheet.apply_ops_delimited(path, ops, view['delimiter'],
+                                                        backup_dir=where)
+            except Exception as exc:
+                _calc_sheet_note(f'Saving failed: {exc}')
+                return
+            state['sheet_pending'].pop(key, None)
+            note = f'{len(ops)} change{"" if len(ops) == 1 else "s"} saved'
+            if backup is not None:
+                note += f' · backup: {backup.name}'
+            if not _DOC_VIEW_FEEL:
+                _calc_render_sheet(path, sheet_name=sheet_name,
+                                   scroll_top=scroll_top, status=note)
+                return
+            # The cells on screen already show what was written, so nothing
+            # about the grid needs rebuilding -- and rebuilding it is what
+            # threw the user back to A1 with the view somewhere else.
+            try:
+                state['selected_file_size'] = int(path.stat().st_size)
+            except OSError:
+                pass
+            _calc_sheet_mark_saved(view['token'], note)
+            # The file has changed, so its formulas work out to something
+            # else now. Only the results are pushed in -- the grid is not
+            # rebuilt, so the cursor and the scroll stay where they are.
+            _calc_sheet_push_results(path, view)
+            return
+
+        if action == 'discard':
+            # This one does have to rebuild: the values on screen are the
+            # discarded ones and have to come back from the file. Put the
+            # user back where they were standing.
+            state['sheet_pending'].pop(key, None)
+            _calc_render_sheet(path, sheet_name=sheet_name, scroll_top=scroll_top,
+                               cursor=cursor if _DOC_VIEW_FEEL else None,
+                               status='Changes discarded')
+            return
+
+        if action == 'fill':
+            block = payload.get('block')
+            at = payload.get('at')
+            if not isinstance(block, list) or not isinstance(at, list):
+                return
+            try:
+                rows = max(0, int(payload.get('rows') or 0))
+                cols = max(0, int(payload.get('cols') or 0))
+                top, left = int(at[0]), int(at[1])
+                filled = _sheet.fill_block(block, rows, cols)
+            except (_sheet.SpreadsheetError, TypeError, ValueError) as exc:
+                _calc_sheet_note(f'Could not fill: {exc}', color='#b26a00')
+                return
+            # fill_block returns what the drag added, not the block itself:
+            # those cells already hold what was dragged.
+            height = len(block)
+            width = len(block[0]) if block else 0
+            ops, cells = [], []
+            for r, row in enumerate(filled):
+                for c, text in enumerate(row):
+                    absolute_row = top + (height + r if rows else r)
+                    column = left + (width + c if cols else c)
+                    ops.append({'op': 'set', 'row': absolute_row,
+                                'col': column, 'text': text})
+                    cells.append([absolute_row, column, text])
+            if not ops:
+                return
+            state['sheet_pending'].setdefault(key, []).extend(
+                _sheet.validate_ops(ops))
+            _calc_sheet_apply_cells(view['token'], cells)
+            return
+
+        if action == 'sort':
+            # Reorders the file, so the same rule as the sheet actions: an
+            # unsaved journal addresses rows that are about to move.
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            if view.get('kind') != 'xlsx':
+                _calc_sheet_note('Sorting writes a workbook; this is a csv.')
+                return
+            try:
+                backup, kept = _sheet.sort_sheet(
+                    path, sheet_name, int(payload.get('col') or 0),
+                    descending=bool(payload.get('desc')),
+                    backup_dir=_calc_backup_dir(path))
+            except _sheet.SpreadsheetError as exc:
+                _calc_sheet_note(str(exc), color='#b26a00')
+                return
+            except Exception as exc:  # noqa: BLE001
+                _calc_sheet_note(f'Could not sort: {exc}')
+                return
+            where = _sheet.col_letter(int(payload.get('col') or 1) - 1)
+            note = f'Sorted by column {where}'
+            if kept:
+                note += ' · first row kept as the heading'
+            if backup is not None:
+                note += f' · backup: {backup.name}'
+            _calc_render_sheet(path, sheet_name=sheet_name,
+                               row_offset=int(view.get('row_offset') or 0),
+                               status=note)
+            return
+
+        if action in ('new_sheet', 'rename_sheet', 'drop_sheet'):
+            # These write the workbook straight away, so an unsaved journal
+            # would be replayed against a file it no longer describes.
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            if view.get('kind') != 'xlsx':
+                _calc_sheet_note('Only a workbook has sheets.')
+                return
+            where = _calc_backup_dir(path)
+            try:
+                if action == 'new_sheet':
+                    backup, target = _sheet.add_sheet(
+                        path, payload.get('name') or '', backup_dir=where)
+                    note = f'Sheet "{target}" added'
+                elif action == 'rename_sheet':
+                    backup, target = _sheet.rename_sheet(
+                        path, sheet_name, payload.get('name') or '',
+                        backup_dir=where)
+                    note = f'Renamed to "{target}"'
+                else:
+                    backup, target = _sheet.drop_sheet(
+                        path, sheet_name, backup_dir=where)
+                    note = f'Sheet "{sheet_name}" deleted'
+            except _sheet.SpreadsheetError as exc:
+                _calc_sheet_note(str(exc), color='#b26a00')
+                return
+            except Exception as exc:  # noqa: BLE001
+                _calc_sheet_note(f'Could not change the sheets: {exc}')
+                return
+            if backup is not None:
+                note += f' · backup: {backup.name}'
+            _calc_render_sheet(path, sheet_name=target, row_offset=0, status=note)
+            return
+
+        if action in ('switch_sheet', 'page'):
+            # Pending edits address absolute rows of the current window; moving
+            # the window while they are unsaved would show them in the wrong
+            # place, so make the user decide first.
+            if _calc_sheet_has_pending(view['path']):
+                _calc_sheet_note('Save or discard first.', color='#b26a00')
+                return
+            if action == 'switch_sheet':
+                target = str(payload.get('target') or '')
+                if target and target in (view.get('names') or []):
+                    _calc_render_sheet(path, sheet_name=target, row_offset=0)
+                return
+            step = int(view.get('page_rows') or _sheet.MAX_ROWS)
+            if payload.get('dir') == 'next':
+                new_offset = int(view['row_offset']) + step
+            else:
+                new_offset = max(0, int(view['row_offset']) - step)
+            _calc_render_sheet(path, sheet_name=sheet_name, row_offset=new_offset)
+            return
+
+    # -- PDF viewer ---------------------------------------------------------
+
+    def _calc_pdf_panel():
+        """The tab's PDF panel, built on first use."""
+        panel = state.get('pdf_panel')
+        if panel is None:
+            # In Office the frame takes the space the pane has, the same
+            # way the text view and the grid do, so it reaches the bottom and
+            # follows the tab into fullscreen. Elsewhere it keeps the fixed
+            # height and the one-page-at-a-time view it always had.
+            panel = _pdf.PdfPanel(
+                run_js=_run_js,
+                continuous=_DOC_VIEW_FEEL,
+                backup_dir_name=OFFICE_BACKUP_DIR if _OFFICE_DOC_FEEL else None,
+                height_px=None if _DOC_VIEW_FEEL else max(240, CALC_CONTENT_HEIGHT - 80),
+            )
+            state['pdf_panel'] = panel
+            calc_pdf_container.children = [panel.widget]
+        return panel
+
+    def _calc_pdf_close():
+        """Release the open document and hand the frame back to the text view."""
+        panel = state.get('pdf_panel')
+        if panel is not None:
+            panel.close()
+        state['pdf_active'] = False
+        calc_pdf_container.layout.display = 'none'
+
+    def _calc_render_pdf(path):
+        """Show a PDF; failures land in the panel as text, never as a traceback."""
+        panel = _calc_pdf_panel()
+        state['pdf_active'] = True
+        calc_pdf_container.layout.display = 'flex'
+        try:
+            panel.open(Path(path))
+        except _pdf.PdfError as exc:
+            panel.show_error(str(exc))
+        except Exception as exc:
+            panel.show_error(f'PDF could not be displayed: {exc}')
+        calc_update_view()
+
+    # -- a drawing goes back to the editor it came from ----------------------
+
+    def _calc_ketcher_panel():
+        """The tab's drawing editor, built on first use.
+
+        It saves into the folder of whatever is open, not into a store of its
+        own: a drawing opened out of a job's directory belongs back in that
+        directory, the way a document does.
+        """
+        panel = state.get('ketcher_panel')
+        if panel is None:
+            # The height the pane has, not a number: the frame reaches the
+            # bottom and follows the tab into fullscreen, the way the text
+            # view and the grid do.
+            panel = _ketcher_panel.build(
+                ctx,
+                height='100%',
+                scope=f'delfin-ketcher-calc-{abs(id(calc_ketcher_container))}',
+                title='',
+                folder=lambda: state.get('ketcher_folder') or _calc_dir(),
+                compact=True,
+                fill=True,
+            )
+            state['ketcher_panel'] = panel
+            calc_ketcher_container.children = [panel.widget]
+            # Its startup script would otherwise never go out: the dashboard
+            # sent them all before this panel existed.
+            fresh = '\n'.join(getattr(ctx, 'init_js_parts', [])[-1:])
+            if fresh.strip():
+                _run_js(fresh)
+        return panel
+
+    def _calc_ketcher_close():
+        """Hand the pane back to whatever is opened next."""
+        state['ketcher_active'] = False
+        calc_ketcher_container.layout.display = 'none'
+
+    def _calc_open_in_ketcher(full_path, size_str=''):
+        """Show a drawing in the editor that can read it, here in this tab.
+
+        A .ket is JSON and a .mol is a table of numbers.  Shown as text --
+        which is what the default branch does with anything it has no viewer
+        for -- neither is something a chemist can read, so this is a viewer
+        for them, opened and saved in place like the spreadsheet and the
+        document beside it.
+        """
+        calc_file_info.value = (
+            f'<b><span style="word-break:break-all;">'
+            f'{_html.escape(full_path.name)}</span></b>'
+            + (f' ({size_str})' if size_str else '')
+        )
+        got = _ketcher.read_drawing(full_path)
+        if not got['ok']:
+            calc_set_message(got['status'])
+            return
+        # Saving goes back where it came from, and Ketcher's own Open lists
+        # what else is in that folder.
+        state['ketcher_folder'] = full_path.parent
+        try:
+            panel = _calc_ketcher_panel()
+        except Exception as exc:                        # noqa: BLE001
+            calc_set_message(f'The drawing editor could not be built: {exc}')
+            return
+        state['ketcher_active'] = True
+        _set_view_toggle(False, False)
+        calc_update_view()
+        if not panel.open_text(got['text'], got['name']):
+            # Not installed yet: the panel says so, and it is on screen to
+            # say it in.
+            return
+        calc_set_message(f'{full_path.name} is open in the editor.')
+
+    # -- item open logic (shared by dblclick and single-click on files) ------
+
+    def _calc_show_image(data, mime, name, size_str, note=''):
+        """Put image bytes on screen, as small a detour through markup as the widget allows."""
+        b64 = base64.b64encode(data).decode('ascii')
+        label = f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b> ({size_str})'
+        if note:
+            label += f' <span style="color:#888;">&middot; {_html.escape(note)}</span>'
+        calc_file_info.value = label
+        calc_content_area.value = (
+            "<div style='height:100%; width:100%; border:1px solid #ddd; padding:6px;"
+            " background:#fafafa; box-sizing:border-box; display:flex;"
+            " align-items:center; justify-content:center; overflow:hidden;'>"
+            f"<img src='data:image/{mime};base64,{b64}' style='max-width:100%; max-height:100%;"
+            " width:auto; height:auto; object-fit:contain; display:block;' />"
+            "</div>"
+        )
+        calc_update_view()
+
+    def _calc_image_preview(path):
+        """A downscaled copy, or None when Pillow cannot make one.
+
+        Decoding and shrinking costs a fraction of what shipping the original
+        through the page costs, and the result is what fits on screen anyway.
+        """
+        try:
+            from PIL import Image
+            with Image.open(path) as img:
+                img.draft('RGB', (CALC_IMAGE_PREVIEW_PX, CALC_IMAGE_PREVIEW_PX))
+                img = img.convert('RGB') if img.mode in ('CMYK', 'P') else img
+                img.thumbnail((CALC_IMAGE_PREVIEW_PX, CALC_IMAGE_PREVIEW_PX))
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG', optimize=False, compress_level=1)
+                return buffer.getvalue()
+        except Exception:
+            return None
+
+    def _calc_image_full_later(path, mime, name, size_str, opened_as):
+        """Replace the preview with the original -- unless the user moved on."""
+        try:
+            data = path.read_bytes()
+        except Exception:
+            return
+        if state.get('open_label') != opened_as:
+            return                      # another file is on screen now
+        try:
+            _calc_show_image(data, mime, name, size_str)
+        except Exception:
+            pass
+
+    def _calc_open_item(selected):
+        """Open/display a single item given its label string."""
+        if not selected or selected.startswith('('):
+            return
+
+        name = _calc_label_to_name(selected)
+        full_path = (
+            (_calc_dir() / state['current_path'] / name)
+            if state['current_path']
+            else (_calc_dir() / name)
+        )
+
+        # Directories are only navigated via dblclick, not here.
+        if full_path.is_dir():
+            return
+        if _calc_link_leaves_root(full_path):
+            calc_set_message(
+                f'{name} is a link to a file outside the explorer root and is '
+                'not shown (DELFIN_BROWSER_FOLLOW_LINKS=1 allows it).')
+            return
+
+        if _is_archive_tab and _calc_is_table_preset_path(full_path):
+            try:
+                _open_calc_table_preset_file(full_path)
+            except Exception as exc:
+                _set_calc_table_preset_status(f'Could not load preset file: {exc}', color='#d32f2f')
+                calc_table_panel.layout.display = ''
+                state['table_panel_active'] = True
+                calc_update_view()
+            return
+
+        # Reset search state
+        state['search_spans'] = []
+        state['current_match'] = -1
+        state['search_truncated'] = False
+        calc_search_result.value = ''
+        calc_search_input.value = ''
+        calc_update_nav_buttons()
+        calc_delete_hide_confirm()
+        state['open_label'] = selected
+        calc_update_options_dropdown(selected)
+
+        next_suffix = full_path.suffix.lower()
+        next_name_lower = full_path.name.lower()
+        keep_previous_viewer_during_load = (
+            next_name_lower == 'coord' or next_suffix in ['.xyz', '.cube', '.cub']
+        )
+
+        # Always hide the Fukui panel on any new file selection; the
+        # fukui-result.json handler re-shows + populates it on demand.
+        calc_fukui_panel_container.children = []
+        calc_fukui_panel_container.layout.display = 'none'
+        # Close any open PDF so the document is not kept mapped behind an
+        # unrelated file; the .pdf handler re-opens on demand.
+        _calc_pdf_close()
+        _calc_ketcher_close()
+        # Restore the standard 3D viewer row in case the previous render
+        # was a Fukui panel (which hides this row to claim the full frame).
+        calc_mol_view_row.layout.display = ''
+
+        # Reset display (avoid flashing text area before viewer is ready)
+        if not keep_previous_viewer_during_load:
+            _calc_clear_main_viewer_state(reset_view_state=False)
+            calc_mol_container.layout.display = 'none'
+        calc_content_area.layout.display = 'none'
+        calc_content_label.layout.display = 'none'
+        if not keep_previous_viewer_during_load:
+            _set_view_toggle(False, True)
+        calc_file_info.value = ''
+        calc_path_display.value = ''
+        calc_download_status.value = ''
+        calc_xyz_batch_status.value = ''
+        state['xyz_batch_marked_paths'] = []
+        calc_print_mode_status.value = ''
+        calc_mo_plot_status.value = ''
+        state['file_content'] = ''
+        state['selected_file_path'] = None
+        state['selected_file_size'] = 0
+        state['file_is_preview'] = False
+        state['file_preview_note'] = ''
+        state['file_chunk_start'] = 0
+        state['file_chunk_end'] = 0
+        state['chunk_dom_initialized'] = False
+        # Only the on-screen view is dropped; state['sheet_pending'] and
+        # state['text_pending'] keep unsaved edits, because this runs on every
+        # selection change -- a stray click must not discard someone's work.
+        state['sheet_view'] = {}
+        state['text_edit'] = {}
+        # Word: unsaved block edits are deliberately not kept across a
+        # selection change. They address paragraphs of the document that was
+        # open, and replaying them into another one would write into whatever
+        # paragraph happens to carry that index.
+        state['docx_doc'] = None
+        state['docx_path'] = ''
+        state['docx_edit'] = {}
+        state['docx_pending'] = {}
+        state['docx_hits'] = []
+        state['sheet_hits'] = []
+        state['search_kind'] = 'text'
+        calc_text_area.value = ''
+        _calc_text_sync_controls()
+        _calc_stop_xyz_playback(update_button=True)
+        _calc_hide_chunk_controls()
+        calc_reset_recalc_state()
+        calc_reset_xyz_workflow_state()
+        _calc_preselect_show(False)
+        _calc_show_xyz_batch_panel(False)
+        _calc_show_print_mode_panel(False)
+        _calc_show_mo_plot_panel(False)
+
+        # Reset xyz trajectory controls
+        state['xyz_frames'].clear()
+        state['xyz_current_frame'][0] = 0
+        state['traj_viewer_ready'] = False
+        calc_xyz_controls.layout.display = 'none'
+        calc_coord_controls.layout.display = 'none'
+        _calc_update_xyz_traj_control_state()
+        _calc_set_rmsd_available(False)
+        _calc_reset_rmsd_ui(clear_input=True)
+        calc_xyz_frame_label.value = ''
+        calc_xyz_frame_input.value = 1
+        calc_xyz_frame_input.max = 1
+        calc_xyz_frame_total.value = '<b>/ 1</b>'
+
+        if not full_path.exists():
+            calc_update_download_btn()
+            calc_set_message('File not found')
+            return
+
+        # File info
+        size = full_path.stat().st_size
+        if size > 1024 * 1024:
+            size_str = f'{size / (1024 * 1024):.2f} MB'
+        elif size > 1024:
+            size_str = f'{size / 1024:.2f} KB'
+        else:
+            size_str = f'{size} B'
+
+        suffix = full_path.suffix.lower()
+        name_lower = full_path.name.lower()
+        state['selected_file_path'] = str(full_path)
+        state['selected_file_size'] = int(size)
+        calc_update_download_btn()
+
+        # --- a drawing, which belongs in the editor it was drawn in ---
+        # First in the ladder rather than last: these are text files, and the
+        # default branch would show a chemist the JSON of their own structure.
+        if _ketcher.is_drawing(full_path):
+            _calc_open_in_ketcher(full_path, size_str)
+            return
+
+        # --- Turbomole coord file ---
+        if name_lower == 'coord':
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
+            calc_update_view()
+            try:
+                content = full_path.read_text()
+                state['file_content'] = content
+                state['file_is_preview'] = False
+                state['file_preview_note'] = ''
+                state['chunk_dom_initialized'] = False
+                calc_render_content(scroll_to='top')
+                calc_copy_btn.disabled = False
+                calc_copy_path_btn.disabled = False
+                xyz_data = coord_to_xyz(content)
+                if xyz_data:
+                    calc_file_info.value = (
+                        f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                        f' ({size_str}, Turbomole coord)'
+                    )
+                    state['xyz_frames'].clear()
+                    state['xyz_frames'].append(('TM coord', xyz_data.split('\n', 2)[2] if '\n' in xyz_data else '', xyz_data.count('\n') - 1))
+                    state['xyz_current_frame'][0] = 0
+                    calc_xyz_controls.layout.display = 'none'
+                    calc_coord_controls.layout.display = 'flex'
+                    _calc_update_xyz_traj_control_state()
+                    _render_3dmol(xyz_data)
+                    _calc_apply_traj_style()
+                else:
+                    calc_file_info.value = f'<b>{_html.escape(name)}</b> (could not parse)'
+            except Exception as e:
+                calc_file_info.value = f'<b>{_html.escape(name)}</b> (error: {_html.escape(str(e))})'
+            return
+
+        # --- XYZ file (with trajectory support) ---
+        if suffix == '.xyz':
+            if size > CALC_XYZ_MAX_READ_BYTES:
+                # Large trajectory: read only enough for the first frame(s)
+                # to show in 3D viewer, and use chunked text for the rest.
+                _set_view_toggle(True, False)
+                calc_mol_container.layout.display = 'block'
+                calc_content_area.layout.display = 'none'
+                calc_update_view()
+                try:
+                    head_bytes = min(CALC_TEXT_CHUNK_BYTES, size)
+                    with open(str(full_path), 'r', errors='ignore') as fh:
+                        head_text = fh.read(head_bytes)
+                    head_frames = parse_xyz_frames(head_text)
+                    _calc_load_text_preview_chunk(full_path, size, 0)
+                    calc_copy_btn.disabled = False
+                    calc_copy_path_btn.disabled = False
+                    if head_frames:
+                        state['xyz_frames'].clear()
+                        state['xyz_frames'].extend(head_frames)
+                        state['xyz_current_frame'][0] = 0
+                        n_head = len(head_frames)
+                        calc_xyz_frame_input.max = n_head
+                        calc_xyz_frame_input.value = 1
+                        calc_xyz_frame_total.value = f"<b>/ {n_head}+</b>"
+                        calc_xyz_controls.layout.display = 'flex'
+                        calc_coord_controls.layout.display = 'none'
+                        _calc_update_xyz_traj_control_state()
+                        calc_update_xyz_viewer(initial_load=True)
+                        calc_file_info.value = (
+                            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                            f' ({size_str}, showing first {n_head} frames, file too large for full load)'
+                        )
+                    else:
+                        calc_file_info.value = (
+                            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                            f' ({size_str}, chunked view)'
+                        )
+                    _set_view_toggle(False, False)
+                except Exception as e:
+                    calc_set_message(f'Error: {e}')
+                return
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
+            calc_update_view()
+            try:
+                content = full_path.read_text()
+                state['file_content'] = content
+                state['file_is_preview'] = False
+                state['file_preview_note'] = ''
+                state['chunk_dom_initialized'] = False
+                calc_render_content(scroll_to='top')
+                calc_copy_btn.disabled = False
+                calc_copy_path_btn.disabled = False
+                lines = content.split('\n')
+
+                state['xyz_frames'].clear()
+                state['xyz_frames'].extend(parse_xyz_frames(content))
+                n_frames = len(state['xyz_frames'])
+                is_aligned_overlay_file = bool(
+                    re.search(r'(?i)_aligned_ref(?:_\d+)?\.xyz$', name)
+                )
+
+                if is_aligned_overlay_file and state['xyz_frames']:
+                    def _frame_to_xyz(frame):
+                        comment, xyz_block, n_atoms = frame
+                        return f"{n_atoms}\n{comment}\n{xyz_block}\n"
+
+                    aligned_xyz = _frame_to_xyz(state['xyz_frames'][-1])
+                    original_xyz = None
+                    original_name = re.sub(
+                        r'(?i)_aligned_ref(?:_\d+)?\.xyz$',
+                        '.xyz',
+                        name,
+                    )
+                    original_path = full_path.with_name(original_name)
+                    if original_path.exists():
+                        try:
+                            original_content = original_path.read_text()
+                            original_frames = parse_xyz_frames(original_content)
+                            if original_frames:
+                                original_xyz = _frame_to_xyz(original_frames[0])
+                        except Exception:
+                            original_xyz = None
+                    # Fallback for legacy aligned files that already contain both frames.
+                    if original_xyz is None and len(state['xyz_frames']) > 1:
+                        original_xyz = _frame_to_xyz(state['xyz_frames'][0])
+
+                    if original_xyz is not None:
+                        calc_file_info.value = (
+                            f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                            f' ({size_str}, aligned overlay with '
+                            f'<code>{_html.escape(original_name)}</code>)'
+                        )
+                        state['xyz_current_frame'][0] = 0
+                        calc_xyz_controls.layout.display = 'none'
+                        calc_coord_controls.layout.display = 'none'
+                        _calc_update_xyz_traj_control_state()
+                        _calc_set_rmsd_available(False)
+                        calc_xyz_frame_label.value = ''
+                        _render_rmsd_preview_dual_xyz(
+                            aligned_xyz,
+                            original_xyz,
+                            output_widget=calc_mol_viewer,
+                            viewer_height=f'{CALC_MOL_SIZE}px',
+                        )
+                        calc_render_content(scroll_to='top')
+                        return
+
+                if n_frames > 1:
+                    calc_file_info.value = (
+                        f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                        f' ({size_str}, {n_frames} frames)'
+                    )
+                    state['xyz_current_frame'][0] = 0
+                    calc_xyz_frame_input.max = n_frames
+                    calc_xyz_frame_input.value = 1
+                    calc_xyz_frame_total.value = f"<b>/ {n_frames}</b>"
+                    calc_xyz_controls.layout.display = 'flex'
+                    calc_coord_controls.layout.display = 'none'
+                    _calc_update_xyz_traj_control_state()
+                    _calc_set_rmsd_available(False)
+                    calc_update_xyz_viewer(initial_load=True)
+                else:
+                    calc_file_info.value = (
+                        f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                        f' ({size_str}, {len(lines)} lines)'
+                    )
+                    if state['xyz_frames']:
+                        comment = state['xyz_frames'][0][0]
+                        state['xyz_current_frame'][0] = 0
+                        calc_xyz_frame_input.max = len(state['xyz_frames'])
+                        calc_xyz_frame_input.value = 1
+                        calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
+                        calc_xyz_controls.layout.display = 'flex'
+                        calc_coord_controls.layout.display = 'none'
+                        calc_xyz_frame_label.value = format_xyz_comment_label(
+                            comment,
+                            frames=state['xyz_frames'],
+                        )
+                        _calc_update_xyz_traj_control_state()
+                        _calc_set_rmsd_available(True)
+                    else:
+                        calc_xyz_controls.layout.display = 'none'
+                        _calc_update_xyz_traj_control_state()
+                        _calc_set_rmsd_available(False)
+                        calc_xyz_frame_label.value = ''
+                    _render_3dmol(content)
+                    _calc_apply_traj_style()
+                calc_render_content(scroll_to='top')
+            except Exception as e:
+                calc_set_message(f'Error: {e}')
+            return
+
+        # --- PNG image ---
+        if suffix in CALC_IMAGE_SUFFIXES:
+            _calc_set_png_button_mode(main=False)
+            if size > CALC_IMAGE_MAX_READ_BYTES:
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str})'
+                )
+                calc_set_message(f'Image too large for inline display ({size_str}).')
+                return
+            mime = {'.jpg': 'jpeg', '.tif': 'tiff'}.get(suffix, suffix.lstrip('.'))
+            opened_as = state.get('open_label')
+            try:
+                if size > CALC_IMAGE_PREVIEW_BYTES:
+                    preview = _calc_image_preview(full_path)
+                    if preview is not None:
+                        _calc_show_image(preview, 'png', name, size_str,
+                                         note='preview, full image loading')
+                        threading.Thread(
+                            target=_calc_image_full_later,
+                            args=(full_path, mime, name, size_str, opened_as),
+                            daemon=True,
+                        ).start()
+                        return
+                _calc_show_image(full_path.read_bytes(), mime, name, size_str)
+            except Exception as e:
+                calc_set_message(f'Error: {e}')
+            return
+
+        # --- Fukui results panel (fukui_result.json) ---
+        if name_lower == 'fukui_result.json':
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
+            # The Fukui panel owns its own 3D viewer (inside the returned
+            # widget) so we hide the shared 3D viewer row entirely — that
+            # also prevents stale cube/xyz canvases from peeking through.
+            calc_mol_view_row.layout.display = 'none'
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str}, Fukui results)'
+            )
+            try:
+                panel = render_fukui_panel(full_path.parent)
+                calc_fukui_panel_container.children = [panel]
+                calc_fukui_panel_container.layout.display = 'block'
+                calc_update_view()
+            except Exception as exc:
+                calc_set_message(f'Failed to render Fukui panel: {exc}')
+            return
+
+        # --- Cube/Cub volumetric data ---
+        if suffix in ['.cube', '.cub']:
+            if size > CALC_CUBE_MAX_READ_BYTES:
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str})'
+                )
+                calc_set_message(
+                    f'Cube file too large for live preview ({size_str}).\n\n'
+                    f'Use chunked text view instead.'
+                )
+                _calc_load_text_preview_chunk(full_path, size, 0)
+                calc_copy_btn.disabled = False
+                calc_copy_path_btn.disabled = False
+                calc_update_view()
+                return
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
+            calc_update_view()
+            try:
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str})'
+                )
+                lower_name = name.lower()
+                if lower_name.endswith('.esp.cube') or lower_name.endswith('.esp.cub'):
+                    _calc_set_png_button_mode(main=False)
+                    from delfin.reporting.esp_report import generate_esp_png_for_state
+
+                    workspace_root = None
+                    search = full_path.parent
+                    while True:
+                        if (search / 'CONTROL.txt').exists():
+                            workspace_root = search
+                            break
+                        if search.parent == search:
+                            break
+                        search = search.parent
+                    if workspace_root is None:
+                        workspace_root = full_path.parent
+
+                    rendered = generate_esp_png_for_state(workspace_root, 'S0')
+                    state['file_content'] = ''
+                    with calc_mol_viewer:
+                        if rendered and rendered.exists():
+                            data = rendered.read_bytes()
+                            b64 = base64.b64encode(data).decode('ascii')
+                            display(HTML(
+                                f"<img src='data:image/png;base64,{b64}'"
+                                f" style='max-width:100%; max-height:{CALC_CONTENT_HEIGHT}px; height:auto;"
+                                f" display:block;' />"
+                            ))
+                        else:
+                            print('ESP render failed (no PNG generated).')
+                else:
+                    content = full_path.read_text()
+                    state['file_content'] = ''
+                    def _cube_extra(view, raw):
+                        view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
+                        view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
+                    _render_3dmol(content, fmt='cube', extra_fn=_cube_extra)
+                # Trigger dynamic resize after volumetric data is loaded
+                _run_js(
+                    f"setTimeout(function(){{"
+                    f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
+                    f"}}, 600);"
+                )
+            except Exception as e:
+                calc_set_message(f'Error: {e}')
+            return
+
+        # --- Binary files ---
+        _BINARY_SUFFIXES = {
+            '.gbw', '.cis', '.densities', '.tmp', '.rwf', '.chk', '.fchk',
+            '.wfn', '.wfx', '.molden', '.nat', '.hess', '.engrad',
+            '.zip', '.gz', '.tar', '.bz2', '.xz', '.7z',
+            '.so', '.o', '.a', '.exe', '.dll', '.pyc', '.pyo',
+            '.db', '.sqlite', '.sqlite3',
+        }
+        if suffix in _BINARY_SUFFIXES:
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            calc_set_message(f'Binary file ({size_str})\n\nCannot display binary content.')
+            return
+
+        # --- PDF documents ---
+        if suffix in _pdf.PDF_SUFFIXES:
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            _set_view_toggle(False, True)
+            # There is no text buffer behind a rendered page; only the path
+            # can be copied.
+            calc_copy_btn.disabled = True
+            calc_copy_path_btn.disabled = False
+            _calc_render_pdf(full_path)
+            return
+
+        # --- Spreadsheets: Excel workbooks and delimited text ---
+        if suffix in _sheet.WORKBOOK_SUFFIXES or suffix in _sheet.DELIMITED_SUFFIXES:
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            if size > _sheet.MAX_FILE_BYTES:
+                calc_set_message(
+                    f'File is too large for the sheet view ({size_str}).'
+                )
+                return
+            try:
+                _calc_render_sheet(full_path)
+            except _sheet.SpreadsheetError as exc:
+                calc_set_message(str(exc))
+                return
+            except Exception as exc:
+                calc_set_message(f'The sheet could not be read: {exc}')
+                return
+            # Mutation-space CSVs keep their preselection workflow: the grid is
+            # the text view, the Visualize toggle still opens the card browser.
+            if _calc_is_mutation_csv(name):
+                _set_view_toggle(False, False)
+                _calc_preselect_show(False)
+            return
+
+        # --- Legacy Excel (BIFF) ---
+        if suffix == '.xls':
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            calc_set_message(
+                'Old Excel format (.xls).\n\n'
+                'Save it as .xlsx in Excel or LibreOffice, then it can be '
+                'shown and edited here.'
+            )
+            return
+
+        # --- DOCX files ---
+        if suffix == '.docx' and _DOC_VIEW_FEEL:
+            # Rendered from the document itself so every paragraph carries
+            # the address an edit is written back to. mammoth below produces
+            # nicer HTML but nothing in it says which paragraph a line came
+            # from, so it can carry a view and nothing else.
+            try:
+                document = _docx.read_document(full_path)
+            except _docx.DocxError as exc:
+                document = None
+                _calc_docx_note = str(exc)
+            except Exception as exc:  # noqa: BLE001
+                document = None
+                _calc_docx_note = f'Document could not be read: {exc}'
+            if document is not None:
+                _calc_render_docx(full_path, document, name, size_str)
+                return
+            calc_set_message(_calc_docx_note)
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            return
+
+        if suffix in ('.doc', '.docx'):
+            try:
+                import mammoth
+
+                def convert_image_to_base64(image):
+                    try:
+                        with image.open() as img_stream:
+                            img_data = img_stream.read()
+                            content_type = image.content_type if image.content_type else 'image/png'
+                            b64 = base64.b64encode(img_data).decode('ascii')
+                            return {'src': image_data_uri(content_type, b64)}
+                    except Exception:
+                        return {'src': ''}
+
+                with open(str(full_path), 'rb') as docx_file:
+                    result = mammoth.convert_to_html(
+                        docx_file,
+                        convert_image=mammoth.images.img_element(convert_image_to_base64),
+                    )
+                    html_content = neutralise_link_targets(result.value)
+
+                styled_html = (
+                    '<div style="font-family: Calibri, Arial, sans-serif; line-height: 1.5;'
+                    ' padding: 15px; background: white;">'
+                    '<style>'
+                    '.docx-content img { max-width: 100%; height: auto; margin: 10px 0;'
+                    ' border: 1px solid #ddd; border-radius: 4px; }'
+                    '.docx-content p { margin: 8px 0; }'
+                    '.docx-content h1 { color: #1976d2; font-size: 1.8em; margin: 20px 0 10px 0; }'
+                    '.docx-content h2 { color: #1976d2; font-size: 1.5em; margin: 18px 0 8px 0; }'
+                    '.docx-content h3 { color: #333; font-size: 1.2em; margin: 15px 0 6px 0; }'
+                    '.docx-content table { border-collapse: collapse; margin: 10px 0; width: 100%; }'
+                    '.docx-content td, .docx-content th { border: 1px solid #ddd; padding: 8px; }'
+                    '.docx-content ul, .docx-content ol { margin: 10px 0; padding-left: 25px; }'
+                    '</style>'
+                    f'<div class="docx-content">{html_content}</div>'
+                    '</div>'
+                )
+
+                text_only = re.sub(r'<[^>]+>', '', html_content)
+                text_only = re.sub(r'\s+', ' ', text_only).strip()
+                state['file_content'] = text_only
+                state['file_is_preview'] = False
+                state['file_preview_note'] = ''
+                state['chunk_dom_initialized'] = False
+
+                num_images = html_content.count('<img ')
+                img_info = f', {num_images} image{"s" if num_images != 1 else ""}' if num_images > 0 else ''
+
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str}{img_info})'
+                )
+                calc_content_area.value = (
+                    "<div class='calc-content-box' style='height:100%; overflow-y:auto;"
+                    " overflow-x:hidden; border:1px solid #ddd; background:#fafafa;"
+                    " width:100%; box-sizing:border-box;'>" + styled_html + "</div>"
+                )
+                calc_copy_btn.disabled = False
+                calc_copy_path_btn.disabled = False
+                calc_update_view()
+
+            except ImportError:
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str})'
+                )
+                calc_set_message('mammoth not installed.\n\nRun: pip install mammoth')
+            except Exception as e:
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str})'
+                )
+                calc_set_message(f'Error reading Word file: {e}')
+            return
+
+        # --- Text files (default) ---
+        try:
+            if size > CALC_TEXT_FULL_READ_BYTES:
+                # Only a window of the file is in memory, so editing it here
+                # would drop everything outside that window on save.
+                _calc_text_prepare(full_path, editable=False)
+                _calc_load_text_preview_chunk(full_path, size, 0)
+                calc_copy_btn.disabled = False
+                calc_copy_path_btn.disabled = False
+                chunk_lines = state['file_content'].count('\n') + (1 if state['file_content'] else 0)
+                calc_file_info.value = (
+                    f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                    f' ({size_str}, chunked view, {chunk_lines} lines loaded)'
+                )
+                if suffix == '.inp':
+                    state['selected_inp_path'] = full_path
+                    state['selected_inp_base'] = full_path.stem
+                    calc_recalc_btn.disabled = False
+                elif suffix in ['.out', '.log']:
+                    try:
+                        if size > CALC_LOG_XYZ_EXTRACT_MAX:
+                            # Read only the tail of large logs (XYZ blocks are near the end)
+                            with open(str(full_path), 'r', errors='ignore') as fh:
+                                fh.seek(max(0, size - CALC_TEXT_CHUNK_BYTES))
+                                xyz_source = fh.read()
+                        else:
+                            xyz_source = full_path.read_text(errors='ignore')
+                        xyz_content = calc_extract_orca_xyz_block(xyz_source)
+                        if xyz_content:
+                            state['xyz_frames'].clear()
+                            state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
+                            if state['xyz_frames']:
+                                state['xyz_current_frame'][0] = 0
+                                calc_xyz_frame_input.max = len(state['xyz_frames'])
+                                calc_xyz_frame_input.value = 1
+                                calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
+                                calc_xyz_controls.layout.display = 'flex'
+                                calc_coord_controls.layout.display = 'none'
+                                _calc_update_xyz_traj_control_state()
+                                if len(state['xyz_frames']) > 1:
+                                    calc_update_xyz_viewer(initial_load=True)
+                                else:
+                                    calc_xyz_frame_label.value = ''
+                                    _render_3dmol(xyz_content)
+                                    _calc_apply_traj_style()
+                            else:
+                                calc_xyz_controls.layout.display = 'none'
+                                _calc_update_xyz_traj_control_state()
+                            _set_view_toggle(False, False)
+                    except Exception:
+                        pass
+                calc_update_view()
+                return
+
+            content = full_path.read_text(errors='ignore')
+            state['file_content'] = content
+            state['file_is_preview'] = False
+            state['file_preview_note'] = ''
+            state['file_chunk_start'] = 0
+            state['file_chunk_end'] = 0
+            state['chunk_dom_initialized'] = False
+            # Whole file is in memory, so it can be edited -- read-only until
+            # the user clicks Edit, and never written without clicking Save.
+            _calc_text_prepare(full_path, editable=True)
+            _calc_update_chunk_controls()
+            calc_copy_btn.disabled = False
+            calc_copy_path_btn.disabled = False
+            line_count = content.count('\n') + (1 if content else 0)
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str}, {line_count} lines)'
+            )
+            calc_render_content(scroll_to='top')
+
+            if _calc_is_mutation_csv(name):
+                _set_view_toggle(False, False)
+                _calc_preselect_show(False)
+
+            # input.txt/start.txt: show coordinates in molecule viewer
+            if name in ('input.txt', 'start.txt'):
+                # For SMILES-only input.txt, open the same side-by-side 2D/3D visual mode
+                # used for mutation-space CSV browsing.
+                if name == 'input.txt' and is_smiles(content):
+                    _set_view_toggle(True, False)
+                    _on_view_toggle()
+                    return
+
+                _set_view_toggle(True, False)
+                calc_mol_container.layout.display = 'block'
+                calc_content_area.layout.display = 'none'
+                calc_update_view()
+                try:
+                    xyz_content = calc_build_xyz_from_input(
+                        content, title=name, base_dir=full_path.parent
+                    )
+                    if xyz_content:
+                        state['xyz_frames'].clear()
+                        state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
+                        if state['xyz_frames']:
+                            state['xyz_current_frame'][0] = 0
+                            calc_xyz_frame_input.max = len(state['xyz_frames'])
+                            calc_xyz_frame_input.value = 1
+                            calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
+                            calc_xyz_controls.layout.display = 'flex'
+                            calc_coord_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
+                        else:
+                            calc_xyz_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
+                        calc_xyz_frame_label.value = ''
+                        _render_3dmol(xyz_content)
+                        _calc_apply_traj_style()
+                except Exception as exc:
+                    calc_set_message(f'Error: {exc}')
+
+            # .inp files: prepare visualization but do not auto-open it
+            elif suffix == '.inp':
+                try:
+                    xyz_content = calc_build_xyz_from_input(
+                        content, title=name, base_dir=full_path.parent
+                    )
+                    if xyz_content:
+                        state['xyz_frames'].clear()
+                        state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
+                        if state['xyz_frames']:
+                            state['xyz_current_frame'][0] = 0
+                            calc_xyz_frame_input.max = len(state['xyz_frames'])
+                            calc_xyz_frame_input.value = 1
+                            calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
+                            calc_xyz_controls.layout.display = 'flex'
+                            calc_coord_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
+                        else:
+                            calc_xyz_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
+                        calc_xyz_frame_label.value = ''
+                        _render_3dmol(xyz_content)
+                        _calc_apply_traj_style()
+                        _set_view_toggle(False, False)
+                    else:
+                        _set_view_toggle(False, True)
+                except Exception as exc:
+                    _set_view_toggle(False, True)
+                    calc_set_message(f'Error: {exc}')
+                calc_mol_container.layout.display = 'none'
+                calc_content_area.layout.display = 'block'
+            elif suffix in ['.out', '.log']:
+                try:
+                    xyz_content = calc_extract_orca_xyz_block(content)
+                    if xyz_content:
+                        state['xyz_frames'].clear()
+                        state['xyz_frames'].extend(parse_xyz_frames(xyz_content))
+                        if state['xyz_frames']:
+                            state['xyz_current_frame'][0] = 0
+                            calc_xyz_frame_input.max = len(state['xyz_frames'])
+                            calc_xyz_frame_input.value = 1
+                            calc_xyz_frame_total.value = f"<b>/ {len(state['xyz_frames'])}</b>"
+                            calc_xyz_controls.layout.display = 'flex'
+                            calc_coord_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
+                            if len(state['xyz_frames']) > 1:
+                                calc_update_xyz_viewer(initial_load=True)
+                            else:
+                                calc_xyz_frame_label.value = ''
+                                _render_3dmol(xyz_content)
+                                _calc_apply_traj_style()
+                        else:
+                            calc_xyz_controls.layout.display = 'none'
+                            _calc_update_xyz_traj_control_state()
+                        _set_view_toggle(False, False)
+                    else:
+                        _set_view_toggle(False, True)
+                except Exception as exc:
+                    _set_view_toggle(False, True)
+                    calc_set_message(f'Error: {exc}')
+                calc_mol_container.layout.display = 'none'
+                calc_content_area.layout.display = 'block'
+
+            if suffix == '.inp':
+                state['selected_inp_path'] = full_path
+                state['selected_inp_base'] = full_path.stem
+                calc_recalc_btn.disabled = False
+
+            calc_update_view()
+        except UnicodeDecodeError:
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str})'
+            )
+            calc_set_message(f'Binary file ({size_str})\n\nCannot display.')
+        except Exception as e:
+            calc_set_message(f'Error: {e}')
+
+    # -- double-click handler (navigate into dir, or open file) ---------------
+    def calc_on_dblclick(change):
+        raw = (change['new'] or '').strip()
+        calc_dblclick_input.value = ''
+        chosen_label, full_path = _calc_resolve_active_label(raw)
+        if not chosen_label or full_path is None:
+            return
+        name = _calc_label_to_name(chosen_label)
+        if full_path.is_dir() and _calc_link_leaves_root(full_path):
+            _calc_set_ops_status(
+                f'<code>{_html.escape(name)}</code> is a link to a folder outside '
+                'the explorer root and is not opened '
+                '(DELFIN_BROWSER_FOLLOW_LINKS=1 allows it).',
+                color='#d32f2f',
+            )
+            return
+        if full_path.is_dir():
+            _calc_hide_rename_prompt()
+            try:
+                mark_calc_as_read(str(full_path.resolve()))
+            except Exception:
+                pass
+            state['current_path'] = (
+                f'{state["current_path"]}/{name}' if state['current_path'] else name
+            )
+            calc_list_directory()
+            calc_file_list.value = ()
+            return
+        if full_path.is_file():
+            _calc_open_item(chosen_label)
+
+    # -- selection-change handler (show file content on single-click) --------
+    def _calc_open_file_label(label):
+        """Open *label* if it names a file, and remember that we did."""
+        name = _calc_label_to_name(label)
+        full_path = (
+            (_calc_dir() / state['current_path'] / name)
+            if state['current_path']
+            else (_calc_dir() / name)
+        )
+        if not full_path.is_file():
+            return
+        # Keyed by the file name, not by the label the click carried. One
+        # press is reported twice -- by the browser's click bridge and by the
+        # selection change it causes -- and the two do not spell the label
+        # alike: the bridge keeps the non-breaking space the list draws with
+        # ("\U0001f52c\xa0second.xyz") where the selection change hands over a
+        # plain one. So the guard never matched, both reports opened the file,
+        # and opening a structure builds a whole 3Dmol viewer: measured, two
+        # fresh stages per click and 232-309 ms of blocked main thread, one of
+        # the two thrown away as soon as it existed. The name is what the path
+        # is built from a few lines up, so keying on it makes the two agree by
+        # construction. Still keyed by folder as well, so the same name in
+        # another directory still opens.
+        state['last_opened_label'] = (state['current_path'], name)
+        _calc_open_item(label)
+
+    def calc_on_open_request(change):
+        """A plain click on a file in the list, reported by the browser.
+
+        Arrives before the selection change the same click produces, so the
+        selection handler can tell that this file has just been opened.
+        """
+        raw = change['new'] or ''
+        calc_open_input.value = ''            # re-arm for the next click
+        label = raw.split('\x1f', 1)[0]
+        if not label or label.startswith('('):
+            return
+        _calc_open_file_label(label)
+
+    def calc_on_selection_change(change):
+        _calc_update_explorer_action_state()
+        labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
+        if len(labels) == 1:
+            # The click bridge above has usually opened this one already.  This
+            # path still serves keyboard navigation, and stands in whenever the
+            # bridge is not installed.
+            if ((state['current_path'], _calc_label_to_name(labels[0]))
+                    == state.get('last_opened_label')):
+                return
+            _calc_open_file_label(labels[0])
+
+    # -- keyboard action handler (from JS bridge) ----------------------------
+    def calc_on_keyboard_action(change):
+        action = (change['new'] or '').strip()
+        calc_keyboard_action_input.value = ''
+        if not action:
+            return
+        if action == 'copy':
+            calc_on_explorer_copy()
+        elif action == 'cut':
+            calc_on_explorer_cut()
+        elif action == 'paste':
+            calc_on_explorer_paste()
+        elif action == 'delete':
+            calc_on_delete_click()
+        elif action == 'rename':
+            calc_on_explorer_start_rename()
+        elif action == 'open':
+            labels = _calc_selected_labels()
+            if len(labels) == 1:
+                calc_on_dblclick({'new': labels[0]})
+        elif action == 'deselect':
+            calc_file_list.value = ()
+
+    # -- wiring -------------------------------------------------------------
+    calc_back_btn.on_click(calc_on_back)
+    calc_home_btn.on_click(calc_on_home)
+    def _calc_toggle_doc_zen():
+        """Fullscreen with the file browser out of the way.
+
+        The tab's own fullscreen gives the tab the window and keeps the
+        explorer beside the document, which is right when the point is to see
+        a job's output next to the folder it came from.  It is not right for a
+        spreadsheet or a document, where the point is the document.  Same
+        lift-out, one class more, and the kernel owns the state so the tab's
+        button and the one in the document's own bar cannot disagree.
+        """
+        on = not bool(state.get('zen_doc'))
+        state['zen_doc'] = on
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) return;
+            root.classList.toggle('calc-zen-doc', {json.dumps(on)});
+        }})();
+        """)
+        if calc_fullscreen_btn is not None:
+            # Let the tab's own handler own 'calc-zen'; this only adds the
+            # class that takes the explorer out.
+            if bool(calc_fullscreen_btn.value) != on:
+                calc_fullscreen_btn.value = on
+                return
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) return;
+            root.classList.toggle('calc-zen', {json.dumps(on)});
+            setTimeout(function() {{ window.dispatchEvent(new Event('resize')); }}, 60);
+        }})();
+        """)
+
+    def _calc_on_fullscreen(change):
+        """Give the tab the whole window, or hand it back.
+
+        Python owns the state so the button always reflects it; Escape
+        reaches here as a click on that same button.
+        """
+        on = bool(change.get('new'))
+        if not on and state.get('zen_doc'):
+            # Leaving fullscreen leaves all of it, or the explorer would stay
+            # hidden in a tab that is no longer fullscreen.
+            state['zen_doc'] = False
+            _run_js(f"""
+            (function() {{
+                var root = document.querySelector('.{calc_scope_id}');
+                if (root) root.classList.remove('calc-zen-doc');
+            }})();
+            """)
+        calc_fullscreen_btn.description = '⤫' if on else '⛶'
+        calc_fullscreen_btn.tooltip = (
+            'Leave fullscreen (Esc)' if on else 'Fullscreen (Esc exits)')
+        _run_js(f"""
+        (function() {{
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) return;
+            root.classList.toggle('calc-zen', {json.dumps(on)});
+            /* The 3D viewer sizes itself in pixels from the free space it
+               measured, so it has to measure again once the tab has resized. */
+            setTimeout(function() {{
+                var fn = window["{calc_resize_mol_fn}"];
+                if (typeof fn === 'function') fn();
+                window.dispatchEvent(new Event('resize'));
+            }}, 60);
+        }})();
+        """)
+
+    calc_fullscreen_btn.observe(_calc_on_fullscreen, names='value')
+    calc_refresh_btn.on_click(calc_on_refresh)
+    calc_path_input.observe(calc_on_path_change, names='value')
+    calc_top_btn.on_click(calc_go_top)
+    calc_bottom_btn.on_click(calc_go_bottom)
+    calc_search_btn.on_click(calc_do_search)
+    calc_search_input.observe(calc_on_search_input_change, names='value')
+    if hasattr(calc_search_input, 'on_submit'):
+        try:
+            calc_search_input.on_submit(calc_on_search_submit)
+        except Exception:
+            pass
+    calc_search_suggest.observe(calc_on_suggest, names='value')
+    calc_chunk_prev_btn.on_click(calc_prev_chunk)
+    calc_chunk_next_btn.on_click(calc_next_chunk)
+    calc_chunk_request_btn.on_click(calc_on_chunk_request)
+    calc_chunk_request_start.observe(calc_on_chunk_request_start_change, names='value')
+    calc_view_toggle.observe(_on_view_toggle, names='value')
+    calc_prev_btn.on_click(calc_prev_match)
+    calc_next_btn.on_click(calc_next_match)
+    calc_recalc_btn.on_click(calc_on_recalc_click)
+    calc_submit_recalc_btn.on_click(calc_on_submit_recalc)
+    calc_submit_xyz_workflow_btn.on_click(_calc_submit_xyz_browser_workflow)
+    calc_prescreen_btn.on_click(_calc_on_prescreen_click)
+    calc_prescreen_refresh_btn.on_click(_calc_on_prescreen_refresh_click)
+    calc_delete_btn.on_click(calc_on_delete_click)
+    calc_delete_yes_btn.on_click(calc_on_delete_yes)
+    calc_delete_no_btn.on_click(calc_on_delete_no)
+    calc_move_archive_btn.on_click(calc_on_move_archive_click)
+    calc_back_to_calculations_btn.on_click(calc_on_back_to_calculations)
+    calc_ssh_transfer_btn.on_click(calc_on_ssh_transfer_click)
+    calc_transfer_jobs_btn.on_click(calc_on_transfer_jobs_toggle)
+    calc_move_archive_yes_btn.on_click(calc_on_move_archive_yes)
+    calc_move_archive_no_btn.on_click(calc_on_move_archive_no)
+    calc_transfer_jobs_refresh_btn.on_click(calc_on_transfer_jobs_refresh)
+    calc_explorer_new_btn.on_click(calc_on_explorer_new_folder)
+    calc_explorer_rename_btn.on_click(calc_on_explorer_start_rename)
+    calc_duplicate_btn.on_click(calc_on_explorer_start_duplicate)
+    calc_rename_prompt_ok_btn.on_click(calc_on_explorer_rename_ok)
+    calc_rename_prompt_cancel_btn.on_click(calc_on_explorer_rename_cancel)
+    calc_duplicate_prompt_yes_btn.on_click(calc_on_explorer_duplicate_yes)
+    calc_duplicate_prompt_cancel_btn.on_click(calc_on_explorer_duplicate_cancel)
+    calc_new_folder_prompt_ok_btn.on_click(calc_on_new_folder_prompt_ok)
+    calc_new_folder_prompt_cancel_btn.on_click(calc_on_new_folder_prompt_cancel)
+    calc_new_folder_btn.on_click(calc_on_new_folder)
+    calc_rename_btn.on_click(calc_on_rename)
+    calc_move_btn.on_click(calc_on_move_items)
+    calc_hidden_upload.observe(calc_on_hidden_upload, names='value')
+    calc_upload_seq_input.observe(calc_on_upload_bridge_seq, names='value')
+    calc_upload_trigger_btn.on_click(calc_on_upload_trigger_click)
+    for _txt, _handler in (
+        (calc_new_folder_input, calc_on_new_folder),
+        (calc_rename_input, calc_on_rename),
+        (calc_move_target_input, calc_on_move_items),
+    ):
+        if hasattr(_txt, 'on_submit'):
+            try:
+                _txt.on_submit(_handler)
+            except Exception:
+                pass
+    if hasattr(calc_rename_prompt_input, 'on_submit'):
+        try:
+            calc_rename_prompt_input.on_submit(calc_on_explorer_rename_ok)
+        except Exception:
+            pass
+    if hasattr(calc_duplicate_prompt_input, 'on_submit'):
+        try:
+            calc_duplicate_prompt_input.on_submit(calc_on_explorer_duplicate_yes)
+        except Exception:
+            pass
+    if hasattr(calc_new_folder_prompt_input, 'on_submit'):
+        try:
+            calc_new_folder_prompt_input.on_submit(calc_on_new_folder_prompt_ok)
+        except Exception:
+            pass
+    if _is_archive_tab:
+        calc_table_btn.on_click(calc_on_table_toggle)
+        calc_table_close_btn.on_click(calc_on_table_close)
+        calc_table_add_col_btn.on_click(calc_on_table_add_col)
+        calc_table_run_btn.on_click(calc_on_table_run)
+        calc_table_csv_btn.on_click(calc_on_table_csv_download)
+        calc_table_preset_save_btn.on_click(calc_on_table_preset_save)
+    calc_file_list.observe(calc_on_selection_change, names='value')
+    calc_dblclick_input.observe(calc_on_dblclick, names='value')
+    calc_open_input.observe(calc_on_open_request, names='value')
+    calc_xyz_batch_dblclick_input.observe(calc_on_xyz_batch_dblclick, names='value')
+    calc_xyz_batch_toggle_input.observe(calc_on_xyz_batch_toggle, names='value')
+    calc_keyboard_action_input.observe(calc_on_keyboard_action, names='value')
+    calc_sheet_action_btn.on_click(calc_on_sheet_action)
+    calc_text_edit_btn.on_click(calc_on_text_edit)
+    calc_text_save_btn.on_click(calc_on_text_save)
+    calc_text_cancel_btn.on_click(calc_on_text_cancel)
+    calc_text_area.observe(calc_on_text_area_change, names='value')
+    calc_folder_search.observe(calc_filter_file_list, names='value')
+    calc_options_dropdown.observe(calc_on_options_change, names='value')
+    calc_override_btn.on_click(calc_on_override_start)
+    calc_preselect_yes.on_click(lambda _b: _calc_preselect_decide('yes'))
+    calc_preselect_no.on_click(lambda _b: _calc_preselect_decide('no'))
+    calc_preselect_prev.on_click(_calc_preselect_prev_entry)
+    calc_preselect_next.on_click(_calc_preselect_next_entry)
+    calc_preselect_move.on_click(_calc_preselect_move_current)
+    calc_preselect_close.on_click(_calc_preselect_close_view)
+    calc_preselect_new3d.on_click(_calc_preselect_new_3d_structure)
+    calc_sort_dropdown.observe(calc_on_sort_change, names='value')
+    calc_dotfiles_btn.observe(calc_on_dotfiles_change, names='value')
+    calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
+    calc_xyz_loop_checkbox.observe(calc_on_xyz_loop_change, names='value')
+    calc_xyz_fps_input.observe(calc_on_xyz_fps_change, names='value')
+    calc_xyz_play_btn.observe(calc_on_xyz_play_change, names='value')
+    calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
+    calc_xyz_select_btn.observe(calc_on_xyz_select_toggle, names='value')
+    calc_xyz_clear_sel_btn.on_click(calc_on_xyz_clear_selection)
+    calc_xyz_png_btn.on_click(calc_on_view_png)
+    calc_rmsd_run_btn.on_click(calc_on_rmsd_run)
+    calc_rmsd_hide_btn.on_click(calc_on_rmsd_hide)
+    calc_coord_copy_btn.on_click(calc_on_coord_copy)
+    calc_coord_png_btn.on_click(calc_on_view_png)
+    calc_view_png_btn.on_click(calc_on_view_png)
+    calc_copy_btn.on_click(calc_on_content_copy)
+    calc_copy_path_btn.on_click(calc_on_path_copy)
+    calc_download_btn.on_click(calc_on_download)
+    calc_xyz_batch_mark_btn.on_click(calc_on_xyz_batch_mark)
+    calc_xyz_batch_select_all_btn.on_click(calc_on_xyz_batch_select_all)
+    calc_xyz_batch_up_btn.on_click(calc_on_xyz_batch_up)
+    calc_xyz_batch_root_btn.on_click(calc_on_xyz_batch_root)
+    calc_xyz_batch_refresh_btn.on_click(calc_on_xyz_batch_refresh)
+    calc_xyz_batch_build_btn.on_click(calc_on_xyz_batch_build)
+    calc_xyz_batch_copy_btn.on_click(calc_on_xyz_batch_copy)
+    calc_print_mode_plot_btn.on_click(calc_on_print_mode_plot)
+    calc_mo_plot_alpha_cb.observe(_calc_update_mo_spin_button_styles, names='value')
+    calc_mo_plot_beta_cb.observe(_calc_update_mo_spin_button_styles, names='value')
+    _calc_update_mo_spin_button_styles()
+    calc_mo_plot_btn.on_click(calc_on_mo_plot)
+    calc_nmr_submit_btn.on_click(_calc_on_nmr_submit)
+    calc_censo_nmr_submit_btn.on_click(_calc_on_censo_nmr_submit)
+    calc_report_btn.on_click(calc_on_report)
+    disable_spellcheck(ctx, class_name='calc-search-input')
+    disable_spellcheck(ctx, class_name='calc-table-preset-name')
+    _calc_update_xyz_traj_control_state()
+
+    # -- initialise ---------------------------------------------------------
+    _calc_register_explorer_refresh()
+    if _remote_archive_enabled:
+        _calc_render_transfer_jobs()
+
+    if ctx.calc_dir.exists():
+        calc_list_directory()
+    else:
+        calc_file_list.options = ['(calc folder not found)']
+
+    _explorer_interactions_js = r"""
+    (function(){
+        if (window._delfinExplorerInteractionsReady) return;
+        window._delfinExplorerInteractionsReady = true;
+        console.log('[DELFIN] Explorer interactions JS loaded');
+
+        function _labelText(opt){
+            if (!opt) return '';
+            return String(opt.textContent || opt.innerText || '');
+        }
+        function _labelToName(text){
+            var t = String(text || '').trim();
+            var idx = t.indexOf(' ');
+            return idx >= 0 ? t.slice(idx + 1).trim() : t;
+        }
+        function _isFolderLabel(text){
+            var t = String(text || '');
+            return t.indexOf('📂 ') === 0 || t.indexOf('✅ ') === 0;
+        }
+        function _eventPointNode(e){
+            if (document.elementFromPoint && e && typeof e.clientX === 'number' && typeof e.clientY === 'number') {
+                var pointed = document.elementFromPoint(e.clientX, e.clientY);
+                if (pointed) return pointed;
+            }
+            return e && e.target ? e.target : null;
+        }
+        function _optionIndex(selectEl, opt){
+            if (!selectEl || !opt || !selectEl.options) return -1;
+            return Array.prototype.indexOf.call(selectEl.options, opt);
+        }
+        function _optionFromIndex(selectEl, idx){
+            if (!selectEl || !selectEl.options || idx < 0 || idx >= selectEl.options.length) return null;
+            return selectEl.options[idx];
+        }
+        function _optionVisualHeight(selectEl){
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return 0;
+            for (var i = 0; i < selectEl.options.length; i++) {
+                var rect = selectEl.options[i].getBoundingClientRect ? selectEl.options[i].getBoundingClientRect() : null;
+                if (rect && rect.height > 0) return rect.height;
+            }
+            return 0;
+        }
+        function _selectedOption(selectEl){
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return null;
+            if (selectEl.selectedOptions && selectEl.selectedOptions.length) {
+                return selectEl.selectedOptions[0];
+            }
+            if (typeof selectEl.selectedIndex === 'number' && selectEl.selectedIndex >= 0) {
+                return _optionFromIndex(selectEl, selectEl.selectedIndex);
+            }
+            return null;
+        }
+        function _optionIndexAtPoint(selectEl, e){
+            if (!selectEl || !selectEl.options || !selectEl.options.length) return -1;
+            var node = _eventPointNode(e);
+            if (node && node.tagName === 'OPTION') return _optionIndex(selectEl, node);
+            if (node && node.closest) {
+                var optNode = node.closest('option');
+                if (optNode) return _optionIndex(selectEl, optNode);
+            }
+            if (!e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return -1;
+            var rect = selectEl.getBoundingClientRect();
+            if (
+                e.clientX < rect.left || e.clientX > rect.right ||
+                e.clientY < rect.top || e.clientY > rect.bottom
+            ) {
+                return -1;
+            }
+            var optionCount = selectEl.options.length;
+            var optionHeight = _optionVisualHeight(selectEl);
+            if ((!optionHeight || !isFinite(optionHeight)) && selectEl.scrollHeight && selectEl.scrollHeight > 0) {
+                optionHeight = selectEl.scrollHeight / optionCount;
+            }
+            if ((!optionHeight || !isFinite(optionHeight)) && rect.height > 0) {
+                var visibleRows = Math.max(1, Math.min(optionCount, Number(selectEl.size) || optionCount));
+                optionHeight = rect.height / visibleRows;
+            }
+            if (!optionHeight || !isFinite(optionHeight)) return -1;
+            var localY = (e.clientY - rect.top) + (selectEl.scrollTop || 0);
+            var contentHeight = optionHeight * optionCount;
+            if (localY < 0 || localY >= contentHeight) return -1;
+            var rawIdx = Math.floor(localY / optionHeight);
+            if (rawIdx < 0) rawIdx = 0;
+            if (rawIdx >= optionCount) rawIdx = optionCount - 1;
+            return rawIdx;
+        }
+        function _optionAtPoint(selectEl, e){
+            return _optionFromIndex(selectEl, _optionIndexAtPoint(selectEl, e));
+        }
+        function _activeOptionForEvent(selectEl, e){
+            return _optionAtPoint(selectEl, e) || _selectedOption(selectEl);
+        }
+        function _selectAtPoint(e){
+            var node = _eventPointNode(e);
+            if (!node || !node.closest) return null;
+            return node.closest('.calc-file-list select');
+        }
+        function _batchSelectAtPoint(e){
+            var node = _eventPointNode(e);
+            if (!node || !node.closest) return null;
+            return node.closest('.calc-xyz-batch-select select');
+        }
+        function _leftPaneAtPoint(e){
+            var node = _eventPointNode(e);
+            if (!node || !node.closest) return null;
+            return node.closest('.calc-left');
+        }
+        function _pointInsideElement(el, e){
+            if (!el || !e || typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return false;
+            var rect = el.getBoundingClientRect();
+            return (
+                e.clientX >= rect.left &&
+                e.clientX <= rect.right &&
+                e.clientY >= rect.top &&
+                e.clientY <= rect.bottom
+            );
+        }
+        function _hasExternalFiles(e){
+            var dt = e && e.dataTransfer;
+            if (!dt) return false;
+            if (dt.files && dt.files.length) return true;
+            var types = Array.prototype.slice.call(dt.types || []);
+            return types.indexOf('Files') >= 0;
+        }
+        function _setDropActive(selectEl, active){
+            if (!selectEl || !selectEl.classList) return;
+            if (active) selectEl.classList.add('calc-drop-active');
+            else selectEl.classList.remove('calc-drop-active');
+        }
+        function _widgetField(root, cls){
+            if (!root) return null;
+            return root.querySelector('.' + cls + ' textarea, .' + cls + ' input');
+        }
+        function _getWidgetFieldValue(root, cls){
+            var field = _widgetField(root, cls);
+            return field ? String(field.value == null ? '' : field.value) : '';
+        }
+        function _setWidgetField(root, cls, value){
+            var field = _widgetField(root, cls);
+            if (!field) return false;
+            var strVal = String(value == null ? '' : value);
+            var nativeSet = Object.getOwnPropertyDescriptor(
+                Object.getPrototypeOf(field), 'value'
+            ) || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+              || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            if (nativeSet && nativeSet.set) {
+                nativeSet.set.call(field, strVal);
+            } else {
+                field.value = strVal;
+            }
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            field.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        }
+        function _setWidgetInput(root, cls, value){
+            return _setWidgetField(root, cls, value);
+        }
+        function _clickWidgetButton(root, cls){
+            if (!root) return false;
+            var node = root.querySelector('.' + cls);
+            if (!node) return false;
+            var btn = null;
+            if (node.tagName === 'BUTTON') {
+                btn = node;
+            } else if (node.querySelector) {
+                btn = node.querySelector('button');
+            }
+            if (!btn && typeof node.click === 'function') {
+                node.click();
+                return true;
+            }
+            if (!btn) return false;
+            btn.click();
+            return true;
+        }
+        function _cookieValue(name){
+            var parts = document.cookie ? document.cookie.split(';') : [];
+            for (var i = 0; i < parts.length; i++) {
+                var raw = String(parts[i] || '').trim();
+                if (raw.indexOf(name + '=') === 0) {
+                    return decodeURIComponent(raw.slice(name.length + 1));
+                }
+            }
+            return '';
+        }
+        function _pageConfig(){
+            try {
+                var node = document.getElementById('jupyter-config-data');
+                return node ? JSON.parse(node.textContent || '{}') : {};
+            } catch (_err) {
+                return {};
+            }
+        }
+        function _baseUrl(){
+            var cfg = _pageConfig();
+            return String(cfg.baseUrl || '/');
+        }
+        function _uploadStagingRootRel(root){
+            if (!root || !window.__delfinCalcUploadStagingRoots) return '';
+            var classes = Array.prototype.slice.call(root.classList || []);
+            for (var i = 0; i < classes.length; i++) {
+                var cls = classes[i];
+                if (cls.indexOf('calc-scope-') === 0 && window.__delfinCalcUploadStagingRoots[cls]) {
+                    return String(window.__delfinCalcUploadStagingRoots[cls] || '');
+                }
+            }
+            return '';
+        }
+        function _currentExplorerRelPath(root){
+            if (!root) return '';
+            var label = root.querySelector('.calc-path-label');
+            var text = label ? String(label.textContent || label.innerText || '') : '';
+            var idx = text.indexOf('Path:');
+            if (idx >= 0) text = text.slice(idx + 5);
+            text = text.replace(/\u00a0/g, ' ').trim();
+            if (!text || text === '/') return '';
+            return text.replace(/^\/+/, '').replace(/\/+$/, '');
+        }
+        function _setOpsStatus(root, message, color){
+            if (!root) return;
+            var node = root.querySelector('.calc-ops-status .widget-html-content') || root.querySelector('.calc-ops-status');
+            if (!node) return;
+            node.innerHTML = '<span style="color:' + String(color || '#555') + ';">' + String(message || '') + '</span>';
+            /* A status line is about the thing that just happened. Left on
+               screen it reports an upload that finished ten minutes ago, so
+               the next thing the user does takes it away. The stamp is what
+               keeps a stale listener from clearing a newer message. */
+            if (root.__opsStatusClear) {
+                root.removeEventListener('pointerdown', root.__opsStatusClear, true);
+                root.__opsStatusClear = null;
+            }
+            if (!String(message || '')) return;
+            var stamp = (root.__opsStatusStamp = (root.__opsStatusStamp || 0) + 1);
+            root.__opsStatusClear = function(){
+                if (root.__opsStatusStamp !== stamp) return;
+                node.innerHTML = '';
+                root.removeEventListener('pointerdown', root.__opsStatusClear, true);
+                root.__opsStatusClear = null;
+            };
+            /* Not on the click that produced the message. */
+            setTimeout(function(){
+                if (root.__opsStatusClear) {
+                    root.addEventListener('pointerdown', root.__opsStatusClear, true);
+                }
+            }, 0);
+        }
+        function _encodeContentsPath(path){
+            return String(path || '')
+                .split('/')
+                .filter(function(part){ return !!part; })
+                .map(function(part){ return encodeURIComponent(part); })
+                .join('/');
+        }
+        function _normalizeRelParts(path){
+            var raw = String(path || '').replace(/\\/g, '/');
+            var parts = raw.split('/').filter(function(part){ return !!part && part !== '.'; });
+            if (!parts.length) return [];
+            for (var i = 0; i < parts.length; i++) {
+                if (parts[i] === '..') throw new Error('Upload path cannot contain ".."');
+            }
+            return parts;
+        }
+        function _joinRelParts(parts){
+            return parts.filter(function(part){ return !!part; }).join('/');
+        }
+        function _mergeRelParts(){
+            var merged = [];
+            for (var i = 0; i < arguments.length; i++) {
+                var segment = arguments[i];
+                if (!segment) continue;
+                merged = merged.concat(_normalizeRelParts(segment));
+            }
+            return merged;
+        }
+        function _basename(path){
+            var parts = _normalizeRelParts(path);
+            return parts.length ? parts[parts.length - 1] : '';
+        }
+        function _widgetText(root, cls){
+            if (!root) return '';
+            var node = root.querySelector('.' + cls);
+            return node ? String(node.textContent || node.innerText || '').trim() : '';
+        }
+        function _currentUploadAck(root){
+            return _getWidgetFieldValue(root, 'calc-upload-ack') || _widgetText(root, 'calc-upload-ack-label');
+        }
+        function _sleep(ms){
+            return new Promise(function(resolve){ setTimeout(resolve, ms); });
+        }
+        function _waitForUploadAck(root, previousAck, timeoutMs){
+            return new Promise(function(resolve, reject){
+                var start = Date.now();
+                var prev = String(previousAck == null ? '' : previousAck);
+                function check(){
+                    var cur = _currentUploadAck(root);
+                    if (cur && cur !== prev) {
+                        resolve(cur);
+                        return true;
+                    }
+                    if ((Date.now() - start) >= timeoutMs) {
+                        reject(new Error('Explorer upload bridge timed out.'));
+                        return true;
+                    }
+                    return false;
+                }
+                if (check()) return;
+                var timer = setInterval(function(){
+                    if (check()) clearInterval(timer);
+                }, 40);
+            });
+        }
+        async function _sendUploadChunk(root, meta, chunkData){
+            var prevAck = _currentUploadAck(root);
+            if (!_setWidgetInput(root, 'calc-upload-meta', JSON.stringify(meta))) {
+                throw new Error('Upload meta widget not found');
+            }
+            if (!_setWidgetInput(root, 'calc-upload-chunk', chunkData)) {
+                throw new Error('Upload chunk widget not found');
+            }
+            if (_clickWidgetButton(root, 'calc-upload-trigger-btn')) {
+                await _waitForUploadAck(root, prevAck, 300000);
+                await _sleep(5);
+                return;
+            }
+            root._delfinUploadSeq = Math.max(
+                Number(root._delfinUploadSeq) || 0,
+                parseInt(String(_currentUploadAck(root) || '0'), 10) || 0
+            ) + 1;
+            if (!_setWidgetInput(root, 'calc-upload-seq', String(root._delfinUploadSeq))) {
+                throw new Error('Upload trigger controls not found');
+            }
+            await _waitForUploadAck(root, prevAck, 300000);
+            await _sleep(5);
+        }
+        async function _putContentsModel(relPath, model){
+            var url = _baseUrl().replace(/\/?$/, '/') + 'api/contents/' + _encodeContentsPath(relPath);
+            var headers = { 'Content-Type': 'application/json' };
+            var xsrf = _cookieValue('_xsrf');
+            if (xsrf) headers['X-XSRFToken'] = xsrf;
+            var response = await fetch(url, {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: headers,
+                body: JSON.stringify(model)
+            });
+            if (!response.ok) {
+                var body = await response.text();
+                throw new Error('Upload failed (' + response.status + '): ' + body.slice(0, 240));
+            }
+            return response;
+        }
+        async function _ensureContentsDirectory(relDir){
+            var parts = _normalizeRelParts(relDir);
+            var current = [];
+            for (var i = 0; i < parts.length; i++) {
+                current.push(parts[i]);
+                await _putContentsModel(_joinRelParts(current), { type: 'directory' });
+            }
+        }
+        function _hideCtxMenu(){
+            var menu = document.getElementById('delfin-explorer-ctx-menu');
+            if (menu) menu.style.display = 'none';
+        }
+        function _ensureCtxMenu(){
+            var menu = document.getElementById('delfin-explorer-ctx-menu');
+            if (menu) return menu;
+            menu = document.createElement('div');
+            menu.id = 'delfin-explorer-ctx-menu';
+            menu.style.cssText = [
+                'position:fixed',
+                'z-index:2147483647',
+                'display:none',
+                'min-width:170px',
+                'background:#fff',
+                'border:1px solid #c8c8c8',
+                'box-shadow:0 8px 24px rgba(0,0,0,0.18)',
+                'border-radius:6px',
+                'padding:4px'
+            ].join(';');
+
+            function makeItem(label, onClick){
+                var item = document.createElement('button');
+                item.type = 'button';
+                item.textContent = label;
+                item.style.cssText = [
+                    'display:block',
+                    'width:100%',
+                    'text-align:left',
+                    'padding:7px 10px',
+                    'border:none',
+                    'background:transparent',
+                    'cursor:pointer',
+                    'border-radius:4px',
+                    'font:13px sans-serif'
+                ].join(';');
+                item.addEventListener('mouseenter', function(){ item.style.background = '#f2f6ff'; });
+                item.addEventListener('mouseleave', function(){ item.style.background = 'transparent'; });
+                item.addEventListener('click', function(ev){
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    try { onClick(menu); } finally { _hideCtxMenu(); }
+                });
+                return item;
+            }
+
+            menu.appendChild(makeItem('New Folder', function(menuEl){
+                var root = menuEl._root;
+                _clickWidgetButton(root, 'calc-cmd-explorer-new-btn');
+            }));
+            menu.appendChild(makeItem('Rename', function(menuEl){
+                var root = menuEl._root;
+                var opt = menuEl._ctxOption;
+                if (!root || !opt) return;
+                var currentName = _labelToName(_labelText(opt));
+                if (!currentName) return;
+                var nextName = window.prompt('Rename to:', currentName);
+                if (nextName === null) return;
+                _setWidgetInput(root, 'calc-cmd-action-source', currentName);
+                _setWidgetInput(root, 'calc-cmd-rename-input', nextName);
+                _clickWidgetButton(root, 'calc-cmd-rename-btn');
+            }));
+            menu.appendChild(makeItem('Download ZIP', function(menuEl){
+                var root = menuEl._root;
+                if (!root) return;
+                _clickWidgetButton(root, 'calc-download-btn');
+            }));
+            document.body.appendChild(menu);
+            return menu;
+        }
+        function _triggerMove(root, sourceOpt, targetOpt){
+            if (!root || !sourceOpt || !targetOpt || sourceOpt === targetOpt) return;
+            var targetLabel = _labelText(targetOpt);
+            if (!_isFolderLabel(targetLabel)) return;
+            var targetName = _labelToName(targetLabel);
+            if (!targetName) return;
+            var sourceName = _labelToName(_labelText(sourceOpt));
+            if (!sourceName) return;
+            _setWidgetInput(root, 'calc-cmd-action-source', sourceName);
+            _setWidgetInput(root, 'calc-cmd-move-target', targetName);
+            setTimeout(function(){
+                _clickWidgetButton(root, 'calc-cmd-move-btn');
+            }, 20);
+        }
+        function _entryFile(entry){
+            return new Promise(function(resolve, reject){
+                try { entry.file(resolve, reject); }
+                catch (err) { reject(err); }
+            });
+        }
+        function _readDirEntries(reader){
+            return new Promise(function(resolve, reject){
+                try { reader.readEntries(resolve, reject); }
+                catch (err) { reject(err); }
+            });
+        }
+        async function _walkDroppedEntry(entry, prefix, files){
+            if (!entry) return;
+            if (entry.isFile) {
+                var file = await _entryFile(entry);
+                files.push({
+                    file: file,
+                    relativePath: String(prefix || '') + String(file.name || 'upload.bin'),
+                });
+                return;
+            }
+            if (!entry.isDirectory) return;
+            var nextPrefix = String(prefix || '') + String(entry.name || 'folder') + '/';
+            var reader = entry.createReader();
+            while (true) {
+                var entries = await _readDirEntries(reader);
+                if (!entries || !entries.length) break;
+                for (var i = 0; i < entries.length; i++) {
+                    await _walkDroppedEntry(entries[i], nextPrefix, files);
+                }
+            }
+        }
+        async function _collectDroppedFiles(e){
+            var dt = e && e.dataTransfer;
+            if (!dt) return [];
+            var files = [];
+            var items = Array.prototype.slice.call(dt.items || []);
+            var usedEntries = false;
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                if (!item || typeof item.webkitGetAsEntry !== 'function') continue;
+                var entry = item.webkitGetAsEntry();
+                if (!entry) continue;
+                usedEntries = true;
+                await _walkDroppedEntry(entry, '', files);
+            }
+            if (!usedEntries) {
+                Array.prototype.forEach.call(dt.files || [], function(file){
+                    if (!file) return;
+                    files.push({
+                        file: file,
+                        relativePath: file.webkitRelativePath || file.name || 'upload.bin',
+                    });
+                });
+            }
+            return files;
+        }
+        function _readFileAsBase64(file){
+            return new Promise(function(resolve, reject){
+                var reader = new FileReader();
+                reader.onload = function(){
+                    var result = String(reader.result || '');
+                    var comma = result.indexOf(',');
+                    resolve(comma >= 0 ? result.slice(comma + 1) : result);
+                };
+                reader.onerror = function(){
+                    reject(reader.error || new Error('Failed to read dropped file'));
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+        function _clipboardFiles(e){
+            var cd = e && e.clipboardData;
+            if (!cd) return [];
+            var files = [];
+            var items = Array.prototype.slice.call(cd.items || []);
+            items.forEach(function(item){
+                if (!item || item.kind !== 'file') return;
+                var file = typeof item.getAsFile === 'function' ? item.getAsFile() : null;
+                if (!file) return;
+                files.push({
+                    file: file,
+                    relativePath: file.name || 'upload.bin',
+                });
+            });
+            if (!files.length) {
+                Array.prototype.forEach.call(cd.files || [], function(file){
+                    if (!file) return;
+                    files.push({
+                        file: file,
+                        relativePath: file.name || 'upload.bin',
+                    });
+                });
+            }
+            return files;
+        }
+        function _targetFolderName(selectEl, e, preferSelected){
+            var targetOpt = e ? _optionAtPoint(selectEl, e) : null;
+            if (!targetOpt && preferSelected && selectEl && selectEl.selectedOptions && selectEl.selectedOptions.length) {
+                targetOpt = selectEl.selectedOptions[0];
+            }
+            var targetLabel = _labelText(targetOpt);
+            return _isFolderLabel(targetLabel) ? _labelToName(targetLabel) : '';
+        }
+        async function _uploadBrowserFiles(root, browserFiles, targetName, batchPrefix){
+            console.log('[DELFIN] _uploadBrowserFiles called, files:', browserFiles.length, 'targetName:', targetName);
+            if (!root || !browserFiles || !browserFiles.length) return false;
+            _setOpsStatus(root, 'Uploading ' + browserFiles.length + ' file(s)...', '#555');
+            var chunkChars = 1000000;
+            var batchId = String(batchPrefix || 'drop') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+            var target = String(targetName || '');
+            for (var i = 0; i < browserFiles.length; i++) {
+                var browserEntry = browserFiles[i];
+                var fileObj = browserEntry && browserEntry.file ? browserEntry.file : null;
+                if (!fileObj) continue;
+                var relativePath = String(browserEntry.relativePath || fileObj.webkitRelativePath || fileObj.name || ('upload_' + i));
+                var payload = await _readFileAsBase64(fileObj);
+                var totalChunks = Math.max(1, Math.ceil(payload.length / chunkChars));
+                for (var chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                    var chunkData = payload.slice(chunkIndex * chunkChars, (chunkIndex + 1) * chunkChars);
+                    await _sendUploadChunk(root, {
+                        batch_id: batchId,
+                        upload_id: batchId + ':' + i,
+                        batch_total: browserFiles.length,
+                        chunk_index: chunkIndex,
+                        chunk_total: totalChunks,
+                        target: target,
+                        name: _basename(relativePath) || (fileObj.name || ('upload_' + i)),
+                        relative_path: relativePath,
+                    }, chunkData);
+                }
+            }
+            _setOpsStatus(root, 'Upload sent. Processing...', '#2e7d32');
+            return true;
+        }
+        async function _uploadDroppedFiles(root, selectEl, e){
+            if (!root || !selectEl || !_hasExternalFiles(e)) return false;
+            var droppedFiles = await _collectDroppedFiles(e);
+            if (!droppedFiles.length) return false;
+            return _uploadBrowserFiles(root, droppedFiles, _targetFolderName(selectEl, e, false), 'drop');
+        }
+        async function _uploadPastedFiles(root, selectEl, e){
+            if (!root || !selectEl) return false;
+            var pastedFiles = _clipboardFiles(e);
+            if (!pastedFiles.length) return false;
+            return _uploadBrowserFiles(root, pastedFiles, _targetFolderName(selectEl, null, true), 'paste');
+        }
+        function _installExplorerSelect(selectEl){
+            if (!selectEl || selectEl._delfinExplorerReady) return;
+            selectEl._delfinExplorerReady = true;
+            var root = selectEl.closest('.calc-tab');
+            if (!root) return;
+
+            var dragState = { src: null, x: 0, y: 0, moved: false };
+            var ctxOption = null;
+            function _rememberExplorerScroll(){
+                root._delfinExplorerScrollTop = selectEl.scrollTop || 0;
+                root._delfinExplorerKeepScroll = true;
+            }
+            function _restoreExplorerScroll(){
+                if (!root._delfinExplorerKeepScroll) return;
+                var top = Number(root._delfinExplorerScrollTop) || 0;
+                function apply(){
+                    if (!selectEl || !selectEl.isConnected) return;
+                    if (root.querySelector('.calc-file-list select') !== selectEl) return;
+                    selectEl.scrollTop = top;
+                }
+                apply();
+                requestAnimationFrame(apply);
+                setTimeout(apply, 0);
+                setTimeout(function(){
+                    apply();
+                    if (selectEl && selectEl.isConnected && root.querySelector('.calc-file-list select') === selectEl) {
+                        root._delfinExplorerKeepScroll = false;
+                    }
+                }, 120);
+            }
+            function _armExplorerDblClick(opt, e){
+                var label = _labelText(opt);
+                if (!label || label.charAt(0) === '(') {
+                    root._dblLastTime = 0;
+                    root._dblLastLabel = '';
+                    return;
+                }
+                root._dblLastTime = Date.now();
+                root._dblLastLabel = label;
+                root._dblLastX = (e && typeof e.clientX === 'number') ? e.clientX : 0;
+                root._dblLastY = (e && typeof e.clientY === 'number') ? e.clientY : 0;
+            }
+
+            function refreshDraggable(){
+                var opts = Array.prototype.slice.call(selectEl.options || []);
+                opts.forEach(function(opt){
+                    var txt = _labelText(opt);
+                    opt.draggable = txt && txt.charAt(0) !== '(';
+                });
+            }
+            _restoreExplorerScroll();
+            selectEl.addEventListener('scroll', function(){
+                root._delfinExplorerScrollTop = selectEl.scrollTop || 0;
+            }, true);
+
+            selectEl.addEventListener('contextmenu', function(e){
+                var menu = _ensureCtxMenu();
+                var opt = _optionAtPoint(selectEl, e);
+                e.preventDefault();
+                e.stopPropagation();
+                if (opt) {
+                    ctxOption = opt;
+                } else {
+                    ctxOption = null;
+                }
+                menu._root = root;
+                menu._ctxOption = ctxOption;
+                menu.style.left = (e.clientX + 2) + 'px';
+                menu.style.top = (e.clientY + 2) + 'px';
+                menu.style.display = 'block';
+            }, true);
+
+            /* --- Click selection + drag tracking --- */
+            var lastIdx = -1;
+
+            selectEl.addEventListener('mousedown', function(e){
+                if (e.button != null && e.button !== 0) return;
+                var opt = _optionAtPoint(selectEl, e);
+                if (!opt) {
+                    dragState.src = null;
+                    dragState.moved = false;
+                    root._dblLastTime = 0;
+                    root._dblLastLabel = '';
+                    root._dblLastX = 0;
+                    root._dblLastY = 0;
+                    _rememberExplorerScroll();
+                    e.preventDefault();
+                    Array.prototype.forEach.call(selectEl.options || [], function(item){
+                        item.selected = false;
+                    });
+                    selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    selectEl.focus();
+                    _restoreExplorerScroll();
+                    return;
+                }
+                /* Track drag start */
+                dragState.src = opt;
+                dragState.x = e.clientX || 0;
+                dragState.y = e.clientY || 0;
+                dragState.moved = false;
+
+                /* Prevent native select behavior – we manage selection ourselves */
+                e.preventDefault();
+
+                var opts = Array.from(selectEl.options);
+                var idx = _optionIndex(selectEl, opt);
+                if (idx < 0) {
+                    dragState.src = null;
+                    return;
+                }
+
+                /* Selection logic */
+                if (e.shiftKey && lastIdx >= 0) {
+                    var lo = Math.min(lastIdx, idx);
+                    var hi = Math.max(lastIdx, idx);
+                    if (!e.ctrlKey && !e.metaKey) {
+                        for (var i = 0; i < opts.length; i++) opts[i].selected = false;
+                    }
+                    for (var j = lo; j <= hi; j++) opts[j].selected = true;
+                } else if (e.ctrlKey || e.metaKey) {
+                    opt.selected = !opt.selected;
+                } else {
+                    for (var k = 0; k < opts.length; k++) opts[k].selected = false;
+                    opt.selected = true;
+                }
+                lastIdx = idx;
+                _armExplorerDblClick(opt, e);
+                _rememberExplorerScroll();
+
+                /* A plain click asks for the file to be opened, whether or not
+                 * it changes the selection.  Clicking an already-selected file
+                 * changes nothing, so the change event below carries no news
+                 * and the file would never load.  The counter keeps every click
+                 * distinct so none of them is dropped as "same value". */
+                if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+                    var openLabel = _labelText(opt);
+                    if (openLabel && openLabel.charAt(0) !== '(') {
+                        root._openSeq = (Number(root._openSeq) || 0) + 1;
+                        _setWidgetInput(root, 'calc-cmd-open',
+                                        openLabel + '\x1f' + root._openSeq);
+                    }
+                }
+
+                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                selectEl.focus();
+                _restoreExplorerScroll();
+            }, true);
+
+            selectEl.addEventListener('mousemove', function(e){
+                if (!dragState.src) return;
+                var dx = Math.abs((e.clientX || 0) - dragState.x);
+                var dy = Math.abs((e.clientY || 0) - dragState.y);
+                if (dx + dy > 8) dragState.moved = true;
+            }, true);
+
+            selectEl.addEventListener('mouseup', function(e){
+                var targetOpt = _optionAtPoint(selectEl, e);
+                if (!dragState.src || !dragState.moved || !targetOpt) {
+                    dragState.src = null;
+                    dragState.moved = false;
+                    return;
+                }
+                e.preventDefault();
+                _triggerMove(root, dragState.src, targetOpt);
+                dragState.src = null;
+                dragState.moved = false;
+            }, true);
+
+            /* --- Keyboard shortcuts --- */
+            selectEl.addEventListener('keydown', function(e){
+                var action = '';
+                if ((e.ctrlKey || e.metaKey) && e.key === 'c') action = 'copy';
+                else if ((e.ctrlKey || e.metaKey) && e.key === 'x') action = 'cut';
+                else if ((e.ctrlKey || e.metaKey) && e.key === 'v') action = 'paste';
+                else if (e.key === 'Delete' || e.key === 'Backspace') action = 'delete';
+                else if (e.key === 'Enter') action = 'open';
+                else if (e.key === 'Escape') action = 'deselect';
+                else if (e.key === 'F2') action = 'rename';
+                if (action) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _setWidgetInput(root, 'calc-cmd-keyboard-action', action);
+                }
+            }, true);
+
+            selectEl.addEventListener('dragstart', function(e){
+                var opt = _activeOptionForEvent(selectEl, e);
+                if (!opt) return;
+                selectEl._delfinDragSource = opt;
+                try {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', _labelText(opt));
+                } catch (_err) {}
+            }, true);
+
+            selectEl.addEventListener('dragenter', function(e){
+                if (!_hasExternalFiles(e)) return;
+                e.preventDefault();
+                _setDropActive(selectEl, true);
+            }, true);
+
+            selectEl.addEventListener('dragover', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    _setDropActive(selectEl, true);
+                    try { e.dataTransfer.dropEffect = 'copy'; } catch (_err) {}
+                    return;
+                }
+                var opt = _optionAtPoint(selectEl, e);
+                if (opt && _isFolderLabel(_labelText(opt))) e.preventDefault();
+            }, true);
+
+            selectEl.addEventListener('dragleave', function(e){
+                if (!_hasExternalFiles(e)) return;
+                setTimeout(function(){ _setDropActive(selectEl, false); }, 0);
+            }, true);
+
+            selectEl.addEventListener('drop', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _setDropActive(selectEl, false);
+                    selectEl._delfinDragSource = null;
+                    _uploadDroppedFiles(root, selectEl, e).catch(function(err){
+                        _setOpsStatus(root, 'Explorer upload failed: ' + String(err && err.message ? err.message : err), '#d32f2f');
+                        console.error('Explorer upload failed', err);
+                    });
+                    return;
+                }
+                var targetOpt = _optionAtPoint(selectEl, e);
+                var sourceOpt = selectEl._delfinDragSource || null;
+                _setDropActive(selectEl, false);
+                if (!sourceOpt || !targetOpt) {
+                    selectEl._delfinDragSource = null;
+                    return;
+                }
+                e.preventDefault();
+                _triggerMove(root, sourceOpt, targetOpt);
+                selectEl._delfinDragSource = null;
+            }, true);
+
+            refreshDraggable();
+            try {
+                new MutationObserver(refreshDraggable).observe(selectEl, {
+                    childList: true,
+                    subtree: true,
+                });
+            } catch (_err) {}
+        }
+        function _installBatchSelect(selectEl){
+            if (!selectEl || selectEl._delfinBatchSelectReady) return;
+            selectEl._delfinBatchSelectReady = true;
+            var root = selectEl.closest('.calc-tab');
+            if (!root) return;
+
+            function _isBatchToggleZone(e){
+                if (!e || typeof e.clientX !== 'number') return false;
+                var opt = _optionAtPoint(selectEl, e);
+                if (!opt || !opt.getBoundingClientRect) return false;
+                var rect = opt.getBoundingClientRect();
+                var localX = e.clientX - rect.left;
+                return localX >= 0 && localX <= 64;
+            }
+            function _styleBatchOption(opt){
+                if (!opt) return;
+                var text = _labelText(opt);
+                if (text.indexOf('✔ ') === 0) {
+                    opt.style.color = '#2e7d32';
+                    opt.style.fontWeight = '700';
+                } else {
+                    opt.style.color = '';
+                    opt.style.fontWeight = '';
+                }
+            }
+            function _applyBatchOptionStyles(){
+                Array.prototype.forEach.call(selectEl.options || [], function(opt){
+                    _styleBatchOption(opt);
+                });
+            }
+            function _toggleBatchOptionLabel(opt){
+                if (!opt) return;
+                var text = _labelText(opt);
+                if (!text) return;
+                if (text.indexOf('□ ') === 0) {
+                    opt.textContent = text.replace(/^□\s+/, '✔ ');
+                    _styleBatchOption(opt);
+                    return;
+                }
+                if (text.indexOf('✔ ') === 0) {
+                    opt.textContent = text.replace(/^✔\s+/, '□ ');
+                    _styleBatchOption(opt);
+                }
+            }
+
+            function _resetBatchDblClick(){
+                root._batchDblLastTime = 0;
+                root._batchDblLastLabel = '';
+                root._batchDblLastX = 0;
+                root._batchDblLastY = 0;
+            }
+            function _armBatchDblClick(opt, e){
+                var label = _labelText(opt);
+                if (!label || label.charAt(0) === '(') {
+                    _resetBatchDblClick();
+                    return;
+                }
+                root._batchDblLastTime = Date.now();
+                root._batchDblLastLabel = label;
+                root._batchDblLastX = (e && typeof e.clientX === 'number') ? e.clientX : 0;
+                root._batchDblLastY = (e && typeof e.clientY === 'number') ? e.clientY : 0;
+            }
+
+            selectEl.addEventListener('mousedown', function(e){
+                if (e.button != null && e.button !== 0) return;
+                var opt = _optionAtPoint(selectEl, e);
+                if (!opt) {
+                    _resetBatchDblClick();
+                    return;
+                }
+                if (_isBatchToggleZone(e)) {
+                    _resetBatchDblClick();
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _toggleBatchOptionLabel(opt);
+                    _setWidgetInput(root, 'calc-cmd-xyz-batch-toggle', 'idx:' + String(_optionIndex(selectEl, opt)));
+                    return;
+                }
+                _armBatchDblClick(opt, e);
+            }, true);
+
+            _applyBatchOptionStyles();
+            try {
+                new MutationObserver(_applyBatchOptionStyles).observe(selectEl, {
+                    childList: true,
+                    subtree: true,
+                });
+            } catch (_err) {}
+        }
+        function _installExternalFileDrop(root){
+            if (!root || root._delfinExternalDropReady) return;
+            console.log('[DELFIN] _installExternalFileDrop on', root.className);
+            root._delfinExternalDropReady = true;
+            root._delfinPasteArmed = false;
+
+            /* --- Double-click via delegated mousedown on stable root ---
+             * ipywidgets may re-create the <select> between clicks, so native
+             * dblclick never fires.  We therefore remember the first click on
+             * the stable root and only use the second click to confirm timing
+             * and pointer position. */
+            root._dblLastTime = 0;
+            root._dblLastLabel = '';
+            root._dblLastX = 0;
+            root._dblLastY = 0;
+            root._batchDblLastTime = 0;
+            root._batchDblLastLabel = '';
+            root._batchDblLastX = 0;
+            root._batchDblLastY = 0;
+            root.addEventListener('mousedown', function(e){
+                if (e.button != null && e.button !== 0) return;
+                var sel = _selectAtPoint(e);
+                if (sel && sel.closest('.calc-file-list')) {
+                    var currentOpt = _optionAtPoint(sel, e);
+                    if (!currentOpt) return;
+                    var currentLabel = _labelText(currentOpt);
+                    var label = String(root._dblLastLabel || '');
+                    if (!label || label.charAt(0) === '(') return;
+                    var now = Date.now();
+                    var dx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._dblLastX) || 0));
+                    var dy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._dblLastY) || 0));
+                    if (currentLabel === label && (now - root._dblLastTime) < 500 && dx <= 20 && dy <= 20) {
+                        root._dblLastTime = 0;
+                        root._dblLastLabel = '';
+                        root._dblLastX = 0;
+                        root._dblLastY = 0;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        _setWidgetInput(root, 'calc-cmd-dblclick', label);
+                    }
+                    return;
+                }
+                sel = _batchSelectAtPoint(e);
+                if (!sel || !sel.closest('.calc-xyz-batch-select')) return;
+                if (typeof e.clientX === 'number') {
+                    var batchOptForZone = _optionAtPoint(sel, e);
+                    if (batchOptForZone && batchOptForZone.getBoundingClientRect) {
+                        var batchRect = batchOptForZone.getBoundingClientRect();
+                        var batchLocalX = e.clientX - batchRect.left;
+                        if (batchLocalX >= 0 && batchLocalX <= 64) return;
+                    }
+                }
+                var batchOpt = _optionAtPoint(sel, e);
+                if (!batchOpt) return;
+                var batchLabel = _labelText(batchOpt);
+                var prevBatchLabel = String(root._batchDblLastLabel || '');
+                if (!prevBatchLabel || prevBatchLabel.charAt(0) === '(') return;
+                var batchNow = Date.now();
+                var batchDx = Math.abs((typeof e.clientX === 'number' ? e.clientX : 0) - (Number(root._batchDblLastX) || 0));
+                var batchDy = Math.abs((typeof e.clientY === 'number' ? e.clientY : 0) - (Number(root._batchDblLastY) || 0));
+                if (batchLabel === prevBatchLabel && (batchNow - root._batchDblLastTime) < 500 && batchDx <= 20 && batchDy <= 20) {
+                    root._batchDblLastTime = 0;
+                    root._batchDblLastLabel = '';
+                    root._batchDblLastX = 0;
+                    root._batchDblLastY = 0;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    _setWidgetInput(root, 'calc-cmd-xyz-batch-dblclick', prevBatchLabel);
+                }
+            }, true);
+
+            function activeSelectFromEvent(e){
+                if (!pointerInsideExplorer(e)) return null;
+                var selectEl = _selectAtPoint(e);
+                if (selectEl && root.contains(selectEl)) return selectEl;
+                return root.querySelector('.calc-file-list select');
+            }
+            function activeSelectForPaste(){
+                return root.querySelector('.calc-file-list select');
+            }
+            function pointerInsideExplorer(e){
+                var leftPane = root.querySelector('.calc-left');
+                if (!leftPane) return false;
+                var leftPaneAtPoint = _leftPaneAtPoint(e);
+                if (leftPaneAtPoint) return root.contains(leftPaneAtPoint);
+                return _pointInsideElement(leftPane, e);
+            }
+            function clearHighlight(){
+                var active = root.querySelector('.calc-file-list select.calc-drop-active');
+                if (active) _setDropActive(active, false);
+            }
+            function handleExternalDrag(e){
+                if (!_hasExternalFiles(e)) return false;
+                if (!pointerInsideExplorer(e)) return false;
+                var selectEl = activeSelectFromEvent(e);
+                e.preventDefault();
+                e.stopPropagation();
+                if (selectEl) _setDropActive(selectEl, true);
+                return true;
+            }
+
+            document.addEventListener('dragenter', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                handleExternalDrag(e);
+            }, true);
+            document.addEventListener('dragover', function(e){
+                if (_hasExternalFiles(e)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try { e.dataTransfer.dropEffect = 'copy'; } catch (_err) {}
+                }
+                if (!handleExternalDrag(e)) clearHighlight();
+            }, true);
+            document.addEventListener('drop', function(e){
+                console.log('[DELFIN] drop event', '_hasExternalFiles=', _hasExternalFiles(e), 'types=', e.dataTransfer ? Array.from(e.dataTransfer.types) : 'none');
+                if (!_hasExternalFiles(e)) return;
+                if (!pointerInsideExplorer(e)) return;
+                e.preventDefault();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                else e.stopPropagation();
+                clearHighlight();
+                var selectEl = activeSelectFromEvent(e);
+                console.log('[DELFIN] drop selectEl found:', !!selectEl, 'root:', !!root);
+                if (selectEl) {
+                    _uploadDroppedFiles(root, selectEl, e).catch(function(err){
+                        _setOpsStatus(root, 'Explorer upload failed: ' + String(err && err.message ? err.message : err), '#d32f2f');
+                        console.error('[DELFIN] Explorer upload failed', err);
+                    });
+                } else {
+                    console.warn('[DELFIN] No selectEl found for drop upload');
+                }
+            }, true);
+            root.addEventListener('mousedown', function(){
+                root._delfinPasteArmed = true;
+            }, true);
+            root.addEventListener('focusin', function(){
+                root._delfinPasteArmed = true;
+            }, true);
+            document.addEventListener('mousedown', function(e){
+                if (!root.contains(e.target)) root._delfinPasteArmed = false;
+            }, true);
+            document.addEventListener('paste', function(e){
+                var selectEl = activeSelectForPaste();
+                if (!selectEl) return;
+                /* Not a paste that landed in something being edited. A copy
+                   out of a spreadsheet program carries the cells as text AND
+                   a picture of them, and this listener runs before the grid's
+                   own: it saw the picture, took the paste, and uploaded an
+                   image into the folder instead of filling the cells. */
+                var into = e.target;
+                if (into && into.closest && into.closest(
+                        '.dsheet-root, .dw-page, textarea, input,'
+                        + ' [contenteditable="true"]')) {
+                    return;
+                }
+                var files = _clipboardFiles(e);
+                if (!files.length) return;
+                var activeInside = root._delfinPasteArmed || root.contains(document.activeElement);
+                if (!activeInside) return;
+                e.preventDefault();
+                e.stopPropagation();
+                _uploadPastedFiles(root, selectEl, e).catch(function(err){
+                    _setOpsStatus(root, 'Explorer paste upload failed: ' + String(err && err.message ? err.message : err), '#d32f2f');
+                    console.error('Explorer paste upload failed', err);
+                });
+            }, true);
+            document.addEventListener('dragleave', function(_e){
+                setTimeout(clearHighlight, 0);
+            }, true);
+            document.addEventListener('dragend', clearHighlight, true);
+        }
+        function _scanAndInstall(root){
+            if (!root || !root.querySelectorAll) return;
+            var selects = [];
+            if (root.matches && root.matches('.calc-file-list select')) selects.push(root);
+            Array.prototype.forEach.call(root.querySelectorAll('.calc-file-list select'), function(sel){
+                selects.push(sel);
+            });
+            Array.prototype.forEach.call(selects, _installExplorerSelect);
+
+            var batchSelects = [];
+            if (root.matches && root.matches('.calc-xyz-batch-select select')) batchSelects.push(root);
+            Array.prototype.forEach.call(root.querySelectorAll('.calc-xyz-batch-select select'), function(sel){
+                batchSelects.push(sel);
+            });
+            Array.prototype.forEach.call(batchSelects, _installBatchSelect);
+
+            var tabs = [];
+            if (root.matches && root.matches('.calc-tab')) tabs.push(root);
+            Array.prototype.forEach.call(root.querySelectorAll('.calc-tab'), function(tab){
+                tabs.push(tab);
+            });
+            Array.prototype.forEach.call(tabs, _installExternalFileDrop);
+        }
+
+        _scanAndInstall(document.body);
+        var _scanRetryCount = 0;
+        function _retryScan(){
+            _scanAndInstall(document.body);
+            _scanRetryCount++;
+            if (_scanRetryCount < 30) {
+                setTimeout(_retryScan, 500);
+            }
+        }
+        setTimeout(_retryScan, 300);
+        new MutationObserver(function(mutations){
+            mutations.forEach(function(m){
+                Array.prototype.forEach.call(m.addedNodes || [], function(node){
+                    if (node && node.nodeType === 1) _scanAndInstall(node);
+                });
+            });
+            _scanAndInstall(document.body);
+        }).observe(document.body, { childList: true, subtree: true });
+
+        document.addEventListener('click', _hideCtxMenu, true);
+        document.addEventListener('scroll', _hideCtxMenu, true);
+        document.addEventListener('keydown', function(e){
+            if (e.key === 'Escape') _hideCtxMenu();
+        }, true);
+    })();
+    """
+    # -- layout -------------------------------------------------------------
+    _archive_nav_children = [calc_table_btn] if _is_archive_tab else []
+    _archive_selection_children = []
+    if not _is_archive_tab:
+        if _remote_archive_enabled:
+            _archive_selection_children.append(calc_ssh_transfer_btn)
+        _archive_selection_children.append(calc_move_archive_btn)
+    else:
+        if _remote_archive_enabled:
+            _archive_selection_children.append(calc_ssh_transfer_btn)
+        _archive_selection_children.append(calc_back_to_calculations_btn)
+    calc_nav_controls_row = widgets.HBox(
+        [calc_back_btn, calc_home_btn, calc_refresh_btn, calc_delete_btn, *_archive_nav_children],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            justify_content='flex-start', gap='6px',
+        ),
+    )
+    calc_nav_selection_row = widgets.HBox(
+        [calc_explorer_new_btn, calc_explorer_rename_btn, calc_duplicate_btn,
+         *_dotfiles_children, *_archive_selection_children],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            justify_content='flex-start', gap='6px',
+            display='flex', flex_flow='row wrap',
+        ),
+    )
+    calc_nav_bar = widgets.VBox([
+        calc_path_label,
+        calc_nav_controls_row,
+        calc_nav_selection_row,
+        calc_new_folder_prompt_row,
+        calc_rename_prompt_row,
+        calc_duplicate_prompt_row,
+        calc_hidden_upload,
+        widgets.VBox(
+            [calc_new_folder_input, calc_new_folder_btn, calc_rename_input, calc_rename_btn,
+             calc_move_target_input, calc_upload_target_input,
+             calc_action_source_input, calc_move_btn,
+             calc_upload_meta_input, calc_upload_chunk_input,
+             calc_upload_seq_input, calc_upload_ack_input,
+             calc_upload_trigger_btn, calc_upload_ack_label,
+             calc_dblclick_input, calc_xyz_batch_dblclick_input, calc_xyz_batch_toggle_input,
+             calc_keyboard_action_input, calc_open_input,
+             calc_sheet_payload_input, calc_sheet_action_btn],
+            layout=widgets.Layout(display='none'),
+        ),
+    ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
+
+    calc_left = widgets.VBox([
+        calc_nav_bar,
+        calc_filter_sort_row,
+        calc_file_list,
+        calc_transfer_jobs_panel,
+    ], layout=widgets.Layout(
+        flex=f'0 0 {CALC_LEFT_DEFAULT}px',
+        min_width=f'{CALC_LEFT_MIN}px',
+        max_width=f'{CALC_LEFT_MAX}px',
+        padding='5px', overflow_x='hidden', overflow_y='hidden',
+    ))
+
+    calc_css = widgets.HTML(
+        '<style>'
+        + _text_view.text_view_css() +
+        '.calc-content-box { overflow-x:hidden !important; }'
+        # Fullscreen. The tab lifts out of the page instead of moving its
+        # children into an overlay: everything inside already sizes itself
+        # from the tab's height, so giving the tab the viewport is the whole
+        # change, and no widget is reparented and re-rendered to get there.
+        '.calc-tab.calc-zen { position:fixed !important; top:0; left:0;'
+        ' right:0; bottom:0; width:100vw !important; height:100vh !important;'
+        ' max-height:100vh !important; max-width:100vw !important;'
+        ' z-index:9990 !important; background:#fff !important;'
+        ' margin:0 !important; padding:10px !important; }'
+        '.calc-tab.calc-zen > h3 { display:none !important; }'
+        # Fullscreen for a document: the document alone.  The explorer holds
+        # the folder listing and the controls that act on files -- none of it
+        # is what someone reading a table is looking at.  Hidden rather than
+        # unmounted: the widget bridges the document talks through live in
+        # that column, and a display:none element still answers a click.
+        '.calc-tab.calc-zen-doc .calc-left { display:none !important; }'
+        # The splitter is a drag handle between the two columns.  With one of
+        # them gone it is a grey bar standing where the table should start,
+        # and there is nothing left for it to resize.
+        '.calc-tab.calc-zen-doc .calc-splitter { display:none !important; }'
+        '.calc-tab.calc-zen-doc .calc-right { flex:1 1 100% !important;'
+        ' max-width:100% !important; padding:0 !important; }'
+        # Office holds documents, not jobs. These controls report on
+        # calculations -- a keyword menu of ORCA section headings, a DELFIN
+        # report, a 3D structure, the calculation archive, running SSH
+        # transfers -- and none of them has anything to act on here. Retired
+        # in CSS rather than by a display flag: the flag is set again by the
+        # per-file-type code that enables them.
+        '.calc-office .calc-search-suggest,'
+        ' .calc-office .calc-report-btn,'
+        ' .calc-office .calc-view-toggle,'
+        ' .calc-office .calc-move-archive-btn,'
+        ' .calc-office .calc-ssh-transfer-btn,'
+        ' .calc-office .calc-transfer-jobs-btn { display:none !important; }'
+        '.calc-tab, .calc-tab * { overflow-x:hidden !important; box-sizing:border-box; }'
+        '.calc-tab { overflow:hidden !important;'
+        ' height:calc(100vh - 145px) !important;'
+        ' max-height:calc(100vh - 145px) !important;'
+        ' display:flex !important; flex-direction:column !important; }'
+        '.calc-right { overflow:hidden !important;'
+        ' display:flex !important; flex-direction:column !important; }'
+        '.calc-left { display:flex !important; flex-direction:column !important; }'
+        '.calc-left .widget-select { flex:1 1 0 !important; min-height:0 !important; }'
+        '.calc-left .widget-select select { height:100% !important; }'
+        '.calc-left .widget-select-multiple { flex:1 1 0 !important; min-height:0 !important; }'
+        '.calc-left .widget-select-multiple select { height:100% !important; }'
+        '.calc-content-area { flex:1 1 0 !important; min-height:0 !important;'
+        ' overflow-y:auto !important; overflow-x:hidden !important; }'
+        '.calc-content-area .widget-html-content { height:100%; }'
+        '.calc-edit-area textarea { height:100% !important; }'
+        '.calc-tab .widget-vbox, .calc-tab .widget-hbox { overflow-y:hidden !important; }'
+        '.calc-tab .calc-table-panel { flex:1 1 0 !important; min-height:0 !important;'
+        ' overflow:hidden !important; }'
+        '.calc-table-output { flex:1 1 0 !important; min-height:0 !important;'
+        ' overflow-y:auto !important; overflow-x:auto !important; max-height:none !important; }'
+        '.calc-tab .calc-table-panel .widget-text { overflow:visible !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown, .calc-tab .calc-table-panel .widget-text { flex:0 0 auto !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown, .calc-tab .calc-table-panel .widget-dropdown select { overflow:hidden !important; }'
+        '.calc-tab .calc-table-top-row > .widget-text { flex:1 1 0 !important; min-width:0 !important; width:1px !important; }'
+        '.calc-tab .calc-table-top-row > .widget-text input { width:100% !important; min-width:0 !important; }'
+        '.calc-tab .calc-table-col-row > .widget-text { flex:1 1 0 !important; min-width:0 !important; width:1px !important; height:26px !important; min-height:26px !important; }'
+        '.calc-tab .calc-table-col-row > .widget-text input { width:100% !important; min-width:0 !important; height:26px !important; line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-tab .calc-table-panel .widget-text { height:26px !important; min-height:26px !important; }'
+        '.calc-tab .calc-table-panel .widget-text input { width:100% !important; overflow-x:hidden !important; overflow-y:hidden !important; height:26px !important; line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown { height:26px !important; min-height:26px !important; }'
+        '.calc-tab .calc-table-panel .widget-dropdown select { height:26px !important; max-height:26px !important; line-height:26px !important; overflow:hidden !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-tab .calc-table-panel input::-webkit-scrollbar { width:0; height:0; display:none; }'
+        '.calc-tab .calc-table-panel input { scrollbar-width:none; overflow:hidden !important; height:26px !important; line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-right .widget-output, .calc-right .jupyter-widgets-output-area { overflow:hidden !important; }'
+        '.calc-right .widget-output .output_area { overflow:hidden !important; }'
+        '.calc-right .widget-output .output { overflow:hidden !important; }'
+        '.calc-right .output_scroll, .calc-right .output_subarea,'
+        ' .calc-right .output_wrapper { overflow:hidden !important; }'
+        '.calc-right .jp-OutputArea, .calc-right .jp-OutputArea-child,'
+        ' .calc-right .jp-OutputArea-output { overflow:hidden !important; }'
+        '.calc-right .p-Widget { overflow:hidden !important; }'
+        '.calc-right .widget-textarea { overflow:visible !important; }'
+        '.calc-right .widget-textarea textarea { overflow-y:auto !important; }'
+        '.calc-left, .calc-right { overflow-x:hidden !important; }'
+        '.calc-left * { max-width:100% !important; }'
+        '.calc-right * { max-width:100% !important; }'
+        '.calc-left .widget-select, .calc-left .widget-select select'
+        ' { overflow-x:hidden !important; }'
+        '.calc-hidden-upload { position:absolute !important; width:1px !important; height:1px !important;'
+        ' opacity:0 !important; overflow:hidden !important; pointer-events:none !important; }'
+        '.calc-hidden-upload input, .calc-hidden-upload button'
+        ' { width:1px !important; height:1px !important; opacity:0 !important; pointer-events:none !important; }'
+        '.calc-left .calc-file-list select.calc-drop-active'
+        ' { border:2px dashed #1976d2 !important; background:#edf4ff !important; }'
+        '.calc-left .widget-select select'
+        ' { text-overflow: ellipsis; white-space: nowrap; }'
+        '.calc-path-label { gap:2px !important; align-items:stretch !important; }'
+        '.calc-path-label > .widget-html { width:100% !important; margin:0 !important; }'
+        '.calc-path-label > .widget-text'
+        ' { flex:1 1 0 !important; min-width:0 !important; width:1px !important;'
+        ' max-width:100% !important; margin:0 !important; }'
+        '.calc-path-label > .widget-text input'
+        ' { width:100% !important; height:24px !important; line-height:24px !important;'
+        ' padding:2px 5px !important; margin:0 !important; border:0 !important;'
+        ' border-radius:0 !important; box-shadow:none !important; background:#eee !important;'
+        ' font-family:monospace !important; overflow:hidden !important;'
+        ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
+        '.calc-left .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
+        '.calc-left .widget-text input { width:100% !important; }'
+        '.calc-filter-row { width:100% !important; display:flex !important; }'
+        '.calc-filter-row > .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
+        '.calc-filter-row > .widget-text input { width:100% !important; min-width:0 !important; }'
+        '.calc-filter-row > .widget-dropdown { flex:0 0 90px !important; margin-left:auto !important; }'
+        '.calc-left.calc-transfer-jobs-mode .calc-filter-row,'
+        ' .calc-left.calc-transfer-jobs-mode .calc-file-list'
+        ' { display:none !important; }'
+        '.calc-left .widget-text input'
+        ' { overflow-x:hidden !important; overflow-y:hidden !important; text-overflow: ellipsis; }'
+        '.calc-right .widget-text input'
+        ' { overflow-x:hidden !important; overflow-y:hidden !important; }'
+        '.calc-tab .widget-text { overflow:visible !important; }'
+        '.calc-tab .widget-dropdown { height:26px !important; }'
+        '.calc-tab .widget-dropdown select { '
+        'height:26px !important; max-height:26px !important; line-height:26px !important; '
+        'overflow:hidden !important; padding:0 6px !important; }'
+        '.calc-tab .widget-dropdown, .calc-tab .widget-dropdown select { overflow:hidden !important; }'
+        '.calc-options-dropdown { width:150px !important; min-width:150px !important; }'
+        '.calc-options-dropdown select { width:150px !important; max-width:150px !important; }'
+        '.calc-left .widget-text { width:auto !important; }'
+        '.calc-left .widget-text input { width:100% !important; }'
+        '.calc-filter-row > .widget-text { width:calc(100% - 94px) !important; }'
+        '.calc-tab .widget-button { flex:0 0 auto !important; }'
+        '.calc-png-btn button { display:inline-flex !important; align-items:center !important;'
+        ' justify-content:center !important; text-align:center !important; padding:0 !important;'
+        ' line-height:30px !important; }'
+        '.calc-png-btn button i, .calc-png-btn .fa { display:none !important; }'
+        '.calc-png-btn button > span, .calc-png-btn button .widget-button-label {'
+        ' display:flex !important; align-items:center !important; justify-content:center !important;'
+        ' width:100% !important; height:100% !important; margin:0 auto !important;'
+        ' text-align:center !important; line-height:30px !important; padding:0 !important; }'
+        '.calc-rmsd-trigger-btn button { display:flex !important; align-items:center !important;'
+        ' justify-content:center !important; text-align:center !important; height:32px !important; }'
+        '.calc-rmsd-trigger-btn button > span { display:inline-flex !important; align-items:center !important;'
+        ' justify-content:center !important; text-align:center !important; width:100% !important; line-height:1.2 !important; }'
+        '.calc-rmsd-controls { width:100% !important;'
+        ' flex-wrap:nowrap !important; align-items:stretch !important; }'
+        '.calc-rmsd-controls > .widget-vbox, .calc-rmsd-controls > .widget-output'
+        ' { flex:1 1 0 !important; min-width:0 !important; }'
+        '.calc-rmsd-input-col .widget-textarea { flex:1 1 0 !important; min-height:0 !important; }'
+        '.calc-rmsd-input-col .widget-textarea textarea { height:100% !important; min-height:220px !important; }'
+        '.calc-tab .widget-dropdown, .calc-tab .widget-text { flex:0 0 auto !important; }'
+        '.calc-tab input { overflow:hidden !important; height:26px !important;'
+        ' line-height:26px !important; padding:0 6px !important; box-sizing:border-box !important; }'
+        '.calc-tab input::-webkit-scrollbar { width:0; height:0; display:none; }'
+        '.calc-tab input { scrollbar-width:none; }'
+        '.calc-left .widget-vbox { overflow:hidden !important; }'
+        '.calc-left code { display:block !important; overflow:hidden !important;'
+        ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
+        '.calc-splitter { width:8px; height:100%; cursor:col-resize; touch-action:none;'
+        ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
+        ' border-radius:4px; display:block;'
+        ' z-index:10; pointer-events:auto !important; position:relative; }'
+        '.calc-splitter:hover { background:linear-gradient('
+        'to right, #b0b0b0, #e0e0e0, #b0b0b0); }'
+        '.calc-mol-viewer { overflow:hidden !important; padding:0 !important;'
+        ' transition: height 0.15s ease-out; }'
+        '.calc-mol-viewer .output_area, .calc-mol-viewer .output_subarea,'
+        ' .calc-mol-viewer .output_wrapper, .calc-mol-viewer .jp-OutputArea-child,'
+        ' .calc-mol-viewer .jp-OutputArea-output'
+        ' { padding:0 !important; margin:0 !important; }'
+        '.calc-rmsd-preview { overflow:hidden !important; padding:0 !important; }'
+        '.calc-rmsd-preview .output_area, .calc-rmsd-preview .output_subarea,'
+        ' .calc-rmsd-preview .output_wrapper, .calc-rmsd-preview .jp-OutputArea-child,'
+        ' .calc-rmsd-preview .jp-OutputArea-output'
+        ' { padding:0 !important; margin:0 !important; width:100% !important; height:100% !important; }'
+        '.calc-preselect-viz { overflow:hidden !important; padding:0 !important; margin:0 !important; }'
+        '.calc-preselect-viz-wrap { flex:1 1 220px !important; min-width:180px !important;'
+        f' max-width:min({CALC_PRESELECT_VIZ_SIZE}px, 42vh) !important; width:100% !important; }}'
+        '.calc-preselect-viz { width:100% !important; aspect-ratio:1 / 1 !important;'
+        ' height:auto !important; max-width:100% !important; }'
+        '.calc-preselect-viz .output_area, .calc-preselect-viz .output_subarea,'
+        ' .calc-preselect-viz .output_wrapper, .calc-preselect-viz .jp-OutputArea-child,'
+        ' .calc-preselect-viz .jp-OutputArea-output'
+        ' { padding:0 !important; margin:0 !important; width:100% !important;'
+        ' height:100% !important; overflow:hidden !important; }'
+        '.calc-preselect-viz img { width:100% !important; height:100% !important; object-fit:contain !important; }'
+        '.calc-preselect-viz [id^="3dmolviewer"], .calc-preselect-viz canvas {'
+        ' width:100% !important; height:100% !important; }'
+        + structure_viewer_fullscreen_css()
+        + '</style>'
+    )
+
+    calc_right_children = [
+        widgets.HBox([
+            calc_file_info,
+            widgets.HBox(
+                [
+                    calc_transfer_jobs_btn,
+                    calc_copy_path_btn,
+                    calc_copy_btn,
+                    calc_download_btn,
+                    calc_report_btn,
+                    calc_view_toggle,
+                    *([calc_fullscreen_btn] if _DOC_VIEW_FEEL else []),
+                ],
+                layout=widgets.Layout(
+                    gap='10px',
+                    flex_flow='row wrap',
+                    justify_content='flex-end',
+                    align_items='center',
+                    width='100%',
+                    overflow_x='hidden',
+                ),
+            ),
+        ], layout=widgets.Layout(align_items='center', justify_content='space-between', width='100%')),
+        calc_path_display,
+        calc_download_status,
+        calc_report_status,
+        calc_xyz_batch_panel,
+        calc_print_mode_panel,
+        calc_mo_plot_panel,
+        calc_delete_confirm,
+        calc_delete_status,
+        calc_mol_container,
+        calc_content_label,
+        calc_preselect_container,
+        calc_move_archive_confirm,
+        calc_move_archive_status,
+        calc_ops_status,
+    ]
+    if _is_archive_tab:
+        calc_right_children.append(calc_table_panel)
+    calc_right_children.extend([
+        calc_recalc_toolbar,
+        calc_xyz_workflow_toolbar,
+        calc_nmr_panel,
+        calc_censo_nmr_panel,
+        calc_content_toolbar,
+        calc_chunk_hidden_row,
+        calc_override_status,
+        calc_pdf_container,
+        calc_ketcher_container,
+        calc_content_area,
+        calc_edit_area,
+        calc_text_area,
+    ])
+    calc_right = widgets.VBox(calc_right_children, layout=widgets.Layout(
+        flex='1 1 0', min_width='0', padding='5px',
+        overflow_x='hidden', overflow_y='hidden',
+    ))
+
+    calc_splitter = widgets.HTML(
+        "<div class='calc-splitter' title='Drag to resize'></div>",
+        layout=widgets.Layout(height='100%', width='10px', margin='0', overflow='visible'),
+    )
+
+    tab_widget = widgets.VBox([
+        calc_css,
+        widgets.HTML(
+            '<h3>📁 Office</h3>' if _is_office_tab
+            else '<h3>📂 Calculations Browser</h3>'
+        ),
+        widgets.HBox(
+            [calc_left, calc_splitter, calc_right],
+            layout=widgets.Layout(
+                width='100%', overflow_x='hidden',
+                align_items='stretch', gap='12px',
+                flex='1 1 0', min_height='0',
+            ),
+        ),
+    ], layout=widgets.Layout(
+        padding='10px', overflow_x='hidden',
+        width='100%', max_width='100%',
+    ))
+    tab_widget.add_class('calc-tab')
+    tab_widget.add_class(calc_scope_id)
+    if _is_office_tab:
+        tab_widget.add_class('calc-office')
+    calc_left.add_class('calc-left')
+    calc_right.add_class('calc-right')
+    calc_nav_controls_row.add_class('calc-nav-controls-row')
+    calc_nav_selection_row.add_class('calc-nav-selection-row')
+    calc_rename_prompt_row.add_class('calc-rename-prompt-row')
+    calc_duplicate_prompt_row.add_class('calc-duplicate-prompt-row')
+    calc_content_area.add_class('calc-content-area')
+    calc_table_panel.add_class('calc-table-panel')
+    calc_table_output.add_class('calc-table-output')
+
+    # Enable draggable splitter + dynamic mol-viewer resize + $3Dmol patch
+    # Stored as a plain string; the CALLER (create_dashboard in __init__.py)
+    # runs ALL tab init scripts in one ctx.run_js() call so that no tab's
+    # clear_output() wipes another tab's init JS.
+    # Resolvers the tab's scripts are rewritten to use (see _scope_js). Defined
+    # once for the page and keyed by scope, so each browser instance reaches
+    # only its own DOM and only its own chunk-loader state.
+    _scope_resolvers_js = """
+    window.__delfinCalcQ = window.__delfinCalcQ || function(scope, sel) {
+        var root = document.querySelector('.' + scope);
+        return root ? root.querySelector('.' + sel) : null;
+    };
+    window.__delfinCalcQA = window.__delfinCalcQA || function(scope, sel) {
+        var root = document.querySelector('.' + scope);
+        return root ? root.querySelectorAll('.' + sel) : [];
+    };
+    /* Whatever is scrolling in this tab right now: the text view and the
+       Word view put their content in .calc-content-box, the spreadsheet
+       grid scrolls its own body. Top and End are about the document on
+       screen, not about one of the ways of showing one. */
+    window.__delfinCalcScroller = window.__delfinCalcScroller || function(scope) {
+        var root = document.querySelector('.' + scope);
+        if (!root) return null;
+        return root.querySelector('.dsheet-scroll')
+            || root.querySelector('.calc-content-box');
+    };
+    window.__delfinCalcS = window.__delfinCalcS || function(scope) {
+        var all = (window.__delfinCalcStates = window.__delfinCalcStates || {});
+        return (all[scope] = all[scope] || {});
+    };
+    """
+
+    _init_js = (
+        # Must be first: the content renderer calls into it, and the tab can
+        # render a file before anything else on the page has run.
+        _text_view.text_view_bootstrap_js()
+        + "\n"
+        + _scope_resolvers_js
+        + "\n"
+        + _explorer_interactions_js
+        + "\n"
+        + structure_viewer_fullscreen_bootstrap_js()
+        + "\n"
+        # A structure and a trajectory, and the structure answers first.
+        + structure_viewer_fullscreen_kind_js(
+            'calc', 'calc-scope-',
+            ['_calcMolViewerByScope', '_calcTrajViewerByScope'])
+        + "\n"
+        + f"""
+    (function() {{
+        function initCalcScopeBind(attempt) {{
+            var scopeKey = {json.dumps(calc_scope_id)};
+            var root = document.querySelector('.{calc_scope_id}');
+            if (!root) {{
+                if ((attempt || 0) < 40) {{
+                    setTimeout(function() {{
+                        initCalcScopeBind((attempt || 0) + 1);
+                    }}, 100);
+                    return;
+                }}
+                // No fallback to the first .calc-tab on the page: with three
+                // browsers open that is somebody else's tab, and binding this
+                // tab's splitter and upload target to it is worse than not
+                // binding at all.
+                return;
+            }}
+            window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
+            window.__delfinCalcUploadStagingRoots[scopeKey] = {json.dumps(CALC_BROWSER_UPLOAD_STAGING_SCOPE_REL)};
+
+        /* --- Splitter drag logic --- */
+        var left = root.querySelector('.calc-left');
+        var right = root.querySelector('.calc-right');
+        var splitter = root.querySelector('.calc-splitter');
+        if (left && right && splitter && splitter.dataset.bound !== scopeKey) {{
+            splitter.dataset.bound = scopeKey;
+            var minW = {CALC_LEFT_MIN};
+            var maxW = {CALC_LEFT_MAX};
+            function onMove(e) {{
+                var box = left.parentElement.getBoundingClientRect();
+                var w = e.clientX - box.left;
+                if (w < minW) w = minW;
+                if (w > maxW) w = maxW;
+                left.style.flex = '0 0 ' + w + 'px';
+                left.style.minWidth = w + 'px';
+                left.style.maxWidth = w + 'px';
+            }}
+            function onUp(e) {{
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
+                try {{ if (e && e.pointerId != null) splitter.releasePointerCapture(e.pointerId); }}
+                catch (err) {{ /* the pointer was already released */ }}
+                if (window["{calc_resize_mol_fn}"]) {{
+                    setTimeout(window["{calc_resize_mol_fn}"], 50);
+                }}
+            }}
+            /* Pointer events rather than mouse events: the same drag then works
+               with a finger and a pen, and capturing the pointer keeps the drag
+               alive when it leaves the 8 px strip -- which is most drags. */
+            splitter.addEventListener('pointerdown', function(e) {{
+                e.preventDefault();
+                try {{ splitter.setPointerCapture(e.pointerId); }}
+                catch (err) {{ /* older engines: the document listeners carry it */ }}
+                document.addEventListener('pointermove', onMove);
+                document.addEventListener('pointerup', onUp);
+                document.addEventListener('pointercancel', onUp);
+            }});
+        }}
+
+        /* --- Kick every scoped resizer once a viewer appears ---------------
+           This used to monkey-patch $3Dmol.createViewer. That can never work:
+           3Dmol exposes createViewer as a non-configurable getter, so the
+           assignment fails silently in sloppy mode -- no exception, so the
+           defineProperty fallback in the catch block never ran either, and
+           the flag was set anyway. The resize kick therefore never fired once
+           in the life of this code. Every construction now goes through
+           window.__delfinCreateViewer instead, which reports what it built. */
+        if (window.__delfinOnViewerCreated) {{
+            window.__delfinOnViewerCreated(function() {{
+                setTimeout(function() {{
+                    try {{
+                        var fns = window._calcResizeMolViewerFns || {{}};
+                        Object.keys(fns).forEach(function(k) {{
+                            if (typeof fns[k] === 'function') fns[k]();
+                        }});
+                    }} catch (_e) {{}}
+                }}, 300);
+            }});
+        }}
+
+        /* --- Dynamic mol-viewer resize --- */
+        window["{calc_resize_mol_fn}"] = function() {{
+            var scopeRoot = document.querySelector('.{calc_scope_id}');
+            if (!scopeRoot || scopeRoot.offsetParent === null) return;
+            var rightPanel = scopeRoot.querySelector('.calc-right');
+            var mv = scopeRoot.querySelector('.calc-mol-viewer');
+            if (!rightPanel || !mv || mv.offsetParent === null) return;
+            var scopeKey = {json.dumps(calc_scope_id)};
+            var savedView = null;
+            var savedViewScope = null;
+            window._calcMolViewStateByScope = window._calcMolViewStateByScope || {{}};
+            window._calcMolViewScopeKeyByScope = window._calcMolViewScopeKeyByScope || {{}};
+            var currentViewer =
+                (window._calcMolViewerByScope && window._calcMolViewerByScope[scopeKey])
+                || (window._calcTrajViewerByScope && window._calcTrajViewerByScope[scopeKey])
+                || null;
+            if (currentViewer && typeof currentViewer.getView === 'function') {{
+                try {{
+                    savedView = currentViewer.getView();
+                    savedViewScope = window._calcMolViewScopeKeyByScope[scopeKey] || null;
+                    if (savedView && savedViewScope) {{
+                        window._calcMolViewStateByScope[savedViewScope] = savedView;
+                    }}
+                }} catch (_e) {{}}
+            }}
+            var container = mv.closest('.widget-vbox');
+            if (!container || container.style.display === 'none') return;
+            var mvRect = mv.getBoundingClientRect();
+            if (mvRect.top === 0 && mvRect.height === 0) return;
+            var rightRect = rightPanel.getBoundingClientRect();
+            var topChildren = Array.prototype.slice.call(rightPanel.children || []);
+            var host = null;
+            for (var i = 0; i < topChildren.length; i++) {{
+                if (topChildren[i].contains(mv)) {{
+                    host = topChildren[i];
+                    break;
+                }}
+            }}
+            var reservedBelow = 0;
+            if (host) {{
+                var passed = false;
+                for (var j = 0; j < topChildren.length; j++) {{
+                    var child = topChildren[j];
+                    if (child === host) {{
+                        passed = true;
+                        continue;
+                    }}
+                    if (!passed) continue;
+                    var style = window.getComputedStyle(child);
+                    if (!style || style.display === 'none' || style.visibility === 'hidden') {{
+                        continue;
+                    }}
+                    var childRect = child.getBoundingClientRect();
+                    if (childRect.height > 0) reservedBelow += childRect.height;
+                }}
+            }}
+            var availH = rightRect.bottom - mvRect.top - reservedBelow - 10;
+            var row = mv.closest('.calc-mol-view-row');
+            var rowRect = row ? row.getBoundingClientRect() : rightRect;
+            var tray = scopeRoot ? scopeRoot.querySelector('.calc-xyz-tray-controls') : null;
+            var trayStyle = tray ? window.getComputedStyle(tray) : null;
+            var trayVisible = !!(tray && trayStyle && trayStyle.display !== 'none');
+            var trayWidth = trayVisible ? tray.getBoundingClientRect().width : 0;
+            var availW = Math.max(120, rowRect.width - trayWidth - 16);
+            var h = Math.floor(availH * {CALC_MOL_DYNAMIC_SCALE});
+            var w = Math.floor(Math.min(h * 1.2, availW));
+            if (h < 80) h = 80;
+            if (w < 120) w = 120;
+            mv.style.width = w + 'px';
+            mv.style.height = h + 'px';
+            var stage = mv.querySelector(
+                '[id^="mol3d_"], [id^="calc_trj_viewer_"], [id^="3dmolviewer_"], [id^="calc_trj"]'
+            );
+            if (stage) {{
+                stage.style.width = w + 'px';
+                stage.style.height = h + 'px';
+            }}
+            var v = currentViewer;
+            if (v && typeof v.resize === 'function') {{ v.resize(); v.render(); }}
+            if (savedView && v && typeof v.setView === 'function') {{
+                try {{
+                    v.setView(savedView);
+                    v.render();
+                }} catch (_e) {{}}
+            }}
+        }};
+        /* Every caller -- viewer creation, the style MutationObserver, the
+           splitter -- goes through the same coalesced handler, so a burst of
+           requests costs one resize instead of one buffer reallocation and
+           three draws apiece. */
+        if (window.__delfinCoalesce) {{
+            window["{calc_resize_mol_fn}"] =
+                window.__delfinCoalesce(window["{calc_resize_mol_fn}"], 80);
+        }}
+        window._calcResizeMolViewerFns = window._calcResizeMolViewerFns || {{}};
+        window._calcResizeMolViewerFns[scopeKey] = window["{calc_resize_mol_fn}"];
+        window.addEventListener('resize', function() {{
+            if (window["{calc_resize_mol_fn}"]) {{
+                setTimeout(window["{calc_resize_mol_fn}"], 100);
+            }}
+        }});
+        window["{calc_resize_pre_fn}"] = function() {{
+            var v = window._calcPreselect3dViewerByScope
+                ? window._calcPreselect3dViewerByScope[scopeKey]
+                : null;
+            var elId = window._calcPreselect3dElIdByScope
+                ? window._calcPreselect3dElIdByScope[scopeKey]
+                : null;
+            if (!v || !elId) return;
+            var el = document.getElementById(elId);
+            var box = el ? el.closest('.calc-preselect-viz') : null;
+            if (!el || !box || box.offsetParent === null) return;
+            var rect = box.getBoundingClientRect();
+            var side = Math.floor(Math.min(rect.width || 0, rect.height || 0));
+            if (side >= 100) {{
+                el.style.width = side + 'px';
+                el.style.height = side + 'px';
+            }}
+            if (typeof v.resize === 'function') {{
+                v.resize();
+                v.render();
+            }}
+        }};
+        window.addEventListener('resize', function() {{
+            setTimeout(function() {{
+                if (window["{calc_resize_pre_fn}"]) window["{calc_resize_pre_fn}"]();
+            }}, 120);
+        }});
+        if (root) {{
+            new MutationObserver(function() {{
+                if (window["{calc_resize_mol_fn}"]) {{
+                    setTimeout(window["{calc_resize_mol_fn}"], 200);
+                }}
+                setTimeout(function() {{
+                    if (window["{calc_resize_pre_fn}"]) window["{calc_resize_pre_fn}"]();
+                }}, 220);
+            }}).observe(root, {{attributes: true, subtree: true, attributeFilter: ['style']}});
+        }}
+
+        /* Escape leaves fullscreen by pressing the same button, so the
+           button and the tab can never disagree about the state. */
+        if (root && root.dataset.zenEscBound !== '1') {{
+            root.dataset.zenEscBound = '1';
+            document.addEventListener('keydown', function(e) {{
+                if (e.key !== 'Escape') return;
+                if (!root.classList.contains('calc-zen')) return;
+                var holder = root.querySelector('.calc-fullscreen-btn');
+                var btn = holder && (holder.tagName === 'BUTTON'
+                    ? holder : holder.querySelector('button'));
+                if (btn) {{ e.preventDefault(); btn.click(); }}
+            }}, true);
+        }}
+        }}
+        initCalcScopeBind(0);
+    }})();
+    """
+    )
+
+    def calc_set_root(root_dir):
+        """Switch browser root directory and reset to top level."""
+        try:
+            new_root = Path(root_dir).expanduser()
+        except Exception:
+            new_root = Path(root_dir)
+        new_root.mkdir(parents=True, exist_ok=True)
+        ctx.calc_dir = new_root
+        if _is_archive_tab:
+            ctx.archive_dir = new_root
+        state['current_path'] = ''
+        calc_list_directory()
+
+    def calc_set_primary_root(root_dir):
+        """Update the Calculations root used by Archive move-back actions."""
+        try:
+            new_root = Path(root_dir).expanduser()
+        except Exception:
+            new_root = Path(root_dir)
+        new_root.mkdir(parents=True, exist_ok=True)
+        ctx.primary_calc_dir = new_root
+
+    if _remote_archive_enabled:
+        _calc_update_transfer_jobs_visibility()
+
+    ctx.add_init_js(_init_js)
+
+    return tab_widget, {
+        'calc_list_directory': calc_list_directory,
+        'calc_set_root': calc_set_root,
+        'calc_set_primary_root': calc_set_primary_root,
+        # --- Agent-accessible widgets ---
+        # Navigation
+        'calc_path_input': calc_path_input,
+        'calc_sort_dropdown': calc_sort_dropdown,
+        'calc_dotfiles_btn': calc_dotfiles_btn,
+        'calc_folder_search': calc_folder_search,
+        'calc_search_input': calc_search_input,
+        'calc_top_btn': calc_top_btn,
+        'calc_bottom_btn': calc_bottom_btn,
+        'calc_search_result': calc_search_result,
+        'calc_file_info': calc_file_info,
+        # What the browser is showing, which is how a test can ask
+        # what a file was opened as.
+        'calc_content_area': calc_content_area,
+        'calc_ketcher_container': calc_ketcher_container,
+        'calc_recalc_toolbar': calc_recalc_toolbar,
+        'calc_content_toolbar': calc_content_toolbar,
+        'calc_sheet_payload_input': calc_sheet_payload_input,
+        'calc_sheet_action_btn': calc_sheet_action_btn,
+        # the spreadsheet, for driving it the way the browser does
+        'calc_render_sheet': _calc_render_sheet,
+        'calc_docx_save': _calc_docx_save,
+        'sheet_state': state,
+        # File operations
+        'calc_new_folder_btn': calc_new_folder_btn,
+        'calc_new_folder_input': calc_new_folder_input,
+        'calc_rename_btn': calc_rename_btn,
+        'calc_rename_input': calc_rename_input,
+        'calc_duplicate_btn': calc_duplicate_btn,
+        'calc_copy_btn': calc_copy_btn,
+        'calc_copy_path_btn': calc_copy_path_btn,
+        # Exported so the download control can be driven in a test. It was
+        # not reachable from outside, so the defect it carried -- a folder
+        # selection leaving the button grey -- could only be found by hand.
+        'calc_on_selection_change': calc_on_selection_change,
+        '_calc_tree_size': _calc_tree_size,
+        # Transfer / move
+        'calc_move_archive_btn': calc_move_archive_btn,
+        'calc_back_to_calculations_btn': calc_back_to_calculations_btn,
+        'calc_ssh_transfer_btn': calc_ssh_transfer_btn,
+        # Visualization & report
+        'calc_view_toggle': calc_view_toggle,
+        'calc_prescreen_btn': calc_prescreen_btn,
+        'calc_prescreen_refresh_btn': calc_prescreen_refresh_btn,
+        'calc_prescreen_toolbar': calc_prescreen_toolbar,
+        'calc_view_png_btn': calc_view_png_btn,
+        'calc_view_fullscreen_btn': calc_view_fullscreen_btn,
+        'calc_xyz_png_btn': calc_xyz_png_btn,
+        'calc_report_btn': calc_report_btn,
+        # Extract Table
+        'calc_table_btn': calc_table_btn,
+        'calc_table_file_input': calc_table_file_input,
+        'calc_table_scope_dd': calc_table_scope_dd,
+        'calc_table_recursive_cb': calc_table_recursive_cb,
+        'calc_table_decimal_comma_btn': calc_table_decimal_comma_btn,
+        'calc_table_preset_name': calc_table_preset_name,
+        'calc_table_preset_save_btn': calc_table_preset_save_btn,
+        'calc_table_add_col_btn': calc_table_add_col_btn,
+        'calc_table_run_btn': calc_table_run_btn,
+        'calc_table_csv_btn': calc_table_csv_btn,
+        'calc_table_output': calc_table_output,
+        # Recalc & editor
+        'calc_recalc_btn': calc_recalc_btn,
+        'calc_recalc_time': calc_recalc_time,
+        'calc_submit_recalc_btn': calc_submit_recalc_btn,
+        'calc_edit_area': calc_edit_area,
+        # Options dropdown (Recalc / Smart Recalc / Override / etc.)
+        'calc_options_dropdown': calc_options_dropdown,
+        'calc_override_input': calc_override_input,
+        'calc_override_time': calc_override_time,
+        'calc_override_btn': calc_override_btn,
+        # File browser selection
+        'calc_file_list': calc_file_list,
+        # the browser's "this file was clicked" bridge (see calc_on_open_request)
+        'calc_open_input': calc_open_input,
+        'calc_update_options_dropdown': calc_update_options_dropdown,
+        # Download (exposed for tests: trigger on a synthetic click / read status)
+        'calc_on_download': calc_on_download,
+        'calc_download_btn': calc_download_btn,
+        'calc_download_status': calc_download_status,
+        'calc_download_targets': _calc_download_targets,
+        'calc_update_download_btn': calc_update_download_btn,
+        # Delete (exposed for blocking only — agent must NOT click)
+        'calc_delete_btn': calc_delete_btn,
+        # Batch from XYZ
+        'xyz_batch_prepare_export': _calc_xyz_batch_prepare_export,
+        'xyz_batch_state': state,
+        'xyz_batch_select': calc_xyz_batch_select,
+        'xyz_batch_filename': calc_xyz_batch_filename,
+        'xyz_batch_refresh': _calc_refresh_xyz_batch_selector,
+        'xyz_batch_show_panel': _calc_show_xyz_batch_panel,
+    }
+,
+                                  stdout, re.M)
+                if match:
+                    run = Path(match.group(2).strip())
+                    state['prescreen_last_run'] = str(run)
+                    calc_prescreen_refresh_btn.disabled = False
+                if p.returncode != 0:
+                    details = (stdout + '\n' + stderr).strip()[-1100:]
+                    raise RuntimeError(details or f'Exit code {p.returncode}')
+                if match is None:
+                    raise RuntimeError('Workflow did not return a run directory')
+                count = int(match.group(1))
+                job_info = ''
+                submission = run / 'submission.json'
+                if submission.is_file():
+                    try:
+                        ids = json.loads(submission.read_text())
+                        job_info = (
+                            f" | SLURM g-xTB={ids.get('gxtb_array')}, "
+                            f"DFT-SP={ids.get('sp_array')}, "
+                            f"report={ids.get('collect_job')}"
+                        )
+                    except (ValueError, OSError):
+                        pass
+                verb = 'Submitted' if submit_jobs else 'Prepared only'
+                calc_prescreen_status.value = (
+                    '<span style="color:#2e7d32;">'
+                    f'{verb}: {count} conformers{_html.escape(job_info)}. '
+                    f'Run: <code>{_html.escape(str(run))}</code>. '
+                    'After completion press <b>Load SP ranking</b>.'
+                    '</span>'
+                )
+                calc_list_directory()
+            except Exception as exc:
+                calc_prescreen_status.value = (
+                    '<span style="color:#c62828;">Pre-screening failed: '
+                    f'{_html.escape(str(exc)[:1200])}</span>'
+                )
+            finally:
+                state['prescreen_running'] = False
+                calc_prescreen_btn.disabled = False
+
+        threading.Thread(target=_prescreen_worker, daemon=True).start()
+
+    def _calc_on_prescreen_refresh_click(_button=None):
+        """Show complete SP results, and navigate them in the existing XYZ viewer."""
+        run_str = state.get('prescreen_last_run')
+        # Runs may take hours. Recover a prior session's run from the
+        # selected GOAT ensemble, instead of requiring the notebook to stay open.
+        if not run_str:
+            selected = state.get('selected_file_path')
+            if selected is not None:
+                source = Path(selected).resolve()
+                if source.is_file() and source.name.lower().endswith('finalensemble.xyz'):
+                    matches = []
+                    for candidate in source.parent.glob('pre_gxtb_sp_*'):
+                        config = candidate / 'settings.json'
+                        if not config.is_file():
+                            continue
+                        try:
+                            settings = json.loads(config.read_text())
+                            if Path(settings.get('input', '')).resolve() == source:
+                                matches.append(candidate)
+                        except (ValueError, OSError, TypeError):
+                            continue
+                    if matches:
+                        run_str = str(max(matches, key=lambda x: x.stat().st_mtime))
+                        state['prescreen_last_run'] = run_str
+        if not run_str:
+            calc_prescreen_status.value = (
+                'No matching pre-screening run found for the selected finalensemble.xyz.'
+            )
+            return
+        run = Path(run_str)
+        summary_path = run / 'results' / 'summary.json'
+        if not summary_path.is_file():
+            calc_prescreen_status.value = (
+                f'Waiting for result collection. Run: <code>{_html.escape(str(run))}</code>'
+            )
+            return
+        try:
+            summary = json.loads(summary_path.read_text())
+            n = int(summary['frames'])
+            valid = int(summary['sp_valid'])
+            gvalid = int(summary['gxtb_valid'])
+            if valid != n or gvalid != n:
+                calc_prescreen_status.value = (
+                    '<span style="color:#a86800;">'
+                    f'Screening incomplete: g-xTB {gvalid}/{n}, SP {valid}/{n}. '
+                    'See results/per_conformer_status.csv and SLURM logs. '
+                    f'<code>{_html.escape(str(run))}</code></span>'
+                )
+                return
+            xyz_path = run / 'results' / 'gxtb_geometries_sorted_by_dft_sp.xyz'
+            csv_path = run / 'results' / 'single_point_energies.csv'
+            import csv as _csv
+            with csv_path.open(newline='') as f:
+                rows = list(_csv.DictReader(f))
+            if len(rows) != n:
+                raise ValueError('SP energy CSV does not contain every conformer')
+            frames = parse_xyz_frames(xyz_path.read_text(encoding='utf-8'))
+            if len(frames) != n:
+                raise ValueError('Ranked XYZ has wrong frame count')
+            # Same viewer path used by the existing conformer-clustering button.
+            state['xyz_frames'].clear()
+            state['xyz_frames'].extend(frames)
+            state['xyz_current_frame'][0] = 0
+            state['traj_viewer_ready'] = False
+            calc_xyz_controls.layout.display = 'flex'
+            calc_coord_controls.layout.display = 'none'
+            calc_mol_container.layout.display = 'block'
+            calc_mol_view_row.layout.display = ''
+            _set_view_toggle(True, False)
+            calc_update_xyz_viewer(initial_load=True)
+            calc_file_info.value = (
+                f'<b>{n} SP-sorted g-xTB geometries</b> | '
+                f'{_html.escape(xyz_path.name)}'
+            )
+            top = ', '.join(
+                f"#{r['sp_rank']} GOAT {r['goat_index']} "
+                f"({float(r['delta_kcal_mol']):.3f} kcal/mol)"
+                for r in rows[:min(8, n)]
+            )
+            calc_prescreen_status.value = (
+                '<span style="color:#2e7d32;">'
+                f'COMPLETE: {n}/{n}. Leading SP candidates: {_html.escape(top)}. '
+                f'Results: <code>{_html.escape(str(run / "results"))}</code>'
+                '</span>'
+            )
+            calc_list_directory()
+        except Exception as exc:
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Could not load SP results: '
+                f'{_html.escape(str(exc)[:800])}</span>'
+            )
 
     def calc_on_override_start(button):
         selected_option = calc_options_dropdown.value
