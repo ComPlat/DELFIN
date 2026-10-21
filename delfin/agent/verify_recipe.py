@@ -95,10 +95,29 @@ def _yaml_safe_load(text: str):
 
 def _classify_command(command: str) -> str:
     """Best-effort classification of a CI run command.  Empty string
-    when nothing indicates a check step."""
-    head = command.split()[0] if command.split() else ""
-    if head in ("pytest", "py.test") or "pytest" in command.split()[:2]:
+    when nothing indicates a check step.
+
+    ``python -m <tool> ...`` is classified as ``<tool> ...``; ``cargo``
+    and ``go`` by their subcommand (test -> test; clippy, fmt --check,
+    vet -> lint)."""
+    argv = command.split()
+    head = argv[0] if argv else ""
+    if head in ("python", "python3") and len(argv) >= 3 and argv[1] == "-m":
+        return _classify_command(" ".join(argv[2:]))
+    if head in ("pytest", "py.test") or "pytest" in argv[:2]:
         return "test"
+    if head == "cargo" and len(argv) > 1:
+        if argv[1] in ("test", "nextest"):
+            return "test"
+        if argv[1] == "clippy" or (argv[1] == "fmt" and "--check" in argv):
+            return "lint"
+        return ""
+    if head == "go" and len(argv) > 1:
+        if argv[1] == "test":
+            return "test"
+        if argv[1] == "vet":
+            return "lint"
+        return ""
     if head in ("ruff", "flake8", "pylint", "mypy", "pyright",
                 "eslint", "tsc", "golangci-lint", "shellcheck"):
         return "lint" if head != "mypy" and head != "pyright" else "typecheck"
@@ -117,8 +136,18 @@ _INSTALL_HEADS = ("pip", "pip3", "python", "python3", "npm", "yarn",
 
 
 def _is_install_or_noise(command: str) -> bool:
+    """A run-line that is setup, not a check.
+
+    Classification first: ``python``/``npm``/``yarn``/``pnpm`` head both
+    installs and checks, and filtering on the head word alone dropped
+    ``npm test`` and ``python -m pytest`` before they were classified.
+    """
+    if command.startswith("{"):
+        return True
+    if _classify_command(command):
+        return False
     head = command.split()[0] if command.split() else ""
-    return head in _INSTALL_HEADS or command.startswith("{")
+    return head in _INSTALL_HEADS
 
 
 def _commands_from_run(run_text: str) -> list[str]:

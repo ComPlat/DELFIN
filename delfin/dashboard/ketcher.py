@@ -27,10 +27,12 @@ one copy per directory anyone had ever launched from.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import time
 import urllib.error
 import urllib.request
@@ -40,7 +42,8 @@ from typing import Any, Callable, Dict, Optional
 
 __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'published_root', 'stored_directory', 'url_prefix',
-           'latest_release', 'is_installed', 'smiles_from_molfile',
+           'latest_release', 'pinned_release', 'is_installed',
+           'smiles_from_molfile',
            'reaction_smiles_from_rxnfile', 'reaction_smiles_from_sdf',
            'smiles_from_drawing',
            'parse_reaction_smiles',
@@ -51,11 +54,29 @@ __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'clear_js', 'contain_js',
            'files_js', 'wire_js']
 
-#: Where the releases come from.  The versioned asset rather than the
-#: unversioned one beside it: two files of the same content and only one of
-#: them says which build it is.
-RELEASES = 'https://api.github.com/repos/epam/ketcher/releases/latest'
+#: The one build that is installed, named by version, URL, size and
+#: SHA-256.  Pinned rather than "whatever releases/latest names": the editor
+#: is served on the dashboard's own origin, from a route that carries no
+#: token, so whoever could move that pointer or replace the asset would
+#: decide what script runs beside the dashboard.  The versioned asset rather
+#: than the unversioned one beside it: two files of the same content and only
+#: one of them says which build it is.
+#:
+#: Source of the digest: the ``digest`` the GitHub release API reports for
+#: this asset of epam/ketcher v3.18.0 (read 2026-10-16), recomputed over the
+#: downloaded file with the same result.  Moving to a newer build is an edit
+#: of these four lines, from the same two sources, and a run of
+#: tests/test_the_editor_download_is_pinned_and_unpacked_inside.py.
+VERSION = '3.18.0'
+ARCHIVE_URL = ('https://github.com/epam/ketcher/releases/download/'
+               'v3.18.0/ketcher-standalone-3.18.0.zip')
+ARCHIVE_SHA256 = '484e7f10a0e74808ae5f43f0e6448db6f4d884bdd2189aa271108474167a3e7e'
+ARCHIVE_SIZE = 35_057_618
 _ASSET = re.compile(r'^ketcher-standalone-(\d[\w.]*)\.zip$')
+
+#: What the kept files may add up to once unpacked.  The pinned build keeps
+#: about 32 MB; the bound is for an archive that is not that build.
+_UNPACKED_LIMIT = 256 * 1024 * 1024
 
 #: Written beside the app so an installed copy can say which build it is.
 _STAMP = '.delfin-ketcher-version'
@@ -297,32 +318,81 @@ def app_url() -> Optional[str]:
     return f'/voila/files/{quote(rel)}/index.html?v={stamp}'
 
 
-def latest_release(timeout: float = 20.0) -> Dict[str, Any]:
-    """What the newest published build is, asked of the release feed.
+def pinned_release() -> Dict[str, Any]:
+    """The build this DELFIN installs, without asking the network.
 
-    Returns ``{'ok', 'version', 'url', 'size', 'status'}``.  Nothing is pinned
-    here: the newest is whatever is newest when asked, so keeping up to date is
-    a button rather than an edit to this file.
+    Returns ``{'ok', 'version', 'url', 'size', 'sha256', 'status'}``.
     """
-    request = urllib.request.Request(
-        RELEASES, headers={'Accept': 'application/vnd.github+json',
-                           'User-Agent': 'delfin-dashboard'})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as answer:
-            payload = json.loads(answer.read().decode('utf-8'))
-    except (urllib.error.URLError, ValueError, OSError) as exc:
-        return {'ok': False, 'version': None, 'url': None, 'size': 0,
-                'status': f'The release list could not be read: {exc}'}
-    for asset in payload.get('assets') or []:
-        found = _ASSET.match(str(asset.get('name') or ''))
-        if found:
-            return {'ok': True, 'version': found.group(1),
-                    'url': asset.get('browser_download_url'),
-                    'size': int(asset.get('size') or 0),
-                    'status': f'Ketcher {found.group(1)} is the newest build.'}
-    return {'ok': False, 'version': None, 'url': None, 'size': 0,
-            'status': ('That release carries no standalone build; nothing to '
-                       'install.')}
+    return {'ok': True, 'version': VERSION, 'url': ARCHIVE_URL,
+            'size': ARCHIVE_SIZE, 'sha256': ARCHIVE_SHA256,
+            'status': f'Ketcher {VERSION} is the build this DELFIN installs.'}
+
+
+def latest_release(timeout: float = 20.0) -> Dict[str, Any]:
+    """What the dashboard offers to fetch: the pinned build.
+
+    Kept under its old name for the callers that ask before offering the
+    download; it used to read releases/latest, and now answers from the pin
+    (``timeout`` is unused).
+    """
+    return pinned_release()
+
+
+class _UnsafeArchive(ValueError):
+    """An archive member that would land outside the unpacking directory."""
+
+
+def _member_target(root: Path, info: zipfile.ZipInfo, tail: str) -> Path:
+    """Where ``info`` may be written below ``root``, or raise _UnsafeArchive.
+
+    Refused: a symbolic link (mode bits in ``external_attr``), an absolute
+    path, a backslash, a drive letter, a ``..`` component, and anything that
+    resolves outside ``root``.  The check is on the name the archive gives,
+    before any directory is made for it.
+    """
+    name = info.filename
+    if stat.S_ISLNK(info.external_attr >> 16):
+        raise _UnsafeArchive(f'{name} is a symbolic link')
+    if (not tail or tail.startswith('/') or '\\' in tail
+            or re.match(r'^[A-Za-z]:', tail)
+            or '..' in tail.split('/')):
+        raise _UnsafeArchive(f'{name} names a path outside the editor')
+    base = root.resolve()
+    target = (base / tail).resolve()
+    if not target.is_relative_to(base):
+        raise _UnsafeArchive(f'{name} names a path outside the editor')
+    return target
+
+
+def _download(url: str, sink_path: Path, *, size: int, sha256: str,
+              timeout: float) -> Optional[str]:
+    """Fetch ``url`` into ``sink_path``; None when it is the pinned file.
+
+    Otherwise the reason, and the partial file is left for the caller's
+    cleanup.  Read in chunks and hashed as it arrives; more bytes than the
+    pin names stop the read there.
+    """
+    digest = hashlib.sha256()
+    total = 0
+    request = urllib.request.Request(url, headers={'User-Agent': 'delfin-dashboard'})
+    with urllib.request.urlopen(request, timeout=timeout) as answer:
+        with open(sink_path, 'wb') as sink:
+            while True:
+                chunk = answer.read(1 << 20)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > size:
+                    return (f'the download is larger than the {size} bytes '
+                            'pinned for this build')
+                digest.update(chunk)
+                sink.write(chunk)
+    if total != size:
+        return f'the download is {total} bytes, the pin names {size}'
+    if digest.hexdigest() != sha256:
+        return (f'its SHA-256 is {digest.hexdigest()}, the pin names '
+                f'{sha256}')
+    return None
 
 
 def _wanted(names: list, page: str) -> set:
@@ -365,7 +435,12 @@ def install(
     timeout: float = 900.0,
     folder: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Fetch the newest build and put it where the browser can load it.
+    """Fetch the pinned build, check it, and put it where the browser can load it.
+
+    The download must have the pinned size and SHA-256, and every member
+    kept must land inside the unpacking directory (no ``..``, no absolute
+    path, no symbolic link); otherwise nothing is installed and the status
+    says why.
 
     Never called by itself: it is thirty-odd megabytes over the network, and
     on a machine that has no network it is a wait ending in nothing.  The
@@ -388,7 +463,7 @@ def install(
                 'status': ('Voila is not serving a directory, so a drawing '
                            'editor could not be reached by the browser even '
                            'once it was fetched.')}
-    newest = latest_release()
+    newest = pinned_release()
     if not newest['ok']:
         return {'ok': False, 'version': None, 'status': newest['status']}
 
@@ -401,12 +476,16 @@ def install(
     archive = staging / 'ketcher.zip'
     try:
         staging.mkdir(parents=True, exist_ok=True)
-        request = urllib.request.Request(
-            newest['url'], headers={'User-Agent': 'delfin-dashboard'})
-        with urllib.request.urlopen(request, timeout=timeout) as answer:
-            with open(archive, 'wb') as sink:
-                shutil.copyfileobj(answer, sink)
-        say('unpacking')
+        mismatch = _download(newest['url'], archive, size=int(newest['size']),
+                             sha256=str(newest['sha256']), timeout=timeout)
+        if mismatch:
+            # Fail closed: nothing of a file that is not the pinned build is
+            # unpacked, kept or served.
+            return {'ok': False, 'version': None,
+                    'status': (f'Ketcher {newest["version"]} was not installed: '
+                               f'{mismatch}. The SHA-256 check refused it; '
+                               'nothing was kept.')}
+        say('checked (SHA-256), unpacking')
         with zipfile.ZipFile(archive) as bundle:
             names = bundle.namelist()
             page = ''
@@ -424,13 +503,22 @@ def install(
                         'status': 'The archive has no standalone/index.html.'}
             keep = _wanted(names, page)
             unpacked = staging / 'app'
+            unpacked.mkdir(parents=True, exist_ok=True)
+            # Every member checked before the first is written: a refusal
+            # leaves nothing half-unpacked behind.
+            plan = []
             for name in sorted(keep):
                 tail = name.split('standalone/', 1)[-1]
-                target = unpacked / tail
                 if not tail or tail.endswith('/'):
                     continue
+                info = bundle.getinfo(name)
+                plan.append((info, _member_target(unpacked, info, tail)))
+            if sum(info.file_size for info, _ in plan) > _UNPACKED_LIMIT:
+                raise _UnsafeArchive('the archive unpacks to more than '
+                                     f'{_UNPACKED_LIMIT // (1024 * 1024)} MB')
+            for info, target in plan:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with bundle.open(name) as source, open(target, 'wb') as sink:
+                with bundle.open(info) as source, open(target, 'wb') as sink:
                     shutil.copyfileobj(source, sink)
         (unpacked / _STAMP).write_text(newest['version'], encoding='utf-8')
         # In place at the end, not written over piece by piece: a half-updated
@@ -447,6 +535,10 @@ def install(
             shutil.rmtree(folder, ignore_errors=True)
             folder.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(kept, folder)
+    except _UnsafeArchive as exc:
+        return {'ok': False, 'version': None,
+                'status': (f'Ketcher was not installed: {exc}. The archive '
+                           'was refused as a whole; nothing was kept.')}
     except (OSError, zipfile.BadZipFile, urllib.error.URLError) as exc:
         return {'ok': False, 'version': None,
                 'status': f'Ketcher could not be installed: {exc}'}

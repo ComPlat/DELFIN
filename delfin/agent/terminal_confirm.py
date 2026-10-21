@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from . import activity as _activity
 from . import repl_render as rr
 
 __all__ = [
@@ -49,7 +50,19 @@ __all__ = [
 #: whoever is supervising -- and where an answer for it may be left. The
 #: room is file_confirm's, so its checks apply unchanged and the terminal
 #: still wins a race: resolve() is the single point that decides.
+#: Where a session parks a question a supervisor can answer. The name
+#: is the terminal's because the terminal was the first surface to
+#: publish here; the dashboard broker publishes into the same room, so
+#: one `delfin-agent approvals ls` sees every waiting approval and one
+#: checked reader answers them all. The path does not move: a record
+#: written by an older version is still in flight, and state_paths maps
+#: this directory by name.
 _PENDING_DIR = Path.home() / ".delfin" / "terminal_confirmations"
+
+#: Which surface asked. Read with a default of "terminal", so a record
+#: written before this field existed keeps its meaning.
+TERMINAL = "terminal"
+DASHBOARD = "dashboard"
 
 CONFIRM = "confirm"
 ASK = "ask"
@@ -126,6 +139,44 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
     Written under a temporary name and moved into place, so a reader
     never sees half a question.
     """
+    return publish_waiting(
+        surface=TERMINAL,
+        session_id=session_id,
+        session_key=session_key,
+        kind=str(req.kind or ""),
+        tool=str(req.tool or ""),
+        command=req.command,
+        # Only a question's payload (its text and options) is published;
+        # other kinds may carry file contents that must stay in-process.
+        payload=dict(req.payload or {}) if req.kind == ASK else {},
+        preview=str(req.preview or ""),
+        protected=bool(req.is_protected),
+        outside_read=bool(req.is_outside_read),
+        answer_at="terminal or supervisor",
+    )
+
+
+def publish_waiting(*, surface: str, session_id: str = "",
+                    session_key: str = "", kind: str = "",
+                    tool: str = "", command=None, payload=None,
+                    preview: str = "", protected: bool = False,
+                    outside_read: bool = False,
+                    answer_at: str = "") -> "Path | None":
+    """Park a question in the room, whichever surface is asking.
+
+    Input: what the question is. Output: the path of the published
+    record, or None where the room cannot be written. Semantics: exactly
+    the record `_publish_pending` has always written, plus a ``surface``
+    field saying who is waiting.
+
+    Extracted rather than copied because the record's shape is a
+    contract with three readers -- file_confirm's checked reader, the
+    lister, and the answer writer -- and a second writer with its own
+    idea of the shape is how two of them come to disagree.
+
+    Never raises: a session must ask its question even where no
+    supervisor can be reached.
+    """
     room = _PENDING_DIR
     room.mkdir(parents=True, exist_ok=True)
     try:
@@ -134,14 +185,16 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
         pass
     record = {
         "id": f"{int(time.time())}-{uuid.uuid4().hex[:8]}",
+        "surface": str(surface or TERMINAL),
         "session_id": str(session_id or ""),
         "session_key": str(session_key or ""),
-        "kind": str(req.kind or ""),
-        "tool": str(req.tool or ""),
-        "command": req.command,
-        "preview": str(req.preview or ""),
-        "protected": bool(req.is_protected),
-        "outside_read": bool(req.is_outside_read),
+        "kind": str(kind or ""),
+        "tool": str(tool or ""),
+        "command": command,
+        "payload": dict(payload or {}),
+        "preview": str(preview or ""),
+        "protected": bool(protected),
+        "outside_read": bool(outside_read),
         "asked_at": time.time(),
         "pid": os.getpid(),
         # A pid is a number the system hands out again. The start settles
@@ -149,11 +202,17 @@ def _publish_pending(req: ConfirmRequest, session_id: str,
         # extracted for exactly this class of mistake.
         "proc_start": _proc_start_of_this_process(),
         "host": socket.gethostname(),
-        # Answerable from both ends now. The terminal still wins a race:
-        # resolve() is the single point that decides, and the first
-        # answer takes it.
-        "answer_at": "terminal or supervisor",
+        # Answerable from both ends now. The asking surface still wins a
+        # race: its own resolve() is the single point that decides, and
+        # the first answer takes it.
+        "answer_at": str(answer_at or f"{surface} or supervisor"),
+        # An answer from outside must be signed with the code this
+        # process shows on its own surface (approval_code); the code
+        # itself is never in the record.
+        "needs_code": True,
     }
+    from . import approval_code as _code
+    _code.issue(record["id"])
     # The same filename file_confirm uses, so its reader, its lister and
     # its answer writer apply here unchanged -- with every careful part
     # they carry: not a symlink, this user's, not group-writable, naming
@@ -205,17 +264,59 @@ def _asker_is_gone(record: dict) -> bool:
 
 
 def _withdraw_pending(path) -> None:
-    """Take a published question away once it has been answered."""
+    """Take a published question away once it has been answered, and its
+    code with it."""
     if not path:
         return
+    try:
+        from . import approval_code as _code
+        _code.forget(request_id_of(path))
+    except Exception:
+        pass
     try:
         Path(path).unlink()
     except OSError:
         pass
 
 
-def pending_at_terminals() -> list[dict]:
-    """Every question a terminal session is waiting on, read whole.
+def request_id_of(published) -> str:
+    """The request id of a published record's path, or ""."""
+    name = Path(str(published or "")).name
+    suffix = ".request.json"
+    return name[:-len(suffix)] if name.endswith(suffix) else ""
+
+
+def code_spent(published) -> bool:
+    """True once the published request has seen three unsigned answers."""
+    try:
+        from . import approval_code as _code
+        return _code.spent(request_id_of(published))
+    except Exception:
+        return False
+
+
+def outside_answer_line(published, *, choice: bool = False) -> str:
+    """The line that tells the person how to answer from another terminal,
+    with the code. For the asking surface only (the terminal frame, the
+    dashboard row): it is the human channel. "" when not published.
+    *choice* names the ``answer <id> <n>`` form of a choice question."""
+    rid = request_id_of(published)
+    if not rid:
+        return ""
+    try:
+        from . import approval_code as _code
+        code = _code.code_for(rid)
+    except Exception:
+        code = ""
+    if not code:
+        return ""
+    verb = f"answer {rid} <n>" if choice else f"approve|deny {rid}"
+    return (f"from another terminal: delfin-agent approvals {verb} "
+            f"--code {_code.display(code)}")
+
+
+def pending_for_supervisors() -> list[dict]:
+    """Every question any session is waiting on, read whole.
 
     Never raises: a supervisor's view of the world must not be the thing
     that ends the supervisor.
@@ -238,6 +339,67 @@ def pending_at_terminals() -> list[dict]:
     return out
 
 
+def surface_of(record: dict) -> str:
+    """Which surface published *record*.
+
+    "terminal" for a record with no ``surface`` field: that is what every
+    record in the room was before the field existed, and one may still be
+    in flight while this version starts reading.
+    """
+    value = str((record or {}).get("surface") or "").strip().lower()
+    return value or TERMINAL
+
+
+def pending_at_terminals() -> list[dict]:
+    """The terminal sessions' questions, which is what the name says.
+
+    Kept as its own view rather than widened in place: `cli_resume` uses
+    it to decide whether a TERMINAL session can be resumed, and
+    `approval_answers` to find the question a typed choice belongs to.
+    Handing either of them a dashboard row would be a different answer
+    under the same name.
+    """
+    return [row for row in pending_for_supervisors()
+            if surface_of(row) == TERMINAL]
+
+
+def pending_in_dashboards() -> list[dict]:
+    """The dashboard sessions' questions. The other half of the room."""
+    return [row for row in pending_for_supervisors()
+            if surface_of(row) == DASHBOARD]
+
+
+def withdraw(path) -> None:
+    """Take a published question away. Public name for one line, because
+    the surface that published a record is the one that has to retire it
+    and `kit_confirm` is not inside this module."""
+    _withdraw_pending(path)
+
+
+def answer_left_for(published) -> "tuple[bool, str] | None":
+    """The answer somebody left for the record at *published*, or None.
+
+    Input: the path `publish_waiting` returned. Output: (decision,
+    reason) or None when nothing has been answered yet. Semantics:
+    file_confirm's single checked reader decides -- not a symlink, this
+    user's, not group-writable, naming this very question, not older than
+    it -- and there is deliberately no laxer second path.
+
+    Never raises.
+    """
+    if not published:
+        return None
+    try:
+        from . import file_confirm as _fc
+        path = Path(published)
+        request_id = path.name[:-len(".request.json")]
+        answer_path = path.with_name(f"{request_id}.answer.json")
+        return _fc._read_answer(answer_path, request_id,
+                                path.stat().st_mtime)
+    except Exception:
+        return None
+
+
 def _note_outside_answer(req: ConfirmRequest, session_key: str,
                          decision) -> None:
     """Record that this one was answered from outside the pane.
@@ -257,7 +419,7 @@ def _note_outside_answer(req: ConfirmRequest, session_key: str,
 
 
 def answer_waiting(request_id: str, decision: bool, *, by: str = "",
-                   reason: str = "") -> bool:
+                   reason: str = "", code: "str | None" = None) -> bool:
     """Answer a question a terminal session is stuck on. Never raises.
 
     The decision this reverses is the one the first published record
@@ -272,9 +434,11 @@ def answer_waiting(request_id: str, decision: bool, *, by: str = "",
     """
     try:
         from . import file_confirm as _fc
+        # file_confirm.answer refuses inside an agent session
+        # (approval_guard); this goes through it, not around it.
         return bool(_fc.answer(str(request_id), bool(decision),
                                room=_PENDING_DIR, by=str(by or ""),
-                               reason=str(reason or "")))
+                               reason=str(reason or ""), code=code))
     except Exception:
         return False
 
@@ -283,20 +447,10 @@ def _answer_from_outside(req: ConfirmRequest) -> "tuple[bool, str] | None":
     """The answer somebody left for *req*, with a refusal reason, or None.
 
     Never raises. The reason comes from file_confirm's single checked
-    reader -- there is deliberately no laxer second path for text.
+    reader -- there is deliberately no laxer second path for text, and
+    this is one caller of the one reader rather than a second copy of it.
     """
-    published = getattr(req, "published", None)
-    if not published:
-        return None
-    try:
-        from . import file_confirm as _fc
-        path = Path(published)
-        request_id = path.name[:-len(".request.json")]
-        answer_path = path.with_name(f"{request_id}.answer.json")
-        return _fc._read_answer(answer_path, request_id,
-                                path.stat().st_mtime)
-    except Exception:
-        return None
+    return answer_left_for(getattr(req, "published", None))
 
 
 def _choice_from_outside(req: ConfirmRequest) -> "list[str] | None":
@@ -324,10 +478,12 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
 
     Two absences are the point rather than an oversight.
 
-    An outside-workspace READ gets no "always". The only persistable form
-    of that grant is an extra workspace directory, and that is WRITABLE —
-    in this session and every future one. One keystroke on a read prompt
-    must not be able to hand over write access.
+    An outside-workspace READ gets an "always" that saves READING only:
+    the directory is read in every later session and never written. It
+    used to get none, because the only thing that could be saved was an
+    extra workspace directory, which is writable -- and one keystroke on
+    a read prompt must not hand over write access. Home, system and key
+    directories get no "always" at all.
 
     An unknown MCP tool gets no "always" either: there is no persist kind
     for one. ``allow_patterns`` are shell regexes, so an "always" here
@@ -352,6 +508,10 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
         if suggestion and suggestion != _exact_pattern(req.command):
             opts.append(Option("k", "always commands like this",
                                f"persists {suggestion}"))
+    if req.is_outside_read and read_dir_for(req):
+        opts.append(Option("R", "always read here",
+                           f"{read_dir_for(req)} readable (never writable) "
+                           "in every future session"))
     if req.is_write and not req.is_protected:
         opts.append(Option("e", "stop asking about writes this session",
                            "acceptEdits until this session ends"))
@@ -359,6 +519,15 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
     opts.append(Option("a", "abort", "deny this and end the turn"))
     opts.append(Option("?", "explain", "what each option does here"))
     return opts
+
+
+def read_dir_for(req: ConfirmRequest) -> str:
+    """The directory "always read here" would save for ``req``, or ""."""
+    try:
+        from . import kit_settings
+        return kit_settings.read_grant_dir(str(req.args.get("path", "") or ""))
+    except Exception:
+        return ""
 
 
 def _exact_pattern(command: str) -> str:
@@ -405,21 +574,56 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
     if req.is_outside_read:
         lines.append("│")
         lines.append(theme.dim(
-            "│  Approving reads this file and opens its directory for READS "
-            "for the rest of this session. Nothing is saved."))
+            "│  [y] reads it and opens its directory for READS for the rest "
+            "of this session; [R] keeps that for every session. Neither "
+            "grants writing."))
 
-    keys = "  ".join(f"[{o.key}] {o.label}" for o in options)
-    lines.append("└─ " + rr.truncate_middle(keys, max(20, width - 3)))
+    outside = outside_answer_line(getattr(req, "published", None))
+    if outside:
+        lines.append(theme.dim("│  " + outside))
+
+    # What a persisting key saves, on screen before the key is pressed.
+    # It sat behind [?] only, and [k]'s pattern is the one thing about
+    # that answer the person cannot guess from its label.
+    for o in options:
+        if o.key in ("A", "k") and o.detail:
+            lines.append(theme.dim("│  " + rr.truncate_middle(
+                f"[{o.key}] {o.detail}", max(20, width - 4))))
+
+    lines.extend(_key_rows(options, width))
     return "\n".join(lines)
+
+
+def _key_rows(options: list[Option], width: int) -> list[str]:
+    """The answer keys, wrapped between options and never cut inside one.
+
+    One row cut in the middle used to hold them all; at 100 columns a
+    shell request lost "[k]" and half its label to the ellipsis, so the
+    key that persists a pattern was the one not on screen. Rows stay
+    below ``width`` so no terminal wraps them on its own. The first row
+    carries the frame corner; continuation rows are indented under it.
+    """
+    room = max(20, width - 4)
+    rows: list[str] = []
+    current = ""
+    for o in options:
+        item = rr.truncate_middle(f"[{o.key}] {o.label}", room)
+        if current and len(current) + 2 + len(item) > room:
+            rows.append(current)
+            current = item
+        else:
+            current = f"{current}  {item}" if current else item
+    if current:
+        rows.append(current)
+    return ["└─ " + rows[0]] + ["   " + r for r in rows[1:]] if rows else []
 
 
 def render_help(req: ConfirmRequest, options: list[Option]) -> str:
     out = [f"  [{o.key}] {o.label}" + (f" — {o.detail}" if o.detail else "")
            for o in options]
-    if req.is_outside_read:
-        out.append("  no 'always' here: the only persistable form of this "
-                   "grant is a writable directory, now and in every future "
-                   "session.")
+    if req.is_outside_read and not read_dir_for(req):
+        out.append("  no 'always' here: a home, system or key directory is "
+                   "approved one read at a time.")
     return "\n".join(out)
 
 
@@ -428,6 +632,7 @@ class TerminalConfirmBroker:
 
     def __init__(self, *, timeout_s: float = 0.0,
                  persist: Callable[[str], tuple[bool, str]] | None = None,
+                 persist_read: Callable[[str], tuple[bool, str]] | None = None,
                  set_mode: Callable[[str], Any] | None = None,
                  on_abort: Callable[[], None] | None = None,
                  session_id: str = "", session_key: str = "",
@@ -449,6 +654,7 @@ class TerminalConfirmBroker:
         self.session_id = str(session_id or "")
         self.session_key = str(session_key or "")
         self._persist = persist
+        self._persist_read = persist_read
         self._set_mode = set_mode
         self._on_abort = on_abort
         self._lock = threading.Lock()
@@ -468,6 +674,9 @@ class TerminalConfirmBroker:
         # reason from one thread's refusal must not land on another's.
         self._refusal_reason = threading.local()
         self.aborted = False
+        # Where the wait for the person is marked: an activity.Activity,
+        # a callable returning one, or None. The REPL binds the engine's.
+        self.activity: Any = None
 
     # -- the three bindings ----------------------------------------------
     @property
@@ -494,19 +703,25 @@ class TerminalConfirmBroker:
 
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
-        req = self._enqueue(ConfirmRequest(
-            kind=CONFIRM, tool=str(tool_name or ""),
-            args=dict(args or {}), preview=str(preview or "")))
-        return bool(self._wait(req))
+        with _activity.awaiting_person(self.activity, _activity.APPROVAL):
+            req = self._enqueue(ConfirmRequest(
+                kind=CONFIRM, tool=str(tool_name or ""),
+                args=dict(args or {}), preview=str(preview or "")))
+            return bool(self._wait(req))
 
     def ask_user(self, payload: dict) -> dict:
-        req = self._enqueue(ConfirmRequest(kind=ASK, payload=dict(payload or {})))
-        answer = self._wait(req)
+        with _activity.awaiting_person(self.activity, _activity.ANSWER):
+            req = self._enqueue(ConfirmRequest(
+                kind=ASK, tool="ask_user_question",
+                payload=dict(payload or {})))
+            answer = self._wait(req)
         return answer if isinstance(answer, dict) else {"answers": []}
 
     def approve_plan(self, plan: str) -> dict:
-        req = self._enqueue(ConfirmRequest(kind=PLAN, preview=str(plan or "")))
-        answer = self._wait(req)
+        with _activity.awaiting_person(self.activity, _activity.APPROVAL):
+            req = self._enqueue(ConfirmRequest(kind=PLAN,
+                                               preview=str(plan or "")))
+            answer = self._wait(req)
         if isinstance(answer, dict):
             return answer
         return {"approved": False, "new_mode": "plan"}
@@ -564,6 +779,8 @@ class TerminalConfirmBroker:
                 _note_outside_answer(req, self.session_key, outside[0])
                 self._audit_dialog(req, by="outside")
                 return req.decision
+            if code_spent(req.published):
+                break           # three unsigned answers: expired
             if deadline is not None and _time.monotonic() >= deadline:
                 break
         with self._lock:
@@ -654,6 +871,26 @@ class TerminalConfirmBroker:
         req.event.set()
         return True
 
+    def answer_question_with_text(self, text: str) -> bool:
+        """Resolve the oldest waiting ask_user_question with a typed line.
+
+        Input: a line the user typed while the question was open. Output:
+        True when a question took it (the line is then the answer and must
+        not also be sent as a message), False when none was waiting. The
+        decision is ``approval_answers.typed_answer``: an option when the
+        line names one, free text otherwise. Approvals (CONFIRM) and plan
+        approvals are never answered this way -- a typed sentence is not
+        a yes.
+        """
+        from .approval_answers import typed_answer
+        with self._lock:
+            req = next((r for r in self._queue
+                        if r.kind == ASK and not r.resolved), None)
+        if req is None or not str(text or "").strip():
+            return False
+        # The waiting thread writes the dialog's audit record when it wakes.
+        return self.resolve(req, typed_answer(text, req.payload))
+
     def abort_all(self) -> list[ConfirmRequest]:
         """Deny everything in flight, and everything that arrives after."""
         with self._lock:
@@ -703,6 +940,14 @@ class TerminalConfirmBroker:
             return False, "nothing to persist through"
         try:
             return self._persist(pattern)
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+
+    def persist_read(self, directory: str) -> tuple[bool, str]:
+        if not self._persist_read:
+            return False, "nothing to persist through"
+        try:
+            return self._persist_read(directory)
         except Exception as exc:
             return False, f"persist failed: {exc}"
 

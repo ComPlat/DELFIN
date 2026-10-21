@@ -101,6 +101,57 @@ def test_no_attention_event_is_lost_between_processes(tmp_path):
     assert len({json.loads(ln)["id"] for ln in lines}) == PROCS * WRITES
 
 
+_EMIT_DELIVERED = """
+from delfin.agent import attention
+# Told the user (a desktop notification went out): the delivery is noted
+# on the record afterwards -- a second rewrite of the whole inbox.
+attention._deliver = lambda event, **kw: ["desktop"]
+for i in range(n):
+    attention.emit_attention("run_finished", title=f"{tag}-{i}")
+"""
+
+_DISMISS = """
+import json
+from delfin.agent import attention
+ids = json.loads((home / "ids.json").read_text())
+for item_id in ids:
+    assert attention.dismiss_item(item_id)["ok"], item_id
+for _ in range(n):
+    attention.prune_inbox()
+"""
+
+
+def test_a_noted_delivery_or_a_prune_undoes_nothing_another_process_wrote(tmp_path):
+    """Emits whose delivery is noted, dismissals (as the window's agent
+    service makes them) and prunes, all at once: every event stays, every
+    dismissal sticks. The delivery note and the prune rewrote the inbox
+    from a copy read under a thread lock only."""
+    inbox = tmp_path / ".delfin" / "attention_inbox.jsonl"
+    inbox.parent.mkdir(parents=True)
+    waiting = [{"id": f"att-q{i:03d}", "kind": "question_pending", "session_id": "",
+                "title": f"Question waiting: {i}", "detail": "", "options": None, "workspace": "",
+                "created_at": 1.0e9 + i, "status": "pending", "answer": None, "resolved_at": None,
+                "acknowledged": False, "delivered": []} for i in range(WRITES)]
+    inbox.write_text("".join(json.dumps(r) + "\n" for r in waiting), encoding="utf-8")
+    (tmp_path / "ids.json").write_text(json.dumps([r["id"] for r in waiting]))
+    root = str(Path(__file__).resolve().parent.parent)
+    children = [
+        subprocess.Popen([sys.executable, "-c", _CHILD.format(root=root, body=body), str(tmp_path),
+                          tag, str(WRITES)], env=child_env(tmp_path))
+        for tag, body in [*((f"p{k}", _EMIT_DELIVERED) for k in range(PROCS - 1)), ("d", _DISMISS)]
+    ]
+    for child in children:
+        assert child.wait(timeout=180) == 0
+    records = [json.loads(ln) for ln in inbox.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    emitted = [r for r in records if r["kind"] == "run_finished"]
+    assert len(emitted) == (PROCS - 1) * WRITES                       # none lost
+    assert all(r.get("delivered") == ["desktop"] for r in emitted)     # every delivery noted
+    asked = {r["id"]: r for r in records if r["kind"] == "question_pending"}
+    assert len(asked) == WRITES
+    undone = [i for i, r in asked.items() if r["status"] != "resolved" or not r["acknowledged"]]
+    assert undone == []                                                # every dismissal kept
+
+
 def test_no_job_stays_unaddressable_after_a_concurrent_index_write(tmp_path):
     _run_concurrently(_INDEX, tmp_path)
     data = json.loads(
@@ -108,10 +159,15 @@ def test_no_job_stays_unaddressable_after_a_concurrent_index_write(tmp_path):
     assert len(data["jobs"]) == PROCS * WRITES
 
 
-def test_no_job_record_is_lost_from_the_workspace_registry(tmp_path):
+def test_no_job_record_is_lost_from_the_workspace_registry(tmp_path,
+                                                           monkeypatch):
     _run_concurrently(_REGISTRY, tmp_path)
+    # The children's home is tmp_path; resolve the registry as they did.
+    from delfin.agent import state_paths
+    monkeypatch.setattr(state_paths, "workspace_state_root",
+                        lambda: tmp_path / ".delfin" / "workspace_state")
     data = json.loads(
-        (tmp_path / ".delfin" / "bash_jobs.json").read_text("utf-8"))
+        bash_jobs._registry_path(tmp_path).read_text("utf-8"))
     assert len(data["jobs"]) == PROCS * WRITES
 
 

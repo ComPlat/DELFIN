@@ -85,7 +85,7 @@ def _resolve_slurm_mem_headroom() -> float:
       * 5edfb89 (2026-05-05) introduced the cap at 0.85 after JEW-R465
         OOM-kill (312 GB / 351 GB SLURM, two parallel OCCUPIER jobs
         SIGKILL after 48 h walltime).
-      * 2026-05-12 raised default to 0.90 after Fritz' archive analysis
+      * 2026-05-12 raised default to 0.90 after a user-archive analysis
         showed DFT-OPT real RSS = 80 % of `%maxcore × cores`. Correlation
         methods (DLPNO-CC, MP2) can still trip at 0.90 — set lower for
         those workflows.

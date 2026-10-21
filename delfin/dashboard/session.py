@@ -28,6 +28,7 @@ Two properties this module is built around:
 
 from __future__ import annotations
 
+import html as _html
 import os
 import threading
 import time
@@ -308,11 +309,13 @@ def resume_url(name: str = "", *, request_url: str = "",
                resume_path: str = "") -> str:
     """The address that comes back to this session, or "" if unknown.
 
-    Built from the request that started the kernel, so it carries the
-    host, the port and the server token the user already authenticated
-    with. That makes it exactly as sensitive as the address they are
-    looking at — it belongs in a terminal or a copy button, not in a
-    ticket.
+    Built from the request that started the kernel: its host and port,
+    and whatever else the query carried -- except the server token. The
+    browser that opened the dashboard holds the login cookie, so the link
+    works there without it; another browser gets the login page, which
+    takes the token and continues to this link. A token inside a URL is
+    kept by browser history and by every copy of the terminal it was
+    printed in (``delfin-agent where --token`` prints it on its own).
     """
     from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -325,10 +328,10 @@ def resume_url(name: str = "", *, request_url: str = "",
         parts = urlsplit(base)
         if not parts.netloc:
             return ""
-        # Keep whatever the current address carries -- the token above
-        # all -- and add the session on top, replacing any stale one.
+        # Keep whatever the current address carries except the token,
+        # and add the session on top, replacing any stale one.
         query = [(k, v) for k, v in parse_qsl(parts.query)
-                 if k != SESSION_QUERY_KEY]
+                 if k not in (SESSION_QUERY_KEY, "token")]
         query.append((SESSION_QUERY_KEY, who))
         return urlunsplit((
             parts.scheme or "http", parts.netloc, path,
@@ -388,10 +391,11 @@ def _strip_html(armed: bool, name: str, url: str) -> str:
     if url:
         # The title sits on the dot, which is what a pointer hovers; the
         # anchor around it is where a click goes.
-        title = f"Kept as {name} &middot; click for the return address"
+        title = (f"Kept as {_html.escape(str(name), quote=True)} &middot; "
+                 "click for the return address")
         return (
             '<div class="delfin-session-strip">'
-            f'<a class="delfin-session-link" href="{url}">'
+            f'<a class="delfin-session-link" href="{_html.escape(url, quote=True)}">'
             f'<span class="delfin-session-dot on" title="{title}"></span></a></div>'
         )
     return (
@@ -466,11 +470,12 @@ def build_status_strip():
             "keeps working, forms and open calculations stay. Scroll "
             "positions do not come back."
         ),
-        icon="thumb-tack",
+        # Drawn as a switch by the header's style (header_ui): its state
+        # is the knob's position, and the label stays "Keep session".
         # flex 0 0 auto: the header is a flex row, and a control that may
         # shrink is one that renders twenty pixels wide the moment the
         # row is full -- seen in a browser, clickable and unreadable.
-        layout=widgets.Layout(width="130px", flex="0 0 auto"),
+        layout=widgets.Layout(flex="0 0 auto"),
     )
 
     def _on_toggle(change):
@@ -500,6 +505,7 @@ def build_status_strip():
         if on:
             announce(name)
 
+    toggle.add_class("delfin-switch")
     toggle.observe(_on_toggle, names="value")
     if _armed:
         # The observer fires on a CHANGE; a control that starts armed
@@ -888,7 +894,7 @@ def _banner_html(records: list[dict]) -> str:
         if elsewhere and elsewhere != _hostname():
             # Its kernel is served on that machine; a link here would ask
             # this server for a kernel it does not run.
-            link = (f'<span style="color:#8a919e">runs on <code>{elsewhere}'
+            link = (f'<span style="color:#8a919e">runs on <code>{_html.escape(elsewhere)}'
                     '</code> &mdash; log in there to return</span>')
         elif url:
             # A button, and a verb that says what happens. "re-enter"
@@ -896,7 +902,7 @@ def _banner_html(records: list[dict]) -> str:
             # and the one control that takes a person back into their
             # running work is not the place to be clever (2026-09-17).
             link = (
-                f'<a href="{url}" style="display:inline-block;'
+                f'<a href="{_html.escape(url, quote=True)}" style="display:inline-block;'
                 ' background:#2f7d4f; color:#fff; text-decoration:none;'
                 ' padding:3px 12px; border-radius:4px; font-weight:600;'
                 '">Open this session &rarr;</a>'
@@ -905,7 +911,7 @@ def _banner_html(records: list[dict]) -> str:
             link = '<span style="color:#8a919e">address unknown</span>'
 
         rows.append(
-            f'<li style="margin:2px 0"><code>{name}</code>'
+            f'<li style="margin:2px 0"><code>{_html.escape(str(name))}</code>'
             f'{" &middot; " + when if when else ""} &middot; {link}</li>')
     return (
         '<div style="border:1px solid #d7dbe2; border-left:3px solid #4b9e5f;'

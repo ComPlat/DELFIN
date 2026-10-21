@@ -22,7 +22,7 @@ def test_md_to_html_renders_and_escapes():
     assert "<strong>bold</strong>" in html
     assert "<code>code</code>" in html
     assert "<li>item one</li>" in html
-    assert "<td>1</td>" in html
+    assert "<td class=\"al-r num\">1</td>" in html
     assert "<script>" not in html          # escaped, never raw
     assert "&lt;script&gt;" in html
 

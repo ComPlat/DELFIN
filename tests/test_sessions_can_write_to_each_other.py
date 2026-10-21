@@ -38,8 +38,12 @@ def test_a_message_waits_until_it_is_taken_once():
 
 
 def test_a_message_never_reads_as_the_user():
-    text = M.render({"from": "A", "from_title": "collector", "text": "done"})
-    assert "not from the user" in text and 'to="A"' in text and text.endswith("done")
+    text = M.render({"from": "A", "from_title": "collector", "text": "done",
+                     "verified": True})
+    assert "not from the user" in text and 'to="A"' in text
+    # The sender's text follows the header, inside its own fence.
+    from delfin.agent import untrusted
+    assert untrusted.unwrap(text[text.index("\n") + 1:]) == "done"
 
 
 def _call(perms, **arguments):
@@ -79,16 +83,27 @@ def test_a_running_turn_is_handed_the_message_between_rounds(tmp_path):
     tab, refs = _tab(tmp_path)
     steered = []
     refs["state"]["streaming"] = True
+    hooks = []
+
+    def push_steer(text, on_delivered=None):
+        steered.append(text)
+        hooks.append(on_delivered)
     refs["state"]["engine"] = SimpleNamespace(
-        client=SimpleNamespace(push_steer=steered.append))
-    M.send("B", "I pushed; rebase before you commit", from_key="A",
-           from_title="collector")
+        client=SimpleNamespace(push_steer=push_steer))
+    sent = M.send("B", "I pushed; rebase before you commit", from_key="A",
+                  from_title="collector")
 
     refs["deliver_messages"]()
 
     (text,) = steered
     assert "not from the user" in text and "rebase before you commit" in text
     assert "Message from collector" in str(refs["state"]["chat_messages"])
+    # Queued is not read: the receipt waits for the client to put the text
+    # into a request, which runs the hook (a stop drops it unrun).
+    assert M.status(sent["id"], "A") == "delivered"
+    (hook,) = hooks
+    hook()
+    assert M.status(sent["id"], "A") == "read"
     refs["state"]["streaming"] = False
     refs["state"]["engine"] = None
     refs["shutdown"]()

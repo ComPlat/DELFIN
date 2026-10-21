@@ -20,13 +20,40 @@ import textwrap
 
 import pytest
 
+from delfin import mcp_compat as _mcp_compat
 from delfin.agent import mcp_client, mcp_isolation
+
+#: The probe resolves its server class the way the product does, from
+#: ``mcp_compat._SERVER_CLASSES`` -- generated here rather than written
+#: out, so the probe cannot name an SDK the product has stopped
+#: supporting. mcp 2.0.0 removed ``mcp.server.fastmcp``; the probe's
+#: unconditional import of it meant this containment test stopped running
+#: the moment the SDK moved, and said so as a FAILURE that reads like a
+#: containment breach.
+#:
+#: Generated in THIS process, not imported in the child: ``delfin`` is
+#: importable from a temp directory on this installation and resolves to
+#: a DIFFERENT checkout, so a child that imported it would answer about
+#: another tree.
+_RESOLVER = "\n".join(
+    f"try:\n"
+    f"    from {module} import {attr} as _ServerClass\n"
+    f"except (ImportError, AttributeError):\n"
+    f"    pass"
+    for module, attr in _mcp_compat._SERVER_CLASSES
+) + "\n"
 
 _SERVER_SOURCE = textwrap.dedent('''
     import json, os, sys
-    from mcp.server.fastmcp import FastMCP
 
-    mcp = FastMCP("counterpart")
+    _ServerClass = None
+''') + _RESOLVER + textwrap.dedent('''
+
+    if _ServerClass is None:
+        sys.stderr.write("no MCP server class could be resolved\\n")
+        raise SystemExit(1)
+
+    mcp = _ServerClass("counterpart")
 
     @mcp.tool()
     def read(path: str) -> str:
@@ -52,16 +79,27 @@ _SERVER_SOURCE = textwrap.dedent('''
 ''')
 
 
-def _try_import_fastmcp():
+def _server_class_resolves() -> bool:
+    """Can a server class be resolved at all, on the installed SDK.
+
+    It used to be ``import mcp``, under the name
+    ``_try_import_fastmcp``. That answers a neighbouring question: with
+    mcp 2.x installed the package imports fine while
+    ``mcp.server.fastmcp`` is gone, so the guard said "available", the
+    probe failed to start, and three containment tests reported FAILURE
+    -- which in a test named "a contained server cannot read outside its
+    roots" reads like a breach.
+    """
     try:
-        import mcp  # noqa: F401
+        _mcp_compat.load_server_class()
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
 pytestmark = [
-    pytest.mark.skipif(not _try_import_fastmcp(), reason="no mcp package"),
+    pytest.mark.skipif(not _server_class_resolves(),
+                       reason="no usable MCP server class"),
     pytest.mark.skipif(not mcp_isolation.bwrap_functional(),
                        reason="bubblewrap not usable here"),
 ]
@@ -162,3 +200,71 @@ class TestAContainedServerCannotReadOutsideItsRoots:
         finally:
             server.stop()
         assert outside_read == {"read": True, "data": "secret beyond the wall"}
+
+
+# ---------------------------------------------------------------------------
+# The probe has to run, or this file proves nothing
+# ---------------------------------------------------------------------------
+
+def test_the_probe_resolves_its_server_class_from_the_product_list():
+    """Generated from mcp_compat, not written out.
+
+    The probe used to import ``mcp.server.fastmcp`` unconditionally. mcp
+    2.0.0 removed that module, so the probe stopped starting -- and this
+    file, whose job is to show that a contained server cannot reach
+    outside its roots, reported three FAILURES. A containment test that
+    fails because its own fixture cannot start is worse than one that
+    skips: it reads like a breach.
+    """
+    for module, attr in _mcp_compat._SERVER_CLASSES:
+        assert f"from {module} import {attr} as _ServerClass" in _SERVER_SOURCE
+    assert "fastmcp" not in _RESOLVER or len(_mcp_compat._SERVER_CLASSES) > 1
+
+
+def test_the_probe_is_a_valid_program():
+    compile(_SERVER_SOURCE, "counterpart_server.py", "exec")
+
+
+def test_the_probe_says_so_rather_than_starting_half_built():
+    """With no resolvable class it exits 1 with a sentence, so the
+    server's last_error names the cause instead of a bare traceback."""
+    assert "no MCP server class could be resolved" in _SERVER_SOURCE
+    assert "raise SystemExit(1)" in _SERVER_SOURCE
+
+
+def test_the_probe_does_not_import_delfin():
+    """It runs as a child whose sys.path[0] is a temp directory. On this
+    installation ``delfin`` is importable from there and resolves to a
+    DIFFERENT checkout, so a probe that imported it would answer about
+    another tree."""
+    assert "import delfin" not in _SERVER_SOURCE
+    assert "mcp_compat" not in _SERVER_SOURCE
+
+
+def test_the_guard_asks_whether_a_class_resolves():
+    """Not whether the package imports: that was the bug."""
+    import inspect
+
+    src = inspect.getsource(_server_class_resolves)
+    assert "load_server_class" in src
+    assert "import mcp  # noqa" not in src
+
+
+def test_the_probe_actually_starts_on_this_host(monkeypatch, tmp_path):
+    """A security test that skips is a security test that does not exist.
+
+    The three containment cases above are guarded by pytestmark, so on a
+    host without a usable SDK or without bubblewrap they skip and say so.
+    Where they do run, the probe has to START -- which is exactly what
+    stopped working when the SDK moved the server class, and what turned
+    this file's verdict from "skipped" into three FAILURES.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    iso = mcp_isolation.parse_isolation({"roots": [str(workspace)]})
+    root, server = _start(monkeypatch, tmp_path, iso)
+    try:
+        assert server.proc is not None, server.last_error
+        assert server.initialize(), server.last_error
+    finally:
+        server.stop()

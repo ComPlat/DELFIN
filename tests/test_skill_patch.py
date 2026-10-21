@@ -44,7 +44,8 @@ class FakeProposals:
     def __init__(self):
         self.calls = []
 
-    def propose(self, name, text, *, evidence, source, base_version=""):
+    def propose(self, name, text, *, evidence, source, base_version="",
+                reason=""):
         self.calls.append({
             "name": name, "text": text, "evidence": evidence,
             "source": source, "base_version": base_version,
@@ -153,3 +154,8 @@ def test_archive_rejects_a_versionless_skill(only_this_workspace):
     src = _write(only_this_workspace, "tune", "# Tune\n\nstep one\n")
     with pytest.raises(SkillPatchError, match="[Vv]ersion"):
         archive_previous_version(src, "")
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

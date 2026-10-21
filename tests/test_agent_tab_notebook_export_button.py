@@ -1,4 +1,4 @@
-"""The agent tab has an \"Export as notebook\" button.
+"""The agent tab's "Export as notebook" handler (button now hidden).
 
 Source-level test: the dashboard button row is UI glue, so this pins the
 wiring, not pixel behaviour — the button exists next to the Markdown
@@ -14,13 +14,16 @@ SRC = Path(__file__).resolve().parents[1].joinpath(
     "delfin", "dashboard", "tab_agent.py").read_text()
 
 
-def test_the_button_sits_next_to_the_markdown_export():
-    i = SRC.index("export_btn = widgets.Button(")
-    j = SRC.index("nb_export_btn = widgets.Button(")
-    assert abs(i - j) < 1500, "notebook button should share the export row"
-    k = SRC.index("nb_export_btn,")
-    # the row layout lists both buttons together
-    assert "export_btn," in SRC[k - 400:k]
+def test_both_exports_left_the_visible_row():
+    """Taken out of the top row (2026-10-09): the git buttons took their
+    place, and a sent bug report downloads a copy instead. The widgets
+    stay wired, as the other retired buttons do."""
+    i = SRC.index("for _hidden in (")
+    hidden = SRC[i:i + 400]
+    assert "export_btn" in hidden and "nb_export_btn" in hidden
+    j = SRC.index("_controls_hbox = widgets.HBox(")
+    row = SRC[j:j + 300]
+    assert "export_btn" not in row and "git_group" in row
 
 
 def test_the_handler_exports_via_session_export():

@@ -1210,7 +1210,7 @@ def correct_results_rotamers_only(mol, results):
 
 # Per-(metal,C) contraction factor on the covalent-radius sum that gives
 # an empirically reasonable M-C(sp3) sigma-bond length.  Calibrated
-# against CSD-typical ranges: Zr-C ~2.20 A (cov sum 2.51 -> 0.877),
+# against typical textbook ranges: Zr-C ~2.20 A (cov sum 2.51 -> 0.877),
 # Ti-C ~2.10 (sum 2.36 -> 0.890), Hf-C ~2.22 (sum 2.51 -> 0.885),
 # Mo-C ~2.20 (sum 2.30 -> 0.957), Fe-C ~2.05 (sum 2.08 -> 0.986).
 # A single factor of 0.88 gives <0.05 A error for early-TM cases that

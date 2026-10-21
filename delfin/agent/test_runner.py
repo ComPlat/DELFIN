@@ -40,6 +40,29 @@ _DEFAULT_TIMEOUT_S = 300
 _TAIL_LINES = 30
 
 
+def _pytest_missing_from(python: str) -> str:
+    """A sentence naming the interpreter that has no pytest, or "".
+
+    Asked of the interpreter the run will USE, which is not always this
+    one: the agent runs the suite in the project's environment while
+    DELFIN itself may live in another. Checking `importlib` here would
+    answer about the wrong interpreter.
+
+    One short subprocess, and any failure to ask counts as present -- a
+    preflight that cannot reach the interpreter must not stand in for a
+    verdict about the suite.
+    """
+    import subprocess as _sp
+    try:
+        done = _sp.run([python, "-c", "import pytest"],
+                       capture_output=True, text=True, timeout=30)
+    except (OSError, _sp.SubprocessError):
+        return ""
+    if done.returncode == 0:
+        return ""
+    return f"pytest is not installed in {python}"
+
+
 def _has_json_report() -> bool:
     """Detect pytest-json-report installation in the active interpreter."""
     try:
@@ -103,6 +126,7 @@ def _parse_json_report(path: Path) -> dict[str, Any]:
             "failed": int(summary.get("failed", 0)),
             "errors": int(summary.get("error", 0)),
             "skipped": int(summary.get("skipped", 0)),
+            "xfailed": int(summary.get("xfailed", 0)),
             "duration_s": round(float(data.get("duration", 0.0)), 3),
         },
         "failures": [],
@@ -140,10 +164,16 @@ def _parse_junitxml(path: Path) -> dict[str, Any]:
         return {"summary": {}, "failures": [], "_parse_error": str(exc)}
     # Either <testsuites> wraps multiple, or a lone <testsuite>
     suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
-    passed = failed = errors = skipped = 0
+    passed = failed = errors = skipped = xfailed = 0
     duration = 0.0
     failures: list[dict[str, Any]] = []
     for s in suites:
+        # pytest writes an expected failure as <skipped type="pytest.xfail">.
+        for tc in s.findall("testcase"):
+            sk = tc.find("skipped")
+            if sk is not None and "xfail" in (
+                    (sk.get("type") or "") + (sk.get("message") or "")):
+                xfailed += 1
         try:
             failed += int(s.get("failures", 0))
             errors += int(s.get("errors", 0))
@@ -178,6 +208,7 @@ def _parse_junitxml(path: Path) -> dict[str, Any]:
             "failed": failed,
             "errors": errors,
             "skipped": skipped,
+            "xfailed": xfailed,
             "duration_s": round(duration, 3),
         },
         "failures": failures,
@@ -265,6 +296,26 @@ def run_tests(
             "error": f"python interpreter not found: {py}",
         }
 
+    # Is there a pytest to run, in THAT interpreter. `python -m pytest`
+    # with no pytest exits 1 and writes no report, which arrived as
+    # "no report file produced" -- a parse complaint about a run that never
+    # started. A field report describes the consequence: told that, the
+    # agent builds a runner of its own, in a venv or as a wrapper script
+    # under the home directory. Naming the real condition, with the command
+    # that fixes it, removes the reason to improvise.
+    _missing = _pytest_missing_from(py)
+    if _missing:
+        return {
+            "status": "error", "framework": "pytest",
+            "error": _missing,
+            "fix": ("install it into THAT interpreter: "
+                    f"'{py} -m pip install delfin-complat[test]'"),
+            "note": ("this is the environment, not the tests: nothing was "
+                     "run, so nothing follows about the suite. Do NOT build "
+                     "a second interpreter or a pytest wrapper of your own "
+                     "-- report this to the user instead."),
+        }
+
     use_json = _has_json_report()
     tmpdir = Path(tempfile.mkdtemp(prefix="delfin_tests_"))
     report_path = tmpdir / ("report.json" if use_json else "report.xml")
@@ -341,14 +392,23 @@ def run_tests(
 
     summary = parsed.get("summary") or {}
     status = "ok"
-    if proc.returncode in (4, 5):
-        # 4 = usage error (a path pytest could not find), 5 = no tests
-        # collected. Neither ran a test; "failed" told the agent its tests
-        # were red while the same files passed from bash (2026-09-16).
+    _ran = sum(int(summary.get(k, 0) or 0)
+               for k in ("passed", "failed", "errors"))
+    if proc.returncode == 4:
+        # A usage error (a path pytest could not find): no test ran;
+        # "failed" told the agent its tests were red while the same files
+        # passed from bash (2026-09-16).
         status = "error"
+        parsed.setdefault("_parse_error",
+                          "pytest usage error: a target was not found")
+    elif proc.returncode == 5 or (proc.returncode == 0 and _ran == 0):
+        # Nothing collected, or everything skipped: exit 0 is not a pass.
+        # It was reported as "ok" with 0 passed / 5 skipped, which a model
+        # reads as green (fund_b, diagnosis 2026-10-15).
+        status = "nothing_ran"
         parsed.setdefault("_parse_error", (
-            "pytest usage error: a target was not found"
-            if proc.returncode == 4 else "no tests were collected"))
+            "no tests were collected" if proc.returncode == 5 else
+            "every collected test was skipped or deselected"))
     elif proc.returncode == 0:
         status = "ok"
     elif summary.get("failed", 0) or summary.get("errors", 0):
@@ -358,7 +418,7 @@ def run_tests(
     else:
         status = "failed"
 
-    return {
+    out = {
         "status": status,
         "framework": "pytest",
         "report_format": "json-report" if use_json else "junitxml",
@@ -369,6 +429,10 @@ def run_tests(
         "raw_stdout_tail": _tail(proc.stdout or ""),
         "raw_stderr_tail": _tail(proc.stderr or ""),
     }
+    if status == "nothing_ran":
+        out["note"] = (parsed.get("_parse_error") or "nothing ran") + \
+            " -- no test passed, so nothing about the code follows."
+    return out
 
 
 __all__ = ["run_tests"]

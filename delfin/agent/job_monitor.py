@@ -35,8 +35,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import time
+
+from delfin import scheduler_client
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -56,7 +57,7 @@ _OK_TERMINAL_STATES = frozenset({"COMPLETED"})
 
 # Known error signatures in .err/.out files → short labels the diagnosis
 # prompt (and the notification) can use.  Grown from real cases — the
-# venv/tarball entry IS Jerome's production failure.
+# venv/tarball entry is a production failure from a field report.
 ERROR_SIGNATURES: tuple[tuple[str, str], ...] = (
     (r"bin/activate: No such file or directory", "venv-activation-failed"),
     (r"(?i)out.of.memory|oom-kill|Killed", "out-of-memory"),
@@ -113,12 +114,87 @@ def monitor_settings(settings: dict | None = None) -> dict:
 # Watch list (shared file: dashboard writes, daemon reads — and vice versa)
 # ---------------------------------------------------------------------------
 
-def load_watched(path: Path | None = None) -> dict:
-    p = path or _WATCHED_PATH
+# Upper bound on a watch file that is read at all. A watch entry is
+# ~200 bytes and entries are pruned after seven days, so 1 MiB is ~5000
+# live watches; a larger file is not one this module wrote.
+WATCH_FILE_MAX_BYTES = 1 << 20
+
+
+def read_watch_file(path: Path | str) -> Optional[dict]:
+    """The parsed top-level mapping of a watch file, or None.
+
+    Input: a path to a watch file (the per-workspace agent watch file,
+    the shared ``~/.delfin/watched_jobs.json`` or the workspace index).
+    Output: the JSON object it holds; None when the path is missing, is
+    not a regular file (FIFO, socket, device, directory), is a symlink,
+    is larger than ``WATCH_FILE_MAX_BYTES``, is not UTF-8 JSON, or holds
+    a non-object. Never raises.
+
+    Opened ``O_NONBLOCK | O_NOFOLLOW`` and checked with ``fstat`` on the
+    open descriptor, so the type check and the read see the same inode:
+    a FIFO open returns at once and is then refused, a symlink in the
+    last component fails the open (ELOOP), and at most
+    ``WATCH_FILE_MAX_BYTES + 1`` bytes are read whatever ``st_size``
+    said. The agent watch file lives in a model-writable workspace and
+    is read at every turn start, so the read must be bounded in time and
+    size. Cost: one open + fstat + read, as before. Symlinked parent
+    directories are still followed (``O_NOFOLLOW`` covers the last
+    component only), so a ``~/.delfin`` that is itself a link keeps
+    working.
+
+    Rejected: ``Path.is_file()`` before ``read_text()`` (follows links,
+    and the path can be swapped between check and open); ``signal.alarm``
+    around a blocking read (main thread only, and the dashboard reads
+    from worker threads).
+    """
+    import stat as _stat
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(str(path), flags)
     except Exception:
+        return None
+    try:
+        st = os.fstat(fd)
+        if (not _stat.S_ISREG(st.st_mode)
+                or st.st_size > WATCH_FILE_MAX_BYTES):
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            raw = fh.read(WATCH_FILE_MAX_BYTES + 1)
+        if len(raw) > WATCH_FILE_MAX_BYTES:
+            return None
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def load_watched(path: Path | None = None) -> dict:
+    """The watch list at ``path`` (default: the shared file), as
+    ``{"jobs": {...}, ...}``; ``{"jobs": {}}`` for anything
+    :func:`read_watch_file` refuses or a ``jobs`` that is no mapping.
+
+    The empty view is the answer for every caller, the turn start
+    included: it never blocks and never raises. No warning is emitted --
+    the file sits in a model-writable workspace and is read on every
+    turn and daemon tick, so an attention event per refusal would be a
+    channel the model can flood. The next write (``save_watched``)
+    replaces the refused entry with a regular file; for an oversize file
+    the entries it held are dropped then, which a file this module wrote
+    does not reach (see ``WATCH_FILE_MAX_BYTES``)."""
+    data = read_watch_file(path or _WATCHED_PATH)
+    if data is None:
         return {"jobs": {}}
+    if not isinstance(data.get("jobs", {}), dict):
+        data["jobs"] = {}
+    return data
 
 
 def save_watched(data: dict, path: Path | None = None) -> None:
@@ -127,6 +203,9 @@ def save_watched(data: dict, path: Path | None = None) -> None:
     # Atomic (temp file + os.replace, the memory_store._atomic_write
     # pattern): daemon and dashboard share this file — a reader racing a
     # plain truncate-write would observe an empty or torn watch list.
+    # os.replace renames over the last path component without opening
+    # it, so a symlink or FIFO there is replaced, never written through;
+    # mkstemp creates the temp file O_EXCL in the same directory.
     import tempfile
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{p.name}.", suffix=".tmp", dir=str(p.parent))
@@ -186,15 +265,25 @@ def remove_watch(job_id: str, path: Path | None = None) -> dict:
 # string, which is why a watch list could sit for days reporting nothing
 # changed while the queue it was watching was unreachable.
 STATE_UNAVAILABLE = "UNAVAILABLE"
+#: The shared scheduler client's gate was closed, so nothing was asked.
+#: Unlike STATE_UNAVAILABLE this is no degradation: the next poll asks.
+STATE_THROTTLED = "THROTTLED"
 
 
 def _default_run(cmd: list[str]) -> Optional[str]:
-    """Run a scheduler query. ``None`` means it could not be run at all."""
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        return out.stdout if out.returncode == 0 else None
-    except Exception:
-        return None
+    """Run a scheduler query, throttled through the shared scheduler client.
+
+    Every scheduler query the daemon issues goes through
+    :func:`delfin.scheduler_client.query`, the single process-wide gate
+    that lets a distinct query kind reach the scheduler at most once per
+    25 s and serves the shared cache while the gate is closed (wave-11
+    finding 1: idle terminals must not each hammer ``squeue``). ``None``
+    means the scheduler could not be run; :data:`scheduler_client.THROTTLED`
+    means the gate is closed for a not-yet-cached argv.
+    """
+    result = scheduler_client.query(
+        scheduler_client.kind_of_argv(cmd), list(cmd))
+    return result  # type: ignore[return-value]  # str, None or THROTTLED
 
 
 def _parse_state_lines(text: Optional[str]) -> dict[str, str]:
@@ -233,12 +322,18 @@ def query_job_states_detailed(
     if not job_ids:
         return result
 
+    throttled = False
+
     def _squeue(ids: list[str]) -> Optional[dict[str, str]]:
+        nonlocal throttled
         out = run_fn(["squeue", "-j", ",".join(ids), "-h", "-o", "%i %T"])
+        if out is scheduler_client.THROTTLED:
+            throttled = True
+            return None
         return None if out is None else _parse_state_lines(out)
 
     found = _squeue(job_ids)
-    if found is None and len(job_ids) > 1:
+    if found is None and len(job_ids) > 1 and not throttled:
         found = {}
         for jid in job_ids[:_MAX_PER_ID_RETRIES]:
             one = _squeue([jid])
@@ -247,15 +342,23 @@ def query_job_states_detailed(
     for jid, state in (found or {}).items():
         if jid in result:
             result[jid] = state
+    if throttled:
+        for jid in job_ids:
+            if result[jid] == STATE_UNAVAILABLE:
+                result[jid] = STATE_THROTTLED
 
     # Anything squeue did not place is asked of accounting. sacct answers
     # for finished jobs and is happy to be asked about ids it does not know.
     missing = [j for j in job_ids
-               if result.get(j) in ("", STATE_UNAVAILABLE)]
+               if result.get(j) in ("", STATE_UNAVAILABLE, STATE_THROTTLED)]
     if missing:
         out = run_fn(["sacct", "-j", ",".join(missing), "-n", "-X",
                       "-o", "JobID,State"])
-        if out is not None:
+        if out is scheduler_client.THROTTLED:
+            for jid in missing:
+                if result[jid] == STATE_UNAVAILABLE:
+                    result[jid] = STATE_THROTTLED
+        elif out is not None:
             acct = _parse_state_lines(out)
             for jid in missing:
                 result[jid] = acct.get(jid, "")
@@ -272,7 +375,7 @@ def query_job_states(
     :func:`query_job_states_detailed` to tell "not known" from "not asked".
     """
     return {j: s for j, s in query_job_states_detailed(job_ids, run_fn).items()
-            if s and s != STATE_UNAVAILABLE}
+            if s and s not in (STATE_UNAVAILABLE, STATE_THROTTLED)}
 
 
 def scan_error_signatures(folder: str, max_bytes: int = 65536) -> list[str]:
@@ -320,6 +423,8 @@ def check_once(
     for job_id, info in jobs.items():
         state = states.get(job_id, "")
         prev = info.get("last_state", "")
+        if state == STATE_THROTTLED:
+            continue  # not asked this time; nothing changed, nothing to say
         if state == STATE_UNAVAILABLE:
             info["unavailable_since"] = info.get("unavailable_since") or time.time()
             continue
@@ -362,12 +467,8 @@ def _note_agent_watch_workspace(workspace: str | Path) -> None:
     try:
         ws = str(Path(workspace).expanduser())
         now = time.time()
-        try:
-            data = json.loads(
-                _AGENT_WATCH_INDEX_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-        seen = data.get("workspaces") if isinstance(data, dict) else None
+        data = read_watch_file(_AGENT_WATCH_INDEX_PATH) or {}
+        seen = data.get("workspaces")
         if not isinstance(seen, dict):
             seen = {}
         seen = {w: t for w, t in seen.items()
@@ -382,8 +483,8 @@ def _note_agent_watch_workspace(workspace: str | Path) -> None:
 def agent_watch_workspaces() -> list[str]:
     """Workspaces with an agent watch file, newest registration first."""
     try:
-        data = json.loads(_AGENT_WATCH_INDEX_PATH.read_text(encoding="utf-8"))
-        seen = data.get("workspaces") if isinstance(data, dict) else None
+        data = read_watch_file(_AGENT_WATCH_INDEX_PATH) or {}
+        seen = data.get("workspaces")
         if not isinstance(seen, dict):
             return []
         return [w for w, _ in sorted(seen.items(), key=lambda kv: -float(kv[1] or 0))
@@ -659,6 +760,29 @@ def check_agent_jobs(
     def _kind(jid: str, entry: dict) -> str:
         return entry.get("kind") or ("slurm" if jid.isdigit() else "bash")
 
+    def _takes(entry: dict) -> bool:
+        # A consuming read retires the entry unless it is unscoped and the
+        # entry has an owner: the owning session is still owed it.
+        return consume and (session_id is not None
+                            or not entry.get("session_id"))
+
+    def _already_told(jid: str, entry: dict) -> bool:
+        """True when this reader must not report a terminal entry again.
+
+        The owner's consuming read skips what the idle wake already told
+        it (``wake_notified``) and retires the entry in the same step;
+        leaving it would keep a finished job in the file, polled on every
+        tick, until the seven-day prune. Every read that does not retire
+        the entry -- a peek, or an unscoped consuming read of an owned
+        entry -- reports it once under ``marker``; without that, the
+        unscoped read reported the same finished job on every turn."""
+        nonlocal changed
+        if consume and session_id is not None and entry.get("wake_notified"):
+            jobs.pop(jid, None)
+            changed = True
+            return True
+        return not _takes(entry) and bool(entry.get(marker))
+
     slurm_ids = [j for j, e in jobs.items() if _kind(j, e or {}) == "slurm"]
     states = (query_job_states_detailed(slurm_ids, run_fn)
               if slurm_ids else {})
@@ -696,6 +820,8 @@ def check_agent_jobs(
             continue
         if _kind(jid, entry) == "slurm":
             state = states.get(jid, "")
+            if state == STATE_THROTTLED:
+                continue  # not asked this time; the next poll asks
             if state == STATE_UNAVAILABLE:
                 # Degradation, not silence: the entry stays, and it says
                 # WHY nothing is being reported about it.
@@ -721,7 +847,7 @@ def check_agent_jobs(
                 entry["last_state"] = state
                 changed = True
             if state in _OK_TERMINAL_STATES or state in _FAILURE_STATES:
-                if not consume and entry.get(marker):
+                if _already_told(jid, entry):
                     continue
                 done.append({
                     "job_id": jid,
@@ -733,7 +859,7 @@ def check_agent_jobs(
                     "signatures": (scan_error_signatures(entry.get("folder", ""))
                                    if state in _FAILURE_STATES else []),
                 })
-                if consume:
+                if _takes(entry):
                     jobs.pop(jid)
                 else:
                     entry[marker] = True
@@ -779,7 +905,7 @@ def check_agent_jobs(
                 if ci["runs"] or waited < _CI_NO_RUN_AFTER_S:
                     continue
                 state = "NO CI RUN"
-            if not consume and entry.get(marker):
+            if _already_told(jid, entry):
                 continue
             done.append({
                 "job_id": jid, "kind": "ci",
@@ -788,7 +914,7 @@ def check_agent_jobs(
                 "exit_code": None, "signatures": ci.get("failed", []),
                 "url": ci.get("url", ""),
             })
-            if consume:
+            if _takes(entry):
                 jobs.pop(jid)
             else:
                 entry[marker] = True
@@ -803,7 +929,7 @@ def check_agent_jobs(
                 job = None
             if job is None or job.poll() is None:
                 continue        # unknown yet (age prune applies) or running
-            if not consume and entry.get(marker):
+            if _already_told(jid, entry):
                 continue
             status = job.status_dict()
             rc = status.get("exit_code")
@@ -817,7 +943,7 @@ def check_agent_jobs(
                 "exit_code": rc,
                 "signatures": [],
             })
-            if consume:
+            if _takes(entry):
                 jobs.pop(jid)
             else:
                 entry[marker] = True
@@ -1019,6 +1145,7 @@ def diagnose_finding(
     finding.summary = text[:400]
     # Save as a loadable session so the user can continue the conversation.
     try:
+        from delfin.agent.harness_rows import HARNESS_KEY
         from delfin.agent.session_store import save_session
         sid = f"monitor-{finding.job_id}-{int(finding.ts)}"
         save_session(
@@ -1029,6 +1156,15 @@ def diagnose_finding(
                 {"role": "assistant", "content": text,
                  "role_label": "Job-Monitor"},
             ],
+            # What a resumed engine reads: without it the session came
+            # back with nothing of the diagnosis -- the model had no
+            # context, a window showed no conversation. The prompt is the
+            # monitor's, not the user's words.
+            engine_messages=[
+                {"role": "user", "content": prompt, HARNESS_KEY: True},
+                {"role": "assistant", "content": text},
+            ],
+            workspace=str(finding.folder or ""),
             title=f"🚨 Job {finding.job_id} failed — "
                   f"{(finding.signatures or [finding.state])[0]}",
         )

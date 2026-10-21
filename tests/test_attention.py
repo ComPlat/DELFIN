@@ -153,6 +153,27 @@ def test_drain_can_be_scoped_by_workspace_and_kind(_fake_home):
     assert [ev["id"] for ev in got] == [theirs]
 
 
+def test_a_late_answer_goes_to_a_session_in_the_questions_folder(_fake_home):
+    """The engine hands a late answer to a session in the folder the
+    question was parked in (api_client parks it with perms.workspace).
+    It drained unscoped: the next session anywhere -- one working in
+    another project, mid-turn -- was told to act on it."""
+    from types import SimpleNamespace
+    from delfin.agent.engine import AgentEngine
+    asked = attention.emit_attention("question_pending", title="Question waiting: which functional?",
+                                     workspace="/calc/benzene/")
+    attention.resolve(asked, answer="CAM-B3LYP")
+
+    def block(workspace):
+        engine = SimpleNamespace(kit_permissions=SimpleNamespace(task_session_id="s9", workspace=workspace))
+        return AgentEngine._build_answered_attention_block(engine)
+
+    assert block("/calc/water") == ""                      # another project: not its answer
+    got = block("/calc/benzene")                           # the same folder, spelled without the slash
+    assert "CAM-B3LYP" in got and "which functional" in got
+    assert block("/calc/benzene") == ""                    # exactly once
+
+
 def test_drain_skips_pending_and_resolve_missing_is_false(_fake_home):
     attention.emit_attention("plan_pending", session_id="s1", title="plan")
     assert attention.drain_resolved("s1") == []            # pending ≠ answered

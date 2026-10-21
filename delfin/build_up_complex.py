@@ -52,9 +52,8 @@ def _get_git_commit() -> str:
     if not repo:
         return "unknown"
     try:
-        import subprocess
-        out = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo)
-        return out.decode().strip()
+        from delfin.agent import safe_git
+        return safe_git.check_output(["rev-parse", "HEAD"], repo).strip()
     except Exception:
         return "unknown"
 

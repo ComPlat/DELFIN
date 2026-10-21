@@ -44,7 +44,14 @@ from delfin.dashboard import saddle as saddle_mod
 from delfin.dashboard import solvents as solvents_mod
 from editor_source import EDITOR_SOURCE
 
-_needs_xtb = pytest.mark.skipif(not shutil.which("xtb"), reason="xtb not installed")
+#: Supplied, not skipped. These tests exercise DELFIN's own handling
+#: -- the command line it builds, the output it parses, the guard it
+#: applies -- and never xtb's arithmetic, so a stand-in on PATH is
+#: enough and the test then runs on every machine. The fixture uses
+#: the real xtb when there is one. See conftest.xtb_on_path.
+_needs_xtb = pytest.mark.usefixtures("xtb_on_path")
+#: A test of xtb's RESULTS: a real xtb or a named skip (conftest.real_xtb).
+_needs_real_xtb = pytest.mark.usefixtures("real_xtb")
 
 #: Hand-built, every C-H at 1.0897 A and nothing relaxed. Its RMS gradient is
 #: 2.6e-3 Hartree per Bohr, twenty-six times what an optimiser converges on.
@@ -106,9 +113,20 @@ def test_the_solvent_refusals_measured_for_gfn1_still_hold():
         assert not solvents_mod.refusal("gbsa", missing, "gfn2"), missing
     assert not solvents_mod.refusal("gbsa", "water", "gfn1")
     assert not solvents_mod.refusal("alpb", "dmf", "gfn1"), "ALPB covers it"
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_gfn1_runs_and_says_it_was_gfn1():
     """Asking for a Hamiltonian and being given it are two different claims.
 
@@ -204,9 +222,20 @@ def test_the_entropy_is_the_difference_of_the_two_totals():
     heat = float(gfn._ENTHALPY_RE.search(text).group(1))
     free = float(gfn._FREE_ENERGY_RE.search(text).group(1))
     assert heat - free == pytest.approx(0.0211142, abs=1e-7)
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_one_press_brings_back_the_shape_and_the_cost_together():
     """A Hessian is what a free energy costs; the rest is in the same block.
 
@@ -230,9 +259,20 @@ def test_one_press_brings_back_the_shape_and_the_cost_together():
     # xtb none the less counts no imaginary modes.
     assert got["imaginary"]["count"] == 0
     assert gfn.not_a_stationary_point(got["gradient"], 5) != ""
+# Real chemistry, and un-skipped by PR #70: it runs xtb and reads the
+# result, so it belongs in slow-tests.yml rather than the fast gate.
+# #70 moved it into the gate on the claim that it never consumed xtb
+# OUTPUT. The measurement could not support that claim: DELFIN's resolver
+# searches its own tool directory and XTBHOME BEFORE the PATH, so the
+# stand-in on PATH never stood in for anything -- the test ran against a
+# real xtb on the measuring machine and passed because that build
+# converged. On CI (xtb 6.7.1 under delfin/qm_tools/.mamba_env) the SCF
+# does not always converge, and main went red on it.
+@pytest.mark.slow
 
 
 @_needs_xtb
+@_needs_real_xtb
 def test_a_temperature_changes_the_free_energy_and_not_the_modes():
     """The box on the toolbar reaches the answer, or it is decoration."""
     cold = gfn.optimize_with_gfn(_METHANE_AS_BUILT, "gfn2", timeout=None,

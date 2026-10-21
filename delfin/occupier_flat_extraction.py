@@ -806,7 +806,7 @@ def _create_occupier_fob_jobs(
                 # A FoB marked complete here never runs its work, and its energy
                 # is what a FoB started from it waits for and what the comparison
                 # reads.  Without it a recalc that had to rerun one FoB waited on
-                # its finished source until the walltime (Jerome's CoHPP, six
+                # its finished source until the walltime (an archived CoHPP job, six
                 # submissions), and compared the rerun FoB against nothing.
                 energy = _parse_energy(_out, use_gibbs)
                 with results_lock:

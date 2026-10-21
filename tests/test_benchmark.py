@@ -1068,8 +1068,8 @@ _EXPORT_PATTERN = (
     r"\([^\n]{0,120}?tests/fixtures/user_project_workspace/export\.py")
 
 _SHORT_ROOT = "/home/user/DELFIN"
-_DEEP_ROOT = ("/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/"
-              "8f2bbd7b-b742-412e-aa66-8c6af96be393/scratchpad/bench_wt")
+_DEEP_ROOT = ("/tmp/session-1000/-srv-work-projects-agent-checkout-DELFIN/"
+              "00000000-0000-4000-8000-000000000000/scratchpad/bench_wt")
 
 
 def _write_call(root: str) -> dict:

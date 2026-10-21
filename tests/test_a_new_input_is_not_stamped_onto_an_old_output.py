@@ -4,7 +4,7 @@ A finished job without a fingerprint (every archived run before the
 fingerprints, and some after) was given one on recalc whenever its output
 was complete.  The recalc wrapper did that without asking whether the output
 belonged to the input beside it -- ORCA copies its input into the head of
-the output, so it can be asked.  Measured in a dry run over Jerome's
+the output, so it can be asked.  Measured in a dry run over one user's
 archived jobs: after functional=B3LYP, the FoBs of complexes_1_200/7-26_23
 were written anew with B3LYP and then skipped, their PBE0 results kept under
 a B3LYP fingerprint.  orca.run_orca already asked; the wrapper, which decides

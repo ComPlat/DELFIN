@@ -264,38 +264,164 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _claim_lock_file(path: Path, payload: str) -> bool:
+    """Create ``path`` holding ``payload``, or report that it exists.
+
+    Returns True when THIS call created the file, False when a file was
+    already there. Never overwrites, and the file is never visible under
+    its own name while incomplete.
+
+    Written as a temp file and then ``os.link``-ed into place: link is
+    atomic and fails with FileExistsError if the target exists, so the
+    content is complete before any reader can see it. ``O_CREAT|O_EXCL``
+    alone would also be an atomic claim, but it publishes an EMPTY file
+    and fills it afterwards -- and a reader finding a lock with no pid in
+    it treats it as stale and breaks it, which would hand the lock to two
+    callers again by a different route. The fallback to O_EXCL is for a
+    filesystem without hardlinks, where that narrower window is still
+    better than no claim at all.
+
+    This is the primitive the sessions directory needs rather than
+    ``flock``: the directory is shared between login nodes over NFS,
+    where advisory locks are unreliable and exclusive create is the one
+    operation that is not.
+    """
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".claim", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        try:
+            os.link(tmp_name, str(path))
+            return True
+        except FileExistsError:
+            return False
+        except OSError:
+            try:
+                fd2 = os.open(str(path),
+                              os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                return False
+            with os.fdopen(fd2, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            return True
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+
+
+def _read_lock(path: Path) -> tuple[int, float, str] | None:
+    """``(pid, ts, host)`` from a lock file.
+
+    None when the file is ABSENT, and ``(0, 0.0, "")`` when it is present
+    but says nothing usable (truncated, corrupt, no pid). The difference
+    decides whether the lock may be broken, so the two cannot share one
+    answer: a file that is gone is evidence of another claimer, while a
+    file nobody can own is evidence of a lock that is stale.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return (0, 0.0, "")
+    try:
+        info = json.loads(raw)
+        return (int(info.get("pid", 0) or 0),
+                float(info.get("ts", 0) or 0),
+                str(info.get("host", "") or ""))
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        return (0, 0.0, "")
+
+
+#: How many times a stale lock may be broken before the attempt is given
+#: up. Each pass costs one read; contention this persistent means somebody
+#: else is claiming the same id, and refusing is the safe answer.
+_LOCK_BREAK_ATTEMPTS = 3
+
+
 def acquire_session_lock(session_id: str) -> Path:
     """Acquire or refresh the per-session single-writer lock.
 
-    The lock file holds ``{"pid": ..., "ts": ...}``. Our own pid just
-    refreshes the timestamp. A DIFFERENT pid that is still alive and
-    whose lock is younger than :data:`_LOCK_MAX_AGE_S` raises
-    :class:`SessionLockedError`. Stale locks (dead pid, or older than
-    1h) are broken silently.
+    The lock file holds ``{"pid", "ts", "host"}``. Our own pid refreshes
+    the timestamp. A DIFFERENT pid that is still alive and whose lock is
+    younger than :data:`_LOCK_MAX_AGE_S` raises
+    :class:`SessionLockedError`. Stale locks (dead pid, or older than 1h)
+    are broken silently.
+
+    The claim is ATOMIC. It used to read the file, decide, and then write
+    -- so when the lock did not exist, every concurrent caller read "no
+    holder", every one of them wrote, and every one of them returned
+    holding it. Measured on this installation with 24 processes released
+    by one barrier: 6 of 10 runs produced more than one holder (3 runs
+    with two, 3 with three). Each extra holder is a writer that believes
+    it alone may save the session, which is the clobbering this lock
+    exists to prevent.
+
+    A pid from another login node names nothing here, so a lock taken
+    elsewhere is judged by age alone -- it cannot be checked, and must
+    not be assumed dead.
     """
     d = _ensure_dir()
     p = d / f"{session_id}.lock"
     me = os.getpid()
-    holder, ts, holder_host = 0, 0.0, ""
-    try:
-        info = json.loads(p.read_text(encoding="utf-8"))
-        holder = int(info.get("pid", 0) or 0)
-        ts = float(info.get("ts", 0) or 0)
-        holder_host = str(info.get("host", "") or "")
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        pass
     here = _this_host()
-    elsewhere = bool(holder_host) and holder_host != here
-    if holder and (holder != me or elsewhere):
-        fresh = (time.time() - ts) < _LOCK_MAX_AGE_S
-        # A lock taken on another login node (they share this directory)
-        # cannot be judged by a pid, which names nothing here or a stranger;
-        # it holds until it is stale.
-        if fresh and (elsewhere or _pid_alive(holder)):
-            raise SessionLockedError(session_id, holder)
-        # Stale lock (dead pid or >1h old): break silently.
-    _atomic_write_text(p, json.dumps({"pid": me, "ts": time.time(), "host": here}))
-    return p
+
+    def _payload() -> str:
+        return _lock_payload(me, here)
+
+    handed = _read_handover(session_id)
+    if handed and handed["from"] == me and _pid_alive(handed["to"]):
+        # This process handed the conversation to a reload's kernel. Its
+        # saves stop here, whatever the lock file says at this instant.
+        raise SessionLockedError(session_id, handed["to"])
+
+    for _attempt in range(_LOCK_BREAK_ATTEMPTS):
+        if _claim_lock_file(p, _payload()):
+            return p
+        # Something was there. Read it and decide.
+        found = _read_lock(p)
+        if found is None:
+            # Gone between our claim and our read: somebody else is
+            # claiming the same id right now. Retry the claim WITHOUT
+            # breaking anything -- this was the residual race in the first
+            # version of this function. Treating "I could not read it" as
+            # "it is stale" let a loser unlink the winner's lock and take
+            # it, so two callers held it again by a second route. Measured:
+            # 4 of 10 runs at N=24 still produced two holders.
+            continue
+        holder, ts, holder_host = found
+        elsewhere = bool(holder_host) and holder_host != here
+        if holder == me and not elsewhere:
+            # Ours already: refreshing the timestamp is not a claim, and
+            # rewriting it in place is safe because we are the holder.
+            _atomic_write_text(p, _payload())
+            return p
+        if (handed and handed["to"] == me and holder == handed["from"]
+                and not elsewhere):
+            # The previous holder refreshed its lock in the instant of the
+            # handover; the handover record decides between the two.
+            _atomic_write_text(p, _payload())
+            return p
+        if holder:
+            fresh = (time.time() - ts) < _LOCK_MAX_AGE_S
+            if fresh and (elsewhere or _pid_alive(holder)):
+                raise SessionLockedError(session_id, holder)
+        # Demonstrably stale: a dead pid on this host, a lock older than
+        # an hour, or a file nobody can own. Break it and claim again.
+        # Two breakers can both unlink, but only one link() then succeeds;
+        # the loser comes back, finds the winner's fresh lock, and is
+        # refused.
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    # Out of attempts: somebody re-took it on every pass, which is a live
+    # holder by any useful definition.
+    raise SessionLockedError(session_id, (_read_lock(p) or (0, 0.0, ""))[0])
 
 
 def _this_host() -> str:
@@ -304,6 +430,52 @@ def _this_host() -> str:
         return (socket.gethostname() or "").strip()
     except Exception:
         return ""
+
+
+def session_lock_holder(session_id: str) -> dict | None:
+    """Who holds the writer lock for ``session_id``, without taking it.
+
+    Returns ``{"pid": int, "host": str, "ts": float, "elsewhere": bool}``
+    for a lock that :func:`acquire_session_lock` would honour, and None
+    when the lock is absent, stale, or this process's own.
+
+    The same three questions ``acquire_session_lock`` asks -- is the
+    holder someone else, is the lock fresh, is the holder alive -- are
+    asked here and nowhere else. A reader that needs to know BEFORE
+    committing to a save (a dashboard deciding whether to open a
+    conversation) previously had no way to ask, so it guessed from its own
+    in-memory list of windows and could not see a holder in another
+    process or on another node at all.
+    """
+    # Read through the same helper acquire_session_lock uses. A second
+    # copy of "what does this file say" is a second answer that can
+    # disagree with the first, and this function exists to agree with it.
+    found = _read_lock(_lock_path(session_id))
+    if found is None:
+        return None
+    holder, ts, holder_host = found
+    if not holder:
+        return None
+    here = _this_host()
+    elsewhere = bool(holder_host) and holder_host != here
+    handed = _read_handover(session_id)
+    if handed and not elsewhere:
+        if handed["from"] == os.getpid() and _pid_alive(handed["to"]):
+            return {"pid": handed["to"], "host": here, "ts": ts,
+                    "elsewhere": False, "kernel": ""}
+        if handed["to"] == os.getpid() and holder == handed["from"]:
+            return None
+    if holder == os.getpid() and not elsewhere:
+        return None
+    if (time.time() - ts) >= _LOCK_MAX_AGE_S:
+        return None
+    # A pid from another login node names nothing here: age is the only
+    # judge available, and it has already been applied above.
+    if not elsewhere and not _pid_alive(holder):
+        return None
+    return {"pid": holder, "host": holder_host, "ts": ts,
+            "elsewhere": elsewhere,
+            "kernel": _lock_field(_lock_path(session_id), "kernel")}
 
 
 def release_session_lock(session_id: str) -> None:
@@ -317,6 +489,96 @@ def release_session_lock(session_id: str) -> None:
             p.unlink()
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         pass
+    handed = _read_handover(session_id)
+    if handed and handed["to"] == os.getpid():
+        try:
+            _handover_path(session_id).unlink()
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Handing the lock to a reload
+# ---------------------------------------------------------------------------
+#
+# A reload starts a new dashboard kernel while the server keeps the old one
+# for the grace. The old one holds the conversation's lock and nobody is
+# looking at it; the new one is where the person is. The lock carries the
+# holder's kernel id (set_lock_identity) so the new kernel can ask the
+# server's record whether that kernel still has a window
+# (dashboard.window_state.may_take_over), and a handover record next to the
+# lock names the two processes, so the old one stops saving even if it
+# refreshed its lock in the same instant.
+
+_LOCK_IDENTITY: dict[str, str] = {}
+
+
+def set_lock_identity(**fields: str) -> None:
+    """Fields every lock this process takes carries besides pid/ts/host.
+
+    A dashboard kernel sets ``kernel=<its kernel id>``. Input: string
+    fields; empty values are dropped. Output: none."""
+    _LOCK_IDENTITY.clear()
+    _LOCK_IDENTITY.update({k: str(v) for k, v in fields.items()
+                           if k not in ("pid", "ts", "host") and v})
+
+
+def _lock_payload(pid: int, host: str) -> str:
+    return json.dumps({**_LOCK_IDENTITY, "pid": pid, "ts": time.time(),
+                       "host": host})
+
+
+def _lock_field(path: Path, name: str) -> str:
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+        return str(info.get(name) or "") if isinstance(info, dict) else ""
+    except (OSError, ValueError):
+        return ""
+
+
+def _handover_path(session_id: str) -> Path:
+    return _SESSIONS_DIR / f"{session_id}.handover"
+
+
+def _read_handover(session_id: str) -> dict | None:
+    """``{"from": pid, "to": pid}`` of a handover on this host, or None."""
+    try:
+        info = json.loads(_handover_path(session_id).read_text(encoding="utf-8"))
+        if str(info.get("host") or "") != _this_host():
+            return None
+        return {"from": int(info.get("from") or 0),
+                "to": int(info.get("to") or 0)}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def take_over_session_lock(session_id: str, from_pid: int) -> bool:
+    """Take the lock from ``from_pid``, a live holder on this host.
+
+    Input: the session and the pid ``session_lock_holder`` reported. Output:
+    True when this process now holds the lock. The caller decides WHETHER
+    (dashboard.window_state.may_take_over); this only performs it. The
+    handover record is written before the lock, so from the moment the lock
+    names this process the old holder's ``acquire_session_lock`` refuses.
+    Refuses (False) when the lock no longer names ``from_pid``, or names a
+    holder on another host.
+    """
+    found = _read_lock(_lock_path(session_id))
+    if not found or found[0] != int(from_pid) or int(from_pid) == os.getpid():
+        return False
+    here = _this_host()
+    if found[2] and found[2] != here:
+        return False
+    try:
+        _ensure_dir()
+        _atomic_write_text(_handover_path(session_id), json.dumps({
+            "from": int(from_pid), "to": os.getpid(), "host": here,
+            "ts": time.time()}))
+        _atomic_write_text(_lock_path(session_id),
+                           _lock_payload(os.getpid(), here))
+    except OSError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +850,14 @@ def _enforce_elided_cap(path: Path, cap: int | None = None) -> None:
     atomic (temp file + replace) so a crash never tears the store.
     ``cap`` defaults to the module-level :data:`_ELIDED_CAP` at call time
     so tests can shrink it.
+
+    Best-effort stays right — a failed cap enforcement must never break
+    the append that triggered it — but a failing REWRITE after a
+    successful read is no longer silent: every caller believes the cap
+    is enforced, and an unbounded store would grow forever with nothing
+    anywhere saying so. The store is left whole either way.
     """
+    import logging
     if cap is None:
         cap = _ELIDED_CAP
     try:
@@ -604,8 +873,10 @@ def _enforce_elided_cap(path: Path, cap: int | None = None) -> None:
             if text and not text.endswith("\n"):
                 text += "\n"
             _atomic_write_text(path, text)
-    except OSError:
-        pass
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "elided store cap enforcement failed (%s): %s — the store "
+            "keeps growing past %s records", type(exc).__name__, exc, cap)
 
 
 def append_elided_record(
@@ -678,6 +949,154 @@ def load_elided_record(session_id: str, ref: str) -> dict[str, Any] | None:
     except OSError:
         return None
     return found
+
+
+# The headers the compactions write, repeated here (engine and
+# in_turn_compaction import this module); a test pins each to its writer.
+_SUMMARY_MARKER = "[Conversation summary — older messages compacted]"
+_IN_TURN_SUMMARY_MARKER = (
+    "[Conversation summary — earlier rounds of this turn compacted]")
+_WORKING_STATE_HEADER = (
+    "[Working state — session recap, rebuilt at each compaction]")
+# working_state._MAX_BLOCK_CHARS plus its trim marker: the farthest the
+# summary marker can sit behind a block the compaction wrote.
+_WORKING_STATE_MAX_CHARS = 2200 + len("\n... [working state trimmed]\n") + 1
+
+
+def _begins_with_compaction_summary(first) -> bool:
+    """Whether a history's first message is a compaction's summary.
+
+    Input: the first message's content (a string, or a list of blocks whose
+    first text block is read). Output: True when it starts with the summary
+    marker ``AgentEngine._compact_history`` or the in-turn compaction
+    writes, or when it starts with the working-state header and the summary
+    marker opens a line within the block's size ceiling after it -- the
+    compaction composes the block AHEAD of the summary.
+
+    Semantics: exact markers, at the positions the writers use. The former
+    test, a ``"[Conversation summary"`` prefix, missed every compaction
+    that had a working-state block, so a save without the compaction record
+    kept the long history and appended the compacted one. A marker quoted
+    later in a message, or after more text than a block can hold, is not a
+    compaction. Cost: two prefix tests and one bounded find.
+    """
+    if isinstance(first, list):
+        first = next((b.get("text") for b in first
+                      if isinstance(b, dict) and isinstance(b.get("text"), str)),
+                     "")
+    if not isinstance(first, str):
+        return False
+    if first.startswith((_SUMMARY_MARKER, _IN_TURN_SUMMARY_MARKER)):
+        return True
+    if not first.startswith(_WORKING_STATE_HEADER):
+        return False
+    at = first.find("\n" + _SUMMARY_MARKER + "\n", len(_WORKING_STATE_HEADER),
+                    _WORKING_STATE_MAX_CHARS + len(_SUMMARY_MARKER) + 2)
+    return at >= 0
+
+
+def _user_turns(messages) -> int:
+    return sum(1 for m in messages or []
+               if isinstance(m, dict) and m.get("role") == "user")
+
+
+# repl._FRESH_CONTEXT_MARKER; repeated here because repl imports this module.
+_FRESH_PREFIX = "[Fresh context — full history cut at the token budget]"
+
+
+def _fresh_start_since(session_id: str, first, stored_file: Path) -> bool:
+    """Whether the engine started fresh after ``stored_file`` was written.
+
+    Input: the first message's content of the history about to be saved
+    and the stored session file. Output: True when that content starts
+    with the fresh-context marker AND the transcript archive holds a
+    ``fresh_restart`` record written after the stored file.
+
+    Semantics: a fresh start (``prepare_fresh_turn`` / ``run_turn`` with
+    the context over the model's window) archives the history and keeps
+    the fused prompt; that shorter history is the one the model works
+    with from then on. Keeping the stored one instead would put the
+    session over the window at every resume. Both signals are required:
+    the marker is plain text a message could carry, the archive record is
+    what makes the cut history recoverable. When the archive write failed
+    the stored history is kept, and the next turn starts fresh again --
+    no history is lost, one turn pays the cut twice. Cost: one read of the
+    session's archive file, only on a save that shortens the history.
+    """
+    if isinstance(first, list):
+        first = next((b.get("text") for b in first
+                      if isinstance(b, dict) and isinstance(b.get("text"), str)),
+                     "")
+    if not isinstance(first, str) or not first.startswith(_FRESH_PREFIX):
+        return False
+    try:
+        stored_at = stored_file.stat().st_mtime
+    except OSError:
+        return False
+    for rec in reversed(load_transcript_archive(session_id)):
+        if ((rec.get("info") or {}).get("kind") == "fresh_restart"
+                and float(rec.get("compacted_at") or 0) >= stored_at):
+            return True
+    return False
+
+
+def _keep_engine_history(session_id: str, engine_messages, chat_messages,
+                         last_compaction_info):
+    """The engine history to save, never silently shorter than the stored one.
+
+    A save writes what the engine holds at that moment. When an engine was
+    rebuilt without its history (a dashboard session after a reload, a
+    model switch whose hand-over was lost), that is one message, and the
+    save replaced a session's whole history with it; every later resume
+    then restored that one message while the transcript still showed
+    everything (2026-10-14: 902 transcript entries, 1 engine message).
+
+    A shorter history is legitimate in three cases, and only these: the
+    engine compacted (its history starts with the summary, or the
+    compaction record changed), the transcript was cleared with it (a new
+    cycle), or the drop is the size the sliding window takes. Anything
+    else keeps the stored history and appends what is new; the file as it
+    was is kept beside it. Returns ``(messages, kept_note_or_None)``.
+    """
+    new = list(engine_messages or [])
+    try:
+        stored_file = _SESSIONS_DIR / f"{session_id}.json"
+        if not stored_file.exists():
+            return new, None
+        stored = json.loads(stored_file.read_text(encoding="utf-8"))
+    except Exception:
+        return new, None
+    old = stored.get("engine_messages") or []
+    if not isinstance(old, list) or len(new) >= len(old):
+        return new, None
+    first = new[0].get("content") if new and isinstance(new[0], dict) else ""
+    if _begins_with_compaction_summary(first):
+        return new, None
+    if _fresh_start_since(session_id, first, stored_file):
+        return new, None
+    if (last_compaction_info or None) != (stored.get("last_compaction_info") or None):
+        return new, None
+    if len(chat_messages or []) < len(stored.get("chat_messages") or []):
+        return new, None
+    if len(new) * 2 >= len(old) and _user_turns(new) * 2 >= _user_turns(old):
+        return new, None                      # a sliding-window trim
+    tail = old[-len(new) - 4:] if new else []
+    seen = {(m.get("role"), json.dumps(m.get("content"), sort_keys=True,
+                                        ensure_ascii=False, default=str))
+            for m in tail if isinstance(m, dict)}
+    added = [m for m in new if not isinstance(m, dict)
+             or (m.get("role"), json.dumps(m.get("content"), sort_keys=True,
+                                           ensure_ascii=False, default=str))
+             not in seen]
+    kept_aside = stored_file.with_name(
+        f"{stored_file.name}.history-kept-{int(time.time())}")
+    try:
+        _atomic_write_text(kept_aside, stored_file.read_text(encoding="utf-8"))
+    except OSError:
+        pass
+    # Counts only: the caller logs them, and nothing of the messages'
+    # content may reach a log line (CodeQL alert 59).
+    return old + added, (len(old), len(new), len(added))
 
 
 def save_session(
@@ -793,6 +1212,16 @@ def save_session(
                     title += "..."
                 break
 
+    engine_messages, _history_kept = _keep_engine_history(
+        session_id, engine_messages, chat_messages, last_compaction_info)
+    if _history_kept:
+        import logging
+        _stored, _offered, _added = (int(n) for n in _history_kept)
+        logging.getLogger(__name__).warning(
+            "engine history kept: a save would have replaced %d messages "
+            "by %d with no compaction and no new cycle; kept the stored "
+            "history and appended %d", _stored, _offered, _added)
+
     data = {
         # Unrecognised exporter keys first, so a named parameter always
         # wins over a same-named passthrough. Anything that would not
@@ -857,6 +1286,11 @@ def save_session(
         try:
             existing = json.loads(filepath.read_text())
             data["created_at"] = existing.get("created_at", data["updated_at"])
+            # The "already announced" mark of a pending plan survives a
+            # save of the same plan, and only that.
+            mark = existing.get("pending_plan_noticed")
+            if mark and mark == _plan_mark(data.get("pending_plan_body")):
+                data["pending_plan_noticed"] = mark
         except (json.JSONDecodeError, OSError):
             data["created_at"] = data["updated_at"]
     else:
@@ -864,6 +1298,49 @@ def save_session(
 
     _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
     return filepath
+
+
+def _plan_mark(body: Any) -> str:
+    """A short digest naming one pending plan body; "" for none."""
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def pending_plan_needs_notice(data: dict[str, Any] | None) -> bool:
+    """Whether a restore of *data* should announce its pending plan.
+
+    Input: a loaded session record. Output: True when it holds a pending
+    plan that has not been announced yet (``pending_plan_noticed`` is
+    absent or names another plan). Every restore announced it before: 10
+    notices in 2 sessions (bug archive 2026-09-16..10-14), the same plan
+    each time."""
+    if not isinstance(data, dict):
+        return False
+    mark = _plan_mark(data.get("pending_plan_body"))
+    return bool(mark) and data.get("pending_plan_noticed") != mark
+
+
+def mark_pending_plan_noticed(session_id: str) -> bool:
+    """Record on the stored session that its pending plan was announced.
+    Touches nothing else. False when there is no such session, no plan,
+    or the file cannot be rewritten."""
+    filepath = _SESSIONS_DIR / f"{session_id}.json"
+    try:
+        data = json.loads(filepath.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    mark = _plan_mark(data.get("pending_plan_body"))
+    if not mark:
+        return False
+    data["pending_plan_noticed"] = mark
+    try:
+        _atomic_write_text(filepath, json.dumps(data, ensure_ascii=False, indent=1))
+    except OSError:
+        return False
+    return True
 
 
 def load_session(session_id: str) -> dict[str, Any] | None:
@@ -1010,6 +1487,36 @@ def delete_session(session_id: str) -> bool:
         filepath.unlink()
         return True
     return False
+
+
+def rename_session(session_id: str, title: str) -> bool:
+    """Give a saved session another title, changing nothing else.
+
+    For a session no process runs (a running one saves its title with its
+    next save). Under the writer lock :func:`save_session` takes, so it
+    never tears a file another process writes; False when there is no such
+    session, another live process holds it, or it cannot be written.
+    """
+    if not session_id:
+        return False
+    path = _SESSIONS_DIR / f"{session_id}.json"
+    if not path.exists():
+        return False
+    try:
+        acquire_session_lock(session_id)
+    except SessionLockedError:
+        return False
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return False
+        data["title"] = str(title or "")
+        _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=1))
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        release_session_lock(session_id)
 
 
 def fork_session(

@@ -17,13 +17,24 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import _package_ast
 from delfin.agent import security_events
 
 
 def _recorded_kinds() -> set[str]:
-    """Every literal kind ``api_client`` records, read from its source."""
-    src = Path(__file__).resolve().parents[1] / "delfin" / "agent" / "api_client.py"
-    tree = ast.parse(src.read_text(encoding="utf-8"))
+    """Every literal kind a module of ``delfin/agent`` records through
+    ``_record_security_event``, read from the source. Every module, not
+    only ``api_client``: ``file_confirm``, ``cli`` and ``exchange`` record
+    kinds of their own, and a scan of one file let three of them render
+    as an unlabelled bullet."""
+    agent = Path(__file__).resolve().parents[1] / "delfin" / "agent"
+    kinds: set[str] = set()
+    for src in sorted(agent.rglob("*.py")):
+        kinds |= _kinds_in(_package_ast.parse(src))
+    return kinds
+
+
+def _kinds_in(tree) -> set[str]:
     kinds: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):

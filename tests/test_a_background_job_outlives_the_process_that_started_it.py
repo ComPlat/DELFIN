@@ -89,7 +89,7 @@ def _register(ws: Path, rec: dict) -> None:
 
 
 def _read(ws: Path, job_id: str) -> dict:
-    data = json.loads((ws / ".delfin" / "bash_jobs.json").read_text())
+    data = json.loads(BJ._registry_path(ws).read_text())
     return data["jobs"][job_id]
 
 

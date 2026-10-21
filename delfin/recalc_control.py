@@ -58,7 +58,7 @@ _STRUCTURE_PREFIXES = ("MANTA_", "GUPPY_")
 #: An edit confined to these leaves OCCUPIER's inputs as they are -- written
 #: anew, many would still come out different, because DELFIN itself has
 #: changed since (the first coordination sphere's basis, the resolution of
-#: automatic sequences: 14 of 43 archived jobs of Jerome's in a dry run).
+#: automatic sequences: 14 of 43 archived jobs of one user in a dry run).
 _NOT_OCCUPIER_KEYS: FrozenSet[str] = frozenset({
     "states", "ISCs", "ICs", "emission_rates", "fluor_keywords", "phosp_keywords",
     "phosp_IROOT", "TROOTSSL", "DOHT", "addition_S0", "logK_exp", "allow_imaginary_freq",

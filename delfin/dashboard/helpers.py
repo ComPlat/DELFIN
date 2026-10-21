@@ -42,6 +42,41 @@ def js_string_literal(value):
             .replace("&", "\\u0026"))
 
 
+_HREF_RE = re.compile(r'(\bhref\s*=\s*)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
+_SAFE_SCHEMES = ('http://', 'https://', 'mailto:', '#')
+_IMAGE_TYPE_RE = re.compile(r'^image/[A-Za-z0-9.+-]+$')
+
+
+def neutralise_link_targets(markup):
+    """Replace every ``href`` that is not http(s), mailto or a fragment by ``#``.
+
+    For HTML another program converted from a user's document (mammoth's
+    .docx conversion): text there is escaped, but a hyperlink target is
+    copied as written, and a ``javascript:`` target would run on the
+    dashboard's origin when clicked. The target is compared after HTML
+    entity decoding and with whitespace and control characters removed,
+    the forms browsers ignore inside a scheme.
+    """
+    import html as _html_mod
+
+    def _fix(match):
+        target = _html_mod.unescape(match.group(3))
+        target = ''.join(ch for ch in target if ch > ' ').lower()
+        if target.startswith(_SAFE_SCHEMES):
+            return match.group(0)
+        return f'{match.group(1)}{match.group(2)}#{match.group(2)}'
+
+    return _HREF_RE.sub(_fix, str(markup or ''))
+
+
+def image_data_uri(content_type, b64):
+    """A ``data:`` image URI, or '' when *content_type* is not an image type."""
+    content_type = str(content_type or '').strip()
+    if not _IMAGE_TYPE_RE.match(content_type):
+        return ''
+    return f'data:{content_type};base64,{b64}'
+
+
 def parse_neb_final_interp(text):
     """Parse a ``*.final.interp`` file into Images / Interp. sections."""
     sections = {}

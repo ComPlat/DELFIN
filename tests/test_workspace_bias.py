@@ -62,8 +62,12 @@ def test_permissions_delfin_workspace_gets_xtb_pattern():
         assert perms.is_delfin_workspace is True
         # xtb is auto-allowed inside DELFIN
         assert perms.matches_bash_auto_allow("xtb mol.xyz --opt") is True
-        # delfin-cli wrapper too
-        assert perms.matches_bash_auto_allow("delfin-run --config x") is True
+        # the read-only delfin subcommands too; acting ones are asked
+        # (tests/test_an_acting_delfin_command_is_asked.py)
+        assert perms.matches_bash_auto_allow("delfin qm_check xtb") is True
+        assert perms.matches_bash_auto_allow("delfin-agent doctor") is True
+        assert perms.matches_bash_auto_allow("delfin-run --config x") is False
+        assert perms.matches_bash_auto_allow("delfin-agent stop-all") is False
 
 
 def test_permissions_generic_workspace_no_xtb_pattern():

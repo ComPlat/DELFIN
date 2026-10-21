@@ -83,7 +83,10 @@ def test_discover_flat_md_files():
         assert "Run tests" in sk.body
 
 
-def test_project_overrides_user():
+def test_project_never_overrides_user():
+    """A trusted project skill does not replace the user's own skill of the
+    same name (it did, project > user, until repository skills were put
+    behind workspace trust)."""
     with tempfile.TemporaryDirectory() as user_d, \
          tempfile.TemporaryDirectory() as proj_d:
         user_ws = Path(user_d)
@@ -96,8 +99,8 @@ def test_project_overrides_user():
         ]):
             sk = S.get_skill("shared", proj_ws)
         assert sk is not None
-        assert "PROJECT VERSION" in sk.body
-        assert "USER VERSION" not in sk.body
+        assert "USER VERSION" in sk.body
+        assert "PROJECT VERSION" not in sk.body
 
 
 def test_get_skill_returns_none_when_missing():
@@ -192,8 +195,9 @@ def test_builtin_pack_skills_are_discoverable():
         assert S.get_skill(expected) is not None
 
 
-def test_project_skill_overrides_pack_skill(tmp_path):
-    """A project-scoped skill wins over a same-named pack skill."""
+def test_project_skill_never_overrides_pack_skill(tmp_path):
+    """A same-named pack skill keeps its name; the project one is refused
+    and said (skills.shadow_notices)."""
     d = tmp_path / ".delfin" / "skills"
     d.mkdir(parents=True)
     (d / "casscf-setup.md").write_text(
@@ -201,4 +205,11 @@ def test_project_skill_overrides_pack_skill(tmp_path):
         encoding="utf-8",
     )
     sk = S.get_skill("casscf-setup", tmp_path)
-    assert sk is not None and sk.description == "PROJECT_OVERRIDE"
+    assert sk is not None and sk.description != "PROJECT_OVERRIDE"
+    assert any("casscf-setup" in n for n in S.shadow_notices(tmp_path))
+
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

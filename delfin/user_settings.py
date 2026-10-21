@@ -72,12 +72,12 @@ DEFAULT_SETTINGS = {
         # Above 0.99 risks OOM-SIGKILL (Linux cgroup is unforgiving), below
         # 0.50 wastes resources. Set lower (0.85) for correlation methods
         # (DLPNO-CC, MP2) where ORCA's real RSS may exceed %maxcore. Set
-        # higher (0.95) for pure DFT-OPT setups where Fritz' archive shows
+        # higher (0.95) for pure DFT-OPT setups where a user archive shows
         # real RSS = 80-82 % of promised.
         # Historical context: 5edfb89 (2026-05-05) introduced the cap at
         # 0.85 after JEW-R465 OOM (312 GB / 351 GB SLURM, two parallel
         # OCCUPIER jobs SIGKILL after 48 h). Default raised to 0.90 on
-        # 2026-05-12 after Fritz-archive analysis.
+        # 2026-05-12 after a user-archive analysis.
         "slurm_mem_headroom": 0.90,
     },
     "ui": {
@@ -147,9 +147,21 @@ DEFAULT_SETTINGS = {
         # that actually binds on a slow endpoint (a build task spends ~30 s
         # per tool call there); call count and output size have not been
         # the limit in measured runs. 0 → fall back to the module default.
+        # Caps per delegated subagent. Raised 2026-10-08 from 40 calls and
+        # 900 s, because the presets became specialists and two of them
+        # cannot finish inside the old numbers: `verifier` runs the
+        # covering tests and then the same tests on the base as a control,
+        # and the full suite takes 2520 s on this installation -- a cap
+        # below the thing a preset exists to do makes the preset useless,
+        # and the run is billed for a report nobody can use. 40 calls was
+        # sized for `explore`, which uses about ten.
+        #
+        # Caps, not targets: the cost circuit-breaker and the
+        # consecutive-failure abort are unchanged, and a delegate that
+        # finishes in four calls still costs four.
         "subagents": {
-            "max_tool_calls": 40,
-            "max_wall_s": 900,
+            "max_tool_calls": 120,
+            "max_wall_s": 3600,
             "max_output_tokens": 16000,
         },
         # Dashboard ACTION rounds: a round that issues at least one NEW
@@ -157,7 +169,16 @@ DEFAULT_SETTINGS = {
         # re-issues what already ran this turn is charged against
         # action_repeat_limit, so a loop ends after the first repeat while
         # honest multi-step work runs on. 0 → ceiling disabled.
-        "max_action_rounds": 12,
+        #
+        # 40, raised from 12. The ceiling is not what stops a degenerate
+        # loop -- action_repeat_limit is, and it ends the turn on the first
+        # repeated command. The ceiling only ever binds work where every
+        # round brings NEW commands, which is honest multi-step work, and
+        # 12 of those is few. A field report describes agents stopping
+        # short of the task with steps left to take; the number it names is
+        # this one, reached while agent.max_tool_rounds was set to 500 and
+        # therefore never the limit that bit.
+        "max_action_rounds": 40,
         "action_repeat_limit": 2,
         # Auto-verification: don't let the agent finish a turn with broken code.
         # When the model stops after editing .py files, the harness verifies
@@ -178,6 +199,12 @@ DEFAULT_SETTINGS = {
         # to main/master is refused. "maintainer": pushes to the default
         # branch are allowed, one per user request.
         "git_role": "contributor",
+        # The role per repository, which wins over git_role in both
+        # directions: {"github.com/<owner>/<repo>": "maintainer"}, keyed by
+        # the normalised remote URL (a repository without a remote: its
+        # absolute top-level path). Set with `/git role maintainer` in the
+        # terminal, inside the repository. delfin/agent/git_role.py.
+        "git_roles": {},
         # The address the agent's Co-Authored-By trailer carries. GitHub
         # attaches a co-author to an account by its email, so an address
         # nobody owns renders a line with no avatar that counts for
@@ -191,6 +218,18 @@ DEFAULT_SETTINGS = {
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
         # overrides this at runtime). NEVER hard-code a site path here.
         "bug_archive_dir": "",
+        # Whether a written bug report is also copied to the shared remote
+        # archive (<transfer.remote_path>/AGENT_BUGS), where its maintainers
+        # read it. The report holds the session's transcript, so this is a
+        # consent of its own, separate from configuring the transfer:
+        #   "ask"    (default) -- only after a yes for that report (the
+        #            dashboard's Send under the named host, the [y/N] of
+        #            /bug and `delfin-agent bug report`); with nobody to ask
+        #            (--yes, unattended) the report stays local.
+        #   "never"  -- every report stays local.
+        #   "always" -- standing opt-in: copied without asking, also in
+        #            unattended runs. delfin/agent/bug_report.py.
+        "bug_upload": "ask",
         # Complexity-based model routing (provider-agnostic, opt-in).
         # enabled=False → exactly today's behaviour (user's model for all).
         # strong_model/cheap_model override the built-in per-provider tier
@@ -233,10 +272,14 @@ DEFAULT_SETTINGS = {
         # Cloud metadata addresses are refused in every mode, attended
         # commands included. allowed_domains ADDS to the built-in list
         # (PyPI, conda, GitHub); "*.example.org" covers subdomains.
+        # upload_domains: hosts that may receive an upload (a write
+        # request, or more than upload_ask_bytes) when nobody can be
+        # asked; every other known host gets reads only in that case.
         "sandbox_network": {
             "mode": "proxy",
             "allowed_domains": [],
             "allowed_ports": [80, 443],
+            "upload_domains": [],
         },
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The
@@ -253,6 +296,12 @@ DEFAULT_SETTINGS = {
         # Narrow by default: too wide puts one project's notes into
         # another's prompt.
         "memory_key": "path",
+        # `delfin-agent tui` on a host with neither the window's binary nor
+        # Bun installs a pinned Bun (SHA-256 checked) and the window's
+        # packages (bun.lock) into ~/.delfin/tools on its first start.
+        # false: it prints the manual commands instead
+        # (DELFIN_TUI_AUTO_INSTALL=0 does the same for one shell).
+        "tui_auto_install": True,
         "auto_memory": {
             "enabled": True,
             "model": "",
@@ -805,6 +854,70 @@ def _apply_security_updates(settings):
     return updated
 
 
+#: One-time DEFAULT updates: a shipped default moved, and a file still
+#: carrying the OLD default should follow it. Recorded the same way the
+#: security updates are, so each runs once and a later choice is kept.
+#:
+#: Named apart from the security updates on purpose. Raising a cap is not
+#: a security fix, and putting it under that name would make the record
+#: say something untrue about why it happened.
+_SUBAGENT_CAPS_RAISED = "2026-10-subagent-caps"
+
+#: The values that are FINGERPRINTS of an old shipped default rather than
+#: of a decision. 300 and 900 were the wall-clock defaults at different
+#: times; 40 was the tool-call default. Anything else in the file is a
+#: number somebody chose, and is left alone.
+_OLD_SUBAGENT_DEFAULTS = {"max_wall_s": (300, 900), "max_tool_calls": (40,)}
+
+
+def _apply_default_updates(settings):
+    """Move a file that still carries an old shipped default onto the new one.
+
+    2026-10: the subagent presets became specialists, and two of them
+    cannot finish inside the old caps -- ``verifier`` runs the covering
+    tests and then the same tests on the base as a control. A file holding
+    the old default would have kept the new presets useless while the
+    shipped default said otherwise, which is the drift this codebase has
+    already paid for twice in these same numbers.
+
+    Only the exact old defaults move. A file saying 1800 chose 1800, and
+    the point of a setting is that it is respected; a migration that
+    overwrote it would be the dashboard lying about what is in force.
+    """
+    applied = list(settings.get("default_updates_applied") or [])
+    if _SUBAGENT_CAPS_RAISED in applied:
+        return settings
+    updated = dict(settings)
+    agent = dict(updated.get("agent") or {})
+    subs = dict(agent.get("subagents") or {})
+    shipped = ((DEFAULT_SETTINGS.get("agent") or {}).get("subagents") or {})
+    moved = []
+    for key, fingerprints in _OLD_SUBAGENT_DEFAULTS.items():
+        if key not in subs:
+            continue                      # absent: the default already wins
+        try:
+            current = int(subs[key])
+        except (TypeError, ValueError):
+            continue
+        target = int(shipped.get(key, current) or current)
+        if current in fingerprints and target > current:
+            subs[key] = target
+            moved.append(f"{key} {current} -> {target}")
+    if moved:
+        agent["subagents"] = subs
+        updated["agent"] = agent
+        notices = list(updated.get("security_notices") or [])
+        notices.append(
+            "Settings update: the subagent caps in this file were the old "
+            "shipped defaults and now follow the new ones ("
+            + ", ".join(moved) + "). The specialist presets need the room; "
+            "set your own numbers in ~/.delfin_settings.json and they will "
+            "not be changed again.")
+        updated["security_notices"] = notices
+    updated["default_updates_applied"] = applied + [_SUBAGENT_CAPS_RAISED]
+    return updated
+
+
 def take_security_notices(settings_path=None):
     """The security notices not shown yet, removed from the settings file."""
     path = get_settings_path(settings_path)
@@ -828,8 +941,9 @@ def load_settings(settings_path=None):
     path = get_settings_path(settings_path)
     if path.exists():
         normalized = _normalized_settings_dict(_read_json(path))
-        merged = _merge_missing_defaults(_apply_security_updates(normalized),
-                                         DEFAULT_SETTINGS)
+        merged = _merge_missing_defaults(
+            _apply_default_updates(_apply_security_updates(normalized)),
+            DEFAULT_SETTINGS)
         if merged != normalized:
             _write_json_atomic(path, merged)
         return merged

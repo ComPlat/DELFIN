@@ -3,7 +3,7 @@ the same objects as the canonical module.
 
 If this test fails, a shim has diverged from its canonical source —
 exactly the bug class that caused the GlobalJobManager dual-singleton
-crash (Tilman, 2026-04).
+crash (field report, 2026-04).
 
 The test is intentionally exhaustive: it checks identity (``is``), not
 equality, so that accidental copy-paste of classes is caught immediately.

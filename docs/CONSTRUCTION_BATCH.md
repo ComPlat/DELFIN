@@ -111,23 +111,40 @@ for k in $(seq 0 $((N_SHARDS - 1))); do $PY -m delfin cluster run-shard runs/mac
 ## 4. From the dashboard
 
 Submit Job tab, panel **Construction batch (MANTA / ARCHITECTOR / MOLSIMPLIFY / MACE)** under the
-Batch SMILES field:
+Batch SMILES field. Builder, Mode, Run name and List file are always shown; everything else sits
+in a folded **Advanced** section. Every field has a tooltip and a grey one-line explanation, and
+shows its real default (no hidden 0 or empty value):
 
-| Field | `delfin cluster` argument |
-|---|---|
-| Builder, Mode | `prepare --tool`, `--mode` |
-| Run name | run directory `<calculation folder>/construction_batch/<run name>` (`--run-dir`) |
-| List file | `--input`; empty: the Batch SMILES field, `name;SMILES[;...]` lines cut to `name;SMILES` and saved as `<run name>.input.txt` beside the run directory |
-| Selection, Specs | `--select`, `--specs` |
-| Tool python | `--tool-python`; empty: found automatically (shown as the placeholder) |
-| Shard size (0 = default), Limit/system s, Speed factor, Repeat N | `--shard-size`, `--timeout`, `--speed-factor`, `--repeat` |
-| Throttle %N, Job wall time | `slurm --throttle`, `--time` |
+| Field | Default shown | `delfin cluster` argument |
+|---|---|---|
+| Builder | MANTA | `prepare --tool` |
+| Mode | the builder's default, marked "(default)", with one line on what it builds | `--mode` |
+| Run name | empty = `<builder>_<YYYYMMDD>_<N>mol` (shown as the placeholder, `_2`, `_3` when taken); a warning when the folder already exists | run directory `<calculation folder>/construction_batch/<run name>` (`--run-dir`) |
+| List file | empty = the Batch SMILES field above, `name;SMILES[;...]` lines cut to `name;SMILES` and saved as `<run name>.input.txt` beside the run directory | `--input` |
+| *Advanced:* Only these IDs (file), Reuse specs (JSONL file) | empty = all molecules / specs made from the SMILES | `--select`, `--specs` |
+| Builder environment (python) | found automatically (shown as the placeholder) | `--tool-python` |
+| Molecules per job (shard size) | the builder's default (MANTA 500, others 250) | `--shard-size` |
+| Time limit per molecule (s) | 21600, shown as hours and with the slowness factor applied | `--timeout` |
+| Cluster slowness factor (x) | 1.0 | `--speed-factor` |
+| Max. parallel jobs | 40 (0 = no limit) | `slurm --throttle` |
+| Determinism check: rebuild N molecules | 0 = off | `--repeat` |
+| Job wall time (hh:mm:ss) | auto = 72 h, with the computed worst case of the biggest shard (a warning when that exceeds 72 h) | `slurm --time` |
 
-**Prepare** runs `prepare` and shows systems, shards and an upper bound of the time per shard.
-**Submit** runs `slurm --submit` for the main set (and the repeat set) on a Slurm backend, with
-the partitions DELFIN uses for every job and the site's `DELFIN_MODULES` loaded on the node; on
-the local backend it builds the shards one after the other in the background. **Status** and
-**Collect** run `status -v` and `collect` (plus `repeat-stats` when there is a repeat set).
+Options at their default are left out of the command, as a user typing it would leave them out.
+Under the fields an estimate (molecules, shards, at most core-hours and wall time with the
+parallel jobs, every molecule at its limit) follows every change.
+
+**Prepare** checks the list first (invalid lines of the Batch SMILES field by their line number,
+an empty list, an existing run folder) and then runs `prepare`; it shows a one-line summary
+(molecules, shards, at most core-hours, ~wall time with the parallel jobs, output folder) before
+the details. A refusal of the CLI is shown as its first line (a missing builder environment as
+the install command). **Submit** runs `slurm --submit` for the main set (and the repeat set) on a
+Slurm backend, with the partitions DELFIN uses for every job and the site's `DELFIN_MODULES`
+loaded on the node; on the local backend it builds the shards one after the other in the
+background. **Status** shows one progress line per shard set (done/total, ok/timeout/failed,
+shards complete and in progress) followed by `status -v`; **Refresh** updates that line only.
+**Collect** runs `collect` (plus `repeat-stats` when there is a repeat set) and says where the
+archive is and how many molecules have frames; a set already collected is not collected again.
 
 Each button runs the very same code as the command line and prints the command it ran, so a run
 from the dashboard can be repeated without it, and the same settings give the same run directory

@@ -52,7 +52,7 @@ def test_a_bwrap_wrap_binds_the_extra_directory_after_the_fresh_tmp(tmp_path, mo
     out = A._bash_isolation_argv("true", tmp_path, perms, extra_write=(report,))
     rd = str(report.resolve())
     i = out.index(rd)
-    assert out[i - 1] == "--bind" and i > out.index("--tmpfs")
+    assert out[i - 1] in ("--bind", "--bind-try") and i > out.index("--tmpfs")
 
 
 @pytest.mark.skipif(not A._bwrap_functional(), reason="bubblewrap does not work here")
@@ -72,3 +72,22 @@ def test_a_real_run_in_the_cage_still_reports_its_result(tmp_path, monkeypatch, 
         {"target": "test_env.py", "timeout_s": 120}, perms))
     assert out["status"] == "ok", out
     assert out["summary"].get("passed") == 2, out
+
+
+def test_a_root_that_does_not_exist_yet_does_not_stop_the_sandbox(
+        tmp_path, monkeypatch):
+    """The repository's handover directory is a root from the start but is
+    created on first write. A plain --bind of it made bwrap refuse to start,
+    so every shell command of the session failed (2026-10-09). Measured on
+    the argv: every writable root, existing or not, is a --bind-try."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    missing = (tmp_path / "not-yet").resolve()
+    monkeypatch.setattr(A, "_bash_isolation_decision",
+                        lambda perms, mode=None: ("bwrap", "bwrap"))
+    argv = A._bash_isolation_argv("true", ws, _perms(ws),
+                                  extra_write=(missing,))
+    for root in (str(ws.resolve()), str(missing)):
+        hits = [argv[i - 1] for i, a in enumerate(argv)
+                if a == root and argv[i + 1] == root]
+        assert hits == ["--bind-try"], (root, hits)

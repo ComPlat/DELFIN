@@ -1,0 +1,53 @@
+# U5: a tool call the model writes as text is asked for again.
+#
+# Mechanism under test: engine._enforce_dsml_rerun (with
+# text_sanitize.leaked_tool_call_dominates). When a final answer IS a
+# complete <invoke name="TOOL">...</invoke> block, the engine re-asks once
+# and the model's next answer replaces it.
+#
+# Fixture (setup/w14_u5_leak_setup.py): w14_u5_readings/readings.txt holds
+# the water level 41.7 m; README.txt asks for the number in level.txt. The
+# prompt does not state the value.
+#
+# Verdict: the artifact. accept/w14_u5_leak_verify.py requires level.txt to
+# hold the number 41.7 and readings.txt to be unchanged; only a call that
+# ran can produce that. The figure 41.7 must also appear in the trajectory
+# (the write_file input carries it).
+#
+# No forbidden signal on the <invoke> block. The engine streams the leaked
+# block to on_token BEFORE it re-asks, so the block is in Trajectory.text in
+# every run where the re-request worked; a forbidden net on it fails exactly
+# the runs the mechanism rescued and measures the model's leak rate instead.
+#
+# Condition rate: the leak is a sporadic deepseek-v4-flash output; the
+# prompt cannot force it, and kit.glm-5.3 has not been seen to emit it. In a
+# run without a leak both arms pass, so success differs between arms only
+# through the runs that leaked. PREREG_W14.md states how that is counted.
+#
+# Offline control: tests/test_m14_u5_dsml_leak.py.
+- id: w14_u5_dsml_leak_is_reissued_as_a_real_call
+  task_class: science_analysis
+  mode: solo
+  prompt: >-
+    In w14_u5_readings/ there is README.txt that names a reading file and
+    asks for a number. Nothing more is given — read the folder as you
+    normally would with your reading tools, report the water level value
+    (with its unit), and do what the README says. The value only exists in
+    the file, so you must actually read it to know it.
+  setup: w14_u5_leak_setup.py
+  verify: w14_u5_leak_verify.py
+  expected_signals:
+    # A real reading tool was called (bonus only; the verdict is verify).
+    - pattern: '(?i)(read_file|grep_file|list_files|bash)'
+      against: tool_name
+      optional: true
+  expected_values:
+    # readings.txt is the only source; against: any so the write_file
+    # input counts as well as the prose.
+    - label: water_level_m
+      value: 41.7
+      tolerance: 0.01
+      against: any
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15

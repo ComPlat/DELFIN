@@ -10,7 +10,7 @@ Pipeline:
            → near-DFT-quality XYZ
 
 Expected quality (literature, MACE-MP-0 medium model on TMC subset):
-    raw DELFIN heavy-atom RMSD vs CSD: ~0.85 Å median (today's HEAD)
+    raw DELFIN heavy-atom RMSD vs crystal structures: see the evaluation
     + MACE-MP-0 refinement: ~0.15-0.30 Å (typical, 70-90% of DFT gap closed)
     + DFT (PBE0/def2-TZVP): ~0.05-0.10 Å (not used in default pipeline)
 

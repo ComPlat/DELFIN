@@ -41,7 +41,8 @@ class StandInProposals:
         self.proposals = []
         self.accepted = []
 
-    def propose(self, name, text, *, evidence, source, base_version=""):
+    def propose(self, name, text, *, evidence, source, base_version="",
+                reason=""):
         rec = {"name": name, "text": text, "evidence": evidence,
                "source": source, "base_version": base_version,
                "status": "pending"}
@@ -162,3 +163,8 @@ def test_plan_mode_refuses_and_proposes_nothing(
     out = _exec(perms)
     assert out["error"].startswith("plan mode"), out
     assert store.proposals == []
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

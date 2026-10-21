@@ -282,6 +282,12 @@ class CodeClaimFlag:
 
 def _iter_path_citations(text: str):
     """Yield (path, line|None) citations that plausibly reference files."""
+    for raw, line, _start, _end in _iter_path_citation_spans(text):
+        yield raw, line
+
+
+def _iter_path_citation_spans(text: str):
+    """``_iter_path_citations`` with the match span: (path, line, start, end)."""
     from delfin.agent.memory_store import _PATH_REF_RE
     for m in _PATH_REF_RE.finditer(text or ""):
         raw = m.group(1).strip().rstrip(".,;:")
@@ -303,7 +309,154 @@ def _iter_path_citations(text: str):
                 continue
         if raw.startswith(("http", "www.")) or "://" in raw:
             continue
-        yield raw, line
+        yield raw, line, m.start(), m.end()
+
+
+# A clause boundary: sentence punctuation followed by space, a newline, or
+# a colon. An abbreviation's dot ("z.B.", "e.g.") is not one: the letter
+# before it follows another dot.
+_CLAUSE_END_RE = re.compile(r"(?<![\s.][A-Za-z])[.!;](?=\s)|\?|\n")
+
+# The clause names the file as something to be made, an example, or as
+# absent -- not as a file that exists. Past-tense creation ("I created
+# x.py", "erstellt") is deliberately NOT here: that is an assertion of
+# existence and stays checked.
+_NOT_ASSERTED_RE = re.compile(
+    r"(?i)"
+    # future / intended creation (EN)
+    r"\bwill\s+(?:\w+\s+){0,3}(?:create|write|add|build|put|generate)\b"
+    r"|\b(?:I'?ll|we'?ll|going to|plan(?:s|ned)? to|about to)\s+"
+    r"(?:\w+\s+){0,2}(?:create|write|add|build|put)\b"
+    r"|\bto be (?:created|written|added|built)\b"
+    r"|\b(?:a |the )?new (?:file|module|test file)\b"
+    r"|\bonce\b[^\n]{0,60}\b(?:created|written|exists)\b"
+    # absence (EN)
+    r"|\b(?:does|do|did)(?:n't| not) (?:yet |even )?exist\b"
+    r"|\bno longer exists?\b|\bnot (?:yet )?(?:created|written|present)\b"
+    # example (EN, DE)
+    r"|\be\.g\.|\bfor example\b|\bz\.\s?B\.|\bzum Beispiel\b"
+    # future / intended creation (DE)
+    r"|\b(?:erstelle|schreibe|lege)\s+ich\b|\bich\s+(?:erstelle|schreibe|lege)\b"
+    r"|\b(?:wird|werden|soll|sollen|sollte|würde)\b[^\n]{0,80}?"
+    r"\b(?:angelegt|erstellt|geschrieben|entstehen|heißen)\b"
+    r"|\bleg(?:e|t|en)\b[^\n]{0,120}?\ban\b|\b(?:neu )?anlegen\b"
+    r"|\bsobald\b"
+    # absence (DE)
+    r"|\bexistier\w*\s+(?:\w+\s+){0,2}?(?:nicht|nirgends)\b"
+    r"|\bgibt es\s+(?:\w+\s+){0,2}?(?:nicht|nirgends)\b"
+    r"|\bnirgends\b|\bnoch nicht\b"
+    # an offer, conditional on the reader (EN, DE)
+    r"|\bif you (?:like|want)\b|\bwenn du (?:magst|willst|möchtest)\b")
+
+
+# Coordinated clauses: "I create x.py and use y.py" asserts y.py exists.
+_COORDINATION_RE = re.compile(r"(?i)\s(?:and|und|sowie)\s")
+
+
+def _citation_clause(text: str, start: int, end: int) -> str:
+    """The clause around ``text[start:end]``: bounded by _CLAUSE_END_RE,
+    then narrowed to the coordinated part (and/und/sowie) the span is in."""
+    left = 0
+    for m in _CLAUSE_END_RE.finditer(text, 0, start):
+        left = m.end()
+    m = _CLAUSE_END_RE.search(text, end)
+    right = m.start() if m else len(text)
+    for m in _COORDINATION_RE.finditer(text, left, start):
+        left = m.end()
+    m = _COORDINATION_RE.search(text, end, right)
+    if m:
+        right = m.start()
+    return text[left:right]
+
+
+def _cited_as_not_existing(text: str, start: int, end: int) -> bool:
+    """True when the clause citing a path says it is to be made, an
+    example, or absent. Field shapes: 'schreibe ich die Tests ... pytest
+    tests/test_x.py', 'z.B. delfin/x.py ... angelegt', 'delfin/x.py
+    existiert weiterhin nirgends', 'x.py does not exist'. A clause that
+    ends in a question mark asks about the file ('Gibt es delfin/x.py
+    schon auf einem Branch?') and asserts nothing either."""
+    try:
+        m = _CLAUSE_END_RE.search(text, end)
+        if m and m.group(0) == "?":
+            return True
+        return bool(_NOT_ASSERTED_RE.search(
+            _citation_clause(text, start, end)))
+    except Exception:
+        return False
+
+
+_SIBLING_CACHE: dict[str, tuple[float, list[Path]]] = {}
+_SIBLING_TTL_S = 60.0
+_SIBLING_MAX = 12
+
+
+def _sibling_roots(root: Path) -> list[Path]:
+    """Other checkouts of ``root``'s repository: its git worktrees (the
+    main checkout among them) and the workspaces of open sessions in the
+    same repository. Cached for a minute; [] on any failure.
+
+    A session working beside others cites their files ('Session B built
+    report_costs.py') and the worktree directories under the main
+    checkout; none of these resolve against its own root.
+    """
+    import os
+    import time
+    key = str(root)
+    now = time.time()
+    hit = _SIBLING_CACHE.get(key)
+    if hit and now - hit[0] < _SIBLING_TTL_S:
+        return hit[1]
+    found: list[Path] = []
+    try:
+        from . import safe_git
+        r = safe_git.run(["worktree", "list", "--porcelain"], key, timeout=5)
+        if r.returncode == 0:
+            for ln in r.stdout.splitlines():
+                if ln.startswith("worktree "):
+                    found.append(Path(ln[len("worktree "):].strip()))
+    except Exception:
+        pass
+    try:
+        from . import session_presence as _presence
+        for rec in _presence.in_same_repository(key):
+            ws = str(rec.get("workspace") or "")
+            if ws:
+                found.append(Path(ws))
+    except Exception:
+        pass
+    out: list[Path] = []
+    try:
+        mine = root.resolve()
+    except OSError:
+        mine = root
+    for p in found:
+        try:
+            rp = p.resolve()
+        except OSError:
+            continue
+        if rp != mine and rp not in out and rp.is_dir():
+            out.append(rp)
+    out = out[:_SIBLING_MAX]
+    _SIBLING_CACHE[key] = (now, out)
+    return out
+
+
+def _exists_in_a_sibling(root: Path, path: str) -> bool:
+    """Whether ``path`` resolves in another checkout of the repository."""
+    rel = path.strip()
+    if not rel or Path(rel).is_absolute():
+        return False
+    for sib in _sibling_roots(root):
+        try:
+            if "/" not in rel.strip("./"):
+                if _basename_exists_under(sib, rel.strip("./")):
+                    return True
+            elif (sib / rel).exists():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _is_observed(path: str, observed: frozenset[str]) -> bool:
@@ -377,7 +530,7 @@ def scan_for_ungrounded_code_claims(
     obs = frozenset(str(p) for p in (observed_files or ()))
     root = Path(repo_root) if repo_root else None
     try:
-        for path, line in _iter_path_citations(text):
+        for path, line, _s, _e in _iter_path_citation_spans(text):
             key = f"{path}:{line}"
             if key in seen or len(flags) >= max_flags:
                 continue
@@ -446,6 +599,16 @@ def scan_for_ungrounded_code_claims(
                 flags.append(CodeClaimFlag(path=path, line=line,
                                            kind="unread"))
             elif not exists:
+                # Named as a file to make, an example, or as absent: the
+                # answer does not assert it exists, so it invented nothing.
+                if _cited_as_not_existing(text, _s, _e):
+                    continue
+                # There, in another checkout of the same repository: a
+                # sibling session's file is real, only not read here.
+                if root is not None and _exists_in_a_sibling(root, path):
+                    flags.append(CodeClaimFlag(path=path, line=line,
+                                               kind="unread"))
+                    continue
                 flags.append(CodeClaimFlag(path=path, line=line,
                                            kind="nonexistent"))
             else:
@@ -598,6 +761,126 @@ _QUANTITY_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
 
 # Fenced code blocks (``` ... ```): never claims.
 _FENCED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class ArithmeticFlag:
+    """One stated equation whose arithmetic does not hold.
+
+    "0.031522 - 0.087844 = 0.056322" claims an identity; the operands
+    and the operator are IN the claim, so the check is exact -- no pool,
+    no tolerance beyond the printed precision. This is the only place
+    the wave-10 sign flip (s17) is detectable: against an unordered
+    observation pool a sign can never be checked, because for any pair
+    a, b both ordered differences a-b and b-a exist. See the module
+    docstring of the test that pins this (tests/test_claim_wrong_arithmetic.py).
+    """
+
+    equation: str      # the matched equation, whitespace-normalized
+    claimed: str       # the stated result, as printed
+    actual: float      # the value the operands give
+
+    def message(self) -> str:
+        return (
+            f"⚠️ Verify: the equation '{self.equation}' does not hold -- "
+            f"the operands give {self.actual:.6g}, not {self.claimed}. "
+            f"Recompute or state the numbers as unverified.")
+
+
+# An equation of two decimal numbers joined by + or -, then a result:
+# "0.031522 - 0.087844 = -0.056322". Unicode minus is accepted (the
+# scanner's own _QTY_NUM class does the same). The second operand may be
+# parenthesised -- "E(S1) - (-1705.219605)" is how answers write a
+# difference of negative energies, the commonest form in this project.
+_ARITHMETIC_EQ_RE = re.compile(
+    r"(?<![\w.])([-+−]?\d+(?:[.,]\d+)?)\s*([+−-])\s*(?:\(\s*"
+    r"([-+−]?\d+(?:[.,]\d+)?)\s*\)|([-+−]?\d+(?:[.,]\d+)?))"
+    r"\s*=\s*([-+−]?\d+(?:[.,]\d+)?)")
+
+
+def _read_decimal(token: str) -> float | None:
+    """The value of a decimal token under BOTH separator conventions.
+
+    "0.056322" is unambiguous; "0,056322" is the German form of the same
+    value; "1.234" could be a grouped thousand. A guard that has to
+    guess should guess toward silence: the equation is flagged only when
+    it is wrong under EVERY reading the operands and result admit. See
+    _claim_readings for the same discipline on single numbers.
+    """
+    token = token.replace("−", "-")
+    readings: list[float] = []
+    if "," in token:
+        head, _, tail = token.partition(",")
+        try:
+            readings.append(float(f"{head}.{tail}"))
+        except ValueError:
+            return None
+        if len(tail) == 3:
+            try:
+                readings.append(float(head + tail))
+            except ValueError:
+                pass
+        return readings[0] if len(readings) == 1 else None
+    if "." in token:
+        head, _, tail = token.partition(".")
+        try:
+            readings.append(float(token))
+        except ValueError:
+            return None
+        if len(tail) == 3:
+            try:
+                readings.append(float(head + tail))
+            except ValueError:
+                pass
+        return readings[0] if len(readings) == 1 else None
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def scan_for_wrong_arithmetic(text: str, max_flags: int = 6
+                              ) -> list[ArithmeticFlag]:
+    """Equations the answer states whose arithmetic does not hold.
+
+    Fires only on "A + B = C" / "A - B = C" forms written in the agent's
+    own prose (fenced blocks and backtick spans are blanked first, like
+    every scanner here). An equation is flagged only when the arithmetic
+    is wrong under every reading its ambiguous decimals admit -- a
+    number with three digits after the separator is read both ways, and
+    a disagreement inside the 5e-3 absolute tolerance the quantity
+    grounding already uses is not claimed. Never raises.
+    """
+    flags: list[ArithmeticFlag] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        scrubbed = _strip_non_claim_regions(text)
+        seen: set[str] = set()
+        for m in _ARITHMETIC_EQ_RE.finditer(scrubbed):
+            a_raw, op, b_paren, b_bare, c_raw = m.groups()
+            b_raw = b_paren if b_paren is not None else b_bare
+            a = _read_decimal(a_raw)
+            b = _read_decimal(b_raw)
+            c = _read_decimal(c_raw)
+            if a is None or b is None or c is None:
+                continue
+            actual = (a + b) if op == "+" else (a - b)
+            tolerance = max(abs(actual) * 1e-4, 5e-3)
+            if abs(actual - c) <= tolerance:
+                continue
+            equation = " ".join(m.group(0).split())
+            key = equation.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            flags.append(ArithmeticFlag(equation=equation,
+                                        claimed=c_raw, actual=actual))
+            if len(flags) >= max_flags:
+                break
+    except Exception:
+        return flags
+    return flags
 
 
 @dataclass(frozen=True)
@@ -1638,6 +1921,21 @@ def quantity_claim_feedback(flags: list[QuantityClaimFlag]) -> str:
     )
 
 
+def arithmetic_feedback(flags: list[ArithmeticFlag]) -> str:
+    """Feedback message for the forced self-correction turn.
+
+    A wrong equation differs from an unsourced quantity: the claim
+    itself carries its operands, so no source read can ground it --
+    only recomputation or an explicit unverified statement fixes it.
+    The wording says so."""
+    eqs = ", ".join(f"'{f.equation}'" for f in flags)
+    return (
+        f"The following equations do not hold: {eqs}. The operands "
+        "give a different value -- recompute from the sources you "
+        "read, or state the numbers as unverified."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Claim scoping — a disarm excuses the claim it stands next to, nothing else
 # ---------------------------------------------------------------------------
@@ -2075,12 +2373,14 @@ def verification_marker(new_files) -> str:
 def grounding_caveat(
     location_flags: list[LocationClaimFlag],
     quantity_flags: list[QuantityClaimFlag],
+    arithmetic_flags: list[ArithmeticFlag] | None = None,
 ) -> str:
     """Visible caveat appended when the single correction turn still lacks
     grounding — the turn is never failed, the reader is warned instead."""
     items: list[str] = []
     items.extend(f"'{f.claim}'" for f in location_flags)
     items.extend(f"'{f.quantity}'" for f in quantity_flags)
+    items.extend(f"'{f.equation}'" for f in arithmetic_flags or ())
     if not items:
         return ""
     return (
@@ -3027,3 +3327,49 @@ def ambiguous_column_caveat(columns: list[str]) -> str:
         "column decides it. The figure above rests on an assumption, not "
         "a measurement — please confirm the reading before passing it on."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test honesty about the change itself — package B3, wave 18
+# ---------------------------------------------------------------------------
+#
+# The scanners above judge the ANSWER's claims. Nothing judged the
+# change's own TESTS: a bare `except: pass` around new code leaves the
+# suite green while two real bugs stay invisible, a committed
+# tests/test_zz_* probe, a test that reads a .gate/ copy (green only
+# in the builder's tree) and a settings switch tested in one state
+# were all measured failures in wave 17. This wiring exposes the pure
+# scanner in ``test_honesty`` through the same pattern every other
+# scanner here uses — a ``scan_for_*`` entry plus a feedback builder —
+# so a report path can surface it BEFORE the agent claims done. It
+# BLOCKS NOTHING: it is a report, like the caveat chain, never a
+# refusal.
+
+
+def scan_for_dishonest_tests(change_records) -> list:
+    """Scan a change's records for tests that claim more than they measure.
+
+    ``change_records`` is what :func:`delfin.agent.test_honesty.check`
+    takes: ``(path, new_start, new_end, source)`` per changed file.
+    Returns the honesty findings (path, line, reason); never raises —
+    a scanner in this module degrades to quiet, not to a crash.
+    """
+    try:
+        from delfin.agent import test_honesty as _th
+        return _th.check(change_records)
+    except Exception:
+        return []
+
+
+def test_honesty_feedback(findings) -> str:
+    """The report text for the agent to see before it claims done."""
+    if not findings:
+        return ""
+    lines = [
+        "> ⚠️ test_honesty: the change's tests may claim more than they "
+        "measure — each item below should be resolved or explicitly "
+        "justified before claiming done (report only; blocks nothing):"
+    ]
+    for f in findings:
+        lines.append(f"> - {f.path}:{f.line} — {f.reason}")
+    return "\n".join(lines)

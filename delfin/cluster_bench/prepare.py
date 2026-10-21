@@ -49,6 +49,19 @@ SPEC_BAIL = (("could not be parsed", "unparseable"), ("contains no metal", "no_m
              ("has no ligands", "no_ligands"))
 
 
+def cbatch_check_line(ln: str):
+    """One non-blank list line -> (id, smiles), or the reason it is invalid (a str)."""
+    sep = ";" if ";" in ln else ("|" if "|" in ln else None)
+    if sep is None or ln.count(sep) != 1:
+        return "need exactly one ';' (or '|') between ID and SMILES"
+    rid, smi = (x.strip() for x in ln.split(sep))
+    if not ID_RE.match(rid):
+        return f"ID {rid!r} (letters, digits, _ . + - only)"
+    if not smi or any(c.isspace() for c in smi):
+        return "empty SMILES or whitespace inside it"
+    return rid, smi
+
+
 def cbatch_parse_list(path) -> list:
     """``ID;SMILES`` (or ``ID|SMILES``) lines -> [(id, smiles)].  Any bad line aborts."""
     rows, errors, seen = [], [], set()
@@ -59,17 +72,11 @@ def cbatch_parse_list(path) -> list:
         ln = ln.rstrip("\r")
         if not ln.strip():
             continue
-        sep = ";" if ";" in ln else ("|" if "|" in ln else None)
-        if sep is None or ln.count(sep) != 1:
-            errors.append(f"line {i}: need exactly one ';' (or '|') between ID and SMILES")
+        row = cbatch_check_line(ln)
+        if isinstance(row, str):
+            errors.append(f"line {i}: {row}")
             continue
-        rid, smi = (x.strip() for x in ln.split(sep))
-        if not ID_RE.match(rid):
-            errors.append(f"line {i}: ID {rid!r} (letters, digits, _ . + - only)")
-            continue
-        if not smi or any(c.isspace() for c in smi):
-            errors.append(f"line {i}: empty SMILES or whitespace inside it")
-            continue
+        rid, smi = row
         if rid in seen:
             errors.append(f"line {i}: ID {rid} twice")
             continue
