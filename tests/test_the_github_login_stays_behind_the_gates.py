@@ -16,6 +16,7 @@ that would leave a mark if they ran.
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 from pathlib import Path
 
@@ -131,7 +132,9 @@ def _ran(mark: Path) -> list:
             if line.startswith(("gh auth token", "gh auth status -t",
                                 "gh auth status --show", "gh auth git-",
                                 "gh api", "curl"))
-            or (line.startswith("git") and "credential" in line)]
+            or (line.startswith("git ") and any(
+                word in {"credential", "credential-store", "credential-cache"}
+                for word in shlex.split(line)[1:]))]
 
 
 def _run(cmd: str, ws: Path, mode: str) -> str:
@@ -218,3 +221,14 @@ def test_both_refusals_are_never_handed_to_the_user_as_a_command():
         assert kind in handover._CONTENT_KINDS
         assert handover.for_user("gh auth token", kind=kind) == ""
         assert kind in security_events._KINDS
+
+
+def test_the_call_spy_distinguishes_credential_commands_from_workspace_names(tmp_path):
+    mark = tmp_path / "ran"
+    mark.write_text(
+        "git -C /tmp/test_credential_read/ws --no-pager config --null --list\n"
+        "git -C /tmp/test_credential_read/ws rev-parse --show-toplevel\n"
+        "git -c credential.helper= credential fill\n"
+        "git credential-store get\n")
+    assert _ran(mark) == ["git -c credential.helper= credential fill",
+                          "git credential-store get"]

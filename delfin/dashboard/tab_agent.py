@@ -18795,7 +18795,7 @@ def create_tab(ctx):
     # -- main event handlers -----------------------------------------------
 
     def _on_send(button):
-        user_text = _unquote_shell_offer(input_textarea.value.strip())
+        user_text = input_textarea.value.strip()
         if not user_text:
             return
         # `!cmd`: the terminal's shell escape, on this surface too. It
@@ -18804,8 +18804,9 @@ def create_tab(ctx):
         # not a message to the model. Off the UI thread, because the gate
         # may ask the user and the command may take a while.
         from delfin.agent.repl_commands import SHELL_PREFIX as _SHELL_PREFIX
-        if user_text.startswith(_SHELL_PREFIX) and len(user_text) > 1:
-            _cmd = user_text[len(_SHELL_PREFIX):].strip()
+        _shell_text = _unquote_shell_offer(user_text)
+        if _shell_text.startswith(_SHELL_PREFIX) and len(_shell_text) > 1:
+            _cmd = _shell_text[len(_SHELL_PREFIX):].strip()
             input_textarea.value = ""
             _eng = state.get("engine")
 
