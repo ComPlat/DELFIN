@@ -3843,7 +3843,8 @@ def _mol3d_card_html(path, name_html: str,
     element may never become visible, and a card that then shows an
     empty grey box says less than "24 atoms, C12H10O2" did before.
     """
-    from delfin.dashboard.molecule_viewer import get_viewer_profile
+    from delfin.dashboard.molecule_viewer import (get_viewer_profile,
+                                                  molecule_view_style_js)
 
     try:
         if not get_viewer_profile().get("enabled", True):
@@ -3868,6 +3869,10 @@ def _mol3d_card_html(path, name_html: str,
     # than a fixed 260px box so a close inspection is actually possible;
     # `min(68vh, 1000px)` keeps it large without swallowing the chat.
     is_traj = payload["frames"] > 1
+    # The style the user set in the dashboard's viewer settings: the same
+    # value the Calculations tab draws with, so a molecule looks identical
+    # in the chat card and in the fullscreen lightbox.
+    style_js = molecule_view_style_js(get_viewer_profile()["style"])
     # A nav bar under every card: the Fullscreen button (right-aligned) lets
     # any structure/trajectory/orbital fill the viewport, and a trajectory
     # (frames > 1) additionally gets the play / step / reset controls. The
@@ -3910,6 +3915,8 @@ def _mol3d_card_html(path, name_html: str,
         f'data-mol3d-fmt="{payload["fmt"]}" '
         f'data-mol3d-frames="{payload["frames"]}" '
         f'data-mol3d-iso="{payload["iso"]:g}" '
+        f'data-mol3d-style="{_html.escape(style_js, quote=True)}" '
+        f'data-mol3d-title="{_html.escape(name_html, quote=True)}" '
         f'data-mol3d="{_html.escape(payload["text"], quote=True)}" '
         f'style="margin:6px 0;padding:6px;border:1px solid #e5e7eb;'
         f'border-radius:6px;background:#fff;">'
@@ -7711,6 +7718,7 @@ def create_tab(ctx):
         function build(card, stage) {
             var data = card.getAttribute('data-mol3d') || '';
             var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
+            var label = card.getAttribute('data-mol3d-title') || '';
             var frames = parseInt(card.getAttribute('data-mol3d-frames') || '1', 10);
             var iso = parseFloat(card.getAttribute('data-mol3d-iso') || '0.02');
             if (!(iso > 0)) iso = 0.02;
@@ -7760,6 +7768,9 @@ def create_tab(ctx):
             // in the attribute so a long transcript does not hold every
             // molecule twice.
             card.__delfinMol3DData = data;
+            card.__delfinMol3DTitle = label;
+            var st = card.getAttribute('data-mol3d-style');
+            if (st) { try { card.__delfinMol3DStyle = JSON.parse(st); } catch (e) {} }
             card.removeAttribute('data-mol3d');
             card.__delfinViewer = viewer;
             wireFullscreen(card, viewer, frames, iso);
@@ -7818,30 +7829,46 @@ def create_tab(ctx):
                 if (fs) { closeFs(); return; }
                 var txt = card.__delfinMol3DData;
                 if (!txt) return;
+                // Same layout language as the Calculations-tab fullscreen:
+                // white viewer surface, a dark toolbar bar with the file
+                // name on the left and Close on the right, the viewer
+                // filling everything below it, ESC closes.
                 fs = document.createElement('div');
                 fs.className = 'delfin-mol3d-fs';
                 fs.style.cssText = 'position:fixed;inset:0;z-index:20000;'
-                    + 'background:#0b0f14;display:flex;flex-direction:column;'
-                    + 'align-items:center;justify-content:center;';
-                var head = document.createElement('div');
-                head.style.cssText = 'position:absolute;top:0;right:0;'
-                    + 'padding:8px 14px;color:#fff;font:13px sans-serif;'
-                    + 'cursor:pointer;z-index:20001;';
-                head.textContent = 'Close \u2715';
-                head.onclick = closeFs;
+                    + 'display:flex;flex-direction:column;background:#fff;';
+                var bar = document.createElement('div');
+                bar.style.cssText = 'flex:0 0 auto;display:flex;'
+                    + 'align-items:center;gap:10px;padding:8px 14px;'
+                    + 'background:#111827;color:#fff;font:13px sans-serif;';
+                var title = document.createElement('div');
+                title.style.cssText = 'flex:1 1 auto;overflow:hidden;'
+                    + 'text-overflow:ellipsis;white-space:nowrap;';
+                title.textContent = (card.__delfinMol3DTitle || '');
+                var close = document.createElement('button');
+                close.type = 'button';
+                close.style.cssText = 'flex:0 0 auto;cursor:pointer;'
+                    + 'background:#374151;color:#fff;border:0;'
+                    + 'border-radius:4px;padding:4px 12px;font:13px sans-serif;';
+                close.textContent = 'Close \u2715 (Esc)';
+                close.onclick = closeFs;
+                bar.appendChild(title);
+                bar.appendChild(close);
                 var big = document.createElement('div');
-                big.style.cssText =
-                    'width:94vw;height:90vh;position:relative;';
+                big.style.cssText = 'flex:1 1 auto;min-height:0;'
+                    + 'position:relative;';
                 // A lightbox fullscreen re-creates the viewer rather than
                 // moving the DOM node: 3Dmol renders into the stage's box
                 // it was created with, and moving the node leaves a blank
                 // canvas. Rebuilding from the saved text is cheap and the
                 // trajectory frame index is copied back.
                 var f = viewer.getFrame();
-                var v2 = $3Dmol.createViewer(big);
-                v2.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                var v2 = $3Dmol.createViewer(big,
+                    {backgroundColor: 'white'});
+                v2.setStyle({}, card.__delfinMol3DStyle ||
+                    {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                fs.appendChild(bar);
                 fs.appendChild(big);
-                fs.appendChild(head);
                 document.body.appendChild(fs);
                 var f2 = card.getAttribute('data-mol3d-fmt');
                 if (f2 === 'cube') {
@@ -7865,6 +7892,9 @@ def create_tab(ctx):
                 try { p.removeChild(fs); } catch (e) {}
                 fs = null;
             }
+            document.addEventListener('keydown', function(ev) {
+                if (ev.key === 'Escape') closeFs();
+            });
         }
 
 
