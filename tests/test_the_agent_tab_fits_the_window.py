@@ -173,3 +173,59 @@ def test_tab_takes_the_suggestion_behind_its_own_guard():
     assert i < guard, "the Tab listener must be installed before the guard"
     assert "document.addEventListener('keydown'" in src[i:guard]
     assert ", true);" in src[i:guard]
+
+
+def _tab_and_ctx(tmp_path):
+    from delfin.agent import scheduler as S
+    from delfin.dashboard import tab_agent
+    from delfin.dashboard.context import DashboardContext
+
+    S._GLOBAL = S.Scheduler(path=tmp_path / "cron.json")
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir(exist_ok=True)
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "archive",
+                           office_dir=tmp_path / "office")
+    sent = []
+    ctx.run_js = lambda script, **kw: sent.append(script)
+    tab = tab_agent.create_tab(ctx)
+    return (tab[0] if isinstance(tab, tuple) else tab), ctx, sent
+
+
+def test_the_window_measure_goes_out_with_the_startup_scripts(tmp_path):
+    """Sent through run_js, the script that sizes the tab never ran: the
+    next run_js during startup cleared the shared output before the
+    browser executed it, and every page used the 140px fallback (measured
+    in a real page, 2026-10-20: window.__delfinAgentTop undefined)."""
+    _root, ctx, sent = _tab_and_ctx(tmp_path)
+    startup = [p for p in ctx.init_js_parts if "__delfinAgentTop" in p]
+    assert len(startup) == 1
+    assert not any("__delfinAgentTop" in s for s in sent)
+    # Voila scrolls #rendered_cells, not the window: the top is taken in
+    # the scrollers' coordinates, and their overflow is trimmed.
+    script = startup[0]
+    assert "window.scrollY" not in script
+    assert "scrollTop" in script and "scrollHeight-" in script
+
+
+def test_what_runs_in_the_background_sits_in_the_chat_not_in_the_details(tmp_path):
+    root, _ctx, _sent = _tab_and_ctx(tmp_path)
+    frame = _frame(root)
+    box = _find(frame, lambda n: "delfin-agent-background" in _classes(n))
+    assert box is not None
+    below = root.children[-1]
+    assert _find(below, lambda n: "delfin-agent-background" in _classes(n)) is None
+    assert _find(below, lambda n: n is box.children[1]) is None
+    # Nothing out: no row, not an empty header.
+    assert box.layout.display == "none"
+    # It stays while the reader is up in the history: not a chat-foot row.
+    assert "delfin-agent-chat-foot" not in _classes(box)
+
+
+def test_a_short_window_does_not_make_the_page_scroll():
+    """At 1366x480 the 420px floor of the tab and the 45vh floor of the
+    chat made the page scroll by 60px (real page, 2026-10-20)."""
+    from delfin.dashboard.tab_agent import _AGENT_CSS
+    css = " ".join(_AGENT_CSS.split())
+    assert "min-height: 420px" not in css
+    assert "min-height: min(45vh, calc(100vh - 340px));" in css

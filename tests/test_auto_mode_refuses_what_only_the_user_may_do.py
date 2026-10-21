@@ -270,6 +270,10 @@ def test_claim_findings_use_verification_claims_when_present(monkeypatch):
 
     fake.judge = judge
     monkeypatch.setitem(sys.modules, "delfin.agent.verification_claims", fake)
+    # ``from . import verification_claims`` reads the package attribute once
+    # the real module is loaded (it is on main), so the stand-in goes there too.
+    import delfin.agent as _pkg
+    monkeypatch.setattr(_pkg, "verification_claims", fake, raising=False)
     out, source = ag.claim_findings("it is verified", check_command="make check",
                                     check_exit=2, edited=True)
     assert source == "verification_claims"

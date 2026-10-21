@@ -17,7 +17,7 @@
 #
 # Opt-out for emergencies:
 #     git commit --no-verify  (but please don't — these exist because
-#     silent regressions cost Tilman and Jan many lost CPU-hours)
+#     silent regressions cost two users many lost CPU-hours)
 
 set -e
 

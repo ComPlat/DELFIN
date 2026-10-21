@@ -158,12 +158,15 @@ def test_an_upload_is_asked(proxy, web, tmp_path):
     assert len(yes2.asked) == 1 and "upload" in yes2.asked[0][2].lower()
 
 
-def test_a_small_post_to_an_allowed_host_passes_unattended(proxy, web, tmp_path):
-    """The model call of an unattended run: no question, no refusal."""
+def test_a_small_post_to_an_allowed_host_is_refused_unattended(proxy, web, tmp_path):
+    """A write to a known host with nobody to ask is an upload: refused,
+    naming the setting (test_an_unattended_upload_is_refused_unless_the_
+    host_is_named.py). The model call of an unattended run is the next
+    test: the endpoint the session registered still passes."""
     out = _via(proxy, _perms(tmp_path, mode="bypassPermissions"),
                f"http://allowed.test:{web.server_address[1]}/v1/chat",
                data=b'{"messages": []}')
-    assert out == "got 16", out
+    assert out.startswith("403") and "upload_domains" in out, out
 
 
 def test_the_endpoint_the_session_uses_is_allowed(proxy, web, tmp_path):
@@ -369,6 +372,10 @@ def test_the_configured_hosts_and_direct_endpoints(monkeypatch, tmp_path):
         "ssh://git@other.example.test:2222/team/repo.git"]})
     monkeypatch.setattr(EP, "slurm_controllers", lambda: ["10.0.0.1:6817"])
     monkeypatch.setattr(EP, "_resolve", lambda host, port: [f"{host}:{port}"])
+    # An SSH remote gets a direct route only for a host a setting names
+    # (tests/test_a_workspace_remote_does_not_widen_the_egress.py).
+    monkeypatch.setattr(EP, "_settings", lambda: {"allowed_domains": [
+        "ssh.example.test", "other.example.test"]})
     for var in [v for v in os.environ if v.upper().endswith("LICENSE_FILE")]:
         monkeypatch.delenv(var)
     monkeypatch.setenv("LM_LICENSE_FILE", "27000@lic.example.test:/opt/lic.dat")

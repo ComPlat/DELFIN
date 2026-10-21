@@ -342,6 +342,19 @@ class _Forwarder:
                     pass
 
 
+# Package managers keep their cache under $HOME (~/.npm, ~/.cache/uv), which
+# a caged command may not write: npm then fails before it fetches anything
+# (measured 2026-10-19, "Log files were not written ... /home/.../.npm/_logs").
+# Each gets a directory in the command's private temp dir instead. pip is
+# not here: it warns and carries on without its cache. The same pairs are
+# set by the bubblewrap and Seatbelt routes (api_client).
+PACKAGE_CACHE_DIRS = (
+    ("npm_config_cache", "npm-cache"),
+    ("YARN_CACHE_FOLDER", "yarn-cache"),
+    ("npm_config_store_dir", "pnpm-store"),
+    ("UV_CACHE_DIR", "uv-cache"),
+)
+
 _PROXY_VARS = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
 _UNSET_VARS = ("no_proxy", "NO_PROXY", "all_proxy", "ALL_PROXY",
                "SSH_AUTH_SOCK", "SSH_AGENT_PID", "TMUX", "TMUX_PANE", "STY",
@@ -588,6 +601,8 @@ def main(argv: list[str]) -> int:
         write.append(tmpdir)
         for key in ("TMPDIR", "TMP", "TEMP"):
             os.environ[key] = tmpdir
+        for key, sub in PACKAGE_CACHE_DIRS:
+            os.environ[key] = os.path.join(tmpdir, sub)
     roots = [w for w in write if w]
     write.append("/dev")
     try:

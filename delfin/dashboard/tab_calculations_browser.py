@@ -32,8 +32,10 @@ from .input_processing import (
     contains_metal,
     is_smiles,
 )
+from . import upload_limits as _upload_limits
 from .helpers import (
-    disable_spellcheck, js_string_literal, save_neb_trajectory_csv,
+    disable_spellcheck, image_data_uri, js_string_literal,
+    neutralise_link_targets, save_neb_trajectory_csv,
     save_neb_trajectory_plot_png,
 )
 from . import docx_view as _docx
@@ -2359,15 +2361,42 @@ def create_tab(ctx):
             raise ValueError('Path must remain inside explorer root.') from exc
         return resolved
 
+    def _calc_link_leaves_root(path):
+        """True when *path* resolves outside the explorer root.
+
+        A folder or file reached through a link that points out of the root
+        is not entered or shown (every write path already refuses it, see
+        _calc_resolve_within_root); DELFIN_BROWSER_FOLLOW_LINKS=1 allows it.
+        """
+        if os.environ.get('DELFIN_BROWSER_FOLLOW_LINKS', '').strip() == '1':
+            return False
+        try:
+            Path(path).resolve().relative_to(_calc_dir().resolve())
+            return False
+        except (ValueError, OSError, RuntimeError):
+            return True
+
     def _calc_extract_uploaded_zip(target_dir, filename, content):
         archive_name = str(filename or '').replace('\\', '/').split('/')[-1]
         archive_stem = Path(archive_name).stem or 'upload'
+        payload = bytes(content)
+        _upload_limits.check_upload_size(len(payload), archive_name)
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            _upload_limits.check_archive(archive.infolist(), archive_name)
         extract_root = _calc_next_available_dir(target_dir, archive_stem)
         extract_root = _calc_resolve_within_root(extract_root)
         extract_root.mkdir(parents=False, exist_ok=False)
+        try:
+            return _calc_unpack_into(extract_root, archive_name, payload)
+        except BaseException:
+            # Nothing half-unpacked stays behind: an archive over a limit,
+            # or one with an unsafe entry, leaves the tree as it was.
+            _upload_limits.remove_tree(extract_root)
+            raise
 
+    def _calc_unpack_into(extract_root, archive_name, payload):
         extracted_files = []
-        payload = bytes(content)
+        budget = _upload_limits.Budget(name=archive_name)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             file_entries = [info for info in archive.infolist() if not info.is_dir()]
             part_lists = []
@@ -2394,8 +2423,8 @@ def create_tab(ctx):
                 destination = _calc_resolve_within_root(extract_root.joinpath(*rel_parts))
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination = _calc_next_available_path(destination.parent, destination.name)
-                with archive.open(info, 'r') as src, destination.open('wb') as dst:
-                    shutil.copyfileobj(src, dst)
+                with archive.open(info, 'r') as src:
+                    _upload_limits.write_new_file(destination, src, budget)
                 extracted_files.append(destination)
 
         return extract_root, extracted_files
@@ -2408,6 +2437,7 @@ def create_tab(ctx):
             content = entry['content'] if isinstance(entry, dict) else getattr(entry, 'content', b'')
             if not name:
                 continue
+            _upload_limits.check_upload_size(len(content), str(name))
             if str(name).lower().endswith('.zip'):
                 extract_root, extracted_files = _calc_extract_uploaded_zip(target_dir, name, content)
                 extracted_archives.append((extract_root, extracted_files))
@@ -2415,7 +2445,7 @@ def create_tab(ctx):
             destination = _calc_next_available_path(target_dir, name)
             destination = _calc_resolve_within_root(destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(bytes(content))
+            _upload_limits.write_new_bytes(destination, bytes(content))
             saved_files.append(destination)
         return saved_files, extracted_archives
 
@@ -2483,10 +2513,11 @@ def create_tab(ctx):
         if filename.lower().endswith('.zip'):
             extract_root, extracted_files = _calc_extract_uploaded_zip(parent_dir, filename, payload)
             return {'kind': 'zip', 'path': extract_root, 'count': len(extracted_files)}
+        _upload_limits.check_upload_size(len(payload), filename)
         destination = _calc_next_available_path(parent_dir, filename)
         destination = _calc_resolve_within_root(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(payload)
+        _upload_limits.write_new_bytes(destination, payload)
         return {'kind': 'file', 'path': destination, 'count': 1}
 
     def _calc_parse_staged_upload_target_dir(raw_target_rel):
@@ -2526,6 +2557,7 @@ def create_tab(ctx):
             raise ValueError('Staged upload path escapes batch directory.') from exc
         if not payload_path.is_file():
             raise FileNotFoundError(f'Staged upload file not found: {payload_path.name}')
+        _upload_limits.check_upload_size(payload_path.stat().st_size, payload_path.name)
         return payload_path.read_bytes()
 
     def _calc_consume_staged_upload_batch(batch_dir):
@@ -2682,6 +2714,7 @@ def create_tab(ctx):
             batch['expected_files'] = max(batch['expected_files'], batch_total)
             batch['target_dir'] = target_dir
 
+            _upload_limits.check_chunk_plan(chunk_total, 0, rel_parts[-1])
             file_state = upload_bridge_state['files'].setdefault(
                 upload_id,
                 {
@@ -2696,6 +2729,15 @@ def create_tab(ctx):
                 raise ValueError('Upload chunk count changed during transfer.')
             if chunk_index < 0 or chunk_index >= chunk_total:
                 raise ValueError('Invalid upload chunk index.')
+            previous = file_state['chunks'][chunk_index]
+            file_state['received'] = (file_state.get('received', 0)
+                                      - len(previous or '') + len(chunk_data))
+            try:
+                _upload_limits.check_chunk_plan(
+                    chunk_total, file_state['received'], rel_parts[-1])
+            except ValueError:
+                upload_bridge_state['files'].pop(upload_id, None)
+                raise
             file_state['chunks'][chunk_index] = chunk_data
 
             if all(part is not None for part in file_state['chunks']):
@@ -2762,6 +2804,7 @@ def create_tab(ctx):
             batch['expected_files'] = max(batch['expected_files'], batch_total)
             batch['target_dir'] = target_dir
 
+            _upload_limits.check_chunk_plan(chunk_total, 0, rel_parts[-1])
             file_state = upload_bridge_state['files'].setdefault(
                 upload_id,
                 {
@@ -2776,6 +2819,15 @@ def create_tab(ctx):
                 raise ValueError('Upload chunk count changed during transfer.')
             if chunk_index < 0 or chunk_index >= chunk_total:
                 raise ValueError('Invalid upload chunk index.')
+            previous = file_state['chunks'][chunk_index]
+            file_state['received'] = (file_state.get('received', 0)
+                                      - len(previous or '') + len(chunk_data))
+            try:
+                _upload_limits.check_chunk_plan(
+                    chunk_total, file_state['received'], rel_parts[-1])
+            except ValueError:
+                upload_bridge_state['files'].pop(upload_id, None)
+                raise
             file_state['chunks'][chunk_index] = chunk_data
 
             if all(part is not None for part in file_state['chunks']):
@@ -3315,14 +3367,14 @@ def create_tab(ctx):
 
     def _calc_preselect_title_for_mode(mode, csv_name):
         if mode == 'complete_preselection':
-            return f'<b>Preselection:</b> {csv_name}'
+            return f'<b>Preselection:</b> {_html.escape(str(csv_name))}'
         if mode == 'complete_visualize':
-            return f'<b>Visualize:</b> {csv_name}'
+            return f'<b>Visualize:</b> {_html.escape(str(csv_name))}'
         if mode == 'preselected_visualize':
-            return f'<b>Visualize (Preselected):</b> {csv_name}'
+            return f'<b>Visualize (Preselected):</b> {_html.escape(str(csv_name))}'
         if mode == 'rejected_visualize':
-            return f'<b>Visualize (Rejected):</b> {csv_name}'
-        return f'<b>Visualize:</b> {csv_name}'
+            return f'<b>Visualize (Rejected):</b> {_html.escape(str(csv_name))}'
+        return f'<b>Visualize:</b> {_html.escape(str(csv_name))}'
 
     def _calc_preselect_load(csv_path, mode='complete_preselection'):
         entries = _calc_parse_mutation_csv(csv_path)
@@ -3404,11 +3456,6 @@ def create_tab(ctx):
             display(HTML(f"""
                 <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
                 <script>
-                if (typeof $3Dmol === "undefined") {{
-                    var _s = document.createElement("script");
-                    _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-                    document.head.appendChild(_s);
-                }}
                 (function() {{
                     var tries = 0;
                     function initViewer() {{
@@ -4183,11 +4230,6 @@ def create_tab(ctx):
             <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
         </div>
         <script>
-        if (typeof $3Dmol === "undefined") {{
-            var _s = document.createElement("script");
-            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-            document.head.appendChild(_s);
-        }}
         (function() {{
             var tries = 0;
             function initViewer() {{
@@ -4926,8 +4968,8 @@ def create_tab(ctx):
 
                 calc_content_area.value = (
                     f'<span style="color:#2e7d32;">NMR spectrum saved: '
-                    f'<code>{out_png.name}</code></span><br><br>'
-                    f'<img src="files/{out_png.relative_to(selected_path.parent)}" '
+                    f'<code>{_html.escape(out_png.name)}</code></span><br><br>'
+                    f'<img src="files/{_html.escape(str(out_png.relative_to(selected_path.parent)), quote=True)}" '
                     f'style="max-width:100%;" /><br><br>'
                     f'<pre style="font-size:11px;">{table_html}</pre>'
                 )
@@ -7255,11 +7297,6 @@ def create_tab(ctx):
             <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
         </div>
         <script>
-        if (typeof $3Dmol === "undefined") {{
-            var _s = document.createElement("script");
-            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-            document.head.appendChild(_s);
-        }}
         (function() {{
             var tries = 0;
             function initViewer() {{
@@ -7458,11 +7495,6 @@ def create_tab(ctx):
         html = f"""
         {viewer_container}
         <script>
-        if (typeof $3Dmol === "undefined") {{
-            var _s = document.createElement("script");
-            _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-            document.head.appendChild(_s);
-        }}
         (function() {{
             var tries = 0;
             function initViewer() {{
@@ -7565,11 +7597,6 @@ def create_tab(ctx):
                     <div id="{viewer_id}" style="width:100%;height:{CALC_MOL_SIZE}px;position:relative;"></div>
                 </div>
                 <script>
-                if (typeof $3Dmol === "undefined") {{
-                    var _s = document.createElement("script");
-                    _s.src = "https://3Dmol.org/build/3Dmol-min.js";
-                    document.head.appendChild(_s);
-                }}
                 (function() {{
                     var tries = 0;
                     function initViewer() {{
@@ -8440,7 +8467,7 @@ def create_tab(ctx):
                     where = f'{hit.sheet} · {where}'
             calc_search_result.value = (
                 f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
-                f'<span style="color:#555;">({where})</span>{note_html}'
+                f'<span style="color:#555;">({_html.escape(str(where))})</span>{note_html}'
             )
             return
         if state.get('search_kind') == 'docx':
@@ -8453,7 +8480,7 @@ def create_tab(ctx):
                          else f'paragraph {hit.block + 1}')
             calc_search_result.value = (
                 f'<b>{state["current_match"] + 1}/{len(state["search_spans"])}</b> '
-                f'<span style="color:#555;">({where})</span>{note_html}'
+                f'<span style="color:#555;">({_html.escape(str(where))})</span>{note_html}'
             )
             return
         start, _ = state['search_spans'][state['current_match']]
@@ -9299,7 +9326,7 @@ def create_tab(ctx):
                          else f'{len(targets)} selected items')
                 calc_download_status.value = (
                     '<span style="color:#d32f2f;">'
-                    f'{_what} too large to download '
+                    f'{_html.escape(str(_what))} too large to download '
                     f'({_calc_format_bytes(_raw)} before compression). '
                     f'Limit: {_calc_format_bytes(CALC_DOWNLOAD_MAX_BYTES)}. '
                     'Select less, or a subfolder.</span>'
@@ -9417,7 +9444,7 @@ def create_tab(ctx):
         if len(report_targets) == 1:
             target_label = _calc_report_target_label(report_targets[0])
             calc_report_status.value = (
-                f'<span style="color:blue;">Generating report in {target_label}...</span>'
+                f'<span style="color:blue;">Generating report in {_html.escape(str(target_label))}...</span>'
             )
         else:
             calc_report_status.value = (
@@ -9433,12 +9460,12 @@ def create_tab(ctx):
                     target_label = _calc_report_target_label(target_dir)
                     if len(report_targets) == 1:
                         calc_report_status.value = (
-                            f'<span style="color:blue;">Generating report in {target_label}...</span>'
+                            f'<span style="color:blue;">Generating report in {_html.escape(str(target_label))}...</span>'
                         )
                     else:
                         calc_report_status.value = (
                             f'<span style="color:blue;">Generating report {idx}/{len(report_targets)} '
-                            f'in {target_label}...</span>'
+                            f'in {_html.escape(str(target_label))}...</span>'
                         )
 
                     try:
@@ -9467,9 +9494,9 @@ def create_tab(ctx):
                         parts.append(f'{len(timeouts)} timeout')
                     detail = ''
                     if failures:
-                        detail = f' First error in {failures[0][0]}: {_html.escape(failures[0][1])}'
+                        detail = f' First error in {_html.escape(str(failures[0][0]))}: {_html.escape(failures[0][1])}'
                     elif timeouts:
-                        detail = f' Timeout in {timeouts[0]}.'
+                        detail = f' Timeout in {_html.escape(str(timeouts[0]))}.'
                     calc_report_status.value = (
                         f'<span style="color:#d32f2f;">Report run finished: {", ".join(parts)}.'
                         f'{detail}</span>'
@@ -9477,7 +9504,7 @@ def create_tab(ctx):
                 else:
                     if len(successes) == 1:
                         calc_report_status.value = (
-                            f'<span style="color:green;">Report generated in {successes[0]}!</span>'
+                            f'<span style="color:green;">Report generated in {_html.escape(str(successes[0]))}!</span>'
                         )
                     else:
                         calc_report_status.value = (
@@ -9835,7 +9862,7 @@ def create_tab(ctx):
                 calc_render_content(scroll_to='top')
             except Exception as e:
                 calc_override_status.value = (
-                    f'<span style="color:#d32f2f;">Error saving CONTROL.txt: {e}</span>'
+                    f'<span style="color:#d32f2f;">Error saving CONTROL.txt: {_html.escape(str(e))}</span>'
                 )
                 return
 
@@ -9901,22 +9928,22 @@ def create_tab(ctx):
             if result.returncode == 0:
                 if not is_recalc:
                     calc_override_status.value = (
-                        f'<span style="color:#388e3c;">Submitted from {workspace_root} '
+                        f'<span style="color:#388e3c;">Submitted from {_html.escape(str(workspace_root))} '
                         f'(Override: {_html.escape(override_value)}): '
-                        f'{result.stdout.strip()}</span>'
+                        f'{_html.escape(result.stdout.strip())}</span>'
                     )
                 else:
                     recalc_label = 'Smart Recalc' if is_smart_recalc else 'Recalc'
                     calc_override_status.value = (
-                        f'<span style="color:#388e3c;">Submitted {recalc_label} from {workspace_root}: '
-                        f'{result.stdout.strip()}</span>'
+                        f'<span style="color:#388e3c;">Submitted {recalc_label} from {_html.escape(str(workspace_root))}: '
+                        f'{_html.escape(result.stdout.strip())}</span>'
                     )
             else:
                 calc_override_status.value = (
-                    f'<span style="color:#d32f2f;">Error: {result.stderr.strip()}</span>'
+                    f'<span style="color:#d32f2f;">Error: {_html.escape(result.stderr.strip())}</span>'
                 )
         except Exception as e:
-            calc_override_status.value = f'<span style="color:#d32f2f;">Error: {e}</span>'
+            calc_override_status.value = f'<span style="color:#d32f2f;">Error: {_html.escape(str(e))}</span>'
 
     def calc_on_recalc_click(button):
         if not state['selected_inp_path'] or not state['selected_inp_path'].exists():
@@ -12544,6 +12571,11 @@ def create_tab(ctx):
         # Directories are only navigated via dblclick, not here.
         if full_path.is_dir():
             return
+        if _calc_link_leaves_root(full_path):
+            calc_set_message(
+                f'{name} is a link to a file outside the explorer root and is '
+                'not shown (DELFIN_BROWSER_FOLLOW_LINKS=1 allows it).')
+            return
 
         if _is_archive_tab and _calc_is_table_preset_path(full_path):
             try:
@@ -12707,7 +12739,7 @@ def create_tab(ctx):
                 else:
                     calc_file_info.value = f'<b>{_html.escape(name)}</b> (could not parse)'
             except Exception as e:
-                calc_file_info.value = f'<b>{_html.escape(name)}</b> (error: {e})'
+                calc_file_info.value = f'<b>{_html.escape(name)}</b> (error: {_html.escape(str(e))})'
             return
 
         # --- XYZ file (with trajectory support) ---
@@ -13091,7 +13123,7 @@ def create_tab(ctx):
                             img_data = img_stream.read()
                             content_type = image.content_type if image.content_type else 'image/png'
                             b64 = base64.b64encode(img_data).decode('ascii')
-                            return {'src': f'data:{content_type};base64,{b64}'}
+                            return {'src': image_data_uri(content_type, b64)}
                     except Exception:
                         return {'src': ''}
 
@@ -13100,7 +13132,7 @@ def create_tab(ctx):
                         docx_file,
                         convert_image=mammoth.images.img_element(convert_image_to_base64),
                     )
-                    html_content = result.value
+                    html_content = neutralise_link_targets(result.value)
 
                 styled_html = (
                     '<div style="font-family: Calibri, Arial, sans-serif; line-height: 1.5;'
@@ -13358,6 +13390,14 @@ def create_tab(ctx):
         if not chosen_label or full_path is None:
             return
         name = _calc_label_to_name(chosen_label)
+        if full_path.is_dir() and _calc_link_leaves_root(full_path):
+            _calc_set_ops_status(
+                f'<code>{_html.escape(name)}</code> is a link to a folder outside '
+                'the explorer root and is not opened '
+                '(DELFIN_BROWSER_FOLLOW_LINKS=1 allows it).',
+                color='#d32f2f',
+            )
+            return
         if full_path.is_dir():
             _calc_hide_rename_prompt()
             try:

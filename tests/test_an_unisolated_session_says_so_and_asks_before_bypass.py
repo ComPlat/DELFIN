@@ -479,6 +479,16 @@ def _interactive(monkeypatch, tmp_path, argv, answer):
         def run(self, positional):
             return 0
 
+        def leave_held(self):
+            import contextlib
+            return contextlib.nullcontext(self)
+
+        def begin_leaving(self, code, *, terminal_gone=False):
+            pass
+
+        def leave_stages(self):
+            return None         # session-end stages inline
+
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(launch_guard, "inspect_launch_dir",
                         lambda *a, **k: _Report())
@@ -552,7 +562,7 @@ def test_interactive_isolated_bypass_asks_nothing(
     assert "[y/N]" not in capsys.readouterr().out
 
 
-# -- the unattended fallback: the classifier decides off-list commands -------
+# -- the unattended fallback: off-list commands are refused ----------------
 
 #: Harmless and off the auto-allow list (asserted in the test).
 _OFF_LIST = "expr 2 + 3"
@@ -575,50 +585,34 @@ def _run(perms, cmd=_OFF_LIST):
     return A._DocToolExecutor().execute("bash", {"command": cmd}, perms)
 
 
-def test_the_fallback_runs_an_off_list_command_the_classifier_allows(
-        monkeypatch, tmp_path):
+def _down(prompt, model):
+    raise ConnectionError("endpoint down")
+
+
+@pytest.mark.parametrize("answer", [
+    "DECISION: allow\nREASON: arithmetic, harmless.",
+    "DECISION: refuse\nREASON: not part of the task.",
+    "DECISION: ask\nREASON: unclear.",
+    "raise", None])
+def test_the_fallback_refuses_an_off_list_command_whatever_the_classifier_says(
+        monkeypatch, tmp_path, answer):
+    """No layer holds the command and nobody reads it: refused, naming
+    what works, without consulting the classifier
+    (test_an_unattended_run_without_isolation_runs_only_the_auto_allow_
+    list.py)."""
     seen = []
-
-    def _allow(prompt, model):
-        seen.append(prompt)
-        return "DECISION: allow\nREASON: arithmetic, harmless."
-
-    out = _run(_fallback_perms(monkeypatch, tmp_path, _allow))
-    assert seen, "the classifier was not asked"
-    assert "5" in out and "blocked" not in out, out
-
-
-def test_the_fallback_refuses_what_the_classifier_refuses(
-        monkeypatch, tmp_path):
-    def _refuse(prompt, model):
-        return "DECISION: refuse\nREASON: not part of the task."
-
-    out = _run(_fallback_perms(monkeypatch, tmp_path, _refuse))
-    assert "blocked" in out and "not part of the task" in out, out
-    assert "read_file" in out
-
-
-def test_the_fallback_refuses_in_doubt(monkeypatch, tmp_path):
-    def _ask(prompt, model):
-        return "DECISION: ask\nREASON: unclear."
-
-    out = _run(_fallback_perms(monkeypatch, tmp_path, _ask))
-    assert "blocked" in out and "unclear" in out, out
-
-
-def test_the_fallback_refuses_when_the_classifier_raises(
-        monkeypatch, tmp_path):
-    def _down(prompt, model):
-        raise ConnectionError("endpoint down")
-
-    out = _run(_fallback_perms(monkeypatch, tmp_path, _down))
-    assert "blocked" in out and "read_file" in out, out
-
-
-def test_the_fallback_refuses_without_a_classifier(monkeypatch, tmp_path):
-    out = _run(_fallback_perms(monkeypatch, tmp_path, None))
-    assert "blocked" in out and "no action classifier" in out, out
-    assert "read_file" in out
+    if answer is None:
+        runner = None
+    elif answer == "raise":
+        runner = _down
+    else:
+        def runner(prompt, model, _a=answer):
+            seen.append(prompt)
+            return _a
+    out = _run(_fallback_perms(monkeypatch, tmp_path, runner))
+    assert "blocked" in out and "auto-allow" in out, out
+    assert "read_file" in out and "run_tests" in out, out
+    assert seen == []
 
 
 def test_the_fallback_keeps_the_hard_refusals(monkeypatch, tmp_path):

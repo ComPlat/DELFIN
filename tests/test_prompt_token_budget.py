@@ -249,7 +249,13 @@ def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
         # principles INTO the refusal addendum, where the budget sees them
         # (71 tokens, measured). The prompt as a whole got smaller by it:
         # the principles lost ~130 tokens, which the budget does not count.
-        ("solo_agent", "solo", ["solo_agent"], 11555),
+        # 11555 -> 11605 (2026-10-19): the go-ahead / default / real-choice
+        # rule of the autonomy section, 50 tokens over the head's slack.
+        # Session 78c36f8c: after 4 of 7 go-aheads no tool acted, and every
+        # choice came as a prose list while ask_user_question was bound.
+        # In the stable head, not behind a trigger: it applies to every
+        # turn that ends, which is every turn.
+        ("solo_agent", "solo", ["solo_agent"], 11605),
         ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
     ],
 )

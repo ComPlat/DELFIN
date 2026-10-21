@@ -32,7 +32,7 @@ def test_two_threads_saving_at_once_both_land(tmp_path, monkeypatch):
     facts = [
         "ORCA scratch files go to the node-local disk under /scratch",
         "The NMR training set holds eight hundred samples of thirteen shifts each",
-        "Jerome works on carbon dioxide coordination at metal centres",
+        "A colleague works on carbon dioxide coordination at metal centres",
         "Continuous integration runs only on a push to the main branch",
         "The GLM endpoint answers slowly before noon on busy days",
         "Uploads from the dashboard land in agent_workspace/uploads",

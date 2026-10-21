@@ -29,7 +29,7 @@ import pytest
 pytest.importorskip("pexpect")
 pytest.importorskip("termios")
 
-from agent_terminal_probes.pty_chat import Chat         # noqa: E402
+from agent_terminal_probes.pty_chat import Chat, close_all  # noqa: E402
 
 DEFAULT = ("--permission-mode", "default")
 BYPASS = ("--permission-mode", "bypassPermissions", "--unattended")
@@ -48,8 +48,7 @@ def chat(tmp_path):
         return session
 
     yield _open
-    for session in opened:
-        session.close()
+    close_all(opened)
 
 
 def _status(session: Chat) -> str:

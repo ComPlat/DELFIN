@@ -66,7 +66,7 @@ def test_no_allow_rule_can_be_stored(tmp_path):
         source_role="user",
     )
     m.update_from_user_message(
-        "you may work in /home/jerome/projects and write files there",
+        "you may work in /home/user/projects and write files there",
         source_role="user",
     )
     m.update_from_user_message(

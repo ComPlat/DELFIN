@@ -110,7 +110,7 @@ def _subagent_limits() -> dict:
     """Resolve per-run subagent limits from settings, with fallbacks.
 
     ``settings["agent"]["subagents"]`` may set ``max_tool_calls``,
-    ``max_wall_s`` and ``max_output_tokens`` — so Jerome can tune how deep and
+    ``max_wall_s`` and ``max_output_tokens`` — so a user can tune how deep and
     how long a delegated subagent may run from the dashboard, without code
     changes. Missing/zero values fall back to the module defaults above.
     """
@@ -2808,7 +2808,10 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
     try:
         narrowed = _narrow_allowed_tools(parent_perms, preset_tools)
     except Exception:
-        narrowed = None
+        # A list was given and could not be applied: the child may call
+        # nothing, never everything. Without a list nothing was narrowed.
+        narrowed = (frozenset({_PRESET_ALLOWS_NOTHING})
+                    if tuple(preset_tools or ()) else None)
     # Plan mode admits web_search for a delegate whose list names it
     # (api_client._PLAN_DELEGATE_TOOLS). A parent in plan mode may not
     # search, so its delegate is not handed the search either -- the same
@@ -2865,15 +2868,32 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
                 return dataclasses.replace(
                     parent_perms, mode=mode, workspace=workspace, **reduced)
             return dataclasses.replace(parent_perms, mode=mode, **reduced)
-        except Exception:
-            pass
+        except Exception as exc:
+            if reduced:
+                # The restriction cannot be carried by this type. Dropping
+                # it would hand the child the parent's full surface.
+                raise SubagentPermissionsError(
+                    "the sub-agent's permissions could not be built with "
+                    "its role's tool list (" + type(exc).__name__ + "), so "
+                    "it was not started") from exc
         try:
             if workspace is not None:
                 return dataclasses.replace(
                     parent_perms, mode=mode, workspace=workspace)
             return dataclasses.replace(parent_perms, mode=mode)
-        except Exception:
-            return parent_perms
+        except Exception as exc:
+            # Not the parent's own object: it carries the parent's mode,
+            # not the clamped one, and the child would write into it.
+            raise SubagentPermissionsError(
+                "the sub-agent's permissions could not be copied from the "
+                "parent's (" + type(exc).__name__ + "), so it was not "
+                "started") from exc
+
+
+class SubagentPermissionsError(RuntimeError):
+    """``_derive_perms`` could not build a child's permissions that hold
+    the role's tool list and the clamped mode. ``run_subagent`` reports it
+    as the result's error; no child runs."""
 
 
 def _cheap_tier_enabled() -> bool:
@@ -3143,9 +3163,20 @@ def run_subagent(
             worktree_info = None
 
     sub_workspace = worktree_info.path if worktree_info else None
-    sub_perms = _derive_perms(
-        parent_perms, preset.mode, workspace=sub_workspace,
-        preset_tools=getattr(preset, "tools", ()) or ())
+    try:
+        sub_perms = _derive_perms(
+            parent_perms, preset.mode, workspace=sub_workspace,
+            preset_tools=getattr(preset, "tools", ()) or ())
+    except SubagentPermissionsError as exc:
+        if worktree_info is not None:
+            try:
+                from .worktree import exit_worktree as _exit_wt
+                _exit_wt(worktree_info, keep_if_changed=True)
+            except Exception:
+                pass
+        return SubagentResult(
+            subagent_type=subagent_type, description=description,
+            final_text="", error=f"refused: {exc}")
 
     # Run against an isolated SHALLOW COPY of the parent client: it shares the
     # same underlying OpenAI client (endpoint/key/model — thread-safe to share)

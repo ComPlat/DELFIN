@@ -1,11 +1,15 @@
 name: CI
 
-# The gate for every push to main and every pull request. The suite is fully
-# mocked (no live KIT/Ollama calls), so no secrets are required.
+# The gate for every push to main, every pull request and every merge-queue
+# group. The suite is fully mocked (no live KIT/Ollama calls), so no secrets
+# are required.
 #
 # Everything in this file either gates or is cheap enough to sit beside what
-# gates: `tests` (fast suite, required), `lint` (required), `audit`, and
-# `coverage` on the nightly schedule. What that buys is a run conclusion that
+# gates: `tests` (fast suite), `lint`, `container`, `toolchains` and
+# `reference-env` (all five required on main, docs/MAIN_PROTECTION.md), and
+# `coverage` on the nightly schedule. The dependency audit is in audit.yml:
+# it fails on a published advisory, which is news about upstream, not about
+# the change under review. What that buys is a run conclusion that
 # means something — CI green says the gate passed, and nothing else in here
 # can take that away.
 #
@@ -20,8 +24,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A merge queue tests the combination it is about to merge on a
+  # gh-readonly-queue/main/* ref and waits for every required check there;
+  # a workflow without this trigger never reports and the entry times out.
+  merge_group:
   schedule:
-    # Nightly, for the coverage and audit reports below.
+    # Nightly, for the coverage report below.
     - cron: "17 3 * * *"
   workflow_dispatch:
 
@@ -42,38 +50,60 @@ on:
 # before them. So on main the commit itself is the group -- a run there is
 # alone in its group, waits its turn, and is never superseded. Elsewhere
 # the ref is the group, which is what makes a new revision replace the old.
+#
+# A merge-queue run is the main case, not the pull-request one: its commit
+# is what main becomes if it passes, and the queue removes or rebuilds an
+# entry itself. So it is grouped by its own commit (prefixed, so the push
+# of the same commit after the merge never shares its group) and never
+# cancelled from here.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'merge_group' && format('queue-{0}', github.sha) || github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: tests (py${{ matrix.python-version }})
+  test-shard:
+    # The fast suite, split by test file over four runners. In one job it
+    # ran 27-34 min on 2026-10-13 and 47.7 min of tests on 2026-10-15
+    # against a 50-minute limit; three of the five runs on main before that
+    # were cancelled at the limit. Each shard collects the whole suite and
+    # runs the files .github/ci/ci_shards.py assigns it by measured
+    # duration (702 s of the 2810 s measured on the runner). The required
+    # check is `tests (py3.11)` below, which passes only when the four
+    # together ran every collected test exactly once.
+    #
+    # Each shard is its own runner, so no state is shared between them.
+    # The plan is a function of the commit alone, so a re-run of one shard
+    # runs the same files.
+    name: tests (py3.11, shard ${{ matrix.shard }} of ${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    # The fast suite ran 27-34 min on main (2026-10-13) and the open security
-    # PRs add a few thousand gate cases; at 35 the job was cancelled mid-run.
-    timeout-minutes: 50
+    # A shard is a quarter of the suite (about 12 min expected); 30 is
+    # 2.5 times that. The unsharded job needed 60 on 2026-10-15 (#276)
+    # after reaching 100 % at 49.5 min. Each test keeps its own 300 s
+    # limit (--timeout below), so a hang still fails at once.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11"]
+        # The verify step in `test` names the same count.
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # Full history: test_pre_refactor_api_preserved.py compares the public
           # API against a pre-refactor commit via `git show`. A shallow clone
           # lacks it -> 0 cases -> that guard test fails.
           fetch-depth: 0
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: pip
 
       - name: Install package + test deps
@@ -82,8 +112,43 @@ jobs:
         # reference-environment job below; without the pin both would test
         # numpy 2 and nothing would notice a break of the 1.x line.
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install -e ".[agent,docs,dev]" "numpy<2"
+
+      # A real xtb for the tests that read its results (conftest.real_xtb;
+      # without one they skip). The conda-forge build, pinned to version and
+      # build string: the one the unsharded job had been using without
+      # declaring it -- DELFIN's automatic install, started by the first test
+      # that reached optimize_with_gfn without an xtb, fetched xtb>=6.7.1
+      # from conda-forge into delfin/qm_tools/.mamba_env, which resolved to
+      # this build (compiled 2026-06-10). The suite no longer installs
+      # anything (conftest sets DELFIN_AUTO_INSTALL_QM_TOOLS=0).
+      #
+      # Not the release binary slow-tests.yml uses: under pytest it returned
+      # a frequency 1.055e-6 cm-1 apart between two runs of the same input on
+      # 6 of 20 pairs, while this build was identical 20 of 20.
+      #
+      # micromamba is the same checksum-verified release binary as in the
+      # toolchains job below; the package itself is pinned to its build.
+      #
+      # Onto PATH through GITHUB_PATH, from the step right before the tests:
+      # the test step's run line must stay exactly the project's test
+      # command (verify_recipe; test_a_shard_runs_what_the_unsharded_job_ran),
+      # and the only later step is the report upload.
+      - name: Install xtb 6.7.1 (conda-forge, build gfortran_ha02e54d_5)
+        env:
+          MAMBA_ROOT_PREFIX: ${{ runner.temp }}/mamba
+          MICROMAMBA_URL: https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-linux-64
+          MICROMAMBA_SHA256: 366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/micromamba" "$MICROMAMBA_URL"
+          echo "$MICROMAMBA_SHA256  $RUNNER_TEMP/bin/micromamba" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/bin/micromamba"
+          "$RUNNER_TEMP/bin/micromamba" create -y -q -p "$RUNNER_TEMP/xtb" \
+            -c conda-forge --override-channels "xtb==6.7.1=gfortran_ha02e54d_5"
+          "$RUNNER_TEMP/xtb/bin/xtb" --version | grep "xtb version 6.7.1"
+          echo "$RUNNER_TEMP/xtb/bin" >> "$GITHUB_PATH"
 
       - name: Run fast test suite (excludes heavy + order-dependent tests)
         # A per-TEST deadline, for the reason pytest-timeout is declared in
@@ -97,7 +162,75 @@ jobs:
         # above the slowest test here and still turns a hang into one named
         # failure within five minutes. --timeout-method=signal so a test
         # blocked in C code (a lock, a socket) is interrupted too.
+        #
+        # The shard comes in through the environment, so the command stays
+        # the one to run locally (and the one delfin.agent.verify_recipe
+        # reads as this project's test command). PYTEST_ADDOPTS loads
+        # .github/ci/shard_plugin.py, which reports the other shards' files
+        # as deselected, as -m does for slow tests, and removes both
+        # variables before the first test, so no subprocess a test starts
+        # inherits them.
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.github/ci
+          PYTEST_ADDOPTS: >-
+            -p shard_plugin --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+            --shard-report=shard-report
         run: pytest -q -m "not slow" --timeout=300 --timeout-method=signal
+
+      - name: Keep the shard's report
+        # Also after a failure: the report names what ran. overwrite, so a
+        # re-run of this shard replaces its report instead of failing on
+        # the name.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tests-shard-${{ matrix.shard }}
+          path: shard-report/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  test:
+    # The required check. It runs whenever the shards ran, whatever they
+    # concluded (a job whose needs failed is otherwise skipped, and a
+    # skipped required check counts as passed), and fails unless every
+    # shard succeeded AND their reports prove the split complete: four
+    # reports for this commit, one collected suite, disjoint files, union
+    # equal to the suite, every selected test finished. A missing report
+    # is a failure.
+    name: tests (py3.11)
+    needs: test-shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Every shard succeeded
+        env:
+          SHARDS_RESULT: ${{ needs.test-shard.result }}
+        run: |
+          echo "shards: $SHARDS_RESULT"
+          [ "$SHARDS_RESULT" = success ]
+
+      - name: Checkout the check
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/ci
+          persist-credentials: false
+
+      - name: Fetch the shard reports
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tests-shard-*
+          path: shard-reports
+
+      - name: The shards ran every collected test exactly once
+        # Also when a shard failed, for the summary of what each one ran.
+        if: ${{ !cancelled() }}
+        env:
+          SHA: ${{ github.sha }}
+        run: python3 .github/ci/ci_shards.py verify shard-reports --shards 4 --sha "$SHA"
 
   container:
     # agent.bash_isolation = "container", driven for real. The fast suite
@@ -109,24 +242,27 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install the package without its chemistry stack
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install --no-deps -e .
-          pip install pytest pytest-timeout
+          pip install -c .github/ci/constraints-ci.txt pytest pytest-timeout
 
       - name: Pull the default image for both runtimes
         run: |
-          docker pull docker.io/library/python:3.11-slim
-          podman pull docker.io/library/python:3.11-slim
+          # container_exec.DEFAULT_OCI_IMAGE, by digest
+          docker pull docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
+          podman pull docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 
       - name: Container isolation tests
         env:
@@ -148,24 +284,37 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install the package without its chemistry stack
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install --no-deps -e .
-          pip install pytest pytest-timeout pyyaml
+          pip install -c .github/ci/constraints-ci.txt pytest pytest-timeout pyyaml
 
       - name: Install node, rust and go from conda-forge
+        # micromamba 2.9.0-0, the release binary checked against its
+        # SHA-256 before it runs. The digest is the one GitHub records for
+        # the asset, the one in the release's micromamba-linux-64.sha256,
+        # and the one computed from the download on 2026-10-15; all three
+        # agree. Until then this piped .../linux-64/latest into tar: a new
+        # release, or whatever answered at that address, ran unchecked.
+        env:
+          MICROMAMBA_URL: https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-linux-64
+          MICROMAMBA_SHA256: 366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3
         run: |
-          curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
-            | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bin/micromamba" "$MICROMAMBA_URL"
+          echo "$MICROMAMBA_SHA256  $RUNNER_TEMP/bin/micromamba" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/bin/micromamba"
           "$RUNNER_TEMP/bin/micromamba" create -y -q -p "$RUNNER_TEMP/tc" \
             -c conda-forge "nodejs>=22.6" rust go
           echo "DELFIN_TOOLCHAIN_BIN=$RUNNER_TEMP/tc/bin" >> "$GITHUB_ENV"
@@ -194,19 +343,22 @@ jobs:
     # cannot: does the reference file still resolve, and does the
     # construction still hold in the environment the paper data comes from.
     #
-    # Not a second leg of `test`. The fast suite takes about 24.6 minutes on
-    # 3.11 against a 25-minute limit, and a leg on 3.12 would sit on the same
-    # edge. So this job runs the part the reference environment is about: the
+    # Not a second leg of `test`. The fast suite measured 47.7 minutes of
+    # tests on 3.11 on 2026-10-15 and runs as four shards (test-shard); a
+    # 3.12 leg would be four more runners on every push. So this job runs the
+    # part the reference environment is about: the
     # MANTA CLI/dashboard parity, formula (every frame carries the whole
     # SMILES) and isomer-identity tests including their slow cases, and the
     # fast MANTA and user-SMILES contracts. Measured 2026-09-28 on a
     # workstation: about five minutes of tests, all passing.
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12.11
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12.11"
           cache: pip
@@ -218,7 +370,7 @@ jobs:
         # take the manylinux_2_35 wheel; a glibc 2.34 machine (RHEL 9)
         # installs the same command without the extra.
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
           pip install -e ".[agent,docs,dev,pymol]" -c env/reference-environment.lock
           python -c "import numpy, rdkit, scipy, openbabel, pymol; print('numpy', numpy.__version__, '| rdkit', rdkit.__version__, '| scipy', scipy.__version__)"
 
@@ -262,25 +414,28 @@ jobs:
     # the incantation that makes it pass. They stay visible through `ruff check
     # --select F` when anybody wants to work them down.
     #
-    # ruff is pinned. Unpinned, a release that adds or widens a rule turns main
-    # red for everybody without a line having changed — the same shape of
-    # accident as an unbounded dependency. Raising the pin is a small, ordinary
-    # pull request: bump it, see what the new version says, fix or accept.
+    # ruff is pinned (.github/ci/constraints-ci.txt). Unpinned, a release that
+    # adds or widens a rule turns main red for everybody without a line having
+    # changed — the same shape of accident as an unbounded dependency. Raising
+    # the pin is a small, ordinary pull request: bump it, see what the new
+    # version says, fix or accept.
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install ruff
         run: |
-          python -m pip install --upgrade pip
-          pip install ruff==0.16.3
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
+          pip install -c .github/ci/constraints-ci.txt ruff
 
       - name: Lint for real defects
         run: |
@@ -288,102 +443,177 @@ jobs:
             --select F821,F811,F601,F402,F823 \
             --output-format github
 
-  audit:
-    name: dependency audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Also reporting rather than gating, and green while it reports. A freshly
-    # published advisory against a transitive dependency would otherwise mark
-    # work that has nothing to do with it as failing, and DELFIN's dependency
-    # tree is deep enough that this happens regularly. The findings land in the
-    # run summary; the nightly schedule means one surfaces within a day even if
-    # nobody pushes.
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install package + audit tool
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e "." pip-audit
-
-      - name: Audit installed dependencies for known advisories
-        run: |
-          {
-            echo "### pip-audit"
-            echo
-            echo '```'
-            pip-audit --progress-spinner off || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          pip-audit --progress-spinner off || true
-
-  coverage:
-    name: coverage
-    runs-on: ubuntu-latest
-    # Nightly and on demand, never on a push. Measuring coverage roughly
-    # doubles a suite that already takes ten minutes, and the merge gate is
-    # what people wait on. The question it answers — which parts of 344,000
-    # lines no test reaches — does not change between one commit and the next.
+  coverage-shard:
+    # Nightly and on demand, never on a push. The question it answers --
+    # which parts of 344,000 lines no test reaches -- does not change
+    # between one commit and the next, and the merge gate is what people
+    # wait on.
     #
     # It exists because of two things this repository found the hard way: a
     # test that never ran because a later function took its name, and six of
     # nine recovery strategies that no run in the archive ever reached. Both
     # are invisible to a green suite and obvious in a coverage report.
+    #
+    # Sharded like test-shard, by the same plan. As one job it ran the whole
+    # fast suite under tracing in a 60-minute limit; the suite alone measured
+    # 47.7 min of tests on 2026-10-15 and tracing adds to that, so the job
+    # would end at its limit with no report. A shard is about 12 min of
+    # tests (702 s, ci_shards.py plan); 45 leaves room for the tracing
+    # overhead at up to 2.5x. Each shard writes its coverage data file and
+    # its shard report; `coverage` combines them.
+    name: coverage (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The verify step in `coverage` names the same count.
+        shard: [1, 2, 3, 4]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install package + test deps
+        # coverage first, at the version the combining job installs (the
+        # data file format is coverage's own); pytest-cov from [dev] then
+        # finds its requirement met and keeps it. numpy<2 as in test-shard:
+        # the measurement is of the environment the gate runs.
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[agent,docs,dev]"
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
+          pip install -c .github/ci/constraints-ci.txt coverage
+          pip install -e ".[agent,docs,dev]" "numpy<2"
 
-      - name: Measure coverage over the fast suite
+      - name: Measure coverage over this shard of the fast suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.github/ci
+          PYTEST_ADDOPTS: >-
+            -p shard_plugin --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+            --shard-report=shard-report
+        run: >
+          pytest -q -m "not slow" --timeout=300 --timeout-method=signal
+          --cov=delfin --cov-branch --cov-report=
+
+      - name: Keep the shard's data and report
+        # Also after a failure: the combined report says what was measured,
+        # and the verify step in `coverage` says whether that was all of it.
+        if: ${{ always() }}
         run: |
-          pytest -q -m "not slow" --timeout=300 --timeout-method=signal \
-            --cov=delfin --cov-report=term --cov-report=xml \
-            > coverage.txt 2>&1 || true
+          mkdir -p coverage-data
+          if [ -f .coverage ]; then mv .coverage "coverage-data/shard-${{ matrix.shard }}.coverage"; fi
+
+      - name: Upload the shard's data and report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: |
+            coverage-data/
+            shard-report/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  coverage:
+    # One report over the four shards' data. Red when the measurement does
+    # not cover the suite: a shard missing, a test that did not finish, or a
+    # failing one (ci_shards.py verify, the check `tests (py3.11)` runs). The
+    # report is written first, so a partial figure is still there to read,
+    # labelled by the verdict below it.
+    name: coverage
+    needs: coverage-shard
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # The sources: `coverage report` reads the measured files, at the
+        # same workspace path the shards ran in.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install coverage
+        run: python -m pip install -c .github/ci/constraints-ci.txt coverage
+
+      - name: Fetch the shards' data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-shard-*
+          path: coverage-shards
+
+      - name: Combine and report
+        run: |
+          shopt -s nullglob
+          data=(coverage-shards/coverage-shard-*/coverage-data/shard-*.coverage)
+          echo "data files: ${#data[@]}"
+          [ "${#data[@]}" -gt 0 ]
+          coverage combine --keep --data-file=.coverage "${data[@]}"
+          coverage report --data-file=.coverage > coverage.txt
+          coverage xml --data-file=.coverage -o coverage.xml
+          # Branch data (--cov-branch): the columns are Stmts Miss Branch
+          # BrPart Cover, and Cover counts statements and branches together.
+          # The security-relevant modules get a table of their own; no
+          # threshold yet, the figure is to be read.
+          include="$(grep -vE '^\s*(#|$)' .github/ci/security-modules.txt | paste -sd, -)"
+          coverage report --data-file=.coverage --include="$include" > coverage-security.txt
           {
-            echo "### Coverage"
+            echo "### Coverage (${#data[@]} of 4 shards, statements and branches)"
             echo
             echo '```'
+            head -1 coverage.txt
             tail -1 coverage.txt
+            echo '```'
+            echo
+            echo "#### Security-relevant modules (.github/ci/security-modules.txt)"
+            echo
+            echo '```'
+            cat coverage-security.txt
             echo '```'
             echo
             echo "#### Least covered modules"
             echo
             echo '```'
             grep -E '^delfin/' coverage.txt \
-              | awk '{gsub("%","",$4); if ($4 != "") print $4, $1}' \
+              | awk '{c = $NF; gsub("%", "", c); if (c != "") print c, $1}' \
               | sort -n | head -25 \
               | awk '{printf "%5s%%  %s\n", $1, $2}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the report
-        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
           path: |
             coverage.txt
+            coverage-security.txt
             coverage.xml
           retention-days: 30
+
+      - name: The shards measured every collected test exactly once
+        if: ${{ !cancelled() }}
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p shard-reports
+          for d in coverage-shards/coverage-shard-*/shard-report; do
+            [ -d "$d" ] && cp -r "$d" "shard-reports/$(basename "$(dirname "$d")")"
+          done
+          python3 .github/ci/ci_shards.py verify shard-reports --shards 4 --sha "$SHA"

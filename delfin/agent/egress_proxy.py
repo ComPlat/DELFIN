@@ -20,7 +20,8 @@ Settings (``agent.sandbox_network``): ``allowed_domains`` adds domains
 (``example.org`` or ``*.example.org``), ``allowed_ports`` replaces the port
 list, ``mode`` is ``"proxy"`` (default), ``"none"`` or ``"open"``,
 ``upload_ask_bytes`` the request body size above which a request counts
-as an upload (default 1 MiB).
+as an upload (default 1 MiB), ``upload_domains`` the hosts (same forms as
+``allowed_domains``) that may receive uploads when nobody can be asked.
 
 Decisions per request (``EgressProxy.decide``), for the session whose
 token the request carries (``token_for``):
@@ -32,7 +33,18 @@ token the request carries (``token_for``):
    session itself is configured to use (its model endpoint, its git
    remotes, its pip and conda indexes) -- passes; an upload to it
    (a body above ``upload_ask_bytes``) is asked when someone can be
-   asked and passes otherwise, so an unattended push or model call works;
+   asked. With nobody to ask (plan, bypass, no approval channel, the
+   process token) a WRITE to it -- POST/PUT/PATCH/DELETE in plain HTTP,
+   a body above ``upload_ask_bytes``, or more than that many bytes sent
+   inside a CONNECT tunnel -- is refused, recorded as
+   ``egress_upload_refused`` (a blocked event: it reaches the attention
+   inbox), unless the host is in ``upload_domains`` or is a model
+   endpoint this process registered (``note_endpoint``); those pass and
+   are recorded as ``egress_upload``. A read (GET, a tunnel that sends
+   less than the limit) passes as before. Inside TLS the method is not
+   visible, so a write below the limit cannot be told from a read; the
+   limit bounds what one connection carries, it does not make a small
+   write visible;
 4. an UNKNOWN host, and any POST/PUT/PATCH to one, is asked when the
    session has an approval channel and is not in plan or bypass mode;
    otherwise refused with a message naming the host and the rule that
@@ -44,7 +56,14 @@ only, unknown refused -- the behaviour before sessions existed.
 The mode is read when the process first asks; a later change to the
 settings file may tighten it at once but loosens it only at the next
 start, so a command that edits the file cannot switch the proxy off for
-the session it runs in.
+the session it runs in. ``upload_domains`` follows the same rule: the
+list read when the proxy starts is a ceiling, a host removed from the
+file later loses uploads at once, a host added waits for the next start.
+
+Rejected: a lower tunnel limit for API hosts such as ``api.github.com``
+(a small authenticated write still fits under any limit a read needs);
+refusing every write method attended as well (the person is there to be
+asked, and a refused question would cost function for no gain).
 """
 from __future__ import annotations
 
@@ -55,7 +74,6 @@ import re
 import secrets
 import select
 import socket
-import subprocess
 import tempfile
 import threading
 import weakref
@@ -71,12 +89,38 @@ DEFAULT_ALLOWED_DOMAINS = (
     "github.com", "api.github.com", "codeload.github.com",
     "objects.githubusercontent.com", "raw.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    # A project's own environment in other languages: the npm registry and
+    # the two CDNs browser pages load their libraries from, Rust's and Go's
+    # package indexes. Read-only like the rest: an upload to them is still
+    # held by the rules below. Measured 2026-10-19: a browser game could
+    # not fetch three.js (curl exit 56, the CDN unknown under Bypass), and
+    # the agent rewrote a 3D renderer by hand instead.
+    "registry.npmjs.org", "cdn.jsdelivr.net", "unpkg.com",
+    "crates.io", "static.crates.io", "index.crates.io",
+    "proxy.golang.org", "sum.golang.org",
 )
 DEFAULT_ALLOWED_PORTS = (80, 443)
 DEFAULT_UPLOAD_ASK_BYTES = 1024 * 1024
 
 _MAX_HEADER = 64 * 1024
 _UPLOAD_METHODS = ("POST", "PUT", "PATCH")
+# What counts as a write to a KNOWN host when nobody can be asked.
+_WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def _is_loopback(host: str) -> bool:
+    h = str(host or "").strip("[]").lower()
+    return h in ("localhost", "::1") or h.startswith("127.")
+
+
+def _own_ports(perms) -> set:
+    """Ports the background jobs of ``perms``'s session listen on."""
+    try:
+        from .bash_jobs import own_listening_ports
+        return own_listening_ports(
+            str(getattr(perms, "task_session_id", "") or ""))
+    except Exception:
+        return set()
 
 
 def _settings() -> dict:
@@ -87,6 +131,15 @@ def _settings() -> dict:
         return net if isinstance(net, dict) else {}
     except Exception:
         return {}
+
+
+def _string_list(value) -> list:
+    """A settings value as a list of non-empty strings; [] for anything else."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(v).strip() for v in value if str(v or "").strip()]
 
 
 _MODE_ORDER = {"none": 0, "proxy": 1, "open": 2}
@@ -164,15 +217,19 @@ _GIT_REMOTES: dict = {}
 
 
 def git_remotes(workspace) -> list[str]:
-    """The workspace repository's remote URLs (fetch and push). Cached."""
+    """The workspace repository's remote URLs (fetch and push). Cached per
+    process and workspace: the first network decision of a session takes
+    the snapshot, so a remote a command adds later widens nothing. Read
+    with ``safe_git`` (the repository is the workspace's; no program it
+    names runs)."""
     key = str(workspace or "")
     if not key:
         return []
     if key not in _GIT_REMOTES:
         out: list[str] = []
         try:
-            done = subprocess.run(["git", "-C", key, "remote", "-v"],
-                                  capture_output=True, text=True, timeout=5)
+            from . import safe_git
+            done = safe_git.run(["remote", "-v"], key, timeout=5)
             if done.returncode == 0:
                 for line in done.stdout.splitlines():
                     parts = line.split()
@@ -187,12 +244,21 @@ def git_remotes(workspace) -> list[str]:
 def configured_domains(workspace=None) -> list[str]:
     """Hosts the session is configured to use beyond the defaults: the
     ``allowed_domains`` setting, the model endpoints, the pip/conda indexes
-    and the workspace's HTTP(S) git remotes."""
+    and the workspace's HTTPS git remotes.
+
+    A remote is the workspace's to name (a cloned or unpacked repository
+    names any), so it widens only reads: its host passes the proxy as a
+    known host, where an upload is judged as for every known host (asked,
+    or with nobody to ask refused unless ``upload_domains`` names it). An
+    ``http://`` remote names no host here: a plain-HTTP POST to a known
+    host passes in an attended session, and a remote must not grant that.
+    A remote host reaches public addresses only (``_connect_public`` is
+    asked without the workspace)."""
     out = [str(d) for d in (_settings().get("allowed_domains") or [])]
     out += sorted(_ENDPOINT_HOSTS)
     out += [h for h in (_host_of(u) for u in _index_urls()) if h]
     out += [h for h in (_host_of(u) for u in git_remotes(workspace)
-                        if u.startswith(("http://", "https://"))) if h]
+                        if u.startswith("https://")) if h]
     return out
 
 
@@ -219,15 +285,40 @@ def direct_tcp_endpoints(workspace=None) -> list[str]:
 _DIRECT_TCP: dict = {}
 
 
+#: SSH remotes whose host no setting names, already said in this process.
+_SSH_REMOTE_NOTED: set = set()
+
+
+def _ssh_route_allowed(host: str, url: str) -> bool:
+    """Whether an SSH remote's host may get a direct TCP route: named by
+    the default allow-list or ``agent.sandbox_network.allowed_domains``,
+    which the workspace does not write. A direct route bypasses the proxy
+    (no upload limit, no question), so a host the repository alone names
+    gets none; that is recorded once."""
+    named = list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
+        _settings().get("allowed_domains"))
+    if domain_allowed(host, named):
+        return True
+    if host not in _SSH_REMOTE_NOTED:
+        _SSH_REMOTE_NOTED.add(host)
+        _note_event("network", f"the workspace's git remote {url[:80]} names "
+                    f"{host}, which no setting names: no direct TCP route "
+                    "for it (add it to agent.sandbox_network.allowed_domains "
+                    "to reach it over SSH from a command)", False)
+    return False
+
+
 def _direct_tcp_endpoints(workspace) -> list[str]:
     out = list(slurm_controllers())
     for url in git_remotes(workspace):
         m = re.match(r"^ssh://(?:[^@/]+@)?(\[[^\]]+\]|[^:/]+)(?::(\d+))?/", url)
         if m:
-            out += _resolve(m.group(1).strip("[]"), int(m.group(2) or 22))
+            host = m.group(1).strip("[]")
+            if _ssh_route_allowed(host, url):
+                out += _resolve(host, int(m.group(2) or 22))
             continue
         m = re.match(r"^(?:[^@/:]+@)?([A-Za-z0-9.\-]+):(?!//)", url)
-        if m and "://" not in url:
+        if m and "://" not in url and _ssh_route_allowed(m.group(1), url):
             out += _resolve(m.group(1), 22)
     for var, value in os.environ.items():
         if not var.upper().endswith("LICENSE_FILE"):
@@ -278,11 +369,19 @@ class EgressProxy:
     def __init__(self, allowed_domains=None, allowed_ports=None, *,
                  connector: Optional[Callable[[str, int, float], socket.socket]] = None,
                  on_refusal: Optional[Callable[[str], None]] = None,
-                 upload_ask_bytes: Optional[int] = None):
+                 upload_ask_bytes: Optional[int] = None,
+                 upload_domains=None):
         conf = _settings()
         extra = conf.get("allowed_domains") or []
         self.allowed_domains = tuple(allowed_domains if allowed_domains is not None
                                      else list(DEFAULT_ALLOWED_DOMAINS) + list(extra))
+        # Hosts that may receive an upload with nobody to ask. Read once:
+        # the settings file is a ceiling the session cannot raise for
+        # itself (see the module docstring); a list passed in is final.
+        self._upload_from_settings = upload_domains is None
+        self.upload_domains = tuple(
+            str(d) for d in (upload_domains if upload_domains is not None
+                             else _string_list(conf.get("upload_domains"))))
         ports = allowed_ports if allowed_ports is not None else conf.get("allowed_ports")
         self.allowed_ports = tuple(int(p) for p in (ports or DEFAULT_ALLOWED_PORTS))
         try:
@@ -365,9 +464,10 @@ class EgressProxy:
     @staticmethod
     def _connect_public(host: str, port: int, timeout: float) -> socket.socket:
         """Public addresses only -- except for a host the user configured
-        (a model endpoint, an index, a remote, ``allowed_domains``), which
-        may be on the private network. Link-local and the cloud metadata
-        addresses never."""
+        (a model endpoint, an index, ``allowed_domains``), which may be on
+        the private network; a workspace's git remote is not asked here
+        (no workspace is passed), so it reaches public addresses only.
+        Link-local and the cloud metadata addresses never."""
         from .web_tools import _checked_create_connection
         if not domain_allowed(host, configured_domains()):
             return _checked_create_connection((host, port), timeout=timeout)
@@ -465,9 +565,57 @@ class EgressProxy:
         return domain_allowed(host, list(self.allowed_domains) + configured_domains(
             getattr(perms, "workspace", None)))
 
+    def upload_allowed(self, host: str) -> bool:
+        """Whether ``host`` may receive an upload when nobody can be asked:
+        named in ``upload_domains`` (and still named in the settings file,
+        when the list came from there), or a model endpoint this process
+        registered itself."""
+        if domain_allowed(host, sorted(_ENDPOINT_HOSTS)):
+            return True
+        allowed = list(self.upload_domains)
+        if self._upload_from_settings:
+            now = set(_string_list(_settings().get("upload_domains")))
+            allowed = [d for d in allowed if d in now]
+        return domain_allowed(host, allowed)
+
+    @staticmethod
+    def _can_ask(perms, rule_ask: bool = False) -> bool:
+        """Whether the session has someone to ask: an approval channel, in
+        a mode that asks (a permission rule's ask holds in every mode)."""
+        mode = str(getattr(perms, "mode", "") or "")
+        return getattr(perms, "confirm_callback", None) is not None and (
+            rule_ask or mode not in ("plan", "bypassPermissions"))
+
+    def _unattended_write(self, host: str, port: int, method: str,
+                          body_bytes: int) -> Optional[str]:
+        """The refusal for a write to a known host with nobody to ask, or
+        None when ``host`` is named for uploads (recorded, not blocked)."""
+        size = (f"{body_bytes} bytes" if body_bytes > self.upload_ask_bytes
+                else f"a {method} request")
+        if self.upload_allowed(host):
+            _note_event("egress_upload", f"{host}: {size} (upload_domains)",
+                        False)
+            return None
+        _note_event("egress_upload_refused",
+                    f"{host}:{port}: {size}, nobody to ask", True)
+        return (f"blocked by DELFIN's egress proxy: {size} to {host} is an "
+                "upload, and nobody can be asked about it. Reads from "
+                f"{host} still work. To let this session upload to {host} "
+                f"unattended, the user adds {host} to "
+                "agent.sandbox_network.upload_domains in "
+                "~/.delfin_settings.json. Do not retry it or send the same "
+                "data another way.")
+
     def decide(self, host: str, port: int, *, method: str = "CONNECT",
                body_bytes: int = 0, perms=None) -> tuple[str, str, bool]:
         """``(verdict, reason, upload)``; verdict is allow, ask or deny."""
+        # The session's own server on this machine (bash_jobs.
+        # own_listening_ports): a port one of ITS running background jobs
+        # listens on, on the loopback, for a session's token only -- the
+        # process token and every other port and host go on below.
+        if (perms is not None and _is_loopback(host)
+                and port in _own_ports(perms)):
+            return "allow", "", False
         if port not in self.allowed_ports:
             return "deny", (
                 f"blocked by DELFIN's egress proxy: port {port} is not allowed "
@@ -516,20 +664,24 @@ class EgressProxy:
         allows a question; a known host's upload passes unasked otherwise."""
         verdict, why, upload = self.decide(host, port, method=method,
                                            body_bytes=body_bytes, perms=perms)
-        if verdict == "allow":
-            return None
         if verdict == "deny":
             return why
+        rule_ask = verdict == "ask" and why.startswith("the permission rule")
+        can_ask = self._can_ask(perms, rule_ask)
+        method_u = (method or "").upper()
+        writes = (method_u in _WRITE_METHODS
+                  or body_bytes > self.upload_ask_bytes)
+        if verdict == "allow":
+            if not can_ask and writes:
+                return self._unattended_write(host, port, method_u or "CONNECT",
+                                              body_bytes)
+            return None
         known = self.known(host, perms)
-        mode = str(getattr(perms, "mode", "") or "")
         callback = getattr(perms, "confirm_callback", None)
-        rule_ask = why.startswith("the permission rule")
-        can_ask = callback is not None and (
-            rule_ask or mode not in ("plan", "bypassPermissions"))
         if not can_ask:
             if known and upload and not rule_ask:
-                _note_event("egress_upload", f"{host}: {why} (passed unasked)", False)
-                return None
+                return self._unattended_write(host, port, method_u or "CONNECT",
+                                              body_bytes)
             return self._no_one_to_ask(host, why)
         kind = "upload" if upload else "domain"
         key = (id(perms), host.lower(), kind)
@@ -641,14 +793,19 @@ class EgressProxy:
                 if why:
                     self._refuse(conn, 403, why)
                     return
-                if not self.known(host, perms) and self.upload_ask_bytes:
+                if self.upload_ask_bytes and (
+                        not self.known(host, perms)
+                        or not (self._can_ask(perms)
+                                or self.upload_allowed(host))):
                     # Inside a tunnel the method is not visible; what leaves
                     # is. A host the user admitted by answering a question
-                    # is asked again once its upload passes the limit.
+                    # is asked again once its upload passes the limit; a
+                    # known host with nobody to ask is cut there unless it
+                    # is named for uploads.
                     meter = (lambda sent, _h=host, _p=port, _perms=perms:
                              self.settle(_h, _p, method="CONNECT",
                                          body_bytes=sent, perms=_perms) is None)
-                upstream = self._open(conn, host, port)
+                upstream = self._open(conn, host, port, perms)
                 if upstream is None:
                     return
                 conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -681,7 +838,7 @@ class EgressProxy:
                     except OSError:
                         pass
                     return
-                upstream = self._open(conn, url.hostname, port)
+                upstream = self._open(conn, url.hostname, port, perms)
                 if upstream is None:
                     return
                 path = url.path or "/"
@@ -704,8 +861,14 @@ class EgressProxy:
                     except OSError:
                         pass
 
-    def _open(self, conn, host: str, port: int):
+    def _open(self, conn, host: str, port: int, perms=None):
         try:
+            if (perms is not None and _is_loopback(host)
+                    and port in _own_ports(perms)):
+                # The session's own server (decide): the loopback itself,
+                # never a name that resolves elsewhere.
+                addr = "::1" if str(host).strip("[]") == "::1" else "127.0.0.1"
+                return socket.create_connection((addr, port), timeout=30.0)
             return self._connector(host, port, 30.0)
         except OSError as exc:
             reason = str(exc)

@@ -68,7 +68,6 @@
     },
     "tool_usage": {
       "rules": [
-        "pytest in background after every code change",
         "Agent subprocesses for research spanning >3 files"
       ]
     }

@@ -207,7 +207,7 @@ def test_the_session_an_item_belongs_to_is_named_and_where_it_is_said(home, monk
                workspace="/calc/water", age=63),
     ])
     monkeypatch.setattr(session_presence, "open_sessions", lambda **_: [
-        {"session_id": "s-open", "title": "scan of benzene", "host": "uc3n991"}])
+        {"session_id": "s-open", "title": "scan of benzene", "host": "login02"}])
     saved = {"s-saved": {"title": "relax Fe complex"}, "s-open": {"title": "scan of benzene"}}
     monkeypatch.setattr(session_store, "load_session", lambda sid: saved.get(sid))
     monkeypatch.setattr(session_store, "session_lock_holder", lambda sid: None)
@@ -216,7 +216,7 @@ def test_the_session_an_item_belongs_to_is_named_and_where_it_is_said(home, monk
     assert by["s-open"]["name"] == "scan of benzene"
     # Open in the dashboard and saved: a window opens a copy of it.
     assert by["s-open"]["sessionOpen"] is True and by["s-open"]["sessionSaved"] is True
-    assert by["s-open"]["host"] == "uc3n991"
+    assert by["s-open"]["host"] == "login02"
     assert by["s-saved"]["name"] == "relax Fe complex"
     assert by["s-saved"]["sessionSaved"] is True and by["s-saved"]["sessionOpen"] is False
     assert by["s-gone"]["sessionSaved"] is False

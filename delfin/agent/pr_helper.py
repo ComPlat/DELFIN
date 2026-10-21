@@ -84,13 +84,12 @@ def _default_git_log(base: str, head: str,
     Merge commits are left out: on a branch that took main in, their
     subjects ("Merge remote-tracking branch ...") describe no change.
     No prompt and no stdin (a credential or pager question fails instead
-    of hanging), a timeout, and ``log.showSignature`` off so a checkout
-    config cannot make the read run ``gpg.program``. A failing git
+    of hanging), a timeout, and safe_git, so a checkout config cannot
+    make the read run ``gpg.program``, a textconv or any other program. A failing git
     (unknown base, not a repository) raises ``RuntimeError``: an empty
     list would be published as "no commits".
     """
     import os
-    import subprocess
 
     sep = "\x1e"  # record separator, practically absent from commit text
     fmt = f"%h%x1f%s%x1f%b%{sep}"
@@ -98,14 +97,10 @@ def _default_git_log(base: str, head: str,
     # so a name that starts with a dash is not handed to git at all.
     if str(base).startswith("-") or str(head).startswith("-"):
         return []
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    proc = subprocess.run(
-        ["git", "-c", "log.showSignature=false", "log", "--no-merges",
-         f"--format={fmt}", "--end-of-options", f"{base}..{head}"],
-        capture_output=True, text=True, check=False, cwd=cwd, env=env,
-        stdin=subprocess.DEVNULL, timeout=30,
-    )
+    from . import safe_git
+    proc = safe_git.run(
+        ["log", "--no-merges", f"--format={fmt}", "--end-of-options",
+         f"{base}..{head}"], cwd or os.getcwd(), timeout=30)
     if proc.returncode != 0:
         err = (proc.stderr or "").strip().splitlines()
         raise RuntimeError(

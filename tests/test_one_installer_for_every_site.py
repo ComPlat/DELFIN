@@ -401,11 +401,16 @@ def test_one_ai_tool_pip_cannot_install_does_not_stop_the_rest(tmp_path):
 
 
 def test_genarris_is_cloned_from_the_branch_its_repository_has():
-    """The installer asked for "main"; Genarris's default is master."""
+    """The installer asked for "main"; Genarris's default is master.
+
+    No branch is named at all now: the default branch is cloned and the
+    pinned commit checked out of it
+    (tests/test_every_installer_download_is_pinned.py)."""
     text = (REPO / "delfin" / "csp_tools" / "install_csp_tools.sh").read_text(encoding="utf-8")
 
-    assert 'GENARRIS_BRANCH="${GENARRIS_BRANCH:-}"' in text
-    assert 'git clone "${GENARRIS_REPO}" "${genarris_dir}"' in text, "no branch named when none is set"
+    assert "GENARRIS_BRANCH" not in text
+    assert "--branch" not in text
+    assert 'git clone "${GENARRIS_REPO}" "${genarris_dir}"' in text, "no branch named"
 
 
 def test_the_swig_wrappers_the_genarris_wheel_leaves_out_are_added(tmp_path):

@@ -21,6 +21,7 @@ something useful turns up, not preemptively.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -115,6 +116,31 @@ class ModelProfile:
     # above it is brought down and said so, and the request never
     # carries a level above it.
     max_effort: str = ""
+
+    # Add MODEL_NOTES["terse_tool_rounds"] to the solo prompt: at most one
+    # short line beside a tool call. For a model whose decode, not its
+    # prefill, is the cost. Archive 2026-09-16 .. 10-14: kit.deepseek-v4-
+    # flash wrote prose beside 38 of 38 tool calls, p50 593 characters,
+    # at ~6 s per 100 output tokens -- about 11 s per tool round. GLM-flash
+    # decodes at ~0.9 s per 100 and stays off.
+    terse_tool_rounds: bool = False
+
+    # Add MODEL_NOTES["concise_answers"]: lead with the result, no recap of
+    # the steps. Benchmark store, 950 kit.deepseek-v4-flash attempts: within
+    # a task, answers longer than the task median passed 0.79 (n=406) and
+    # shorter ones 0.75 (n=399), at a duration p50 of 55 s against 40 s;
+    # passing answers p50 2146 characters against 710 on kit.glm-5.3.
+    concise_answers: bool = False
+
+    # Send the OpenAI ``user`` field with an opaque per-session value
+    # (``session_route_key``), so a router that keys sticky routes on it
+    # sends a session's requests to the replica that holds its prefix.
+    # Archive 2026-09-16 .. 10-14, kit.glm-5.3: 408 of 2066 requests cold
+    # (cached/input < 0.2) with system prompt and turn prefix unchanged and
+    # under 300 s since the previous request, ~740 min of time to first
+    # token. The KIT endpoint accepts the field (HTTP 200, 2026-10-14);
+    # whether it routes on it is unmeasured -- the A/B decides.
+    session_affinity: bool = False
 
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
@@ -232,6 +258,13 @@ _GLM_5_3 = ModelProfile(
     # before a single tool call, on a 45-line change -- and the arms above
     # showed no answer that low did not give.
     max_effort="low",
+    # Off by default, decided by the A/B of 2026-10-15/16 (5 rounds per arm,
+    # 68 tasks): with a stable `user` on 94% of requests the cache-hit share
+    # (0.624 vs 0.627), the cold share after the first request (0.274 vs
+    # 0.265) and TTFT did not move, and wall time per attempt was if anything
+    # higher (+9 s, p=0.068). The KIT gateway does not appear to route on
+    # `user`. The mechanism stays; `kit.glm.session_affinity: true` turns it on.
+    session_affinity=False,
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "
@@ -253,6 +286,8 @@ _DEEPSEEK_V4_FLASH = ModelProfile(
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
+    terse_tool_rounds=True,
+    concise_answers=True,
     notes=(
         "KIT DeepSeek V4 Flash — fast on this deployment, cold and warm "
         "alike. Coding line, native function calling."
@@ -415,7 +450,79 @@ _COERCE: dict[str, type] = {
     "stale_kill_after_s": float,
     "all_prompt_modules": bool,
     "max_effort": str,
+    "terse_tool_rounds": bool,
+    "concise_answers": bool,
+    "session_affinity": bool,
 }
+
+
+# The prompt text behind each note-type knob, by field name. English, one
+# or two sentences: it rides in the stable head of every solo request for
+# the model that has the knob on, and nowhere else.
+MODEL_NOTES: dict[str, str] = {
+    "terse_tool_rounds": (
+        "Beside a tool call write one short line or nothing. Do not restate "
+        "the task, the plan or the previous result before each call; the "
+        "call says what you are doing."),
+    "concise_answers": (
+        "Final answer: lead with the result -- file:line, figures, verdict. "
+        "No recap of the steps taken, no restated question. Write at length "
+        "only when a plan, document or report was asked for."),
+}
+
+
+_ROUTE_IDS: dict[str, str] = {}
+_ROUTE_IDS_MAX = 4096
+_ROUTE_IDS_LOCK = threading.Lock()
+
+
+def session_route_key(model: str, session: str) -> str:
+    """The ``user`` value for *model*'s requests in *session*, or "".
+
+    Input: a model name and the engine's per-session key (its trace
+    session). Output: ``delfin-`` plus 16 random hex characters, drawn
+    once per key and process and the same for every later request of the
+    session; "" when the profile has session_affinity off or there is no
+    key. Nothing is derived from the key, so neither it nor any digest of
+    it leaves the machine (a hash of the key was rejected: it is a value
+    computed from session data, and code scanning flags it). Cost: a
+    session resumed in a new process gets a new id, so its first request
+    misses the backend's prefix cache once. Never raises.
+    """
+    key = str(session or "").strip()
+    if not key:
+        return ""
+    try:
+        if not bool(get_profile(model).session_affinity):
+            return ""
+    except Exception:
+        return ""
+    with _ROUTE_IDS_LOCK:
+        rid = _ROUTE_IDS.get(key)
+        if rid is None:
+            if len(_ROUTE_IDS) >= _ROUTE_IDS_MAX:
+                _ROUTE_IDS.pop(next(iter(_ROUTE_IDS)))
+            import secrets
+            rid = _ROUTE_IDS[key] = "delfin-" + secrets.token_hex(8)
+    return rid
+
+
+def model_notes(model: str) -> str:
+    """The notes *model*'s profile switches on, joined, or "".
+
+    Input: a model name. Output: a block headed ``--- Model notes ---``
+    with one line per enabled note, in MODEL_NOTES order, so the bytes are
+    the same on every turn for the same profile. Never raises.
+    """
+    try:
+        prof = get_profile(model)
+    except Exception:
+        return ""
+    lines = [text for name, text in MODEL_NOTES.items()
+             if bool(getattr(prof, name, False))]
+    if not lines:
+        return ""
+    return "--- Model notes ---\n" + "\n".join(f"- {t}" for t in lines)
 
 _OVERRIDES_CACHE: tuple[float, dict] | None = None
 

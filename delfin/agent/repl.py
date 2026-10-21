@@ -14,11 +14,13 @@ nothing about how it was reached.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import queue
 import signal
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -44,6 +46,14 @@ _JOIN_ABANDON_S = 1.0
 # That work runs on storage that may be the very thing that went wrong, and
 # waiting on it is how a session outlives its terminal.
 _LEAVE_DEADLINE_S = 10.0
+#: Total for the session-end stages of an attended leave (ctrl+d, /exit,
+#: the second idle ctrl+c); setting ``agent.leave_stage_budget_s``.
+_LEAVE_STAGE_BUDGET_S = 300.0
+#: A session-end stage without a timeout of its own (report, indexing,
+#: cycle outcome, episode, eval loop: file and index work, no model).
+_STAGE_DEFAULT_S = 60.0
+#: How long a stage runs before the line saying what is being finished.
+_STAGE_SAY_AFTER_S = 1.0
 _STATUS_TICK_S = 0.25
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -675,7 +685,36 @@ def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
     performs: under the budget it returns ``prompt`` unchanged; over it, it
     archives the history, arms the engine's one-shot ``start_fresh`` and
     returns the fresh block fused with ``prompt``. Never raises.
+
+    Package B1: a session without its task stops and asks. When the
+    person gave no task (no unmarked user row in this session's history
+    and no prompt that is a person typing now), the ONE plain
+    instruction is fused in front of the prompt and a notice names it
+    for the person watching. Nothing is refused: the turn proceeds.
+    The check runs BEFORE the budget branch, so it fires on every
+    dashboard/cli turn, not only on fresh starts.
     """
+    try:
+        from . import task_presence as _tp
+        _history = list(getattr(engine, "messages", None) or [])
+        _ws = workspace if workspace is not None else getattr(
+            getattr(engine, "kit_permissions", None), "workspace", None)
+        _status, _reason = _tp.assess(_history, workspace=_ws, prompt=prompt)
+        _note = _tp.instruction_for(_status)
+        if _note and not isinstance(prompt, HarnessText):
+            # A HarnessText wake never carries the instruction (PR #324
+            # hang: the fused "stop and ask" in front of a job-finished
+            # wake made the model ask — a question nobody answers in an
+            # unattended session). A wake is harness transport, not where
+            # a person gives a task. And a None prompt fuses the note
+            # alone instead of raising past the swallow-guard below.
+            was_harness = isinstance(prompt, HarnessText)
+            body = prompt if isinstance(prompt, str) else ""
+            prompt = _note + "\n\n" + body
+            if was_harness:
+                prompt = HarnessText(prompt)
+    except Exception:
+        pass
     try:
         budget = _resolve_fresh_budget(context_budget, engine)
         if budget <= 0:
@@ -823,11 +862,41 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
         turn_outcome.denied(name, "backend_denied", "")
         _emit(RenderItem("denied", name=name))
 
+    _turn_started = time.monotonic()
     in_before, out_before = _usage(engine)
     from . import turn_context
     if memory_context is None:
         memory_context = turn_context.memory_context(engine, prompt)
     prompt = turn_context.user_message(prompt)
+    # Package B1: a session without its task stops and asks. assess keys
+    # on the RAW prompt (before the fusion at ~863 re-wraps it), so a
+    # wake prompt's HarnessText type is still visible here. The ONE
+    # plain instruction is fused in front of the prompt and a notice
+    # names it for the person watching. Nothing is refused: the turn
+    # proceeds with its full prompt either way.
+    try:
+        from . import task_presence as _tp
+        _ws = getattr(getattr(engine, "kit_permissions", None),
+                      "workspace", None)
+        _status, _reason = _tp.assess(
+            list(getattr(engine, "messages", None) or []),
+            workspace=_ws, prompt=prompt)
+        _note = _tp.instruction_for(_status)
+        if _note and not isinstance(prompt, HarnessText) \
+                and not _tp.instruction_present(prompt):
+            # A HarnessText wake never carries the instruction (PR #324
+            # hang: the fused "stop and ask" in front of a job-finished
+            # wake made the model ask — a question nobody answers in an
+            # unattended session). And a prompt that already carries the
+            # instruction (prepare_fresh_turn fused it; cli.py:830 hands
+            # its result here) is never fused AGAIN. A non-str prompt
+            # fuses the note alone instead of raising past the
+            # swallow-guard below.
+            prompt = _note + "\n\n" + (prompt if isinstance(prompt, str)
+                                       else "")
+            _emit(RenderItem("notice", text=_note))
+    except Exception:
+        pass
     user_message = prompt
     budget = _resolve_fresh_budget(context_budget, engine)
     if budget > 0 and (_context_tokens(engine) <= budget
@@ -886,6 +955,23 @@ def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
     result.tool_calls = tool_calls
     result.input_tokens = max(0, in_after - in_before)
     result.output_tokens = max(0, out_after - out_before)
+
+    # KG4 phase 1: the metrics contract agent_metrics.py states ("one
+    # JSONL line per finished agent turn") was kept only by the
+    # dashboard's turn footer; a `delfin-agent chat` turn never wrote a
+    # line. run_turn is the one place a non-dashboard turn ends with its
+    # numbers computed -- record here from exactly those numbers.
+    # Best-effort: record_chat_turn swallows every failure, a metrics
+    # write never breaks the turn it describes.
+    try:
+        from . import agent_metrics as _metrics
+        _metrics.record_chat_turn(
+            engine, result,
+            duration_s=time.monotonic() - _turn_started,
+            mode=str(getattr(engine, "mode", "") or ""),
+        )
+    except Exception:
+        pass
 
     # The answer was streamed before the sanitiser ran on it, and a
     # terminal cannot un-print. Say so rather than let the screen and the
@@ -1138,6 +1224,127 @@ def shell_escape_result(engine, command: str) -> dict:
     return run
 
 
+def _leave_stage_budget_s() -> float:
+    """``agent.leave_stage_budget_s``, else ``_LEAVE_STAGE_BUDGET_S``."""
+    try:
+        from delfin.user_settings import load_settings
+        cfg = (load_settings() or {}).get("agent") or {}
+        value = float(cfg.get("leave_stage_budget_s", _LEAVE_STAGE_BUDGET_S))
+    except Exception:
+        return _LEAVE_STAGE_BUDGET_S
+    return value if value >= 0 else _LEAVE_STAGE_BUDGET_S
+
+
+def _stage_budget_s(name: str) -> float:
+    """A stage's own limit, from the timeout its work already has.
+
+    Skill learning drafts with one model call, whose request timeout is
+    ``api_client._request_timeout_s()`` (600 s, DELFIN_REQUEST_TIMEOUT_S);
+    the stage gets that plus 30 s. The other stages call no model and
+    had no timeout; each gets ``_STAGE_DEFAULT_S``. Both are capped by
+    what is left of the total budget.
+    """
+    if name == "skill learning":
+        try:
+            from .api_client import _request_timeout_s
+            return float(_request_timeout_s()) + 30.0
+        except Exception:
+            return _LEAVE_STAGE_BUDGET_S
+    return _STAGE_DEFAULT_S
+
+
+class _LeaveStages:
+    """``run_stage(name, fn)`` for ``cli._end_session`` on an attended leave.
+
+    Input: a stage's name and its best-effort callable (it never raises).
+    Each stage runs on a daemon thread while the main thread waits in
+    0.1 s steps, so a signal handler can act between them. Per stage:
+    ``_stage_budget_s(name)``, capped by what is left of the total
+    (``agent.leave_stage_budget_s``, default 300 s). A stage still running
+    after ``_STAGE_SAY_AFTER_S`` is named on stderr with its limit and
+    "Ctrl+C skips what is left". At its limit it is left unfinished (said)
+    and the next stage starts. Ctrl+C, SIGHUP or SIGTERM sets
+    ``skipped_by``: the stage under way and every later one are skipped
+    (said once), and the short leave deadline is armed for the rest of
+    the process. With the terminal gone, or no holder, stages run inline
+    under the deadline already armed, as before.
+
+    Rejected: one deadline for the whole leave. Skill learning makes a
+    model call whose request timeout is 600 s; the 10 s deadline cut it,
+    and the eval loop after it, on almost every attended leave on a slow
+    endpoint. Also rejected: stopping at the first stage that runs out of
+    time. The later stages (indexing, outcome, episode) call no model and
+    would be lost to one that did.
+    """
+
+    def __init__(self, agent: "TerminalAgent", out=None) -> None:
+        self.agent = agent
+        self.out = out
+        self.skipped_by: int | None = None
+        self._budgeted: bool | None = None
+        self._t0 = 0.0
+        self._total = _LEAVE_STAGE_BUDGET_S
+        self._said_skip = False
+
+    def _say(self, text: str) -> None:
+        stream = self.out or sys.stderr
+        try:
+            stream.write(text + "\n")
+            stream.flush()
+        except Exception:
+            pass                    # a terminal that hung up takes no line
+
+    def _skip(self, name: str) -> None:
+        if not self._said_skip:
+            self._said_skip = True
+            self._say(f"Skipped the rest of the session end, from {name} on. "
+                      "The session is saved.")
+        self.agent._stages_skipped()
+
+    def __call__(self, name: str, fn) -> None:
+        if self._budgeted is None:
+            self._budgeted = self.agent._stages_begin(self)
+            self._t0 = time.monotonic()
+            self._total = _leave_stage_budget_s()
+        if not self._budgeted:
+            fn()
+            return
+        if self.skipped_by is not None:
+            self._skip(name)
+            return
+        left = self._total - (time.monotonic() - self._t0)
+        budget = min(left, _stage_budget_s(name))
+        if budget <= 0:
+            self._say(f"{name}: no time left of the "
+                      f"{self._total:.0f} s session-end budget; not run.")
+            return
+        done = threading.Event()
+
+        def _run() -> None:
+            try:
+                fn()
+            finally:
+                done.set()
+
+        threading.Thread(target=_run, name=f"session end: {name}",
+                         daemon=True).start()
+        start = time.monotonic()
+        said = False
+        while not done.wait(0.1):
+            if self.skipped_by is not None:
+                self._skip(name)
+                return
+            ran = time.monotonic() - start
+            if not said and ran >= _STAGE_SAY_AFTER_S:
+                said = True
+                self._say(f"Finishing the session: {name} (up to "
+                          f"{budget:.0f} s). Ctrl+C skips what is left.")
+            if ran >= budget:
+                self._say(f"{name} did not finish within {budget:.0f} s; "
+                          "left unfinished.")
+                return
+
+
 class TerminalAgent:
     """Reads, runs one turn, renders it, repeats.
 
@@ -1202,6 +1409,15 @@ class TerminalAgent:
         self._idle_interrupts = 0
         self._prev_sigint = None
         self._prev_sigwinch = None
+        # The leave (see begin_leaving): started, its deadline armed, and
+        # whether the caller holds the signals until its save is done.
+        self._leaving = False
+        self._leave_armed = False
+        self._leave_held = False
+        self._leave_gone = False         # armed because the terminal went
+        self._leave_timer = None
+        self._leave_code = 0
+        self._stages = None              # the session-end stages under way
         # How much history was already on disk when this session started.
         self._hist_base = 0
         # Set by the resize handler, acted on by the loop. A signal handler
@@ -1286,6 +1502,8 @@ class TerminalAgent:
         do the writing. Getting that wrong produces interleaved output once
         every few interrupts, which is the worst kind of bug to reproduce.
         """
+        if self._leaving:
+            return              # the leave is under way and has a deadline
         if not self._turn_active.is_set():
             raise KeyboardInterrupt
         self._interrupts += 1
@@ -1439,6 +1657,12 @@ class TerminalAgent:
         denied = bool(getattr(self, "_denied_in_turn", False))
         self.__dict__.pop("_denied_in_turn", None)
         self._note_turn_blocked(result.text, denied=denied)
+        # B4 target 1: a turn that ended blocked IS a wait — register it
+        # so ops health shows on_whom/for_what and the idle poll can
+        # satisfy it. register_once keeps it idempotent. A registry
+        # failure (ValueError, OSError) costs one log line; other errors
+        # propagate.
+        self._register_blocked_wait(result.text, denied=denied)
         self._offer_next_steps()
         self._report_status()
         # For the length-continuation: a length end WITH a tool call is
@@ -2974,6 +3198,79 @@ class TerminalAgent:
         except Exception:
             return
 
+    def _register_blocked_wait(self, text: str = "", denied: bool = False
+                               ) -> None:
+        """A turn that ended blocked registers that wait (B4 target 1).
+
+        Operator finding: on_whom must name who REALLY holds the turn,
+        not always the operator. Classification from what the turn end
+        already knows: a denial or a question waits on the PERSON (an
+        approval, an answer); anything else is the operator.
+        register_once keeps it idempotent.
+
+        Never swallows broadly: only ValueError/OSError from the
+        registry is caught and logged — a wider except here hid two real
+        bugs in wave 17. Everything else propagates, so a test sees it.
+        """
+        try:
+            from .job_wake import _ends_with_open_question as _question
+            from .wait_registry import SessionWaits, register_once
+            # A session with no broker (broker=None) registers no wait, so
+            # ops health and the status footer stay unchanged for every
+            # unsupervised user (operator finding, pty regression: a
+            # "waiting" footer pushed the draft line). Broker presence
+            # alone is NOT the marker: cli.py:2114 builds a broker for
+            # every person at a tty. The documented marker (cli.py:2116):
+            # a person at the keyboard passes --confirm-timeout 0 (wait
+            # for the answer as long as it takes); a session nobody
+            # watches (a wave run in tmux) passes --confirm-timeout > 0.
+            # So: supervised = broker present AND timeout_s > 0 — the
+            # broker's own attribute (terminal_confirm.py:641) decides,
+            # no new flag, no env guess.
+            _broker = getattr(self, "broker", None)
+            if _broker is None or not float(
+                    getattr(_broker, "timeout_s", 0) or 0) > 0:
+                return
+            # The hook's own previous wait is satisfied the moment a new
+            # turn ran: whatever it waited on got its answer. Clear it
+            # before judging THIS turn, so the footer shows at most the
+            # current wait and disappears after an unblocked turn. Waits
+            # on another session's reply are not the hook's footprint and
+            # stay (operator finding 2).
+            _own_values = ("answer", "operator")
+            waits_key = self._presence_key()
+            for old in SessionWaits(waits_key).list():
+                if (str(old.get("kind")) == "message_from"
+                        and str(old.get("value")) in _own_values):
+                    SessionWaits(waits_key).clear(str(old.get("id") or ""))
+            # The session branch was dropped (operator finding 3): the
+            # turn-end hook knows no message recipient, so it was dead
+            # code. on_whom "session" waits are registered by whoever
+            # sends a message and parks on the reply — not here.
+            if denied or _question(text):
+                whom, value, what = "person", "answer", \
+                    "turn ended blocked; waiting on the person"
+            else:
+                whom, value, what = "operator", "operator", \
+                    "turn ended blocked; waiting on the operator"
+            register_once("message_from", value, on_whom=whom,
+                          for_what=what, key=self._presence_key())
+        except (ValueError, OSError) as exc:
+            # OSError too: the registry file is written here at every
+            # turn end — a full disk / a lost lock must cost one record,
+            # not the session's turn loop. Anything else (NameError,
+            # ImportError, TypeError) propagates: that is the bug class
+            # we want loud. The record goes to the session's own failure
+            # log, never to the person's terminal (operator finding,
+            # pty test: a root-logger warning on stderr drew a line onto
+            # the screen). record_failure itself never raises
+            # (failure_log.py:36), so no outer wrapper is added — an
+            # ImportError on this in-package relative import must stay
+            # visible (reviewer finding).
+            from .failure_log import record_failure
+            record_failure("wait_registration", "", str(exc))
+            return
+
     def _checkpoint_session(self) -> None:
         """Save the conversation after a finished turn. Never raises.
 
@@ -3022,18 +3319,35 @@ class TerminalAgent:
         try:
             from . import session_pause as _sp
             if _sp.wake_blocked(self._presence_key()):
+                self._say_nothing_runs()
                 return ""
         except Exception:
             pass
         done = int(getattr(self, "_announce_followups", 0) or 0)
         if done >= self._ANNOUNCE_FOLLOWUP_CAP:
+            self._say_nothing_runs()
             return ""
         self._announce_followups = done + 1
         return note
 
+    def _say_nothing_runs(self) -> None:
+        """The turn ended on an announced step and no follow-up will run
+        (the cap is spent, or the session is paused): say so, or the user
+        reads "I'll do it now" and cannot tell a finished turn from a hung
+        model (bug report davh 414e5a17). Never raises."""
+        try:
+            from .engine import AgentEngine
+            from . import repl_render as rr
+            self.transcript.chrome(rr.notice_line(
+                AgentEngine.NOTHING_RUNS_NOTICE.strip(),
+                theme=getattr(self.transcript, "theme", None)))
+        except Exception:
+            pass
+
     def run(self, first_prompt: str = "") -> int:
         from . import repl_keys as rk
 
+        self._leaving = False
         self._install_sigint()
         self._load_history()
         self._install_completer()
@@ -3083,11 +3397,13 @@ class TerminalAgent:
                             woke = bool(from_wake)
                             pending = text.strip()
                     except EOFError:
+                        self.begin_leaving(0)
                         self.transcript.chrome("")
                         return 0
                     except KeyboardInterrupt:
                         self._idle_interrupts += 1
                         if self._idle_interrupts >= 2:
+                            self.begin_leaving(130)
                             self.transcript.chrome("")
                             return 130
                         self.transcript.chrome(
@@ -3104,6 +3420,7 @@ class TerminalAgent:
                 pending = self._expand_next_step(pending)
                 pending = self._handle_line(pending)
                 if self._quit:
+                    self.begin_leaving(0)
                     return 0
                 if not pending:
                     continue
@@ -3123,6 +3440,7 @@ class TerminalAgent:
                 try:
                     last = self.turn(pending)
                 except KeyboardInterrupt:
+                    self.begin_leaving(130)
                     self.transcript.chrome("")
                     return 130
                 # The turn finished: the conversation goes on disk now,
@@ -3164,6 +3482,7 @@ class TerminalAgent:
                     try:
                         last = self.turn(HarnessText(continuation))
                     except KeyboardInterrupt:
+                        self.begin_leaving(130)
                         self.transcript.chrome("")
                         return 130
                     self._checkpoint_session()
@@ -3182,11 +3501,14 @@ class TerminalAgent:
             # in a dialog -- the terminal is gone and so is the session.
             # Returning (rather than dying) is what saves it for a resume.
             # The deadline comes first: everything after it can hang.
-            self._arm_leave_deadline(left.code)
+            self.begin_leaving(left.code, terminal_gone=True)
             self._stop_for_leaving()
             self._end_what_it_started()
             return left.code
         finally:
+            # Every way out, an exception included, is a leave from here
+            # on: a repeated signal no longer unwinds the cleanup below.
+            self.begin_leaving(1)
             _ctl = self.__dict__.get("_auto")
             if _ctl is not None and getattr(_ctl, "enabled", False):
                 try:
@@ -3233,10 +3555,132 @@ class TerminalAgent:
                 pass
 
     def _on_leave_signal(self, signum, _frame) -> None:
-        """Same rule as the other handlers: never print, only unwind."""
+        """Same rule as the other handlers: never print, only unwind.
+
+        Once the leave has begun, a repeat is ignored: raised again, it
+        would unwind the cleanup or the save that the first one started,
+        and the leave already ends by its deadline.
+        """
+        if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
+            return
         from . import repl_keys as rk
         raise rk.TerminalLeft(signal.Signals(signum).name.lower(),
                               128 + int(signum))
+
+    def _on_held_sigint(self, signum, frame) -> None:
+        """SIGINT outside run() while the leave is held: KeyboardInterrupt
+        as by default; once the leave has begun, ignored during the save
+        and a skip of what is left during the session-end stages."""
+        if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
+            return
+        raise KeyboardInterrupt
+
+    def begin_leaving(self, code: int, *, terminal_gone: bool = False) -> None:
+        """The session is leaving with exit *code*; idempotent.
+
+        From here SIGHUP, SIGTERM and SIGINT are ignored by this agent's
+        handlers. The leave deadline (``_LEAVE_DEADLINE_S``, then
+        ``os._exit(code)``) is armed once: always when the terminal is
+        gone (hangup, SIGHUP, SIGTERM), and for every other way out --
+        ctrl+d at the prompt, /exit, the second idle ctrl+c -- while the
+        caller holds the leave (``leave_held``). Without a holder a
+        returning run() arms nothing: an in-process caller (the service
+        worker, a test) is not ended by a timer it did not ask for.
+        """
+        self._leaving = True
+        if self._leave_armed or not (terminal_gone or self._leave_held):
+            return
+        self._leave_armed = True
+        self._leave_gone = terminal_gone
+        self._leave_code = int(code)
+        self._arm_leave_deadline(code)
+
+    def leave_stages(self) -> "_LeaveStages":
+        """The runner ``cli._end_session`` hands each session-end stage to
+        (``run_stage``); see ``_LeaveStages``."""
+        return _LeaveStages(self)
+
+    def _stages_begin(self, runner: "_LeaveStages") -> bool:
+        """The save is done and the session-end stages start. True when
+        they run under their own budget: an attended leave, held. Its short
+        deadline, which bounded the cleanup and the save, is cancelled.
+        False when the terminal is gone (or nothing holds the leave): the
+        stages run inline under whatever deadline is armed, as before."""
+        if self._leave_gone or not self._leave_held:
+            return False
+        timer = self._leave_timer
+        if timer is not None:
+            timer.cancel()
+            self._leave_timer = None
+        self._leave_armed = False
+        self._stages = runner
+        return True
+
+    def _stages_skipped(self) -> None:
+        """Ctrl+C, SIGHUP or SIGTERM during the stages: what is left is
+        skipped and the process ends within the short deadline, kept armed
+        past ``leave_held`` (the session is saved by now)."""
+        if self._leave_armed:
+            return
+        self._leave_armed = True
+        self._leave_gone = True
+        self._arm_leave_deadline(self._leave_code)
+
+    @contextlib.contextmanager
+    def leave_held(self):
+        """For the owner of the process that saves the session after run().
+
+        Input: none. Inside the block, SIGHUP and SIGTERM take the REPL's
+        leave handler and SIGINT ``_on_held_sigint``, so run()'s restore
+        returns to them instead of to the defaults; every way out of run()
+        arms the leave deadline. Once the leave has begun, a repeated
+        signal is ignored until the block ends, so the save after run()
+        is ended only by the deadline or by SIGKILL. On exit the previous
+        handlers are back. A deadline armed because the terminal went
+        stays armed (as before), and bounds the session-end stages too.
+        One armed by ctrl+d, /exit or ctrl+c bounds the cleanup and the
+        save; the stages after it run under their own budget
+        (``_LeaveStages``), and whatever is still armed at the end of the
+        block is cancelled, so it never outlives the leave in a process
+        that goes on (``main()`` called in-process: os._exit(0) there
+        would end a test run with exit status 0).
+
+        Rejected: restoring the defaults at the end of run(), as before.
+        A second SIGHUP or SIGTERM then ended the process by the default
+        action in the middle of ``_finish_interactive_session``'s save,
+        and a SIGINT raised KeyboardInterrupt there (exit 130).
+        """
+        held: dict = {}
+        for name, handler in (("SIGHUP", self._on_leave_signal),
+                              ("SIGTERM", self._on_leave_signal),
+                              ("SIGINT", self._on_held_sigint)):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                held[sig] = signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+        self._leave_held = True
+        try:
+            yield self
+        finally:
+            self._leave_held = False
+            self._stages = None
+            timer = self._leave_timer
+            if self._leave_armed and not self._leave_gone and timer:
+                timer.cancel()
+                self._leave_timer = None
+                self._leave_armed = False
+            for sig, prev in held.items():
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, OSError, TypeError):
+                    pass
 
     def _restore_leave_signals(self) -> None:
         for sig, prev in (getattr(self, "_prev_leave", None) or {}).items():
@@ -3289,6 +3733,7 @@ class TerminalAgent:
         timer = threading.Timer(_LEAVE_DEADLINE_S, os._exit, args=(code,))
         timer.daemon = True
         timer.start()
+        self._leave_timer = timer
 
     def _install_sigwinch(self) -> None:
         """Notice the window changing size.
@@ -3825,8 +4270,11 @@ class TerminalAgent:
             if not messages:
                 return ""
             for message in messages:
-                sender = (message.get("from_title") or message.get("from")
-                          or "an operator")
+                # Named only when its signature checks (session_messages).
+                sender = _msgs.sender_label(message)
+                # The senders this delivery carried, so the wake path can
+                # satisfy a message_from wait for them (package KG1).
+                self.__dict__.setdefault("_mail_senders", []).append(sender)
                 # The text too, not only the sender: the message becomes
                 # the next prompt, and a prompt is not echoed. Somebody
                 # watching the pane has to be able to read what arrived.
@@ -3919,9 +4367,28 @@ class TerminalAgent:
         # finished job must not switch off a person.
         self._announce_presence()       # the poll doubles as the heartbeat
         mail = self._operator_messages(typed)
+        # Package KG1 phase 3: a registered WAIT wakes the session when its
+        # event arrives (or its deadline passes), with a note naming the
+        # event. It fires once (due consumes what it fires), and only when
+        # nothing is typed -- the same guards the mail path already holds.
+        # A delivered message satisfies a message_from wait for its sender;
+        # the mail itself becomes the prompt, the note is merged under it.
+        try:
+            from .wait_registry import due as _due, wait_note
+            events = [("message_from", s)
+                      for s in self.__dict__.pop("_mail_senders", [])]
+            hits = _due(_time.time(), events, key=self._presence_key())
+        except Exception:
+            hits = []
         if mail:
             self._wake_kind = "mail"
+            if hits:
+                mail = mail + "\n" + "\n".join(wait_note(w) for w in hits)
             return HarnessText(mail)
+        if hits:
+            notes = "\n".join(wait_note(w) for w in hits)
+            self._wake_kind = "wait"
+            return HarnessText(notes)
         try:
             from . import job_wake
             if not job_wake.wake_enabled():
@@ -3998,6 +4465,7 @@ class TerminalAgent:
                 self._BACKGROUND_STATUS_EVERY_S:
             return getattr(self, "_bg_status", "")
         self._bg_status_at = now
+        wait_line = self._wait_status()
         try:
             from . import background_view as _bgv
             view = _bgv.collect(self.opts.cwd)
@@ -4006,7 +4474,30 @@ class TerminalAgent:
             self._bg_status = _bgv.status_line(view, now=self._bg_now)
         except Exception:
             self._bg_status = ""
+        if wait_line:
+            self._bg_status = (wait_line + " | " + self._bg_status) \
+                if self._bg_status else wait_line
         return self._bg_status
+
+    def _wait_status(self) -> str:
+        """The registered waits, in one line under the input area.
+
+        Package KG1 phase 3: a session parked on a wait must SHOW that it
+        is waiting and WHAT for -- otherwise an idle terminal reads as a
+        dead one, and the person has no way to see (or clear) the thing
+        that suppresses the nudges. Never raises: a decoration.
+        """
+        try:
+            from .wait_registry import SessionWaits
+            waits = SessionWaits(self._presence_key()).list()
+            if not waits:
+                return ""
+            rows = ", ".join(
+                f"{w.get('kind')}={w.get('value')}" for w in waits[:4])
+            more = "" if len(waits) <= 4 else f" (+{len(waits) - 4})"
+            return f"waiting: {rows}{more}"
+        except Exception:
+            return ""
 
     def _bg_status_selected(self, selected: int | None) -> str:
         """The status line with one row marked, from the cached view.

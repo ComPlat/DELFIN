@@ -105,10 +105,9 @@ def _git_branch(workspace: Path | None) -> str:
     if workspace is None:
         return ""
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(workspace), capture_output=True, text=True, timeout=2,
-        )
+        from . import safe_git
+        out = safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"], workspace,
+                           timeout=2)
         if out.returncode == 0:
             name = out.stdout.strip()
             if name == "HEAD":

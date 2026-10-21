@@ -692,6 +692,59 @@ def test_a_tool_that_cannot_do_the_job_is_installed_when_it_is_needed(monkeypatc
     assert 'Settings' in second['status'], 'say where the output can be read'
 
 
+def test_an_install_is_found_although_an_older_xtb_was_found_first(
+        monkeypatch, tmp_path):
+    """The resolver's cached answer does not outlive an install.
+
+    Input: an xtb 6.6.1 on PATH, found once (so qm_runtime caches it under
+    the current environment), and an install that puts xtb 6.7.1 into the
+    qm_tools root, which the chain searches before PATH.
+    Output: ensure_binary reports the new binary, ok.
+
+    Without the cache being cleared the environment key is unchanged, the
+    cached 6.6.1 still exists, and resolve_tool returns it: the install
+    succeeded and was reported as "Installing one did not put it right".
+    The same mask kept a real xtb installed mid-run in CI shard 2 of
+    PR #278 behind the test stand-in for the rest of that shard.
+    """
+    from delfin.dashboard import gfn_optimize as gfn
+    from delfin.qm_runtime import clear_resolver_cache
+
+    def fake_xtb(path, version):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"#!/bin/sh\necho 'xtb version {version}'\n")
+        path.chmod(0o755)
+
+    old = tmp_path / "old" / "xtb"
+    root = tmp_path / "qm_tools"
+    fake_xtb(old, "6.6.1")
+    (root / "bin").mkdir(parents=True)
+    monkeypatch.setenv("DELFIN_QM_TOOLS_ROOT", str(root))
+    monkeypatch.setenv("PATH", f"{old.parent}{os.pathsep}/usr/bin{os.pathsep}/bin")
+    monkeypatch.delenv("XTBHOME", raising=False)
+    monkeypatch.delenv("DELFIN_AUTO_INSTALL_QM_TOOLS", raising=False)
+    monkeypatch.setattr(gfn, "_AUTO_TRIED", set())
+    gfn._XTB_JUDGED.clear()
+    clear_resolver_cache()
+
+    assert gfn.find_xtb() == str(old), "the precondition: 6.6.1 is found first"
+
+    def fake_install(on_line=None, timeout=0, tool="xtb"):
+        fake_xtb(root / "bin" / "xtb", "6.7.1")
+        return {"ok": True, "binary": None, "status": "installed"}
+
+    monkeypatch.setattr(gfn, "install_xtb", fake_install)
+    try:
+        outcome = gfn.ensure_binary("gfn2")
+    finally:
+        clear_resolver_cache()
+        gfn._XTB_JUDGED.clear()
+
+    assert outcome["installed"] is True
+    assert outcome["path"] == str(root / "bin" / "xtb"), outcome
+    assert outcome["ok"] is True, outcome["status"]
+
+
 def test_the_automatic_install_can_be_switched_off(monkeypatch):
     """On a cluster with no network it is only a wait."""
     from delfin.dashboard import gfn_optimize as gfn

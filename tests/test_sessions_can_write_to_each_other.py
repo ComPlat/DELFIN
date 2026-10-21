@@ -38,8 +38,12 @@ def test_a_message_waits_until_it_is_taken_once():
 
 
 def test_a_message_never_reads_as_the_user():
-    text = M.render({"from": "A", "from_title": "collector", "text": "done"})
-    assert "not from the user" in text and 'to="A"' in text and text.endswith("done")
+    text = M.render({"from": "A", "from_title": "collector", "text": "done",
+                     "verified": True})
+    assert "not from the user" in text and 'to="A"' in text
+    # The sender's text follows the header, inside its own fence.
+    from delfin.agent import untrusted
+    assert untrusted.unwrap(text[text.index("\n") + 1:]) == "done"
 
 
 def _call(perms, **arguments):

@@ -1356,7 +1356,7 @@ Switch with `/mode`. Older mode names (`quick`, `reviewed`, `tdd`, `cluster`, `f
 | `kit` | `KIT_TOOLBOX_API_KEY` | University-hosted, OpenAI-compatible |
 | `ollama` | none | Any OpenAI-compatible endpoint: Ollama, vLLM, LM Studio, llama.cpp-server. `OLLAMA_HOST`, default `http://localhost:11434` |
 
-Choose with `--provider` / `--model` or `/model`. DELFIN detects each model's real context window and its tool, vision and reasoning support — live from the endpoint where that is possible, otherwise from a built-in table — and sizes context management to it. For Ollama it sends the matching `num_ctx`, so a local model is not silently capped.
+Choose with `--provider` / `--model` or `/model`. Without `--provider` and without a provider in the settings file, a model id that names its provider chooses it (`kit.` / `azure.` → kit, `name:tag` → ollama, `gpt-` / `o1` / `o3` / `o4` → openai, `claude` → claude) and the start notes say so; `--provider` always wins. DELFIN detects each model's real context window and its tool, vision and reasoning support — live from the endpoint where that is possible, otherwise from a built-in table — and sizes context management to it. For Ollama it sends the matching `num_ctx`, so a local model is not silently capped.
 
 **A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
 
@@ -1500,7 +1500,7 @@ The strongest layer: `bash`, `bash_background` and `run_tests` run each command 
 }
 ```
 
-`runtime` is `auto` (the first of Apptainer, Singularity, Podman, Docker that is installed and has the image), or one of them by name; a named runtime is never swapped for another. `image` empty means `docker.io/library/python:3.11-slim` for Podman and Docker, and `~/.local/share/delfin/containers/python_3.11-slim.sif` for Apptainer. Any image works that has `/bin/bash`; put the tools your commands need into it (a module system or a conda environment of the host is not visible inside unless it lies in a session directory).
+`runtime` is `auto` (the first of Apptainer, Singularity, Podman, Docker that is installed and has the image), or one of them by name; a named runtime is never swapped for another. `image` empty means `docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce` (python:3.11-slim pinned by the digest of its image index; a copy pulled by tag is not used) for Podman and Docker, and `~/.local/share/delfin/containers/python_3.11-slim.sif` for Apptainer. Any image works that has `/bin/bash`; put the tools your commands need into it (a module system or a conda environment of the host is not visible inside unless it lies in a session directory).
 
 Inside the container the writable workspace roots (and the git metadata of a worktree) are mounted read-write, read-only and confirm-write roots, git hooks and the approvals directory read-only, credential directories inside a mounted root are covered, and nothing else of your home exists. The command runs as your uid, without capabilities, with no-new-privileges, on a read-only root filesystem, without network. Only `agent.sandbox_network.mode = "open"` gives it the runtime's normal network; the egress proxy is not reachable from inside a container, so `proxy` means no network here. The permission gate still reads every command first.
 
@@ -1511,7 +1511,7 @@ If no runtime is installed or the image is missing, commands fall back to bubble
 <!-- recipe: not-runnable — pulls a container image from a registry; needs Apptainer on an HPC login node -->
 ```bash
 mkdir -p ~/.local/share/delfin/containers
-apptainer pull ~/.local/share/delfin/containers/python_3.11-slim.sif docker://python:3.11-slim
+apptainer pull ~/.local/share/delfin/containers/python_3.11-slim.sif docker://docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 ```
 
 Requires Apptainer 1.1 or SingularityCE 3.8 or newer (`--no-mount hostfs,bind-paths`, so the site's default bind paths are not mounted). An image with your own software: `apptainer build my.sif my.def`, then set `"image": "/path/to/my.sif"`.
@@ -1520,7 +1520,7 @@ Requires Apptainer 1.1 or SingularityCE 3.8 or newer (`--no-mount hostfs,bind-pa
 
 <!-- recipe: not-runnable — pulls a container image from a registry; needs Podman or Docker -->
 ```bash
-podman pull docker.io/library/python:3.11-slim     # or: docker pull python:3.11-slim
+podman pull docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce     # or: docker pull docker.io/library/python@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 ```
 
 Podman maps your uid into the container (`--userns=keep-id`), so files written in the workspace belong to you. Docker runs with `--user <uid>:<gid>`; with rootless Docker the files can end up owned by a subordinate uid, so prefer Podman there.
@@ -1529,10 +1529,10 @@ Limits: a command's network cannot go through the egress proxy (no network, or o
 
 **The network of programs a command starts.** A script or binary the agent runs reaches the network only through DELFIN's egress proxy. The kernel makes the proxy the only way out: the socket guard (seccomp), a network namespace (bubblewrap), or Landlock's TCP restriction (Linux 6.7+, TCP only). The proxy applies the same domain decisions as `web_fetch`:
 
-- Always reachable: PyPI, conda channels, GitHub, and whatever the session is configured to use (its model endpoint, the workspace's git remotes, the pip/conda indexes from the environment and config files, `agent.sandbox_network.allowed_domains`). SSH git remotes, the SLURM controller and license servers named in `*_LICENSE_FILE` are reached directly.
+- Always reachable: PyPI, conda channels, GitHub, and whatever the session is configured to use (its model endpoint, the workspace's HTTPS git remotes, the pip/conda indexes from the environment and config files, `agent.sandbox_network.allowed_domains`). A remote is the repository's to name, so it counts for reads only: an `http://` remote is treated like an unknown host, and an upload to an HTTPS remote is judged like any upload below. SSH git remotes on GitHub or on a host named in `agent.sandbox_network.allowed_domains`, the SLURM controller and license servers named in `*_LICENSE_FILE` are reached directly; an SSH remote on any other host gets no direct route (the security panel says so once, with the setting).
 - Permission rules: `web_fetch(domain:…)` rules deny, ask or allow first.
 - Unknown domains: you are asked when the session has an approval dialog and is not in plan or bypass mode. Otherwise the request is refused, and the message names the domain and the rule that would allow it.
-- Uploads: a request body above `agent.sandbox_network.upload_ask_bytes` (default 1 MiB), or any POST/PUT to an unknown host, is asked. With nobody to ask, an upload to a known host passes and is recorded.
+- Uploads: a request body above `agent.sandbox_network.upload_ask_bytes` (default 1 MiB), or any POST/PUT to an unknown host, is asked. With nobody to ask (plan, bypass, a run without an approval channel), a write to a known host -- POST, PUT, PATCH or DELETE over plain HTTP, a body above the limit, or more than that many bytes sent through an HTTPS tunnel -- is refused, and the refusal names the setting; downloads keep working. Name a host in `agent.sandbox_network.upload_domains` to let it receive uploads unattended; the session's own model endpoint is always allowed. A plain `git push` to a GitHub remote is not affected: DELFIN runs it itself, outside the sandbox and the proxy, behind its own push checks (a push nobody asked for is refused). Pushes over SSH reach the remote directly and are not affected either. Affected are uploads a command makes through the proxy: `curl`/`gh api` writes, a package upload, and a `git push` over HTTPS that DELFIN's push path does not take (a non-GitHub host, a force or delete refspec, other flags) -- for those, name the host. A host added to the list while a session runs takes effect at the next start.
 
 `agent.sandbox_network.mode` is `"proxy"` (default), `"none"` or `"open"`. A session reads it at start and cannot loosen it while it runs. Where the host has none of the three layers, the startup banner, the security panel and `delfin-agent doctor` ("command network") say so.
 
@@ -1598,7 +1598,7 @@ Whether a command is held by a filesystem layer (bubblewrap, Landlock or Seatbel
 
 | Start mode | Attended | Nobody to ask (`-p` from a script, a pipe) |
 |------------|----------|---------------------------------------------|
-| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is judged by the action classifier and runs only when it allows |
+| `bypassPermissions` | asked once per session (terminal; in the dashboard, in the approval panel while the session runs in `default`); yes keeps it, no starts in `default` | starts in `default`, with a notice on stderr; a command off the auto-allow list is refused (reads, workspace writes, the test runner and the auto-allowed commands still run) |
 | `acceptEdits` | starts, with a notice | starts, with a notice |
 | `default`, `plan` | unchanged | unchanged |
 
@@ -1921,7 +1921,7 @@ The dialog shows a code; you confirm by typing it. For a **public** repository (
 
 **What the check refuses.** Credentials, keys and tokens; email addresses; your home path, account and machine names; machine references (absolute paths, `user@host`, job ids); licensed or internal markers (CSD refcodes and refcode-shaped tokens, "unpublished", "confidential", terms you list in `agent.knowledge.unpublished_terms`); text written about one person or session ("I", "yesterday"); text that reads like an approval; and any instruction about permissions, checks, the sandbox or DELFIN's protected files. For a public repository it also refuses host and node names, `@handles`, numbers and values with units, sample and project names, URLs other than doi.org and arxiv.org, and evidence pointers that only mean something on your machine. The check never rewrites your text: you reword and share again. A published value can be released for one share with `release=<value>`; personal data and instructions cannot.
 
-**Withdrawing.** `/unshare <entry>` prepares a branch that removes your own entry, or only your name from an entry several people wrote. A removal does not erase text from the git history.
+**Withdrawing.** A global share still waiting in the review queue is withdrawn with `/unshare <queue id>` or `/unshare <lesson id>`, confirmed by a code: the record keeps only its id, dates and the status `withdrawn`. Only the OS account that queued it can do this; once the admin has decided, ask the admin. For an entry already in a repository, `/unshare <entry>` prepares a branch that removes your own entry, or only your name from an entry several people wrote. A removal does not erase text from the git history.
 
 **Where a share lands.** A project share becomes a local branch `delfin-knowledge/<entry>` in that repository; your working tree and index are not touched, nothing is pushed, and the push and pull-request commands are printed for you. A global share goes to the knowledge admin's review queue first: `$DELFIN_KNOWLEDGE_QUEUE`, else `agent.knowledge.queue_dir`, else `~/.delfin/knowledge/queue`. `/memory` shows the outcome, and the admin's reason when an entry is rejected.
 
@@ -1929,7 +1929,7 @@ The dialog shows a code; you confirm by typing it. For a **public** repository (
 
 **Swarm runs.** Agents started for one wave share a run when the orchestrator sets `DELFIN_SWARM_RUN=<run>`; the subagents of a session share one automatically. An agent records a finding with evidence ("test X is flaky, cause Y"); the others see each new finding once, between their tool calls, as data. A finding that tries to change permissions or switch off a check is refused. `/swarm` lists the runs, `/swarm harvest <run>` lists the findings with their evidence, `/swarm propose <run> <n>` keeps one as your private lesson, and `/swarm close <run>` ends a run and archives it.
 
-**The knowledge admin.** The admins are listed as `knowledge_admins` in the managed policy (`/etc/delfin/managed_policy.json`, written by an administrator; it takes precedence), else as `agent.knowledge_admins` in your settings. An admin is recognised by the operating-system account or the GitHub login, never by the handle you choose for your entries. Everyone can use `/knowledge` (entries by topic), `/knowledge search <words>`, `/knowledge lint`, `/knowledge dupes` (near-duplicates and contradictions) and `/knowledge stats` (expired entries, entries never loaded on this machine, references to files, functions or commands that no longer exist). Only the admin can use `/knowledge queue`, `accept <id>`, `reject <id> <reason>`, `edit <id> lesson=...`, `merge-into <id> <entry>`, `merge <keep> <drop>`, `move <entry> <topic>`, `rename <entry> <new>`, `retire <entry> <reason>`, `index` and `topic add <topic> <description>`. Each one shows the resulting diff, needs the admin's own code (two for the public DELFIN repository) and produces a local branch. The same commands run outside a session as `delfin-agent knowledge <command>`, with the code on the terminal. In CI, `tests/test_knowledge_lint.py` checks every entry: template, topic, length, content rules, duplicates, and that `INDEX.md` matches the entries.
+**The knowledge admin.** The admins are listed as `knowledge_admins` in the managed policy (`/etc/delfin/managed_policy.json`, written by an administrator; it takes precedence), else as `agent.knowledge_admins` in your settings. An admin is recognised by the operating-system account (the account of the process's uid, not the `$USER` variable) or the GitHub login, never by the handle you choose for your entries. Everyone can use `/knowledge` (entries by topic), `/knowledge search <words>`, `/knowledge lint`, `/knowledge dupes` (near-duplicates and contradictions) and `/knowledge stats` (expired entries, entries never loaded on this machine, references to files, functions or commands that no longer exist). Only the admin can use `/knowledge queue`, `accept <id>`, `reject <id> <reason>`, `edit <id> lesson=...`, `merge-into <id> <entry>`, `merge <keep> <drop>`, `move <entry> <topic>`, `rename <entry> <new>`, `retire <entry> <reason>`, `index` and `topic add <topic> <description>`. Each one shows the resulting diff, needs the admin's own code (two for the public DELFIN repository) and produces a local branch. The same commands run outside a session as `delfin-agent knowledge <command>`, with the code on the terminal. In CI, `tests/test_knowledge_lint.py` checks every entry: template, topic, length, content rules, duplicates, and that `INDEX.md` matches the entries.
 
 **What is never shared.** Your memories, your lessons until you share them, and swarm findings: none of these is ever written into a repository. Nothing is pushed for you. The agent cannot share, withdraw, confirm or curate, in any permission mode.
 
@@ -1965,9 +1965,11 @@ delfin-agent bug report --session latest -m "the plot came back empty"
 
 `--session` takes `latest` (the newest session of the current directory, or of `--workspace`), a session id, or the first characters of one as `/session ls` prints them. Without `--yes` the same preview and question come first; with no terminal to ask on, `--yes` is required.
 
-All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many.
+All three ways write the same report: conversation, engine messages, tool trace, turn and request timings, refused commands, model/provider/mode/effort/permissions, an allow-listed settings excerpt, versions and git head. Each report records which way it came (`dashboard`, `terminal` or `cli`), and `delfin-agent bug ls` shows it. Before anything is written, every credential DELFIN holds (credential file, keyring, the well-known key variables in the environment) and anything shaped like a key, token or password is redacted; a `REDACTIONS.txt` in the report says how many. If the redaction of a file fails, the file is replaced by a placeholder and `REDACTION_FAILED.txt` names it; the text is never written unredacted. A binary file the session touched is not copied, only listed with its size and sha256.
 
-Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report is also copied there over SSH; the local copy is always kept.
+Reports go to `$DELFIN_BUG_ARCHIVE` if set, else to `agent.bug_archive_dir` in `~/.delfin_settings.json`, else to `~/.delfin/agent_bugs`. To send reports to your group's maintainers, point either one at the shared archive directory, for example `"agent": {"bug_archive_dir": "/path/to/shared/AGENT_BUGS"}`. When a transfer target is configured (`transfer.host`, `transfer.remote_path`), the report can also be copied there over SSH, under `agent.bug_upload` (Settings tab, "Bug upload"): `ask` (the default) copies it only after a yes for that report (a second `[y/N]` naming the destination after `/bug` and `delfin-agent bug report`; in the dashboard, Send under the line naming the host), and with `--yes` or no one to ask the report stays local; `never` keeps every report local; `always` copies without asking, also in unattended runs. The local copy is always kept.
+
+A report also carries your account name, the host name, the workspace path and copies of up to 40 text files the session touched, and it is made readable to the archive directory's group. Reports in a configured or shared archive are not deleted by DELFIN; the per-user fallback folder `~/.delfin/agent_bugs` keeps them for 30 days.
 
 ### MCP servers
 
@@ -1975,7 +1977,18 @@ External Model Context Protocol servers are configured in `~/.delfin/mcp_servers
 
 A tool reached through MCP runs in a process DELFIN did not start a command line for, so the shell sandbox is not around it. Give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it is started inside a namespace holding only those paths. A server that declares neither runs uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all name it as such.
 
+A stdio server and a hook start with the environment DELFIN's shell commands get: no model provider key, no `GH_TOKEN`/`GITHUB_TOKEN`, no AWS or other cloud secret, and no variable whose name ends in a credential marker such as `_TOKEN`, `_SECRET` or `_API_KEY`. A server or hook that needs one names it in its own entry: `"env": {"GH_TOKEN": "${GH_TOKEN}", "MODE": "ci"}` passes `GH_TOKEN` from your environment and sets `MODE`; `"env": ["GH_TOKEN"]` is the short form for passing names unchanged. For a hook, `env` goes on the command entry beside `command`.
+
 DELFIN ships three servers of its own: `delfin-tools-server` (the tool platform), `delfin-docs-server` (literature and calculation search) and `delfin-ops-server` (typed runtime actions). They can take their roots from your settings with `agent.mcp_isolation: "builtin"`.
+
+A server's tool descriptions are pinned the first time the server is seen: a hash of each tool's description and parameters, kept in `~/.delfin/trust_store` (no agent tool can read or write it). If the server later changes a description or its parameters, or offers a new tool, the model is not shown that tool until you accept it. In a session with an approval dialog you are asked once, with the new text; with nobody to ask the tool is withheld and the attention inbox names it. From your own shell:
+
+```bash
+delfin-agent mcp-pins                       # pinned servers and the changes that wait
+delfin-agent mcp-pins accept <server> [tool]
+```
+
+A server is identified by its name and how it is started (command and arguments, or URL); changing that in the configuration pins it anew. DELFIN's own servers are not pinned.
 
 ### Tool groups per workspace
 
@@ -1998,7 +2011,10 @@ delfin-agent sessions            # earlier sessions: id, age, model, task
 delfin-agent where               # which node the dashboard runs on, and how to get back in
 delfin-agent jobs                # watched cluster jobs
 delfin-agent ops status          # checkouts, dashboard servers, session locks, leftovers; changes nothing
+delfin-agent audit verify        # is the audit log intact (no edited, removed or cut-off record); exit 1 if not
 ```
+
+`audit verify` checks `~/.delfin/audit.log` and every rotated week (`--log PATH` for one file, `--json` for the reports). Each record carries the hash of the one before it and a head file holds the last one, so an edited, removed or inserted record, a cut tail and a torn line are named with their line number; records written before the chain existed are counted as legacy. Each record is also signed with a key of your account (in `~/.delfin/trust_store`, which no agent tool reaches), and the trust store notes where the log ended at its last write: a program of your account that rewrites the whole log consistently, strips the signatures, or cuts the end and puts an older head file back, is found as well. Records from before the signatures existed are counted as unsigned and are not an error; an unsigned record after a signed one is. Keep the trust store with the log: without its key, earlier signatures can no longer be checked. If the log cannot be written at all (a full disk, a link in its place), the containment panel and the attention inbox say so once.
 
 `ops status` is the first thing to run when the dashboard or the agent behaves oddly around git or sessions (a branch switch that fails, a save that is refused, a git command that reports a lock). It lists:
 
@@ -2008,6 +2024,24 @@ delfin-agent ops status          # checkouts, dashboard servers, session locks, 
 - **Leftovers:** `index.lock` files and whether a git process of yours is working in that checkout, stale session locks, agent worktrees that nothing uses and that hold nothing outside the main branch.
 
 Every problem ends in one line `problem → safe next step`, for example `main is held by <path>; this dashboard (pid N) runs detached at the same commit → to take the name here: git -C <path> checkout --detach, then git -C <here> switch main`. The command only prints; the steps are yours to run. `--json` prints the same as JSON (schema `delfin.ops_status/1`), `--repo <checkout>` inspects another repository. The agent may run it without asking in every mode that runs shell commands (plan mode runs none); a `--repo` outside its workspace still needs the usual read permission. Inside a sandbox that has its own process namespace, the process list is limited to that sandbox, and the output says so.
+
+#### Supervising running sessions as data
+
+For a person or a script that watches several sessions at once (for example a wave of supervised agent sessions), `delfin-agent ops` gives events and state as JSON lines instead of terminal screens:
+
+```bash
+delfin-agent ops sessions                   # open sessions on this host: branch, HEAD, idle seconds, open approvals, inbox
+delfin-agent ops session <name>             # one of them
+delfin-agent ops approvals                  # what any session waits on
+delfin-agent ops events --follow            # sessions opened/exited/idle, turns ended, approvals open/closed,
+                                            # messages, refused steps, commits
+delfin-agent ops wait --until kind=approval_open --timeout 3600
+delfin-agent ops send <name> --text "..."   # a message, shown to the session as from the operator, never as you
+delfin-agent ops escalate <approval-id>     # put a waiting approval in front of you; it stays open
+delfin-agent ops pause <name> --reason "..."
+```
+
+There is no `ops approve`: an approval is answered by a person, at the session or with `delfin-agent approvals`. A message from `ops send` does not count as something you typed and lifts no refusal. The actions (`send`, `escalate`, `pause`, and `delfin-agent pause`/`resume`) refuse to run from inside an agent session, and the agent's shell refuses their command lines in every spelling, and read from there, `events` names who wrote to whom but keeps the message text back (`text_withheld`). `events` and `wait` keep a cursor per reader (`--cursor NAME`, under `~/.delfin/ops_cursors/`): a new cursor starts at "now", and a reader that restarts with the same cursor neither repeats nor drops an event; events after the one a `wait` matched stay for the next reader. An event is what one look sees against the last, so an approval opened and answered between two looks does not appear, and a message its session took between two looks appears without its text (from the delivery receipt). A `--until` filter that cannot match as written (`kind==x`, `idle_s>=abc`) is an error (exit 2), not a wait. `send` refuses a name no session has. `escalate` names the command that answers; replying to the notice answers nothing. Output is one JSON object per line, ASCII-escaped; `dirty_files` counts tracked files whose size or modification time differ from the index.
 
 `stop-all --check` reads open dashboard sessions, kept sessions, schedules and PID files from the **shared home**, so they are visible from any login node; **agent processes** it can only see on the machine you run it on. Run it on every login node you have used.
 
@@ -2054,7 +2088,7 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `--output-format` | `stream-json`: one JSON object per line while the turn runs; `json`: one object at the end; `text`: the answer only |
 | `--permission-mode` | `plan`, `default`, `acceptEdits` or `bypassPermissions`. **Always pass it**: without it the run takes `default_mode` from your permission settings, or `default` |
 | `--max-turns N` | Ends the turn after N tool rounds, with a notice |
-| `--max-run-seconds S` / `--max-budget-usd USD` | Session ceilings. From 80 % the model is told to wind down, at 100 % to start no new work, and past 110 % no further turn of the session starts; a turn already running is not cut off |
+| `--max-run-seconds S` / `--max-budget-usd USD` | Session ceilings. From 80 % the model is told to wind down; at 100 % a running turn stops between two tool rounds (its work is kept, the session saved, the stop reason names the setting); past 110 % no further turn of the session starts. A run with no terminal on stdin, or with `--unattended`, that sets neither gets the unattended defaults: 8 h, 200 turns, 500 tool rounds per turn where `agent.max_tool_rounds` is 0 (uncapped), and $25 on a model with a published rate (KIT endpoints and local servers bill nothing, so there time and turns are the bound). Inside a SLURM, PBS or LSF job the job's time limit replaces the 8 h. An auto-mode run or loop in the session widens these defaults to its own budget (iterations, wall, tokens) and says so when it starts. Change them in `agent.unattended_budget` (`{"usd": 10, "seconds": 3600, "turns": 50, "tool_rounds": 200}`; 0 lifts one); a flag (`--max-run-turns N` for turns) or `agent.run_budget_usd` / `run_budget_s` / `run_budget_turns` replaces the default. stderr names the ceilings in force; a ceiling that ends the run is named in the turn's notice, its stop reason and the attention inbox, with the command that continues it: `delfin-agent -p "continue where the run stopped" --session <id> --max-run-seconds <higher>` (the clock and turn count carry over a resume, so the flag must exceed what was used) |
 | `--allowed-tools a,b` / `--disallowed-tools a,b` | Narrow the tool surface; a named tool is refused when called, not only hidden. Deny wins. Neither can grant a tool the mode or role forbids; an unknown name is reported on stderr |
 | `--cwd DIR` | The workspace. Your home directory, a parent of it, a system directory and a missing directory are refused (exit 2) |
 | `--session ID` / `--session latest` | Continue a saved session; `latest` is this workspace's last one, or the newest on the machine when the workspace has none. The `session_id` is in the `result` line |

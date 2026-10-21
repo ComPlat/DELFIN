@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from . import safe_git
+
 PASS = "PASS"
 WARN = "WARN"
 FAIL = "FAIL"
@@ -428,13 +430,8 @@ def _check_git_tooling(ctx: dict) -> list[dict]:
         rows.append(_row("git installed", PASS, git))
         missing = []
         for field in ("user.name", "user.email"):
-            try:
-                done = subprocess.run(["git", "config", "--get", field],
-                                      capture_output=True, text=True,
-                                      timeout=10, cwd=cwd)
-                if done.returncode != 0 or not (done.stdout or "").strip():
-                    missing.append(field)
-            except (OSError, subprocess.SubprocessError):
+            done = safe_git.run(["config", "--get", field], cwd, timeout=10)
+            if done.returncode != 0 or not (done.stdout or "").strip():
                 missing.append(field)
         if missing:
             rows.append(_row(
@@ -499,18 +496,16 @@ def _remote_url(workspace: str, remote: str) -> str | None:
     against ``workspace`` because the probe runs elsewhere. None: the
     word is neither a configured remote nor a URL or path.
     """
-    try:
-        done = subprocess.run(["git", "remote", "get-url", "--push", remote],
-                              capture_output=True, text=True, timeout=10,
-                              cwd=workspace, stdin=subprocess.DEVNULL)
-        if done.returncode == 0 and done.stdout.strip():
-            remote = done.stdout.strip()
-        elif not any(c in remote for c in ":/\\") and remote != ".":
-            # A bare word that is not a configured remote: git would fail
-            # with "does not appear to be a git repository".
-            return None
-    except (OSError, subprocess.SubprocessError):
-        pass
+    done = safe_git.run(["remote", "get-url", "--push", remote], workspace,
+                        timeout=10)
+    if done.returncode == 0 and done.stdout.strip():
+        remote = done.stdout.strip()
+    elif (done.returncode not in (safe_git.MISSING, safe_git.TIMED_OUT,
+                                  safe_git.NOT_STARTED)
+          and not any(c in remote for c in ":/\\") and remote != "."):
+        # A bare word that is not a configured remote: git would fail
+        # with "does not appear to be a git repository".
+        return None
     if "://" in remote:
         return remote
     colon, slash = remote.find(":"), remote.find("/")
@@ -777,6 +772,20 @@ _IMPORT_ORDER_PAIRS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _installed(module: str) -> bool:
+    """Whether *module* can be found, without importing it.
+
+    ``find_spec`` on a top-level name reads the path entries only, so it
+    cannot map a shared library into this interpreter -- the reason the
+    pair itself is imported in a subprocess.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _check_loader_path(ctx: dict) -> list[dict]:
     """Can the native stack load in one interpreter, in both orders.
 
@@ -797,6 +806,15 @@ def _check_loader_path(ctx: dict) -> list[dict]:
     rows: list[dict] = []
     py = sys.executable or _sh.which("python3") or "python3"
     for first, second, what in _IMPORT_ORDER_PAIRS:
+        # pymupdf is the optional [pdf] extra. Absent, there is nothing to
+        # load first, and the subprocess would report ModuleNotFoundError
+        # with a remedy about LD_LIBRARY_PATH that does not apply.
+        if not _installed(first):
+            rows.append(_row(
+                "loader path", PASS,
+                f"{first} is not installed, so nothing in the {what} "
+                "pair can load first"))
+            continue
         code = (f"import {first}\n"
                 f"import {second}\n"
                 "print('ok')")

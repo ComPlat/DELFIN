@@ -47,5 +47,5 @@ def test_another_users_scratch_directory_does_not_block_a_run(fresh_scratch):
 
 def test_the_name_is_safe_for_any_user_name(monkeypatch):
     import getpass
-    monkeypatch.setattr(getpass, "getuser", lambda: "ka ew/7404")
-    assert orca._user_scratch_name() == "delfin_orca_scratch-ka_ew_7404"
+    monkeypatch.setattr(getpass, "getuser", lambda: "jane doe/42")
+    assert orca._user_scratch_name() == "delfin_orca_scratch-jane_doe_42"

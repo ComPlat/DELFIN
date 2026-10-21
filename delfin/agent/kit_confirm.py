@@ -259,6 +259,16 @@ class KitConfirmBroker:
         except Exception:
             return None
 
+    def _session_perms(self):
+        """The followed engine's KitToolPermissions, or None (the tab
+        follows the engine through ``follow_activity``)."""
+        source = getattr(self, "_activity_source", None)
+        try:
+            followed = source() if callable(source) else source
+        except Exception:
+            return None
+        return getattr(followed, "kit_permissions", None)
+
     def follow_activity(self, source: Optional[Any]) -> None:
         """Mark each wait for a decision on *source*'s activity state.
 
@@ -665,7 +675,7 @@ class KitConfirmBroker:
         persist_kind = ""        # 'allow_pattern' / 'extra_dir' / ''
         persist_disabled_reason = ""
         if tool == "bash":
-            persist_pat = _suggest_persist_pattern(cmd)
+            persist_pat = _suggest_persist_pattern(cmd, self._session_perms())
             persist_kind = "allow_pattern"
             if not persist_pat:
                 persist_disabled_reason = (
@@ -903,14 +913,17 @@ def _is_protected_path(path_arg: str) -> bool:
     return False
 
 
-def _suggest_persist_pattern(cmd: str) -> str:
+def _suggest_persist_pattern(cmd: str, perms=None) -> str:
     """Regex form for ``~/.delfin/settings.json`` allow_patterns.
 
     Delegates to ``kit_settings.suggest_pattern_for_command`` so the same
-    rules apply that the engine consumes on load.
+    rules apply that the engine consumes on load. ``perms`` is the
+    session's KitToolPermissions: with it, a compound command's rule
+    covers the segments THIS session's gate asked about, its own rules
+    included.
     """
     try:
         from .kit_settings import suggest_pattern_for_command
-        return suggest_pattern_for_command(cmd)
+        return suggest_pattern_for_command(cmd, perms)
     except Exception:
         return ""

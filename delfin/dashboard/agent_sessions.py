@@ -16,7 +16,6 @@ import html
 import json
 import os
 import re
-import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -709,9 +708,9 @@ def _exclude_locally(root: str, common_dir: str, pattern: str = ".delfin/") -> N
     """Keep ``pattern`` out of ``git status`` in this clone only: an entry
     in its info/exclude, nothing committed. Skipped when already ignored."""
     try:
-        probe = subprocess.run(
-            ["git", "-C", root, "check-ignore", "-q", ".delfin/worktrees/probe"],
-            capture_output=True, timeout=5)
+        from delfin.agent import safe_git
+        probe = safe_git.run(["check-ignore", "-q", ".delfin/worktrees/probe"],
+                             root, timeout=5)
         if probe.returncode == 0:
             return
         exclude = Path(common_dir) / "info" / "exclude"

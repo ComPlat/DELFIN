@@ -868,7 +868,7 @@ def ensure_binary(method: Any = None,
     outcome = install_xtb(on_line=on_line, timeout=timeout, tool=tool)
     # Ask again from scratch: the answer kept about the old binary says
     # nothing about the one that has just replaced it.
-    _XTB_JUDGED.clear()
+    _forget_found_binaries()
     now = find_binary(method)
     fixed = judge_xtb(now) if (now and tool == 'xtb') else {'ok': bool(now), 'why': ''}
     if now and fixed['ok']:
@@ -877,6 +877,27 @@ def ensure_binary(method: Any = None,
     return {'path': now, 'installed': True, 'ok': False,
             'status': (f'{tool}: {why}. Installing one did not put it right: '
                        f'{fixed.get("why") or outcome.get("status") or "no reason given"}')}
+
+
+def _forget_found_binaries() -> None:
+    """Drop every remembered xtb lookup and verdict after an install.
+
+    Two caches hold answers about binaries: ``_XTB_JUDGED`` (version
+    verdicts, keyed by path and mtime) and qm_runtime's resolver cache
+    (keyed by the environment). An install changes neither key's input --
+    the environment is the same, and an older xtb further down the chain
+    still exists -- so without this the resolver returned the binary found
+    before the install and a successful install was reported as not having
+    helped (tests/test_tools_that_answer.py,
+    test_an_install_is_found_although_an_older_xtb_was_found_first).
+    """
+    _XTB_JUDGED.clear()
+    try:
+        from delfin.qm_runtime import clear_resolver_cache
+
+        clear_resolver_cache()
+    except Exception:
+        pass
 
 
 def install_xtb(
@@ -939,6 +960,7 @@ def install_xtb(
         except Exception:
             pass
     spent = time.perf_counter() - started
+    _forget_found_binaries()
     binary = find_gxtb() if tool == 'gxtb' else find_xtb()
     name = 'g-xTB' if tool == 'gxtb' else 'xtb'
     if running.returncode == 0 and binary:
@@ -3624,6 +3646,26 @@ _CORE_LADDER = ((30, 4), (60, 8))
 _CORE_CEILING = 16
 
 
+#: OpenBLAS threads for every xtb this module starts.  OMP_NUM_THREADS sets
+#: xtb's own team; a conda-forge xtb is linked against OpenBLAS, which left
+#: alone starts one more thread per CPU it may use and competes with that team
+#: for the same CPUs.  Measured 2026-10-16, conda-forge xtb 6.7.1, GFN2, twenty
+#: cycles: glycine on 4 CPUs 323 ms unset, 34 ms at 1; ibuprofen on 8 CPUs
+#: 9277 ms unset, 269 ms at 1; with CPUs to spare no difference (66 / 68 ms).
+#: See tests/test_xtb_runs_without_competing_blas_threads.py.
+_OPENBLAS_THREADS = '1'
+
+#: And xtb's OpenMP threads sleep at a barrier instead of spinning.  An
+#: interactive run shares its CPUs with the kernel, the browser and whatever
+#: else is on a login node; spinning threads then wait for each other on CPUs
+#: something else holds.  Measured 2026-10-16, Climb.step() on 16 atoms, 4
+#: CPUs: idle 18 ms default, 16 ms here; with four busy processes on the same
+#: CPUs 280 ms default, 22 ms here.  With CPUs to spare relax_steps measured
+#: the same (glycine 68/68 ms, eicosane 270/270 ms); one case lost, 16 threads
+#: on 8 CPUs, 319 against 368 ms.
+_OMP_WAIT_POLICY = 'PASSIVE'
+
+
 def interactive_cores(atoms: Optional[int] = None) -> int:
     """Cores for one interactive run, never more than the machine has.
 
@@ -3776,7 +3818,9 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
                    '-P', str(cores)]
         command += _solvents.xtb_flags(solvation_model, solvent)
         environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
-                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G')
+                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G',
+                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS,
+                           OMP_WAIT_POLICY=_OMP_WAIT_POLICY)
         own = parameter_home(binary)
         if own:
             environment['XTBPATH'] = own
@@ -4088,7 +4132,9 @@ def optimize_with_gfn(
         # A few cores, and a scratch directory of its own: two of these must
         # not fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
-                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G')
+                           MKL_NUM_THREADS=str(cores), OMP_STACKSIZE='1G',
+                           OPENBLAS_NUM_THREADS=_OPENBLAS_THREADS,
+                           OMP_WAIT_POLICY=_OMP_WAIT_POLICY)
         # And the parameters that belong to this binary, not whatever is lying
         # around. xtb reads a `param_gfn2-xtb.txt` from XTBPATH or from the
         # home directory *instead of* the parameters compiled into it, and a

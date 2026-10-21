@@ -43,11 +43,23 @@ _OWNED_SOURCE = ("`git show HEAD:./<name>` of the path the secret-deny "
                  "session's journalled pre-image; the bytes are hashed, "
                  "never returned, and a False only keeps the refusal")
 
+_REVIEWED = ("`git ls-files --error-unmatch` and `git status --porcelain` "
+             "of the path the secret-deny check is deciding (the same "
+             "call site as _session_owned_source), through safe_git; only "
+             "git's answer is used, and a False keeps the refusal. Seen "
+             "by the scan since it reads safe_git calls; the earlier "
+             "`import subprocess as _sp` spelling was not")
+
 #: (executor, function holding the access, sink kind) -> why it needs no
 #: gate.  Each was driven through the real executor in a tmp workspace.
 EXPLAINED = {
     ("_execute_pinned", "_ensure_loaded", "read_text"):
         "the documentation index at get_default_index_path()",
+    ("_execute_pinned", "_read", "read_text"):
+        "_canonical_patch_arguments reads the file a *** Begin Patch "
+        "envelope updates, to place its chunks: resolved inside the "
+        "workspace and refused when it matches a secret deny-glob before "
+        "the read; the diff it builds then meets apply_patch's write gate",
     ("_execute_read_file", "_on_another_sessions_branch", "iterdir"):
         _SIBLINGS,
     ("_execute_edit_file", "_on_another_sessions_branch", "iterdir"):
@@ -58,20 +70,32 @@ EXPLAINED = {
         _SIBLINGS,
     ("_execute_notebook_edit", "_on_another_sessions_branch", "iterdir"):
         _SIBLINGS,
-    ("_execute_grep_file", "_session_owned_source", "subprocess.run"):
+    ("_execute_grep_file", "_session_owned_source", "safe_git.run"):
         _OWNED_SOURCE,
-    ("_execute_apply_patch", "_session_owned_source", "subprocess.run"):
+    ("_execute_grep_file", "_is_reviewed_project_file", "safe_git.run"):
+        _REVIEWED,
+    ("_execute_apply_patch", "_session_owned_source", "safe_git.run"):
         _OWNED_SOURCE,
-    ("_execute_code_nav", "_session_owned_source", "subprocess.run"):
+    ("_execute_apply_patch", "_is_reviewed_project_file", "safe_git.run"):
+        _REVIEWED,
+    ("_execute_code_nav", "_session_owned_source", "safe_git.run"):
         _OWNED_SOURCE,
+    ("_execute_code_nav", "_is_reviewed_project_file", "safe_git.run"):
+        _REVIEWED,
     ("_execute_grep_file", "_gitignore_skip_dirs", "read_text"): _GITIGNORE,
     ("_execute_list_files", "_gitignore_skip_dirs", "read_text"): _GITIGNORE,
     ("_execute_list_files", "_iter_scan_files", "os.walk"):
         "walks perms.workspace or the folder _resolve_in_workspace returned "
         "(reached through `base = resolved`, which the scan does not "
         "follow); an outside path and a symlink to outside are refused",
-    ("_execute_run_tests", "_git_metadata_roots", "subprocess.run"):
+    ("_execute_run_tests", "_git_metadata_roots", "safe_git.run"):
         "git rev-parse in perms.workspace",
+    ("_execute_run_tests", "_caged_readonly_paths", "glob"):
+        "lists ~/.delfin/projects/*/memory (a harness-chosen directory) to "
+        "bind those stores read-only into the cage, only when a writable "
+        "root holds them; nothing is read or returned "
+        "(tests/test_shared_knowledge_and_memory_writes_are_asked_in_"
+        "every_mode.py)",
     ("_execute_grep_file", "_looks_binary", "open"): _GREP_WALK,
     ("_execute_grep_file", "_looks_binary", "read"): _GREP_WALK,
     ("_execute_grep_file", "_execute_grep_file", "open"): _GREP_WALK,

@@ -267,7 +267,8 @@ def test_an_acting_command_is_asked_when_someone_can_ask(ws, ran, mode, cmd):
     assert ran == [], f"{cmd!r} ran unasked in {mode}: {out}"
     # Asked -- or refused outright by an earlier tier (the secret-path
     # deny for `credentials`, the approval guard for `approvals
-    # approve|deny|answer`), which is stricter than asking.
+    # approve|deny|answer` and for the operator's pause and resume),
+    # which is stricter than asking.
     assert [c for (_n, c) in asked] == [cmd] or (
         asked == [] and '"error"' in out), (cmd, mode, asked, out)
 
@@ -402,7 +403,11 @@ def test_another_module_still_runs_unasked(ws, ran, cmd):
 CAGED_ACTING = [c for c in ACTING
                 if c != "delfin/scripts/run_all.sh"
                 and "credentials" not in c
-                and not c.startswith("delfin-agent approvals ")] + [
+                and not c.startswith("delfin-agent approvals ")
+                # Refused outright in every mode, like an approval answer
+                # (approval_guard.operator_command).
+                and not c.startswith(("delfin-agent pause ",
+                                      "delfin-agent resume "))] + [
     "~/bin/delfin-agent stop-all --yes",
     "/opt/env/bin/delfin --recalc",
     "timeout 60 delfin-agent bench run",

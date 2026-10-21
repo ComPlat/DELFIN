@@ -10,6 +10,7 @@ into a real session's next turn.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -79,8 +80,10 @@ _GENERATED_ROOTS = (
 # Build noise: byte-code caches and tool caches created by running at all,
 # plus the worktrees parallel agents check out under `.claude`, which are
 # separate working copies with their own runs going on in them.
+# Not ".hypothesis": the property-based tests' cache goes to a directory of
+# the session's own (pytest_configure), so one in the checkout is a leak.
 _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
-                   ".ruff_cache", ".hypothesis",
+                   ".ruff_cache",
                    ".claude", ".venv", "node_modules",
                    # The gate/coordination directory the operator and the
                    # swarm workers write their controls, control runs and
@@ -446,6 +449,75 @@ def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
         tempfile.tempdir = previous
 
 
+try:  # pytest >= 7.3: the per-phase pass/fail record the retention policy reads
+    from _pytest.tmpdir import tmppath_result_key as _TMPPATH_RESULT_KEY
+except ImportError:  # pragma: no cover - older pytest has no retention policy
+    _TMPPATH_RESULT_KEY = None
+from _pytest.pathlib import make_numbered_dir as _make_numbered_dir  # noqa: E402
+
+_TMP_SHARDS = pytest.StashKey[dict]()
+
+
+@pytest.fixture
+def tmp_path(request, tmp_path_factory):
+    """pytest's ``tmp_path``, created in one numbered directory per test module.
+
+    Input: the requesting test. Output: a new, empty directory
+    ``<basetemp>/t<k>/<test name as pytest truncates it><n>``. ``t<k>`` is
+    made once per module and session; the inner name and numbering are
+    pytest's own (``_pytest.tmpdir._mk_tmp``). The retention policy is
+    applied as pytest applies it: under ``tmp_path_retention_policy =
+    "failed"`` the directory of a passing test is removed at teardown,
+    ``"all"`` (the default) and ``"none"`` keep it, and the per-run cleanup
+    of whole ``pytest-<N>`` base directories is untouched.
+    ``tmp_path_factory`` and ``getbasetemp()`` are unchanged, and every
+    ``tmp_path`` stays under ``gettempdir()``
+    (``test_the_suite_leaves_no_scratch_behind``).
+
+    Why: ``make_numbered_dir`` lists its parent to find the next free
+    number. In pytest's flat layout the parent is the base directory, which
+    holds one entry per test run so far, plus the ``-settings`` and
+    ``-approval-codes`` siblings of each and every bare ``mkdtemp``. Test
+    *k* scans ~1.3*k entries, so the run is O(N^2): ~420 s of a 36 min CI
+    run at 29 300 tests, the per-test p10 rising linearly from 3 ms to
+    28 ms over a local run (2026-10-15). Here the base holds one entry per
+    module (~1800) and a shard at most its own module's tests (largest
+    ~970). Measured on two paired local full runs: -405 s and -447 s, the
+    per-test p10 flat at 1 ms, the identical pass set.
+
+    Rejected: a ``mkdtemp`` shard named after the module -- paths grew by
+    the module name and two tests that measure path-length budgets went
+    red (5018 > 5000 characters). An unnumbered ``mkdtemp`` per test loses
+    pytest's ``<name><n>`` naming that failure output shows. The shard
+    here costs 4-6 characters of path.
+    """
+    store = request.config.stash.setdefault(_TMP_SHARDS, {})
+    base = tmp_path_factory.getbasetemp()
+    key = (str(base), request.node.nodeid.split("::", 1)[0])
+    shard = store.get(key)
+    if shard is None or not shard.is_dir():
+        shard = store[key] = _make_numbered_dir(root=base, prefix="t")
+    name = re.sub(r"[\W]", "_", request.node.name)[:30]
+    path = _make_numbered_dir(root=shard, prefix=name, mode=0o700)
+    yield path
+
+    if _TMPPATH_RESULT_KEY is None:
+        return
+    result = request.node.stash.get(_TMPPATH_RESULT_KEY, {})
+    policy = getattr(tmp_path_factory, "_retention_policy", "all")
+    if policy == "failed" and result.get("call", True):
+        import shutil
+        shutil.rmtree(path, ignore_errors=True)
+        # pytest removes dead ``<name>current`` links in the base only.
+        link = shard / f"{name}current"
+        if link.is_symlink() and not link.exists():
+            link.unlink(missing_ok=True)
+    try:
+        del request.node.stash[_TMPPATH_RESULT_KEY]
+    except KeyError:
+        pass
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_opens_no_browser():
     """No test reaches the developer's browser.
@@ -736,6 +808,37 @@ def _isolate_shared_ledgers():
 _XTB_STUB_DIR = Path(__file__).resolve().parent / "stubs"
 
 
+#: Process-wide as well as per test (the fixture below): a worker thread a
+#: test started can outlive it, and a per-test monkeypatch is undone at
+#: teardown. Measured 2026-10-15, test_gfn_methods_in_the_viewer.py alone
+#: with no xtb reachable and the per-test setting only: structure-editor
+#: worker threads of one test reached ensure_binary while the next test
+#: was in setup, and wrote xtb 6.7.1 into delfin/qm_tools/.mamba_env of the
+#: checkout 5 s into the run (test_the_switch_holds_between_tests_as_well).
+os.environ["DELFIN_AUTO_INSTALL_QM_TOOLS"] = "0"
+
+
+@pytest.fixture(autouse=True)
+def _no_test_installs_a_tool(monkeypatch):
+    """DELFIN_AUTO_INSTALL_QM_TOOLS=0 for every test.
+
+    Input: none. Output: ensure_binary (gfn_optimize) and
+    qm_health.ensure_tool refuse with "Automatic installation is switched
+    off" instead of running install_qm_tools.sh.
+
+    The default is on, and a test that reached optimize_with_gfn with no
+    usable xtb started a conda install into the tool root: the checkout's
+    delfin/qm_tools on CI, the user's ~/.delfin/qm_tools elsewhere. Every
+    later test in the process then resolved that real xtb before the
+    stand-in, so tests that read xtb's results passed only after the
+    download and failed when run alone or in another CI shard (PR #278).
+    A test that needs a real xtb asks for ``real_xtb`` and skips without
+    one; tests of the install path delete the variable and replace
+    ``install_xtb`` themselves.
+    """
+    monkeypatch.setenv("DELFIN_AUTO_INSTALL_QM_TOOLS", "0")
+
+
 @pytest.fixture
 def xtb_on_path(monkeypatch):
     """Supply xtb for a test instead of skipping the test.
@@ -822,9 +925,14 @@ def _reset_workspace_trust_caches():
     refusals have already been reported. Both would otherwise leak from one
     test's tmp workspace into the next one's assertions."""
     from delfin.agent import workspace_trust as wt
+    from delfin.agent import mcp_client as _mcp
     wt.reset_announcements()
+    # The MCP pins live in each test's trust store; the answers and the
+    # withheld tools of one test are its process state, not the next's.
+    _mcp.forget_pin_decisions()
     yield
     wt.reset_announcements()
+    _mcp.forget_pin_decisions()
 
 
 @pytest.fixture(autouse=True)
@@ -1148,6 +1256,22 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
 
     monkeypatch.setattr(_approval_code, "codes_dir", _codes_dir)
 
+    # The account key store, beside tmp_path for the same reason. Unlike
+    # the code directory its Landlock hide is kept inside a write root
+    # (api_client._landlock_hide_paths), which costs that root the right
+    # to create files at its top: with the store under tmp_path, every
+    # test whose workspace is tmp_path could no longer create a file
+    # there on a host without bubblewrap (the CI runners).
+    from delfin.agent import trust_store as _trust_store
+    store_home = tmp_path.parent / f"{tmp_path.name}-trust-store"
+
+    def _store_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "trust_store"
+        return store_home
+
+    monkeypatch.setattr(_trust_store, "store_dir", _store_dir)
+
 
 # ---------------------------------------------------------------------------
 # The sandbox-escape gate
@@ -1296,6 +1420,49 @@ _SLOW_TEST_FILES = frozenset({
 })
 
 
+_HYPOTHESIS_STORE: dict[str, str | None] = {}
+
+
+def _hypothesis_store_outside_the_checkout() -> None:
+    """Point hypothesis's storage at a directory of this session.
+
+    hypothesis writes ``<cwd>/.hypothesis`` (the unicode table it caches
+    for text strategies, the constants it collects from the code under
+    test) even with ``database=None``: one run of the parser property
+    tests from the checkout root left ``.hypothesis/`` beside
+    pyproject.toml. The variable reaches every process a test starts; the
+    directory is created only when hypothesis writes, and removed at the
+    end of the session.
+
+    Rejected: a ``settings`` profile -- it sets the example database, not
+    the storage directory the unicode table and constants go to.
+    """
+    import os
+    import tempfile
+    where = os.path.join(tempfile.gettempdir(), f"delfin-hypothesis-{os.getpid()}")
+    _HYPOTHESIS_STORE["dir"] = where
+    _HYPOTHESIS_STORE["was"] = os.environ.get("HYPOTHESIS_STORAGE_DIRECTORY")
+    os.environ["HYPOTHESIS_STORAGE_DIRECTORY"] = where
+    try:  # already imported by its pytest plugin; the location is read once
+        from hypothesis.configuration import set_hypothesis_home_dir
+    except ImportError:
+        return
+    set_hypothesis_home_dir(where)
+
+
+def _hypothesis_store_removed() -> None:
+    import os
+    import shutil
+    where = _HYPOTHESIS_STORE.pop("dir", None)
+    was = _HYPOTHESIS_STORE.pop("was", None)
+    if was is None:
+        os.environ.pop("HYPOTHESIS_STORAGE_DIRECTORY", None)
+    else:
+        os.environ["HYPOTHESIS_STORAGE_DIRECTORY"] = was
+    if where:
+        shutil.rmtree(where, ignore_errors=True)
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -1305,12 +1472,14 @@ def pytest_configure(config):
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    _hypothesis_store_outside_the_checkout()
 
 
 def pytest_unconfigure(config):
     import os
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
+    _hypothesis_store_removed()
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -1345,6 +1514,31 @@ def pytest_collection_modifyitems(config, items):
         fname = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if fname in _SLOW_TEST_FILES:
             item.add_marker(pytest.mark.slow)
+
+
+_PACKAGE_AST_LAST: list = []
+
+
+def pytest_collection_finish(session):
+    """Name the last test of the run whose module uses ``_package_ast``.
+
+    After the final deselection (``-m``, ``-k``), so the name is one that
+    runs. ``pytest_runtest_logfinish`` drops the shared trees (~740 MB)
+    once that test is through; without a consumer nothing is held.
+    """
+    import _package_ast
+    _PACKAGE_AST_LAST.clear()
+    for item in session.items:
+        module = getattr(item, "module", None)
+        if module is not None and any(
+                value is _package_ast for value in vars(module).values()):
+            _PACKAGE_AST_LAST[:] = [item.nodeid]
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    if _PACKAGE_AST_LAST and nodeid == _PACKAGE_AST_LAST[0]:
+        import _package_ast
+        _package_ast.release()
 
 
 @pytest.fixture(autouse=True)

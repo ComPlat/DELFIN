@@ -561,6 +561,7 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".anthropic", ".openai", ".claude",
     ".delfin/credentials.json",
     ".delfin/approval_codes",
+    ".delfin/trust_store",
 )
 
 

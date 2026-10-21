@@ -144,6 +144,35 @@ def test_every_module_and_symbol_exists():
     assert missing == [], f"symbols named but not defined: {missing}"
 
 
+_DOTTED = re.compile(r"^delfin(?:\.[a-z_][a-z0-9_]*)+(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def test_every_fully_qualified_name_exists():
+    """``delfin.pkg.module`` names a module file; ``delfin.pkg.module.Symbol``
+    a module that defines the symbol -- for the parts outside
+    ``delfin/agent`` (the dashboard server's modules)."""
+    checked, missing = 0, []
+    for span in sorted(set(_spans(_doc_text()))):
+        if not _DOTTED.match(span):
+            continue
+        parts = span.split(".")
+        checked += 1
+        as_module = ROOT.joinpath(*parts)
+        if as_module.with_suffix(".py").is_file() or (as_module / "__init__.py").is_file():
+            continue
+        module = ROOT.joinpath(*parts[:-1]).with_suffix(".py")
+        if not module.is_file():
+            missing.append(f"{span} (no module {module.relative_to(ROOT)})")
+            continue
+        text = module.read_text(encoding="utf-8")
+        symbol = re.escape(parts[-1])
+        if not re.search(rf"^(?:def|class|async def) {symbol}\b|^{symbol}\s*[:=]",
+                         text, re.MULTILINE):
+            missing.append(span)
+    assert checked >= 3, checked
+    assert missing == [], f"names that do not exist: {missing}"
+
+
 def test_every_bare_module_name_exists():
     """A bare identifier is a module where the document says so: the names
     it introduces as the implementation of a layer."""

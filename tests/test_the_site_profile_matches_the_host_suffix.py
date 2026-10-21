@@ -14,7 +14,7 @@ from delfin import slurm_submit
 
 
 @pytest.mark.parametrize("fqdn, expected", [
-    ("uc3n990.localdomain.hpc.scc.kit.edu", "bwunicluster3"),
+    ("login01.localdomain.hpc.scc.kit.edu", "bwunicluster3"),
     ("login1.scc.kit.edu", "bwunicluster3"),
     ("scc.kit.edu", "bwunicluster3"),
     ("scc.kit.edu.example.org", ""),
@@ -29,5 +29,5 @@ def test_the_domain_must_be_the_suffix(monkeypatch, fqdn, expected):
 
 def test_a_uc3_host_name_still_counts(monkeypatch):
     monkeypatch.setattr(slurm_submit.socket, "getfqdn", lambda: "x.example.org")
-    monkeypatch.setenv("HOSTNAME", "uc3n990")
+    monkeypatch.setenv("HOSTNAME", "uc3-login01")
     assert slurm_submit.detect_site_profile() == "bwunicluster3"

@@ -10,8 +10,8 @@ names in ``DELFIN_SHARED_CHECKOUT``. Everyone works from main there: a
 ``git switch`` / ``git checkout <branch>`` in it moves every person and
 agent session on it at once, and a session that stays open keeps running
 the modules it imported before the move. Testing a branch is a preview
-(the dashboard header's Test branch: its own worktree and server); work on
-a branch happens in a worktree (``enter_worktree``).
+(the dashboard header's ⎇ menu and ▶ Test: its own worktree and server);
+work on a branch happens in a worktree (``enter_worktree``).
 
 A *branch move* is a git invocation (``git [-C dir] ...``, after ``cd dir``
 in the same command line) of ``switch`` (any form but ``--help``), or of
@@ -34,20 +34,14 @@ import subprocess
 from pathlib import Path
 from typing import Iterable, Optional
 
+from . import safe_git
+
 ENV = "DELFIN_SHARED_CHECKOUT"
 _SEPARATORS = {";", "&&", "||", "|", "&", "\n"}
 
 
 def _git(cwd, *args: str) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env.setdefault("GIT_OPTIONAL_LOCKS", "0")
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        return subprocess.run(["git", "-C", str(cwd), *args],
-                              capture_output=True, text=True, timeout=15,
-                              env=env, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(args, 1, "", str(exc))
+    return safe_git.run(args, cwd, timeout=15)
 
 
 def _toplevel(path) -> Optional[Path]:
@@ -173,6 +167,6 @@ def refusal(command: str, cwd, *, shared: Optional[Iterable] = None) -> str:
             "`gh pr create --head <user>/<topic>`; to run or test an existing "
             "branch, enter_worktree(base_ref=\"<branch>\"); to only create "
             "one, `git branch <name> origin/main` (no switch). For the user "
-            "to try a branch in the dashboard: the header's Test branch "
-            "button opens it in its own worktree and server.")
+            "to try a branch in the dashboard: pick it in the header's ⎇ "
+            "menu; ▶ Test opens it in its own worktree and server.")
     return ""

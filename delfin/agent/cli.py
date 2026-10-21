@@ -33,7 +33,6 @@ import argparse
 import datetime
 import json
 import os
-import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -71,6 +70,55 @@ def guard_principles_or_exit(pack_dir: "Path | None" = None) -> None:
         raise SystemExit(f"refusing to start: {exc}") from None
 
 
+def _resolve_provider(args: argparse.Namespace,
+                      fallback: "dict | None" = None) -> str:
+    """The provider a session is built with.
+
+    Input: the parsed flags and the settings-file defaults (``fallback``;
+    read here when None and the command takes them). Output: ``--provider``
+    when given, else the settings file's provider, else the provider the
+    model id names (``pricing.infer_provider``: ``kit.``/``azure.`` -> kit,
+    ``name:tag`` -> ollama, ``gpt-``/``o1``/``o3``/``o4`` -> openai,
+    ``claude`` -> claude), else "". An inferred provider is recorded on
+    ``args`` for ``_provider_notes``.
+
+    Rejected: leaving it empty, which sent ``--model kit.<id>`` to the
+    Anthropic backend and its key error; a second prefix table here (the
+    pricing table is the one answerer for "which provider is this id").
+    """
+    if fallback is None:
+        fallback = (_engine_defaults()
+                    if getattr(args, "settings_defaults", False) else {})
+    try:
+        args.provider_inferred_note = ""
+    except Exception:
+        pass
+    provider = (getattr(args, "provider", "") or ""
+                or fallback.get("provider", "") or "")
+    if provider:
+        return provider
+    model = getattr(args, "model", "") or fallback.get("model", "") or ""
+    try:
+        from .pricing import infer_provider
+        inferred = infer_provider(model) if model else ""
+    except Exception:
+        inferred = ""
+    if inferred:
+        try:
+            args.provider_inferred_note = (
+                f"provider   {inferred}, read from the model name {model} "
+                "(no --provider given; --provider names another)")
+        except Exception:
+            pass
+    return inferred
+
+
+def _provider_notes(args: argparse.Namespace) -> list[str]:
+    """The start note of a provider read from the model name, or []."""
+    note = getattr(args, "provider_inferred_note", "") or ""
+    return [note] if note else []
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -88,7 +136,7 @@ def _build_engine(args: argparse.Namespace):
     fallback = _engine_defaults() if getattr(args, "settings_defaults", False) else {}
     backend = args.backend or fallback.get("backend", "") or "api"
     model = args.model or fallback.get("model", "")
-    provider = args.provider or fallback.get("provider", "")
+    provider = _resolve_provider(args, fallback)
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
     engine = AgentEngine(
@@ -191,6 +239,12 @@ def _apply_run_budget(engine, args: argparse.Namespace) -> None:
         engine.run_budget_usd = usd
     if secs > 0:
         engine.run_budget_s = secs
+    try:
+        turns = int(getattr(args, "max_run_turns", 0) or 0)
+    except (TypeError, ValueError):
+        turns = 0
+    if turns > 0:
+        engine.run_budget_turns = turns
 
     # `--max-turns` bounds the tool ROUNDS inside one turn, which is a
     # different dimension from the two above: a session can be cheap and
@@ -555,7 +609,7 @@ def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
 
 
 def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
-                 t0: float | None) -> None:
+                 t0: float | None, run_stage=None) -> None:
     """The session-end stages, one list for ``run``, ``chat -p`` and the
     interactive session.
 
@@ -571,6 +625,11 @@ def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
     prompt -- the cycle outcome and the episode are skipped: there is no
     turn to judge, and a PASS for nothing would enter the history the
     briefing quotes. The terminal used to run the first three only.
+
+    ``run_stage(name, fn)``, when given, runs each stage instead of a
+    plain call (the terminal's attended leave: ``repl._LeaveStages``, a
+    budget per stage and Ctrl+C to skip). None runs them inline, as for
+    ``run``, ``chat -p`` and the scheduler.
     """
     verdict = "FAIL" if failed else "PASS"
 
@@ -584,11 +643,17 @@ def _end_session(engine, sid: str, repo: Path, *, task: str, failed: bool,
         did its job. The warning is the same shape as the save-failure
         line above.
         """
-        try:
-            fn()
-        except Exception as exc:
-            print(f"WARN: session-end stage {name} failed: {exc}",
-                  file=sys.stderr)
+        def _guarded() -> None:
+            try:
+                fn()
+            except Exception as exc:
+                print(f"WARN: session-end stage {name} failed: {exc}",
+                      file=sys.stderr)
+
+        if run_stage is None:
+            _guarded()
+        else:
+            run_stage(name, _guarded)
 
     # Session report: best-effort Markdown write; never breaks exit.
     def _report_stage(sid_, engine_):
@@ -685,7 +750,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 3
     # The headless half has no banner, so the can't-deliver lines go to
     # stderr — stdout carries the answer and nothing else.
-    for _note in _bounding_notices(args, engine):
+    for _note in _provider_notes(args) + _bounding_notices(args, engine):
         print(_note, file=sys.stderr)
     if prepare is None:
         _resume_or_create(engine, args)
@@ -701,6 +766,13 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     # will actually have.
     from .isolation_posture import apply_at_start
     for _note in apply_at_start(engine, can_ask=sys.stdin.isatty()):
+        print(_note, file=sys.stderr)
+    # A run nobody watches (--unattended, or no terminal on stdin) gets
+    # the ceilings its flags and settings did not set (run_limits).
+    from .run_limits import apply_unattended
+    for _note in apply_unattended(
+            engine, unattended=bool(getattr(args, "unattended", False))
+            or not sys.stdin.isatty()):
         print(_note, file=sys.stderr)
     import time as _time
     _t0 = _time.monotonic()
@@ -1177,6 +1249,19 @@ def _startup_banner(engine, report, workspace: Path,
         f"delfin-agent · {provider}/{model} · {role_mode}",
         f"workspace  {_tilde(workspace)}  ({where})",
     ]
+    # A model too small to drive an agent, said where the model is named
+    # (model_capabilities.agent_fitness): the dashboard warned in its
+    # preflight, the terminal started on gpt-5-nano without a word.
+    try:
+        from . import model_capabilities as _mc
+        # By name only: the banner must not wait on a model listing.
+        _warn = _mc.agent_fitness(provider, model, _mc.ModelCapabilities(
+            model=model, provider=provider, context_window=0,
+            supports_tools=True))
+        if _warn:
+            lines.append(f"model      ⚠ {_warn}")
+    except Exception:
+        pass
     if perms_mode:
         lines.append(f"approval   {perms_mode}"
                      + (f"  [{why}]" if why else ""))
@@ -1912,13 +1997,19 @@ def _start_interactive_session(args: argparse.Namespace, report,
     # The same start check as cmd_run: bypass without isolation is
     # confirmed once here, else the session starts in default.
     from .isolation_posture import apply_at_start
-    start_notes = tuple(apply_at_start(engine, can_ask=can_ask))
+    start_notes = tuple(_provider_notes(args))
+    start_notes += tuple(apply_at_start(engine, can_ask=can_ask))
+    # --unattended: the default run ceilings. Not keyed on can_ask: the
+    # window's worker starts with can_ask=False and a person attaches.
+    from .run_limits import apply_unattended
+    start_notes += tuple(apply_unattended(
+        engine, unattended=bool(getattr(args, "unattended", False))))
     return InteractiveStart(engine, why, isolation_note, start_notes)
 
 
 def _finish_interactive_session(engine, agent, workspace: Path, *,
                                 title: str, t0: float | None,
-                                learn: bool = True) -> str:
+                                learn: bool = True, run_stage=None) -> str:
     """The end of an interactive session: save it, then ``_end_session``'s
     stages (report, skill learning, indexing, cycle outcome, episode, eval
     loop). The task is the first prompt typed in this process, the verdict
@@ -1934,7 +2025,7 @@ def _finish_interactive_session(engine, agent, workspace: Path, *,
         workspace,
         task=str(getattr(agent, "first_task", "") or ""),
         failed=bool(getattr(_last, "error", "")),
-        t0=t0)
+        t0=t0, run_stage=run_stage)
     return sid or ""
 
 
@@ -2076,17 +2167,27 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 + (f"\n\n{notices}" if notices else "")),
     ))
     import time as _time
+    from . import repl_keys as _rk
     _t0 = _time.monotonic()
-    try:
-        return agent.run(positional)
-    finally:
-        _finish_interactive_session(
-            engine, agent, workspace,
-            title=getattr(args, "session_name", "") or "", t0=_t0)
+    # Held from the loop's start until the session is saved: every way out
+    # is bounded by the leave deadline, and a repeated SIGHUP, SIGTERM or
+    # SIGINT does not end the process in the middle of the save.
+    with agent.leave_held():
         try:
-            os.chdir(_cwd_before)
-        except Exception:
-            pass
+            return agent.run(positional)
+        except _rk.TerminalLeft as left:
+            # A signal before the loop's own try took it.
+            agent.begin_leaving(left.code, terminal_gone=True)
+            return left.code
+        finally:
+            _finish_interactive_session(
+                engine, agent, workspace,
+                title=getattr(args, "session_name", "") or "", t0=_t0,
+                run_stage=agent.leave_stages())
+            try:
+                os.chdir(_cwd_before)
+            except Exception:
+                pass
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -2172,7 +2273,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
             )
             try:
                 n_records = sum(
-                    1 for line in f.open(encoding="utf-8") if line.strip()
+                    1 for line in f.open(encoding="utf-8")
+                    if line.strip() and not line.startswith('{"run_header"')
                 )
             except OSError:
                 n_records = 0
@@ -2201,6 +2303,23 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         cmp = _bm.compare_runs(baseline, candidate)
+        # Whether one instrument produced both files. A changed scorer or
+        # task pack makes the score difference partly the measure's, so
+        # the comparison is refused unless asked for explicitly; a file
+        # without a header (written before 2026-10-15) is said, not
+        # refused. The settings that differ are always printed: they
+        # should be exactly the axis the A/B declares.
+        _prov = cmp.get("provenance") or {}
+        if not args.json:
+            for _line in _bm.format_provenance_check(_prov):
+                print(_line)
+        if _prov.get("instrument_match") is False and not getattr(
+                args, "allow_instrument_change", False):
+            print("ERROR: comparison refused -- the instrument differs "
+                  "between the arms. Re-run one arm, or pass "
+                  "--allow-instrument-change to compare anyway.",
+                  file=sys.stderr)
+            return 4
         if args.json:
             print(json.dumps(cmp, indent=2, ensure_ascii=False))
             return 0
@@ -2283,7 +2402,10 @@ def cmd_bench(args: argparse.Namespace) -> int:
         print("ERROR: --model is required for `bench run`",
               file=sys.stderr)
         return 2
-    max_tokens = int(getattr(args, "max_tokens", 1024) or 1024)
+    # 0 = the role's own output limit, as in a session (engine
+    # _ROLE_MAX_TOKENS; solo 32768). 1024 cut every write_file longer than
+    # about four kilobytes into invalid JSON in the benchmark only.
+    max_tokens = int(getattr(args, "max_tokens", 0) or 0)
     backend = getattr(args, "backend", "") or "api"
     provider = getattr(args, "provider", "") or ""
     repeats = max(1, int(getattr(args, "repeats", 1) or 1))
@@ -2309,7 +2431,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   + (f"accept-q={_vq} " if _vq is not None else "")
                   + " ".join(f"{k}={_proc[k]:g}" for k in (
                       "planned", "scouted", "tested_after_last_edit",
-                      "test_runs", "edits", "tool_errors", "nonzero_exits",
+                      "passing_test_after_last_edit", "test_runs",
+                      "refused_test_runs", "edits", "measure_edits",
+                      "measure_changed", "tool_errors", "nonzero_exits",
                       "tool_budget_used") if k in _proc),
                   flush=True)
         if result.violated_signals or result.missing_signals or result.error:
@@ -2369,8 +2493,21 @@ def cmd_bench(args: argparse.Namespace) -> int:
         # output read as a crash rather than as a queue.
         print(f"\nbenchmark not started: {exc}", file=sys.stderr)
         return 3
-    path = _bm.write_run(results, model=model)
+    path = _bm.write_run(results, model=model, run_args={
+        "max_tokens": max_tokens, "repeats": repeats, "backend": backend,
+        "provider": provider})
     s = _bm.summarise_run(results)
+    _pm = s.get("process_means") or {}
+    if _pm:
+        # Rates per model, not only per task line.
+        print("process (mean over tasks): " + "  ".join(
+            f"{k}={v['mean']:g} (n={v['n']})" for k, v in _pm.items()
+            if k in ("tested_after_last_edit",
+                     "passing_test_after_last_edit", "refused_test_runs",
+                     "measure_edits", "measure_changed", "edits")))
+    if s.get("channels_total"):
+        print("channels fired: " + "  ".join(
+            f"{k}={v}" for k, v in s["channels_total"].items()))
     print(f"\n{s['n_pass']}/{s['n_tasks']} passed "
           f"({s['pass_rate']:.0%})   "
           f"avg-quality {s['avg_quality']:.1f}   "
@@ -2473,10 +2610,9 @@ def _cmd_bench_baseline(args, action: str) -> int:
         note = (getattr(args, "note", "") or "").strip()
         commit = ""
         try:
-            commit = subprocess.run(
-                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-                cwd=str(Path(__file__).resolve().parents[2]),
-            ).stdout.strip()
+            from . import safe_git
+            commit = safe_git.out(Path(__file__).resolve().parents[2],
+                                  "rev-parse", "HEAD").strip()
         except Exception:
             pass
         measured = datetime.date.fromtimestamp(
@@ -2694,7 +2830,9 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
     Without --yes the description and a y/N confirmation are read from
     the terminal after a preview of what goes in. With no terminal and no
     --yes nothing is written: a pipe cannot see the preview it would be
-    agreeing to.
+    agreeing to. The copy to the remote archive follows
+    ``agent.bug_upload`` (``bug_filing.upload``): asked separately without
+    --yes, never made under --yes unless the setting is ``always``.
     """
     from . import bug_filing
     from .bug_report import resolve_archive_dir
@@ -2743,7 +2881,11 @@ def _cmd_bug_report(args: argparse.Namespace) -> int:
         print(f"ERROR: bug report failed: {exc}", file=sys.stderr)
         return 1
     print(f"bug report written: {report_dir}")
-    remote = bug_filing.push_if_configured(report_dir)
+    # --yes answers the questions about writing, not the one about
+    # sending: with it nobody is asked, so the copy to the remote archive
+    # happens only under agent.bug_upload: always.
+    remote = bug_filing.upload(report_dir,
+                               ask=None if assume_yes else input)
     if remote:
         print(remote)
     return 0
@@ -2790,10 +2932,14 @@ def cmd_bug(args: argparse.Namespace) -> int:
         if not targets:
             print(f"No reports to triage in {archive}")
             return 0
+        print(_bw.send_line())
+        consent = _bw.ask_consent(len(targets))
         for d in targets:
             print(f"→ analysing {d.name} …", flush=True)
-            t = _bw.triage_report(d)
-            if t.error:
+            t = _bw.triage_report(d, consent=consent)
+            if t.withheld:
+                print(f"  [WITHHELD] ({t.withheld_reason})")
+            elif t.error:
                 print(f"  [ERROR] {t.error}")
             else:
                 print(f"  [OK] {t.summary[:200].strip()}")
@@ -2834,11 +2980,22 @@ def cmd_bug(args: argparse.Namespace) -> int:
 
         if getattr(args, "once", False):
             print(f"Triaging {archive} once …", flush=True)
-            results = _bw.run_once(archive=archive, settings=settings)
+            print(_bw.send_line(settings))
+            consent = _bw.ask_consent(
+                len(_bw.find_unsolved(archive, settings=settings)), settings)
+            results = _bw.run_once(archive=archive, settings=settings,
+                                   consent=consent)
+            # One line per report from fixed fields only; the analysis
+            # itself is in triage.md (bug triage prints its first line).
             for t in results:
-                tag = "ERROR" if t.error else "OK"
-                print(f"  [{tag}] {t.report_name}: "
-                      f"{(t.error or t.summary)[:150].strip()}")
+                if t.withheld:
+                    tag, detail = "WITHHELD", f"({t.withheld_reason})"
+                elif t.error:
+                    tag, detail = "ERROR", t.error[:150]
+                else:
+                    tag = "OK"
+                    detail = f"triage → {Path(t.report_path) / 'triage.md'}"
+                print(f"  [{tag}] {t.report_name}: {detail}")
             print(f"Done — {len(results)} report(s) triaged.")
             return 0
 
@@ -2856,6 +3013,7 @@ def cmd_bug(args: argparse.Namespace) -> int:
         try:
             print(f"bug_watcher started (interval {cfg['interval_s']}s, "
                   f"archive={archive}).")
+            print(_bw.send_line(settings))
             return _bw.run_loop(settings=settings)
         finally:
             _bw.release_pid_lock()
@@ -3028,7 +3186,9 @@ def cmd_skills(args: argparse.Namespace) -> int:
             print("safety findings: none")
         return 0
 
-    who = os.environ.get("USER", "")
+    # Recorded as who accepted: the account, not $USER (os_account).
+    from .os_account import name as _account
+    who = _account()
 
     if action == "accept":
         try:
@@ -3175,7 +3335,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         # resolves against the question's own options; anything that is
         # not a choice question is refused here, not guessed at.
         from . import approval_answers as _ans
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         try:
             picks = _ans.answer(args.request_id, args.choice, by=who,
                                 code=code)
@@ -3187,7 +3348,8 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         return 0
 
     if action in ("approve", "deny"):
-        who = os.environ.get("USER", "")
+        from .os_account import name as _account
+        who = _account()
         # A refusal may say what to do instead, and the model reads it in
         # the same turn -- instead of guessing the same thing spelled
         # differently, which is one more dialog for the person here.
@@ -3539,9 +3701,24 @@ def _print_stop_all_check(report: dict) -> int:
     return 0
 
 
+def _refuse_pause_inside_agent(verb: str) -> bool:
+    """True (and says so) when an agent session started this process: a
+    pause or a resume decides over another session, which is the
+    person's, as for ``ops pause`` (ops_interface._refuse_inside_agent)."""
+    from . import approval_guard
+    if not approval_guard.inside_agent_session():
+        return False
+    print(f"ERROR: {verb} is run by the person, not from inside an agent "
+          "session", file=sys.stderr)
+    return True
+
+
 def cmd_pause(args: argparse.Namespace) -> int:
     """Pause one session (see ``session_pause``). It takes effect at the
-    session's next tool call; nothing else is touched."""
+    session's next tool call; nothing else is touched. Refused inside an
+    agent session."""
+    if _refuse_pause_inside_agent("delfin-agent pause"):
+        return 2
     from . import session_pause
     session_pause.pause(args.session, args.reason or "delfin-agent pause")
     print(f"paused {args.session}: it stops at its next tool call; "
@@ -3549,8 +3726,43 @@ def cmd_pause(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp_pins(args: argparse.Namespace) -> int:
+    """The MCP tool descriptions pinned on first use, and the changes
+    waiting for the person (mcp_client). ``accept`` is the person's:
+    refused inside an agent session."""
+    from . import mcp_client as _mcp
+    if getattr(args, "pins_action", "") == "accept":
+        if _refuse_pause_inside_agent("delfin-agent mcp-pins accept"):
+            return 2
+        done = _mcp.accept_pending(args.server, args.tool or "")
+        if not done:
+            print(f"nothing waits for {args.server}"
+                  + (f"/{args.tool}" if args.tool else ""))
+            return 1
+        for name in done:
+            print(f"accepted {name}: the next session shows it to the model")
+        return 0
+    from .session_messages import _plain
+    rows = _mcp.pins_overview()
+    if not rows:
+        print("no MCP server pinned yet")
+        return 0
+    for row in rows:
+        print(f"{_plain(row['name'])}  ({len(row['tools'])} tools pinned)")
+        for tool, info in sorted(row["pending"].items()):
+            state = "new tool" if info.get("state") == "new" else "changed"
+            print(f"  {state}: {_plain(tool)} -- "
+                  f"{_plain(info.get('description') or '')[:200]}")
+            print(f"    accept with: delfin-agent mcp-pins accept "
+                  f"{_plain(row['name'])} {_plain(tool)}")
+    return 0
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
-    """Lift a pause set by ``delfin-agent pause``."""
+    """Lift a pause set by ``delfin-agent pause``. Refused inside an agent
+    session."""
+    if _refuse_pause_inside_agent("delfin-agent resume"):
+        return 2
     from . import session_pause
     was = session_pause.resume(args.session)
     print(f"resumed {args.session}" if was else f"{args.session} was not paused")
@@ -3785,6 +3997,23 @@ def _doctor_repair(results: list) -> int:
     return 1 if failed else 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """``delfin-agent audit verify``: 0 when every log checked is intact,
+    1 when one is not, 2 without a subcommand. Reads only."""
+    from . import audit_log as _al
+    if getattr(args, "audit_action", "") != "verify":
+        print("usage: delfin-agent audit verify [--log PATH] [--json]",
+              file=sys.stderr)
+        return 2
+    log = str(getattr(args, "log", "") or "")
+    reports = [_al.verify(Path(log).expanduser())] if log else _al.verify_all()
+    if getattr(args, "json", False):
+        print(json.dumps(reports, indent=2))
+    else:
+        print(_al.format_verify(reports))
+    return 0 if all(r["ok"] for r in reports) else 1
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """One-surface prerequisite report: docs index, credentials,
     binaries, Python deps, MCP servers, scheduler, attention inbox,
@@ -3938,7 +4167,7 @@ def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
 
-    flags = [flag for flag in ("--attach", "--ssh-config", "--write")
+    flags = [flag for flag in ("--token", "--attach", "--ssh-config", "--write")
              if getattr(args, flag[2:].replace("-", "_"), False)]
     if flags:
         return _where.main(flags)
@@ -4312,7 +4541,9 @@ def _add_agent_flags(p: argparse.ArgumentParser, *,
     p.add_argument("--backend", default="", choices=["", "api", "cli"],
                    help="api (direct Anthropic) or cli (subprocess)")
     p.add_argument("--provider", default="",
-                   help="claude / openai / kit / ollama")
+                   help="claude / openai / kit / ollama (not given: the "
+                        "configured one for chat, else the one the model "
+                        "id names)")
     p.add_argument("--model", default="",
                    help="Model name (provider-specific)")
     p.add_argument("--effort", default="",
@@ -4481,12 +4712,20 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--max-budget-usd", type=float, default=0.0,
                       dest="max_budget_usd", metavar="USD",
                       help="Stop this session once measured spend reaches "
-                           "this much (0: use the configured budget)")
+                           "this much (0: use the configured budget; an "
+                           "unattended run without one: "
+                           "agent.unattended_budget, $25)")
     chat.add_argument("--max-run-seconds", type=float, default=0.0,
                       dest="max_run_seconds", metavar="SECONDS",
                       help="Wall-clock ceiling for this session — the "
                            "dimension that still holds on a model with no "
-                           "published rate")
+                           "published rate (an unattended run without one: "
+                           "agent.unattended_budget, 8 h)")
+    chat.add_argument("--max-run-turns", type=int, default=0,
+                      dest="max_run_turns", metavar="N",
+                      help="Turn ceiling for this session (0: the "
+                           "configured one; an unattended run without one: "
+                           "agent.unattended_budget, 200)")
     # The consumer existed without the producer: ReplOptions.color has been
     # read as getattr(args, "color", "auto") since the first version, and no
     # parser ever declared the flag — so the one setting that decides
@@ -4558,7 +4797,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help=("Prompt language. en runs each selected "
                                  "task's prompt_en under the id <id>.en and "
                                  "skips tasks without one (default: de)"))
-    bench_run.add_argument("--max-tokens", type=int, default=1024,
+    bench_run.add_argument("--max-tokens", type=int, default=0,
                            dest="max_tokens")
     bench_run.add_argument(
         "--repeats", type=int, default=1,
@@ -4628,6 +4867,11 @@ def build_parser() -> argparse.ArgumentParser:
     bench_cmp.add_argument("--markdown", action="store_true",
                            help="Emit a markdown report (PR-body ready, "
                                 "annotates profile commits between runs)")
+    bench_cmp.add_argument(
+        "--allow-instrument-change", action="store_true",
+        dest="allow_instrument_change",
+        help=("Compare two run files whose headers show a different "
+              "scorer or task pack (refused otherwise)"))
 
     bench_gate = bench_sub.add_parser(
         "gate",
@@ -5038,6 +5282,19 @@ def build_parser() -> argparse.ArgumentParser:
     resume_p.add_argument("session", help="The session's -n name")
     resume_p.set_defaults(func=cmd_resume)
 
+    pins_p = sub.add_parser(
+        "mcp-pins",
+        help="MCP tool descriptions pinned on first use, and changes that "
+             "wait for you (accept SERVER [TOOL])")
+    pins_sub = pins_p.add_subparsers(dest="pins_action")
+    pins_sub.add_parser("list", help="Pinned servers and waiting changes")
+    accept_p = pins_sub.add_parser(
+        "accept", help="Accept a changed or new tool of a server")
+    accept_p.add_argument("server", help="The server's name")
+    accept_p.add_argument("tool", nargs="?", default="",
+                          help="One tool (default: every waiting one)")
+    pins_p.set_defaults(func=cmd_mcp_pins)
+
     # doctor — aggregate prerequisite health report
     doctor = sub.add_parser(
         "doctor",
@@ -5052,6 +5309,21 @@ def build_parser() -> argparse.ArgumentParser:
                              "step that fixes a WARN/FAIL; refuses when stdin "
                              "is not a terminal")
     doctor.set_defaults(func=cmd_doctor)
+
+    # audit verify -- the audit log's hash chain (audit_log.verify)
+    audit_p = sub.add_parser(
+        "audit", help="Check the audit log for edited, removed or cut-off "
+                      "records")
+    audit_sub = audit_p.add_subparsers(dest="audit_action")
+    audit_verify = audit_sub.add_parser(
+        "verify", help="Verify the hash chain of the audit log and its "
+                       "rotated weeks; exit 1 when one is not intact")
+    audit_verify.add_argument("--log", default="",
+                              help="One log file (default: ~/.delfin/"
+                                   "audit.log and every rotated week)")
+    audit_verify.add_argument("--json", action="store_true",
+                              help="Emit the reports as JSON")
+    audit_p.set_defaults(func=cmd_audit)
 
     # capabilities / gate explain -- the boundary, read before a session
     # starts. Both read only; see delfin/agent/boundaries.py.
@@ -5209,6 +5481,9 @@ def build_parser() -> argparse.ArgumentParser:
                               "(ssh + port forward when it runs elsewhere)")
     where_p.add_argument("--ssh-config", action="store_true",
                          help="Print a ready ssh config entry for it")
+    where_p.add_argument("--token", action="store_true",
+                         help="Print the dashboard's login token and nothing "
+                              "else (for the login page; links carry none)")
     where_p.add_argument("--write", action="store_true",
                          help="With --ssh-config: append the entry instead "
                               "of printing (never overwrites)")
@@ -5289,6 +5564,206 @@ def build_parser() -> argparse.ArgumentParser:
                                    "(default: the current directory, else "
                                    "the checkout DELFIN runs from)")
     ops_status_p.set_defaults(func=_cmd_ops)
+
+    # ops health -- the person sees at a glance which session is stuck and
+    # why (UX2, wave 17). READ-ONLY: classify + collect read, nothing
+    # writes; --wait is the loop the person or operator starts that emits
+    # the attention events (emit_attention only, interval >= 60 s).
+    def _cmd_ops_health(args):
+        import time as _t
+
+        from delfin.agent import ops_interface as _oi
+        from delfin.agent import session_health as _sh
+        from delfin.agent import stop_all as _sa
+        try:
+            from delfin import user_settings
+            agent_cfg = (user_settings.load_settings().get("agent") or {})
+        except Exception:
+            agent_cfg = {}
+
+        interval = max(60, int(getattr(args, "interval", 0) or 0))
+        state = {"seen": {}}
+        stop_seen = {}
+        stop = _sa.last_stop()
+        while True:
+            try:
+                records = _sh.collect()
+            except KeyboardInterrupt:
+                return 0
+            if getattr(args, "wait", False):
+                events = _sh.watch_events(records, _t.time(), state,
+                                          settings=agent_cfg,
+                                          stop_all=stop,
+                                          stop_all_seen=stop_seen)
+                for name, text in events:
+                    print(f"attention: {text}", flush=True)
+            rows = []
+            for rec in records:
+                verdict = _sh.classify(rec, _t.time(), agent_cfg)
+                rows.append({
+                    "name": rec.get("name"),
+                    "session_id": rec.get("session_id"),
+                    "verdict": verdict["verdict"],
+                    "reason": verdict["reason"],
+                    "next": verdict["next"],
+                })
+            if getattr(args, "json", False):
+                print(_oi.dumps(rows), flush=True)
+            else:
+                for r in rows:
+                    print(f"{r['name']}  {r['verdict']}: {r['reason']} "
+                          f"[{r['next']}]", flush=True)
+            if not getattr(args, "wait", False):
+                return 0
+            _sh.pause_watch(interval)
+            stop = _sa.last_stop()
+
+    ops_health_p = ops_sub.add_parser(
+        "health",
+        help="One line per open session: verdict (working / waiting on "
+             "you / stalled / paused / gone / ...), why, and the next "
+             "step; --wait loops and emits the attention events",
+    )
+    ops_health_p.add_argument("--json", action="store_true",
+                              help="Print the rows as JSON")
+    ops_health_p.add_argument("--wait", action="store_true",
+                              help="Loop forever (interval >= 60 s) and "
+                                   "emit ONE attention event per session "
+                                   "entering a stuck state, deduped")
+    ops_health_p.add_argument("--interval", type=int, default=60,
+                              help="Seconds between --wait ticks (min 60)")
+    ops_health_p.set_defaults(func=_cmd_ops_health)
+
+    # The supervisor's side of running sessions, as data
+    # (delfin/agent/ops_interface.py): events and state to read; a message,
+    # an escalation to the person and a pause as the only actions. There is
+    # no approve: a person answers approvals (#202, #207).
+    def _cmd_ops_interface(args):
+        from delfin.agent import ops_interface as _oi
+        act = args.ops_action
+
+        def _out(obj):
+            print(_oi.dumps(obj), flush=True)
+
+        try:
+            if act == "sessions":
+                for row in _oi.sessions():
+                    _out(row)
+                return 0
+            if act == "session":
+                row = _oi.session(args.name)
+                if row is None:
+                    print(f"ERROR: no open session {args.name!r}",
+                          file=sys.stderr)
+                    return 2
+                _out(row)
+                return 0
+            if act == "approvals":
+                for row in _oi.pending_approvals():
+                    _out(row)
+                return 0
+            if act == "events":
+                if not args.follow:
+                    # Printed first, saved second: a reader that dies
+                    # while printing reads the batch again.
+                    state = _oi.load_cursor(args.cursor)
+                    for ev in _oi.next_events(state, idle_s=args.idle_s):
+                        _out(ev)
+                    _oi.save_cursor(state, args.cursor)
+                    return 0
+                for ev in _oi.follow(args.cursor, idle_s=args.idle_s,
+                                     interval=args.interval,
+                                     seconds=args.seconds):
+                    _out(ev)
+                return 0
+            if act == "wait":
+                ev = _oi.wait(args.until, cursor=args.cursor,
+                              timeout=args.timeout, idle_s=args.idle_s,
+                              interval=args.interval)
+                if ev is None:
+                    return 3
+                _out(ev)
+                return 0
+            if act == "send":
+                text = args.text
+                if args.file:
+                    # Bounded: the inbox keeps 4000 characters, and a
+                    # read of /dev/zero or a FIFO must not take the
+                    # supervisor's memory or hang it.
+                    with open(args.file, "rb") as fh:
+                        text = fh.read(_oi.FILE_MAX).decode("utf-8",
+                                                            "replace")
+                _out(_oi.send(args.name, text or ""))
+                return 0
+            if act == "escalate":
+                _out({"attention_id": _oi.escalate(args.request_id,
+                                                   args.note or "")})
+                return 0
+            if act == "pause":
+                _out(_oi.pause(args.name, args.reason))
+                return 0
+        except (_oi.OpsRefused, ValueError, OSError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            return 0
+        return 2
+
+    for _name, _help in (
+            ("sessions", "Open sessions on this host as JSON lines (read-only)"),
+            ("approvals", "Approvals any session waits on, as JSON lines "
+                          "(read-only; answering is the person's)"),
+    ):
+        ops_sub.add_parser(_name, help=_help).set_defaults(
+            func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("session", help="One open session as JSON "
+                                             "(read-only)")
+    _p.add_argument("name", help="The -n name or the head of the id")
+    _p.set_defaults(func=_cmd_ops_interface)
+    for _name, _help in (
+            ("events", "Events since the cursor as JSON lines: sessions "
+                       "opened/exited/idle, turns ended, approvals "
+                       "open/closed, messages, refused steps, commits"),
+            ("wait", "Block until one event matches --until; exit 3 on "
+                     "timeout"),
+    ):
+        _p = ops_sub.add_parser(_name, help=_help)
+        _p.add_argument("--cursor", default="default",
+                        help="Name of the reader's cursor (one per reader)")
+        _p.add_argument("--idle-s", type=int, default=900,
+                        help="A session with no activity for this long is "
+                             "reported idle once")
+        _p.add_argument("--interval", type=float, default=5.0)
+        if _name == "events":
+            _p.add_argument("--follow", action="store_true",
+                            help="Keep printing new events")
+            _p.add_argument("--seconds", type=float, default=0.0,
+                            help="With --follow: stop after this long")
+        else:
+            _p.add_argument("--until", required=True,
+                            help="kind=approval_open,session=s11 or "
+                                 "idle_s>=1800; every term must hold")
+            _p.add_argument("--timeout", type=float, default=0.0)
+        _p.set_defaults(func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("send", help="Leave a message in a session's "
+                                          "inbox, as the operator (never as "
+                                          "the user)")
+    _p.add_argument("name")
+    _g = _p.add_mutually_exclusive_group(required=True)
+    _g.add_argument("--text")
+    _g.add_argument("--file")
+    _p.set_defaults(func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("escalate", help="Put a waiting approval in "
+                                              "front of the person; it stays "
+                                              "open")
+    _p.add_argument("request_id")
+    _p.add_argument("--note", default="")
+    _p.set_defaults(func=_cmd_ops_interface)
+    _p = ops_sub.add_parser("pause", help="Pause a session at its next safe "
+                                           "point")
+    _p.add_argument("name")
+    _p.add_argument("--reason", required=True)
+    _p.set_defaults(func=_cmd_ops_interface)
 
     # T6: run a session's tests on a SLURM compute node from a node-local
     # copy. The handler lives in delfin/agent/slurm_tests.py; it is imported

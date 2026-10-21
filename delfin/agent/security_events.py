@@ -46,6 +46,14 @@ _KINDS = {
     # A script run after `cd $VAR` / `cd -`: its file is unknown, so unread.
     "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
+    "memory_refused": ("🧠", "Instruction-shaped memory refused"),
+    "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
+    "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
+    # Descriptions pinned on first use (mcp_client.pin_check): a first
+    # sight, a change the user accepted, and a change withheld.
+    "mcp_pinned": ("🔌", "MCP tool descriptions pinned on first use"),
+    "mcp_description_accepted": ("🔌", "Changed MCP tool accepted by the user"),
+    "mcp_description_changed": ("🔌", "Changed MCP tool withheld"),
     "calc_edit":      ("🧪", "Stored-calculation edit"),
     "read_only_write": ("📕", "Write into a read-only location"),
     "out_of_write_scope": ("📐", "Write outside the repo's write scope"),
@@ -87,7 +95,20 @@ _KINDS = {
     "network_missing": ("⚠", "Command network NOT (fully) held"),
     "egress_asked":   ("🌐", "Command network: destination asked"),
     "egress_upload":  ("📤", "Command upload to an allowed host"),
+    # A write to a known host with nobody to ask, refused because the
+    # host is not named in agent.sandbox_network.upload_domains.
+    "egress_upload_refused": ("📤", "Command upload refused (nobody to ask)"),
+    # The audit log (audit_log.py): a write that failed, and a log that
+    # was changed outside DELFIN between two writes.
+    "audit_write_failed": ("📒", "Audit log could not be written"),
+    "audit_chain_broken": ("📒", "Audit log changed outside DELFIN"),
     "key_exported":   ("🔑", "Provider key exported in the environment"),
+    # The account key store (trust_store.py) held a file that is not a
+    # private key of this account: nothing is signed with it.
+    "trust_store_refused": ("🔑", "Account key store refused"),
+    # A wrong token sent to the dashboard server (login form, URL or
+    # header), at most one record a minute (dashboard/login_session.py).
+    "dashboard_login_refused": ("🔑", "Dashboard login refused (wrong token)"),
     # A commit message naming a home directory, an account or a machine.
     # The repository is public, and a name in a public history is paid
     # for once and permanently.
@@ -99,6 +120,9 @@ _KINDS = {
     # An agent session reaching for an approval: the answer command, an
     # answer function, or a write where answers and the CLI gate state live.
     "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
+    # An agent session running the operator's actions (ops send, escalate,
+    # pause; delfin-agent pause/resume).
+    "operator_action_refused": ("🚫", "Agent tried to act as the operator"),
     # An answer from outside the waiting process without the one-time
     # code it showed (file_confirm reads it; cli refuses to write it).
     "approval_code_refused": ("🚫", "Approval answer without the session's code"),
@@ -113,6 +137,11 @@ _KINDS = {
     "push_default_branch": ("🔀", "Contributor push to the default branch"),
     "pr_route":       ("🔀", "Direct push or merge refused (PR route requested)"),
     "pr_merge_unpinned": ("🚫", "Merge not pinned to a green PR head"),
+    "gh_credential_print": ("🔑", "GitHub login printed by a command"),
+    "gh_api_write": ("🚫", "GitHub write through the raw API"),
+    # A gh alias or extension that would carry the login past those two.
+    "gh_alias_refused": ("🚫", "gh alias that hides a guarded command"),
+    "gh_extension_refused": ("🚫", "gh extension install refused"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
     # The user's permission rules (permission_rules.py).
     "permission_rule_deny": ("⛔", "Refused by a permission rule"),
@@ -157,6 +186,8 @@ _KINDS = {
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    # Off the auto-allow list, no isolation layer, nobody to ask.
+    "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
 }
@@ -185,6 +216,10 @@ class SecurityEvent:
 _LOCK = threading.Lock()
 _EVENTS: Deque[SecurityEvent] = deque(maxlen=200)
 _SEQ = 0
+# Events pushed out of the full ring since the last clear(). Counted so a
+# flood of one kind cannot hide what came before it without the panel
+# saying how much is gone (the blocked ones also reached the inbox).
+_DROPPED = 0
 _ON_RECORD = None  # optional callback(SecurityEvent) for live UI refresh
 # (kind, tool) pairs already raised in this process — the dedup key.
 _ALERTED: set[tuple[str, str]] = set()
@@ -230,11 +265,13 @@ def _raise_alert(ev: SecurityEvent) -> None:
 
 def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
     """Record one containment event. Never raises."""
-    global _SEQ
+    global _SEQ, _DROPPED
     try:
         with _LOCK:
             _SEQ += 1
             ev = SecurityEvent(_SEQ, kind, tool, str(detail)[:300], blocked)
+            if len(_EVENTS) == _EVENTS.maxlen:
+                _DROPPED += 1
             _EVENTS.append(ev)
         cb = _ON_RECORD
         if cb is not None:
@@ -259,15 +296,21 @@ def recent(limit: int = 20) -> list[SecurityEvent]:
 
 
 def counts() -> dict:
+    """``total`` and ``blocked`` in the ring; ``dropped``: events the full
+    ring pushed out since the last ``clear``."""
     with _LOCK:
         evs = list(_EVENTS)
-    return {"total": len(evs), "blocked": sum(1 for e in evs if e.blocked)}
+        dropped = _DROPPED
+    return {"total": len(evs), "blocked": sum(1 for e in evs if e.blocked),
+            "dropped": dropped}
 
 
 def clear() -> None:
+    global _DROPPED
     with _LOCK:
         _EVENTS.clear()
         _ALERTED.clear()
+        _DROPPED = 0
 
 
 def known_kinds() -> frozenset:
@@ -297,7 +340,9 @@ def format_panel_html(limit: int = 12) -> str:
     head = (
         f"<div style='font-size:11px;color:#aaa;margin-bottom:3px;'>"
         f"🛡 Containment &nbsp; {n['blocked']} blocked / {n['total']} flagged"
-        f"</div>"
+        + (f" &nbsp; ({n['dropped']} older events dropped; blocked ones "
+           "are in the attention inbox)" if n.get("dropped") else "")
+        + "</div>"
     )
     return (
         "<div style='border-left:3px solid #d32f2f;padding:6px 10px;"

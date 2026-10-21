@@ -207,7 +207,8 @@ Check availability in code:
   DELFIN_CSP_TOOLS_ROOT   Override csp_tools root directory
   MPICC                   Path to MPI C compiler (default: auto-detect)
   GENARRIS_REPO           Git clone URL (default: GitHub Yi5817/Genarris)
-  GENARRIS_BRANCH         Branch to clone (default: main)
+  GENARRIS_REF            Commit to build (default: the one pinned in
+                          install_csp_tools.sh); the checkout is compared with it
   FORCE_REINSTALL         Set to 1 to force reinstallation
 
 ===========================================================================

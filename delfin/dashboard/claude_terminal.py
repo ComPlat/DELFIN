@@ -117,21 +117,18 @@ class ClaudeOnlyTerminalManager(TerminalManager):
 # -- the browser side -----------------------------------------------------------
 # xterm.js, pinned to exact versions and to their bytes (SRI): an unpinned
 # CDN script in a page that holds a terminal is a supply-chain surface, and
-# the browser refuses a file whose hash does not match.
-XTERM_VERSION = "5.5.0"
-XTERM_FIT_VERSION = "0.10.0"
-XTERM_JS = ("https://cdn.jsdelivr.net/npm/@xterm/xterm@" + XTERM_VERSION
-            + "/lib/xterm.js")
-XTERM_JS_SRI = ("sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdeP"
-                "Jh/HaTzUOe/")
-XTERM_CSS = ("https://cdn.jsdelivr.net/npm/@xterm/xterm@" + XTERM_VERSION
-             + "/css/xterm.css")
-XTERM_CSS_SRI = ("sha384-8Xk9wy/gzEDUKrXtrmCFa2bBuK3BpjpDuL/p0SeKQX19Khl/M+lH"
-                 "OgD/CyYf7efP")
-XTERM_FIT_JS = ("https://cdn.jsdelivr.net/npm/@xterm/addon-fit@"
-                + XTERM_FIT_VERSION + "/lib/addon-fit.js")
-XTERM_FIT_SRI = ("sha384-iF+jqbuti4XlB64clWgFWYEscb+UnSRv3VgVikGYZu+otNFnSHr7"
-                 "y7NcKfBnGizn")
+# the browser refuses a file whose hash does not match. The URLs live in
+# pinned_cdn, which the page CSP is built from.
+from delfin.dashboard import pinned_cdn as _pinned  # noqa: E402
+
+XTERM_VERSION = _pinned.XTERM_VERSION
+XTERM_FIT_VERSION = _pinned.XTERM_FIT_VERSION
+XTERM_JS = _pinned.XTERM_JS.url
+XTERM_JS_SRI = _pinned.XTERM_JS.sri
+XTERM_CSS = _pinned.XTERM_CSS.url
+XTERM_CSS_SRI = _pinned.XTERM_CSS.sri
+XTERM_FIT_JS = _pinned.XTERM_FIT_JS.url
+XTERM_FIT_SRI = _pinned.XTERM_FIT_JS.sri
 
 # Attaches every visible .delfin-claude-term to the server's terminal: the
 # running one if there is one (a reload or a second window continues the

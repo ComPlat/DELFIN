@@ -401,7 +401,6 @@ def _sibling_roots(root: Path) -> list[Path]:
     checkout; none of these resolve against its own root.
     """
     import os
-    import subprocess
     import time
     key = str(root)
     now = time.time()
@@ -410,10 +409,8 @@ def _sibling_roots(root: Path) -> list[Path]:
         return hit[1]
     found: list[Path] = []
     try:
-        r = subprocess.run(
-            ["git", "-C", key, "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, timeout=5,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        from . import safe_git
+        r = safe_git.run(["worktree", "list", "--porcelain"], key, timeout=5)
         if r.returncode == 0:
             for ln in r.stdout.splitlines():
                 if ln.startswith("worktree "):
@@ -3330,3 +3327,49 @@ def ambiguous_column_caveat(columns: list[str]) -> str:
         "column decides it. The figure above rests on an assumption, not "
         "a measurement — please confirm the reading before passing it on."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test honesty about the change itself — package B3, wave 18
+# ---------------------------------------------------------------------------
+#
+# The scanners above judge the ANSWER's claims. Nothing judged the
+# change's own TESTS: a bare `except: pass` around new code leaves the
+# suite green while two real bugs stay invisible, a committed
+# tests/test_zz_* probe, a test that reads a .gate/ copy (green only
+# in the builder's tree) and a settings switch tested in one state
+# were all measured failures in wave 17. This wiring exposes the pure
+# scanner in ``test_honesty`` through the same pattern every other
+# scanner here uses — a ``scan_for_*`` entry plus a feedback builder —
+# so a report path can surface it BEFORE the agent claims done. It
+# BLOCKS NOTHING: it is a report, like the caveat chain, never a
+# refusal.
+
+
+def scan_for_dishonest_tests(change_records) -> list:
+    """Scan a change's records for tests that claim more than they measure.
+
+    ``change_records`` is what :func:`delfin.agent.test_honesty.check`
+    takes: ``(path, new_start, new_end, source)`` per changed file.
+    Returns the honesty findings (path, line, reason); never raises —
+    a scanner in this module degrades to quiet, not to a crash.
+    """
+    try:
+        from delfin.agent import test_honesty as _th
+        return _th.check(change_records)
+    except Exception:
+        return []
+
+
+def test_honesty_feedback(findings) -> str:
+    """The report text for the agent to see before it claims done."""
+    if not findings:
+        return ""
+    lines = [
+        "> ⚠️ test_honesty: the change's tests may claim more than they "
+        "measure — each item below should be resolved or explicitly "
+        "justified before claiming done (report only; blocks nothing):"
+    ]
+    for f in findings:
+        lines.append(f"> - {f.path}:{f.line} — {f.reason}")
+    return "\n".join(lines)

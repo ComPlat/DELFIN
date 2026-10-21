@@ -157,6 +157,32 @@ _MEMORY_BLOCK_PREAMBLE = (
 _SOURCE_LABELS = {"user": "the user stated", "agent": "the agent noted"}
 
 
+def _fence_notes(source: str, text: str) -> str:
+    """``text`` inside an ``untrusted`` notes fence, or "" for empty text.
+
+    Recalled memory, past-session episodes and the outcome briefing are
+    text earlier sessions wrote, partly after reading files, pages and tool
+    results; a line in them that reads like an instruction must arrive
+    labelled as a note. The nonce is ``project_memory._fence_nonce`` of the
+    content: unknowable to whoever wrote the stored text (a per-process
+    key), and the same for the same content, so the prompt prefix stays
+    byte-stable between builds. Rejected: a random nonce per build (every
+    turn's prompt would differ and the prefix cache would miss); a content
+    hash alone (anyone who can hash could write the matching closer)."""
+    if not (text or "").strip():
+        return ""
+    from . import untrusted
+    from .project_memory import _fence_nonce
+    return untrusted.wrap_as("notes", source, text, nonce=_fence_nonce(text))
+
+
+def _notes_fence_overhead(source: str) -> int:
+    """Characters a notes fence adds around a body (header, closer and the
+    two newlines), for callers that pay it from a fixed budget."""
+    from . import untrusted
+    return len(untrusted.wrap_as("notes", source, "", nonce="0" * 16))
+
+
 def _memory_entry_header(title: str, rel: str, raw: str) -> str:
     """The provenance line that introduces one recalled memory.
 
@@ -188,6 +214,12 @@ def _memory_entry_header(title: str, rel: str, raw: str) -> str:
     written = _stamp("created_at")
     if written:
         parts.append(written)
+    # Where a model's note was learned: the tools whose fenced output the
+    # turn had read before remember() wrote it (memory_store
+    # PROVENANCE_FIELDS). Stable per file, so the prompt prefix is too.
+    read_before = " ".join(str(meta.get("read_before", "")).split())[:120]
+    if source == "agent" and read_before and read_before != "nothing":
+        parts.append(f"after reading {read_before}")
     # No "last recalled <date>". It moved every day a note was recalled,
     # and the prompt head is cached as a prefix: the first byte that
     # differs from yesterday makes everything after it cold. Measured
@@ -205,13 +237,31 @@ def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
     stored body in place, so without surfacing it the fact that a memory
     used to say something else is only visible on disk.
     """
-    chunk = f"{_memory_entry_header(title, rel, raw)}\n{_memory_body_only(raw)}"
+    body = _memory_body_only(raw)
     try:
         from .memory_store import _parse_frontmatter
         meta, _ = _parse_frontmatter(raw)
         superseded = (meta.get("superseded") or "").strip()
     except Exception:
-        superseded = ""
+        meta, superseded = {}, ""
+    # A model's note that carries an instruction channel is not replayed:
+    # written before the write filter existed, past it, or edited by hand.
+    # The user's own words are shown as written. Same test as the write
+    # path (memory_store.memory_instruction_refusals).
+    try:
+        from .memory_store import (
+            _normalise_source, memory_instruction_refusals)
+        if _normalise_source(meta.get("source")) == "agent":
+            reasons = memory_instruction_refusals(
+                body + "\n" + superseded)
+            if reasons:
+                kinds = ", ".join(r.split(":", 1)[0] for r in reasons)
+                body = (f"[withheld at recall: the note carries text shaped "
+                        f"as an instruction ({kinds}); /memories shows it]")
+                superseded = ""
+    except Exception:
+        pass
+    chunk = f"{_memory_entry_header(title, rel, raw)}\n{body}"
     if superseded:
         chunk += f"\n[this replaced an earlier wording: {superseded}]"
     return chunk
@@ -730,6 +780,8 @@ class PromptLoader:
         # of the same budget rather than added on top of it: ``max_chars``
         # stays the ceiling for everything the block contributes.
         max_chars = max(0, max_chars - len(_MEMORY_BLOCK_PREAMBLE) - 2)
+        # The fence around the recalled text is paid from the same budget.
+        max_chars = max(0, max_chars - _notes_fence_overhead("memory"))
 
         # The index competes for the same characters as the bodies now. Each
         # store's pointer list is capped at a share of the budget so a fat
@@ -840,7 +892,7 @@ class PromptLoader:
             joined = joined[:max(0, room)]
         if notice:
             joined = (joined + "\n\n" + notice) if joined else notice
-        return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
+        return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{_fence_notes('memory', joined)}"
 
     def _load_knowledge_context(self, task_text: str,
                                 max_chars: int | None = None) -> str:
@@ -887,9 +939,9 @@ class PromptLoader:
             from .episodes import recall_episodes
             # Same root as the memory store, and for the same reason: the
             # writer keys episodes by the workspace.
-            return recall_episodes(
+            return _fence_notes("episodes", recall_episodes(
                 Path(self.workspace_root or self.repo_root), task_text,
-                exclude_session_id=session_id)
+                exclude_session_id=session_id))
         except Exception:
             return ""
 
@@ -979,14 +1031,12 @@ class PromptLoader:
             pass
 
         def _git(*args: str) -> str:
+            from . import safe_git
             try:
-                out = subprocess.run(
-                    ["git", *args], cwd=str(repo),
-                    capture_output=True, text=True, timeout=2.0,
-                )
+                out = safe_git.run(args, repo, timeout=2.0)
                 if out.returncode == 0:
                     return out.stdout.strip()
-            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            except Exception:
                 pass
             return ""
 
@@ -1181,7 +1231,8 @@ class PromptLoader:
             from delfin.agent.briefing import generate_briefing
 
             provider = getattr(self, "_active_provider", "claude")
-            return generate_briefing(provider, task_text)
+            return _fence_notes("briefing",
+                                generate_briefing(provider, task_text))
         except Exception:
             return ""
 
@@ -2164,6 +2215,16 @@ class PromptLoader:
                 # Static menu of on-demand sections — belongs in the head.
                 add("progressive_note", self.LAYER_STABLE,
                     self._build_progressive_disclosure_note())
+
+            # Per-model notes (model_profiles.MODEL_NOTES), each switched
+            # by its own profile field. Fixed for the model, so the last
+            # stable section: a model switch re-sends this tail, nothing
+            # before it. Empty for every profile that switches none on.
+            try:
+                from .model_profiles import model_notes as _model_notes
+                add("model_notes", self.LAYER_STABLE, _model_notes(model))
+            except Exception:
+                pass
 
             # ---- Layer 2: per-turn material ------------------------------
             # Everything below is derived from the current task text, the

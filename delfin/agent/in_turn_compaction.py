@@ -153,7 +153,27 @@ def _rounds(messages: list[dict], start: int) -> list[tuple[int, int]]:
 
 def _digest_line(msg: dict) -> str:
     content = str(msg.get("content", ""))
+    # A fenced result (file, command, web output) would digest to its
+    # fence header. The digest quotes the start of the fenced text instead,
+    # marked as data, and leaves it out when it reads like an instruction:
+    # the summary is a user-role row, outside any fence.
+    fenced = False
+    try:
+        from .untrusted import is_fenced, unwrap
+        if is_fenced(content):
+            content = unwrap(content.lstrip())
+            fenced = True
+    except Exception:
+        pass
     head = " ".join(content.split())[:_DIGEST_CHARS]
+    if fenced:
+        try:
+            from .untrusted import flags, instruction_shapes
+            if flags(head) or instruction_shapes(head):
+                head = "(not quoted: the output carries instruction-shaped text)"
+        except Exception:
+            head = "(not quoted)"
+        head = "[data] " + head
     return f"  round result {msg.get('tool_call_id', '?')}: {head}"
 
 

@@ -59,6 +59,10 @@ GATE_P = "self._check_read_access(perms, p)"
     "subprocess.run(['ls'], executable=p)",
     "_text_files.write_text_file(p, 'x')",
     "_text_files.read_text_file(p)",
+    "safe_git.run(['ls-files'], p)",
+    "safe_git.run(['show', str(p)], '.')",
+    "safe_git.check_output(['status'], cwd=p)",
+    "safe_git.out(p, 'status')",
 ])
 def test_an_ungated_access_is_reported(access):
     assert "_execute_x" in _flagged(_src("p = arguments['path']", access))
@@ -67,6 +71,11 @@ def test_an_ungated_access_is_reported(access):
 def test_an_argv_of_constants_and_refs_is_no_file_access():
     assert _flagged(_src("ref = arguments.get('ref') or 'HEAD'",
                          "subprocess.run(['git', 'log', ref])")) == set()
+
+
+def test_safe_git_with_a_constant_directory_and_refs_is_no_file_access():
+    assert _flagged(_src("ref = arguments.get('ref') or 'HEAD'",
+                         "safe_git.run(['log', ref], '.')")) == set()
 
 
 def test_a_function_that_is_not_an_executor_is_not_reported():

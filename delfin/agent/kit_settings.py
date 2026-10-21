@@ -431,7 +431,7 @@ _NARROW_SUBCOMMANDS = frozenset({
 })
 
 
-def suggest_pattern_for_command(cmd: str) -> str:
+def suggest_pattern_for_command(cmd: str, perms=None) -> str:
     """Translate a shell command into a re-usable auto-allow regex.
 
     Examples::
@@ -440,7 +440,81 @@ def suggest_pattern_for_command(cmd: str) -> str:
         'git status'                 -> '^\\s*git status\\b'
         'python3 -m delfin.cli x'    -> '^\\s*python3\\s+-m\\s+delfin\\.cli\\b'
         'rm build/tmp.txt'           -> exact-match pattern (no bare 'rm')
+
+    A compound command (``a && b; c``) is judged by the gate segment by
+    segment, so a rule for its first word covered whatever came first and
+    nothing the gate had actually asked about: field report
+    20261020-140059 confirmed ``python3 - <<EOF … EOF; node --check .t.js;
+    rm -f .t.js`` with "Allow + Permanent", got ``^\\s*python3\\b``, and
+    was asked about ``rm -f .t.js`` again. For a compound the rule is one
+    alternation over the segments ``perms`` (the session's
+    KitToolPermissions; the built-in defaults when None) does not let
+    through, each generalised by the single-command rules below -- so a
+    ``rm`` or ``git push`` in it stays exact. Segments already allowed are
+    left out: naming them would turn a default into a user rule, and a user
+    rule for an interpreter (``node``) also lifts the interpreter check.
     """
+    segments = _blocking_segments(cmd, perms)
+    if len(segments) > 1:
+        parts = [_suggest_one(seg) for seg in segments]
+        parts = [p for p in parts if p]
+        if parts and all(p.startswith(_ANCHOR) for p in parts):
+            inner = []
+            for p in parts:
+                body = p[len(_ANCHOR):]
+                if body not in inner:
+                    inner.append(body)
+            if len(inner) == 1:
+                return _ANCHOR + inner[0]
+            return _ANCHOR + "(?:" + "|".join(inner) + ")"
+    if len(segments) == 1:
+        return _suggest_one(segments[0])
+    return _suggest_one(cmd)
+
+
+#: Every single-command suggestion starts with it; an alternation is built
+#: from what follows.
+_ANCHOR = r"^\s*"
+
+
+def _blocking_segments(cmd: str, perms=None) -> list[str]:
+    """The segments of ``cmd`` the gate would ask about, in order.
+
+    One segment for a plain command. For a compound: those that
+    ``perms._segment_auto_allowed`` refuses, plus those the interpreter
+    rule holds (``python3 - <<EOF`` passes the segment check and is asked
+    about as a whole). Empty when nothing can be singled out -- the caller
+    then falls back to the whole command."""
+    cmd = (cmd or "").strip()
+    if not cmd:
+        return []
+    try:
+        from .api_client import KitToolPermissions, _split_shell_segments
+        segments = _split_shell_segments(cmd)
+    except Exception:
+        return [cmd]
+    if len(segments) <= 1:
+        return segments or [cmd]
+    if perms is None:
+        try:
+            perms = KitToolPermissions(workspace=str(Path.cwd()),
+                                       mode="default")
+        except Exception:
+            return [cmd]
+    out = []
+    for seg in segments:
+        try:
+            blocked = (not perms._segment_auto_allowed(seg)
+                       or perms._interpreter_needs_confirm(seg))
+        except Exception:
+            blocked = True
+        if blocked:
+            out.append(seg)
+    return out
+
+
+def _suggest_one(cmd: str) -> str:
+    """The rule for one command (no chaining operators)."""
     import re as _re
     cmd = (cmd or "").strip()
     parts = cmd.split()

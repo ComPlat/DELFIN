@@ -1110,6 +1110,8 @@ class Worker:
         self._seen_lock = threading.Lock()
         self._tasks: list[dict[str, Any]] = []
         self._tasks_key: Any = ()
+        self._background: list[dict[str, Any]] = []
+        self._background_at = -1e9
         #: bypassPermissions was confirmed once in this session (the
         #: window's y): shift+tab passes through it from then on.
         self._bypass_confirmed = False
@@ -1161,7 +1163,8 @@ class Worker:
                 # not) and whether its first step was confirmed already.
                 "bypassBlocked": self._bypass_blocked(),
                 "bypassConfirmed": bool(getattr(self, "_bypass_confirmed", False)),
-                "auto": self._auto_line()}
+                "auto": self._auto_line(),
+                "background": self._background_rows()}
 
     def _bypass_blocked(self) -> str:
         try:
@@ -1213,6 +1216,43 @@ class Worker:
             pass
         return self._tasks
 
+    #: How often the background list is read again. check_session runs
+    #: every tick (0.25 s); the list reads the job registry, the process
+    #: table and the scheduler, which is a glance every few seconds, not a
+    #: poll (the terminal's status line uses the same 3 s).
+    _BACKGROUND_EVERY_S = 3.0
+    #: Rows sent at most. The window draws three and a count, so a longer
+    #: list only costs event size; a runaway (hundreds of wake-ups) is cut.
+    _BACKGROUND_MAX = 50
+
+    def _background_rows(self) -> list[dict[str, Any]]:
+        """This session's background work (background_view.snapshot), each
+        label one plain line. A list that cannot be read keeps the last one
+        rather than announcing that nothing runs."""
+        # getattr: a worker built without __init__ (tests of the posture
+        # ladder) has neither, and session facts must still be readable.
+        now = time.monotonic()
+        if now - getattr(self, "_background_at", -1e9) < self._BACKGROUND_EVERY_S:
+            return getattr(self, "_background", [])
+        self._background_at = now
+        try:
+            from .. import background_view
+
+            sid = str(getattr(self.engine, "session_id", "") or "") or None
+            rows = background_view.snapshot(
+                background_view.collect(self.workspace, session_id=sid))
+            self._background = [
+                {"group": r["group"], "id": protocol.clean_line(r["id"], 64),
+                 "kind": protocol.clean_line(r["kind"], 40),
+                 "label": protocol.clean_line(r["label"], protocol.TASK_LABEL_MAX),
+                 "url": protocol.clean_line(r["url"], 200),
+                 "state": protocol.clean_line(r["state"], 40),
+                 "since": r["since"], "at": r["at"]}
+                for r in rows[:self._BACKGROUND_MAX]]
+        except Exception:
+            pass
+        return getattr(self, "_background", [])
+
     def check_session(self) -> None:
         """Announce the posture, model, effort or task list whenever it
         changed, however it changed: a plan approval, "stop asking about
@@ -1250,7 +1290,8 @@ class Worker:
                 "tasks": facts["tasks"],
                 "bypassBlocked": facts["bypassBlocked"],
                 "bypassConfirmed": facts["bypassConfirmed"],
-                "auto": facts["auto"]}
+                "auto": facts["auto"],
+                "background": facts["background"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""
@@ -1756,6 +1797,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--fake", action="store_true",
                    help="scripted turns, no model (tests and UI work)")
     p.add_argument("--fake-delay", type=float, default=0.02)
+    p.add_argument("--fake-steer-window", type=float, default=5.0,
+                   help="how long a fake 'steer' turn waits for a message "
+                        "(tests whose steer window only has to elapse)")
     p.add_argument("--fake-save", action="store_true",
                    help="save a fake session to the session store at the end "
                         "(tests of the save path)")
@@ -1863,7 +1907,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.fake:
             from .fake_engine import FakeEngine
-            engine = FakeEngine(str(workspace), delay=args.fake_delay)
+            engine = FakeEngine(str(workspace), delay=args.fake_delay,
+                                steer_window=args.fake_steer_window)
             if args.resume:
                 # As a real resume (cli._open_session restores the id): the
                 # session goes on under its id, in the same log -- with what

@@ -63,6 +63,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -74,6 +75,7 @@ from typing import Callable, Iterable, Optional
 
 from . import knowledge as kn
 from . import knowledge_private as kp
+from . import safe_git
 from . import repo_visibility as rv
 
 PAUSE_S = 2.0
@@ -241,10 +243,12 @@ def _gh_login() -> str:
 
 
 def _identities() -> set:
-    import getpass
+    """The OS account (the real uid's name, ``os_account.name``; never
+    $USER, which the process sets itself) and the gh-authenticated login."""
+    from .os_account import name as _account
     ids = set()
     try:
-        ids.add(getpass.getuser())
+        ids.add(_account())
     except Exception:
         pass
     login = _gh_login()
@@ -265,7 +269,7 @@ def is_admin() -> bool:
 @dataclass
 class Dialog:
     id: str
-    kind: str                        # share | unshare | admin
+    kind: str                        # share | unshare | withdraw | admin
     title: str
     target: Optional[Target]
     entry: Optional[kn.Entry] = None
@@ -331,6 +335,8 @@ class Dialog:
                 f"reword the lesson (/lessons edit {self.lesson_id} ...) "
                 "and share again:"))
             lines += [f"  - {f}" for f in self.findings]
+        elif self.kind == "withdraw":
+            pass
         elif self.kind == "admin":
             lines.append("check: passed (" + ("public" if self.public
                                               else "base") + " rules) for "
@@ -458,9 +464,8 @@ def _project_names(les: kp.Lesson) -> list:
     root = kn.repo_root_of(ws)
     names = [root.name]
     try:
-        url = subprocess.run(["git", "-C", str(root), "remote", "get-url",
-                              "origin"], capture_output=True, text=True,
-                             timeout=5).stdout.strip()
+        url = safe_git.run(["remote", "get-url", "origin"], root,
+                           timeout=5).stdout.strip()
         if url:
             names.append(url.rstrip("/").rsplit("/", 1)[-1]
                          .removesuffix(".git"))
@@ -580,8 +585,10 @@ def start_share(lesson_id, layer: str, *, workspace, scope: str = "",
         if target.layer == kn.GLOBAL:
             qid = enqueue(d)
             kp.set_status(les.id, kp.QUEUED, shared_ref=qid)
+            note = group_note(queue_dir() / f"{qid}.json")
             return (f"queued for the knowledge admin's review as {qid}; "
-                    "/memory shows the outcome", qid)
+                    "/memory shows the outcome"
+                    + (f"\n{note}" if note else ""), qid)
         branch, sha, _diff = prepare_branch(
             target.repo_root, f"delfin-knowledge/{written.slug}",
             {f"{target.folder_rel}/{written.slug}.md": d.text},
@@ -623,8 +630,7 @@ def _offer_pr(target: Target, branch: str, sha: str, d: Dialog) -> str:
 
 def enqueue(d: Dialog) -> str:
     q = queue_dir()
-    shared = bool(os.environ.get("DELFIN_KNOWLEDGE_QUEUE")
-                  or _knowledge_settings().get("queue_dir"))
+    shared = _queue_is_shared()
     q.mkdir(parents=True, exist_ok=True)
     if not shared:
         os.chmod(q, 0o700)
@@ -635,14 +641,123 @@ def enqueue(d: Dialog) -> str:
         "topic": d.entry.topic, "scope": d.entry.scope, "mode": d.mode,
         "entry": d.text, "contradicts": list(d.contradicts),
         "released": list(d.released), "visibility": d.target.visibility,
-        "status": "pending", "reason": "", "decided_by": "",
+        "status": "pending", "reason": "",
     }
-    path = q / f"{qid}.json"
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_NOFOLLOW", 0), 0o640 if shared else 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(record, fh, ensure_ascii=False, indent=1)
+    _write_record(q / f"{qid}.json", record, shared=shared)
     return qid
+
+
+def _queue_is_shared() -> bool:
+    return bool(os.environ.get("DELFIN_KNOWLEDGE_QUEUE")
+                or _knowledge_settings().get("queue_dir"))
+
+
+def _queue_gid(folder: Path) -> int:
+    return os.stat(folder).st_gid
+
+
+def _record_mode(shared: bool, fd: int, folder: Path) -> int:
+    """The mode of the queue record open on ``fd``: owner read/write,
+    plus group read only in a shared queue AND only when the record's
+    group is the queue folder's group.
+
+    The admin of a shared queue reads the records through the folder's
+    group, the one the deployment chose for it. A new file takes the
+    folder's group only on a setgid folder (or on BSD and macOS);
+    elsewhere it takes the writer's primary group, whose members are not
+    the admin's audience. Group read for that group would hand the
+    record to them, so it is withheld and the record stays 0o600 --
+    the admin then cannot read it, and :func:`group_note` says so.
+
+    Rejected: an unconditional 0o640 (the group is whatever the file
+    happens to get); chgrp to the folder's group (it succeeds only for
+    a member of that group and would hide the misconfiguration)."""
+    if not shared:
+        return 0o600
+    try:
+        same = os.fstat(fd).st_gid == _queue_gid(folder)
+    except OSError:
+        same = False
+    return 0o600 | (stat.S_IRGRP if same else 0)
+
+
+def group_note(path: Path) -> str:
+    """One line when a record in a shared queue is not group-readable
+    (see :func:`_record_mode`), else ""."""
+    if not _queue_is_shared() or not hasattr(os, "fchmod"):
+        return ""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return ""
+    if mode & stat.S_IRGRP:
+        return ""
+    return (f"note: the record is readable only by you -- the queue folder "
+            f"{path.parent} does not pass its group on to new files; the "
+            "queue's owner fixes that by setting the setgid bit (chmod "
+            "g+s), and until then the admin cannot read this submission")
+
+
+def _write_record(path: Path, data: dict, *, shared: bool,
+                  cap: int | None = None) -> None:
+    """Write one queue record with an exact mode, atomically.
+
+    Input: the final path, the record, whether the queue is shared, and
+    ``cap``, the mode bits of the record being replaced (a rewrite never
+    grants a bit the old record did not have). Output: ``path`` holds the
+    record, mode :func:`_record_mode` limited by ``cap``.
+
+    Semantics: the bytes go to a fresh temporary file in the same folder
+    (``O_CREAT | O_EXCL | O_NOFOLLOW``, so no existing file or planted
+    link is opened), whose mode is set with ``fchmod`` before the first
+    byte -- independent of the umask --, then fsync, then ``os.replace``
+    onto ``path``, then a best-effort fsync of the folder. A reader sees
+    the old record or the new one, never a partial one, and never a
+    moment with a wider mode. On any failure the temporary file is
+    removed and the old record is untouched.
+
+    Rejected: ``Path.write_text`` + ``os.replace`` (the mode was 0o666
+    minus the rewriter's umask: 0o644 under the common 022, so an admin
+    decision made a record world-readable); ``chmod`` after the write (a
+    window in which the wider mode exists); the umask-masked mode
+    argument of ``os.open`` alone (under umask 077 a shared record was
+    unreadable to the admin).
+    """
+    payload = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.partial")
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    fd = os.open(str(tmp), flags, 0o600)
+    try:
+        mode = _record_mode(shared, fd, path.parent)
+        if cap is not None:
+            mode &= (cap & 0o777) | 0o600
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, mode)
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        tmp.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    try:
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 def read_queue() -> list:
@@ -662,12 +777,18 @@ def read_queue() -> list:
 
 
 def write_queue_record(rec: dict) -> None:
+    """Rewrite one record (an admin decision) through
+    :func:`_write_record`, never wider than the record it replaces."""
     p = Path(rec["_path"])
     data = {k: v for k, v in rec.items() if not k.startswith("_")}
-    tmp = p.with_name(f".{p.name}.partial")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
-                   encoding="utf-8")
-    os.replace(tmp, p)
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        st = None
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        raise ShareRefused(f"{p.name} is not a regular file; not rewritten")
+    _write_record(p, data, shared=_queue_is_shared(),
+                  cap=None if st is None else stat.S_IMODE(st.st_mode))
 
 
 def sync_own_lessons() -> list:
@@ -708,10 +829,139 @@ def _find_entry(slug: str, workspace) -> tuple:
     raise ShareRefused(f"no shared entry named {slug!r}")
 
 
+_QUEUE_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
+
+
+def _current_uid() -> Optional[int]:
+    """This process's real user id; None where the OS has none."""
+    return os.getuid() if hasattr(os, "getuid") else None
+
+
+def _queued_ref(ref: str) -> str:
+    """The queue id ``ref`` names, or "": a queue id itself, or the id of
+    one's own lesson whose status is QUEUED (its ``shared_ref``)."""
+    ref = (ref or "").strip()
+    if _QUEUE_ID_RE.match(ref):
+        return ref
+    if ref.isdigit():
+        les = kp.get(ref)
+        if les is not None and les.status == kp.QUEUED and les.shared_ref:
+            return les.shared_ref
+    return ""
+
+
+def _own_pending_record(qid: str) -> dict:
+    """The pending queue record ``qid`` if this account wrote it, else
+    ShareRefused with the reason.
+
+    Ownership is the record file's owner as the kernel recorded it: the
+    author's process created the file with ``O_EXCL`` (:func:`enqueue`),
+    so its ``st_uid`` is the author's account, and no other account can
+    create a file owned by this one. The author handle on the record is a
+    name the person chose and proves nothing; it is not consulted.
+
+    Trust model, stated plainly: this authenticates the OS account, so
+    every process of that account (the agent included) is the author --
+    hence the refusal inside an agent session and the typed code;
+    root can do anything; a shared queue folder that is group-writable
+    without the sticky bit lets a group member replace a record with
+    one of their own (the owner check then refuses the real author
+    rather than letting the replacer withdraw it) -- a shared queue
+    folder should be ``chmod 3770`` (setgid + sticky). Where the OS has
+    no user ids, only the per-account queue (which no other account can
+    write) allows withdrawal."""
+    rec = next((r for r in read_queue() if r.get("id") == qid), None)
+    if rec is None:
+        raise ShareRefused(f"no queued submission {qid}")
+    status = str(rec.get("status") or "")
+    if status != "pending":
+        hint = {"withdrawn": "nothing is left to withdraw",
+                "rejected": "the record keeps its text and the reason "
+                            "until the knowledge admin removes it",
+                }.get(status, "the admin prepared a branch from it; once "
+                      "merged, /unshare <entry> withdraws it, until then "
+                      "ask the knowledge admin")
+        raise ShareRefused(f"{qid} is {status} already; {hint}")
+    path = Path(rec["_path"])
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        raise ShareRefused(f"{qid}: {exc}") from None
+    if not stat.S_ISREG(st.st_mode):
+        raise ShareRefused(f"{qid} is not a regular file")
+    uid = _current_uid()
+    if uid is None:
+        if _queue_is_shared():
+            raise ShareRefused(f"{qid}: this system has no account ids to "
+                               "tell who wrote a record in a shared queue; "
+                               "ask the knowledge admin to withdraw it")
+        return rec
+    if st.st_uid != uid:
+        raise ShareRefused(f"{qid} was queued by another account; only the "
+                           "account that queued it can withdraw it (the "
+                           "author handle is not proof), otherwise the "
+                           "knowledge admin")
+    return rec
+
+
+def _withdraw_queued(qid: str) -> tuple:
+    """Reduce a pending record to a tombstone and mark the lesson."""
+    rec = _own_pending_record(qid)
+    tomb = {"id": rec["id"], "created": rec.get("created"),
+            "status": "withdrawn", "withdrawn": time.time(),
+            "_path": rec["_path"]}
+    write_queue_record(tomb)
+    les_id = rec.get("lesson_id")
+    les = kp.get(les_id) if les_id is not None else None
+    if les is not None and les.shared_ref == qid:
+        kp.set_status(les.id, kp.WITHDRAWN, note="withdrawn from the queue")
+    return (f"withdrew {qid} from the knowledge admin's review queue; the "
+            "record keeps only its id, its dates and the status "
+            "'withdrawn'. Your private lesson stays; edit it to share "
+            "again", qid)
+
+
+def start_withdraw(qid: str, *,
+                   clock: Callable[[], float] = time.monotonic) -> Dialog:
+    """Withdraw one's own submission while it waits in the review queue.
+
+    Input: a queue id. Output: a one-code :class:`Dialog` (a withdrawal
+    narrows who can read the text) whose ``perform`` checks ownership
+    again (:func:`_own_pending_record`), rewrites the record as a
+    tombstone -- ``id``, ``created``, ``status: withdrawn``,
+    ``withdrawn`` -- without the entry text, the author handle, the slug,
+    topic, evidence and reason, and sets the lesson to WITHDRAWN. An
+    admin decision on a withdrawn record is refused
+    (``knowledge_curation``)."""
+    _refuse_in_agent_session()
+    rec = _own_pending_record(qid)
+    d = Dialog(id=uuid.uuid4().hex[:12], kind="withdraw",
+               title=f"Withdraw {qid} from the knowledge admin's review "
+               "queue", target=None, text=str(rec.get("entry") or ""),
+               mode="remove", lesson_id=int(rec.get("lesson_id") or 0),
+               public=False,
+               extra=["the record keeps only its id, its dates and the "
+                      "status 'withdrawn'; the text and your handle are "
+                      "removed from it"])
+    d.perform = lambda: _withdraw_queued(qid)
+    return _register(d, clock)
+
+
 def start_unshare(slug: str, *, workspace, handle: str = "",
                   clock: Callable[[], float] = time.monotonic) -> Dialog:
-    """Withdraw one's own entry as a branch that removes it."""
+    """Withdraw one's own share.
+
+    A queue id, or the id of a lesson still QUEUED, withdraws the
+    submission from the review queue (:func:`start_withdraw`; ownership
+    is the account, ``handle`` plays no part). Anything else names an
+    entry already in git, withdrawn as a branch that removes it; there
+    ownership is checked against the provenance handle, which only keeps
+    a person from preparing someone else's removal by mistake -- the
+    authority is the review of the pull request the person opens."""
     _refuse_in_agent_session()
+    qid = _queued_ref(slug)
+    if qid:
+        return start_withdraw(qid, clock=clock)
     handle = (handle or default_handle()).strip()
     layer, root, folder, entry = _find_entry(slug, workspace)
     authors = {p.author for p in entry.provenance}
@@ -778,9 +1028,8 @@ def start_admin(title: str, *, preview_text: str,
 # ---------------------------------------------------------------------------
 
 def _g(repo: Path, *args, env=None, input_text=None) -> str:
-    out = subprocess.run(["git", "-C", str(repo), *args],
-                         capture_output=True, text=True, env=env,
-                         input=input_text, timeout=60)
+    """*env*: variables added to safe_git's cleaned environment."""
+    out = safe_git.run(args, repo, env=env, input=input_text, timeout=60)
     if out.returncode != 0:
         raise ShareRefused(f"git {args[0]} failed: "
                            f"{(out.stderr or out.stdout).strip()[:300]}")
@@ -836,7 +1085,7 @@ def prepare_branch(repo: Path | str, branch_hint: str, changes: dict,
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(text, encoding="utf-8")
             changes[f"{index_folder}/{kn.INDEX_FILE}"] = kn.render_index(mat)
-        env = dict(os.environ, GIT_INDEX_FILE=str(tmp / "index"))
+        env = {"GIT_INDEX_FILE": str(tmp / "index")}
         _g(repo, "read-tree", base, env=env)
         for rel, text in changes.items():
             if text is None:

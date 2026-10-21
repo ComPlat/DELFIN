@@ -40,13 +40,9 @@ from typing import Any, Optional
 
 def _git_out(repo: str, *args: str) -> str:
     """Output of a read-only git command, "" on any failure."""
+    from . import safe_git
     try:
-        proc = subprocess.run(
-            ["git", "-C", repo, *args],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-            timeout=15,
-        )
-        return proc.stdout if proc.returncode == 0 else ""
+        return safe_git.out(repo, *args, timeout=15)
     except Exception:
         return ""
 

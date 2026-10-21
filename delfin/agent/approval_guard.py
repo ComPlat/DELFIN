@@ -241,6 +241,110 @@ def answer_command(cmd: str) -> Optional[str]:
     return None
 
 
+# -- the operator's actions --------------------------------------------------
+#
+# ``delfin-agent ops send|escalate|pause`` and the top-level ``delfin-agent
+# pause|resume`` are the person's (ops_interface): a message sent with
+# them reads as the supervisor's, a pause or a resume decides over another
+# session. ops_interface and cmd_pause refuse when the process carries
+# ENV_MARKER; a command can strip the marker (``env -u``), so the command
+# text is refused as well. The words are read as the shell will run them
+# (api_client._command_words: shell bodies, wrappers, assignments,
+# quotes), and the program may stand anywhere in a simple command, which
+# also covers runners such as ``micromamba run -n env delfin-agent``.
+
+#: The ops subcommands that act. sessions/session/approvals/events/wait read.
+_OPS_ACTS = frozenset({"send", "escalate", "pause"})
+#: The top-level subcommands that decide over another session.
+_TOP_ACTS = frozenset({"pause", "resume"})
+_OPERATOR_MODULE_RE = re.compile(r"\b(?:ops_interface|session_pause)\b")
+_OPERATOR_CALL_RE = re.compile(r"\b(?:send|escalate|pause|resume)\s*\(")
+_CLI_MODULE_RE = re.compile(r"\bdelfin\.agent\.cli\b|\bdelfin\.agent\s+import\s+cli\b")
+_CLI_ACT_RE = re.compile(
+    r"\bops\b\W{0,8}(?:send|escalate|pause)\b|\bmain\s*\(\s*\[\W*(?:pause|resume)\b")
+
+
+def _agent_args(words: list) -> Optional[list]:
+    """The words after a delfin-agent program in one simple command, or
+    None when none is there: ``delfin-agent`` under any directory,
+    ``python -m delfin.agent.cli``, or a program held in a variable."""
+    for i, w in enumerate(words):
+        base = os.path.basename(w)
+        if base == "delfin-agent":
+            return words[i + 1:]
+        if (w == "-m" and i + 1 < len(words)
+                and words[i + 1] in ("delfin.agent.cli", "delfin.agent")):
+            return words[i + 2:]
+    if words and words[0].startswith("$"):
+        return words[1:]
+    return None
+
+
+def _acting_subcommand(args: list, xargs: bool) -> str:
+    """``ops <verb>`` or ``pause``/``resume`` when *args* run one, else "".
+    With xargs on the line, a missing verb or argument comes from stdin."""
+    rest = [a for a in args if not a.startswith("-")]
+    if not rest:
+        return "delfin-agent with its words from stdin" if xargs else ""
+    if rest[0] == "ops":
+        if len(rest) > 1 and rest[1] in _OPS_ACTS:
+            return f"delfin-agent ops {rest[1]}"
+        if len(rest) == 1 and xargs:
+            return "delfin-agent ops with its verb from stdin"
+        return ""
+    if rest[0] in _TOP_ACTS and (len(rest) > 1 or xargs):
+        return f"delfin-agent {rest[0]}"
+    # Accepting a changed MCP tool description is the person's decision.
+    if rest[0] == "mcp-pins" and (
+            (len(rest) > 1 and rest[1] == "accept") or (len(rest) == 1
+                                                        and xargs)):
+        return "delfin-agent mcp-pins accept"
+    return ""
+
+
+def operator_command(cmd: str) -> Optional[str]:
+    """What in *cmd* acts as the operator, or None.
+
+    Input: a shell command, commit-message prose already blanked by the
+    caller. Output: the subcommand it runs. Shapes: ``delfin-agent ops
+    send|escalate|pause`` and ``delfin-agent pause|resume`` in every
+    spelling ``_command_words`` reads (and with xargs supplying the verb),
+    and the Python functions that do the same (``ops_interface.send``,
+    ``session_pause.pause``, ``cli.main(["ops", "pause", ...])``)."""
+    text = cmd or ""
+    try:
+        from .api_client import _command_words
+        commands = _command_words(text)
+    except Exception:
+        commands = [part.split() for part in re.split(r"[;&|\n]", text)]
+    xargs = bool(re.search(r"(?<![\w.-])xargs(?![\w-])", text))
+    for words in commands:
+        args = _agent_args(list(words))
+        if args is None:
+            continue
+        found = _acting_subcommand(args, xargs)
+        if found:
+            return found
+    flat = _dequoted(text)
+    if _IMPORT_RE.search(flat) or "-m" in flat.split():
+        if _OPERATOR_MODULE_RE.search(flat) and _OPERATOR_CALL_RE.search(flat):
+            return "the Python function that acts as the operator"
+        if _CLI_MODULE_RE.search(flat) and _CLI_ACT_RE.search(flat):
+            return "the Python entry point of delfin-agent with an operator action"
+    return None
+
+
+def operator_refusal(what: str) -> str:
+    """The message the model reads. Starts with ``blocked:``."""
+    return (
+        f"blocked: `{what}` acts as the operator. Sending as the operator, "
+        "passing an approval on and pausing or resuming a session are the "
+        "person's actions, in every permission mode -- not this session's. "
+        "To tell another session something, use the session_message tool; "
+        "to ask for a pause, tell the user. Reading (`delfin-agent ops "
+        "sessions`, `ops events`, `ops approvals`) stays allowed.")
+
+
 def refusal(what: str) -> str:
     """The message the model reads. Starts with ``blocked:``."""
     return (
@@ -258,4 +362,5 @@ def inside_agent_session(env=None) -> bool:
 
 
 __all__ = ["ENV_MARKER", "answer_rooms", "is_answer_room_path",
-           "answer_command", "refusal", "inside_agent_session"]
+           "answer_command", "refusal", "inside_agent_session",
+           "operator_command", "operator_refusal"]

@@ -236,7 +236,22 @@ def _model(ctx, args: str) -> CommandResult:
         switch(name)
     except Exception as exc:
         return CommandResult(output=f"could not switch: {exc}")
-    return CommandResult(output=f"model → {name}{note}")
+    return CommandResult(output=f"model → {name}{note}{_fitness_note(client, name)}")
+
+
+def _fitness_note(client, name: str) -> str:
+    """The agent-fitness warning for the model just switched to, on its
+    own line, or "" (model_capabilities.agent_fitness). The dashboard said
+    it in its preflight; the terminal switched without a word."""
+    try:
+        from . import model_capabilities as mc
+        provider = str(getattr(client, "provider", "")
+                       or getattr(client, "_provider", "") or "")
+        caps = mc.resolve(provider, name, str(getattr(client, "_base_url", "") or ""))
+        warn = mc.agent_fitness(provider, name, caps)
+    except Exception:
+        return ""
+    return f"\n⚠ {warn}" if warn else ""
 
 
 def _model_check(client, name: str) -> tuple[str, str]:
@@ -1311,6 +1326,53 @@ def _hooks(ctx, _args: str) -> CommandResult:
     return CommandResult(output="\n".join(lines))
 
 
+def _ports(ctx, args: str) -> CommandResult:
+    """The ports background jobs hold open, and closing one.
+
+    `/ports` lists each running job that listens, with its ports and the
+    address to open; `/ports close <port|job_id>` ends the job that holds
+    it, and with it the port. The ports are what the job's processes
+    really listen on (bash_jobs.open_ports, read from /proc), whatever the
+    server is. Asked for 2026-10-20: a server left running after a session
+    held its port with nothing on screen saying so, and closing it took a
+    process hunt.
+    """
+    try:
+        from . import bash_jobs
+        rows = bash_jobs.open_ports()
+    except Exception as exc:
+        return CommandResult(output=f"ports unavailable ({exc})")
+    parts = args.strip().split()
+    if parts[:1] == ["close"]:
+        if len(parts) < 2:
+            return CommandResult(output="usage: /ports close <port|job_id>")
+        want = parts[1].lstrip(":")
+        hit = next((r for r in rows if want.isdigit()
+                    and int(want) in r["ports"]), None) or next(
+            (r for r in rows if r["job_id"].startswith(want)), None)
+        if hit is None:
+            return CommandResult(output=(
+                f"no background job holds {parts[1]} -- /ports lists the "
+                "open ones"))
+        try:
+            ok, note = bash_jobs.get_registry().kill(hit["job_id"])
+        except Exception as exc:
+            return CommandResult(output=f"close failed: {exc}")
+        ports = " ".join(f":{p}" for p in hit["ports"])
+        return CommandResult(output=(
+            f"closed {ports} (job {hit['job_id']}: {note})" if ok
+            else f"not closed -- {note}"))
+    if not rows:
+        return CommandResult(output="no background job holds a port open")
+    lines = ["open ports of background jobs:"]
+    for r in rows:
+        ports = " ".join(f":{p}" for p in r["ports"])
+        lines.append(f"  {ports:<14} http://127.0.0.1:{r['ports'][0]}/   "
+                     f"job {r['job_id']}  {r['command'][:60]}")
+    lines.append("  /ports close <port|job_id>   ends the job, and its port")
+    return CommandResult(output="\n".join(lines))
+
+
 def _bash(ctx, args: str) -> CommandResult:
     """Background shell jobs: list them, look inside one, or kill one.
 
@@ -1789,12 +1851,14 @@ def _bug(ctx, args: str) -> CommandResult:
     produces in the archive ``resolve_archive_dir`` names
     ($DELFIN_BUG_ARCHIVE > agent.bug_archive_dir > ~/.delfin/agent_bugs),
     surface ``terminal``, then a copy to the transfer target when one is
-    configured.
+    configured and ``agent.bug_upload`` allows it (``bug_filing.upload``).
 
-    Two questions, both defaulting to no: the description, then y/N after
-    a preview of what goes in (counts and size, not content). An empty
-    description, any answer but y/yes, Ctrl+C or end of input writes
-    nothing. A context without ``ask`` cannot confirm and refuses.
+    Questions, each defaulting to no: the description, then y/N after a
+    preview of what goes in (counts and size, not content, and where a
+    remote copy would go). An empty description, any answer but y/yes,
+    Ctrl+C or end of input writes nothing. Under ``agent.bug_upload: ask``
+    a third y/N names the remote archive; a no keeps the written report
+    local. A context without ``ask`` cannot confirm and refuses.
     """
     from . import bug_filing
     from .bug_report import resolve_archive_dir
@@ -1827,7 +1891,10 @@ def _bug(ctx, args: str) -> CommandResult:
     lines = [f"bug report written: {report_dir}"]
     if (report_dir / "REDACTIONS.txt").is_file():
         lines.append("credential-shaped values were redacted (REDACTIONS.txt)")
-    remote = bug_filing.push_if_configured(report_dir)
+    if (report_dir / "REDACTION_FAILED.txt").is_file():
+        lines.append("redaction failed for some files; they were replaced "
+                     "by placeholders (REDACTION_FAILED.txt)")
+    remote = bug_filing.upload(report_dir, ask=ctx.ask)
     if remote:
         lines.append(remote)
     return CommandResult(output="\n".join(lines))
@@ -2010,7 +2077,8 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/share", "history", "Share a lesson after a "
                     "confirmation only you can answer", _layered("share"),
                     True),
-        ReplCommand("/unshare", "history", "Withdraw your shared entry",
+        ReplCommand("/unshare", "history", "Withdraw your share: from the "
+                    "review queue, or a merged entry as a removal branch",
                     _layered("unshare"), True),
         ReplCommand("/swarm", "history", "Findings of a swarm run: harvest, "
                     "propose", _layered("swarm"), True),
@@ -2027,6 +2095,9 @@ BUILTINS: dict[str, ReplCommand] = {
                     _reject, True),
         ReplCommand("/git", "workspace", "status | diff | log | branch | role",
                     _git, True),
+        ReplCommand("/ports", "workspace",
+                    "Open ports of background jobs; /ports close <port|id>",
+                    _ports, True),
         ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
                     _bash, True),
         ReplCommand("/jobs", "workspace",

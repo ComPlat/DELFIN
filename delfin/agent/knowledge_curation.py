@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-import subprocess
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -44,6 +43,7 @@ from typing import Callable, Optional
 
 from . import knowledge as kn
 from . import knowledge_share as ks
+from . import safe_git
 
 __all__ = ["lint", "dupes", "stats", "Plan", "start", "plan_merge",
            "plan_move", "plan_retire", "plan_rename", "plan_split",
@@ -112,11 +112,8 @@ _TICK_RE = re.compile(r"`([^`\n]{2,120})`")
 
 
 def _git_grep(repo: Path, pattern: str) -> Optional[bool]:
-    try:
-        out = subprocess.run(["git", "-C", str(repo), "grep", "-q", "-E",
-                              pattern], capture_output=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    out = safe_git.run(["grep", "-q", "-E", pattern], repo, timeout=30,
+                       text=False)
     if out.returncode in (0, 1):
         return out.returncode == 0
     return None
@@ -125,13 +122,9 @@ def _git_grep(repo: Path, pattern: str) -> Optional[bool]:
 def _tracked(repo: Path, ref: str) -> bool:
     """Whether some tracked file ends with ``ref`` (a partial path such as
     ``tools.py`` counts when one file is called that)."""
-    try:
-        out = subprocess.run(["git", "-C", str(repo), "ls-files", "--",
-                              f"*{ref}"], capture_output=True, text=True,
-                             timeout=30)
-        return bool(out.stdout.strip()) if out.returncode == 0 else True
-    except (OSError, subprocess.SubprocessError):
-        return True       # cannot tell: not reported as broken
+    out = safe_git.run(["ls-files", "--", f"*{ref}"], repo, timeout=30)
+    # A failure (no git, a timeout) cannot tell: not reported as broken.
+    return bool(out.stdout.strip()) if out.returncode == 0 else True
 
 
 def broken_refs(e: kn.Entry, repo_root: Path) -> list[BrokenRef]:
@@ -194,6 +187,9 @@ class Plan:
     after: Optional[Callable[[str], None]] = None
     diff: str = ""
     notes: list = field(default_factory=list)
+    #: The review-queue record this plan decides; re-checked as pending
+    #: before anything is written (it may have been withdrawn meanwhile).
+    queue_id: str = ""
 
     def preview(self) -> str:
         lines = list(self.notes)
@@ -337,11 +333,20 @@ def _recheck(e: kn.Entry) -> None:
 
 
 def _decide(rec: dict, status: str, *, reason: str = "") -> Callable:
+    """The write of an admin decision, made on the record as it is on
+    disk at that moment: a record withdrawn since the plan was built
+    raises ValueError instead of being overwritten with the decision.
+
+    No ``decided_by``: it held the admin's login ($USER via getpass),
+    nothing read it, and the account that rewrote the record is the
+    file's owner already."""
+    qid = rec["id"]
+
     def after(branch: str) -> None:
-        import getpass
-        rec.update(status=status, reason=reason, branch=branch,
-                   decided_by=getpass.getuser())
-        ks.write_queue_record(rec)
+        fresh = _record(qid)
+        fresh.pop("decided_by", None)
+        fresh.update(status=status, reason=reason, branch=branch)
+        ks.write_queue_record(fresh)
     return after
 
 
@@ -359,6 +364,7 @@ def plan_accept(qid: str) -> Plan:
                 + "; ".join(p.render() for p in e.provenance),
                 f"accept-{e.slug}", notes=notes)
     plan.after = _decide(rec, "accepted")
+    plan.queue_id = qid
     return _finish(plan)
 
 
@@ -369,6 +375,7 @@ def plan_reject(qid: str, reason: str) -> Plan:
     plan = Plan(f"Reject {qid} ({rec.get('author')}): {reason}", {},
                 "", "reject", public=False)
     plan.after = _decide(rec, "rejected", reason=reason.strip())
+    plan.queue_id = qid
     return plan
 
 
@@ -381,6 +388,7 @@ def plan_queue_merge(qid: str, into: str) -> Plan:
                 f"Knowledge: extend {into} with queue {qid}",
                 f"extend-{into}")
     plan.after = _decide(rec, "merged", reason=f"merged into {into}")
+    plan.queue_id = qid
     return _finish(plan)
 
 
@@ -396,6 +404,7 @@ def plan_queue_edit(qid: str, **fields) -> Plan:
                 f"Knowledge: add '{e.title}' (edited in review)\n\nQueue "
                 f"{qid}", f"accept-{e.slug}")
     plan.after = _decide(rec, "edited", reason="accepted with edits")
+    plan.queue_id = qid
     return _finish(plan)
 
 
@@ -406,6 +415,8 @@ def plan_queue_edit(qid: str, **fields) -> Plan:
 def start(plan: Plan, *, clock=None) -> "ks.Dialog":
     """Open the admin's confirmation for ``plan``."""
     def perform() -> tuple:
+        if plan.queue_id:
+            _record(plan.queue_id)
         if not plan.changes and plan.branch_hint != "index":
             if plan.after:
                 plan.after("")

@@ -785,6 +785,11 @@ _JOB_WAKE_INTERVAL_S = 120.0
 # How often the Background panel re-reads what is running. Local files only.
 _BACKGROUND_REFRESH_S = 10.0
 
+# After Stop, how often the stop is sent again until the turn's thread has
+# ended. One stop can miss: a turn that is still starting clears the flag,
+# and a request blocked on its first byte only notices a closed transport.
+_STOP_REPEAT_S = 1.0
+
 
 def _job_wake_prompt(done: list) -> str:
     """The message a finished watched job sends an idle agent; "" for none.
@@ -1010,7 +1015,9 @@ _AGENT_CSS = """\
    is always on screen. */
 .delfin-agent-root {
     height: calc(100vh - var(--delfin-agent-top, 140px) - 6px);
-    min-height: 420px;
+    /* 320, not 420: on a window under ~530px (a laptop with the browser's
+       developer tools docked) the floor itself made the page scroll. */
+    min-height: 320px;
     overflow-y: auto;
     box-sizing: border-box;
 }
@@ -1051,7 +1058,10 @@ _AGENT_CSS = """\
 .delfin-agent-root > .delfin-agent-chat-frame,
 .delfin-agent-chat-row > .delfin-agent-chat-frame {
     flex: 1 1 0 !important;
-    min-height: 45vh;
+    /* Never below 45vh while the window has room for it; on a short one
+       the floor gives way to the rows outside the frame (top bar, input,
+       the folded details: ~340px), so the closed layout still fits. */
+    min-height: min(45vh, calc(100vh - 340px));
     display: flex;
     flex-direction: column;
     border: 1px solid #ddd;
@@ -1063,7 +1073,9 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame > .delfin-agent-chat-host {
     flex: 1 1 0 !important;
     height: auto !important;
-    min-height: 120px;
+    /* !important: the widget carries min-height 200px inline, which made
+       this rule a dead letter and the frame 200px plus its foot at least. */
+    min-height: 100px !important;
     border: none;
     border-radius: 0;
 }
@@ -1124,6 +1136,15 @@ _AGENT_CSS = """\
     color: #28a745; text-decoration: line-through;
 }
 .delfin-agent-chat-frame > .delfin-agent-dock { margin: 0; }
+/* What is still out -- shells, jobs, sub-agents, wake-ups -- under the
+   task line. Not a chat-foot row: it stays while the reader is up in the
+   history, since a running server is not about the newest output. Capped,
+   so a long list scrolls in itself instead of taking the chat. */
+.delfin-agent-chat-frame > .delfin-agent-background {
+    border-top: 1px solid #e5e7eb; background: #f8fafc;
+    padding: 2px 10px; margin: 0;
+    max-height: 132px; overflow-y: auto;
+}
 .delfin-agent-chat-frame > .delfin-agent-dock:not(:empty) { padding: 0 6px; }
 /* The task line belongs to the newest output: while the reader is up in
    the history it would sit under text it has nothing to do with. */
@@ -2504,9 +2525,13 @@ def format_undo_result(scope: str, result: dict) -> str:
 def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
     """Whether switching between these modes moves the working folder.
 
-    Office is pinned to the office folder, Dashboard to the agent folder,
-    and everything else follows the launch directory. Comparing the GROUP
-    rather than the mode name keeps a rebuild from firing on a switch that
+    Office is pinned to the office folder, Dashboard and Research share the
+    agent scratch folder, and everything else follows the launch directory.
+    Research sits in its OWN group, not "launch": its engine is built in
+    ctx.agent_dir (see the _ensure_engine research branch), so a Code ->
+    Research switch must rebuild, or the next send would reuse an engine
+    bound to the launch directory. Comparing the GROUP rather than the mode
+    name keeps a rebuild from firing on a switch that
     changes nothing (solo to pipeline), which would discard a live session
     for no reason.
     """
@@ -2515,6 +2540,8 @@ def _mode_workspace_differs(old_mode: str, new_mode: str) -> bool:
             return "office"
         if mode == "dashboard":
             return "dashboard"
+        if mode == "research":
+            return "research"
         return "launch"
 
     return group(old_mode) != group(new_mode)
@@ -2576,12 +2603,12 @@ def _assistant_turn_is_wordless(msg: dict) -> bool:
 # The diagram renderer. Pinned to an exact version and to the bytes of that
 # version: an unpinned CDN script is a supply-chain surface, and the browser
 # refuses a script whose hash does not match rather than running it.
-_MERMAID_VERSION = "11.17.2"
-_MERMAID_URL = (
-    "https://cdn.jsdelivr.net/npm/mermaid@" + _MERMAID_VERSION
-    + "/dist/mermaid.min.js")
-_MERMAID_SRI = (
-    "sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2")
+# The URL lives in pinned_cdn, which the page CSP is built from.
+from delfin.dashboard import pinned_cdn as _pinned_cdn  # noqa: E402
+
+_MERMAID_VERSION = _pinned_cdn.MERMAID_VERSION
+_MERMAID_URL = _pinned_cdn.MERMAID_JS.url
+_MERMAID_SRI = _pinned_cdn.MERMAID_JS.sri
 _VENDORED_MERMAID_CACHE = None
 
 
@@ -2758,7 +2785,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/memory", "Every memory layer with its label: private, swarm, project, global (filter: /memory <layer> [words])", False),
     ("Memory", "/lessons", "Your lessons (/lessons show|edit|delete <id>)", False),
     ("Memory", "/share", "Share a lesson: the dialog shows the exact text and the check; /share confirm <dialog> <code>", True),
-    ("Memory", "/unshare", "Withdraw your shared entry as a removal branch", True),
+    ("Memory", "/unshare", "Withdraw your share: from the review queue (/unshare <queue or lesson id>), or a merged entry as a removal branch", True),
     ("Memory", "/swarm", "Findings of a swarm run (/swarm harvest|propose|close)", False),
     ("Memory", "/knowledge", "Global knowledge by topic, search, lint, dupes, stats; queue and curation for the admin", False),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
@@ -3553,7 +3580,7 @@ def _calc_missing_file_hint(filepath: str, look_dir: Path, calc_dir: Path) -> st
 
     The agent (any model) tends to GUESS output names like ``orca.out``
     that don't match DELFIN's actual filenames, then gets stuck
-    repeating "Not a file" (Jerome's error-detection bug). Instead of a
+    repeating "Not a file" (an error-detection bug from a field report). Instead of a
     dead-end, list what's really in the folder — surfacing
     ``.out``/``.log``/``.inp`` with OK/ERROR markers — and point at the
     structured analysis command so even a weak model self-corrects.
@@ -4428,15 +4455,20 @@ def _render_artifact_body(path) -> str | None:
                 f'🎨 <code>{name_html}</code> ({len(text) // 1024} KB) — '
                 f'too large to embed inline.</div>'
             )
-        # Strip a leading XML declaration for clean inline embedding
-        if text.lstrip().startswith("<?xml"):
-            text = text.split("?>", 1)[-1]
+        # As an image, not as inline markup: an <img> renders the drawing
+        # but runs none of the script or event handlers an SVG file can
+        # carry, which inline markup would run on the dashboard's origin.
+        import base64
+        b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
         return (
             f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
             f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🎨 <code>{name_html}</code></div>'
-            f'<div style="max-width:100%;overflow:auto;">{text}</div></div>'
+            f'<div style="max-width:100%;overflow:auto;">'
+            f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'style="max-width:100%;display:block;" alt="{name_html}"/>'
+            f'</div></div>'
         )
 
     # ---- CSV / TSV preview ---------------------------------------------
@@ -5759,13 +5791,14 @@ def create_tab(ctx):
     # place because the same fact drives two independent pieces of UI (the
     # cycle inspector and the minimal layout); when it lived in both, a new
     # mode was added to one and forgotten in the other.
-    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office")
+    _SINGLE_AGENT_MODES = ("dashboard", "solo", "office", "research")
 
-    # Modes that are not tied to a directory: their workspace is a fixed
-    # location, so their sessions are reachable from any launch. Kept
+    # Modes that are not tied to a project directory, so their sessions
+    # are reachable from any launch: each runs in its own fixed folder
+    # (the agent scratch folder, or the office workspace). Kept
     # beside the set above because both describe the same modes from
     # different angles and a new mode has to be considered for each.
-    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office")
+    _LAUNCH_INDEPENDENT_MODES = ("dashboard", "office", "research")
 
     _MODE_DESCRIPTIONS = {
         "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
@@ -5787,7 +5820,8 @@ def create_tab(ctx):
                 "step-by-step plan in markdown, and waits for your approval via "
                 "exit_plan_mode before any file edits or bash run.",
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
-                    "state-of-the-art methods. Web search enabled, read-only, no code changes.",
+                    "state-of-the-art methods. Web search and code reading; "
+                    "read-only: no file changes, no shell commands.",
         # quick / reviewed / tdd / cluster / full were retired with the
         # pipeline modes (see the dropdown below). Their descriptions
         # outlived them here by months: a dictionary nothing looks up,
@@ -5813,7 +5847,7 @@ def create_tab(ctx):
         # remains is what genuinely differs — which folder the session works
         # in, and what it is allowed to reach from there.
         options=[("Dashboard", "dashboard"), ("Code", "solo"),
-                 ("Office", "office")],
+                 ("Office", "office"), ("Research", "research")],
         value="dashboard",
         # "Mode:", and not "Workspace:" as it read between 478eb33e and
         # this change. The argument for the rename was that the control
@@ -5875,6 +5909,7 @@ def create_tab(ctx):
             ("Azure GPT-5", "azure.gpt-5"),
             ("Azure GPT-5-mini", "azure.gpt-5-mini"),
             ("Azure GPT-5-nano", "azure.gpt-5-nano"),
+            ("KIT GLM-5.3 Flash", "kit.glm-5.3-flash"),
             ("KIT DeepSeek V4 Flash", "kit.deepseek-v4-flash"),
             ("KIT GLM-5.3", "kit.glm-5.3"),
             ("KIT mistral-small-4 119B-a8b", "kit.mistral-small-4-119b-a8b"),
@@ -5896,10 +5931,10 @@ def create_tab(ctx):
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
-                          "kit": "azure.gpt-5.1",
+                          "kit": "kit.glm-5.3-flash",
                           "ollama": "qwen3-coder:32b"}
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
-                       "kit": "azure.gpt-5-nano",
+                       "kit": "kit.deepseek-v4-flash",
                        "ollama": "qwen2.5-coder:7b"}
 
     # Skip patterns: models that should not appear in the dropdown.
@@ -6015,7 +6050,7 @@ def create_tab(ctx):
 
     # Show only models that actually work for the current auth. When OpenAI runs
     # through the Codex CLI on a ChatGPT-account login (no OPENAI_API_KEY), the
-    # API-only '*-codex' models fail with a 400 (bug 2026-06-25: Jerome picked
+    # API-only '*-codex' models fail with a 400 (bug 2026-06-25: a user picked
     # gpt-5.3-codex → "not supported when using Codex with a ChatGPT account").
     # Drop them from the offered list. A live fetch (which needs an API key, i.e.
     # API mode) overwrites this with the full list, so API users still see all.
@@ -6279,7 +6314,7 @@ def create_tab(ctx):
         tooltip="Export this session's chemistry steps as a Jupyter notebook",
     )
 
-    # Git workflows (requested by Tilmann, 2026-10-09). Each button sends
+    # Git workflows (user feedback, 2026-10-09). Each button sends
     # its slash command -- the same text a person could type, in the
     # dashboard or the terminal -- and the shipped skill of that name
     # (delfin/agent/pack/skills/) is the playbook the model follows:
@@ -6298,7 +6333,7 @@ def create_tab(ctx):
     # Not always main (user, 2026-10-09): offered from the remote branches
     # this checkout already knows, typeable for any other.
     # Labelled: unlabelled, the field read as a branch switch. The shared
-    # checkout stays on main; a branch is tried with Test branch at the
+    # checkout stays on main; a branch is tried with ⎇ and ▶ Test at the
     # top of the page (a preview). This one only names the target of the
     # git buttons.
     git_base = widgets.Combobox(
@@ -6307,7 +6342,7 @@ def create_tab(ctx):
         placeholder="base branch", ensure_option=False,
         tooltip=("Base branch for the buttons beside it: Merge brings it "
                  "in, Branch starts from it, PR goes into it. Not the "
-                 "branch DELFIN runs on: that stays main, and Test branch "
+                 "branch DELFIN runs on: that stays main, and ▶ Test "
                  "at the top opens another branch in a preview."),
         style={"description_width": "36px"},
         layout=widgets.Layout(width="190px"))
@@ -6321,10 +6356,9 @@ def create_tab(ctx):
             return
         _git_base_cache.update(at=now, where=where)
         try:
-            import subprocess as _sp
-            out = _sp.run(["git", "-C", where, "branch", "-r",
-                           "--format=%(refname:short)"],
-                          capture_output=True, text=True, timeout=5)
+            from delfin.agent import safe_git as _safe_git
+            out = _safe_git.run(["branch", "-r", "--format=%(refname:short)"],
+                                where, timeout=5)
             names = [n for n in out.stdout.split()
                      if n and not n.endswith("/HEAD")]
         except Exception:
@@ -6471,7 +6505,12 @@ def create_tab(ctx):
                 str(Path.home()), "~")
             held = len(state.get("chat_messages", []) or [])
             transfer = (settings.get("transfer") or {})
-            if transfer.get("host") and transfer.get("remote_path"):
+            from delfin.agent.bug_report import upload_policy
+            if (transfer.get("host") and transfer.get("remote_path")
+                    and upload_policy(settings) == "never"):
+                goes = (f"→ <code>{_html.escape(here)}</code>, and no further "
+                        "-- agent.bug_upload is 'never'")
+            elif transfer.get("host") and transfer.get("remote_path"):
                 goes = (f"→ <code>{_html.escape(here)}</code>, then "
                         f"<code>{_html.escape(str(transfer['host']))}</code>")
             else:
@@ -6500,7 +6539,7 @@ def create_tab(ctx):
     # Their widget objects stay alive (handlers/toggles still wired), just
     # not placed in any visible row.
     #   Export / Export as notebook -> the bug report downloads a copy of
-    #     everything when it is sent (Tilmann/user, 2026-10-09)
+    #     everything when it is sent (user feedback, 2026-10-09)
     for _hidden in (new_cycle_btn, advance_btn, undo_btn, commit_btn,
                     push_btn, push_confirm_btn, push_cancel_btn,
                     export_btn, nb_export_btn):
@@ -6796,7 +6835,7 @@ def create_tab(ctx):
 
         # One-line summary: roots inline, comma-separated, repo first.
         roots_html = " · ".join(
-            f"<code>{r}</code>" + (" <small>(repo)</small>" if i == 0 else "")
+            f"<code>{_html.escape(str(r))}</code>" + (" <small>(repo)</small>" if i == 0 else "")
             for i, r in enumerate(roots)
         )
         kit_dirs_status.value = (
@@ -8104,9 +8143,6 @@ def create_tab(ctx):
         ctx_pct = state.get("_fold_ctx")
         if ctx_pct is not None:
             parts.append(f"ctx {ctx_pct:.0f}%")
-        n_bg = int(state.get("_fold_background", 0) or 0)
-        if n_bg:
-            parts.append(f"{n_bg} running")
         n_tools = int(state.get("_fold_tools", 0) or 0)
         if n_tools:
             last = str(state.get("_fold_last_tool", "") or "")
@@ -8243,6 +8279,14 @@ def create_tab(ctx):
     # One row per background item, each with its × (the panel's header is
     # subagent_panel_html above).
     background_rows_box = widgets.VBox(layout=widgets.Layout(margin="0 0 2px 0"))
+    # Header and rows together, at the foot of the chat and only while
+    # something is out. They sat in the folded details, where a running
+    # shell showed as "N running" in a closed header among the token
+    # counts and the containment report.
+    background_box = widgets.VBox(
+        [subagent_panel_html, background_rows_box],
+        layout=widgets.Layout(display="none"))
+    background_box.add_class("delfin-agent-background")
     # Session-start stamp (updated on each New Session) so the panel is
     # session-scoped from first load — never leaks a prior session's subagents.
     import time as _t_init
@@ -8263,8 +8307,9 @@ def create_tab(ctx):
             _ws = _agent_workspace_path()
             _items = _bgv.rows(_bgv.collect(_ws, session_id=_background_owner()))
             subagent_panel_html.value = _bgv.header_html(len(_items))
-            state["_fold_background"] = len(_items)
-            _refresh_fold_title()
+            _shown = "" if _items else "none"
+            if background_box.layout.display != _shown:
+                background_box.layout.display = _shown
             # Rows are kept by item, so a refresh updates the text and a
             # pointer resting on a × is not pulled out from under it.
             _cache = state.setdefault("_background_row_widgets", {})
@@ -8315,6 +8360,7 @@ def create_tab(ctx):
                 "<div style='font-size:11px; color:#b45309;'>Background: the "
                 f"list could not be read ({type(_exc).__name__}).</div>")
             background_rows_box.children = ()
+            background_box.layout.display = ""
 
     def _send_on_its_own(text: str, *, leave_text_when_held: bool = False) -> bool:
         """Start a turn nobody typed: a scheduled wake-up, a finished job, a
@@ -8566,7 +8612,8 @@ def create_tab(ctx):
         if not messages:
             return
         for message in messages:
-            sender = message.get("from_title") or message.get("from") or "a session"
+            # Named only when its signature checks (session_messages).
+            sender = _msgs.sender_label(message)
             _append_system_message(
                 f"✉ Message from {sender}: {str(message.get('text') or '')[:300]}")
         text = HarnessText("\n\n".join(_msgs.render(m) for m in messages))
@@ -8737,7 +8784,7 @@ def create_tab(ctx):
             status_line_html.value = (
                 f"<div style='font-family:monospace;font-size:11px;"
                 f"color:#777;border-top:1px solid #333;padding:3px 6px;'>"
-                f"{line}</div>" if line else ""
+                f"{_html.escape(str(line))}</div>" if line else ""
             )
         except Exception:
             status_line_html.value = ""
@@ -9057,6 +9104,10 @@ def create_tab(ctx):
 
         Buffering moves the decision to the moment the workspace is known.
         """
+        from delfin.dashboard import upload_limits as _upload_limits
+
+        # The tab's own cap, or the installation's upload limit if lower.
+        cap = min(_UPLOAD_SIZE_CAP, _upload_limits.max_upload_bytes())
         files = image_upload.value
         buffered: list[tuple[str, bytes]] = []
         items = (files.items() if isinstance(files, dict)
@@ -9068,13 +9119,18 @@ def create_tab(ctx):
             if not content:
                 _append_system_message(f"File empty, skipped: {fname}")
                 continue
-            if len(content) > _UPLOAD_SIZE_CAP:
+            if len(content) > cap:
                 _append_system_message(
-                    f"File too large (>{_UPLOAD_SIZE_CAP // (1024*1024)} MB): "
+                    f"File too large (>{cap / (1024 * 1024):.0f} MB): "
                     f"{fname}"
                 )
                 continue
-            buffered.append((Path(fname).name, bytes(content)))
+            try:
+                name = _upload_limits.upload_name(fname)
+            except _upload_limits.UploadRefused as exc:
+                _append_system_message(f"Skipped: {exc}")
+                continue
+            buffered.append((name, bytes(content)))
         # Cap the buffer as a whole, not just each file: the per-file cap
         # bounded one drop, not fifty. The whole means everything still
         # waiting, since drops accumulate until the next send.
@@ -9142,10 +9198,13 @@ def create_tab(ctx):
                         "that folder yourself, or switch to a mode that can "
                         "reach it.")
                     continue
+            # Owner-only, and a link the session planted under that name is
+            # replaced rather than written through.
             try:
-                target.write_bytes(content)
+                from delfin.dashboard import upload_limits as _upload_limits
+                _upload_limits.write_replacing(target, content)
                 saved.append(target)
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 _append_system_message(f"Save failed for {name}: {exc}")
         state["_pending_uploads"] = []
         if saved:
@@ -9401,11 +9460,12 @@ def create_tab(ctx):
     state["_security_fold"] = security_fold
     below_panels = widgets.VBox(
         [kit_dirs_status,
-         subagent_pane_html, subagent_panel_html, background_rows_box,
+         subagent_pane_html,
          tools_fold, security_fold, context_bar_html, status_row])
-    # Folded by default: the tool calls, the containment report, the task
-    # list and the subagents are there when wanted, one click away, and
-    # take no height from the chat otherwise.
+    # Folded by default: the tool calls, the containment report and the
+    # sub-agent call log are there when wanted, one click away, and take no
+    # height from the chat otherwise. What is still running is not in
+    # here (background_box, at the foot of the chat).
     below_panels.add_class("delfin-agent-below-body")
     below_fold = widgets.Accordion(
         children=[below_panels],
@@ -9422,8 +9482,8 @@ def create_tab(ctx):
     # task line at the foot of the chat, not in a row of their own.
     palette_row.add_class("delfin-agent-chat-foot")
     chat_frame = widgets.VBox(
-        [chat_html, working_html, queue_html, task_strip, auto_box,
-         palette_row, plan_accept_btn, ask_user_box, approval_dock])
+        [chat_html, working_html, queue_html, task_strip, background_box,
+         auto_box, palette_row, plan_accept_btn, ask_user_box, approval_dock])
     chat_frame.add_class("delfin-agent-chat-frame")
     # The command palette opens OVER the chat, anchored to the top edge of
     # the input: opening it used to push the input down and squeeze the
@@ -9493,24 +9553,42 @@ def create_tab(ctx):
     # the window". Measured, not guessed: the header above it differs
     # between Voila and Jupyter, and between the single and the session
     # layout. Re-measured on resize and while the page settles.
+    #
+    # The top is taken in the coordinates of the page's scroller, which in
+    # Voila is #rendered_cells and not the window: window.scrollY stays 0
+    # there, and a viewport top shrinks as the page scrolls, which made the
+    # tab taller the further it was scrolled. What still overflows the
+    # scroller with the tab at that height -- padding and margins below
+    # it -- is measured with the trim at zero and added to the top, so the
+    # page itself never scrolls while the tab is above its min-height.
+    #
+    # Sent with the startup scripts (ctx.add_init_js). Through ctx.run_js
+    # it never ran: run_js clears the shared output, and the next call
+    # during startup replaced it before the browser executed it (measured
+    # 2026-10-20: window.__delfinAgentTop undefined, the 140px fallback in
+    # use on every page since 2026-10-09).
     _measure_top_js = (
         "(function(){if(window.__delfinAgentTop)return;"
-        "window.__delfinAgentTop=1;function m(){"
+        "window.__delfinAgentTop=1;var de=document.documentElement;"
+        "function scrollers(el){var out=[];"
+        "for(var p=el.parentElement;p;p=p.parentElement){"
+        "var oy=getComputedStyle(p).overflowY;"
+        "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
+        "return out;}"
+        "function m(){"
         "var rs=document.querySelectorAll('.delfin-agent-root');"
         "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
-        "var t=r.getBoundingClientRect().top+window.scrollY;"
-        "document.documentElement.style.setProperty('--delfin-agent-top',"
-        "Math.max(0,Math.round(t))+'px');return;}}"
+        "var ss=scrollers(r),k,y=0;"
+        "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
+        "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
+        "de.style.setProperty('--delfin-agent-top',t+'px');"
+        "var over=0;for(k=0;k<ss.length;k++)"
+        "over=Math.max(over,ss[k].scrollHeight-ss[k].clientHeight);"
+        "if(over>0&&over<200&&r.offsetHeight-over>=320){"
+        "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
+        "return;}}"
         "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
-    try:
-        ctx.run_js(_measure_top_js, keep=True)
-    except TypeError:                    # a context without page scripts
-        try:
-            ctx.run_js(_measure_top_js)
-        except Exception:
-            pass
-    except Exception:
-        pass
+    ctx.add_init_js(_measure_top_js)
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
@@ -9773,7 +9851,7 @@ def create_tab(ctx):
             "default": "solo", "high_risk": "solo", "runtime_cluster": "solo",
             "release": "solo", "quick": "solo", "reviewed": "solo",
             "tdd": "solo", "cluster": "solo", "full": "solo",
-            "research": "solo", "plan": "solo", "code": "solo",
+            "plan": "solo", "code": "solo",
             # Pipeline is a skill now; a session saved under it reopens as
             # the agent it always ran, with the procedure one call away.
             "pipeline": "solo",
@@ -10323,6 +10401,20 @@ def create_tab(ctx):
                     "Write", "Bash",              # agent_workspace only
                     "WebSearch", "WebFetch",      # literature research
                 ]
+            elif mode_dropdown.value == "research":
+                # Literature work binds no project checkout: like Dashboard,
+                # its workspace is the fixed agent scratch folder so a saved
+                # research session is reachable from any launch. The tool
+                # surface is read-only — web search and code reading — the
+                # write denylist of the research_agent role enforces the
+                # rest at the permission layer.
+                _research_ws = _abs_dir(getattr(ctx, "agent_dir", None))
+                if _research_ws:
+                    repo_dir = _research_ws
+                _cli_tools = [
+                    "Read", "Grep", "Glob",      # read code + data
+                    "WebSearch", "WebFetch",      # literature research
+                ]
             elif state.get("_perm_profile") == "repo_free":
                 # repo_free + non-dashboard: auto-approve safe bash commands
                 # so the agent doesn't get stuck in permission-denial loops
@@ -10403,11 +10495,15 @@ def create_tab(ctx):
             # starts. Stamp it now as well, so an office session is locked
             # from construction — otherwise a directory could be granted
             # through the settings UI in the window before the first turn.
-            if mode_dropdown.value == "office":
+            if mode_dropdown.value in ("office", "research"):
                 try:
                     _kp = getattr(engine, "kit_permissions", None)
                     if _kp is not None:
-                        _kp.agent_role = "office_agent"
+                        _kp.agent_role = (
+                            "research_agent"
+                            if mode_dropdown.value == "research"
+                            else "office_agent"
+                        )
                 except Exception:
                     pass
 
@@ -11416,10 +11512,13 @@ def create_tab(ctx):
                 )
             else:
                 content = _md_to_html(msg["content"])
+            _ts = str(msg.get("turn_summary") or "")
+            _ts_html = (f'<div class="delfin-chat-turn-summary">'
+                        f'{_html.escape(_ts)}</div>' if _ts else "")
             return (
                 f'<div class="delfin-chat-msg delfin-chat-agent">'
                 f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
-                f"{content}</div>"
+                f"{content}{_ts_html}</div>"
             )
         elif role == "thinking":
             raw = msg["content"]
@@ -12314,13 +12413,20 @@ def create_tab(ctx):
             f'</div>'
         )
 
+    def _turn_thread_alive() -> bool:
+        t = state.get("_turn_thread")
+        return bool(t is not None and t.is_alive())
+
     def _update_button_states():
         engine = state["engine"]
         is_streaming = state["streaming"]
         # Keep textarea + send enabled during streaming for message queuing
         send_btn.disabled = False
         input_textarea.disabled = False
-        stop_btn.disabled = not is_streaming
+        # Stop stays a button while the turn's thread runs on after a stop:
+        # pressing it again is the one thing left to do when the first
+        # stop did not take.
+        stop_btn.disabled = not (is_streaming or _turn_thread_alive())
         mode_dropdown.disabled = is_streaming
         model_dropdown.disabled = is_streaming
         effort_dropdown.disabled = is_streaming
@@ -13023,7 +13129,7 @@ def create_tab(ctx):
                 _append_system_message(
                     "No MCP servers configured.\n"
                     "Add one with: /mcp add <name> <command> [args ...]\n"
-                    "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp"
+                    "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem@1.0.0 /tmp"
                 )
                 return True
             lines = ["MCP servers in effect (source shown per entry):"]
@@ -13750,7 +13856,7 @@ def create_tab(ctx):
         if cmd == "/grant" or cmd.startswith("/grant "):
             # Parse the argument from the ORIGINAL-case text, not the
             # lowercased ``cmd`` — paths are case-sensitive on Linux
-            # (Jerome's bug: ``.../Porpoise`` was searched as
+            # (a field report: ``.../Porpoise`` was searched as
             # ``.../porpoise`` and "not found"). The "/grant" token is
             # 6 chars regardless of case.
             arg = text.strip()[len("/grant"):].strip()
@@ -14841,14 +14947,13 @@ def create_tab(ctx):
             )
             return True
 
-        # /git commands
+        # /git commands (safe_git: no program the checkout names runs)
         _repo_dir = str(ctx.repo_dir or ".")
+        from delfin.agent import safe_git as _safe_git
         if cmd == "/git status":
             try:
-                r = _sp.run(
-                    ["git", "status", "--short"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["status", "--short"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "Working tree clean."
                 _append_system_message(f"git status:\n{output}")
             except Exception as e:
@@ -14857,16 +14962,12 @@ def create_tab(ctx):
 
         if cmd == "/git diff":
             try:
-                r = _sp.run(
-                    ["git", "diff", "--stat"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["diff", "--stat"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "No unstaged changes."
                 # Also check staged
-                r2 = _sp.run(
-                    ["git", "diff", "--cached", "--stat"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r2 = _safe_git.run(
+                    ["diff", "--cached", "--stat"], _repo_dir, timeout=10)
                 staged = r2.stdout.strip()
                 full = output
                 if staged:
@@ -14878,10 +14979,8 @@ def create_tab(ctx):
 
         if cmd == "/git log":
             try:
-                r = _sp.run(
-                    ["git", "log", "--oneline", "-15"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["log", "--oneline", "-15"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "No commits."
                 _append_system_message(f"git log (last 15):\n{output}")
             except Exception as e:
@@ -14890,10 +14989,8 @@ def create_tab(ctx):
 
         if cmd == "/git branch":
             try:
-                r = _sp.run(
-                    ["git", "branch", "-a", "--no-color"],
-                    capture_output=True, text=True, cwd=_repo_dir, timeout=10,
-                )
+                r = _safe_git.run(
+                    ["branch", "-a", "--no-color"], _repo_dir, timeout=10)
                 output = r.stdout.strip() or "No branches."
                 _append_system_message(f"git branch:\n{output}")
             except Exception as e:
@@ -17330,21 +17427,15 @@ def create_tab(ctx):
         commits: list[str] = []
         branch_name = ""
         try:
-            import subprocess as _sp
-            _r = _sp.run(
-                ["git", "log", "-3", "--oneline"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
-                capture_output=True, text=True, timeout=2,
-            )
+            from delfin.agent import safe_git as _safe_git
+            _r = _safe_git.run(["log", "-3", "--oneline"],
+                               str(ctx.repo_dir or Path.cwd()), timeout=2)
             if _r.returncode == 0:
                 commits = [
                     line for line in _r.stdout.splitlines() if line.strip()
                 ]
-            _b = _sp.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(ctx.repo_dir or Path.cwd()),
-                capture_output=True, text=True, timeout=2,
-            )
+            _b = _safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"],
+                               str(ctx.repo_dir or Path.cwd()), timeout=2)
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
             if branch_name == "HEAD":
@@ -17397,21 +17488,15 @@ def create_tab(ctx):
         except Exception:
             _git_cwd = str(ctx.repo_dir or Path.cwd())
         try:
-            import subprocess as _sp
-            _r = _sp.run(
-                ["git", "log", "-3", "--oneline"],
-                cwd=_git_cwd,
-                capture_output=True, text=True, timeout=2,
-            )
+            from delfin.agent import safe_git as _safe_git
+            _r = _safe_git.run(["log", "-3", "--oneline"],
+                               _git_cwd, timeout=2)
             if _r.returncode == 0:
                 commits = [
                     line for line in _r.stdout.splitlines() if line.strip()
                 ]
-            _b = _sp.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=_git_cwd,
-                capture_output=True, text=True, timeout=2,
-            )
+            _b = _safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"],
+                               _git_cwd, timeout=2)
             if _b.returncode == 0:
                 branch_name = _b.stdout.strip()
             if branch_name == "HEAD":
@@ -18208,9 +18293,12 @@ def create_tab(ctx):
             cmd = inp["command"]
             from delfin.agent import sandbox as _sandbox
             cfg = _sandbox.detect_config()
+            # The state the runner applies on this host (sandbox.confinement
+            # builds the argv too), never the configured wish.
+            _conf = _sandbox.confinement(cfg)
             _append_system_message(
-                f"\u2705 Approved & executing (mode={cfg.mode}, "
-                f"net={'on' if cfg.allow_network else 'off'}):\n  $ {cmd}"
+                f"\u2705 Approved & executing ({_conf.label()}):\n  $ {cmd}"
+                + (f"\n\u26a0 {_conf.notice}" if _conf.notice else "")
             )
             try:
                 res = _sandbox.run_agent_command(
@@ -18572,12 +18660,16 @@ def create_tab(ctx):
                 from delfin.agent.bug_report import push_report_to_remote
                 _tcfg = (load_settings() or {}).get("transfer", {}) or {}
                 if _tcfg.get("host") and _tcfg.get("remote_path"):
+                    # Send was pressed under a line naming this host
+                    # (_on_bug_toggle): that press is the consent for this
+                    # report. agent.bug_upload 'never' still refuses inside.
                     ok, where = push_report_to_remote(
                         report_dir,
                         host=_tcfg.get("host", ""),
                         user=_tcfg.get("user", ""),
                         remote_path=_tcfg.get("remote_path", ""),
                         port=int(_tcfg.get("port", 22) or 22),
+                        consent=True,
                     )
                     remote_line = (
                         f"\n📤 Copied to the remote archive → `{where}`"
@@ -20305,6 +20397,52 @@ def create_tab(ctx):
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks and not answer_shown[0]:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
+                    # UX1: the end-of-turn line lives ON the last
+                    # assistant entry as meta, so it renders dimmed
+                    # under the answer, is saved with the session and
+                    # comes back after a restore. Never a message of
+                    # its own in engine.messages — the model's context
+                    # is untouched. Built from the same timing source
+                    # the status row uses; outcome from what this
+                    # turn actually did (self-correction runs below
+                    # may still append, but they refresh the meta
+                    # through their own finalize calls).
+                    try:
+                        import datetime as _datetime
+                        from delfin.agent.turn_summary import (
+                            format_turn_summary,
+                        )
+                        from delfin.agent import bash_jobs as _bj
+                        _kp = getattr(engine, "kit_permissions", None)
+                        _ws = (_kp.workspace if _kp is not None
+                               else (_agent_workspace_path()
+                                     or str(ctx.repo_dir or "")))
+                        _rj = len(_bj.running_jobs_for_workspace(_ws))
+                        _outcome = ("stopped" if getattr(
+                            engine, "_stop_requested", False) else "ok")
+                        _summary_line = format_turn_summary(
+                            duration_s=(time.monotonic()
+                                        - float(state.get(
+                                            "_turn_started_monotonic")
+                                        or time.monotonic())),
+                            ended_at=_datetime.datetime.now().astimezone(),
+                            outcome=_outcome,
+                            running_jobs=_rj,
+                        )
+                        _meta = {}
+                        if (state["chat_messages"]
+                                and state["chat_messages"][-1].get("role")
+                                == "assistant"):
+                            _meta = dict(state["chat_messages"][-1])
+                            _meta["turn_summary"] = _summary_line
+                            state["chat_messages"][-1] = _meta
+                        else:
+                            _meta = {"role": "assistant", "content": "",
+                                     "role_label": role_label,
+                                     "turn_summary": _summary_line}
+                            state["chat_messages"].append(_meta)
+                    except Exception:
+                        pass
 
                     # Files the answer NAMED, which the artifact diff above
                     # cannot see: it only knows what this turn wrote. See
@@ -21661,7 +21799,12 @@ def create_tab(ctx):
                     # Stale worker — just save session, don't touch UI
                     _auto_save_session()
 
-        threading.Thread(target=_worker, daemon=True).start()
+        # Kept so Stop can tell whether the turn has really ended: the
+        # "streaming" flag goes off the moment Stop is pressed, the thread
+        # only when the engine lets go.
+        _turn_thread = threading.Thread(target=_worker, daemon=True)
+        state["_turn_thread"] = _turn_thread
+        _turn_thread.start()
 
     def _continue_after_announcement():
         """The engine's follow-up note for a turn that ended announcing work
@@ -21678,6 +21821,13 @@ def create_tab(ctx):
             return
         done = int(state.get("_announce_followups") or 0)
         if done >= 3:
+            # No follow-up will run: say so, or "I'll do it now" reads as
+            # work in progress with no indicator (bug report davh 414e5a17).
+            try:
+                from delfin.agent.engine import AgentEngine as _AE
+                _append_system_message(_AE.NOTHING_RUNS_NOTICE.strip())
+            except Exception:
+                pass
             return
         state["_announce_followups"] = done + 1
         _send_on_its_own(note)
@@ -21690,6 +21840,53 @@ def create_tab(ctx):
             input_textarea.value = next_msg
             _on_send(None)
 
+    def _send_stop(engine) -> None:
+        if not engine:
+            return
+        try:
+            engine.request_stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(engine.client, "signal_stop"):
+                engine.client.signal_stop()
+        except Exception:
+            pass
+
+    def _hold_stop(engine, thread) -> None:
+        """Send the stop again every _STOP_REPEAT_S until ``thread`` (the
+        stopped turn) has ended, then put the buttons right.
+
+        One stop can miss. A turn still starting clears the flag as it
+        takes the gate, and a request blocked on its first byte is only
+        cut by a closed transport. Either way the turn carried on after
+        the dashboard said "Stop." and had disabled the button. The
+        worker of the terminal service repeats a cancel the same way
+        (worker._look_around)."""
+        if thread is None or not thread.is_alive():
+            return
+        if state.get("_stop_holding") is thread:
+            return
+        state["_stop_holding"] = thread
+        import threading as _threading_stop
+
+        def _repeat():
+            try:
+                while thread.is_alive() and not state.get("_closed"):
+                    thread.join(_STOP_REPEAT_S)
+                    if thread.is_alive():
+                        _send_stop(engine)
+            finally:
+                if state.get("_stop_holding") is thread:
+                    state["_stop_holding"] = None
+                try:
+                    _update_button_states()
+                except Exception:
+                    pass
+
+        _threading_stop.Thread(target=_repeat, daemon=True,
+                               name="delfin-stop-hold").start()
+
     def _on_stop(button):
         # Soft-stop: cooperative end of the running turn so the next Send
         # can continue the same conversation (CLI session_id preserved).
@@ -21697,10 +21894,15 @@ def create_tab(ctx):
         # follow-up prompts. Old behaviour killed the subprocess and wiped
         # the queue, which forced a full re-init on every ESC.
         engine = state["engine"]
-        if engine:
-            engine.request_stop()
-            if hasattr(engine.client, "signal_stop"):
-                engine.client.signal_stop()
+        _send_stop(engine)
+        thread = state.get("_turn_thread")
+        if not state.get("streaming") and _turn_thread_alive():
+            # A second press on a turn already stopped once: stop again and
+            # keep repeating, without a second "Stop." line in the chat.
+            _hold_stop(engine, thread)
+            _update_button_states()
+            return
+        _hold_stop(engine, thread)
         # Bump generation so the old worker's finally block won't touch UI
         state["_generation_id"] = state.get("_generation_id", 0) + 1
         state["streaming"] = False
@@ -21711,10 +21913,16 @@ def create_tab(ctx):
             _turns.mark(False)
         except Exception:
             pass
-        # Finalize any in-progress streaming message
+        # Finalize any in-progress streaming message. One with no words in
+        # it goes, as it does when a turn finalizes empty (_update_stream):
+        # a Stop before the first token left an empty answer bubble, saved
+        # with the session and replayed on resume.
         msgs = state["chat_messages"]
         if msgs and msgs[-1].get("_streaming"):
             msgs[-1]["_streaming"] = False
+            if (msgs[-1].get("role") == "assistant"
+                    and _assistant_turn_is_wordless(msgs[-1])):
+                msgs.pop()
             _refresh_chat_html()
         _set_active_gate()
         # If the user stopped while messages are queued, show a queued
@@ -21946,6 +22154,15 @@ def create_tab(ctx):
         model_dropdown.options = models
         default = _PROVIDER_DEFAULTS.get(provider, models[0][1])
         valid_values = {v for _, v in models}
+        if default not in valid_values and provider == "kit":
+            # The default is not served (a roster change): the best KIT
+            # model that is, by the same ranking the agent falls back on.
+            try:
+                from delfin.agent.model_capabilities import _KIT_PREFERENCE
+                default = next((m for m in _KIT_PREFERENCE
+                                if m in valid_values), default)
+            except Exception:
+                pass
         model_dropdown.value = default if default in valid_values else models[0][1]
         # The panel stays. Switching the provider does not change who has
         # to approve a document write or a read outside the roots, and
@@ -22167,18 +22384,15 @@ def create_tab(ctx):
 
     def _on_push(button):
         """Show confirmation for git push."""
-        import subprocess as _sp
 
         # Show current branch and unpushed commits
         try:
-            branch = _sp.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
-            ).stdout.strip()
-            unpushed = _sp.run(
-                ["git", "log", "--oneline", "@{upstream}..HEAD"],
-                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
-            ).stdout.strip()
+            from delfin.agent import safe_git as _safe_git
+            _where = str(ctx.repo_dir or ".")
+            branch = _safe_git.run(["rev-parse", "--abbrev-ref", "HEAD"],
+                                   _where).stdout.strip()
+            unpushed = _safe_git.run(["log", "--oneline", "@{upstream}..HEAD"],
+                                     _where).stdout.strip()
             if not unpushed:
                 push_status_html.value = (
                     '<span style="color:#757575;">No unpushed commits.</span>'
@@ -22186,7 +22400,7 @@ def create_tab(ctx):
                 return
             push_status_html.value = (
                 f'<span style="color:#ef6c00;">'
-                f'Push <b>{branch}</b>? '
+                f'Push <b>{_html.escape(str(branch))}</b>? '
                 f'({len(unpushed.splitlines())} commit(s))'
                 f'</span>'
             )
@@ -22200,17 +22414,18 @@ def create_tab(ctx):
 
     def _on_push_confirm(button):
         """Execute the push after user confirmation."""
-        import subprocess as _sp
 
         push_confirm_btn.layout.display = "none"
         push_cancel_btn.layout.display = "none"
         push_btn.layout.display = "inline-flex"
         try:
-            result = _sp.run(
-                ["git", "push"],
-                capture_output=True, text=True, cwd=str(ctx.repo_dir or "."),
-                timeout=30,
-            )
+            # The user's push, on a click. Through safe_git: the user's
+            # global credential helper and ssh agent answer it; a hook,
+            # credential helper or ssh command the checkout's own config
+            # names does not run.
+            from delfin.agent import safe_git as _safe_git
+            result = _safe_git.run(["push"], str(ctx.repo_dir or "."),
+                                   timeout=30)
             if result.returncode == 0:
                 output = result.stdout.strip() or result.stderr.strip()
                 push_status_html.value = (
@@ -22243,7 +22458,7 @@ def create_tab(ctx):
         The repo to operate on is determined by walking up from the
         edited file until a ``.git`` directory is found \u2014 necessary
         because the agent now writes into extra_workspace_dirs that are
-        unrelated to ``ctx.repo_dir`` (e.g. Jerome's TestOpt project
+        unrelated to ``ctx.repo_dir`` (e.g. a user's TestOpt project
         while the dashboard runs from the DELFIN repo).
 
         If the edit was a fresh ``write_file`` (untracked file in git),
@@ -22253,7 +22468,6 @@ def create_tab(ctx):
         """
         if not state["recent_edits"]:
             return
-        import subprocess as _sp
         from pathlib import Path as _Path
         last = state["recent_edits"].pop()
         fpath = _Path(last["file"]).expanduser().resolve()
@@ -22300,11 +22514,9 @@ def create_tab(ctx):
                 return
 
             # File under git: check if tracked or fresh.
-            ls = _sp.run(
-                ["git", "ls-files", "--error-unmatch", str(fpath)],
-                capture_output=True, text=True,
-                cwd=str(repo_root), timeout=5,
-            )
+            from delfin.agent import safe_git as _safe_git
+            ls = _safe_git.run(["ls-files", "--error-unmatch", str(fpath)],
+                               repo_root, timeout=5)
             tracked = ls.returncode == 0
 
             if not tracked and last.get("tool") in ("Write", "write_file"):
@@ -22314,11 +22526,8 @@ def create_tab(ctx):
                     f"\u21a9 Removed new file: {short}"
                 )
             elif tracked:
-                result = _sp.run(
-                    ["git", "checkout", "--", str(fpath)],
-                    capture_output=True, text=True,
-                    cwd=str(repo_root), timeout=10,
-                )
+                result = _safe_git.run(["checkout", "--", str(fpath)],
+                                       repo_root, timeout=10)
                 if result.returncode == 0:
                     _append_system_message(f"\u21a9 Reverted: {short}")
                 else:

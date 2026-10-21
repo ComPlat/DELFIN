@@ -95,15 +95,8 @@ class BranchEntry:
 # -- git ---------------------------------------------------------------------
 
 def _git(repo, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env.setdefault("GIT_OPTIONAL_LOCKS", "0")
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *args], capture_output=True, text=True,
-            timeout=timeout, env=env, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(args, 1, "", str(exc))
+    from delfin.agent import safe_git
+    return safe_git.run(args, repo, timeout=timeout)
 
 
 def _out(repo, *args: str, timeout: float = 30.0) -> str:
@@ -334,7 +327,8 @@ def hide(repo, ref: str) -> tuple[bool, str]:
     if ref == "main":
         return False, "main is always listed."
     _update(repo, add=(("hidden", ref),), remove=(("pinned", ref),))
-    return True, f"{ref} is hidden from your list (still in git; 'Show again' brings it back)."
+    return True, (f"{ref} is hidden from your list (still in git; ↺ in the Hidden "
+                  "view brings it back).")
 
 
 def unhide(repo, ref: str) -> None:
@@ -480,3 +474,167 @@ def filter_entries(entries: list[BranchEntry], text: str) -> list[BranchEntry]:
 
 def hidden_entries(repo) -> list[str]:
     return list(load_prefs(repo)["hidden"])
+
+
+# -- every branch, by view ---------------------------------------------------
+
+#: The dropdown's views. ``mine`` is :func:`branch_entries`; the others show
+#: what it leaves out.
+VIEWS = ("mine", "all", "hidden", "merged", "remote")
+
+
+@dataclass
+class BranchRow:
+    """One branch (or a typed tag / commit) as the dropdown shows it."""
+    ref: str
+    kind: str                    # main | local | remote | tag | commit | lookup
+    sha: str = ""
+    date: str = ""               # YYYY-MM-DD of the last commit
+    author: str = ""
+    merged: bool = False         # origin/main contains it
+    pinned: bool = False
+    hidden: bool = False
+    mine: bool = False           # in the default view
+    ahead: Optional[int] = None
+    pr: Optional[int] = None
+    ci: str = ""
+    current: bool = False
+
+
+_FMT = "%(refname)%00%(objectname)%00%(committerdate:short)%00%(authorname)"
+
+
+def _ref_table(repo) -> dict[str, tuple[str, str, str]]:
+    """``{refname: (sha, date, author)}`` for local and origin branches."""
+    out: dict[str, tuple[str, str, str]] = {}
+    raw = _out(repo, "for-each-ref", f"--format={_FMT}", "refs/heads",
+               "refs/remotes/origin")
+    for line in raw.splitlines():
+        parts = line.split("\0")
+        if len(parts) == 4:
+            out[parts[0]] = (parts[1], parts[2], parts[3])
+    return out
+
+
+def _commit_info(repo, ref: str) -> tuple[str, str, str]:
+    raw = _out(repo, "log", "-1", "--format=%H%x00%cs%x00%an", ref, "--")
+    parts = raw.split("\0")
+    return (parts[0], parts[1], parts[2]) if len(parts) == 3 else ("", "", "")
+
+
+def all_rows(repo, gh: Optional[str] = "auto", *,
+             refresh: bool = False) -> list[BranchRow]:
+    """Every branch that exists: the default view's entries first (in their
+    order), then the other local branches and the ``origin`` branches with
+    no local counterpart, newest commit first. Git is only read."""
+    entries = branch_entries(repo, gh, refresh=refresh)
+    if len(entries) == 1 and (not repo or _git(repo, "rev-parse",
+                                                "--git-dir").returncode != 0):
+        return [BranchRow(ref="main", kind="main", mine=True)]
+    base = base_ref(repo)
+    prefs = load_prefs(repo)
+    hidden, pinned = set(prefs["hidden"]), set(prefs["pinned"])
+    merged = set(merged_local_branches(repo, base))
+    table = _ref_table(repo)
+    prs = (pull_requests(repo, gh) or {}) if gh else {}
+    rows: list[BranchRow] = []
+    seen: set[str] = set()
+
+    def _info(ref: str, kind: str) -> tuple[str, str, str]:
+        full = {"main": "refs/heads/main", "local": f"refs/heads/{ref}",
+                "remote": f"refs/remotes/{ref}"}.get(kind, "")
+        return table.get(full) or _commit_info(repo, ref)
+
+    for e in entries:
+        sha, date, author = _info(e.ref, e.kind)
+        rows.append(BranchRow(
+            ref=e.ref, kind=e.kind, sha=sha, date=date, author=author,
+            merged=e.ref in merged or (e.kind == "main"), pinned=e.pinned,
+            hidden=False, mine=True, ahead=e.ahead, pr=e.pr, ci=e.ci,
+            current=e.current))
+        seen.add(e.ref)
+    local_names = set()
+    rest: list[BranchRow] = []
+    for full, (sha, date, author) in table.items():
+        if full.startswith("refs/heads/"):
+            name = full[len("refs/heads/"):]
+            local_names.add(name)
+            if name in seen:
+                continue
+            rest.append(BranchRow(ref=name, kind="local", sha=sha, date=date,
+                                  author=author, merged=name in merged,
+                                  pinned=name in pinned, hidden=name in hidden))
+    for full, (sha, date, author) in table.items():
+        if not full.startswith("refs/remotes/origin/"):
+            continue
+        name = full[len("refs/remotes/origin/"):]
+        ref = f"origin/{name}"
+        if name in ("HEAD", "main") or name in local_names or ref in seen:
+            continue
+        rest.append(BranchRow(ref=ref, kind="remote", sha=sha, date=date,
+                              author=author, pinned=ref in pinned,
+                              hidden=ref in hidden))
+    for ref in sorted(hidden - seen - {r.ref for r in rest}):
+        kind = ref_kind(repo, ref)
+        if kind in ("tag", "commit"):
+            sha, date, author = _commit_info(repo, ref)
+            rest.append(BranchRow(ref=ref, kind=kind, sha=sha, date=date,
+                                  author=author, hidden=True))
+    for row in rest:
+        pr = prs.get(row.ref[len("origin/"):] if row.kind == "remote" else row.ref)
+        if pr is not None:
+            row.pr, row.ci = pr.number, pr.ci
+    rest.sort(key=lambda r: r.date, reverse=True)
+    return rows + rest
+
+
+def view_rows(rows: list[BranchRow], view: str, text: str = "") -> list[BranchRow]:
+    """The rows of *view*, narrowed by *text* (a case-insensitive substring
+    of the name; not the author, which matched every branch whose newest
+    commit came from main). ``main`` stays in the default view."""
+    pick = {
+        "mine": lambda r: r.mine,
+        "all": lambda r: True,
+        "hidden": lambda r: r.hidden,
+        "merged": lambda r: r.kind == "local" and r.merged,
+        "remote": lambda r: r.kind == "remote",
+    }.get(view, lambda r: r.mine)
+    needle = (text or "").strip().lower()
+    out = []
+    for r in rows:
+        if not pick(r):
+            continue
+        if needle and needle not in r.ref.lower():
+            if not (view == "mine" and r.kind == "main"):
+                continue
+        out.append(r)
+    return out
+
+
+def lookup_row(repo, text: str, known) -> Optional[BranchRow]:
+    """A typed tag, commit or branch name the list does not show, as a
+    candidate row; ``kind="lookup"`` for a name git does not know here (it
+    may exist on origin: adding it fetches). None for anything else."""
+    name = (text or "").strip()
+    if name.startswith("refs/heads/"):
+        name = name[len("refs/heads/"):]
+    if not name or not valid_ref(name) or name in known or (
+            f"origin/{name}" in known):
+        return None
+    kind = ref_kind(repo, name)
+    if kind:
+        sha, date, author = _commit_info(repo, name)
+        return BranchRow(ref=name, kind=kind, sha=sha, date=date, author=author)
+    if re.fullmatch(r"[0-9a-fA-F]{4,40}", name):
+        return None
+    return BranchRow(ref=name, kind="lookup")
+
+
+def fill_ahead(repo, rows: list[BranchRow]) -> None:
+    """Count the commits not in ``origin/main`` for rows that lack it (the
+    ones about to be shown; one ``rev-list`` each)."""
+    base = base_ref(repo)
+    for r in rows:
+        if r.ahead is None and not r.merged and r.kind in ("local", "remote",
+                                                           "tag", "commit"):
+            r.ahead = ahead_of_base(repo, r.ref, base)

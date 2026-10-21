@@ -4,8 +4,8 @@ The shared checkout stays on main and refuses a branch move
 (shared_checkout.refusal). Every suggestion in the prompts, skills and
 gate messages to make a branch with ``git switch -c`` / ``git checkout -b``
 therefore names the route that works there -- ``enter_worktree`` (and
-``git branch <name> origin/main`` without a switch, or the dashboard's Test
-branch) -- or is gone. Checked in the BUILT solo and dashboard prompts, not
+``git branch <name> origin/main`` without a switch, or the dashboard's
+▶ Test) -- or is gone. Checked in the BUILT solo and dashboard prompts, not
 only in the source files: a rule is a rule when it is in the prompt.
 
 The approved shape ``git switch -c pr/<name> origin/main`` stays approved
@@ -27,7 +27,7 @@ from delfin.agent import shared_checkout as SC
 
 PACK = Path(read_only_shapes.__file__).resolve().parent / "pack"
 _MOVE = re.compile(r"git (switch -c|checkout -b)")
-_ROUTE = re.compile(r"enter_worktree|Test branch|git branch <")
+_ROUTE = re.compile(r"enter_worktree|▶ Test|git branch <")
 _ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull}
 

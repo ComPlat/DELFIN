@@ -58,8 +58,8 @@ def test_atom_labels_js_decimals_respected():
 
 def test_atom_labels_js_passthrough_strings():
     js = mv.fukui_atom_labels_js(_XYZ, ['1', '2', '3', '4'])
-    assert "viewer.addLabel('1'" in js
-    assert "viewer.addLabel('4'" in js
+    assert 'viewer.addLabel("1"' in js
+    assert 'viewer.addLabel("4"' in js
 
 
 def test_atom_labels_js_empty_values_returns_empty_string():
@@ -89,7 +89,9 @@ def test_cube_isosurface_js_empty_input_returns_empty():
 
 def test_build_fukui_viewer_html_includes_xyz_and_styles():
     html = mv.build_fukui_viewer_html(_XYZ)
-    assert "3Dmol-min.js" in html
+    # The viewer waits for the bundled 3Dmol; it fetches no copy of its own.
+    assert "typeof $3Dmol" in html
+    assert "3Dmol.org" not in html and "<script src" not in html
     assert "addModel" in html
     # XYZ ist als JSON eingebettet, darf nicht roh stehen.
     assert "formaldehyde" in html

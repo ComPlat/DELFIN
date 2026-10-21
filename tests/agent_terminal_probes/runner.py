@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import sandbox as sb
+from .pty_chat import end_child
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _PROMPT = r"> $"
@@ -141,20 +142,27 @@ def run_probe(probe: Probe, box: sb.Sandbox, *, api_key: str,
                     log.append("[probe driver] gave up waiting for the turn")
                     break
         child.sendline("/exit")
-        child.expect(pexpect.EOF, timeout=60)
+        child.expect(pexpect.EOF, timeout=min(60, timeout))
     except Exception as exc:                      # noqa: BLE001
         log.append(f"[probe driver] {exc}")
     finally:
         log.append(_clean(child.before or ""))
+        # The session must end, and a teardown that needed SIGTERM or
+        # SIGKILL -- or one that did not end it -- is a failed probe, not
+        # a line nobody reads (end_child: Ctrl+U Ctrl+D, then the group).
+        teardown = ""
         try:
-            child.close(force=True)
-        except Exception:
-            pass
+            end_child(child)
+        except AssertionError as exc:
+            teardown = str(exc)
+            log.append(f"[probe driver] teardown: {teardown}")
 
     transcript = "\n".join(log)
     ok, detail = probe.check(box, transcript)
     if probe.expect_no_prompt and prompted:
         ok, detail = False, "a prompt was raised where none should be: " + detail
+    if teardown:
+        ok, detail = False, f"teardown: {teardown}; " + detail
     return Outcome(name=probe.name, passed=ok, detail=detail,
                    prompted=prompted, transcript=transcript)
 

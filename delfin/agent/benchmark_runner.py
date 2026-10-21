@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import contextlib
+import json
 import os
 import re
 import subprocess
@@ -48,11 +49,12 @@ from .benchmark_fixtures import ensure_office_fixtures
 _ACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*ACTION\s*[:.]?\s*(/\S.*?)\s*$",
                re.MULTILINE | re.IGNORECASE),
-    re.compile(r"`(/(?:tab|control|orca|effort|mode|provider|model)\s+\S[^`]*)`"),
+    re.compile(r"`(/(?:tab|control|orca|submit|recalc|cancel|calc|analyze|check|jobs|ui|workspace|done)\s+\S[^`]*)`"),
 )
 _BARE_SLASH_PREFIXES = (
-    "/tab ", "/control ", "/orca ", "/effort ", "/mode ", "/provider ",
-    "/model ",
+    "/tab ", "/control ", "/orca ", "/submit ", "/recalc ", "/cancel ",
+    "/calc ", "/analyze ", "/check ", "/jobs ", "/ui ", "/workspace ",
+    "/done ",
 )
 
 
@@ -96,6 +98,57 @@ def extract_actions(text: str) -> list[str]:
     return out
 
 
+def _bare(name: str) -> str:
+    name = str(name or "")
+    return name.split("__")[-1] if name.startswith("mcp__") else name
+
+
+def pair_results(calls: list, named: list) -> list[str]:
+    """One result per call, paired by tool name in arrival order.
+
+    Input: the calls in request order (``{"name", "input"}``) and the
+    results as ``(tool name, output)`` in arrival order. Output: a list as
+    long as ``calls``; entry i is call i's result, "" when none arrived.
+
+    Index pairing was wrong in both directions, measured on the 1,040
+    captured attempts of 2026-10-13/14: a call whose arguments were invalid
+    JSON produced a result and, after the model's retry, a second one,
+    while the call list held one entry -- so every later result sat one
+    place too early and the last ones were cut off by the slice to
+    ``len(calls)``; and the engine reports no result for an empty output,
+    which shifts the other way. Pairing by name keeps every result with a
+    call of its own tool. Where a tool has more results than calls, the
+    surplus is the retry of an invalid-JSON call: that error is dropped and
+    the call takes the result that followed it. Rejected: pairing by
+    position, and pairing by content (only bash echoes its command).
+    """
+    by_name: dict[str, list[str]] = {}
+    for name, out in named or []:
+        by_name.setdefault(_bare(name), []).append(str(out or ""))
+    wanted: dict[str, int] = {}
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        wanted[n] = wanted.get(n, 0) + 1
+    for n, outs in by_name.items():
+        surplus = len(outs) - wanted.get(n, 0)
+        i = 0
+        while surplus > 0 and i < len(outs) - 1:
+            if "invalid JSON in arguments" in outs[i][:200]:
+                del outs[i]
+                surplus -= 1
+            else:
+                i += 1
+    taken: dict[str, int] = {}
+    paired: list[str] = []
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        k = taken.get(n, 0)
+        outs = by_name.get(n) or []
+        paired.append(outs[k] if k < len(outs) else "")
+        taken[n] = k + 1
+    return paired
+
+
 def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
                        checkout_root: str = "") -> Trajectory:
     """Convert ``_run_once``'s return dict into a Trajectory.
@@ -122,6 +175,10 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
         error=str(raw.get("error") or ""),
         checkout_root=str(checkout_root or ""),
         user_interventions=int(raw.get("user_interventions") or 0),
+        channels={str(k): int(v) for k, v in
+                  (raw.get("channels") or {}).items()},
+        model_rounds=(int(raw["model_rounds"])
+                      if raw.get("model_rounds") is not None else None),
     )
 
 
@@ -940,11 +997,13 @@ def _run_task_once(
     t0 = clock()
     verify_ok: "Optional[bool]" = None
     verify_output = ""
+    _ws_seen = ""
     try:
         with _toolchain_on_path(task.task_class), \
                 _PristineWorkspace(learning_home=learning_home):
             _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
                                 task_class=task.task_class)
+            _ws_seen = str(Path(_ws).resolve()) if _ws else ""
             _seed_fixture_memories(Path(os.getcwd()), _ws)
             _seed_fixture_hooks(Path(os.getcwd()), _ws)
             if task.setup:
@@ -971,10 +1030,10 @@ def _run_task_once(
             # double whose run_once takes no such kwarg keeps working:
             # results stay empty, hint flags read 0, the run itself is
             # unaffected.
-            _results: list[str] = []
+            _results: list[tuple[str, str]] = []
 
             def _collect_result(name: str, output: str) -> None:
-                _results.append(output)
+                _results.append((str(name or ""), output))
 
             # Interventions: each permission denial is the harness
             # steering the run; counted in-stream, forwarded only when
@@ -985,7 +1044,9 @@ def _run_task_once(
             def _collect_denial(name: str) -> None:
                 _denied.append(name)
 
-            with _fixture_calc_dirs(_ws):
+            from . import channels as _channels
+            _channels.reset()
+            with _fixture_calc_dirs(_ws), _pinned_behaviour():
                 try:
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens,
@@ -997,9 +1058,91 @@ def _run_task_once(
                     # interventions read 0 -- the docstrings say so.
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens)
-            raw["tool_results"] = _results[:len(raw.get("tool_calls")
-                                                 or [])]
-            raw["user_interventions"] = len(_denied)
+                # KG4 (wave 17): a task may declare mid-run scripted person
+                # messages. Each is delivered as its own user turn after the
+                # previous turn's run_once completed — that is what a person
+                # steer IS at this layer, and the accept script for
+                # lr_steered_goal requires the run's records to attest the
+                # steer being followed. The declared text goes in verbatim;
+                # a task with no declaration runs exactly one turn, exactly
+                # as before.
+                for _when, _text in (getattr(task, "mid_run_messages", None)
+                                     or ()):
+                    if _when != "after":
+                        raise ValueError(
+                            f"task {task.id}: unsupported mid_run_messages "
+                            f"trigger {_when!r} (only 'after' is wired)")
+                    try:
+                        _mraw = run_once(engine, _text,
+                                         max_tokens=max_tokens,
+                                         on_tool_result=_collect_result,
+                                         on_permission_denied=_collect_denial)
+                    except TypeError:
+                        _mraw = run_once(engine, _text, max_tokens=max_tokens)
+                    _mraw["tool_results"] = pair_results(
+                        _mraw.get("tool_calls") or [], _results)
+                    # The steer TEXT, not the run's output text: the accept's
+                    # marker check needs the message that was delivered.
+                    _mraw["steer_text"] = _text
+                    raw.setdefault("mid_runs", []).append(_mraw)
+                    # The steer reached the session: counted after the
+                    # overwrite below (operator finding 1).
+                    raw["user_interventions"] = (
+                        int(raw.get("user_interventions", 0)) + 1)
+            # KG4 transport (operator findings 1-3): the accept scripts
+            # run as subprocesses with only the workspace
+            # (run_acceptance :1274), so the facts they must judge have
+            # to cross as a file. Written ONLY for tasks that declare
+            # mid_run_messages — every other task's workspace is
+            # untouched. Minimal content: the steer deliveries (the
+            # fixture text the accept's marker check needs) and the tool
+            # CALL NAMES recorded in the runs after each steer — no
+            # transcript text; the file sits in a workspace a later
+            # agent can read. Nothing computed, nothing guessed: the
+            # accept script does the judging against its rubric.
+            # A task class without a fixture workspace resolves _ws to
+            # None (workspace_for :289-292) — Path(None) raised and the
+            # except at the bottom replaced the raw dict, silently
+            # discarding mid_runs and the intervention count. No
+            # workspace -> no facts file: the accepts read it from the
+            # workspace the run had, and a run without one has no
+            # fixture to grade anyway.
+            if _ws and getattr(task, "mid_run_messages", None):
+                _facts_path = Path(_ws) / ".longrun_facts.json"
+                try:
+                    _facts_path.write_text(
+                        json.dumps({
+                            "steer_delivered": [
+                                {"text": _m.get("steer_text", "")}
+                                for _m in (raw.get("mid_runs") or [])],
+                            "actions": [
+                                {"tool_calls": [
+                                    c.get("name", "") for c in
+                                    (_m.get("tool_calls") or [])
+                                    if isinstance(c, dict)]}
+                                for _m in (raw.get("mid_runs") or [])],
+                        }),
+                        encoding="utf-8")
+                except Exception:
+                    _facts_path.unlink(missing_ok=True)
+            raw["tool_results"] = pair_results(raw.get("tool_calls") or [],
+                                               _results)
+            # Operator finding 1: the line below OVERWRITES any earlier
+            # count, so delivered steers are added HERE — after it — and
+            # separately in steers_delivered, so a run where the steer
+            # was never delivered stays distinguishable.
+            raw["user_interventions"] = (
+                len(_denied) + len(raw.get("mid_runs") or []))
+            raw["steers_delivered"] = len(raw.get("mid_runs") or [])
+            # Which mechanisms this attempt reached (channels.py).
+            raw["channels"] = _channels.snapshot()
+            # Model rounds: one assistant message per round.
+            try:
+                raw["model_rounds"] = sum(
+                    1 for m in (getattr(engine, "messages", None) or [])
+                    if isinstance(m, dict) and m.get("role") == "assistant")
+            except Exception:
+                pass
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
             # here. A check that ran afterwards would find the fixture.
@@ -1022,6 +1165,7 @@ def _run_task_once(
         checkout_root=str(Path(os.getcwd()).resolve()),
     )
     traj.denials = _denials_during(engine, since_ts=_iso(t0))
+    traj.workspace = _ws_seen
     traj.verify_ok = verify_ok
     traj.verify_output = verify_output
     return score_outcome(
@@ -1266,6 +1410,43 @@ def _toolchain_on_path(task_class: str):
                 os.environ[k] = v
 
 
+#: Settings that change what the harness does during a turn, pinned for a
+#: benchmark attempt to the shipped default unless the operator set the
+#: variable for the whole run (an arm that measures another value). The
+#: attempt otherwise read the user's ~/.delfin_settings.json: on this
+#: host ``auto_verify`` is "syntax" there, so the suite measured a
+#: py_compile-only turn end that no default installation has, and no run
+#: file said so (diagnosis 2026-10-15).
+PINNED_BEHAVIOUR_ENV: dict[str, str] = {
+    "DELFIN_AUTO_VERIFY": "smart",
+    # The shipped default of agent.verify_nudge
+    # (api_client._VERIFY_NUDGE_DEFAULT); an arm of the three-arm
+    # measurement exports its own value.
+    "DELFIN_VERIFY_NUDGE": "off",
+}
+
+
+def pinned_behaviour_settings() -> dict[str, str]:
+    """The values an attempt runs with: the operator's export, else the pin."""
+    return {k: (os.environ.get(k) or v)
+            for k, v in PINNED_BEHAVIOUR_ENV.items()}
+
+
+@contextlib.contextmanager
+def _pinned_behaviour():
+    """Export ``pinned_behaviour_settings()`` for one attempt; restore after."""
+    saved = {k: os.environ.get(k) for k in PINNED_BEHAVIOUR_ENV}
+    os.environ.update(pinned_behaviour_settings())
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def run_task(
     task: Task,
     *,
@@ -1274,7 +1455,7 @@ def run_task(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     run_once: Callable[..., dict] | None = None,
     clock: Callable[[], float] | None = None,
@@ -1455,7 +1636,7 @@ def run_suite(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
@@ -1494,7 +1675,7 @@ def _run_suite_locked(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
