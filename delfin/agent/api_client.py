@@ -6197,6 +6197,110 @@ def _run_github_push(plan: dict, run_cwd, env: dict,
     return subprocess.CompletedProcess(plan["argv"], code, out, err)
 
 
+def _github_pr_plan(cmd: str, run_cwd) -> Optional[dict]:
+    """A noninteractive PR create, with no shell or checkout code near gh's login.
+
+    Deliberately accepts only inline text and the current branch. In particular,
+    no editor, browser, template/body file, API command or implicit push runs
+    with credentials. All permission gates must have run before execution.
+    """
+    if any(c in cmd for c in ("`", "$", "\n", "\r")):
+        return None
+    push = None
+    if cmd.lstrip().startswith("git push "):
+        first, sep, cmd = cmd.partition("&&")
+        if not sep:
+            return None
+        push = _github_push_plan(first.strip(), run_cwd)
+        if push is None or push["filter"] or push["merge_stderr"]:
+            return None
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None
+    if tokens[:3] != ["gh", "pr", "create"]:
+        return None
+    options = {}
+    flags = set()
+    i = 3
+    while i < len(tokens):
+        key = tokens[i]
+        if key in ("--fill", "--draft") and key not in flags:
+            flags.add(key)
+            i += 1
+        elif key in ("--base", "--head", "--title", "--body", "--repo"):
+            if key in options or i + 1 >= len(tokens):
+                return None
+            options[key] = tokens[i + 1]
+            i += 2
+        else:
+            return None
+    gh = shutil.which("gh")
+    if not gh or _checkout_configures_transport(run_cwd):
+        return None
+    url = (push["url"] if push else
+           _git_out(run_cwd, "remote", "get-url", "--push", "origin")) or ""
+    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:)"
+                         r"([A-Za-z0-9._-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?", url)
+    if not match:
+        return None
+    repo = match.group(1)
+    if options.get("--repo", repo) != repo:
+        return None
+    head = _git_out(run_cwd, "symbolic-ref", "--short", "HEAD") or ""
+    base = options.get("--base", "")
+    # An explicit head prevents gh from pushing or forking interactively.
+    if (not head or options.get("--head", head) != head or not base
+            or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", base)
+            or ".." in base or head.startswith("-")):
+        return None
+    title, body = options.get("--title"), options.get("--body")
+    if "--fill" in flags and (title is None or body is None):
+        base_ref = "refs/remotes/origin/" + base
+        if not _git_out(run_cwd, "rev-parse", "--verify", base_ref):
+            base_ref = "refs/heads/" + base
+        commits = _git_out(run_cwd, "log", "--reverse", "--format=%s%n%n%b",
+                           base_ref + "..HEAD", "--")
+        if not commits:
+            return None
+        title = title if title is not None else commits.splitlines()[0]
+        body = body if body is not None else commits
+    if not title or body is None:
+        return None
+    argv = [gh, "pr", "create", "--repo", repo, "--head", head,
+            "--base", base, "--title", title, "--body", body]
+    if "--draft" in flags:
+        argv.append("--draft")
+    return {"push": push, "argv": argv, "repo": repo}
+
+
+def _run_github_pr(plan: dict, run_cwd, env: dict, timeout: int):
+    """Execute only vetted argv, preserving && failure and the shared deadline."""
+    import tempfile
+    start = time.monotonic()
+    out, err = "", ""
+    if plan["push"] is not None:
+        proc = _run_github_push(plan["push"], run_cwd, env, timeout)
+        if proc.returncode:
+            return proc
+        out, err = proc.stdout or "", proc.stderr or ""
+    remaining = timeout - (time.monotonic() - start)
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(plan["argv"], timeout)
+    gh_env = {k: v for k, v in env.items() if not k.startswith("GIT_")}
+    gh_env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1",
+                  GH_PAGER="cat", GH_BROWSER="false", GH_EDITOR="false")
+    # gh must never discover the agent-writable checkout's config or hooks.
+    with tempfile.TemporaryDirectory(prefix="delfin-pr-") as empty:
+        proc = subprocess.run(plan["argv"], cwd=empty, env=gh_env,
+                              capture_output=True, text=True, timeout=remaining,
+                              stdin=subprocess.DEVNULL, start_new_session=True,
+                              check=False)
+    return subprocess.CompletedProcess(plan["argv"], proc.returncode,
+                                       out + (proc.stdout or ""),
+                                       err + (proc.stderr or ""))
+
+
 def _message_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -24371,8 +24475,11 @@ class _DocToolExecutor:
         # refusal argv instead of the command, which is a refusal too.
         if _GATE_DRY_RUN.get():
             try:
-                _would = ([] if _is_git_push(cmd)
-                          and _github_push_plan(cmd, run_cwd) is not None
+                _broker = ((_is_git_push(cmd)
+                            and _github_push_plan(cmd, run_cwd) is not None)
+                           or (not caged_unasked and _is_gh_pr_create(cmd)
+                               and _github_pr_plan(cmd, run_cwd) is not None))
+                _would = ([] if _broker
                           else _bash_isolation_argv(cmd, run_cwd, perms))
             except Exception:
                 _would = []
@@ -24433,9 +24540,18 @@ class _DocToolExecutor:
         _snap = self._shell_snapshot(perms)
 
         t0 = time.monotonic()
+        _pr = None
         try:
+            _pr = (_github_pr_plan(cmd, run_cwd)
+                   if not caged_unasked and _is_gh_pr_create(cmd) else None)
             _push = _github_push_plan(cmd, run_cwd) if _is_git_push(cmd) else None
-            if _push is not None:
+            if _pr is not None:
+                _record_security_event(
+                    "isolation", "bash",
+                    f"GitHub PR create for {_pr['repo']} used the credential broker "
+                    "(fixed argv, explicit head, no checkout code)", blocked=False)
+                proc = _run_github_pr(_pr, run_cwd, env, timeout)
+            elif _push is not None:
                 _record_security_event(
                     "isolation", "bash",
                     f"git push to {_push['url']} ran outside the process cage "
@@ -24464,6 +24580,13 @@ class _DocToolExecutor:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
             self._note_timed_out(cmd, perms, timeout)
+            if _pr is not None:
+                return json.dumps({
+                    "error": "GitHub publishing timed out. The push or PR creation "
+                             "may already have succeeded; check the remote branch "
+                             "and open PRs before retrying.",
+                    "command": cmd[:200], "description": description,
+                })
             if _is_push:
                 return json.dumps({
                     "error": (
@@ -24564,7 +24687,7 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
-        if _push is None:
+        if _push is None and _pr is None:
             _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
                                            proc.stderr or "")
             if _wrap_err:
@@ -24574,7 +24697,7 @@ class _DocToolExecutor:
                     "Commands off the auto-allow list are asked about for "
                     "the rest of this session; tell the user if they need "
                     "this one.")
-        if _push is None and proc.returncode != 0:
+        if _push is None and _pr is None and proc.returncode != 0:
             self._detach_at_held_branch(
                 cmd, proc, payload, run_cwd, perms, env, timeout,
                 caged_unasked)
