@@ -22,6 +22,8 @@ renderer returns.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from delfin.dashboard import tab_agent as T
@@ -174,14 +176,20 @@ def test_the_page_script_is_installed_once_and_starts_the_viewer():
 
 # -- the reworked chat viewer ------------------------------------------------
 
-def test_the_card_fills_more_of_the_viewport(tmp_path):
-    """The stage used to be a fixed 260px box; it now scales with the
-    viewport (`min(68vh, 1000px)`) and never shrinks below 320px, so a
-    complex molecule can actually be inspected in the chat."""
+def test_the_stage_fits_the_chat_window_not_the_viewport(tmp_path):
+    """The stage used to be a fixed 260px box, then viewport-based
+    (min(68vh,1000px)) -- but the chat scrolls inside its own frame, so
+    the viewport says nothing about the room the card actually has. The
+    fallback height is now moderate (380px) and the JS measures the
+    chat frame and caps the stage to fit inside it."""
     card = T._mol3d_card_html(_xyz(tmp_path), "struct.xyz")
     assert card is not None
-    assert "height:min(68vh,1000px)" in card
-    assert "min-height:320px" in card
+    assert "height:380px" in card
+    assert "min-height:280px" in card
+    src = inspect.getsource(T)
+    assert ".delfin-agent-chat-frame" in src, (
+        "the JS sizes the stage to the chat frame it lives in")
+    assert "clientHeight" in src, "the chat frame's actual height is measured"
 
 
 def test_a_trajectory_card_has_play_step_reset_and_fullscreen(tmp_path):
