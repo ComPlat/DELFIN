@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import contextlib
+import json
 import os
 import re
 import subprocess
@@ -48,11 +49,12 @@ from .benchmark_fixtures import ensure_office_fixtures
 _ACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*ACTION\s*[:.]?\s*(/\S.*?)\s*$",
                re.MULTILINE | re.IGNORECASE),
-    re.compile(r"`(/(?:tab|control|orca|effort|mode|provider|model)\s+\S[^`]*)`"),
+    re.compile(r"`(/(?:tab|control|orca|submit|recalc|cancel|calc|analyze|check|jobs|ui|workspace|done)\s+\S[^`]*)`"),
 )
 _BARE_SLASH_PREFIXES = (
-    "/tab ", "/control ", "/orca ", "/effort ", "/mode ", "/provider ",
-    "/model ",
+    "/tab ", "/control ", "/orca ", "/submit ", "/recalc ", "/cancel ",
+    "/calc ", "/analyze ", "/check ", "/jobs ", "/ui ", "/workspace ",
+    "/done ",
 )
 
 
@@ -96,6 +98,57 @@ def extract_actions(text: str) -> list[str]:
     return out
 
 
+def _bare(name: str) -> str:
+    name = str(name or "")
+    return name.split("__")[-1] if name.startswith("mcp__") else name
+
+
+def pair_results(calls: list, named: list) -> list[str]:
+    """One result per call, paired by tool name in arrival order.
+
+    Input: the calls in request order (``{"name", "input"}``) and the
+    results as ``(tool name, output)`` in arrival order. Output: a list as
+    long as ``calls``; entry i is call i's result, "" when none arrived.
+
+    Index pairing was wrong in both directions, measured on the 1,040
+    captured attempts of 2026-10-13/14: a call whose arguments were invalid
+    JSON produced a result and, after the model's retry, a second one,
+    while the call list held one entry -- so every later result sat one
+    place too early and the last ones were cut off by the slice to
+    ``len(calls)``; and the engine reports no result for an empty output,
+    which shifts the other way. Pairing by name keeps every result with a
+    call of its own tool. Where a tool has more results than calls, the
+    surplus is the retry of an invalid-JSON call: that error is dropped and
+    the call takes the result that followed it. Rejected: pairing by
+    position, and pairing by content (only bash echoes its command).
+    """
+    by_name: dict[str, list[str]] = {}
+    for name, out in named or []:
+        by_name.setdefault(_bare(name), []).append(str(out or ""))
+    wanted: dict[str, int] = {}
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        wanted[n] = wanted.get(n, 0) + 1
+    for n, outs in by_name.items():
+        surplus = len(outs) - wanted.get(n, 0)
+        i = 0
+        while surplus > 0 and i < len(outs) - 1:
+            if "invalid JSON in arguments" in outs[i][:200]:
+                del outs[i]
+                surplus -= 1
+            else:
+                i += 1
+    taken: dict[str, int] = {}
+    paired: list[str] = []
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        k = taken.get(n, 0)
+        outs = by_name.get(n) or []
+        paired.append(outs[k] if k < len(outs) else "")
+        taken[n] = k + 1
+    return paired
+
+
 def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
                        checkout_root: str = "") -> Trajectory:
     """Convert ``_run_once``'s return dict into a Trajectory.
@@ -122,6 +175,10 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
         error=str(raw.get("error") or ""),
         checkout_root=str(checkout_root or ""),
         user_interventions=int(raw.get("user_interventions") or 0),
+        channels={str(k): int(v) for k, v in
+                  (raw.get("channels") or {}).items()},
+        model_rounds=(int(raw["model_rounds"])
+                      if raw.get("model_rounds") is not None else None),
     )
 
 
@@ -191,10 +248,12 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
     the mode cannot tell them apart — both run as ``solo``. So the key is
     the task CLASS, which is what actually decides where a task belongs.
 
-    Measured over the four packaged task files: office 11, behaviour 12,
-    generic_project 8. Those 31 are every task that writes; the other 48
-    read and are left alone deliberately — see the note in #111 on why
-    moving their root is a separate problem.
+    The per-class task counts are pinned in
+    tests/test_every_task_that_writes_writes_where_it_belongs.py (the
+    figures once written here went stale at 8 while the class held 17).
+    The classes without a workspace read only and are left alone
+    deliberately — see the note in #111 on why moving their root is a
+    separate problem.
 
     ``None`` when the class writes nothing or the directory is absent: a
     missing fixture must not silently redirect a run somewhere else.
@@ -207,6 +266,12 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
         rel = "behavior_workspace"
     elif cls == "generic_project":
         rel = "user_project_workspace"
+    elif cls == "generalist":
+        # Everyday software work on a repository that is not DELFIN: each
+        # task's setup builds its own git repository (Python or Node) in
+        # a subdirectory, and the acceptance script runs that
+        # repository's tests on what the attempt left behind.
+        rel = "generalist_workspace"
     elif cls.startswith("science"):
         # The everyday work: read real output, compute something from it,
         # write the script that does it. Its own fixture rather than the
@@ -405,6 +470,9 @@ _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     # build, and their setup refuses an existing chem/ tree. Without
     # restore, repeat 2 collides with repeat 1's fixture.
     Path("tests") / "fixtures" / "chemistry_workspace",
+    # Generalist tasks build a nested git repository per attempt and are
+    # graded on what is left in it; every setup refuses an existing one.
+    Path("tests") / "fixtures" / "generalist_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
@@ -583,6 +651,42 @@ def _prepare_office_fixtures() -> str:
     return reason
 
 
+def _learning_home_checked(learning_home: Path | str) -> Path:
+    """Resolve a learning home and refuse the user's own state.
+
+    Input: the directory a learning measurement keeps the agent's state
+    in. Output: its resolved path. Raises ``ValueError`` when the
+    directory is the user's home (by ``$HOME`` or by the password
+    database) or lies inside the user's ``~/.delfin``: the measurement
+    would then read the user's past and write into their stores, which is
+    what the scratch home exists to prevent.
+    """
+    import os as _os
+    home = Path(learning_home).expanduser().resolve()
+    real_homes = {Path(_os.path.expanduser("~")).resolve()}
+    try:
+        import pwd as _pwd
+        real_homes.add(Path(_pwd.getpwuid(_os.getuid()).pw_dir).resolve())
+    except Exception:
+        pass
+    for real in real_homes:
+        real_state = real / ".delfin"
+        if home == real or home == real_state or real_state in home.parents:
+            raise ValueError(
+                f"learning home {home} is the user's own state ({real}); "
+                "a learning measurement needs a directory of its own")
+    return home
+
+
+def learning_state_id(learning_home: Path | str) -> str:
+    """Stable id of a learning home, stored on every run record made under
+    it: the first 16 hex digits of the SHA-1 of its resolved path. The path
+    itself is not stored, so a run file does not carry a home directory."""
+    import hashlib
+    resolved = str(Path(learning_home).expanduser().resolve())
+    return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:16]
+
+
 class _PristineWorkspace:
     """Snapshot/restore guard for the fixture workspaces (a dir that does not
     exist under the current working directory is skipped), and a blank
@@ -594,7 +698,8 @@ class _PristineWorkspace:
     all -- silently, at the one moment the caller most needed to hear it.
     """
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, *,
+                 learning_home: Path | str | None = None) -> None:
         import os as _os
         base = root or Path(_os.getcwd())
         self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
@@ -613,6 +718,14 @@ class _PristineWorkspace:
         # wording of a different task's prompt that way (2026-09-10).
         # Redirecting also removes the one window the restore had, where
         # the real store was emptied and copied back.
+        #
+        # ``learning_home`` replaces the fresh scratch home with a kept one
+        # for a learning measurement: the attempt reads what an earlier
+        # attempt under the same directory left and its own writes stay
+        # there for the next. Still nobody's past -- the directory belongs
+        # to the measurement, and the user's real home is refused.
+        self._learning_home = (_learning_home_checked(learning_home)
+                               if learning_home is not None else None)
         self._scratch_home: Path | None = None
         self._redirect = None
         self._pairs: list[tuple[Path, Path]] = []
@@ -623,9 +736,15 @@ class _PristineWorkspace:
         import tempfile
 
         from . import state_paths as _sp
-        self._scratch_home = Path(tempfile.mkdtemp(prefix="bench-home-"))
+        if self._learning_home is not None:
+            (self._learning_home / ".delfin").mkdir(parents=True,
+                                                    exist_ok=True)
+            home = self._learning_home
+        else:
+            home = Path(tempfile.mkdtemp(prefix="bench-home-"))
+            self._scratch_home = home
         self._redirect = _sp.RedirectedUserState(
-            self._scratch_home, keep=_sp.KEPT_BY_A_LIVE_RUN)
+            home, keep=_sp.KEPT_BY_A_LIVE_RUN)
         self._redirect.__enter__()
 
     def _leave_scratch_home(self) -> None:
@@ -845,6 +964,7 @@ def _run_task_once(
     max_tokens: int,
     run_once: Callable[..., dict],
     clock: Callable[[], float],
+    learning_home: Path | None = None,
 ) -> BenchmarkResult:
     """Single attempt — kept private so retry-aggregation logic lives
     in one place at the public ``run_task`` entry."""
@@ -880,10 +1000,13 @@ def _run_task_once(
     t0 = clock()
     verify_ok: "Optional[bool]" = None
     verify_output = ""
+    _ws_seen = ""
     try:
-        with _PristineWorkspace():
+        with _toolchain_on_path(task.task_class), \
+                _PristineWorkspace(learning_home=learning_home):
             _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
                                 task_class=task.task_class)
+            _ws_seen = str(Path(_ws).resolve()) if _ws else ""
             _seed_fixture_memories(Path(os.getcwd()), _ws)
             _seed_fixture_hooks(Path(os.getcwd()), _ws)
             if task.setup:
@@ -910,10 +1033,10 @@ def _run_task_once(
             # double whose run_once takes no such kwarg keeps working:
             # results stay empty, hint flags read 0, the run itself is
             # unaffected.
-            _results: list[str] = []
+            _results: list[tuple[str, str]] = []
 
             def _collect_result(name: str, output: str) -> None:
-                _results.append(output)
+                _results.append((str(name or ""), output))
 
             # Interventions: each permission denial is the harness
             # steering the run; counted in-stream, forwarded only when
@@ -924,7 +1047,9 @@ def _run_task_once(
             def _collect_denial(name: str) -> None:
                 _denied.append(name)
 
-            with _fixture_calc_dirs(_ws):
+            from . import channels as _channels
+            _channels.reset()
+            with _fixture_calc_dirs(_ws), _pinned_behaviour():
                 try:
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens,
@@ -936,9 +1061,91 @@ def _run_task_once(
                     # interventions read 0 -- the docstrings say so.
                     raw = run_once(engine, task.prompt,
                                    max_tokens=max_tokens)
-            raw["tool_results"] = _results[:len(raw.get("tool_calls")
-                                                 or [])]
-            raw["user_interventions"] = len(_denied)
+                # KG4 (wave 17): a task may declare mid-run scripted person
+                # messages. Each is delivered as its own user turn after the
+                # previous turn's run_once completed — that is what a person
+                # steer IS at this layer, and the accept script for
+                # lr_steered_goal requires the run's records to attest the
+                # steer being followed. The declared text goes in verbatim;
+                # a task with no declaration runs exactly one turn, exactly
+                # as before.
+                for _when, _text in (getattr(task, "mid_run_messages", None)
+                                     or ()):
+                    if _when != "after":
+                        raise ValueError(
+                            f"task {task.id}: unsupported mid_run_messages "
+                            f"trigger {_when!r} (only 'after' is wired)")
+                    try:
+                        _mraw = run_once(engine, _text,
+                                         max_tokens=max_tokens,
+                                         on_tool_result=_collect_result,
+                                         on_permission_denied=_collect_denial)
+                    except TypeError:
+                        _mraw = run_once(engine, _text, max_tokens=max_tokens)
+                    _mraw["tool_results"] = pair_results(
+                        _mraw.get("tool_calls") or [], _results)
+                    # The steer TEXT, not the run's output text: the accept's
+                    # marker check needs the message that was delivered.
+                    _mraw["steer_text"] = _text
+                    raw.setdefault("mid_runs", []).append(_mraw)
+                    # The steer reached the session: counted after the
+                    # overwrite below (operator finding 1).
+                    raw["user_interventions"] = (
+                        int(raw.get("user_interventions", 0)) + 1)
+            # KG4 transport (operator findings 1-3): the accept scripts
+            # run as subprocesses with only the workspace
+            # (run_acceptance :1274), so the facts they must judge have
+            # to cross as a file. Written ONLY for tasks that declare
+            # mid_run_messages — every other task's workspace is
+            # untouched. Minimal content: the steer deliveries (the
+            # fixture text the accept's marker check needs) and the tool
+            # CALL NAMES recorded in the runs after each steer — no
+            # transcript text; the file sits in a workspace a later
+            # agent can read. Nothing computed, nothing guessed: the
+            # accept script does the judging against its rubric.
+            # A task class without a fixture workspace resolves _ws to
+            # None (workspace_for :289-292) — Path(None) raised and the
+            # except at the bottom replaced the raw dict, silently
+            # discarding mid_runs and the intervention count. No
+            # workspace -> no facts file: the accepts read it from the
+            # workspace the run had, and a run without one has no
+            # fixture to grade anyway.
+            if _ws and getattr(task, "mid_run_messages", None):
+                _facts_path = Path(_ws) / ".longrun_facts.json"
+                try:
+                    _facts_path.write_text(
+                        json.dumps({
+                            "steer_delivered": [
+                                {"text": _m.get("steer_text", "")}
+                                for _m in (raw.get("mid_runs") or [])],
+                            "actions": [
+                                {"tool_calls": [
+                                    c.get("name", "") for c in
+                                    (_m.get("tool_calls") or [])
+                                    if isinstance(c, dict)]}
+                                for _m in (raw.get("mid_runs") or [])],
+                        }),
+                        encoding="utf-8")
+                except Exception:
+                    _facts_path.unlink(missing_ok=True)
+            raw["tool_results"] = pair_results(raw.get("tool_calls") or [],
+                                               _results)
+            # Operator finding 1: the line below OVERWRITES any earlier
+            # count, so delivered steers are added HERE — after it — and
+            # separately in steers_delivered, so a run where the steer
+            # was never delivered stays distinguishable.
+            raw["user_interventions"] = (
+                len(_denied) + len(raw.get("mid_runs") or []))
+            raw["steers_delivered"] = len(raw.get("mid_runs") or [])
+            # Which mechanisms this attempt reached (channels.py).
+            raw["channels"] = _channels.snapshot()
+            # Model rounds: one assistant message per round.
+            try:
+                raw["model_rounds"] = sum(
+                    1 for m in (getattr(engine, "messages", None) or [])
+                    if isinstance(m, dict) and m.get("role") == "assistant")
+            except Exception:
+                pass
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
             # here. A check that ran afterwards would find the fixture.
@@ -961,6 +1168,7 @@ def _run_task_once(
         checkout_root=str(Path(os.getcwd()).resolve()),
     )
     traj.denials = _denials_during(engine, since_ts=_iso(t0))
+    traj.workspace = _ws_seen
     traj.verify_ok = verify_ok
     traj.verify_output = verify_output
     return score_outcome(
@@ -1154,7 +1362,92 @@ def run_acceptance(
     except Exception as exc:
         return None, f"acceptance script could not run: {exc}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if (proc.returncode == TOOLCHAIN_EXIT
+            and "toolchain unavailable" in out):
+        # The host cannot run the check (no cargo, go, or a Node that
+        # runs TypeScript): not run, the same stance as a missing script.
+        return None, out
     return proc.returncode == 0, out
+
+
+# Exit status a setup or acceptance script uses for "this host lacks the
+# toolchain the task needs", printed with ``toolchain unavailable:``.
+TOOLCHAIN_EXIT = 3
+TOOLCHAIN_ENV = "DELFIN_TOOLCHAIN_BIN"
+_DEFAULT_TOOLCHAIN_BIN = Path("~/micromamba/envs/delfin-toolchains/bin")
+
+
+def toolchain_bin() -> Optional[Path]:
+    """Where node, cargo and go for the generalist tasks live, or None.
+
+    ``$DELFIN_TOOLCHAIN_BIN`` when set, else
+    ``~/micromamba/envs/delfin-toolchains/bin``; only an existing
+    directory counts. Resolved before an attempt's scratch home is
+    entered, so ``~`` is the operator's home."""
+    raw = os.environ.get(TOOLCHAIN_ENV) or str(
+        _DEFAULT_TOOLCHAIN_BIN.expanduser())
+    p = Path(raw).expanduser()
+    return p if p.is_dir() else None
+
+
+@contextlib.contextmanager
+def _toolchain_on_path(task_class: str):
+    """For a generalist attempt: the toolchain directory first on PATH
+    and exported as DELFIN_TOOLCHAIN_BIN, for the setup, the agent's own
+    shell commands and the acceptance script alike; both put back
+    afterwards. Other classes and hosts without the directory: no-op."""
+    tc = toolchain_bin() if (task_class or "") == "generalist" else None
+    if tc is None:
+        yield
+        return
+    saved = {k: os.environ.get(k) for k in ("PATH", TOOLCHAIN_ENV)}
+    os.environ["PATH"] = str(tc) + os.pathsep + (saved["PATH"] or "")
+    os.environ[TOOLCHAIN_ENV] = str(tc)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+#: Settings that change what the harness does during a turn, pinned for a
+#: benchmark attempt to the shipped default unless the operator set the
+#: variable for the whole run (an arm that measures another value). The
+#: attempt otherwise read the user's ~/.delfin_settings.json: on this
+#: host ``auto_verify`` is "syntax" there, so the suite measured a
+#: py_compile-only turn end that no default installation has, and no run
+#: file said so (diagnosis 2026-10-15).
+PINNED_BEHAVIOUR_ENV: dict[str, str] = {
+    "DELFIN_AUTO_VERIFY": "smart",
+    # The shipped default of agent.verify_nudge
+    # (api_client._VERIFY_NUDGE_DEFAULT); an arm of the three-arm
+    # measurement exports its own value.
+    "DELFIN_VERIFY_NUDGE": "off",
+}
+
+
+def pinned_behaviour_settings() -> dict[str, str]:
+    """The values an attempt runs with: the operator's export, else the pin."""
+    return {k: (os.environ.get(k) or v)
+            for k, v in PINNED_BEHAVIOUR_ENV.items()}
+
+
+@contextlib.contextmanager
+def _pinned_behaviour():
+    """Export ``pinned_behaviour_settings()`` for one attempt; restore after."""
+    saved = {k: os.environ.get(k) for k in PINNED_BEHAVIOUR_ENV}
+    os.environ.update(pinned_behaviour_settings())
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def run_task(
@@ -1165,13 +1458,23 @@ def run_task(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     run_once: Callable[..., dict] | None = None,
     clock: Callable[[], float] | None = None,
     on_replicate: Callable[[int, BenchmarkResult], None] | None = None,
+    learning_home: Path | str | None = None,
 ) -> BenchmarkResult:
     """Execute one task and return a scored result.
+
+    ``learning_home`` (a learning measurement, PREREG_W15.md): replicate
+    ``k`` runs under ``<learning_home>/<task id>/replicate-<k>``, a home
+    that is kept, so the same call made again later -- the second arm --
+    continues each lineage where the first arm left it. Replicates within
+    one call stay independent of each other. ``None`` (default): every
+    attempt runs under a fresh scratch home that is deleted afterwards.
+    The result carries :func:`learning_state_id` of ``learning_home`` in
+    ``learning_state`` (empty without one).
 
     ``repeats=1`` (default): single sample, returned as-is.
     ``repeats>1``: run the task N times against a FRESH engine each time
@@ -1196,6 +1499,8 @@ def run_task(
     _prepare_office_fixtures()
 
     n = max(1, int(repeats))
+    base = (_learning_home_checked(learning_home)
+            if learning_home is not None else None)
     replicates: list[BenchmarkResult] = []
     for i in range(n):
         r = _run_task_once(
@@ -1203,6 +1508,8 @@ def run_task(
             model=model, backend=backend, provider=provider,
             profile_name=profile_name, engine_factory=factory,
             max_tokens=max_tokens, run_once=run_once, clock=now,
+            learning_home=(base / task.id / f"replicate-{i + 1}"
+                           if base is not None else None),
         )
         replicates.append(r)
         if on_replicate is not None:
@@ -1212,9 +1519,13 @@ def run_task(
                 pass
 
     if n == 1:
-        return replicates[0]
-    from .benchmark import aggregate_replicates
-    return aggregate_replicates(replicates)
+        result = replicates[0]
+    else:
+        from .benchmark import aggregate_replicates
+        result = aggregate_replicates(replicates)
+    if base is not None:
+        result.learning_state = learning_state_id(base)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1328,11 +1639,12 @@ def run_suite(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
     run_once: Callable[..., dict] | None = None,
+    learning_home: Path | str | None = None,
 ) -> list[BenchmarkResult]:
     """Run every task and return scored (optionally aggregated) results.
 
@@ -1340,7 +1652,7 @@ def run_suite(
     N times; the returned list still has one entry per task with the
     aggregate stats.  ``progress`` fires once per task with the final
     aggregated result; ``on_replicate`` fires for each individual
-    sample as it lands.
+    sample as it lands. ``learning_home`` is forwarded to ``run_task``.
     """
 
     import os as _os
@@ -1354,7 +1666,8 @@ def run_suite(
             tasks, model=model, backend=backend, provider=provider,
             profile_name=profile_name, engine_factory=engine_factory,
             max_tokens=max_tokens, repeats=repeats, progress=progress,
-            on_replicate=on_replicate, run_once=run_once, root=_root)
+            on_replicate=on_replicate, run_once=run_once, root=_root,
+            learning_home=learning_home)
 
 
 def _run_suite_locked(
@@ -1365,12 +1678,13 @@ def _run_suite_locked(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
     run_once: Callable[..., dict] | None = None,
     root: Path | None = None,
+    learning_home: Path | str | None = None,
 ) -> list[BenchmarkResult]:
     """The suite body, under the fixture lock."""
     _root = Path(root) if root is not None else Path(os.getcwd())
@@ -1393,6 +1707,7 @@ def _run_suite_locked(
             max_tokens=max_tokens, repeats=repeats,
             run_once=run_once,
             on_replicate=per_task_replicate,
+            learning_home=learning_home,
         )
         out.append(result)
         if progress is not None:

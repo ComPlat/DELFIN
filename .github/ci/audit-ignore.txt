@@ -1,0 +1,10 @@
+# Advisories audit.yml does not fail on, one per line:
+#
+#   <advisory id>  <why it does not apply or cannot be fixed yet>; <date>, <who>
+#
+# Only the first word of a line is read (passed as pip-audit --ignore-vuln).
+# An entry is a decision a person made and can be asked about, not a way to
+# make the workflow green: name the reason (code path not reached, no fixed
+# release, fix blocked by a pin in pyproject.toml), and remove the line when
+# the reason stops holding. Empty on 2026-10-15: the closure of
+# ".[agent,docs]" (171 distributions) had no known advisory.

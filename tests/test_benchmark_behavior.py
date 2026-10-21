@@ -140,9 +140,17 @@ def test_verified_false_edit_with_no_run():
     assert bm.behavior_flags(_task("verify"), traj) == {"verified": 0}
 
 
-def test_verified_true_readback_of_edited_file():
+def test_reading_back_an_edited_code_file_is_not_verification():
+    # Reading the file shows what was written, not what it does. Counted
+    # as verification until 2026-10-15.
     traj = _traj([_call("edit_file", _fp("thermo.py")),
                   _call("bash", "cat thermo.py")])
+    assert bm.behavior_flags(_task("verify"), traj) == {"verified": 0}
+
+
+def test_verified_true_readback_of_an_edited_data_file():
+    traj = _traj([_call("edit_file", _fp("ensemble.csv")),
+                  _call("bash", "cat ensemble.csv")])
     assert bm.behavior_flags(_task("verify"), traj) == {"verified": 1}
 
 
@@ -160,10 +168,10 @@ def test_verified_false_run_before_edit_only():
     assert bm.behavior_flags(_task("verify"), traj) == {"verified": 0}
 
 
-def test_verified_true_readfile_tool_readback():
+def test_a_read_file_of_edited_code_is_not_verification():
     traj = _traj([_call("edit_file", _fp("thermo.py")),
                   _call("read_file", _fp("thermo.py"))])
-    assert bm.behavior_flags(_task("verify"), traj) == {"verified": 1}
+    assert bm.behavior_flags(_task("verify"), traj) == {"verified": 0}
 
 
 # ---------------------------------------------------------------------------

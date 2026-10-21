@@ -151,8 +151,11 @@ def _permissions(state: dict, token: str):
             session.append(Path(d))
         except Exception:
             continue
+    # No code: this hook runs inside the external agent's process tree and
+    # has no human channel; DELFIN's Relay answers it from the person's
+    # dialog (approval_code, "What the code does not cover").
     broker = (FileConfirmBroker(session_id=f"cli-gate-{token}",
-                                timeout_s=HOOK_WAIT_S)
+                                timeout_s=HOOK_WAIT_S, require_code=False)
               if state.get("can_ask") else None)
     perms = ac.KitToolPermissions(
         workspace=Path(state["workspace"]),
@@ -190,6 +193,29 @@ def _unjson(err: str | None) -> str | None:
     return str(err)
 
 
+#: The CLI's tool names as the native tools the permission rules name.
+_NATIVE_NAMES = {
+    "Read": "read_file", "NotebookRead": "notebook_read", "Grep": "grep_file",
+    "Glob": "list_files", "LS": "list_files", "Write": "write_file",
+    "Edit": "edit_file", "MultiEdit": "multi_edit",
+    "NotebookEdit": "notebook_edit", "Bash": "bash", "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
+}
+
+
+def _native_call(tool: str, args: dict, cwd: str, workspace: str) -> tuple:
+    """(native tool name, arguments) for a CLI tool call; MCP names as
+    they are."""
+    name = _NATIVE_NAMES.get(tool, tool)
+    args = dict(args or {})
+    key = _READ_TOOLS.get(tool) or _WRITE_TOOLS.get(tool)
+    if key and args.get(key):
+        args = {**args, "path": str(_abs(args[key], cwd, workspace))}
+    if name == "bash":
+        args = {"command": str(args.get("command") or ""), "cwd": cwd}
+    return name, args
+
+
 def decide(token: str, event: dict) -> str | None:
     """Why this tool call is refused, or None when it may run.
 
@@ -209,6 +235,21 @@ def decide(token: str, event: dict) -> str | None:
     cwd = str(event.get("cwd") or state["workspace"])
     err: str | None = None
 
+    # The permission rules (permission_rules.py) -- the administrator's
+    # managed rules first, then the user's and the project's, one matcher
+    # -- on the native name of the call: deny refuses, ask asks through
+    # the same relay, and with nobody to ask an ask refuses. allow is not
+    # consulted here -- this hook only refuses or passes, it never answers
+    # a question for the CLI.
+    native, native_args = _native_call(tool, args, cwd, state["workspace"])
+    hit = ac._permission_rule_hit(perms, native, native_args)
+    if hit is not None and hit[0] == "deny":
+        return ac._refuse_by_rule(native, hit[1])
+    if hit is not None:
+        refusal = ex._ask_by_rule(perms, native, native_args, hit[1])
+        if refusal is not None:
+            return refusal
+
     if tool in _READ_TOOLS:
         raw = args.get(_READ_TOOLS[tool]) or cwd
         err = ex._check_read_access(perms, _abs(raw, cwd, state["workspace"]))
@@ -220,9 +261,33 @@ def decide(token: str, event: dict) -> str | None:
                 {"path": str(raw)})
     elif tool == "Bash":
         cmd = str(args.get("command") or "")
+        # The same refusal as the native bash gate: a pending approval is
+        # answered by the person (approval_guard), in every mode.
+        from . import approval_guard as _approval_guard
+        _answers = _approval_guard.answer_command(ac._prose_blanked(cmd))
+        if _answers:
+            ac._record_security_event("approval_self_answer", "Bash",
+                                      cmd[:120], blocked=True)
+            return _approval_guard.refusal(_answers)
+        _operator = _approval_guard.operator_command(ac._prose_blanked(cmd))
+        if _operator:
+            ac._record_security_event("operator_action_refused", "Bash",
+                                      cmd[:120], blocked=True)
+            return _approval_guard.operator_refusal(_operator)
         err = _unjson(ex._gate_bash_read_paths(cmd, perms, cwd))
+        targets: list = []
         if err is None:
-            for target in ac._bash_write_targets(cmd):
+            # git apply / patch / checkout -- / restore name their files
+            # in the patch or the pathspec, not as a redirection: the same
+            # reader the executor's bash gate uses, and the same refusal
+            # for a patch that cannot be read from the text.
+            patch_paths, patch_err = ex._patch_write_targets(cmd, cwd, perms)
+            if patch_err is not None:
+                err = _unjson(patch_err)
+            else:
+                targets = ac._bash_write_targets(cmd) + list(patch_paths or [])
+        if err is None:
+            for target in targets:
                 p = _abs(target, cwd, state["workspace"])
                 if ac._is_ephemeral_sink(p, perms.workspace):
                     continue
@@ -329,7 +394,8 @@ class Relay:
             return
         reason = "" if ok else str(getattr(owner, "last_refusal_reason", "")
                                    or "")
-        file_confirm.answer(rid, ok, by="delfin-cli-gate", reason=reason)
+        file_confirm._write_answer(rid, ok, by="delfin-cli-gate",
+                                   reason=reason)
 
 
 if __name__ == "__main__":

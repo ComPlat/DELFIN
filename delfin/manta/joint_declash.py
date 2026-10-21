@@ -366,11 +366,11 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
         # is.  Default 0.0 = strictly never-worse, without any guessed number.  A larger
         # budget can be set per env and is then a MEASUREMENT QUESTION, not a feeling.
         #
-        # ⚠ On the calibration, and why it is NOT here: 553 crystals themselves do not
-        # sit on the ideal (p50 0.37 · p90 3.65 · p99 8.0 CShM against their own ideal
-        # polyhedron).  A budget of this order of magnitude would therefore be
-        # chemically covered -- but the number is CCDC-derived and does not belong in
-        # this repo.  It lives in the private workspace; here the default stays at 0.
+        # ⚠ On the calibration, and why it is NOT here: real crystals themselves do not
+        # sit on the ideal (a sizeable CShM tail against their own ideal
+        # polyhedron).  A budget of that order of magnitude would therefore be
+        # chemically covered -- but the number is derived from structures that are not
+        # redistributed here and does not belong in this repo.  Here the default stays at 0.
         _swing_cshm = float(os.environ.get("DELFIN_FFFREE_LIGAND_SWING_CSHM", "0") or 0.0)
         _swings = []
         for _lid in sorted({int(x) for x in lig if int(x) >= 0}):
@@ -470,9 +470,9 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                             #
                             # The builder can check this without a crystal: if the donor set
                             # already sits FURTHER from its own ideal polyhedron than a real
-                            # crystal at the p90 (CShM 3.65 over 553 crystals), the
+                            # crystal at a high percentile of the crystal CShM distribution, the
                             # starting shape is no trustworthy basis.  The bound comes
-                            # per env, because the number is CCDC-derived; default 0 = off.
+                            # per env, because the number is crystal-derived; default 0 = off.
                             _c_floor = float(os.environ.get(
                                 "DELFIN_FFFREE_LIGAND_SWING_MAX_START_CSHM", "0") or 0.0)
                             if _c_floor > 0.0 and _c_before > _c_floor:

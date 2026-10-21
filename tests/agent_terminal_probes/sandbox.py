@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -27,9 +28,9 @@ if __name__ == "__main__":
 # i.e. 0.595, 1.516 and 0.507 eV — appear in no output file and can only
 # be arrived at by reading both numbers and subtracting.
 _FAR_SYSTEMS: tuple[tuple[str, float, float], ...] = (
-    ("TADFs-Jeneesh_3",  -1705.197734757559, -1705.219605478025),
-    ("TADFs-Jeneesh_10", -1381.940615619111, -1381.996318160017),
-    ("TADFs-Jeneesh_5",  -1552.848824108377, -1552.867447834352),
+    ("TADFs-set_3",  -1705.197734757559, -1705.219605478025),
+    ("TADFs-set_10", -1381.940615619111, -1381.996318160017),
+    ("TADFs-set_5",  -1552.848824108377, -1552.867447834352),
 )
 
 _CALC = "def add(a, b):\n    return a - b\n"
@@ -95,6 +96,18 @@ class Sandbox:
         return env
 
 
+def _other_homes(root: Path) -> list[str]:
+    """Deny patterns for each directory under /home that does not contain
+    the sandbox. Read from the host at build time, so no account name is
+    written into the source; a host without /home yields none."""
+    try:
+        entries = sorted(Path("/home").iterdir())
+    except OSError:
+        return []
+    keep = set(root.resolve().parents)
+    return [re.escape(str(p)) + r"(/|$)" for p in entries if p not in keep]
+
+
 def build(root: Path) -> Sandbox:
     home = root / "home"
     workspace = root / "ws"
@@ -110,8 +123,9 @@ def build(root: Path) -> Sandbox:
     # read outside the roots no longer stops to ask — so a probe that
     # wanders is a probe that reads live records.
     #
-    # It happened: asked for folders matching "Jeneesh" in the sandbox,
-    # the agent found the shared archive instead and reported an energy
+    # It happened: asked for folders matching a name from a field report
+    # in the sandbox, the agent found the shared archive instead and
+    # reported an energy
     # out of a real ORCA output. Nothing was written and the archive is
     # read-only regardless, but a probe must not be able to reach a user's
     # data at all — the promise this family makes is that it can be run
@@ -123,7 +137,7 @@ def build(root: Path) -> Sandbox:
         "kit": {
             "default_mode": "plan",
             "deny_patterns": [
-                r"/home/qmchem_\w+",     # the shared accounts on this host
+                *_other_homes(root),     # every account home on this host
                 r"/pfs/",                # the cluster's home filesystem
                 r"/mnt/",
                 r"/media/",

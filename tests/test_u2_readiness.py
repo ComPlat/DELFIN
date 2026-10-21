@@ -31,6 +31,22 @@ import subprocess
 from delfin.agent import doctor as D
 
 
+def _git_through_safe_git(monkeypatch, fake):
+    """The doctor's git reads go through ``safe_git.run``, which builds its
+    own command line; this hands the argv-keyed *fake* the ``git <args>``
+    it means. A raised FileNotFoundError/OSError becomes the code
+    safe_git returns (127/126), since safe_git never raises."""
+    def run(args, cwd, **kw):
+        argv = ["git", *args]
+        try:
+            return fake(argv, cwd=str(cwd))
+        except FileNotFoundError as exc:
+            return subprocess.CompletedProcess(argv, 127, "", str(exc))
+        except OSError as exc:
+            return subprocess.CompletedProcess(argv, 126, "", str(exc))
+    monkeypatch.setattr(D.safe_git, "run", run)
+
+
 def _fake_run(*, git=True, identity=True, remote=True, has_origin=True,
               gh=True, logged_in=True):
     """A fake ``subprocess.run`` shaped like the real one, keyed on argv.
@@ -83,7 +99,9 @@ def _rows(monkeypatch, **kw):
     if kw.get("gh", True):
         which["gh"] = "/usr/bin/gh"
     monkeypatch.setattr(shutil, "which", lambda name: which.get(name))
-    monkeypatch.setattr(D.subprocess, "run", _fake_run(**kw))
+    fake = _fake_run(**kw)
+    monkeypatch.setattr(D.subprocess, "run", fake)
+    _git_through_safe_git(monkeypatch, fake)
     return {r["check"]: r for r in D.ready_for_push(".")}
 
 

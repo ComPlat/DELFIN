@@ -1,7 +1,9 @@
 """Pyykko radii, donor sigma geometry and the UFF coordination constraints built from a template or from an XYZ in the MANTA constructor.
 
 Moved verbatim from delfin/smiles_converter.py (MANTA split, 2026-10); every
-statement is the original text, only the imports below are new.
+statement was the original text, only the imports below were new.  Since then the
+measured per-period donor angles and the M-D-X slope have moved out of the code into
+a table that is not shipped (see _donor_sigma_geometry).
 """
 from __future__ import annotations
 
@@ -37,23 +39,25 @@ from delfin.manta.pre_uff_snap import (
 logger = get_logger("delfin.smiles_converter")
 
 
-# --- donor geometry, calibrated on CCDC clean_v2 -----------------------------
-# 307370 structures / 1433955 sigma-donor records (exactly one metal partner,
-# non-hapto, H-complete), measured in full rather than sampled.  Two findings drive
-# everything below.
+# --- donor geometry, calibrated on crystal structures -------------------------
+# Measured over sigma-donor records with exactly one metal partner (non-hapto,
+# H-complete).  Two findings drive everything below.
 #
 # 1. ONE angle per element, and it follows the PERIODIC ROW, not the group and not
-#    electronegativity: Si 104.5 / P 103.7 / S 104.8 span 1.1 deg across EN 1.90-2.58,
-#    while P 103.7 -> As 102.1 -> Sb 99.8 tracks the row exactly.  The same number
-#    falls out of two independent bins -- theta from 4-partner X-D-X and theta from
-#    3-partner (angle sum / 3) agree to ~1 deg (S 104.8/103.8, As 102.1/103.1,
-#    Sb 99.8/99.1) -- so it is one physical parameter, not two fitted ones.
+#    electronegativity: elements of one row sit within about a degree of each other
+#    across a wide electronegativity range, while going down a group the angle tracks
+#    the row.  The same number falls out of two independent bins (4-partner X-D-X and
+#    3-partner angle sum), so it is one physical parameter, not two fitted ones.
 #
 # 2. The metal angle is NOT free.  Widening M-D-X closes X-D-X and vice versa:
-#       phi(M-D-X) = 109.5 - 0.87 * (theta - 109.5)
-#    reproduces the measured medians to <= 0.5 deg for C, N, Si, P, S, Ge, As, Sn, Sb.
-#    One parameter per element; every other angle is geometrically implied.
-_THETA_BY_PERIOD = {2: 109.5, 3: 104.0, 4: 101.5, 5: 100.5, 6: 99.0}
+#       phi(M-D-X) = 109.5 - slope * (theta - 109.5)
+#    reproduces the measured medians for the common donor elements.  One parameter per
+#    element; every other angle is geometrically implied.
+#
+# The measured per-period angles and the slope are not shipped: they are read through
+# _energy_terms._period_theta / _phi_md_slope from DELFIN_FFREE_THETA_TABLE.  Without
+# that table theta is tetrahedral for every period and phi equals it.  The switch
+# DELFIN_FFFREE_METAL_SIGMA_COUNT that reaches this is off in the shipped configuration.
 
 
 _GROUP_14 = frozenset((6, 14, 32, 50, 82))   # C  Si Ge Sn Pb
@@ -137,16 +141,17 @@ def _donor_sigma_geometry(atom):
     None        -> no opinion, leave the caller's behaviour untouched.
 
     NOTE: a planar 3-partner donor must NOT be pushed to 120/120/120.  Only the SUM
-    is invariant; the ring fixes the split.  Measured on N: flat 6-ring 118.1 internal
-    / 120.8 to the metal, flat 5-ring 106.1 / 126.6, acyclic 118.3 / 120.6.  Forcing
-    120 would bend every imidazole and pyrazole donor by ~14 deg.
+    is invariant; the ring fixes the split: a flat 5-ring donor has a much smaller
+    internal angle and a correspondingly wider angle to the metal than a flat 6-ring
+    donor.  Forcing 120 would bend every imidazole and pyrazole donor by ~14 deg.
     """
     sigma = [n for n in atom.GetNeighbors() if n.GetAtomicNum() > 1]
     if not any(n.GetSymbol() in _METAL_SET for n in sigma):
         return None, [], 0.0, 0.0
+    from delfin.manta._energy_terms import _period_theta, _phi_md_slope
     z = atom.GetAtomicNum()
-    theta = _THETA_BY_PERIOD.get(_period_of(z), 99.0)
-    phi = 109.5 - 0.87 * (theta - 109.5)
+    theta = _period_theta(_period_of(z), _period_theta(6))
+    phi = 109.5 - _phi_md_slope() * (theta - 109.5)
     idx = sorted(n.GetIdx() for n in sigma)
     n_h = sum(1 for n in atom.GetNeighbors() if n.GetAtomicNum() == 1)
     n_h += atom.GetTotalNumHs()
@@ -157,24 +162,24 @@ def _donor_sigma_geometry(atom):
     if n_sigma != 3:
         return None, idx, theta, phi
     if _period_of(z) == 2:
-        # O is genuinely bimodal in the crystal -- 51 % planar, 26 % pyramidal, p10 of
-        # the angle sum 332.9 deg.  Coordinated ether / alkoxide / aqua is flattened
-        # but SOFT; forcing either target would be wrong, so decline to have an opinion.
+        # O is genuinely bimodal in crystal structures -- planar and pyramidal both
+        # common.  Coordinated ether / alkoxide / aqua is flattened but SOFT; forcing
+        # either target would be wrong, so decline to have an opinion.
         if z == 8:
             return None, idx, theta, phi
         return "planar", idx, theta, phi
     if z in _GROUP_14:
         # Three sigma partners on a heavy group-14 centre is a carbene analogue with an
-        # M=E multiple bond, not a lone-pair donor: Si 96 %, Sn 79 % planar.
+        # M=E multiple bond, not a lone-pair donor: predominantly planar.
         return "planar", idx, theta, phi
     if z in _GROUP_15:
-        # Genuinely bimodal (P: 50.4 % planar / 43.9 % pyramidal).  What separates them
-        # is whether the donor sits in a coplanar ring: phosphinine 95.4 % planar,
-        # a free phosphido pyramidal.
+        # Genuinely bimodal (P: planar and pyramidal about equally common).  What
+        # separates them is whether the donor sits in a coplanar ring: phosphinine
+        # planar, a free phosphido pyramidal.
         return ("planar" if atom.GetIsAromatic() else "pyramidal"), idx, theta, phi
     # Group 16 stays pyramidal even inside an aromatic ring: S in a flat 5-ring is
-    # 94.8 % PYRAMIDAL (sum 316.2 deg) and holds the metal 2.0 A off the ring plane.
-    # "Conjugation flattens the donor" is measurably FALSE here (S 0.4 % vs 0.3 %).
+    # predominantly PYRAMIDAL and holds the metal well off the ring plane.
+    # "Conjugation flattens the donor" is measurably FALSE here.
     return "pyramidal", idx, theta, phi
 
 
@@ -363,15 +368,14 @@ def _build_uff_constraints_from_template(
         # Pyykko sums (C=O 0.67+0.57 = 1.24 vs its 1.22; C#O 0.60+0.53 = 1.13).  So the special case
         # is a hand-listed subset of a rule that holds for the whole periodic table.
         #
-        # Measured gap it closes (CCDC clean_v2, 25.8 M bonds, signature-resolved bands): terminal
-        # multiply-bonded heteroatoms on high-coordination centres are built at SINGLE-bond length --
-        # ClO4- Cl-O +0.55 A (100 % outside the CSD band), N=N=N +0.295, S=O +0.20, coordinated C#N
-        # +0.18 (472 systems), C#S +0.17 -- while P=O (+0.055) and N-O (-0.025) are already fine.
+        # Measured gap it closes (against crystal structures): terminal multiply-bonded
+        # heteroatoms on high-coordination centres are built at SINGLE-bond length -- perchlorate
+        # Cl-O, azide N=N=N, S=O, coordinated C#N and C#S -- while P=O and N-O are already fine.
         # A wrong REFERENCE, not noise, so a reference is what it needs.
         #
         # Runs AFTER the carboxyl block on purpose: `seen_dist` makes that block win where it already
         # acts, so the flag only ever ADDS pins for bonds nothing constrained before.  Aromatic bonds
-        # are left alone (measured offset +0.024 A -- not worth the blast radius), and M-L lengths
+        # are left alone (small offset -- not worth the blast radius), and M-L lengths
         # belong to the coordination path.
         if os.environ.get("DELFIN_FFFREE_MULTIBOND_LEN", "0") == "1":
             for _bond in mol_template.GetBonds():
@@ -506,8 +510,8 @@ def _build_uff_constraints_from_template(
             # Ring-aware targets for a planar donor -- pure polygon geometry, no fitted constant:
             # a planar n-ring has internal angle 180 - 360/n, and the two exocyclic angles split
             # what is left of 360.  6-ring -> 120 internal / 120 exocyclic, 5-ring -> 108 / 126.
-            # Cross-check against the crystal: measured 118.0 / 120.75 and 106.0 / 126.5, so the
-            # regular-polygon values land within ~2 deg without importing a single measured number.
+            # Cross-check against crystal structures: the measured 5- and 6-ring angles lie close
+            # to these regular-polygon values, so no measured number needs to be imported.
             _ring_internal = _ring_exo = 0.0
             if _use_ring_angles:
                 _rs = 0

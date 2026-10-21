@@ -7,10 +7,11 @@ surface first on a user's running dashboard.
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
+
+import _package_ast
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent / "delfin"
 
@@ -27,8 +28,7 @@ def test_package_has_files():
     "path", _PY_FILES, ids=lambda p: str(p.relative_to(_PKG_ROOT.parent))
 )
 def test_file_parses(path: Path):
-    source = path.read_text(encoding="utf-8", errors="replace")
     try:
-        ast.parse(source, filename=str(path))
+        _package_ast.parse(path, errors="replace")
     except SyntaxError as exc:
         pytest.fail(f"{path}:{exc.lineno}: {exc.msg}")

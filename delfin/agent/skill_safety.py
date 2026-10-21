@@ -126,12 +126,40 @@ _INTERPRETER_INVOCATION_RE = re.compile(
 _TEXT_RULES: tuple[tuple[str, re.Pattern, str], ...] = (
     ("approval-bypass",
      re.compile(r"(?i)\b(?:always\s+approve|pre-?approve|auto-?approve"
-                r"|approve\s+(?:everything|anything|all\b|without)"
+                r"|approv(?:e|es|ed|ing)\s+(?:everything|anything|all\b|without)"
                 r"|remember\s+the\s+(?:choice|approval)"
                 r"|remember_permission\b|skip\s+the\s+(?:confirm|dialog|gate))"
                 r"|--dangerously[a-z-]*|—dangerously[a-z-]*"),
      "approval bypass: the text tells the agent to approve or remember an "
      "approval instead of asking ({snippet!r})"),
+    ("allow-rule",
+     # A standing allowance, in words or in the rule syntax itself. A
+     # skill is read by the model, not by the gate, so the text grants
+     # nothing -- but it would teach the agent to expect a grant, and a
+     # permission rule has no business in a recipe.
+     # Also: other tools' rule syntax, with a space before the
+     # parenthesis when the rule carries a ':' or '*' (a plain "Read (the
+     # log)" is prose), "auto-allow", "without asking", "do not ask for
+     # permission", and the German forms a German session writes.
+     re.compile(r"(?i)\b(?:always\s+(?:allow|permit)\w*"
+                r"|allow(?:s|ed|ing)?\s+(?:everything|anything|all\b"
+                r"|every\s+\w+|without\s+(?:ask|confirm|prompt)\w*"
+                r"|by\s+default)"
+                r"|auto-?allow\w*"
+                r"|skip\w*\s+the\s+(?:permission|approval)\s+"
+                r"(?:prompt|dialog|check|question)"
+                r"|(?:never|do\s+not|don't|dont)\s+ask\s+(?:for\s+)?"
+                r"(?:permission|confirmation|approval)"
+                r"|(?:Bash|Edit|MultiEdit|Write|Read|NotebookEdit|WebFetch"
+                r"|WebSearch|Glob|Grep|Task)\([^)\n]{0,120}\)"
+                r"|(?:Bash|Edit|MultiEdit|Write|Read|NotebookEdit|WebFetch"
+                r"|WebSearch|Glob|Grep|Task)\s+\([^)\n]{0,120}[:*][^)\n]{0,120}\)"
+                r"|mcp__\w+\s*\([^)\n]{0,120}\)"
+                r"|immer\s+(?:erlaub|zulass|genehmig)\w*"
+                r"|(?:erlaub|genehmig)\w*\s+(?:immer|stets|alles|jede[nrs]?\b)"
+                r"|ohne\s+(?:Rück|Nach)frage)"),
+     "allow rule: the text states a standing allowance or a permission "
+     "rule ({snippet!r})"),
     ("permission-mode-bypass",
      re.compile(r"(?i)\b(?:bypassPermissions|acceptEdits"
                 r"|set\s+the\s+mode\s+to\s+(?:bypass|accept)"
@@ -204,16 +232,49 @@ _TEXT_RULES: tuple[tuple[str, re.Pattern, str], ...] = (
      "other than the CONTROL defaults ({snippet!r})"),
 )
 
+#: Latin look-alikes from Cyrillic and Greek that render the same as the
+#: letter they stand in for. Only the matching copy of the text is folded;
+#: a finding quotes what was found in it.
+_HOMOGLYPHS = str.maketrans(
+    "аеорсухѕіјԁ"
+    "АВЕКМНОРСТХ"
+    "ΑΒΕΖΗΙΚΜΝΟΡ"
+    "ΤΥΧο",
+    "aeopcyxsijdABEKMHOPCTXABEZHIKMNOPTYXo")
+#: Markdown emphasis and strike markers touching a word on one side. A
+#: ``*`` inside a rule (``Bash(git push:*)``) touches no word and stays.
+_EMPHASIS_RE = re.compile(
+    r"(?<![\w*~_(])(?:[*~]{1,3}|_{1,2})(?=\w)"
+    r"|(?<=\w)(?:[*~]{1,3}|_{1,2})(?![\w*~_)])")
+
+
+def _folded(text: str) -> str:
+    """The text as it reads, for the prose rules: NFKC (fullwidth letters
+    and parentheses become ASCII), format characters (zero-width space
+    and joiners, soft hyphen, bidi marks) removed, Latin look-alikes
+    mapped back, markdown emphasis dropped. Without it ``**Always**
+    allow``, ``Al<ZWSP>ways allow`` and ``Bash（git push:*）`` passed
+    every rule."""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKC", text)
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
+    return _EMPHASIS_RE.sub("", t.translate(_HOMOGLYPHS))
 
 
 def _text_findings(text: str) -> list[str]:
     """Findings from prose patterns (phase 2). Secret detection reuses
     DELFIN's own redaction (:func:`delfin.agent.memory_store.
     _without_secrets` → output_guard): if redacting the text CHANGES it,
-    the text carries something DELFIN classifies as a secret."""
+    the text carries something DELFIN classifies as a secret.
+
+    Each rule is matched against the text and against :func:`_folded`
+    of it, and reported once."""
     findings: list[str] = []
+    folded = _folded(text)
     for name, pattern, template in _TEXT_RULES:
-        m = pattern.search(text)
+        m = pattern.search(text) or (
+            pattern.search(folded) if folded != text else None)
         if m:
             snippet = m.group(0).strip()[:80]
             findings.append(template.format(name=name, snippet=snippet))

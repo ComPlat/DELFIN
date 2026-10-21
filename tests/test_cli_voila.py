@@ -122,10 +122,15 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     assert "--no-browser" in captured["cmd"]
     assert "--port=9001" in captured["cmd"]
     assert f"--ServerApp.root_dir={root_dir.resolve()}" in captured["cmd"]
-    assert (
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)"
-        in captured["cmd"]
-    )
+    # The file route serves images, PDFs and the editor's launch copy --
+    # never HTML/SVG/JS from user data.
+    _allow = next(a for a in captured["cmd"]
+                  if a.startswith("--VoilaConfiguration.file_allowlist="))
+    _pattern = _allow.split("=", 1)[1]
+    for _ok in ("a/b.png", "doc.pdf", "x.gif", ".delfin/ketcher/index.html"):
+        assert re.fullmatch(_pattern, _ok, re.IGNORECASE), _ok
+    for _no in ("page.html", "a/pic.svg", "run.js", "style.css"):
+        assert not re.fullmatch(_pattern, _no, re.IGNORECASE), _no
     assert "--ServerApp.disable_check_xsrf=True" not in captured["cmd"]
     # Tracebacks OFF (info disclosure) and server terminals disabled (RCE surface).
     assert "--VoilaConfiguration.show_tracebacks=False" in captured["cmd"]

@@ -60,6 +60,64 @@ def _sorted(tasks: Iterable[dict]) -> list[dict]:
     return out
 
 
+#: A block set before the session's last user message may no longer hold:
+#: the person has since said something, so the "waiting on" note may be
+#: about a reason that no longer applies. Marked so on the panel rather than
+#: trusted silently. The reference is the engine's ``last_user_message_at``
+#: (set when a user turn starts); the session file's ``updated_at`` is not
+#: one, because the turn-end save advances it past the block that very turn
+#: set, so every fresh block read as stale.
+_STALE_MARKER = " (stale)"
+
+
+def _block_epoch(task: dict) -> float | None:
+    """Epoch seconds of when ``task`` was last updated (i.e. when it was
+    blocked), or None when the timestamp is missing or unparseable. Never
+    raises: a ticker is a courtesy that must not take the panel down over a
+    malformed timestamp."""
+    ts = str(task.get("updated_at") or task.get("created_at") or "").strip()
+    if not ts:
+        return None
+    try:
+        import datetime as _dt
+        naive = _dt.datetime.fromisoformat(ts.rstrip("Z"))
+    except ValueError:
+        return None
+    if naive.tzinfo is None:
+        naive = naive.replace(tzinfo=_dt.timezone.utc)
+    return naive.timestamp()
+
+
+def _stale_suffix(task: dict, last_message_at: float | None) -> str:
+    """``_STALE_MARKER`` when *task* is a blocked task whose reason was set
+    before ``last_message_at`` (to the second) — i.e. the block outdates the last
+    message. "" otherwise. A blocked task with no reason cannot reach the
+    store (an invariant), and one whose timestamp is missing or not older
+    is current, so neither is flagged.
+
+    Never raises: a reference that cannot parse as a number is treated as
+    "nothing stale" (same as ``None``), so a malformed value arriving over a
+    wire cannot take the panel down with it (reviewer nacht-s12).
+    """
+    if last_message_at is None:
+        return ""
+    try:
+        ref = float(last_message_at)
+    except (TypeError, ValueError):
+        return ""
+    if str(task.get("status")) != "blocked":
+        return ""
+    if not str(task.get("blocked_reason") or "").strip():
+        return ""
+    block = _block_epoch(task)
+    # The store writes whole seconds, so the block happened somewhere in
+    # [block, block + 1). Only a reference after that whole second proves
+    # the block older; a message in the same second may have come first.
+    if block is None or not (block + 1.0 <= ref):
+        return ""
+    return _STALE_MARKER
+
+
 def render_html(
     workspace: Path | str,
     *,
@@ -67,11 +125,15 @@ def render_html(
     show_completed: bool = True,
     max_rows: int = 30,
     bare: bool = False,
+    last_message_at: float | None = None,
 ) -> str:
     """Return an HTML fragment listing tasks, ready for ipywidgets HTML.
 
     ``bare=True`` returns the rows alone, without the framed header: the
     body of a fold whose title already carries the counts.
+
+    ``last_message_at`` marks a blocked reason set before it with a stale
+    suffix in a dimmer colour (None marks nothing).
 
     The session filter goes through the shared resolver: an empty id is
     UNSCOPED, the same as everywhere else. Reading it as "no session,
@@ -101,6 +163,12 @@ def render_html(
         if status == "blocked":
             reason = escape(str(t.get("blocked_reason", ""))[:60])
             label += f" — waiting on {reason}" if reason else ""
+            stale = _stale_suffix(t, last_message_at)
+            if stale:
+                # A block that outdates the last message is a stale note, not
+                # a fact: dimmer than the reason itself, so it reads as a
+                # caution rather than as "waiting" all the same.
+                label += f" <span style='color:#999'>{escape(stale)}</span>"
         elif status == "completed" and t.get("verified") == "unmet":
             # A completion the evidence did not support stays visible as
             # such; the alternative is a green tick over an open hole.
@@ -120,7 +188,7 @@ def render_html(
     )
     # Bounded, scrollable list: a long backlog stays a compact panel with a
     # side scrollbar instead of growing into a giant wall of tasks that pushes
-    # the chat off-screen (Jerome 2026-06-13). The summary header stays fixed
+    # the chat off-screen (field report 2026-06-13). The summary header stays fixed
     # above the scroll area so the counts are always visible.
     scroll_open = "<div style='max-height:220px;overflow-y:auto;'>"
     if bare:
@@ -161,6 +229,7 @@ def rows(
     *,
     session_id: str | None = None,
     max_rows: int = 30,
+    last_message_at: float | None = None,
 ) -> list[dict]:
     """The task list as data, in display order, for a surface that builds
     its own rows (the dashboard's clickable task list).
@@ -169,6 +238,10 @@ def rows(
     number the user reads), ``label`` (what the row shows: the active form
     while in progress, the blocking reason appended) and ``subject`` (what
     a click puts into the message box).
+
+    ``last_message_at`` is the epoch-second time of the session's last
+    user message (``engine.last_user_message_at``); a blocked task whose reason was set before it reads as stale
+    (see :func:`_stale_suffix`). None marks nothing.
     """
     store = get_store(Path(workspace))
     raw = store.list(include_deleted=False,
@@ -183,6 +256,7 @@ def rows(
         if status == "blocked":
             reason = str(t.get("blocked_reason", ""))[:60]
             label += f" \u2014 waiting on {reason}" if reason else ""
+            label += _stale_suffix(t, last_message_at)
         elif status == "completed" and t.get("verified") == "unmet":
             label += " (unverified)"
         out.append({
@@ -295,7 +369,8 @@ def next_steps(
 
 
 def render_text(
-    workspace: Path | str, *, session_id: str | None = None, max_rows: int = 30
+    workspace: Path | str, *, session_id: str | None = None, max_rows: int = 30,
+    last_message_at: float | None = None,
 ) -> str:
     """Plain-text rendering for logs / headless contexts."""
     store = get_store(Path(workspace))
@@ -311,6 +386,7 @@ def render_text(
         subject = str(t.get("subject", ""))
         if status == "blocked" and t.get("blocked_reason"):
             subject += f" — waiting on {str(t['blocked_reason'])[:60]}"
+            subject += _stale_suffix(t, last_message_at)
         num = t.get("seq") if t.get("seq") is not None else t.get("id")
         lines.append(f"{glyph} #{num} {subject}")
     return "\n".join(lines)

@@ -190,14 +190,47 @@ def _assigned_attributes(node: ast.AST) -> set[str]:
 # "does a resumed session need this?" to be answered here, in one line,
 # instead of being answered by silence three releases later.
 _NOT_CARRIED = {
+    # The git-errors steering block of the current turn: rebuilt from each
+    # user message, nothing a resumed session needs.
+    "_repo_errors_hint",
+    # Per turn: what the turn verified (turn_verification), read by the
+    # test-claim caveat of the same turn; the next turn starts its own.
+    "_last_turn_verification",
+    # The experiment-discipline steering block of the current turn, the
+    # same kind of per-message pointer.
+    "_experiment_hint",
+    # The message that opened the current turn, read by the turn-end
+    # edit_signals caveat; a resumed session has no turn behind it.
+    "_turn_request",
+    # Per turn: whether the exists-first note was said, and the definition
+    # index it was judged against; rebuilt by the next turn that needs it.
+    "_exists_first_turn",
+    # Counts of multi-step shell commands for the third-repetition note; a
+    # resumed session counts from zero, which says less, not more.
+    "_repeated_sequences",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
+    # Per turn: the history a fresh start cut in THIS turn, given back only
+    # if the same turn ends unanswered; reset at every turn start.
+    "_fresh_cut_this_turn",
     # -- per-turn latch: the follow-up note of the turn that just ended;
     #    a resumed session starts with no turn behind it --
     "pending_turn_continuation", "_continuation_fired",
+    # -- per turn (L2): what was just typed, which skills the turn before
+    #    loaded, and whether the one corrects the other. A resumed session
+    #    has no turn behind it, so its first message corrects no skill --
+    #    the direction that proposes less --
+    "_typed_now", "_skills_used_turn", "_skill_correction",
+    # The stall guard counts identical turn endings of THIS run; a resumed
+    # session starts with a clean count and no stop.
+    "_stall_guard", "_stall_guard_stopped",
     # -- one-shot per turn: the terminal sets it for THIS turn's fresh
     #    start; a resumed session has no turn behind it --
     "start_fresh",
+    # -- the time of the last user message, the task ticker's stale
+    #    reference; a resumed session marks nothing stale until the next
+    #    message, which is the safe direction --
+    "last_user_message_at",
     # -- construction: rebuilt from the launch arguments, never restored --
     "repo_dir", "backend", "provider", "effort", "client", "loader",
     "_lock", "_agent_workspace_dir", "_is_delfin_workspace", "_distiller",
@@ -287,7 +320,12 @@ _NOT_CARRIED = {
     #    _system_prompt_chars, which is declared.
     "last_system_prompt",
     # -- resolved per process from the active model / settings ------------
-    "context_window_tokens", "auto_compact_pct", "_active_capabilities",
+    #    _window_tokens / _window_caps are the stores behind the
+    #    context_window_tokens and _active_capabilities properties;
+    #    _window_generation and _window_assigned order the background
+    #    window probe against direct writes in THIS process only.
+    "_window_tokens", "auto_compact_pct", "_window_caps",
+    "_window_generation", "_window_assigned",
     # -- reports about the last operation, not state to continue from -----
     "last_compaction_info",   # persisted by the callers, not the exporter
     "last_restore_report",
@@ -306,6 +344,12 @@ _NOT_CARRIED = {
     # resumed run that stops on its ceiling says nothing at all.
     "_budget_attention_levels",
     "_prompt_session_serial",
+    # The system prompt held since the session's first turn, with the
+    # section texts already given and the messages that carried updates.
+    # A resumed process starts with a cold cache anyway, so it rebuilds
+    # the prompt whole on its first turn; carrying it would hold message
+    # references that do not survive serialisation.
+    "_held_prompt",
 }
 
 

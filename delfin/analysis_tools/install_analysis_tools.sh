@@ -38,6 +38,18 @@ INSTALL_NGLVIEW="${INSTALL_NGLVIEW:-1}"
 INSTALL_PACKMOL="${INSTALL_PACKMOL:-1}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 CENSO_PREFER_LATEST="${CENSO_PREFER_LATEST:-1}"
+# CENSO from commits, not a branch: pip checks the commit out and git
+# verifies it by its id. v3.0.8 (the head of main on 2026-10-16, which is
+# what "main" used to install) for Python >= 3.12, which it requires;
+# v2.1.4 below that. Move a ref only after reading the new commit.
+CENSO_V3_REF="${CENSO_V3_REF:-1a82c5ad5e0b46c17cbbc93ecd7890a3b8c8a1e3}"
+CENSO_V2_REF="${CENSO_V2_REF:-db667bde403c916bd20e8a42544fa3b0bed8f7d7}"
+# ANMR: the anmr binary of the ENSO release v.2.0.2 (2020-07-30, the newest;
+# the asset the former "latest" lookup picked). GitHub records no digest
+# for it; the SHA-256 was computed 2026-10-16 from the download. A mirror
+# or another build needs both variables.
+ENSO_ANMR_URL="${ENSO_ANMR_URL:-https://github.com/grimme-lab/enso/releases/download/v.2.0.2/anmr}"
+ENSO_ANMR_SHA256="${ENSO_ANMR_SHA256:-9ad5fe7409eb383b86ed1787b7e8cb43f94437ad80a0311c7f6cafa4932c9b3a}"
 
 log() {
   printf "[analysis_tools] %s\n" "$*"
@@ -94,15 +106,15 @@ PY
 
 desired_censo_git_ref() {
   local python_bin="$1"
-  printf '%s\n' "main"
+  printf '%s\n' "${CENSO_V3_REF}"
 }
 
 compatible_censo_git_ref() {
   local python_bin="$1"
   if python_version_at_least "${python_bin}" 3 12; then
-    printf '%s\n' "main"
+    printf '%s\n' "${CENSO_V3_REF}"
   else
-    printf '%s\n' "v2.1.4"
+    printf '%s\n' "${CENSO_V2_REF}"
   fi
 }
 
@@ -212,126 +224,58 @@ with urllib.request.urlopen(url) as response, open(target, "wb") as handle:
 PY
 }
 
-extract_archive() {
-  local archive_path="$1"
-  local extract_dir="$2"
-  local python_bin=""
-  python_bin="$(detect_python)" || return 1
-  "${python_bin}" - "$archive_path" "$extract_dir" <<'PY'
-import shutil
-import sys
-import tarfile
-import zipfile
-from pathlib import Path
-
-archive = Path(sys.argv[1])
-target = Path(sys.argv[2])
-target.mkdir(parents=True, exist_ok=True)
-name = archive.name.lower()
-if name.endswith(".zip"):
-    with zipfile.ZipFile(archive) as zf:
-        zf.extractall(target)
-elif any(name.endswith(suffix) for suffix in (".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar")):
-    with tarfile.open(archive, "r:*") as tf:
-        tf.extractall(target)
-else:
-    shutil.copy2(archive, target / archive.name)
-PY
+sha256_of() {
+  # The digest alone on stdout; status 1 when no tool can compute one.
+  if have sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  elif have shasum; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif have python3; then
+    python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  else
+    return 1
+  fi
 }
 
-find_extracted_anmr() {
-  local extract_dir="$1"
-  local python_bin=""
-  python_bin="$(detect_python)" || return 1
-  "${python_bin}" - "$extract_dir" <<'PY'
-import os
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-candidates = []
-for path in root.rglob("*"):
-    if not path.is_file():
-        continue
-    name = path.name.lower()
-    if name == "anmr" or name.startswith("anmr."):
-        candidates.append(path)
-for path in sorted(candidates, key=lambda item: (len(item.parts), item.name)):
-    print(path)
-    break
-PY
+fetch_verified() {
+  # download_to_file, then the SHA-256 check; status 1 and no file at
+  # DEST when the download fails, no tool can compute the digest, or the
+  # digest differs.
+  local url="$1" dest="$2" want="$3" got
+  if [ -z "${want}" ]; then
+    warn "no SHA-256 is pinned for ${url}; it is not downloaded"
+    return 1
+  fi
+  if ! download_to_file "${url}" "${dest}"; then
+    rm -f "${dest}"
+    warn "download failed: ${url}"
+    return 1
+  fi
+  if ! got="$(sha256_of "${dest}")"; then
+    rm -f "${dest}"
+    warn "no sha256sum, shasum or python3 to verify $(basename "${dest}"); an unchecked download is not installed"
+    return 1
+  fi
+  if [ "${got}" != "${want}" ]; then
+    rm -f "${dest}"
+    warn "checksum mismatch for $(basename "${dest}") from ${url}: expected ${want}, got ${got}. The file was removed and nothing was installed from it."
+    return 1
+  fi
+  log "checksum verified: $(basename "${dest}")"
 }
 
-select_enso_release_asset() {
-  local python_bin="$1"
-  local json_file="$2"
-  "${python_bin}" - "$json_file" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-data = json.loads(Path(sys.argv[1]).read_text())
-assets = data.get("assets", [])
-
-
-def score(name: str) -> tuple[int, int]:
-    text = name.lower()
-    value = 0
-    if "linux" in text:
-        value += 20
-    if "x86_64" in text or "amd64" in text:
-        value += 10
-    if "windows" in text or "mac" in text or "darwin" in text:
-        value -= 50
-    if text.endswith(".zip") or ".tar" in text:
-        value += 5
-    if "anmr" in text:
-        value += 3
-    return value, -len(text)
-
-
-ranked = sorted(
-    (
-        asset for asset in assets
-        if asset.get("browser_download_url") and not asset.get("draft")
-    ),
-    key=lambda asset: score(asset.get("name", "")),
-    reverse=True,
-)
-for asset in ranked:
-    text = asset.get("name", "").lower()
-    if "windows" in text or "darwin" in text or "mac" in text:
-        continue
-    print(asset["browser_download_url"])
-    break
-PY
-}
-
-find_censo_helper_source() {
-  local extract_dir="$1"
-  local helper_name="$2"
-  local python_bin=""
-  python_bin="$(detect_python)" || return 1
-  "${python_bin}" - "$extract_dir" "$helper_name" <<'PY'
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-helper = sys.argv[2]
-names = []
-if helper == "nmrplot":
-    names = ["nmrplot.py", "nmrplot"]
-elif helper == "c2anmr":
-    names = ["c2anmr.py", "c2anmr"]
-else:
-    names = [helper]
-
-for name in names:
-    matches = sorted(root.rglob(name), key=lambda item: (len(item.parts), str(item)))
-    if matches:
-        print(matches[0])
-        break
-PY
+# The SHA-256 of a CENSO helper script (c2anmr, nmrplot) at a pinned
+# commit, from raw.githubusercontent.com on 2026-10-16; the git blob ids
+# of the downloads equal those in the commit's tree. The scripts are the
+# same files in v2.1.3 and v2.1.4.
+censo_helper_sha256() {
+  case "$1/$2" in
+    1a82c5ad5e0b46c17cbbc93ecd7890a3b8c8a1e3/c2anmr) printf '%s\n' f90e9e7a34056f6af4b9fae1e519919bae9f74923770cad8673950e8993e16a1 ;;
+    1a82c5ad5e0b46c17cbbc93ecd7890a3b8c8a1e3/nmrplot) printf '%s\n' 6368c3dc83646701ac0058a5da2026ab0ca7a789f5f612c913c2a4ee1ee551c9 ;;
+    db667bde403c916bd20e8a42544fa3b0bed8f7d7/c2anmr) printf '%s\n' fec66d2ce55143a95562d52b228b14f3f925719b7e45f03687876a6562f8a600 ;;
+    db667bde403c916bd20e8a42544fa3b0bed8f7d7/nmrplot) printf '%s\n' 6276ea3d112b8c8b3ecb7fa4a9e148b001087b6d7c0916d619c834bb960fd384 ;;
+    *) return 1 ;;
+  esac
 }
 
 install_censo_helper_wrappers_from_repo() {
@@ -340,45 +284,27 @@ install_censo_helper_wrappers_from_repo() {
   local helper_store=""
   local bin_dir=""
   local helper_name=""
-  local helper_source=""
   local helper_target=""
   local wrapper_target=""
-  local candidate_ref=""
+  local ref=""
+  local digest=""
   local found_any=0
   local found_c2anmr=0
   local found_nmrplot=0
-  local tmp_dir=""
-  local archive_path=""
-  local extract_dir=""
-  local repo_url=""
+  local refs=()
 
   helper_store="${ROOT}/share/censo_scripts"
   bin_dir="$(python_bin_dir "${python_bin}")"
   mkdir -p "${helper_store}" "${bin_dir}"
 
+  # The scripts of the pinned commit of the installed CENSO line first.
   censo_version="$("${python_bin}" -c "from importlib.metadata import version; print(version('censo'))" 2>/dev/null || true)"
-  for candidate_ref in "${censo_version:+v${censo_version}}" "v2.1.3" "main"; do
-    [ -n "${candidate_ref}" ] || continue
-    tmp_dir="$(mktemp -d)"
-    archive_path="${tmp_dir}/censo_repo.tar.gz"
-    extract_dir="${tmp_dir}/extract"
-    mkdir -p "${extract_dir}"
-    if [ "${candidate_ref}" = "main" ]; then
-      repo_url="https://codeload.github.com/grimme-lab/CENSO/tar.gz/refs/heads/main"
-    else
-      repo_url="https://codeload.github.com/grimme-lab/CENSO/tar.gz/refs/tags/${candidate_ref}"
-    fi
+  case "${censo_version}" in
+    2.*) refs=("${CENSO_V2_REF}" "${CENSO_V3_REF}") ;;
+    *)   refs=("${CENSO_V3_REF}" "${CENSO_V2_REF}") ;;
+  esac
 
-    log "downloading CENSO helper scripts from ${repo_url}..."
-    if ! download_to_file "${repo_url}" "${archive_path}" 2>&1 | tee -a "${LOG_DIR}/censo_install.log" >/dev/null; then
-      cleanup_tmp_dir "${tmp_dir}"
-      continue
-    fi
-    if ! extract_archive "${archive_path}" "${extract_dir}" 2>&1 | tee -a "${LOG_DIR}/censo_install.log" >/dev/null; then
-      cleanup_tmp_dir "${tmp_dir}"
-      continue
-    fi
-
+  for ref in "${refs[@]}"; do
     for helper_name in c2anmr nmrplot; do
       if [ "${helper_name}" = "c2anmr" ] && [ "${found_c2anmr}" = "1" ]; then
         continue
@@ -386,14 +312,17 @@ install_censo_helper_wrappers_from_repo() {
       if [ "${helper_name}" = "nmrplot" ] && [ "${found_nmrplot}" = "1" ]; then
         continue
       fi
-
-      helper_source="$(find_censo_helper_source "${extract_dir}" "${helper_name}")"
-      if [ -z "${helper_source}" ] || [ ! -f "${helper_source}" ]; then
+      if ! digest="$(censo_helper_sha256 "${ref}" "${helper_name}")"; then
+        warn "no SHA-256 is pinned for ${helper_name} at CENSO ${ref}; not downloaded"
         continue
       fi
 
       helper_target="${helper_store}/${helper_name}.py"
-      cp -f "${helper_source}" "${helper_target}"
+      log "downloading CENSO helper ${helper_name} at ${ref}..."
+      if ! fetch_verified "https://raw.githubusercontent.com/grimme-lab/CENSO/${ref}/src/censo/scripts/${helper_name}.py" \
+          "${helper_target}" "${digest}"; then
+        continue
+      fi
       chmod 755 "${helper_target}"
 
       wrapper_target="${bin_dir}/${helper_name}"
@@ -413,17 +342,16 @@ EOF
       found_any=1
     done
 
-    cleanup_tmp_dir "${tmp_dir}"
     if [ "${found_c2anmr}" = "1" ] && [ "${found_nmrplot}" = "1" ]; then
       break
     fi
   done
 
   if [ "${found_c2anmr}" != "1" ]; then
-    warn "Could not locate c2anmr in the downloaded CENSO sources"
+    warn "Could not install c2anmr from the pinned CENSO sources"
   fi
   if [ "${found_nmrplot}" != "1" ]; then
-    warn "Could not locate nmrplot in the downloaded CENSO sources"
+    warn "Could not install nmrplot from the pinned CENSO sources"
   fi
   [ "${found_any}" = "1" ]
 }
@@ -511,13 +439,8 @@ install_censo() {
 
   for ref in "${censo_ref}" "${compat_ref}"; do
     [ -n "${ref}" ] || continue
-    if [ "${ref}" = "main" ]; then
-      censo_git_url="git+https://github.com/grimme-lab/CENSO.git"
-      log "installing latest CENSO from GitHub main..."
-    else
-      censo_git_url="git+https://github.com/grimme-lab/CENSO.git@${ref}"
-      log "installing compatible CENSO fallback (${ref}) from GitHub..."
-    fi
+    censo_git_url="git+https://github.com/grimme-lab/CENSO.git@${ref}"
+    log "installing CENSO at commit ${ref} from GitHub..."
     if "${python_bin}" -m pip install --upgrade "${censo_git_url}" \
       2>&1 | tee -a "${LOG_DIR}/censo_install.log"; then
       install_ok=0
@@ -556,46 +479,23 @@ install_anmr() {
     return 0
   fi
 
-  local api_url release_selector bin_dir tmp_dir json_file archive_url archive_name archive_path extract_dir anmr_source
-  release_selector="${ENSO_ANMR_RELEASE_TAG:-latest}"
-  if [ "${release_selector}" = "latest" ]; then
-    api_url="https://api.github.com/repos/grimme-lab/enso/releases/latest"
-  else
-    api_url="https://api.github.com/repos/grimme-lab/enso/releases/tags/${release_selector}"
+  if [ -n "${ENSO_ANMR_RELEASE_TAG:-}" ]; then
+    warn "ENSO_ANMR_RELEASE_TAG is no longer read; name the file with ENSO_ANMR_URL and its digest with ENSO_ANMR_SHA256"
   fi
+
+  local bin_dir tmp_dir
   bin_dir="$(python_bin_dir "${python_bin}")"
   tmp_dir="$(mktemp -d)"
-  json_file="${tmp_dir}/enso_release.json"
-  archive_path="${tmp_dir}/enso_asset"
-  extract_dir="${tmp_dir}/extract"
-  mkdir -p "${extract_dir}"
 
-  log "querying ENSO release metadata for ANMR..."
-  download_to_file "${api_url}" "${json_file}" 2>&1 | tee -a "${LOG_DIR}/anmr_install.log" >/dev/null
-
-  archive_url="$(select_enso_release_asset "${python_bin}" "${json_file}")"
-
-  if [ -z "${archive_url}" ]; then
-    warn "Could not determine a Linux ENSO release asset for ANMR"
-    cleanup_tmp_dir "${tmp_dir}"
-    return 0
-  fi
-
-  archive_name="$(basename "${archive_url}")"
-  archive_path="${tmp_dir}/${archive_name}"
-  log "downloading ENSO asset ${archive_name}..."
-  download_to_file "${archive_url}" "${archive_path}" 2>&1 | tee -a "${LOG_DIR}/anmr_install.log" >/dev/null
-  extract_archive "${archive_path}" "${extract_dir}" 2>&1 | tee -a "${LOG_DIR}/anmr_install.log" >/dev/null
-
-  anmr_source="$(find_extracted_anmr "${extract_dir}")"
-  if [ -z "${anmr_source}" ] || [ ! -f "${anmr_source}" ]; then
-    warn "Downloaded ENSO asset did not contain an ANMR executable"
+  log "downloading ANMR from ${ENSO_ANMR_URL}..."
+  if ! fetch_verified "${ENSO_ANMR_URL}" "${tmp_dir}/anmr" "${ENSO_ANMR_SHA256}"; then
+    warn "ANMR was not installed"
     cleanup_tmp_dir "${tmp_dir}"
     return 0
   fi
 
   mkdir -p "${bin_dir}"
-  install -m 755 "${anmr_source}" "${bin_dir}/anmr"
+  install -m 755 "${tmp_dir}/anmr" "${bin_dir}/anmr"
   log "ANMR installed successfully to ${bin_dir}/anmr"
   cleanup_tmp_dir "${tmp_dir}"
 }
@@ -679,7 +579,21 @@ install_nglview() {
 
 # ---------------------------------------------------------------------------
 # micromamba wherever DELFIN or the user put it; fetched when there is none.
-MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
+# The shared micromamba fetcher (delfin/installers/fetch_micromamba.sh): one
+# pinned release per platform, held to its SHA-256. Beside this script when
+# the installer was staged into a tool directory, one level up in a checkout
+# or an installed package.
+micromamba_fetcher() {
+  local here candidate
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for candidate in "${here}/fetch_micromamba.sh" "${here}/../installers/fetch_micromamba.sh"; do
+    if [ -f "${candidate}" ]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 find_micromamba() {
   local candidate
@@ -691,15 +605,9 @@ find_micromamba() {
       return 0
     fi
   done
-  have curl || return 1
-  local work="${ROOT}/downloads/micromamba-$$"
-  mkdir -p "${work}" "${ROOT}/bin"
-  if ! curl -fsSL "${MICROMAMBA_URL}" | tar -xj -C "${work}" bin/micromamba 2>/dev/null; then
-    rm -rf "${work}"
-    return 1
-  fi
-  install -m 755 "${work}/bin/micromamba" "${ROOT}/bin/micromamba"
-  rm -rf "${work}"
+  local fetcher
+  fetcher="$(micromamba_fetcher)" || return 1
+  bash "${fetcher}" "${ROOT}/bin/micromamba" >&2 || return 1
   printf "%s\n" "${ROOT}/bin/micromamba"
 }
 

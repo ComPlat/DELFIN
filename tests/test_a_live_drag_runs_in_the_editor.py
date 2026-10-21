@@ -403,8 +403,41 @@ H -0.882 0.510 -1.163
 """
 
 
+@pytest.fixture
+def held_settle_timer(monkeypatch):
+    """The drive hand's settle debounce is armed but never fires by itself.
+
+    Each wheel notch arms a threading.Timer of _DRIVE_SETTLE_AFTER (0.4 s)
+    and the next notch cancels it. These tests send a notch, wait for its
+    answer, then send the next, and fire the settle themselves at the end.
+    When an answer takes longer than 0.4 s the timer of the notch before
+    fires first -- the wheel has been still for 0.4 s, so the editor is
+    right to settle -- and the test's own settle then has nothing left to
+    do. Measured 2026-10-16: with every steered answer made 0.5 s slower,
+    test_the_rest_reacts_fully_when_the_wheel_stops failed 3 of 3 ("rest
+    stood still", 0.0 A); on four CPUs with four busy processes on them,
+    10 of 10. So the timer is held: what is tested is what the settle does,
+    and when it fires is the editor's 0.4 s, which is not a property of a
+    machine.
+    """
+    import threading as _threading
+    import types
+
+    from delfin.dashboard import structure_editor
+
+    class _HeldTimer(_threading.Timer):
+        def start(self):            # armed, never run: the test fires it
+            return None
+
+    shim = types.SimpleNamespace(
+        **{name: getattr(_threading, name) for name in dir(_threading)
+           if not name.startswith('__')})
+    shim.Timer = _HeldTimer
+    monkeypatch.setattr(structure_editor, 'threading', shim)
+
+
 @_needs_xtb
-def test_the_rest_reacts_fully_when_the_wheel_stops():
+def test_the_rest_reacts_fully_when_the_wheel_stops(held_settle_timer):
     """Beim Anhalten fertig reagieren: a notch gives the rest only a few steered
     steps to keep up, so mid-scroll the coordinate races ahead of its relaxation
     and the structure is strained above the real path; when the wheel stops, the
@@ -463,7 +496,8 @@ def test_the_rest_reacts_fully_when_the_wheel_stops():
 
 
 @_needs_xtb
-def test_the_drive_settle_lands_a_realistic_trans_not_a_strained_top():
+def test_the_drive_settle_lands_a_realistic_trans_not_a_strained_top(
+        held_settle_timer):
     """The realism the drive hand is for: turning a cis double bond to trans on
     the wheel and, when it stops, being left with the real trans conformer --
     planar and at or below cis -- not the strained half-twisted top the few

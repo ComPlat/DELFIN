@@ -246,7 +246,7 @@ def _inline_images(document) -> Dict[str, str]:
         return images
     for rel_id, part in list(parts.items()):
         content_type = str(getattr(part, 'content_type', '') or '')
-        if not content_type.startswith('image/'):
+        if not _IMAGE_TYPE_RE.match(content_type):
             continue
         try:
             blob = part.blob
@@ -269,6 +269,9 @@ def is_editable(document: DocxDocument) -> bool:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
+
+_IMAGE_TYPE_RE = re.compile(r'^image/[A-Za-z0-9.+-]+$')
+
 
 def _run_html(runs, fallback: str) -> str:
     """The paragraph's text, with the emphasis it carries.

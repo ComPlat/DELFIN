@@ -41,8 +41,8 @@ def test_contained_run_accepts_a_budget_profile(monkeypatch):
     """A breach through contained_run.run(budget_profile=...) surfaces in
     stderr — the call path hooks and tests actually use."""
     _shrink_profiles(monkeypatch, "hook", 4)
-    proc = contained_run.run(
-        _fanout(12), shell=True, timeout=30,
+    proc = contained_run.run_shell(
+        _fanout(12), timeout=30,
         budget_profile="hook",
     )
     assert proc.returncode != 0
@@ -52,9 +52,9 @@ def test_contained_run_accepts_a_budget_profile(monkeypatch):
 def test_budget_false_still_means_no_guard():
     """The old callers (budget=False, no profile) get exactly what they
     had: no guard, so a fan-out command runs unmolested until timeout."""
-    proc = contained_run.run(
+    proc = contained_run.run_shell(
         "for i in $(seq 1 8); do sleep 3 & done; sleep 3",
-        shell=True, timeout=20)
+        timeout=20)
     # No budget ended it; every sleeper finished, so the shell exits 0.
     assert proc.returncode == 0
 
@@ -71,14 +71,14 @@ def _hook_config(tmp_path, command, event="PreToolUse"):
 
 def test_run_hooks_passes_the_hook_profile(monkeypatch):
     seen = {}
-    real_run = contained_run.run
+    real_run = contained_run.run_shell
 
     def spy_run(*args, **kw):
         seen.update(kw)
         return real_run(*args, **kw)
 
     import delfin.agent.hooks as H
-    monkeypatch.setattr("delfin.agent.contained_run.run", spy_run)
+    monkeypatch.setattr("delfin.agent.contained_run.run_shell", spy_run)
     cfg = _hook_config(None, "echo hi")
     H.run_hooks("PreToolUse", cfg, tool_name="bash",
                 arguments={"command": "true"})

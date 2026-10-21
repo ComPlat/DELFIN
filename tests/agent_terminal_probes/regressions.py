@@ -217,7 +217,7 @@ def build(box: sb.Sandbox) -> list[Probe]:
             # 2026-08-31. The whole reported turn, in one probe.
             name="shell_read_energies_are_evidence",
             prompts=[
-                f"In {far} liegen Ordner mit Jeneesh im Namen. Bitte lies "
+                f"In {far} liegen Ordner mit TADFs im Namen. Bitte lies "
                 "aus jedem ESD/S1.out und ESD/T1.out die letzte FINAL "
                 "SINGLE POINT ENERGY und gib mir ΔEST = E(S1) - E(T1) in "
                 "Hartree und eV. Nur lesen, nichts schreiben."],
@@ -236,7 +236,7 @@ def build(box: sb.Sandbox) -> list[Probe]:
             # confused by nine folders".
             name="one_shell_read_grounds_its_citation",
             prompts=[
-                f"Lies {far}/TADFs-Jeneesh_3/ESD/S1.out und T1.out und "
+                f"Lies {far}/TADFs-set_3/ESD/S1.out und T1.out und "
                 "nenne mir ΔEST in Hartree und eV. Sag dazu, aus welchen "
                 "Dateien die Werte stammen."],
             check=no_guard_fired_on_shell_evidence,

@@ -1,0 +1,99 @@
+# Learning tasks: does a second run of the same task do better than the first?
+#
+# Design and decision rule: PREREG_W15.md. Each task is run in two arms,
+# `delfin-agent bench run --task <id> --repeats 5 --learning-home DIR`
+# twice with the same DIR and model; replicate k of the second arm reads the
+# state replicate k of the first arm left. benchmark.compare_learning pairs
+# the two run files and learning_metric.learning_verdict decides per task.
+#
+# Each setup plants material the first run has to find by tool calls and
+# that a memory or session from the first run makes cheaper to reach. Each
+# answer is a file in the task's fixture folder, judged by value by its
+# acceptance script.
+
+# --- Pair 1: remembering the exact path + unit saves read-and-guess calls ---
+- id: l5_read_the_value_from_file
+  task_class: office_read
+  mode: solo
+  prompt: >-
+    In l5_value_readings/ there is README.txt that names a reading file and
+    asks for a number. Read the folder as you normally would with your
+    reading tools, report the value with its unit, and write just the number
+    to l5_value_readings/level.txt. The value only exists in the file, so you
+    must actually read it to know it.
+  setup: l5_read_value_setup.py
+  verify: l5_read_value_verify.py
+  expected_signals:
+    - pattern: '(?i)(read_file|grep_file|list_files|bash)'
+      against: tool_name
+      optional: true
+  expected_values:
+    - label: water_level_m
+      value: 22.9
+      tolerance: 0.01
+      against: any
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15
+
+# --- Pair 2: an absent quantity is reported absent, not guessed as zero ---
+- id: l5_report_absent_quantity_as_absent
+  task_class: science_report
+  mode: solo
+  prompt: >-
+    l5_absent_catalog/ has catalog.txt and README.txt. The README asks for
+    the freeze_point of two entries listed in catalog.txt. Read the catalog
+    with your reading tools and report each entry's freeze_point with its
+    unit. If an entry has no freeze_point recorded, say so explicitly --
+    do not guess a number for it. Write the answer to
+    l5_absent_catalog/answer.txt, one line per entry: the entry letter, a
+    colon, then the answer.
+  setup: l5_absent_setup.py
+  verify: l5_absent_verify.py
+  expected_signals:
+    - pattern: '(?i)(read_file|grep_file|list_files|bash)'
+      against: tool_name
+      optional: true
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15
+
+# --- Pair 3: the allowed form after a refusal, so no denied retry ---
+- id: l5_refusal_is_followed_by_allowed_form
+  task_class: office_ops
+  mode: solo
+  prompt: >-
+    In l5_entry_cleanup/ there is a subfolder build_old whose files must be
+    moved aside, not deleted, before the winner step runs. Complete the task
+    in one go: README.txt in the folder says what to do and what the
+    forbidden shape is. Use the allowed command form; do not retry a refused
+    command.
+  setup: l5_refusal_setup.py
+  verify: l5_refusal_verify.py
+  expected_signals:
+    - pattern: '(?i)\b(mv|move|rename)'
+      against: any
+      optional: true
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15
+
+# --- Pair 4: a valid functional/basis pair, not several wrong guesses ---
+- id: l5_name_method_with_basis_pairing
+  task_class: science_method
+  mode: solo
+  prompt: >-
+    A colleague asks which density-functional/basis-set combination you would
+    run for a closed-shell molecule with only H, C, N and O, with no solvent
+    and no dispersion, in ORCA. Answer with ONE recommended combination --
+    the functional, the basis set, and the keyword line -- and name both.
+    Do not list every known pair. Write the choice to
+    l5_method_notes/choice.txt.
+  setup: l5_method_setup.py
+  verify: l5_method_verify.py
+  forbidden_signals:
+    - pattern: '(?i)(nactel|nactorb|perdew-callahan-31|gauss-99)'
+      against: text
+  max_duration_s: 120
+  max_cost_usd: 0.30
+  max_tool_calls: 10
