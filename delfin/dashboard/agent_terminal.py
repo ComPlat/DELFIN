@@ -1,6 +1,7 @@
-"""A dashboard terminal that runs the Claude Code CLI and nothing else.
+"""A dashboard terminal that runs one configured command-line program and
+nothing else -- a coding-agent CLI the user chose, beside the chat.
 
-Opt-in (``delfin-voila --claude-terminal``, loopback only). The stock
+Opt-in (``delfin-voila --agent-terminal COMMAND``, loopback only). The stock
 Jupyter terminal API cannot be restricted by configuration: ``POST
 /api/terminals`` passes its JSON body to ``new_terminal`` as keyword
 arguments, and ``new_terminal`` lets them override ``shell_command``,
@@ -12,19 +13,27 @@ with the server's environment minus the dashboard token.
 
 Inputs, from the launcher's environment (``cli_voila``):
 
-- ``DELFIN_CLAUDE_TERMINAL_ARGV``: JSON list, the command (absolute path
-  of ``claude`` first).
-- ``DELFIN_CLAUDE_TERMINAL_CWD``: the directory it starts in.
+- ``DELFIN_AGENT_TERMINAL_ARGV``: JSON list, the command (its absolute
+  path first).
+- ``DELFIN_AGENT_TERMINAL_CWD``: the directory it starts in.
+
+The command may not be a shell or an interpreter (:func:`refusal`), judged
+by the name the launcher resolved (symlinks followed): the point of the
+panel is one program, and a shell behind the dashboard token would be a
+general remote shell. Checked by the launcher and again by the manager.
+It guards against handing over a command line by mistake; a wrapper
+script the user wrote is the user's own program.
 
 Rejected alternative: ``ServerApp.terminado_settings.shell_command`` alone
 -- the default the body overrides (measured: see
-tests/test_a_claude_terminal_runs_only_claude.py).
+tests/test_the_agent_terminal_runs_only_its_command.py).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 try:
@@ -32,10 +41,23 @@ try:
 except ImportError:  # the tab imports this module; it must load without it
     TerminalManager = object  # type: ignore[assignment,misc]
 
-ARGV_ENV = "DELFIN_CLAUDE_TERMINAL_ARGV"
-CWD_ENV = "DELFIN_CLAUDE_TERMINAL_CWD"
-ENABLED_ENV = "DELFIN_CLAUDE_TERMINAL"
+ARGV_ENV = "DELFIN_AGENT_TERMINAL_ARGV"
+CWD_ENV = "DELFIN_AGENT_TERMINAL_CWD"
+ENABLED_ENV = "DELFIN_AGENT_TERMINAL"
 MAX_TERMINALS = 2
+
+#: Programs the panel never runs, by base name (a version suffix such as
+#: python3.11 counts as the name before it). A shell or an interpreter is
+#: a general command line, which is exactly what the dashboard keeps
+#: closed (``ServerApp.terminals_enabled=False`` without this panel).
+REFUSED_COMMANDS = frozenset({
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "csh", "tcsh",
+    "nu", "xonsh", "elvish", "pwsh", "powershell", "cmd",
+    "python", "pypy", "ipython", "perl", "ruby", "node", "deno", "bun",
+    "php", "lua", "tclsh", "irb", "R", "Rscript", "julia",
+    "env", "sudo", "su", "doas", "login", "nohup", "setsid", "xargs",
+    "screen", "tmux", "busybox", "script", "ssh", "telnet",
+})
 
 # Size fields the browser legitimately sends; everything else is dropped.
 _SIZE_KEYS = ("height", "width", "winheight", "winwidth")
@@ -44,15 +66,28 @@ _SIZE_KEYS = ("height", "width", "winheight", "winwidth")
 _DROP_ENV = ("JUPYTER_TOKEN", "JPY_API_TOKEN")
 
 
+def refusal(command: str) -> str:
+    """Why ``command`` may not run in the panel, or "" when it may."""
+    name = os.path.basename(str(command or "").strip())
+    if not name:
+        return "no command was given"
+    stem = re.sub(r"[\d.]+$", "", name) or name
+    if name in REFUSED_COMMANDS or stem in REFUSED_COMMANDS:
+        return (f"{name} is a shell or an interpreter; the panel runs one "
+                "program, never a general command line")
+    return ""
+
+
 def configured_argv() -> list[str]:
-    """The command from the launcher, or [] when absent or malformed."""
+    """The command from the launcher, or [] when absent, malformed or
+    refused."""
     try:
         argv = json.loads(os.environ.get(ARGV_ENV, "") or "[]")
     except ValueError:
         return []
     if (not isinstance(argv, list) or not argv
             or not all(isinstance(a, str) and a for a in argv)
-            or not os.path.isabs(argv[0])):
+            or not os.path.isabs(argv[0]) or refusal(argv[0])):
         return []
     return argv
 
@@ -62,7 +97,7 @@ def configured_cwd() -> str:
     return cwd if cwd and os.path.isdir(cwd) else os.path.expanduser("~")
 
 
-class ClaudeOnlyTerminalManager(TerminalManager):
+class OneCommandTerminalManager(TerminalManager):
     """Terminal manager whose terminals are always the configured CLI."""
 
     def __init__(self, **kwargs: Any) -> None:
@@ -73,8 +108,9 @@ class ClaudeOnlyTerminalManager(TerminalManager):
         argv = configured_argv()
         if not argv:
             raise RuntimeError(
-                f"{ARGV_ENV} is not set to an absolute command; the Claude "
-                "terminal stays off rather than fall back to a shell.")
+                f"{ARGV_ENV} is not set to an absolute, allowed command; "
+                "the agent terminal stays off rather than fall back to a "
+                "shell.")
         super().__init__(shell_command=argv, **kwargs)
         self._delfin_argv = argv
         self._delfin_cwd = configured_cwd()
@@ -130,15 +166,15 @@ XTERM_CSS_SRI = _pinned.XTERM_CSS.sri
 XTERM_FIT_JS = _pinned.XTERM_FIT_JS.url
 XTERM_FIT_SRI = _pinned.XTERM_FIT_JS.sri
 
-# Attaches every visible .delfin-claude-term to the server's terminal: the
+# Attaches every visible .delfin-agent-term to the server's terminal: the
 # running one if there is one (a reload or a second window continues the
 # same CLI session), else a new one. The server decides what runs; the page
 # sends nothing but keystrokes and the window size.
 _INIT_JS = r"""
 (function () {
-    if (window.__delfinClaudeTerm) return;
-    window.__delfinClaudeTerm = true;
-    var CFG = __DELFIN_CLAUDE_TERM_CFG__;
+    if (window.__delfinAgentTerm) return;
+    window.__delfinAgentTerm = true;
+    var CFG = __DELFIN_AGENT_TERM_CFG__;
     var loading = null;
 
     function addScript(url, sri) {
@@ -225,7 +261,7 @@ _INIT_JS = r"""
             return terminalName().then(function (name) { connect(el, name); });
         }).catch(function (e) {
             el.removeAttribute('data-ready');
-            el.textContent = 'The Claude terminal could not start: '
+            el.textContent = 'The agent terminal could not start: '
                 + (e && e.message ? e.message : 'xterm.js did not load');
         });
     }
@@ -255,7 +291,7 @@ _INIT_JS = r"""
         ws.onclose = function () {
             if (el.__ws !== ws) return;
             el.__ws = null;
-            term.write('\r\n\x1b[2m[Claude Code ended -- press Enter to '
+            term.write('\r\n\x1b[2m[The program ended -- press Enter to '
                        + 'start a new session]\x1b[0m\r\n');
             var sub = term.onData(function (d) {
                 if (d !== '\r') return;
@@ -267,7 +303,7 @@ _INIT_JS = r"""
     }
 
     function sweep() {
-        var els = document.querySelectorAll('.delfin-claude-term:not([data-ready])');
+        var els = document.querySelectorAll('.delfin-agent-term:not([data-ready])');
         for (var i = 0; i < els.length; i++) {
             if (els[i].offsetParent !== null) attach(els[i]);
         }
@@ -287,9 +323,9 @@ def init_js() -> str:
     cfg = {"js": XTERM_JS, "jsSri": XTERM_JS_SRI, "css": XTERM_CSS,
            "cssSri": XTERM_CSS_SRI, "fit": XTERM_FIT_JS,
            "fitSri": XTERM_FIT_SRI}
-    return _INIT_JS.replace("__DELFIN_CLAUDE_TERM_CFG__", json.dumps(cfg))
+    return _INIT_JS.replace("__DELFIN_AGENT_TERM_CFG__", json.dumps(cfg))
 
 
 def enabled() -> bool:
-    """True in a dashboard launched with --claude-terminal."""
+    """True in a dashboard launched with --agent-terminal."""
     return os.environ.get(ENABLED_ENV) == "1"
