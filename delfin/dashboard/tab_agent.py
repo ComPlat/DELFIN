@@ -78,6 +78,14 @@ _PLACEHOLDER_WIDTH = 96
 _PROMPT_MARKER = re.compile(r"^[ \t>*_-]*PROMPT:[ \t]*(\S.*?)[ \t]*$", re.M)
 
 
+def _unquote_shell_offer(text: str) -> str:
+    """Accept a copied inline-code shell escape, without interpreting prose."""
+    if (text.startswith("`!") and text.endswith("`")
+            and text.count("`") == 2 and "\n" not in text):
+        return text[1:-1].strip()
+    return text
+
+
 def proposed_prompt(text: str):
     """The message the agent marked as an offer, or None.
 
@@ -93,7 +101,8 @@ def proposed_prompt(text: str):
     except Exception:
         return None
     for line in reversed(found):
-        cleaned = " ".join(str(line).split())
+        candidate = _unquote_shell_offer(str(line).strip())
+        cleaned = candidate if candidate.startswith("!") else " ".join(candidate.split())
         if cleaned:
             return cleaned
     return None
@@ -18847,8 +18856,9 @@ def create_tab(ctx):
         # not a message to the model. Off the UI thread, because the gate
         # may ask the user and the command may take a while.
         from delfin.agent.repl_commands import SHELL_PREFIX as _SHELL_PREFIX
-        if user_text.startswith(_SHELL_PREFIX) and len(user_text) > 1:
-            _cmd = user_text[len(_SHELL_PREFIX):].strip()
+        _shell_text = _unquote_shell_offer(user_text)
+        if _shell_text.startswith(_SHELL_PREFIX) and len(_shell_text) > 1:
+            _cmd = _shell_text[len(_SHELL_PREFIX):].strip()
             input_textarea.value = ""
             _eng = state.get("engine")
 
