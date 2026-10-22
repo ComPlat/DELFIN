@@ -638,6 +638,12 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     # build-gate would reject anyway).  Env-gated default OFF.
                     if Q is not None and _has_collapsed_heavy_bonds(lsyms, Q):
                         Q = None
+                        if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                            from delfin.manta.converter_backend import _ff_trace_write as _tw
+                            _tw("[SEAT_COLLAPSE] dent=%d donors=%s targets=%s embed_r=%s"
+                                % (dent, [lsyms[d] for d in dons_d],
+                                   ["%.3f" % float(np.linalg.norm(t)) for t in targets],
+                                   ["%.3f" % float(np.linalg.norm(lP[int(d)])) for d in dons_d]))
                     # RIGID PLANAR tridentate (DELFIN_FFFREE_PLANAR_MER): the DG
                     # metallacycle embed yields chelating conformers (outer-outer ~150-
                     # 158deg) but a few carry a collapsed donor-backbone bond.  Reject
@@ -649,6 +655,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
                                              targets[0], targets[1], mol=lg["mol"])
+                    if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                        from delfin.manta.converter_backend import _ff_trace_write as _tw
+                        _tw("[SEAT_RIGID] ring_confs=%s result=%s collapsed=%s"
+                            % (ring_confs is not None, Q is not None,
+                               Q is not None and _has_collapsed_heavy_bonds(lsyms, Q)))
                 if Q is None:                       # tridentate embed failure -> skip this config
                     continue
             if not np.all(np.isfinite(Q)):
