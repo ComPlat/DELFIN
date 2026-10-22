@@ -218,6 +218,21 @@ def _cn4_opposite_geometry(geom_name: str) -> Optional[str]:
     return None
 
 
+def _cn5_both_enabled() -> bool:
+    """CN5 dual-geometry completeness on the chelate path: TBP-5 AND SPY-5 (default OFF ->
+    byte-identical when unset)."""
+    return os.environ.get("DELFIN_FFFREE_CN5_BOTH", "0") == "1"
+
+
+def _cn5_opposite_geometry(geom_name: str) -> Optional[str]:
+    """The Berry partner of a CN5 polyhedron (TBP-5 <-> SPY-5), or None."""
+    if geom_name == "TBP-5 trigonal bipyramid":
+        return "SPY-5 square pyramid"
+    if geom_name == "SPY-5 square pyramid":
+        return "TBP-5 trigonal bipyramid"
+    return None
+
+
 # antipodal vertex pairs per geometry (polya vertex ordering) — for universal
 # cis/trans/fac/mer classification from the coloring.  Iter-32d (User 2026-05-28
 # GUVZIH "fac koord fehlt"): extended to CN5 (TBP/SPY) + CN3 (T-shape).
@@ -2783,6 +2798,26 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                     os.write(2, ("[CN4_BOTH] default_chel=%d extra=%d total=%d geom=%s opp=%s\n"
                                  % (len(chel)-len(extra), len(extra), len(chel),
                                     d["geometry"], opp)).encode())
+        # CN5 dual-geometry completeness for chelates (DELFIN_FFFREE_CN5_BOTH, default OFF ->
+        # byte-identical).  The monodentate path adds SPY-5 next to the decompose default TBP-5
+        # (Berry partner, "CN5 polytopal completeness" below); the chelate path never did, so a
+        # CN5 chelate complex was built on ONE polyhedron only.  Measured 22.10.2026 on dev300:
+        # JOQBAU (Cu(II), N,N,N-tridentate + 2 Cl, crystal tau5 0.55) got two TBP frames
+        # (tau5 0.93) and nothing between; URUGOF (Ni, crystal tau5 0.29) three at 0.88.
+        # Same never-worse shape as CN4_BOTH: only on top of a non-empty default.
+        if (_cn5_both_enabled() and d.get("cn") == 5 and chel
+                and _cn5_opposite_geometry(d["geometry"]) is not None):
+            opp5 = _cn5_opposite_geometry(d["geometry"])
+            opp5_key = _GEOM_TO_POLYA.get(opp5)
+            if opp5_key is not None and opp5_key in PIC._GROUPS:
+                d_opp5 = dict(d)
+                d_opp5["geometry"] = opp5
+                try:
+                    extra5 = _fffree_chelate_isomers(d_opp5, opp5_key, max_isomers) or []
+                except Exception:
+                    extra5 = []
+                _ff_trace_write("[CN5_BOTH] default=%d extra=%d opp=%s" % (len(chel), len(extra5), opp5))
+                chel = chel + extra5
         _r = _coord_filter(chel or None)
         if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
             os.write(2, ("[CN4_BOTH] after _coord_filter: %d (was %d)\n"

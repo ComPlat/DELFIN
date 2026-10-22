@@ -38,3 +38,10 @@ def test_quinolinate_ring_embeds_at_the_target_radii(monkeypatch):
     monkeypatch.delenv(BV.EMBED_ENV)
     syms0, confs0 = _embed_metallacycle(lig, dons, "Zn", donor_target_pos=tp)
     assert len(confs0) >= 1          # switch off: the historic embed, whatever it returns
+
+
+def test_cn5_partner_geometry():
+    from delfin.manta.converter_backend import _cn5_opposite_geometry
+    assert _cn5_opposite_geometry("TBP-5 trigonal bipyramid") == "SPY-5 square pyramid"
+    assert _cn5_opposite_geometry("SPY-5 square pyramid") == "TBP-5 trigonal bipyramid"
+    assert _cn5_opposite_geometry("OC-6 octahedron") is None
