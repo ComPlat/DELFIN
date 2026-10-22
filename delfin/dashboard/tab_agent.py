@@ -4065,6 +4065,30 @@ def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
             "iso": iso}
 
 
+def _tool_param_html(parsed: dict, tool_input: str) -> str:
+    """The short description beside a tool's name in the chat.
+
+    The first meaningful argument (a path, a pattern, a query, ...); for a
+    plot spec, its file, kind and title. Without that rule, make_plot
+    showed its raw JSON -- a hundred characters of numbers. Falls back to
+    the start of the raw input, escaped.
+    """
+    spec = parsed.get("spec") if isinstance(parsed, dict) else None
+    if isinstance(spec, dict):
+        kind = str(spec.get("kind") or "plot")
+        name = str(spec.get("filename") or f"plot_{kind}")
+        title = str(spec.get("title") or "")
+        text = f"{name} ({kind})" + (f" \u2014 {title}" if title else "")
+        return f'<span class="tool-param">{_html.escape(text[:120])}</span>'
+    if isinstance(parsed, dict):
+        for key in ("file_path", "path", "pattern",
+                    "prompt", "description", "query", "command"):
+            if key in parsed:
+                val = str(parsed[key])[:80]
+                return f'<span class="tool-param">{_html.escape(val)}</span>'
+    return _html.escape(str(tool_input or "")[:100])
+
+
 def _show_molecule_card_html(tool_output) -> str | None:
     """The chat card for a ``show_molecule`` result, or None.
 
@@ -20182,18 +20206,9 @@ def create_tab(ctx):
                             _append_tool_message("\n".join(lines))
 
                     else:
-                        # Generic: show first meaningful param
-                        param = ""
-                        for key in ("file_path", "path", "pattern",
-                                    "prompt", "description", "query", "command"):
-                            if key in parsed:
-                                val = str(parsed[key])[:80]
-                                param = f'<span class="tool-param">{_e(val)}</span>'
-                                break
-                        if not param:
-                            param = _e(tool_input[:100])
                         _append_tool_message(
-                            f'<span class="tool-name">{_e(tool_name)}</span>  {param}'
+                            f'<span class="tool-name">{_e(tool_name)}</span>  '
+                            + _tool_param_html(parsed, tool_input)
                         )
 
                 def _emit_new_workspace_artifacts() -> None:
