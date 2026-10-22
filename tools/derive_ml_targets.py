@@ -205,6 +205,7 @@ def main(argv=None):
     p.add_argument("--rho", type=float, default=1.0)
     p.add_argument("--min-n", type=int, default=10)
     p.add_argument("--boot", type=int, default=200)
+    p.add_argument("--exclude", default="", help="drop records of these families/formulas (id;SMILES files)")
     p.add_argument("--spin", action="store_true",
                    help="label spin states (3d d4-d7, CN >= 5) and add per-spin rows and low-spin shares")
     a = ap.parse_args(argv)
@@ -221,6 +222,9 @@ def main(argv=None):
     else:
         recs = [json.loads(ln) for ln in open(a.records)]
         recs = [r for r in recs if r.get("st") == "ok"]
+        if a.exclude:
+            ex_roots, ex_forms = MD.load_exclusions(a.exclude.split(","))
+            recs = [r for r in recs if MD.root_of(r["id"]) not in ex_roots and r.get("formula") not in ex_forms]
         n0 = len(recs)
         if a.consensus is not None:
             recs = [r for r in recs if MD.consensus_ok(r, a.consensus)]
