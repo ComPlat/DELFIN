@@ -1600,6 +1600,34 @@ def reset_observed_numbers() -> None:
     _observed_complete.set(True)
 
 
+def evidence_state() -> tuple:
+    """This context's evidence: (number pool, completeness, keyed values).
+
+    The pool and the keyed values are returned by reference, so a later
+    record in the same turn is part of the value already handed out.
+    Used to carry a request's evidence into a turn the harness starts
+    (a job wake-up), which runs on its own thread and therefore in a
+    context whose variables start empty. Never raises.
+    """
+    try:
+        return (_observed_numbers.get(), bool(_observed_complete.get()),
+                _keyed_values.get())
+    except Exception:
+        return (None, True, None)
+
+
+def restore_evidence(state: tuple) -> None:
+    """Install an ``evidence_state()`` value in this context. Never raises."""
+    try:
+        pool, complete, keyed = state
+        _observed_numbers.set(pool)
+        _observed_complete.set(bool(complete))
+        _keyed_values.set(keyed)
+    except Exception:
+        reset_observed_numbers()
+        reset_keyed_values()
+
+
 def record_tool_numbers(output: Any, *, truncated: bool = False) -> int:
     """Take the numbers out of one tool result. Never raises.
 
