@@ -15,9 +15,11 @@ import ipaddress
 import os
 import socket
 import shutil
+import stat
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -557,15 +559,111 @@ def _kernel_transport_args() -> list:
     except Exception:
         limit = 0
     limit = limit or (103 if sys.platform == "darwin" else 107)
-    longest = len(os.fsencode(runtime)) + len("/kernel-") + 36 + len("-ipc-") + 5
-    if longest > limit:
+
+    def fits(path: str) -> bool:
+        longest = (len(os.fsencode(path)) + len("/kernel-") + 36
+                   + len("-ipc-") + 5)
+        return longest <= limit
+
+    if fits(runtime) and _is_private_dir(runtime):
+        return ["--KernelManager.transport=ipc"]
+    moved = _private_runtime_dir(fits)
+    if moved is None:
         print(f"Note: kernels talk over loopback TCP, which other users of "
-              f"this machine can reach: the socket path under {runtime} "
-              f"would be {longest} bytes, more than the {limit} a Unix "
-              "socket allows. Set JUPYTER_RUNTIME_DIR to a short private "
-              "directory (mode 0700) to keep them private.", file=sys.stderr)
+              f"this machine can reach: {runtime} is too long for a Unix "
+              "socket or readable by others, and neither $XDG_RUNTIME_DIR "
+              "nor /tmp gave a private directory. Set JUPYTER_RUNTIME_DIR "
+              "to a short private directory (mode 0700) to keep them "
+              "private.", file=sys.stderr)
         return []
+    # Read by the server, which is started with this process's
+    # environment (main() copies it into the server's env).
+    os.environ["JUPYTER_RUNTIME_DIR"] = moved
+    print(f"Kernels use private sockets under {moved} (the default "
+          f"runtime directory is too long for a socket or not private).",
+          file=sys.stderr)
     return ["--KernelManager.transport=ipc"]
+
+
+def _is_private_dir(path: str) -> bool:
+    """A directory, not a symlink, owned by this user, no group or other
+    permissions: where connection files (the kernels' keys) and sockets
+    may live."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+            and not st.st_mode & 0o077)
+
+
+#: Where the fixed and the one-off runtime directories are made: short on
+#: every Unix, unlike $TMPDIR on macOS (/var/folders/...).
+_TMP_ROOT = "/tmp"
+
+
+def _private_runtime_dir(fits) -> str | None:
+    """A short private directory for the kernels' connection files and
+    sockets, or None.
+
+    In order:
+    - ``$XDG_RUNTIME_DIR/delfin-jupyter`` when ``$XDG_RUNTIME_DIR`` is this
+      user's private directory (on Linux a tmpfs per login, mode 0700);
+    - ``/tmp/delfin-k-<uid>``, made 0700 by this user. It is the same
+      directory on every start, which the login store in it needs: a
+      restart keeps the logins (a fresh directory per start ended them);
+    - a new directory from ``mkdtemp`` under /tmp, made 0700 with a name
+      nobody can take first, removed when this process exits; only when
+      the fixed name exists and is not this user's private directory.
+    Every candidate is checked after it exists: a symlink, another owner
+    or open permissions is refused, not repaired.
+
+    The rules are the established ones for a per-user socket directory:
+    the XDG Base Directory Specification's runtime directory (owned by the
+    user, mode 0700), and in a shared /tmp the pattern tmux and ssh-agent
+    use (a fixed per-user name, accepted only when it is the user's own
+    0700 directory and not a symlink; CWE-377/CWE-379). /tmp itself must
+    carry the sticky bit or belong to the user: without it, any user
+    could rename or replace a directory in it, so neither the fixed name
+    nor a mkdtemp directory is used there.
+    """
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg and _is_private_dir(xdg):
+        candidate = os.path.join(xdg, "delfin-jupyter")
+        try:
+            os.mkdir(candidate, 0o700)
+        except FileExistsError:
+            pass
+        except OSError:
+            candidate = ""
+        if candidate and _is_private_dir(candidate) and fits(candidate):
+            return candidate
+    base = _TMP_ROOT if os.path.isdir(_TMP_ROOT) else tempfile.gettempdir()
+    try:
+        bst = os.lstat(base)
+    except OSError:
+        return None
+    if not (stat.S_ISDIR(bst.st_mode)
+            and (bst.st_mode & stat.S_ISVTX or bst.st_uid == os.getuid())):
+        return None
+    fixed = os.path.join(base, f"delfin-k-{os.getuid()}")
+    try:
+        os.mkdir(fixed, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        fixed = ""
+    if fixed and _is_private_dir(fixed) and fits(fixed):
+        return fixed
+    try:
+        made = tempfile.mkdtemp(prefix="delfin-k-", dir=base)
+    except OSError:
+        return None
+    if not (_is_private_dir(made) and fits(made)):
+        shutil.rmtree(made, ignore_errors=True)
+        return None
+    atexit.register(shutil.rmtree, made, True)
+    return made
 
 
 def _file_allowlist() -> str:
@@ -1383,6 +1481,11 @@ def main(argv=None):
     # daemons watch it, and what runs detached is on its ledger.
     from delfin.agent import lifeline as _lifeline
     env.update(_lifeline.claim_root())
+    # The private runtime directory _kernel_transport_args chose, when the
+    # default one was too long for a socket or not private: env was copied
+    # from os.environ before the choice was made.
+    if os.environ.get("JUPYTER_RUNTIME_DIR"):
+        env["JUPYTER_RUNTIME_DIR"] = os.environ["JUPYTER_RUNTIME_DIR"]
     proc = subprocess.Popen(
         cmd, env=env, stderr=subprocess.PIPE,
         preexec_fn=_lifeline.parent_death_signal if os.name == "posix" else None,

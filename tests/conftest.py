@@ -333,7 +333,33 @@ def child_env(tmp_path) -> dict:
     # login keychain): keyring's own override selects its null backend,
     # which DELFIN refuses as a store.
     env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+    # Jupyter's runtime directory (kernel keys, sockets, the dashboard's
+    # login store) does not follow HOME when JUPYTER_RUNTIME_DIR is set,
+    # and under a pytest HOME it is too long for a socket, so the launcher
+    # moves it to $XDG_RUNTIME_DIR or to the user's real
+    # /tmp/delfin-k-<uid> (measured 2026-10-22: two server tests left
+    # login stores there). A short private one of the child's own:
+    env.pop("JUPYTER_RUNTIME_DIR", None)
+    env["XDG_RUNTIME_DIR"] = _child_runtime_dir()
     return env
+
+
+#: Runtime directories handed to children, removed when the session ends.
+_CHILD_RUNTIMES: list = []
+
+
+def _child_runtime_dir() -> str:
+    import atexit
+    import os
+    import shutil
+    import tempfile
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    made = tempfile.mkdtemp(prefix="dx", dir=root)       # 0700, ours
+    if not _CHILD_RUNTIMES:
+        atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True)
+                                 for d in _CHILD_RUNTIMES])
+    _CHILD_RUNTIMES.append(made)
+    return made
 
 
 @pytest.fixture(scope="session", autouse=True)
