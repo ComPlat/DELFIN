@@ -117,6 +117,52 @@ from delfin.manta.uff_constraints import (
 logger = get_logger("delfin.smiles_converter")
 
 
+def _legconf_trace(tag: str, xyz, mol, extra: str = "") -> None:
+    """DELFIN_LEGCONF_TRACE=1 (default off, output only): the worst ligand bond of one legacy topology
+    frame at one stage of the pipeline (template conformer, pre-UFF placement, raw UFF, flattened,
+    kept).  Reads the SMILES graph (``mol``) -- bond ratio = distance / (rcov_i + rcov_j) over every
+    non-metal bond, the longest X-H, and the count of bonds below 0.85 x rcov or X-H above 1.20 A.
+    ``xyz`` is a DELFIN xyz string (atom order of ``mol``) or an RDKit conformer."""
+    if os.environ.get("DELFIN_LEGCONF_TRACE", "0") != "1":
+        return
+    try:
+        from rdkit import Chem as _lc_Chem
+        _pt = _lc_Chem.GetPeriodicTable()
+        if hasattr(xyz, "GetAtomPosition"):
+            P = [tuple(xyz.GetAtomPosition(i)) for i in range(mol.GetNumAtoms())]
+        else:
+            P = []
+            for _ln in str(xyz).strip().splitlines():
+                _p = _ln.split()
+                if len(_p) >= 4:
+                    P.append((float(_p[1]), float(_p[2]), float(_p[3])))
+        if len(P) != mol.GetNumAtoms():
+            os.write(2, ("[LEGCONF] %s natoms-mismatch %d/%d %s\n"
+                         % (tag, len(P), mol.GetNumAtoms(), extra)).encode())
+            return
+        worst, wtxt, xh, xtxt, n_short, n_xh = 9.0, "-", 0.0, "-", 0, 0
+        for b in mol.GetBonds():
+            a1, a2 = b.GetBeginAtom(), b.GetEndAtom()
+            s1, s2 = a1.GetSymbol(), a2.GetSymbol()
+            if s1 in _METAL_SET or s2 in _METAL_SET:
+                continue
+            i, j = a1.GetIdx(), a2.GetIdx()
+            d = math.dist(P[i], P[j])
+            if s1 == "H" or s2 == "H":
+                if d > xh:
+                    xh, xtxt = d, "%s%d-%s%d" % (s1, i, s2, j)
+                n_xh += int(d > 1.20)
+                continue
+            r = d / max(1e-6, _pt.GetRcovalent(a1.GetAtomicNum()) + _pt.GetRcovalent(a2.GetAtomicNum()))
+            n_short += int(r < 0.85)
+            if r < worst:
+                worst, wtxt = r, "%s%d-%s%d:%.3f" % (s1, i, s2, j, d)
+        os.write(2, ("[LEGCONF] %s bond %s r=%.2f nshort=%d xh %s %.2f nxh=%d %s\n"
+                     % (tag, wtxt, worst, n_short, xtxt, xh, n_xh, extra)).encode())
+    except Exception as _lc_exc:
+        os.write(2, ("[LEGCONF] %s trace-failed %s\n" % (tag, str(_lc_exc)[:60])).encode())
+
+
 def _verify_topology_from_graph(
     xyz_delfin: str,
     mol_template,
@@ -2163,6 +2209,14 @@ def _generate_topological_isomers(
                     _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
                     _conf_idx = _variant_counter[_key] - 1
                     _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
+                    if os.environ.get("DELFIN_LEGCONF_TRACE", "0") == "1":
+                        _lc_x = "b%d %s tc=%s ci=%d" % (len(_pre_uff_batch) - 1,
+                                                        _label_from_canonical_form(cf) or gn, _tc, _conf_idx)
+                        try:
+                            _legconf_trace("TPL", mol.GetConformer(int(_tc)), mol, _lc_x)
+                        except Exception:
+                            pass
+                        _legconf_trace("PRE", xyz0, mol, _lc_x)
                     # ADDITIVE d8 SP-4 (DELFIN_FFFREE_D8_SQ_ADD, default off -> byte-identical).  ONE
                     # self-contained axis: the PRIMARY frame above is the NORMAL (tetrahedral) build, and a
                     # UFF-SP-4 square is added as a PURELY ADDITIVE sibling from the SAME seed (force_d8_sq,
@@ -2389,6 +2443,7 @@ def _generate_topological_isomers(
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
+                _legconf_trace("UFF", xyz_opt, mol, "b%d" % idx)
                 _tr_mcx(xyz_opt, "BATCH_POST_UFF")
                 # Post-UFF polish: project sp2 3-coordinate atoms onto
                 # their neighbours' plane to remove residual
@@ -2398,7 +2453,10 @@ def _generate_topological_isomers(
                 _tr_mcx(xyz_opt, "BATCH_POST_FLATTEN")
                 # Conservative UFF: if UFF broke topology, keep pre-UFF.
                 if not _verify_topology_from_graph(xyz_opt, mol):
+                    _legconf_trace("FLAT", xyz_opt, mol, "b%d topology-broken -> keep PRE" % idx)
                     xyz_opt = xyz_pre
+                else:
+                    _legconf_trace("FLAT", xyz_opt, mol, "b%d" % idx)
                 _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr, _ci)
 
         # Post-UFF: graph-based topology check (replaces the 5 legacy
@@ -2487,6 +2545,7 @@ def _generate_topological_isomers(
                 # so the downstream label-collapse keeps every pucker.
                 if _cidx and _cidx > 0:
                     lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
+                _legconf_trace("EMIT", xyz, mol, "b%d %s" % (_batch_i, lbl))
                 results.append((xyz, lbl))
                 if not _is_pref_extra:
                     # record the BASE (non-recovery) fingerprint so a later recovery that collapses onto
