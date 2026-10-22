@@ -4021,6 +4021,10 @@ def _show_molecule_card_html(tool_output) -> str | None:
     if payload is None:
         return None
     name_html = _html.escape(payload["title"])
+    if payload.get("view") == "2d":
+        card = _formula_card_html(Path(payload["path"]), name_html)
+        if card is not None:
+            return card
     card = _mol3d_card_html(Path(payload["path"]), name_html,
                             isovalue=payload.get("isovalue"))
     if card is not None:
@@ -4035,6 +4039,62 @@ def _show_molecule_card_html(tool_output) -> str | None:
         '<div style="font-size:12px;color:#1f2937;font-family:monospace;'
         f'white-space:pre-wrap;overflow-wrap:anywhere;">'
         f'{_html.escape(payload["text"])}</div></div>'
+    )
+
+
+def _sum_formula_html(formula: str) -> str:
+    """``C4H10`` as ``C<sub>4</sub>H<sub>10</sub>``; charges stay as written."""
+    import re as _re_f
+    return _re_f.sub(r"(?<=[A-Za-z)])(\d+)", r"<sub>\1</sub>",
+                     _html.escape(formula))
+
+
+def _formula_card_html(path: Path, name_html: str) -> str | None:
+    """A structural formula card for a .smi/.mol/.sdf file, or None.
+
+    Input: a path the executor admitted (show_molecule). Output: the
+    formula drawn by RDKit as an SVG, embedded as an image -- a data URI
+    in an ``<img>``, so nothing in it runs as page markup -- with the sum
+    formula and the canonical SMILES under it. Terminal methyl groups are
+    written out (CH3) so a short chain still reads as a formula. None
+    when the file cannot be parsed; the caller then shows the text card.
+    """
+    from delfin.dashboard import chat_viewer
+    try:
+        mol, smiles, formula = chat_viewer.read_formula(str(path))
+        from rdkit.Chem import AllChem
+        from rdkit.Chem.Draw import rdMolDraw2D
+        mol = AllChem.Mol(mol)
+        AllChem.Compute2DCoords(mol)
+        drawer = rdMolDraw2D.MolDraw2DSVG(560, 300)
+        opts = drawer.drawOptions()
+        opts.explicitMethyl = True
+        opts.bondLineWidth = 3
+        opts.minFontSize = 22
+        opts.padding = 0.12
+        opts.clearBackground = True
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+    except Exception:
+        return None
+    import base64 as _b64
+    data = _b64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        '<div class="delfin-artifact delfin-formula-card" style="margin:6px 0;'
+        'padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;'
+        'background:#fff;">'
+        '<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">'
+        f'\U0001F9EA <code>{name_html}</code> '
+        '<span style="color:#9ca3af;">(structural formula)</span></div>'
+        f'<img src="data:image/svg+xml;base64,{data}" alt="{name_html}" '
+        'style="display:block;margin:0 auto;width:min(560px,100%);'
+        'height:auto;"/>'
+        '<div style="text-align:center;margin-top:6px;font-size:15px;'
+        f'color:#111827;">{_sum_formula_html(formula)}'
+        '<span style="margin-left:12px;font-size:12px;color:#6b7280;'
+        f'font-family:monospace;">{_html.escape(smiles)}</span></div>'
+        '</div>'
     )
 
 

@@ -10789,9 +10789,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show an .xyz (multi-frame too) or .cube file as a rotatable "
-                "3D viewer in the chat; isovalue is the cube's isosurface "
-                "(default 0.02)."
+                "Show a molecule in the chat: an .xyz (multi-frame too) or "
+                ".cube file as a rotatable 3D viewer (isovalue is the cube's "
+                "isosurface, default 0.02); a .smi, .mol or .sdf file as its "
+                "2D structural formula."
             ),
             "parameters": {
                 "type": "object",
