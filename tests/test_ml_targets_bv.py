@@ -194,3 +194,18 @@ def test_the_ligand_field_rule_for_unimodal_cases():
     assert BV.spin_by_rule("Co", 2, [("N", "pil")] * 6) == "hs"
     assert BV.spin_candidate("Fe", 2, 6) and not BV.spin_candidate("Fe", 2, 4)
     assert not BV.spin_candidate("Ni", 2, 6) and not BV.spin_candidate("Ru", 2, 6)
+
+
+def test_pins_scope_answers_pins_but_not_checks(tmp_path, monkeypatch):
+    path = _write_bv_table(tmp_path, [("D", "Pt", 2, 4, "N", "t3l", 99, 2.051)])
+    before = MT._get_ml_bond_length("Pt", "N")
+    monkeypatch.setenv(BV.FLAG, "1")
+    monkeypatch.setenv(BV.TABLE_ENV, path)
+    monkeypatch.setenv(BV.SCOPE_ENV, "pins")
+    BV.set_context(CISPLATIN)
+    assert MT._get_ml_bond_length("Pt", "N") == before             # a check: historic value
+    assert MT._pin_ml_bond_length("Pt", "N") == pytest.approx(2.051)  # a pin: the target
+    nh3 = Chem.AddHs(Chem.MolFromSmiles("N"))
+    assert PH.md_distance("Pt", "N", atom=nh3.GetAtomWithIdx(0), mol=nh3) == pytest.approx(2.051)
+    monkeypatch.delenv(BV.FLAG)
+    assert MT._pin_ml_bond_length("Pt", "N") == before

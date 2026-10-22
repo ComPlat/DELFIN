@@ -69,7 +69,10 @@ LITERATURE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE"
 # Where the targets act: "all" (default) = every caller; "seat" = only the FF-free seating of a
 # donor (polyhedra.md_distance with the donor atom), so gate tolerances, legacy pins and every
 # per-element question keep their historic value -- separates a better seat from a moved gate.
+# "pins" = the seating plus the legacy UFF pins and pre-UFF snaps (ml_tables._pin_ml_bond_length); every
+# other per-element question (topology checks, tolerance windows, clash limits) keeps its historic value.
 SCOPE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE"
+_PIN_DEPTH = [0]           # > 0 while a pin or snap asks for its target length
 HISTORIC_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_HISTORIC"
 LEVELS_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LEVELS"
 ALL_LEVELS = ("N", "D", "R", "Re", "Ro", "Roe")
@@ -541,8 +544,10 @@ def target_for_donor(metal: str, donor: str, atom=None) -> Optional[float]:
     ctx = _CTX
     if ctx is None or not bv_targets_enabled() or metal != ctx["metal"]:
         return None
-    if atom is None and os.environ.get(SCOPE_ENV, "all") == "seat":
-        return None
+    if atom is None:
+        scope = os.environ.get(SCOPE_ENV, "all")
+        if scope == "seat" or (scope == "pins" and _PIN_DEPTH[0] <= 0):
+            return None
     if atom is not None:
         try:
             if atom.GetSymbol() == donor:

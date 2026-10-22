@@ -1426,3 +1426,18 @@ def _is_metal_nitrogen_complex(smiles: str) -> bool:
     )
 
     return has_metal and has_coord_n
+
+
+def _pin_ml_bond_length(metal_symbol: str, donor_symbol: str, kind: str = "sigma") -> float:
+    """The length a legacy UFF pin or a pre-UFF snap places a donor at.
+
+    Identical to _get_ml_bond_length; it only tells the bond-valence targets that this question
+    comes from a placement, so that DELFIN_FFFREE_ML_TARGETS_BV_SCOPE=pins answers it while the
+    topology checks and tolerance windows keep their historic per-element value.
+    """
+    from delfin.manta import _ml_targets_bv as _bvt
+    _bvt._PIN_DEPTH[0] += 1
+    try:
+        return _get_ml_bond_length(metal_symbol, donor_symbol, kind)
+    finally:
+        _bvt._PIN_DEPTH[0] -= 1
