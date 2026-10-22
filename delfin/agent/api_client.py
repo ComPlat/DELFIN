@@ -7734,6 +7734,17 @@ def _artifact_path_inside(base: str, perms) -> str:
         return ""
 
 
+def _is_honoured_dry_run(name: str, arguments) -> bool:
+    """True when ``check_only`` on this call is a dry run its executor runs.
+
+    Only the native ``apply_patch`` has one (``git apply --check``). On any
+    other tool, and on every MCP tool, the flag is an argument the executor
+    may ignore -- an MCP server drops a key its schema does not name and
+    performs the call -- so it decides nothing.
+    """
+    return name == "apply_patch" and bool((arguments or {}).get("check_only"))
+
+
 def _bare_tool_name(name: str) -> str:
     """A namespaced ``mcp__server__tool`` reduced to its tool name.
 
@@ -17228,7 +17239,7 @@ class _DocToolExecutor:
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
-                and not bool((arguments or {}).get("check_only"))):
+                and not _is_honoured_dry_run(name, arguments)):
             # Plan mode, deny-by-default. One gate covering everything the
             # per-family refusals had not been remembered into -- future
             # agent turns, worktrees that widen the live permissions,
@@ -17238,7 +17249,8 @@ class _DocToolExecutor:
             # It sits AFTER the role check on purpose: a role that can
             # NEVER use a tool should be told that, not told it is merely
             # the wrong mode. The more permanent reason is more useful.
-            # A check_only call is a dry run and stays allowed.
+            # A check_only call stays allowed where the executor performs
+            # the dry run (_is_honoured_dry_run).
             _record_gate_refusal("plan_mode", name, "")
             result = json.dumps({"error": _plan_mode_refusal(
                 _bare_tool_name(name))})
@@ -22724,8 +22736,7 @@ class _DocToolExecutor:
         # parse_orca_output, which is the investigation plan mode is for.
         if perms is not None and getattr(perms, "mode", "") == "plan":
             if (_bare_tool_name(name) not in _PLAN_READONLY_MCP_TOOLS
-                    and not _plan_mode_admits_for_delegate(name, perms)
-                    and not bool((args or {}).get("check_only"))):
+                    and not _plan_mode_admits_for_delegate(name, perms)):
                 _record_security_event("plan_mode_mcp", name, "", blocked=True)
                 # Same wording as the native gate, for the same reason:
                 # the check is a name against a list and the message may
@@ -22869,11 +22880,6 @@ class _DocToolExecutor:
         bypassPermissions through because that profile's promise is that it
         asks nothing.
         """
-        # A dry run changes nothing, so there is nothing to decide — the
-        # same exemption the plan-mode and native checks make.
-        if bool((args or {}).get("check_only")):
-            return None
-
         executes_code = base in _MCP_CODE_EXEC_TOOL_BASES
 
         # Arguments a code-writing tool cannot be allowed to carry, checked
