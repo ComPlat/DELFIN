@@ -580,6 +580,28 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         or os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1"))
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
                                                     rigid=_rigid_seat, lsyms=lsyms)
+                    if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                        try:
+                            from delfin.manta.converter_backend import _ff_trace_write as _tw
+                            _ptb = Chem.GetPeriodicTable()
+
+                            def _worst_bond(X):
+                                w = (9.0, "")
+                                for _b in lg["mol"].GetBonds():
+                                    _i, _j = _b.GetBeginAtomIdx(), _b.GetEndAtomIdx()
+                                    _r = float(np.linalg.norm(X[_i] - X[_j])) / (
+                                        _ptb.GetRcovalent(lsyms[_i]) + _ptb.GetRcovalent(lsyms[_j]))
+                                    if _r < w[0]:
+                                        w = (_r, "%s%d-%s%d" % (lsyms[_i], _i, lsyms[_j], _j))
+                                return w
+                            _wl, _wq = _worst_bond(lP), (_worst_bond(Q) if Q is not None else (0, "-"))
+                            _tw("[SEAT] dent=%d donors=%s targets=%s embed_r=%s worst_bond embed %.2f %s seated %.2f %s"
+                                % (dent, [lsyms[d] for d in dons_d],
+                                   ["%.3f" % float(np.linalg.norm(t)) for t in targets],
+                                   ["%.3f" % float(np.linalg.norm(lP[int(d)])) for d in dons_d],
+                                   _wl[0], _wl[1], _wq[0], _wq[1]))
+                        except Exception as _e:
+                            _tw("[SEAT] trace failed %r" % (_e,))
                     # THE LEFTOVER ROTATION, SET BY THE LONE PAIRS INSTEAD OF BY THE SVD.
                     # Seating two donors onto two vertices leaves exactly one rotational
                     # freedom -- about the donor-donor axis -- and the Kabsch fit cannot see
