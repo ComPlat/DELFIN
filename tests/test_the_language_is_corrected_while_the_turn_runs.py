@@ -163,15 +163,23 @@ def test_the_first_message_sets_the_language():
     assert "SESSION LANGUAGE: English" in engine._session_language_block()
 
 
-def test_a_later_message_in_another_language_does_not_move_it():
-    """That is the whole point of a SESSION language: a run does not drift
-    halfway through because one message came in differently."""
+def test_a_later_message_from_the_user_moves_it_a_system_turn_does_not():
+    """Until 2026-10-22 a later message did not move the session language;
+    the user then decided that the answer follows their latest message
+    that says one (tests/test_the_session_language_follows_the_user.py).
+    What still cannot move it is a turn the system starts, so a run does
+    not drift while nobody types."""
+    from delfin.agent.harness_rows import HarnessText
     engine = _fresh()
     engine._note_session_language(ASKED_EN)
     engine._note_session_language(
         "Und jetzt bitte auf Deutsch weitermachen, das ist die zweite "
-        "Nachricht in dieser Sitzung und sie soll nichts umstellen.")
-    assert engine._session_language == "en"
+        "Nachricht in dieser Sitzung.")
+    assert engine._session_language == "de"
+    engine._note_session_language(HarnessText(
+        "A job you were watching has finished and the result is in the "
+        "output file of the run that you started before."))
+    assert engine._session_language == "de"
 
 
 def test_german_first_means_a_german_session():
