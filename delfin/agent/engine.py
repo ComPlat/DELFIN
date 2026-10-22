@@ -3870,8 +3870,10 @@ class AgentEngine:
                     # rather than against the fact that something ran.
                     try:
                         from . import verify_guard as _vg_numbers
+                        # What the model was given, not the UI preview.
+                        _seen = str(getattr(event, "seen_text", "") or _out)
                         _vg_numbers.record_tool_numbers(
-                            _out,
+                            _seen,
                             truncated=bool(
                                 getattr(event, "output_truncated", False)))
                         # The same numbers, keyed by record and field, so
@@ -3886,7 +3888,7 @@ class AgentEngine:
                             if _pn == event.tool_name:
                                 _src = str(_pi)
                                 break
-                        _vg_numbers.record_keyed_values(_out, source=_src)
+                        _vg_numbers.record_keyed_values(_seen, source=_src)
                         # Kept on the engine for the harness turns that
                         # continue this request (see the turn start).
                         self._request_evidence = _vg_numbers.evidence_state()
