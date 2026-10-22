@@ -2284,20 +2284,21 @@ _AGENT_CSS = """\
 }
 /* The rest of the composer and the bars around the chat take the same
    corner: the shell and Files buttons (in the input area's row, not in
-   the Send row) as quiet outlined buttons beside the input; the Details bar as a 12 px bar; the working line, task line and
-   Background box as strips inset 8 px into the rounded chat frame, so
-   they sit inside its corners instead of running under them. */
+   the Send row) keep their light grey; the Details bar is a 12 px bar;
+   the working line, task line and Background box are strips inset 8 px
+   into the rounded chat frame, so they sit inside its corners instead of
+   running under them. */
 .delfin-agent-root .delfin-agent-input-area .jupyter-button {
     border-radius: 12px;
 }
 .delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary) {
-    background: #ffffff; border: 1px solid #cbd5e1; color: #334155;
-    /* The 40 px shell button holds an icon and "/": with the border and
-       the default padding its label was cut to ">_ ..." (measured). */
+    background: #eeeeee; border: none; color: #334155;
+    /* The 40 px shell button holds an icon and "/": with the default
+       padding and a border its label was cut to ">_ ..." (measured). */
     padding: 0 4px;
 }
 .delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary):hover {
-    background: #f1f5f9;
+    background: #e2e5e9;
 }
 .delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-header {
     border-radius: 12px; border: 1px solid #e2e8f0; background: #f8fafc;
