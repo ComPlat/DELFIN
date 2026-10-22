@@ -1325,6 +1325,9 @@ _AGENT_CSS = """\
     color: #1976d2 !important;
     opacity: 1;
 }
+/* Empty (marked from Python when a send clears it): the resting height,
+   over whatever the grow script last wrote inline. */
+.delfin-agent-input-empty textarea { height: 80px !important; }
 .delfin-agent-input textarea {
     min-height: 80px;
     max-height: 280px;
@@ -7725,6 +7728,21 @@ def create_tab(ctx):
         ),
     )
     input_textarea.add_class("delfin-agent-input")
+
+    # An empty box is marked from here, in the same message that empties
+    # it: every send clears the value from Python after a kernel round
+    # trip and without an 'input' event, and the browser's grow script,
+    # re-measuring 60 ms after a click, kept a grown box at its height
+    # until the next keystroke (measured: 138 px at 2 s with 300 ms of
+    # latency). The stylesheet holds a marked box at its resting 80 px.
+    def _mark_empty(_change=None):
+        if input_textarea.value:
+            input_textarea.remove_class("delfin-agent-input-empty")
+        else:
+            input_textarea.add_class("delfin-agent-input-empty")
+
+    input_textarea.observe(_mark_empty, names="value")
+    _mark_empty()
     send_btn = widgets.Button(
         description="Send",
         button_style="primary",
