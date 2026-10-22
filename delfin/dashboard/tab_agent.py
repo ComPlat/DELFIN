@@ -1441,6 +1441,21 @@ _AGENT_CSS = """\
     color: inherit;
     background: transparent;
 }
+/* The part of a reply still arriving reads as the reply's own text, not
+   as a code block: the generic ".delfin-chat-agent pre" rule below is more
+   specific than ".delfin-streaming-pre" and drew it as a dark box. */
+.delfin-chat-agent pre.delfin-streaming-pre {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    font-family: inherit;
+    font-size: inherit;
+    white-space: pre-wrap;
+}
 .delfin-chat-approval {
     background: #fef3c7;
     margin: 8px 0;
@@ -2707,6 +2722,45 @@ def _code_block_html(lang: str, code: str, idx: int = 0) -> str:
         f'}})}})(this)">Copy</button>'
         f"<pre>{lang_label}<code>{highlighted}</code></pre></div>"
     )
+
+
+#: Above this many characters a streaming reply is shown as plain text:
+#: markdown costs ~0.5 ms per KB here (measured 2026-10-22), and a reply
+#: this long is rendered once more when it ends anyway.
+_STREAM_MARKDOWN_MAX = 20_000
+
+
+def _streaming_html(text: str) -> str:
+    """A reply that is still arriving, as chat HTML.
+
+    The paragraphs that are finished -- everything up to the last blank
+    line, and never inside an open code fence -- go through
+    :func:`_md_to_html`, so bold text, lists and tables appear as they
+    will stay. The paragraph still being written is escaped plain text in
+    the reply's own font. Before, the whole reply was raw markdown until
+    the turn ended, then flipped to the formatted version. Over
+    ``_STREAM_MARKDOWN_MAX`` characters the whole reply is plain text.
+    """
+    # Same trim as the markdown path: the first tokens often arrive behind
+    # a newline, and that gap would sit under the label for the whole reply.
+    text = text.strip(chr(13) + chr(10))
+
+    def _plain(part: str) -> str:
+        return (f'<pre class="delfin-streaming-pre">{_html.escape(part)}'
+                f'</pre>') if part.strip() else ""
+
+    if len(text) > _STREAM_MARKDOWN_MAX:
+        return _plain(text)
+    cut = text.rfind("\n\n")
+    if cut < 0:
+        return _plain(text)
+    head, tail = text[:cut], text[cut:]
+    if head.count("```") % 2:
+        # The last fence in the finished part is still open: the code
+        # block belongs to the growing part until its closing fence.
+        fence = head.rfind("```")
+        head, tail = text[:fence], text[fence:]
+    return (_md_to_html(head) if head.strip() else "") + _plain(tail.strip("\n"))
 
 
 def _md_to_html(text: str) -> str:
@@ -11862,14 +11916,7 @@ def create_tab(ctx):
             # During streaming: plain <pre> — no expensive markdown parsing.
             # On finalize: full _md_to_html with code blocks, formatting etc.
             if msg.get("_streaming"):
-                # Same trim as the markdown path: the first tokens often
-                # arrive behind a newline, and during streaming that gap
-                # sits under the label for the whole reply.
-                content = (
-                    f'<pre class="delfin-streaming-pre">'
-                    f'{_html.escape(str(msg["content"] or "").strip(chr(13) + chr(10)))}'
-                    f'</pre>'
-                )
+                content = _streaming_html(str(msg["content"] or ""))
             else:
                 content = _md_to_html(msg["content"])
             _ts = str(msg.get("turn_summary") or "")
