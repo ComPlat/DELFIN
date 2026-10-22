@@ -2314,6 +2314,33 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame > .delfin-agent-background {
     margin: 0 8px 6px; border-radius: 8px; border: 1px solid #e2e8f0;
 }
+/* The transcript keeps its height while the agent works. The working line
+   (one widget, with the slow-phase hint under it) lies over the
+   transcript's lower edge in the same grid cell instead of taking its
+   height: in a flex column the transcript went 737 -> 691 -> 657 -> 691
+   -> 737 px through one turn at 1920x1080 (measured), and a reader at the
+   end saw all of it move each time. The transcript keeps that much room
+   below its last message for good, so at the end nothing lies under the
+   line. The task line, the Background box and the docks follow in rows
+   below, as before. */
+.delfin-agent-root .delfin-agent-chat-frame {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-auto-rows: auto;
+}
+.delfin-agent-chat-frame > .delfin-agent-chat-host { grid-area: 1 / 1; }
+.delfin-agent-chat-frame > .delfin-agent-working-slot {
+    grid-area: 1 / 1; align-self: end; z-index: 3;
+}
+.delfin-agent-chat-host .delfin-agent-chat { padding-bottom: 84px; }
+/* The slow-phase hint under the working line: the same inset strip. */
+.delfin-agent-chat-frame .delfin-activity-hint {
+    margin: 0 8px 6px; border-radius: 8px; border: 1px solid #fde68a;
+}
+.delfin-agent-chat-frame:has(> .delfin-agent-working-slot .delfin-agent-working) .delfin-chat-jump {
+    bottom: 84px;
+}
 </style>
 """
 
@@ -7885,6 +7912,9 @@ def create_tab(ctx):
 
     # Working indicator (animated spinner)
     working_html = widgets.HTML(value="")
+    # Placed over the transcript's lower edge by the stylesheet, so its
+    # coming and going does not resize the transcript.
+    working_html.add_class("delfin-agent-working-slot")
 
     # Queue indicator (shown when messages are queued during streaming)
     queue_html = widgets.HTML(value="")
