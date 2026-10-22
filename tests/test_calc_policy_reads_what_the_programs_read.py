@@ -106,3 +106,21 @@ def test_the_host_is_read_from_the_environment(monkeypatch):
 def test_paths_are_lexical(tmp_path):
     assert C._resolve(tmp_path / "run", "../w.xyz") == Path(
         str(tmp_path)) / "w.xyz"
+
+
+def test_the_queue_is_asked_through_the_scheduler_client(monkeypatch):
+    """One throttled, shared address for scheduler queries
+    (delfin.scheduler_client); while its gate is closed, the last answer
+    to the same question is used, and without one the count is unknown."""
+    from delfin import scheduler_client as sc
+    client = sc.SchedulerClient(min_interval_s=60, clock=lambda: 0.0,
+                                runner=lambda argv: "101\n102\n")
+    monkeypatch.setattr(sc, "default_client", client)
+    assert C.queued_jobs() == 2
+    assert client.queries_run == 1
+    assert C.queued_jobs() == 2 and client.queries_run == 1   # cached
+    fresh = sc.SchedulerClient(min_interval_s=60, clock=lambda: 0.0,
+                               runner=lambda argv: "x\n")
+    fresh._kind_last_run["squeue"] = 0.0      # another squeue just ran
+    monkeypatch.setattr(sc, "default_client", fresh)
+    assert C.queued_jobs() is None and fresh.queries_run == 0

@@ -54,7 +54,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -627,19 +626,29 @@ def sbatch_options(script_text: str, argv: list) -> dict:
     return opts
 
 
-def _run_quiet(cmd: list, timeout: float = 10.0) -> Optional[str]:
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True,
-                             timeout=timeout)
-    except (OSError, subprocess.SubprocessError):
+def _ask_scheduler(argv: list) -> Optional[str]:
+    """The scheduler's answer through delfin.scheduler_client.
+
+    The client lets one query of a kind reach the scheduler per interval
+    and shares its cache across the process. While the gate is closed
+    the last cached answer to this same question is used (a queue count
+    or a partition limit a few seconds old); without one, None, and the
+    check reads as "could not be read", which keeps the dialog.
+    """
+    from delfin import scheduler_client as _sc
+    kind = _sc.kind_of_argv(argv)
+    out = _sc.query(kind, argv)
+    if out is _sc.THROTTLED:
+        out = _sc.default_client.last_result(kind, argv)
+    if out is _sc.THROTTLED or out is None:
         return None
-    return out.stdout if out.returncode == 0 else None
+    return str(out)
 
 
 def partition_limits(name: Optional[str]) -> Optional[dict]:
     """``scontrol show partition`` as key=value pairs, or None."""
-    out = _run_quiet(["scontrol", "show", "partition", "-o"]
-                     + ([name] if name else []))
+    argv = ["scontrol", "show", "partition", "-o"] + ([name] if name else [])
+    out = _ask_scheduler(argv)
     if not out:
         return None
     rows = []
@@ -656,8 +665,9 @@ def partition_limits(name: Optional[str]) -> Optional[dict]:
 
 
 def queued_jobs() -> Optional[int]:
-    out = _run_quiet(["squeue", "-h", "-u", os.environ.get("USER", ""),
-                      "-t", "PENDING,RUNNING", "-o", "%i"])
+    argv = ["squeue", "-h", "-u", os.environ.get("USER", ""),
+            "-t", "PENDING,RUNNING", "-o", "%i"]
+    out = _ask_scheduler(argv)
     if out is None:
         return None
     return len([l for l in out.splitlines() if l.strip()])
