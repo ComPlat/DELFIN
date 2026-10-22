@@ -312,6 +312,32 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                                           mol=lg["mol"]) for i in range(_dent)]
             except Exception:
                 _dtp = None
+            # RING CLOSURE FOR BOND-VALENCE LENGTHS (DELFIN_FFFREE_ML_TARGETS_BV_BITE, default OFF ->
+            # byte-identical).  The vertex directions stay at the ideal polyhedron angle while the
+            # bond-valence targets change the two M-D lengths, so the donor-donor distance the embed
+            # is pinned to, |u1 r1 - u2 r2|, changes too -- for Zn(II)-N 1.93 -> 2.16 A a cis pair
+            # moves from 2.73 to 3.05 A apart, which a five-ring chelate cannot span: the embed
+            # stretches or collapses the ring and the self-gate rejects every isomer
+            # (CHELATE_EMPTY -> legacy).  Here the pair keeps the donor-donor distance of the
+            # historic seating (covalent-sum lengths at the ideal angle) and the opening angle is
+            # solved from the new lengths by ring closure, bisector fixed (bite_close), so the
+            # chelate keeps its polyhedron edge.  Bidentates only.
+            if (_dtp is not None and _dent == 2
+                    and os.environ.get("DELFIN_FFFREE_ML_TARGETS_BV_BITE", "0") == "1"):
+                try:
+                    from delfin.manta import polyhedra as _PLYb
+                    from delfin.manta.assemble_chelate import bite_close as _bite_close
+                    _u = [ref[_vts[i]] / np.linalg.norm(ref[_vts[i]]) for i in range(2)]
+                    _rh = [_PLYb.COV.get(metal, 1.5) + _PLYb._donor_cov(_delems[i]) for i in range(2)]
+                    _rn = [float(np.linalg.norm(p)) for p in _dtp]
+                    if any(abs(_rn[i] - _rh[i]) > 1e-6 for i in range(2)):
+                        _ddh = float(np.linalg.norm(_u[0] * _rh[0] - _u[1] * _rh[1]))
+                        _cb = (_rn[0] ** 2 + _rn[1] ** 2 - _ddh ** 2) / (2.0 * _rn[0] * _rn[1])
+                        if -1.0 <= _cb <= 1.0:
+                            _v0, _v1 = _bite_close(_u[0], _u[1], math.degrees(math.acos(_cb)))
+                            _dtp = [_v0 * _rn[0], _v1 * _rn[1]]
+                except Exception:
+                    pass
             # CHELATE-BACKBONE hardening is SCOPED to the newly-admitted LARGE backbones
             # (per-arm heavy > the historic cap of 8) so every existing native chelate
             # (per-arm <= 8: en, acac, bipy, terpy, ...) keeps the EXACT historic embed
