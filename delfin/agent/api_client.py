@@ -60,7 +60,7 @@ class StreamEvent:
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
                  "cost_usd", "tool_name", "tool_input", "tool_output",
                  "cached_tokens", "output_truncated", "output_chars",
-                 "output_notes")
+                 "output_notes", "seen_text")
 
     def __init__(
         self,
@@ -77,6 +77,7 @@ class StreamEvent:
         output_truncated: bool = False,
         output_chars: int = 0,
         output_notes: str = "",
+        seen_text: str = "",
     ):
         self.type = type
         self.text = text
@@ -110,6 +111,13 @@ class StreamEvent:
         self.output_truncated = output_truncated
         self.output_chars = output_chars
         self.output_notes = output_notes
+        # * ``seen_text`` — the result as the model was given it (after the
+        #   context cut, before the data fence). The evidence pool is filled
+        #   from it: filled from the preview, a figure past character 2000
+        #   of a result the model saw whole was flagged as unsupported.
+        #   Empty where a backend passes the result through whole, and
+        #   never written to a trace.
+        self.seen_text = seen_text
 
 
 # ---------------------------------------------------------------------------
@@ -28520,6 +28528,18 @@ def _scrubbed_bash_env() -> dict:
     # 10-14). Fail instead; nothing here adds a credential.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
+    # A thread cap unless the user's environment sets one: an OpenMP
+    # program started without it takes every core the host has (measured:
+    # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
+    # on a cluster login node are everyone's cores. Inside a Slurm
+    # allocation the cap is the allocation; elsewhere a few cores. A job
+    # submitted from here inherits it unless its script sets its own.
+    _cap = env.get("SLURM_CPUS_PER_TASK", "")
+    if not (_cap.isdigit() and int(_cap) > 0):
+        _cap = str(max(1, min(4, os.cpu_count() or 1)))
+    for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                  "OPENBLAS_NUM_THREADS"):
+        env.setdefault(_name, _cap)
     _editor = any(k.startswith("VSCODE_GIT_") for k in env)
     for k in [k for k in env if k.startswith("VSCODE_GIT_")]:
         env.pop(k, None)
@@ -32732,6 +32752,7 @@ class OpenAIClient(_BaseClient):
                     # The cut is judged on the result itself, before the
                     # fence adds its lines.
                     _cut_len = len(context_result)
+                    _seen_text = context_result
                     if _fence_this:
                         context_result = _fence_output_tool_result(
                             fn_name, context_result)
@@ -32772,6 +32793,7 @@ class OpenAIClient(_BaseClient):
                                           or _tool_cut),
                         output_chars=len(_redacted),
                         output_notes=_result_notes,
+                        seen_text=_seen_text,
                     )
                     # Thrash detector: prepend a one-time progress nudge when a
                     # low-progress loop (repeated cleanup, same-file rewrites) is
