@@ -190,6 +190,10 @@ def _assigned_attributes(node: ast.AST) -> set[str]:
 # "does a resumed session need this?" to be answered here, in one line,
 # instead of being answered by silence three releases later.
 _NOT_CARRIED = {
+    # Per request: the observed-number pool of the request a harness turn
+    # (job wake-up) continues. A resumed session starts its next request
+    # with a message, and that message starts a fresh pool anyway.
+    "_request_evidence",
     # The git-errors steering block of the current turn: rebuilt from each
     # user message, nothing a resumed session needs.
     "_repo_errors_hint",

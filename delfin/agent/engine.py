@@ -3234,10 +3234,26 @@ class AgentEngine:
             # returned THIS turn. Kept apart from the ledger above because
             # the evidence has a different shape -- an ORCA output is text
             # a tool returned, not a result dict it filled in.
+            # The unit is the REQUEST, not the engine turn: a turn the
+            # harness starts (job or scheduled wake-up, auto mode, mail)
+            # continues the request the person last sent, and the final
+            # table it writes quotes what that request's earlier turns
+            # returned -- a literature value searched before the jobs were
+            # submitted. Such a turn gets the request's evidence back; the
+            # next message a person sends starts a fresh pool.
             try:
                 from . import verify_guard as _vg_numbers
-                _vg_numbers.reset_observed_numbers()
-                _vg_numbers.reset_keyed_values()
+                # Only inside the conversation that produced it: after
+                # reset_cycle cleared the history there is no request left
+                # to continue.
+                _carried = getattr(self, "_request_evidence", None)
+                if (isinstance(user_message, HarnessText) and _carried
+                        and self.messages):
+                    _vg_numbers.restore_evidence(_carried)
+                else:
+                    self._request_evidence = None
+                    _vg_numbers.reset_observed_numbers()
+                    _vg_numbers.reset_keyed_values()
             except Exception:
                 pass
 
@@ -3854,8 +3870,10 @@ class AgentEngine:
                     # rather than against the fact that something ran.
                     try:
                         from . import verify_guard as _vg_numbers
+                        # What the model was given, not the UI preview.
+                        _seen = str(getattr(event, "seen_text", "") or _out)
                         _vg_numbers.record_tool_numbers(
-                            _out,
+                            _seen,
                             truncated=bool(
                                 getattr(event, "output_truncated", False)))
                         # The same numbers, keyed by record and field, so
@@ -3870,7 +3888,10 @@ class AgentEngine:
                             if _pn == event.tool_name:
                                 _src = str(_pi)
                                 break
-                        _vg_numbers.record_keyed_values(_out, source=_src)
+                        _vg_numbers.record_keyed_values(_seen, source=_src)
+                        # Kept on the engine for the harness turns that
+                        # continue this request (see the turn start).
+                        self._request_evidence = _vg_numbers.evidence_state()
                     except Exception:
                         pass
                     # And whether the model saw the whole result. A count
