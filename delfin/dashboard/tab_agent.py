@@ -2760,6 +2760,15 @@ def _streaming_html(text: str) -> str:
         # block belongs to the growing part until its closing fence.
         fence = head.rfind("```")
         head, tail = text[:fence], text[fence:]
+    else:
+        # A table arrives row by row with no blank line until it ends:
+        # its finished rows (header and separator included) are drawn,
+        # only the row still being written stays text.
+        lines = tail.strip("\n").split("\n")
+        if (len(lines) >= 3 and lines[0].lstrip().startswith("|")
+                and lines[1].lstrip().startswith("|")):
+            done = tail.rfind("\n")
+            head, tail = text[:cut] + tail[:done], tail[done:]
     return (_md_to_html(head) if head.strip() else "") + _plain(tail.strip("\n"))
 
 
