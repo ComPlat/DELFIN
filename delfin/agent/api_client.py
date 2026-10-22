@@ -7759,6 +7759,21 @@ def _calculation_verdict(perms, cmd: str, args: dict,
         return None
 
 
+def _unasked_share(argv: list) -> list:
+    """``argv`` bound to the CPUs a command nobody approved may use.
+
+    On a login node, LOGIN_LOCAL_CORES CPUs (calc_policy.unasked_cpu_set):
+    the gate reads a command's text, and `python3 run.py` that starts a
+    16-core ORCA reads as `python3`. The binding holds for whatever the
+    command starts. Elsewhere, and on any failure, ``argv`` unchanged.
+    """
+    try:
+        from . import calc_policy
+        return calc_policy.bound_argv(argv, calc_policy.unasked_cpu_set())
+    except Exception:
+        return list(argv)
+
+
 def _with_calculation_note(result: str, notes: list) -> str:
     """The run's JSON result, naming the calculation the gate let start.
 
@@ -17791,11 +17806,12 @@ class _DocToolExecutor:
             # check are identical; only the execution model differs.
             _caged: list = []
             _calc_notes: list = []
+            _approved: list = []
             if permissions is not None:
                 if name in ("bash", "bash_background"):
                     gate_err = self._gate_bash_call(name, arguments,
                                                     permissions, _caged,
-                                                    _calc_notes)
+                                                    _calc_notes, _approved)
                 else:
                     gate_err = self._run_permission_gate(
                         name, arguments, permissions)
@@ -17815,13 +17831,16 @@ class _DocToolExecutor:
                     return self._execute_bash(arguments, permissions,
                                               caged_unasked=True)
                 return _with_calculation_note(
-                    self._execute_bash(arguments, permissions), _calc_notes)
+                    self._execute_bash(arguments, permissions,
+                                       approved=bool(_approved)),
+                    _calc_notes)
             if name == "bash_background":
                 if _caged:
                     return self._execute_bash_background(
                         arguments, permissions, caged_unasked=True)
                 return _with_calculation_note(
-                    self._execute_bash_background(arguments, permissions),
+                    self._execute_bash_background(
+                        arguments, permissions, approved=bool(_approved)),
                     _calc_notes)
 
         # Document writes. The per-path write gate runs inside the
@@ -21648,6 +21667,7 @@ class _DocToolExecutor:
                         perms: "KitToolPermissions",
                         caged_admission: Optional[list] = None,
                         calc_notes: Optional[list] = None,
+                        approved: Optional[list] = None,
                         ) -> Optional[str]:
         """The bash gate for ``bash`` and ``bash_background``.
 
@@ -21671,13 +21691,14 @@ class _DocToolExecutor:
             wall = None
         return self._run_permission_gate(
             "bash", args, perms, caged_admission=caged_admission,
-            wall_limit_s=wall, calc_notes=calc_notes)
+            wall_limit_s=wall, calc_notes=calc_notes, approved=approved)
 
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions",
         *, caged_admission: Optional[list] = None,
         wall_limit_s: Optional[float] = None,
         calc_notes: Optional[list] = None,
+        approved: Optional[list] = None,
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None.
 
@@ -22526,6 +22547,8 @@ class _DocToolExecutor:
             if _approved_here:
                 # Asked above, with the whole command shown, after every
                 # hard tier and the publish readiness check.
+                if approved is not None:
+                    approved.append(True)
                 return None
             # An allow rule of the user's (permission_rules) answers the
             # dialog below -- and the head-less refusal after it, which is
@@ -22558,6 +22581,8 @@ class _DocToolExecutor:
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if ok:
+                    if approved is not None:
+                        approved.append(True)
                     return None
                 # Timeout is ABSENCE, not refusal — the two need different
                 # guidance (a "user denied, never retry" after every
@@ -24494,6 +24519,7 @@ class _DocToolExecutor:
     def _hand_suite_to_background(
         self, cmd: str, run_cwd, arguments: dict,
         perms: "KitToolPermissions", caged_unasked: bool,
+        approved: bool = False,
     ) -> Optional[str]:
         """Start a whole-suite pytest run as a watched background job.
 
@@ -24521,7 +24547,7 @@ class _DocToolExecutor:
             return None
         args = {k: v for k, v in (arguments or {}).items() if k != "timeout_s"}
         raw = self._execute_bash_background(
-            args, perms, caged_unasked=caged_unasked)
+            args, perms, caged_unasked=caged_unasked, approved=approved)
         try:
             out = json.loads(raw)
         except Exception:
@@ -24585,7 +24611,7 @@ class _DocToolExecutor:
 
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions",
-        caged_unasked: bool = False,
+        caged_unasked: bool = False, approved: bool = False,
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
@@ -24669,7 +24695,7 @@ class _DocToolExecutor:
         # a command that already ran into the ceiling this turn is not
         # waited out again under another prefix (long_runs).
         _handed = self._hand_suite_to_background(
-            cmd, run_cwd, arguments, perms, caged_unasked)
+            cmd, run_cwd, arguments, perms, caged_unasked, approved=approved)
         if _handed is not None:
             return _handed
         _again = self._timed_out_again(cmd, perms)
@@ -24746,6 +24772,8 @@ class _DocToolExecutor:
                              if not caged_unasked
                              else _bash_isolation_argv(cmd, run_cwd, perms,
                                                        caged_unasked=True))
+                if not approved:
+                    _run_argv = _unasked_share(_run_argv)
                 proc = _contained.run(
                     _run_argv,
                     cwd=str(run_cwd),
@@ -24998,7 +25026,7 @@ class _DocToolExecutor:
 
     def _execute_bash_background(
         self, arguments: dict, perms: "KitToolPermissions",
-        caged_unasked: bool = False,
+        caged_unasked: bool = False, approved: bool = False,
     ) -> str:
         """Start a long-running shell command in the background.
 
@@ -25074,10 +25102,11 @@ class _DocToolExecutor:
                 workspace=str(perms.workspace),
                 # In the process cage like a foreground command: what the
                 # job starts ends with it, and the job with its kernel.
-                argv=_bash_isolation_argv(cmd, run_cwd, perms)
-                if not caged_unasked
-                else _bash_isolation_argv(cmd, run_cwd, perms,
-                                          caged_unasked=True),
+                argv=(lambda _a: _a if approved else _unasked_share(_a))(
+                    _bash_isolation_argv(cmd, run_cwd, perms)
+                    if not caged_unasked
+                    else _bash_isolation_argv(cmd, run_cwd, perms,
+                                              caged_unasked=True)),
                 **({"session_id": _job_sid} if _job_sid else {}),
                 on_finish=_journal_job_changes,
             )

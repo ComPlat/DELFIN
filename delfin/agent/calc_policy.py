@@ -134,6 +134,45 @@ def default_threads(kind: str, env: Optional[dict] = None) -> int:
     return max(1, min(4, os.cpu_count() or 1))
 
 
+def unasked_cpu_set(kind: Optional[str] = None) -> Optional[list]:
+    """The CPUs a command run without a dialog is bound to, or None.
+
+    On a login node: LOGIN_LOCAL_CORES CPUs drawn at random from this
+    process's own set, so concurrent sessions spread over the node instead
+    of all sharing the first two. Elsewhere None: a workstation is the
+    user's own machine, and a Slurm allocation is bound by its cgroup.
+    None also where the affinity call does not exist, or where the process
+    already holds no more than that many CPUs.
+    """
+    kind = kind or host_kind()
+    if kind != "login_node":
+        return None
+    getter = getattr(os, "sched_getaffinity", None)
+    if getter is None:
+        return None
+    try:
+        allowed = sorted(getter(0))
+    except OSError:
+        return None
+    if len(allowed) <= LOGIN_LOCAL_CORES:
+        return None
+    import random
+    return sorted(random.sample(allowed, LOGIN_LOCAL_CORES))
+
+
+def bound_argv(argv: list, cpus: Optional[list]) -> list:
+    """``argv`` started on ``cpus``: taskset where installed, else the
+    cpu_share launcher. Unchanged when ``cpus`` is empty."""
+    if not cpus:
+        return list(argv)
+    spec = ",".join(str(c) for c in cpus)
+    taskset = shutil.which("taskset")
+    if taskset:
+        return [taskset, "-c", spec, *argv]
+    import sys
+    return [sys.executable, "-m", "delfin.agent.cpu_share", spec, *argv]
+
+
 def _memory_mb() -> Optional[int]:
     try:
         with open("/proc/meminfo", encoding="ascii") as fh:
