@@ -28528,6 +28528,18 @@ def _scrubbed_bash_env() -> dict:
     # 10-14). Fail instead; nothing here adds a credential.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
+    # A thread cap unless the user's environment sets one: an OpenMP
+    # program started without it takes every core the host has (measured:
+    # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
+    # on a cluster login node are everyone's cores. Inside a Slurm
+    # allocation the cap is the allocation; elsewhere a few cores. A job
+    # submitted from here inherits it unless its script sets its own.
+    _cap = env.get("SLURM_CPUS_PER_TASK", "")
+    if not (_cap.isdigit() and int(_cap) > 0):
+        _cap = str(max(1, min(4, os.cpu_count() or 1)))
+    for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                  "OPENBLAS_NUM_THREADS"):
+        env.setdefault(_name, _cap)
     _editor = any(k.startswith("VSCODE_GIT_") for k in env)
     for k in [k for k in env if k.startswith("VSCODE_GIT_")]:
         env.pop(k, None)
