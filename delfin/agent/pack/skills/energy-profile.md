@@ -29,9 +29,10 @@ restyle it. Your job is the chemistry and the numbers.
   temperature. Outputs of two programs in one profile are refused; if the
   functional, basis or solvent model differ within one program, say so
   before drawing.
-- `"energy": "gibbs"` (default, needs a frequency run) or `"electronic"`
-  (ΔE). Some outputs carry no free energy (Molpro, NWChem): then ΔE, and
-  say so.
+- Without `"energy"` the tool draws what the outputs carry: ΔG when every
+  output has a free energy (a frequency run), ΔE when none has, and it
+  refuses a mix, naming both groups. `"gibbs"` or `"electronic"` forces
+  one. Say in the answer which one the profile shows.
 
 ## 2. Mass balance
 A profile follows ONE system through the reaction: every state holds the

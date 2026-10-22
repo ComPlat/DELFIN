@@ -234,6 +234,30 @@ def is_orca(text: str) -> bool:
     return "O   R   C   A" in text[:20000]
 
 
+def has_free_energy(text: str, path: str) -> bool:
+    """Whether an output carries a free energy, i.e. a frequency run.
+
+    Read the same way ``read_output`` reads it for ``energy: gibbs``: ORCA
+    through DELFIN's parser, xtb and Psi4 by their printed line, anything
+    else through cclib's ``freeenergy``. An output cclib cannot read has
+    none; ``read_output`` then names the file when it is drawn.
+    """
+    if is_orca(text):
+        return output_energy(text, path, "gibbs") is not None
+    if _last(_FREE_LINES, text) is not None:
+        return True
+    try:
+        import io
+        import logging
+
+        import cclib
+        data = cclib.io.ccread(io.StringIO(text), quiet=True,
+                               loglevel=logging.CRITICAL)
+    except Exception:
+        return False
+    return getattr(data, "freeenergy", None) is not None
+
+
 def read_output(text: str, path: str, energy: str) -> dict:
     """``{"eh", "imag", "atoms", "charge", "program"}`` of one output.
 
