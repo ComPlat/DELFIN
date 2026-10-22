@@ -333,7 +333,33 @@ def child_env(tmp_path) -> dict:
     # login keychain): keyring's own override selects its null backend,
     # which DELFIN refuses as a store.
     env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+    # Jupyter's runtime directory (kernel keys, sockets, the dashboard's
+    # login store) does not follow HOME when JUPYTER_RUNTIME_DIR is set,
+    # and under a pytest HOME it is too long for a socket, so the launcher
+    # moves it to $XDG_RUNTIME_DIR or to the user's real
+    # /tmp/delfin-k-<uid> (measured 2026-10-22: two server tests left
+    # login stores there). A short private one of the child's own:
+    env.pop("JUPYTER_RUNTIME_DIR", None)
+    env["XDG_RUNTIME_DIR"] = _child_runtime_dir()
     return env
+
+
+#: Runtime directories handed to children, removed when the session ends.
+_CHILD_RUNTIMES: list = []
+
+
+def _child_runtime_dir() -> str:
+    import atexit
+    import os
+    import shutil
+    import tempfile
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    made = tempfile.mkdtemp(prefix="dx", dir=root)       # 0700, ours
+    if not _CHILD_RUNTIMES:
+        atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True)
+                                 for d in _CHILD_RUNTIMES])
+    _CHILD_RUNTIMES.append(made)
+    return made
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -1473,6 +1499,7 @@ def pytest_configure(config):
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
     _hypothesis_store_outside_the_checkout()
+    _private_tmp_of_the_suite()
 
 
 def pytest_unconfigure(config):
@@ -1480,6 +1507,37 @@ def pytest_unconfigure(config):
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
+    _private_tmp_removed()
+
+
+#: The suite's stand-in for /tmp as the base of the launcher's private
+#: runtime directories (delfin.cli_voila.PRIVATE_TMP_ENV). Set before the
+#: first test, so every child inherits it: a test server whose runtime
+#: path is too long for a socket otherwise moved its kernels and login
+#: store into the user's real /tmp/delfin-k-<uid> (measured 2026-10-22,
+#: four test files). Short, and the suite's own (0700).
+_PRIVATE_TMP: list = []
+
+
+def _private_tmp_of_the_suite():
+    import os
+    import tempfile
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    made = tempfile.mkdtemp(prefix="dp", dir=root)
+    _PRIVATE_TMP.append((made, os.environ.get("DELFIN_PRIVATE_TMP")))
+    os.environ["DELFIN_PRIVATE_TMP"] = made
+
+
+def _private_tmp_removed():
+    import os
+    import shutil
+    while _PRIVATE_TMP:
+        made, before = _PRIVATE_TMP.pop()
+        shutil.rmtree(made, ignore_errors=True)
+        if before is None:
+            os.environ.pop("DELFIN_PRIVATE_TMP", None)
+        else:
+            os.environ["DELFIN_PRIVATE_TMP"] = before
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):

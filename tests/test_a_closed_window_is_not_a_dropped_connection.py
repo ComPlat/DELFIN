@@ -415,9 +415,8 @@ def test_the_real_server_requires_token_and_xsrf_for_a_close_notice(tmp_path):
         port = int(candidate.getsockname()[1])
 
     records = tmp_path / "records"
-    runtime = tmp_path / "runtime"
     root_dir = tmp_path / "root"
-    for directory in (records, runtime, root_dir):
+    for directory in (records, root_dir):
         directory.mkdir()
         directory.chmod(0o700)
     log = tmp_path / "server.log"
@@ -425,7 +424,9 @@ def test_the_real_server_requires_token_and_xsrf_for_a_close_notice(tmp_path):
     env = child_env(tmp_path)
     env.update({
         "PYTHONPATH": str(repo),
-        "XDG_RUNTIME_DIR": str(runtime),
+        # XDG_RUNTIME_DIR: child_env's short private one. A tmp_path one is
+        # too long for a socket, and the launcher then moved the kernels
+        # and the login store to the user's real /tmp/delfin-k-<uid>.
         "DELFIN_SESSION_RECORD_DIR": str(records),
         "DELFIN_VOILA_ROOT_DIR": str(root_dir),
         "DELFIN_DASHBOARD_STAY_UP": "1",
