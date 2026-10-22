@@ -1336,9 +1336,9 @@ _AGENT_CSS = """\
 }
 .delfin-chat-msg {
     overflow-anchor: none;
-    margin-bottom: 8px;
-    padding: 8px 12px;
-    border-radius: 8px;
+    margin-bottom: 10px;
+    padding: 10px 14px;
+    border-radius: 12px;
     max-width: 85%;
     word-wrap: break-word;
     /* The widget label around the chat sets 28px, which put a blank
@@ -1351,19 +1351,21 @@ _AGENT_CSS = """\
     margin-top: 4px;
 }
 .delfin-chat-user {
-    background: #dbeafe;
+    background: #e8f0fe;
     /* The background is fixed, so the text colour is too: inherited, it
        is the dark theme's white on a light bubble. */
-    color: #1f2937;
+    color: #0f172a;
     margin-left: auto;
     text-align: left;
     border-bottom-right-radius: 2px;
 }
 .delfin-chat-agent {
-    background: #f3f4f6;
-    color: #1f2937;
+    background: #ffffff;
+    color: #111827;
     margin-right: auto;
     border-bottom-left-radius: 2px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 .delfin-chat-system {
     background: #f3f4f6;
@@ -2205,6 +2207,77 @@ _AGENT_CSS = """\
 .delfin-agent-upload i.fa {
     margin: 0 0 3px 0 !important;
     font-size: 16px;
+}
+/* THE PRESENTATION LAYER (2026-10-22). One type face and one card language
+   for the agent tab, on top of the rules above:
+   - a single sans-serif stack for the chat and the input (Inter where
+     installed, else the platform's UI face) at 14 px, where the chat
+     mixed the Jupyter UI font, 13 px and monospace placeholders;
+   - answers as white cards with a hairline and a soft shadow on a light
+     slate canvas, the user's turn in a light blue -- fixed colours, so a
+     dark Jupyter theme does not reach into them;
+   - every card in the transcript (files, plots, molecules, formulas) with
+     the same 12 px corner and shadow -- !important because their own
+     HTML carries inline borders;
+   - system lines in the UI face rather than monospace.
+   Colours and sizes only: nothing here moves an element or changes what is
+   shown. */
+.delfin-agent-root {
+    --delfin-ui-font: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont,
+        Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+/* The chat and the input only. The controls keep the Jupyter UI face:
+   their labels and dropdowns are sized to it, and the wider Inter/Segoe
+   metrics cut "Provider:" to "Provid..." (measured 2026-10-22). */
+.delfin-agent-root .delfin-agent-chat-host,
+.delfin-agent-root .delfin-agent-input textarea {
+    font-family: var(--delfin-ui-font);
+}
+.delfin-agent-root .delfin-agent-chat-host { font-size: 14px; line-height: 1.55; }
+.delfin-agent-root > .delfin-agent-chat-frame,
+.delfin-agent-chat-row > .delfin-agent-chat-frame {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+    border-radius: 12px;
+}
+.delfin-agent-chat-host .delfin-artifact {
+    border-color: #e5e7eb !important;
+    border-radius: 12px !important;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+    background: #ffffff;
+}
+.delfin-chat-system {
+    font-family: var(--delfin-ui-font);
+    font-size: 12px;
+    background: #f1f5f9;
+    border-left-color: #cbd5e1;
+    border-radius: 0 8px 8px 0;
+    word-break: normal;
+    overflow-wrap: anywhere;
+}
+.delfin-chat-role { color: #64748b; letter-spacing: 0.6px; }
+.delfin-chat-tool .tool-name { color: #475569; }
+.delfin-md-table { font-size: 13px; border-radius: 8px; overflow: hidden; }
+.delfin-md-table th, .delfin-md-table td { border-color: #e2e8f0; padding: 5px 10px; }
+.delfin-md-table th { background: #f1f5f9; color: #0f172a; }
+.delfin-agent-root .delfin-agent-input textarea {
+    font-size: 14px;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #0f172a;
+    transition: border-color .12s ease, box-shadow .12s ease;
+}
+.delfin-agent-root .delfin-agent-input textarea:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+.delfin-agent-root .delfin-agent-input textarea::placeholder { color: #94a3b8; }
+.delfin-agent-send-row .jupyter-button.mod-primary {
+    border-radius: 12px;
+    font-weight: 600;
 }
 </style>
 """
