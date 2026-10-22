@@ -2274,8 +2274,49 @@ _AGENT_CSS = """\
 }
 .delfin-agent-root .delfin-agent-input textarea:focus {
     outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+    border-color: #93c5fd;
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12),
+                0 2px 8px rgba(15, 23, 42, 0.06);
+}
+/* Past the 280 px cap the box scrolls: a thin rounded bar without arrow
+   buttons, in the box's own colours (Chromium and Safari); Firefox takes
+   the standard thin bar. */
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar {
+    width: 8px;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-track {
+    background: transparent;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-thumb {
+    background: #cbd5e1; border-radius: 8px; border: 2px solid #ffffff;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-button {
+    display: none;
+}
+@supports not selector(::-webkit-scrollbar) {
+    .delfin-agent-root .delfin-agent-input textarea {
+        scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;
+    }
+}
+/* The shell, Files and Send buttons are as tall as the box beside them:
+   the rows stretch their items, and the buttons' 80 px from their widget
+   layout becomes the least height. */
+.delfin-agent-root .delfin-agent-input-area > .widget-hbox {
+    align-items: stretch !important;
+}
+.delfin-agent-root .delfin-agent-send-row {
+    align-items: stretch !important;
+}
+/* The box and Send carry the widgets' 2 px vertical margin; the shell and
+   Files buttons beside them did not, and stood 4 px taller. */
+.delfin-agent-root .delfin-agent-input-area > .widget-hbox > .jupyter-button {
+    margin-top: 2px !important; margin-bottom: 2px !important;
+}
+.delfin-agent-root .delfin-agent-input-area .jupyter-button {
+    height: auto !important; min-height: 80px;
 }
 .delfin-agent-root .delfin-agent-input textarea::placeholder { color: #94a3b8; }
 .delfin-agent-send-row .jupyter-button.mod-primary {
@@ -8514,7 +8555,17 @@ def create_tab(ctx):
         function grow(ta) {
             if (!ta) return;
             ta.style.height = 'auto';
-            ta.style.height = Math.min(ta.scrollHeight, MAXH) + 'px';
+            // The height includes the borders (box-sizing: border-box),
+            // scrollHeight does not: set to scrollHeight alone, a box
+            // whose content fitted overflowed by its two 1 px borders
+            // and drew a scrollbar (measured: 98 px box, 96 px inside).
+            var edge = ta.offsetHeight - ta.clientHeight;
+            ta.style.height = Math.min(ta.scrollHeight + edge, MAXH) + 'px';
+            // Writing at the end of a box past its cap: keep the line being
+            // written inside the frame with its padding, not on the edge.
+            if (ta.selectionStart === ta.value.length) {
+                ta.scrollTop = ta.scrollHeight;
+            }
         }
         function inputTA() {
             var sel = '.delfin-agent-input textarea';
