@@ -251,6 +251,9 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
             _bite_free = _bvt.embed_at_targets()
         _use_bm = (_have_targets and (_chel_bite or harden or force_bite or _bite_free)) \
             or _oc6_vertex or _ring_b
+        if not _use_bm and os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+            from delfin.manta.converter_backend import _ff_trace_write as _tw
+            _tw("[EMBED_BM] off have_targets=%s bite_free=%s" % (_have_targets, _bite_free))
         if _use_bm:
             try:
                 from rdkit.Chem import rdDistGeom as _DG
@@ -332,13 +335,23 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                             _setb(int(da), int(donor_idxs[b]),
                                   float(np.linalg.norm(_tp_use[a] - _tp_use[b])),
                                   tol=_dd_tol)
-                if _DGs.DoTriangleSmoothing(bm):
+                _smooth = _DGs.DoTriangleSmoothing(bm)
+                if _smooth:
                     ep = _DG.EmbedParameters()
                     ep.randomSeed = SEED
                     ep.useRandomCoords = True
                     ep.SetBoundsMat(bm)
                     cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, params=ep))
-            except Exception:
+                if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                    from delfin.manta.converter_backend import _ff_trace_write as _tw
+                    _tw("[EMBED_BM] metal=%s donors=%s r=%s bite_free=%s smooth=%s confs=%d"
+                        % (metal_sym, [mh.GetAtomWithIdx(int(d)).GetSymbol() for d in donor_idxs],
+                           (["%.3f" % float(np.linalg.norm(p)) for p in tp] if tp is not None else None),
+                           _bite_free, _smooth, len(cids)))
+            except Exception as _e:
+                if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
+                    from delfin.manta.converter_backend import _ff_trace_write as _tw
+                    _tw("[EMBED_BM] failed %r" % (_e,))
                 cids = []
         if not cids:                                      # default / fallback: unconstrained embed
             try:
