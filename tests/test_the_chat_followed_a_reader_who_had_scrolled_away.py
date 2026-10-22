@@ -194,6 +194,10 @@ global.document = {
 global.setInterval = (fn) => { intervalFn = fn; return 1; };
 global.setTimeout = () => 1;
 global.clearTimeout = () => {};
+// The script tells the reader's scrolls from the browser's by the input
+// just before them; the clock is the driver's.
+let NOW = 1000000;
+Date.now = () => NOW;
 
 __SCRIPT__
 
@@ -203,6 +207,19 @@ function flush() {
     for (const fn of (docListeners.scroll || [])) fn({target: t});
 }
 function userScroll(top) {
+  // A person scrolls with a wheel, a touch, a key or the scrollbar: the
+  // input event comes first, then the scroll.
+  NOW += 1000;
+  for (const fn of (docListeners.wheel || [])) fn({target: chat});
+  const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
+  chat._top = Math.max(0, Math.min(max, top));
+  for (const fn of (docListeners.scroll || [])) fn({target: chat});
+}
+// A scroll nobody asked for: the browser moved the offset (measured
+// 2026-10-22: 12 px up every 1.5 s while the agent waited, with no
+// script writing scrollTop), and the script put it back 60-85 ms later.
+function browserScroll(top) {
+  NOW += 1000;
   const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
   chat._top = Math.max(0, Math.min(max, top));
   for (const fn of (docListeners.scroll || [])) fn({target: chat});
@@ -223,6 +240,13 @@ seen.followed_to_the_end = chat.scrollTop === end();
 const shown = () => chat.attrs['data-delfin-follow'] === '0';
 const unseen = () => chat.attrs['data-delfin-unseen'] === '1';
 seen.control_hidden_at_the_end = !shown();
+
+// The browser moves a following reader 12 px up: put back in the same
+// scroll event, before the next paint, and still following.
+browserScroll(end() - 12);
+seen.a_scroll_nobody_made_is_undone_at_once =
+  chat.scrollTop === end() && S().follow === true;
+flush();
 
 // The reader scrolls up to re-read something.
 working = {working: true};
