@@ -138,13 +138,10 @@ def test_a_background_job_starts_bound(tmp_path, monkeypatch, started):
     from delfin.agent import bash_jobs
     seen = {}
 
-    class _Stop(Exception):
-        pass
-
     def fake_start(self, **kw):
         seen.update(kw)
         raise ValueError("stopped by the test")
-    monkeypatch.setattr(bash_jobs.BashJobRegistry, "start", fake_start)
+    monkeypatch.setattr(bash_jobs._Registry, "start", fake_start)
     A._doc_executor.execute("bash_background", {"command": "ls"},
                             _perms(tmp_path))
     assert seen["argv"][:4] == [
