@@ -67,11 +67,33 @@ def append_outcome(
     _trim_if_needed(p)
 
 
+#: Errors that end a turn before the task begins: the provider refused the
+#: key, could not be reached, does not serve the model, or rate-limits the
+#: key. They say nothing about how the task went. Recorded as failed tasks,
+#: an expired KIT key (2026-10-22) became "History: 0% pass rate · Common
+#: errors: AuthenticationError (4x) · Recent failure: <the user's task> ·
+#: WARNING: Low success rate" in the next session's briefing.
+NOT_A_TASK_ERRORS = frozenset({
+    "AuthenticationError", "PermissionDeniedError", "APIConnectionError",
+    "NotFoundError", "RateLimitError",
+})
+
+
+def is_task_outcome(error_type: str | None) -> bool:
+    """False for a turn the provider refused before any work."""
+    return str(error_type or "") not in NOT_A_TASK_ERRORS
+
+
 def load_outcomes(
     path: Path | None = None,
     max_entries: int = 100,
 ) -> list[CycleOutcome]:
-    """Load recent outcomes from the JSONL file."""
+    """Load recent outcomes from the JSONL file.
+
+    Records of a turn the provider refused (``NOT_A_TASK_ERRORS``) are
+    skipped: histories written before they stopped being recorded still
+    hold them.
+    """
     p = path or _DEFAULT_PATH
     if not p.exists():
         return []
@@ -82,6 +104,8 @@ def load_outcomes(
         for line in recent:
             try:
                 data = json.loads(line)
+                if not is_task_outcome(data.get("error_type")):
+                    continue
                 results.append(CycleOutcome(**{
                     k: v for k, v in data.items()
                     if k in CycleOutcome.__dataclass_fields__

@@ -79,7 +79,35 @@ def describe(result: ProbeResult, *, slow_cold_start_s: float = 0.0,
     waited = result.seconds
     text = (f"{name}: no answer to a one-word probe after {waited:.0f} s"
             + (f" ({result.error})" if result.error else "") + ".")
+    # Why there was none decides what the user can do; "queueing" is true
+    # only of a wait. Field report 2026-10-22: an expired KIT key (401) was
+    # announced as a queue.
+    reason = _REASONS.get(result.error or "")
+    if reason:
+        return text + " " + reason
     text += (" The endpoint is queueing. A turn is given "
              f"{first_token_budget_s / 60:.0f} min for its first token; "
              "another model answers sooner, or wait and watch the count.")
     return text
+
+
+#: The probe errors that are not a wait, by the SDK's exception name, and
+#: what they mean for the user. Anything else (a timeout, a 5xx, a stream
+#: that ended without a chunk) is read as a queue.
+_REASONS = {
+    "AuthenticationError": (
+        "The endpoint refused the key (401): sign in again or renew the "
+        "provider key in Settings; waiting does not help."),
+    "PermissionDeniedError": (
+        "The endpoint refused the key for this model (403): sign in again "
+        "or check the key's access in Settings; waiting does not help."),
+    "APIConnectionError": (
+        "The endpoint could not be reached: check the network or the "
+        "provider's base URL."),
+    "NotFoundError": (
+        "The endpoint does not serve this model name (404): pick another "
+        "model."),
+    "RateLimitError": (
+        "The endpoint is rate-limiting this key (429): wait a minute or "
+        "use another model."),
+}
