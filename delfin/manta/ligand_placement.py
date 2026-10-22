@@ -1464,6 +1464,25 @@ def _align_and_orient_ligands(
                 fragments.append(frag)
 
         donor_set = set(donor_atom_indices)
+        # ===== THE HYDROGENS RIDE WITH THEIR FRAGMENT (DELFIN_FFFREE_ORIENT_CARRY_H, default OFF) =====
+        #
+        # THE DEFECT.  The fragments above are built from HEAVY atoms only, and the spin / tilt below
+        # moves only the fragment's non-donor HEAVY atoms.  Every hydrogen stays where it was.  A spin
+        # by 30-330 degrees therefore tears each C-H / N-H / O-H of the rotated ligand apart -- measured
+        # on the legacy topology frames of QISKEK (trace DELFIN_LEGCONF_TRACE, 22.10.2026): the ETKDG
+        # template has X-H <= 1.15 A, the placed frame handed to Open Babel has 17-18 hydrogens at
+        # 4.5-15.7 A from their parent.  Open Babel then perceives connectivity FROM THAT GEOMETRY:
+        # the stray H bonds to whatever is near, the stripped carbons are typed as unsaturated, and UFF
+        # relaxes the wrong molecule -- the collapsed C-C (1.19-1.27 A), the stretched X-H (1.21-1.34 A)
+        # and the torn rings of the legacy conformer branch.  The graph gate after UFF checks only
+        # "bond < 2.2 A", so the relaxed wrong molecule passes.
+        #
+        # THE FIX.  A rotation of a rigid fragment is a rigid motion of ALL its atoms: the hydrogens of
+        # the fragment (H whose non-metal neighbour is a fragment atom) receive the same rotation.  The
+        # donors lie on the rotation axis / at the tilt pivot and stay fixed as before.  The SCORE that
+        # chooses the angle is unchanged (heavy atoms only), so the switch changes no choice -- it only
+        # stops leaving the hydrogens behind.  Off -> byte-identical (moving set = heavy non-donors).
+        _carry_h = _delfin_env_int("DELFIN_FFFREE_ORIENT_CARRY_H", 0) == 1
         # Per-fragment heavy atom list + donor list.
         frag_info: List[dict] = []
         for frag in fragments:
@@ -1474,9 +1493,17 @@ def _align_and_orient_ligands(
             frag_donors = [i for i in frag_heavy if i in donor_set]
             if len(frag_heavy) <= len(frag_donors):
                 continue  # nothing to rotate
+            _fh_set = set(frag_heavy)
+            frag_hyd = sorted(
+                a.GetIdx() for a in mol.GetAtoms()
+                if a.GetAtomicNum() == 1 and any(
+                    nb.GetIdx() in _fh_set for nb in a.GetNeighbors()
+                    if nb.GetSymbol() not in _METAL_SET)
+            ) if _carry_h else []
             frag_info.append({
                 "heavy": frag_heavy,
                 "donors": frag_donors,
+                "hyd": frag_hyd,
             })
 
         m_pos = pts[metal_idx]
@@ -1650,8 +1677,19 @@ def _align_and_orient_ligands(
                 else:
                     continue
 
-                atom_pts = {i: tuple(pts[i]) for i in non_donor}
-                best_score = _frag_score(heavy, donors, atom_pts)
+                # moving set: the heavy non-donors (as always) plus, under
+                # DELFIN_FFFREE_ORIENT_CARRY_H, the fragment's hydrogens; the
+                # score reads the heavy non-donors only (_hv), so the chosen
+                # angle is the same with and without the switch.
+                moving = non_donor + info["hyd"] if info["hyd"] else non_donor
+                if info["hyd"]:
+                    def _hv(_p, _keep=frozenset(non_donor)):
+                        return {i: v for i, v in _p.items() if i in _keep}
+                else:
+                    def _hv(_p):
+                        return _p
+                atom_pts = {i: tuple(pts[i]) for i in moving}
+                best_score = _frag_score(heavy, donors, _hv(atom_pts))
                 best_pts = atom_pts
                 # Multi-level tilt: 50% + 90% of the ideal LP->M correction.
                 # Combined with the no-tilt base gives three starting points
@@ -1665,19 +1703,19 @@ def _align_and_orient_ligands(
                             R_tilt @ (_np.asarray(atom_pts[i]) - tilt_pivot)
                             + tilt_pivot
                         )
-                        for i in non_donor
+                        for i in moving
                     }
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
                 for base in base_sets:
-                    s0 = _frag_score(heavy, donors, base)
+                    s0 = _frag_score(heavy, donors, _hv(base))
                     if s0 < best_score - 1e-6:
                         best_score = s0
                         best_pts = base
                     for k in range(1, n_rot):
                         angle = step * k
                         candidate = _rotate_about(axis, pivot, angle, base)
-                        s = _frag_score(heavy, donors, candidate)
+                        s = _frag_score(heavy, donors, _hv(candidate))
                         if s < best_score - 1e-6:
                             best_score = s
                             best_pts = candidate
