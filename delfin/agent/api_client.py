@@ -7799,7 +7799,10 @@ def _mcp_calculation_verdict(base: str, args: dict):
 
     ``submit_calculation`` in ORCA mode and ``run_orca_input`` are checked;
     every other tool (a DELFIN pipeline folder, a recalc, the workflow
-    runners) is not, and returns None: the dialog stays.
+    runners) is not, and returns None: the dialog stays. So does
+    delfin-tools ``run_application``/``submit_application``: an
+    application's ``inputs`` are its own schema, which carries no charge,
+    spin or geometry this check could read.
     """
     try:
         from . import calc_policy
