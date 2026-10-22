@@ -2373,6 +2373,22 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame > .delfin-agent-chat-host { grid-area: 1 / 1; }
 .delfin-agent-chat-frame > .delfin-agent-working-slot {
     grid-area: 1 / 1; align-self: end; z-index: 3;
+    /* Off the transcript's scrollbar (10 px, below) with 8 px to spare:
+       across the full cell the line lay on it (field report 2026-10-22). */
+    margin-right: 18px;
+}
+/* The transcript's scrollbar: a thin rounded bar like the input's, of a
+   known width, so the working line laid over the transcript can keep off
+   it. Chromium and Safari; Firefox takes its thin bar. */
+.delfin-agent-chat-host::-webkit-scrollbar { width: 10px; }
+.delfin-agent-chat-host::-webkit-scrollbar-track { background: transparent; }
+.delfin-agent-chat-host::-webkit-scrollbar-thumb {
+    background: #cbd5e1; border-radius: 8px; border: 2px solid #f8fafc;
+}
+.delfin-agent-chat-host::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+.delfin-agent-chat-host::-webkit-scrollbar-button { display: none; }
+@supports not selector(::-webkit-scrollbar) {
+    .delfin-agent-chat-host { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
 }
 .delfin-agent-chat-host .delfin-agent-chat { padding-bottom: 84px; }
 /* The slow-phase hint under the working line: the same inset strip. */
@@ -4355,7 +4371,8 @@ def _formula_card_html(path: Path, name_html: str) -> str | None:
         '<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">'
         f'\U0001F9EA <code>{name_html}</code> '
         '<span style="color:#9ca3af;">(structural formula)</span></div>'
-        f'<img src="data:image/svg+xml;base64,{data}" alt="{name_html}" '
+        f'<img src="data:image/svg+xml;base64,{data}" alt="{name_html}"'
+        f'{_img_box(svg.encode("utf-8"))} '
         'style="display:block;margin:0 auto;width:min(560px,100%);'
         'height:auto;"/>'
         '<div style="text-align:center;margin-top:6px;font-size:15px;'
@@ -4691,9 +4708,9 @@ def _render_pdf_preview(p) -> str | None:
     import base64
     b64 = base64.b64encode(png).decode("ascii")
     return (
-        f'<img src="data:image/png;base64,{b64}" '
-        f'style="max-width:100%;border:1px solid #f3f4f6;border-radius:4px;'
-        f'display:block;" alt="page 1 of {pages}"/>'
+        f'<img src="data:image/png;base64,{b64}"{_img_box(png)} '
+        f'style="max-width:100%;height:auto;border:1px solid #f3f4f6;'
+        f'border-radius:4px;display:block;" alt="page 1 of {pages}"/>'
         f'<div style="font-size:11px;color:#9ca3af;margin-top:3px;">'
         f'page 1 of {pages}</div>'
     )
@@ -4777,6 +4794,70 @@ def _render_artifact_inline(path) -> str | None:
     return body + link
 
 
+def _img_box(data: bytes) -> str:
+    """`` width="W" height="H"`` read from an image's header, or "".
+
+    Input: the image's bytes (PNG, GIF, JPEG or SVG text). Output: the two
+    attributes for its ``<img>``. With them the browser reserves the box
+    before the data URI is decoded; without them an image is 0 px tall
+    until then, and Python replaces the whole transcript on every update,
+    so every update collapsed the images above the end for a moment. The
+    CSS keeps scaling them (max-width, height: auto); only the aspect ratio
+    is taken from these numbers.
+    """
+    import struct
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+            w, h = struct.unpack(">II", data[16:24])
+        elif data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+            w, h = struct.unpack("<HH", data[6:10])
+        elif data[:2] == b"\xff\xd8":
+            i, w, h = 2, 0, 0
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+                    h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                    break
+                i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+        else:
+            head = data[:4096].decode("utf-8", "ignore")
+            tag = re.search(r"<svg\b[^>]*>", head)
+            if not tag:
+                return ""
+            tag = tag.group(0)
+
+            def _len(name):
+                m = re.search(name + r'\s*=\s*["\']\s*([\d.]+)\s*(px|pt)?\s*["\']',
+                              tag)
+                return float(m.group(1)) if m else None
+
+            w, h = _len("width"), _len("height")
+            if not (w and h):
+                vb = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[\s,]+[-\d.]+'
+                               r'[\s,]+([\d.]+)[\s,]+([\d.]+)\s*["\']', tag)
+                if not vb:
+                    return ""
+                w, h = float(vb.group(1)), float(vb.group(2))
+        w, h = int(round(w)), int(round(h))
+    except Exception:
+        return ""
+    if w <= 0 or h <= 0:
+        return ""
+    return f' width="{w}" height="{h}"'
+
+
+def _img_box_b64(b64: str) -> str:
+    """``_img_box`` of a base64-encoded PNG, read from its first 24 bytes."""
+    import base64
+    try:
+        return _img_box(base64.b64decode(b64[:32]))
+    except Exception:
+        return ""
+
+
 def _render_artifact_body(path) -> str | None:
     """Render a workspace artifact as inline HTML for the chat.
 
@@ -4829,7 +4910,7 @@ def _render_artifact_body(path) -> str | None:
             f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'📷 <code>{name_html}</code></div>'
-            f'<img src="data:{mime};base64,{b64}" '
+            f'<img src="data:{mime};base64,{b64}"{_img_box(data)} '
             # Never wider than reading size: a 300 dpi figure is 3000 px
             # and filled the whole chat; a small image is not enlarged.
             f'style="max-width:min(900px,100%);height:auto;border-radius:4px;'
@@ -4864,7 +4945,8 @@ def _render_artifact_body(path) -> str | None:
             # A vector drawing is shown at reading size, centred: at its
             # own 576 px a plot sat small in the corner of a 1500 px chat.
             # It scales without blur; 900 px keeps a wide chat calm.
-            f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'<img src="data:image/svg+xml;base64,{b64}"'
+            f'{_img_box(text.encode("utf-8"))} '
             f'style="width:min(900px,100%);height:auto;display:block;'
             f'margin:0 auto;" alt="{name_html}"/>'
             f'</div></div>'
@@ -4941,8 +5023,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
             f'<code style="color:#374151;">{_html.escape(first[:120])}</code></div>'
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="display:block;border-radius:4px;" '
+            f'<img src="data:image/png;base64,{b64}"'
+            f'{_img_box_b64(b64)} '
+            f'style="display:block;border-radius:4px;max-width:100%;'
+            f'height:auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -4971,8 +5055,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
             f'({mol.GetNumAtoms()} atoms, {mol.GetNumBonds()} bonds)</div>'
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="display:block;border-radius:4px;" '
+            f'<img src="data:image/png;base64,{b64}"'
+            f'{_img_box_b64(b64)} '
+            f'style="display:block;border-radius:4px;max-width:100%;'
+            f'height:auto;" '
             f'alt="{name_html}"/></div>'
         )
 
