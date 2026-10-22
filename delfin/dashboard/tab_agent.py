@@ -1262,8 +1262,10 @@ _AGENT_CSS = """\
     bottom: 6px;
     z-index: 5;
     flex: 0 0 auto;
-    align-self: flex-end;
-    margin: -4px 2px 0 0;
+    /* Centred: at the right edge it lay over a card's own controls (the
+       3D viewer's Fullscreen button) whenever the reader scrolled up. */
+    align-self: center;
+    margin: -4px auto 0 auto;
     padding: 3px 10px;
     border: 1px solid #475569;
     border-radius: 999px;
@@ -1440,6 +1442,21 @@ _AGENT_CSS = """\
     word-wrap: break-word;
     color: inherit;
     background: transparent;
+}
+/* The part of a reply still arriving reads as the reply's own text, not
+   as a code block: the generic ".delfin-chat-agent pre" rule below is more
+   specific than ".delfin-streaming-pre" and drew it as a dark box. */
+.delfin-chat-agent pre.delfin-streaming-pre {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    font-family: inherit;
+    font-size: inherit;
+    white-space: pre-wrap;
 }
 .delfin-chat-approval {
     background: #fef3c7;
@@ -2707,6 +2724,54 @@ def _code_block_html(lang: str, code: str, idx: int = 0) -> str:
         f'}})}})(this)">Copy</button>'
         f"<pre>{lang_label}<code>{highlighted}</code></pre></div>"
     )
+
+
+#: Above this many characters a streaming reply is shown as plain text:
+#: markdown costs ~0.5 ms per KB here (measured 2026-10-22), and a reply
+#: this long is rendered once more when it ends anyway.
+_STREAM_MARKDOWN_MAX = 20_000
+
+
+def _streaming_html(text: str) -> str:
+    """A reply that is still arriving, as chat HTML.
+
+    The paragraphs that are finished -- everything up to the last blank
+    line, and never inside an open code fence -- go through
+    :func:`_md_to_html`, so bold text, lists and tables appear as they
+    will stay. The paragraph still being written is escaped plain text in
+    the reply's own font. Before, the whole reply was raw markdown until
+    the turn ended, then flipped to the formatted version. Over
+    ``_STREAM_MARKDOWN_MAX`` characters the whole reply is plain text.
+    """
+    # Same trim as the markdown path: the first tokens often arrive behind
+    # a newline, and that gap would sit under the label for the whole reply.
+    text = text.strip(chr(13) + chr(10))
+
+    def _plain(part: str) -> str:
+        return (f'<pre class="delfin-streaming-pre">{_html.escape(part)}'
+                f'</pre>') if part.strip() else ""
+
+    if len(text) > _STREAM_MARKDOWN_MAX:
+        return _plain(text)
+    cut = text.rfind("\n\n")
+    if cut < 0:
+        return _plain(text)
+    head, tail = text[:cut], text[cut:]
+    if head.count("```") % 2:
+        # The last fence in the finished part is still open: the code
+        # block belongs to the growing part until its closing fence.
+        fence = head.rfind("```")
+        head, tail = text[:fence], text[fence:]
+    else:
+        # A table arrives row by row with no blank line until it ends:
+        # its finished rows (header and separator included) are drawn,
+        # only the row still being written stays text.
+        lines = tail.strip("\n").split("\n")
+        if (len(lines) >= 3 and lines[0].lstrip().startswith("|")
+                and lines[1].lstrip().startswith("|")):
+            done = tail.rfind("\n")
+            head, tail = text[:cut] + tail[:done], tail[done:]
+    return (_md_to_html(head) if head.strip() else "") + _plain(tail.strip("\n"))
 
 
 def _md_to_html(text: str) -> str:
@@ -4002,6 +4067,30 @@ def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
             "iso": iso}
 
 
+def _tool_param_html(parsed: dict, tool_input: str) -> str:
+    """The short description beside a tool's name in the chat.
+
+    The first meaningful argument (a path, a pattern, a query, ...); for a
+    plot spec, its file, kind and title. Without that rule, make_plot
+    showed its raw JSON -- a hundred characters of numbers. Falls back to
+    the start of the raw input, escaped.
+    """
+    spec = parsed.get("spec") if isinstance(parsed, dict) else None
+    if isinstance(spec, dict):
+        kind = str(spec.get("kind") or "plot")
+        name = str(spec.get("filename") or f"plot_{kind}")
+        title = str(spec.get("title") or "")
+        text = f"{name} ({kind})" + (f" \u2014 {title}" if title else "")
+        return f'<span class="tool-param">{_html.escape(text[:120])}</span>'
+    if isinstance(parsed, dict):
+        for key in ("file_path", "path", "pattern",
+                    "prompt", "description", "query", "command"):
+            if key in parsed:
+                val = str(parsed[key])[:80]
+                return f'<span class="tool-param">{_html.escape(val)}</span>'
+    return _html.escape(str(tool_input or "")[:100])
+
+
 def _show_molecule_card_html(tool_output) -> str | None:
     """The chat card for a ``show_molecule`` result, or None.
 
@@ -4021,6 +4110,10 @@ def _show_molecule_card_html(tool_output) -> str | None:
     if payload is None:
         return None
     name_html = _html.escape(payload["title"])
+    if payload.get("view") == "2d":
+        card = _formula_card_html(Path(payload["path"]), name_html)
+        if card is not None:
+            return card
     card = _mol3d_card_html(Path(payload["path"]), name_html,
                             isovalue=payload.get("isovalue"))
     if card is not None:
@@ -4035,6 +4128,62 @@ def _show_molecule_card_html(tool_output) -> str | None:
         '<div style="font-size:12px;color:#1f2937;font-family:monospace;'
         f'white-space:pre-wrap;overflow-wrap:anywhere;">'
         f'{_html.escape(payload["text"])}</div></div>'
+    )
+
+
+def _sum_formula_html(formula: str) -> str:
+    """``C4H10`` as ``C<sub>4</sub>H<sub>10</sub>``; charges stay as written."""
+    import re as _re_f
+    return _re_f.sub(r"(?<=[A-Za-z)])(\d+)", r"<sub>\1</sub>",
+                     _html.escape(formula))
+
+
+def _formula_card_html(path: Path, name_html: str) -> str | None:
+    """A structural formula card for a .smi/.mol/.sdf file, or None.
+
+    Input: a path the executor admitted (show_molecule). Output: the
+    formula drawn by RDKit as an SVG, embedded as an image -- a data URI
+    in an ``<img>``, so nothing in it runs as page markup -- with the sum
+    formula and the canonical SMILES under it. Terminal methyl groups are
+    written out (CH3) so a short chain still reads as a formula. None
+    when the file cannot be parsed; the caller then shows the text card.
+    """
+    from delfin.dashboard import chat_viewer
+    try:
+        mol, smiles, formula = chat_viewer.read_formula(str(path))
+        from rdkit.Chem import AllChem
+        from rdkit.Chem.Draw import rdMolDraw2D
+        mol = AllChem.Mol(mol)
+        AllChem.Compute2DCoords(mol)
+        drawer = rdMolDraw2D.MolDraw2DSVG(560, 300)
+        opts = drawer.drawOptions()
+        opts.explicitMethyl = True
+        opts.bondLineWidth = 3
+        opts.minFontSize = 22
+        opts.padding = 0.12
+        opts.clearBackground = True
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+    except Exception:
+        return None
+    import base64 as _b64
+    data = _b64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        '<div class="delfin-artifact delfin-formula-card" style="margin:6px 0;'
+        'padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;'
+        'background:#fff;">'
+        '<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">'
+        f'\U0001F9EA <code>{name_html}</code> '
+        '<span style="color:#9ca3af;">(structural formula)</span></div>'
+        f'<img src="data:image/svg+xml;base64,{data}" alt="{name_html}" '
+        'style="display:block;margin:0 auto;width:min(560px,100%);'
+        'height:auto;"/>'
+        '<div style="text-align:center;margin-top:6px;font-size:15px;'
+        f'color:#111827;">{_sum_formula_html(formula)}'
+        '<span style="margin-left:12px;font-size:12px;color:#6b7280;'
+        f'font-family:monospace;">{_html.escape(smiles)}</span></div>'
+        '</div>'
     )
 
 
@@ -4502,7 +4651,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'📷 <code>{name_html}</code></div>'
             f'<img src="data:{mime};base64,{b64}" '
-            f'style="max-width:100%;border-radius:4px;display:block;" '
+            # Never wider than reading size: a 300 dpi figure is 3000 px
+            # and filled the whole chat; a small image is not enlarged.
+            f'style="max-width:min(900px,100%);height:auto;border-radius:4px;'
+            f'display:block;margin:0 auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -4530,8 +4682,12 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🎨 <code>{name_html}</code></div>'
             f'<div style="max-width:100%;overflow:auto;">'
+            # A vector drawing is shown at reading size, centred: at its
+            # own 576 px a plot sat small in the corner of a 1500 px chat.
+            # It scales without blur; 900 px keeps a wide chat calm.
             f'<img src="data:image/svg+xml;base64,{b64}" '
-            f'style="max-width:100%;display:block;" alt="{name_html}"/>'
+            f'style="width:min(900px,100%);height:auto;display:block;'
+            f'margin:0 auto;" alt="{name_html}"/>'
             f'</div></div>'
         )
 
@@ -5929,7 +6085,9 @@ def create_tab(ctx):
         # a third thing again. One word for three concepts, and the one it
         # was taken from is the one the user reads next to it.
         description="Mode:",
-        layout=widgets.Layout(width="200px"),
+        # 160: the longest option ("Dashboard") fits; at 200 the control
+        # row wrapped on a 1366 px screen.
+        layout=widgets.Layout(width="160px"),
         style={"description_width": "45px"},
     )
     mode_desc_html = widgets.HTML(
@@ -6234,8 +6392,9 @@ def create_tab(ctx):
         options=_perm_options_for_mode(mode_dropdown.value),
         value="ask_all",
         description="Perms:",
-        layout=widgets.Layout(width="195px"),
-        style={"description_width": "42px"},
+        layout=widgets.Layout(width="190px"),
+        # 48, not 42: at 42 px the label was cut to "Per...".
+        style={"description_width": "48px"},
         tooltip=("Plan = read only · Ask All = asks before every file change "
                  "and every shell command · Accept Edits = file changes go "
                  "through, shell still asks · Bypass = asks nothing inside "
@@ -6315,7 +6474,7 @@ def create_tab(ctx):
     )
     stop_btn = widgets.Button(
         description="Stop",
-        button_style="danger",
+        button_style="",
         layout=widgets.Layout(width="80px"),
     )
     stop_btn.disabled = True
@@ -6479,6 +6638,23 @@ def create_tab(ctx):
             btn = git_buttons[cmd]
             btn.disabled = bool(reasons[cmd])
             btn.tooltip = reasons[cmd] or tip
+        # Outside a git checkout the four buttons and the base field can
+        # do nothing at all; shown greyed out, they took a third of the
+        # control row and pushed the rest onto a second line. They come
+        # back the moment the session's folder is a repository.
+        in_repo = not all(r.startswith("Not a git repository")
+                          for r in reasons.values())
+        shown = "" if in_repo else "none"
+        for w in (git_base, *git_buttons.values()):
+            if w.layout.display != shown:
+                w.layout.display = shown
+
+    # The first look, before any status refresh: a session that opens in
+    # a folder without git starts without the git controls.
+    try:
+        _refresh_git_buttons()
+    except Exception:
+        pass
 
     def _on_git_button(cmd: str) -> None:
         reason = _git_button_state().get(cmd, "")
@@ -7465,11 +7641,10 @@ def create_tab(ctx):
     # so the row looks like one coherent strip.
     # Kept by name: when nothing is open the grey line goes back to this,
     # because an empty placeholder would read as "nothing to propose".
-    _INPUT_HINT = (
-        "Message the agent... (Enter = send, Shift+Enter = newline)\n"
-        "KIT tip: say 'also work in /path' to grant write access \u2014 "
-        "the agent persists it after one confirm click."
-    )
+    # One calm line. The KIT write-access tip it used to carry stays in the
+    # write-access line of the Details fold (kit_dirs_status), where it is
+    # read when wanted rather than on every empty input.
+    _INPUT_HINT = "Message DELFIN\u2026  (Enter to send, Shift+Enter for a new line)"
     input_textarea = widgets.Textarea(
         placeholder=_INPUT_HINT,
         layout=widgets.Layout(
@@ -7771,6 +7946,10 @@ def create_tab(ctx):
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
             }
             viewer.zoomTo();
+            // zoomTo fits the bounding sphere, which leaves a chain small in
+            // a wide stage; a quarter closer still keeps it inside. Not for
+            // an orbital: its lobes reach past the atoms.
+            if (fmt !== 'cube') viewer.zoom(1.25);
             viewer.render();
             // Keep one in-memory copy of the source text for the fullscreen
             // lightbox (wireFullscreen rebuilds from it), then drop the copy
@@ -7826,7 +8005,7 @@ def create_tab(ctx):
             if (btnNext) btnNext.onclick = function() { stop(); step(1); };
             if (btnReset) btnReset.onclick = function() {
                 stop(); viewer.setFrame(0);
-                viewer.zoomTo(); viewer.render(); setCounter();
+                viewer.zoomTo(); viewer.zoom(1.25); viewer.render(); setCounter();
             };
         }
 
@@ -8411,19 +8590,18 @@ def create_tab(ctx):
         # the session compacts, and it costs six characters.
         ctx_pct = state.get("_fold_ctx")
         if ctx_pct is not None:
-            parts.append(f"ctx {ctx_pct:.0f}%")
+            parts.append(f"Context {ctx_pct:.0f}%")
         n_tools = int(state.get("_fold_tools", 0) or 0)
         if n_tools:
-            last = str(state.get("_fold_last_tool", "") or "")
-            parts.append(f"Tool calls {n_tools}" + (f" (last: {last})" if last else ""))
-        sec_total, sec_blocked = state.get("_fold_security", (0, 0))
-        if sec_total:
-            parts.append(f"⚠ Containment {sec_blocked} blocked / "
-                         f"{sec_total - sec_blocked} flagged")
-        t_in, t_out, t_cost = state.get("_fold_tokens", (0, 0, 0.0))
-        if t_in or t_out:
-            parts.append(f"{t_in:,} in / {t_out:,} out"
-                         + (f" · {_fmt_cost(t_cost)}" if t_cost > 0 else ""))
+            parts.append(f"{n_tools} tool call{'s' if n_tools != 1 else ''}")
+        # A warning sign only for what was refused. Flagged-but-allowed
+        # events and the last tool's internal name were in this line on
+        # every busy session and read as an alarm that was not one; they
+        # are in the sub-folds below (Containment, Tool calls) and the
+        # token counts in the status row, one click away.
+        _sec_total, sec_blocked = state.get("_fold_security", (0, 0))
+        if sec_blocked:
+            parts.append(f"⚠ {sec_blocked} blocked")
         return " · ".join(parts) if parts else "Details"
 
     def _refresh_subfolds():
@@ -11775,14 +11953,7 @@ def create_tab(ctx):
             # During streaming: plain <pre> — no expensive markdown parsing.
             # On finalize: full _md_to_html with code blocks, formatting etc.
             if msg.get("_streaming"):
-                # Same trim as the markdown path: the first tokens often
-                # arrive behind a newline, and during streaming that gap
-                # sits under the label for the whole reply.
-                content = (
-                    f'<pre class="delfin-streaming-pre">'
-                    f'{_html.escape(str(msg["content"] or "").strip(chr(13) + chr(10)))}'
-                    f'</pre>'
-                )
+                content = _streaming_html(str(msg["content"] or ""))
             else:
                 content = _md_to_html(msg["content"])
             _ts = str(msg.get("turn_summary") or "")
@@ -12700,6 +12871,11 @@ def create_tab(ctx):
         # pressing it again is the one thing left to do when the first
         # stop did not take.
         stop_btn.disabled = not (is_streaming or _turn_thread_alive())
+        # Red only while there is something to stop: a pale red button
+        # on an idle tab drew the eye to a control that could do nothing.
+        _stop_style = "" if stop_btn.disabled else "danger"
+        if stop_btn.button_style != _stop_style:
+            stop_btn.button_style = _stop_style
         mode_dropdown.disabled = is_streaming
         model_dropdown.disabled = is_streaming
         effort_dropdown.disabled = is_streaming
@@ -20034,18 +20210,9 @@ def create_tab(ctx):
                             _append_tool_message("\n".join(lines))
 
                     else:
-                        # Generic: show first meaningful param
-                        param = ""
-                        for key in ("file_path", "path", "pattern",
-                                    "prompt", "description", "query", "command"):
-                            if key in parsed:
-                                val = str(parsed[key])[:80]
-                                param = f'<span class="tool-param">{_e(val)}</span>'
-                                break
-                        if not param:
-                            param = _e(tool_input[:100])
                         _append_tool_message(
-                            f'<span class="tool-name">{_e(tool_name)}</span>  {param}'
+                            f'<span class="tool-name">{_e(tool_name)}</span>  '
+                            + _tool_param_html(parsed, tool_input)
                         )
 
                 def _emit_new_workspace_artifacts() -> None:
@@ -23427,6 +23594,7 @@ def create_tab(ctx):
         "refresh_loop": _refresh_loop_panel,
         "auto_tick": _auto_tick,
         "auto_after_turn": _auto_after_turn,
+        "fold_title": _fold_title,
     }
 
 

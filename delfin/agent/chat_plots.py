@@ -852,6 +852,22 @@ def _caption(title: str, units: str, kind: str, n_points: int) -> str:
 # rendering
 
 
+#: Lines with at most this many points get a marker on each one.
+_MARKERS_UP_TO = 80
+
+
+def _house_style(ax) -> None:
+    """The look every line/scatter/bar/histogram/box plot shares: no
+    top/right frame, a faint grid under the data, readable tick labels.
+    Set on the axes, not through rcParams, so the caller's process keeps
+    its own matplotlib defaults (see the module docstring)."""
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.grid(True, axis="y", alpha=0.3, linewidth=0.6)
+    ax.set_axisbelow(True)
+    ax.tick_params(labelsize=10)
+
+
 def resolve_out_path(spec: dict, out_dir: Path) -> Path:
     """The file :func:`plot` writes for ``spec`` under ``out_dir``.
 
@@ -862,11 +878,17 @@ def resolve_out_path(spec: dict, out_dir: Path) -> Path:
     # An energy profile goes on a slide or into a paper draft: PNG at
     # 300 dpi as the group's scripts wrote it. Two live runs asked for a PNG
     # without saying format and then converted the SVG by hand.
-    fmt = _require_str(spec, "format",
-                       "png" if kind == "energy_profile" else "svg").lower()
+    filename = _require_str(spec, "filename", "").strip()
+    # A filename that ends in a format IS the format when none is given:
+    # "butane_pes.svg" with the energy profile's PNG default was written as
+    # "butane_pes.svg.png".
+    named = Path(filename).suffix[1:].lower() if filename else ""
+    default_fmt = (named if named in _FORMATS
+                   else "png" if kind == "energy_profile" else "svg")
+    fmt = _require_str(spec, "format", default_fmt).lower()
     if fmt not in _FORMATS:
         raise SpecError(f"format must be png or svg, got {fmt!r}")
-    filename = _require_str(spec, "filename", "").strip() or f"plot_{kind}.{fmt}"
+    filename = filename or f"plot_{kind}.{fmt}"
     if not filename.lower().endswith(f".{fmt}"):
         filename = f"{filename}.{fmt}"
     out_path = (out_dir / filename).resolve()
@@ -907,27 +929,37 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
                                     title=title, xlabel=xlabel)
     series, n_points = _resolve_series(spec, kind, out_dir_path, reader)
 
-    fig = Figure(figsize=(6, 4))
+    fig = Figure(figsize=(7.5, 4.2), layout="constrained")
     ax = fig.subplots()
+    _house_style(ax)
     if kind in ("line", "scatter", "bar"):
         draw = {"line": ax.plot, "scatter": ax.scatter, "bar": ax.bar}[kind]
         for label, xs, ys in series:
             pos, ticks = _positions(xs) if xs else (list(range(len(ys))), None)
-            draw(pos, ys, label=label or None)
+            extra = {}
+            if kind == "line":
+                # Each computed point visible while there are few enough to
+                # read: a smooth line over 25 calculations hides that they
+                # are 25.
+                extra = {"linewidth": 1.8}
+                if len(ys) <= _MARKERS_UP_TO:
+                    extra.update(marker="o", markersize=4)
+            draw(pos, ys, label=label or None, **extra)
             if ticks is not None:
                 ax.set_xticks(pos, ticks)
         if any(lbl for lbl, _, _ in series):
-            ax.legend()
+            ax.legend(frameon=False)
     elif kind == "histogram":
         ax.hist(series[0][2], bins=bins if bins is not None else "auto")
     else:  # box
         ax.boxplot([series[0][2]], tick_labels=[xlabel])
     if xlabel:
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel, fontsize=11.5)
     if ylabel:
-        ax.set_ylabel(f"{ylabel} ({units})" if units else ylabel)
+        ax.set_ylabel(f"{ylabel} ({units})" if units else ylabel,
+                      fontsize=11.5)
     if title:
-        ax.set_title(title)
+        ax.set_title(title, fontsize=13, fontweight="semibold", loc="left")
 
     _write(fig, out_path, fmt)
     return PlotResult(
