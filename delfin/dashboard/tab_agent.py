@@ -2282,6 +2282,38 @@ _AGENT_CSS = """\
     border-radius: 12px;
     font-weight: 600;
 }
+/* The rest of the composer and the bars around the chat take the same
+   corner: the shell and Files buttons (in the input area's row, not in
+   the Send row) keep their light grey; the Details bar is a 12 px bar;
+   the working line, task line and Background box are strips inset 8 px
+   into the rounded chat frame, so they sit inside its corners instead of
+   running under them. */
+.delfin-agent-root .delfin-agent-input-area .jupyter-button {
+    border-radius: 12px;
+}
+.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary) {
+    background: #eeeeee; border: none; color: #334155;
+    /* The 40 px shell button holds an icon and "/": with the default
+       padding and a border its label was cut to ">_ ..." (measured). */
+    padding: 0 4px;
+}
+.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary):hover {
+    background: #e2e5e9;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-header {
+    border-radius: 12px; border: 1px solid #e2e8f0; background: #f8fafc;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse.jupyter-widget-Collapse-open > .jupyter-widget-Collapse-header {
+    border-radius: 12px 12px 0 0;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-contents {
+    border-radius: 0 0 12px 12px; border-color: #e2e8f0;
+}
+.delfin-agent-chat-frame .delfin-agent-working,
+.delfin-agent-chat-frame > .delfin-agent-task-strip,
+.delfin-agent-chat-frame > .delfin-agent-background {
+    margin: 0 8px 6px; border-radius: 8px; border: 1px solid #e2e8f0;
+}
 </style>
 """
 
@@ -4074,7 +4106,8 @@ def _mol3d_card_html(path, name_html: str,
         f'\u269b\ufe0f <code>{name_html}</code> '
         f'<span style="color:#9ca3af;">({kind})</span></div>'
         f'<div id="{view_id}" class="delfin-mol3d-stage" '
-        f'style="width:100%;height:380px;min-height:280px;'
+        f'style="width:100%;height:var(--delfin-mol3d-h, 380px);'
+        f'min-height:280px;'
         f'position:relative;border-radius:4px;overflow:hidden;">'
         f'<div class="delfin-mol3d-scope" style="width:100%;height:100%;'
         f'position:relative;"></div></div>'
@@ -8008,8 +8041,18 @@ def create_tab(ctx):
             if (host) {
                 var frameH = host.clientHeight;
                 if (frameH > 0) {
-                    stage.style.height =
+                    var stageH =
                         Math.max(280, Math.min(Math.round(frameH * 0.8), 700)) + 'px';
+                    stage.style.height = stageH;
+                    // Kept on the frame, which survives the transcript:
+                    // Python replaces the whole transcript on every
+                    // streaming update, and a card rebuilt at 380 px and
+                    // sized here only after 3Dmol had built it moved the
+                    // end of the chat by its difference on every update
+                    // (717 px for three cards at 1920x1080). The card's
+                    // stage reads this property, so it is rebuilt at its
+                    // height.
+                    host.style.setProperty('--delfin-mol3d-h', stageH);
                 }
             }
             var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});

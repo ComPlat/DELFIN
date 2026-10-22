@@ -184,7 +184,9 @@ def test_the_stage_fits_the_chat_window_not_the_viewport(tmp_path):
     chat frame and caps the stage to fit inside it."""
     card = T._mol3d_card_html(_xyz(tmp_path), "struct.xyz")
     assert card is not None
-    assert "height:380px" in card
+    # 380px until a card was sized; then the height the script kept on
+    # the frame (tests/test_a_rebuilt_chat_keeps_its_height.py).
+    assert "height:var(--delfin-mol3d-h, 380px)" in card
     assert "min-height:280px" in card
     src = inspect.getsource(T)
     assert ".delfin-agent-chat-frame" in src, (
