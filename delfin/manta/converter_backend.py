@@ -1551,6 +1551,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
         return False
 
     n_coll = 0
+    _coll_first = ""                                  # trace detail only (ISO_TRACE)
     for i, j in bonds:
         if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
             continue
@@ -1562,7 +1563,9 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
         if _mb_len_exempt and _len_is_multibond(syms[i], syms[j], d_ij):
             continue                                  # length-matches a multibond ideal -> pass
         n_coll += 1
+        _coll_first = _coll_first or "%s%d-%s%d %.2f<%.2f" % (syms[i], i, syms[j], j, d_ij, _coll_floor(syms[i], syms[j]))
     if n_coll > 0:
+        _ff_trace_write("[GATE_DETAIL] COLLAPSED_BOND %s n=%d" % (_coll_first, n_coll))
         return _gate_no("COLLAPSED_BOND")
     # GRAPH ANCHOR (DELFIN_FFFREE_TORN_GATE, default OFF -> byte-identical).  Everything above
     # judges bonds that geometric perception FOUND -- "is this contact too short?".  Nothing asks
