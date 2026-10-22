@@ -24,6 +24,15 @@ def test_finished_paragraphs_are_rendered_and_the_growing_one_is_text():
     assert "GFN2-xTB underestim" in tail and "<table" not in tail
 
 
+def test_a_table_shows_its_finished_rows_while_the_next_one_arrives():
+    text = ("Result:\n\n| Quantity | Value |\n|---|---:|\n| gap | 0.60 |\n"
+            "| barrier | 2.6 |\n| syn | 4.9")
+    html = tab_agent._streaming_html(text)
+    head, tail = html.split("delfin-streaming-pre", 1)
+    assert "<table" in head and "barrier" in head
+    assert "| syn | 4.9" in tail and "<table" not in tail
+
+
 def test_an_open_code_fence_stays_raw_until_it_closes():
     text = "Here is the input:\n\n```\n! r2SCAN-3c\n* xyzfile 0 1"
     html = tab_agent._streaming_html(text)
