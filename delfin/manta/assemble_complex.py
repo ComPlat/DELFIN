@@ -336,8 +336,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         if -1.0 <= _cb <= 1.0:
                             _v0, _v1 = _bite_close(_u[0], _u[1], math.degrees(math.acos(_cb)))
                             _dtp = [_v0 * _rn[0], _v1 * _rn[1]]
+                            from delfin.manta.converter_backend import _ff_trace_write as _tw
+                            _tw("[BV_BITE] dd %.3f r %.3f %.3f angle %.1f" % (_ddh, _rn[0], _rn[1], math.degrees(math.acos(_cb))))
                 except Exception:
-                    pass
+                    from delfin.manta.converter_backend import _ff_trace_write as _tw
+                    _tw("[BV_BITE] failed")
             # CHELATE-BACKBONE hardening is SCOPED to the newly-admitted LARGE backbones
             # (per-arm heavy > the historic cap of 8) so every existing native chelate
             # (per-arm <= 8: en, acac, bipy, terpy, ...) keeps the EXACT historic embed
