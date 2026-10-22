@@ -2282,6 +2282,34 @@ _AGENT_CSS = """\
     border-radius: 12px;
     font-weight: 600;
 }
+/* The rest of the composer and the bars around the chat take the same
+   corner: the shell and Files buttons as quiet outlined buttons beside the
+   input; the Details bar as a 12 px bar; the working line, task line and
+   Background box as strips inset 8 px into the rounded chat frame, so
+   they sit inside its corners instead of running under them. */
+.delfin-agent-root .delfin-agent-send-row .jupyter-button {
+    border-radius: 12px;
+}
+.delfin-agent-root .delfin-agent-send-row .jupyter-button:not(.mod-primary) {
+    background: #ffffff; border: 1px solid #cbd5e1; color: #334155;
+}
+.delfin-agent-root .delfin-agent-send-row .jupyter-button:not(.mod-primary):hover {
+    background: #f1f5f9;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-header {
+    border-radius: 12px; border: 1px solid #e2e8f0; background: #f8fafc;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse.jupyter-widget-Collapse-open > .jupyter-widget-Collapse-header {
+    border-radius: 12px 12px 0 0;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-contents {
+    border-radius: 0 0 12px 12px; border-color: #e2e8f0;
+}
+.delfin-agent-chat-frame .delfin-agent-working,
+.delfin-agent-chat-frame > .delfin-agent-task-strip,
+.delfin-agent-chat-frame > .delfin-agent-background {
+    margin: 0 8px 6px; border-radius: 8px; border: 1px solid #e2e8f0;
+}
 </style>
 """
 
