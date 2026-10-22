@@ -219,3 +219,20 @@ def test_a_local_orca_run_on_a_login_node_is_not_unasked(ws, monkeypatch):
     _host(monkeypatch, "login_node")
     assert _mcp(ws, "run_orca_input",
                 {"input_file": str(ws / "b.inp")}) is not None
+
+
+# -- what the run reports ---------------------------------------------------
+
+def test_the_run_names_what_was_started_where(tmp_path, monkeypatch):
+    """Through the real executor: the result carries the check's line,
+    whether or not xtb is installed on this machine (an absent program
+    still returns a JSON result with its exit code)."""
+    import json
+    _host(monkeypatch, "workstation")
+    monkeypatch.setattr(C, "_available_cpus", lambda: 8)
+    (tmp_path / "h2.xyz").write_text("2\n\nH 0 0 0\nH 0 0 0.74\n")
+    out = json.loads(A._doc_executor.execute(
+        "bash", {"command": "xtb h2.xyz --sp -P 1 > h2.out 2>&1"},
+        _perms(tmp_path)))
+    assert "calculation_check" in out, out
+    assert "xtb h2.xyz, 1 core(s) on this machine" in out["calculation_check"]

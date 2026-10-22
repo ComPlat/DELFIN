@@ -80,15 +80,23 @@ HARMLESS = [
     "sed -i 's/a/b/' data.txt",
     'seq 3 | xargs -n1 echo',
     "find . -name '*.txt' -exec wc -l {} +",
-    'xtb mol.xyz --gfn 2',
-    'xtb mol.xyz --opt',
-    'orca input.inp',
     'obabel mol.xyz -O out.sdf',
-    'crest mol.xyz',
     'ORCA=1 ./run.sh',
     'python3 run_analysis.py --plot && ./run.sh',
     'python3 -c "import os; print(os.cpu_count())" | sort',
     'nproc && ./run.sh',
+]
+
+# Calculations: calc_policy decides them on their setup and resources
+# (tests/test_a_checked_calculation_runs_without_a_dialog.py). The fixture's
+# mol.xyz is a lone H atom, which cannot be a singlet, and input.inp does
+# not exist, so none of these passes the check, and the cage must not run
+# them unasked either.
+UNCHECKED_CALCULATIONS = [
+    'xtb mol.xyz --gfn 2',
+    'xtb mol.xyz --opt',
+    'orca input.inp',
+    'crest mol.xyz',
 ]
 
 # Handled exactly as before, in every mode, with or without a cage.
@@ -196,7 +204,7 @@ def test_the_harmless_table_is_off_the_auto_allow_list(ws):
     perms = KitToolPermissions(mode="default", workspace=str(ws))
     listed = [c for c in HARMLESS if perms.matches_bash_auto_allow(c)]
     assert not listed
-    assert len(HARMLESS) >= 40 and len(UNCHANGED) >= 30
+    assert len(HARMLESS) >= 36 and len(UNCHANGED) >= 30
 
 
 @pytest.mark.parametrize("attended", [True, False])
@@ -209,6 +217,20 @@ def test_a_harmless_command_is_admitted_when_caged(cmd, mode, attended, ws,
     assert verdict is None, verdict
     assert asked == []
     assert admitted == [True]
+
+
+@pytest.mark.parametrize("attended", [True, False])
+@pytest.mark.parametrize("mode", ["default", "acceptEdits"])
+@pytest.mark.parametrize("cmd", UNCHECKED_CALCULATIONS)
+def test_the_cage_does_not_run_a_calculation_that_fails_its_check(
+        cmd, mode, attended, ws, monkeypatch):
+    _cage(monkeypatch, "bwrap")
+    verdict, asked, admitted = _gate(ws, cmd, mode, attended)
+    assert verdict is not None and admitted == []
+    if attended:
+        assert len(asked) == 1 and "Not started unasked" in asked[0]
+    else:
+        assert "was not started" in verdict
 
 
 @pytest.mark.parametrize("attended", [True, False])

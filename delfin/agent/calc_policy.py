@@ -118,10 +118,14 @@ def default_threads(kind: str, env: Optional[dict] = None) -> int:
     """The thread count a program gets when its command names none.
 
     The same number the agent's shell environment sets
-    (``_scrubbed_bash_env``): the allocation inside a job, the login-node
-    limit on a login node, else at most four.
+    (``_scrubbed_bash_env``): a value the user's environment already has,
+    the allocation inside a job, the login-node limit on a login node,
+    else at most four.
     """
     env = os.environ if env is None else env
+    own = str(env.get("OMP_NUM_THREADS", "")).strip()
+    if own.isdigit() and int(own) > 0:
+        return int(own)          # the user's own setting is kept
     cap = str(env.get("SLURM_CPUS_PER_TASK", "")).strip()
     if cap.isdigit() and int(cap) > 0:
         return int(cap)
@@ -686,9 +690,11 @@ def _script_calculations(text: str, cwd: Path) -> list:
 
 
 def check_sbatch(run: _Run, cwd: Path,
-                 limits_of: Callable = partition_limits,
-                 jobs_now: Callable = queued_jobs) -> tuple:
+                 limits_of: Optional[Callable] = None,
+                 jobs_now: Optional[Callable] = None) -> tuple:
     """(summary, problem) for an sbatch submission."""
+    limits_of = limits_of or partition_limits
+    jobs_now = jobs_now or queued_jobs
     # sbatch's own options come first; the first word that is no option and
     # no option's value is the script, and the words after it are its own.
     script, before, i = None, [], 0
@@ -772,14 +778,16 @@ def judge_command(segments: list, cwd: Path,
                   segment_allowed: Callable[[str], bool],
                   *, tool_wall_s: Optional[float] = None,
                   kind: Optional[str] = None,
-                  limits_of: Callable = partition_limits,
-                  jobs_now: Callable = queued_jobs) -> Verdict:
+                  limits_of: Optional[Callable] = None,
+                  jobs_now: Optional[Callable] = None) -> Verdict:
     """The verdict for a shell command given as its segments.
 
     ``segment_allowed`` is the gate's own auto-allow test for a segment
     that starts no calculation (``cd``, ``mkdir``...); a compound admits
     only when every other segment passes it.
     """
+    limits_of = limits_of or partition_limits
+    jobs_now = jobs_now or queued_jobs
     kind = kind or host_kind()
     here: Optional[Path] = Path(cwd)
     summaries, problems, found = [], [], False
@@ -817,9 +825,11 @@ def judge_command(segments: list, cwd: Path,
 
 def judge_orca_submission(folder: Path, pal: int, maxcore: int,
                           time_limit: str, *, kind: Optional[str] = None,
-                          limits_of: Callable = partition_limits,
-                          jobs_now: Callable = queued_jobs) -> Verdict:
+                          limits_of: Optional[Callable] = None,
+                          jobs_now: Optional[Callable] = None) -> Verdict:
     """The verdict for the ops ``submit_calculation`` in ORCA mode."""
+    limits_of = limits_of or partition_limits
+    jobs_now = jobs_now or queued_jobs
     kind = kind or host_kind()
     inputs = sorted(Path(folder).glob("*.inp"))
     if len(inputs) != 1:
