@@ -11,7 +11,8 @@ bond) or one donor of a bidentate whose other donor is equatorial (the chelate i
 about that other donor) -- and whose elements the table's J rows set furthest apart between axial and
 equatorial; ties go to the lower atom index.  Its donors move to the axial length, every other
 movable donor to the equatorial length.  A frame without a movable trans pair is left as it is.
-``elong``: the frames are elongated in place (label suffix -jte).  ``both``: elongated in place and
+``elong``: the frames are elongated in place (label suffix -jte).  ``all``: the frame as built is kept
+and an elongated and a compressed copy are appended.  ``both``: elongated in place and
 a compressed copy of each appended (-jtc), the way the spin pass appends its frames; the
 finalisation chain judges every frame on its own.
 
@@ -29,7 +30,7 @@ JT_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_JT"
 
 def jt_mode() -> str:
     v = os.environ.get(JT_ENV, "").strip().lower()
-    return v if v in ("elong", "both") else ""
+    return v if v in ("elong", "both", "all") else ""
 
 
 def _jt_lengths(table, element: str, form: str):
@@ -150,13 +151,19 @@ def apply_jt(results, ctx, table) -> List[Tuple]:
             xyz, lbl = e[0], e[1]
             syms, X, lines = _parse_xyz(xyz)
             Ye = distort_frame(syms, X, table, "elong")
-            out.append(((_format_xyz(lines, syms, Ye), (f"{lbl}-jte" if lbl else "jte")) + tuple(e[2:]))
-                       if Ye is not None else e)
-            if mode == "both":
+            if mode == "all":
+                out.append(e)
+                if Ye is not None:
+                    extra.append((_format_xyz(lines, syms, Ye), (f"{lbl}-jte" if lbl else "jte")) + tuple(e[2:]))
+            else:
+                out.append(((_format_xyz(lines, syms, Ye), (f"{lbl}-jte" if lbl else "jte")) + tuple(e[2:]))
+                           if Ye is not None else e)
+            if mode in ("both", "all"):
                 Yc = distort_frame(syms, X, table, "comp")
                 if Yc is not None:
                     extra.append((_format_xyz(lines, syms, Yc), (f"{lbl}-jtc" if lbl else "jtc"))
                                  + tuple(e[2:]))
         except Exception:
-            out.append(e)
+            if not out or out[-1] is not e:
+                out.append(e)
     return out + extra

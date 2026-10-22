@@ -66,3 +66,11 @@ def test_a_chelate_donor_is_rotated_about_its_partner():
     # the chelate moved rigidly: N-C-C-N bond lengths unchanged
     for a, b in ((1, 2), (2, 3), (3, 4)):
         assert np.linalg.norm(Y[a] - Y[b]) == pytest.approx(np.linalg.norm(X[a] - X[b]))
+
+
+def test_all_keeps_the_frame_as_built(monkeypatch):
+    syms, X = _hexaaqua()
+    res = [("\n".join(f"{s} {x:.4f} {y:.4f} {z:.4f}" for s, (x, y, z) in zip(syms, X)), "OC-6")]
+    monkeypatch.setenv(JT.JT_ENV, "all")
+    out = JT.apply_jt(res, {"metal": "Cu", "ox": 2, "cn": 6}, TABLE)
+    assert [lbl for _x, lbl in out] == ["OC-6", "OC-6-jte", "OC-6-jtc"] and out[0] == res[0]
