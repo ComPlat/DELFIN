@@ -194,9 +194,11 @@ def test_bypass_permissions_still_asks_nothing(tmp_path):
     assert asked == []
 
 
-def test_a_dry_run_needs_no_decision(tmp_path):
+def test_a_dry_run_flag_is_not_a_decision(tmp_path):
+    # No server is known to honour check_only; one that drops the key runs
+    # the call (tests/test_a_dry_run_flag_no_server_honours_is_not_a_dry_run.py).
     assert _gate("mcp__github__create_pull_request", {"check_only": True},
-                 _perms(tmp_path, "default")) is None
+                 _perms(tmp_path, "default")) is not None
 
 
 # ---------------------------------------------------------------------------
