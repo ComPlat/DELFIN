@@ -4102,7 +4102,8 @@ def _mol3d_card_html(path, name_html: str,
         f'\u269b\ufe0f <code>{name_html}</code> '
         f'<span style="color:#9ca3af;">({kind})</span></div>'
         f'<div id="{view_id}" class="delfin-mol3d-stage" '
-        f'style="width:100%;height:380px;min-height:280px;'
+        f'style="width:100%;height:var(--delfin-mol3d-h, 380px);'
+        f'min-height:280px;'
         f'position:relative;border-radius:4px;overflow:hidden;">'
         f'<div class="delfin-mol3d-scope" style="width:100%;height:100%;'
         f'position:relative;"></div></div>'
@@ -8036,8 +8037,18 @@ def create_tab(ctx):
             if (host) {
                 var frameH = host.clientHeight;
                 if (frameH > 0) {
-                    stage.style.height =
+                    var stageH =
                         Math.max(280, Math.min(Math.round(frameH * 0.8), 700)) + 'px';
+                    stage.style.height = stageH;
+                    // Kept on the frame, which survives the transcript:
+                    // Python replaces the whole transcript on every
+                    // streaming update, and a card rebuilt at 380 px and
+                    // sized here only after 3Dmol had built it moved the
+                    // end of the chat by its difference on every update
+                    // (717 px for three cards at 1920x1080). The card's
+                    // stage reads this property, so it is rebuilt at its
+                    // height.
+                    host.style.setProperty('--delfin-mol3d-h', stageH);
                 }
             }
             var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
