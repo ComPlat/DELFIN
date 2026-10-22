@@ -41,3 +41,28 @@ def test_off_or_other_metal_changes_nothing(monkeypatch):
     assert JT.apply_jt(res, {"metal": "Ni", "ox": 2, "cn": 6}, TABLE) == res
     out = JT.apply_jt(res, {"metal": "Cu", "ox": 2, "cn": 6}, TABLE)
     assert [lbl for _x, lbl in out] == ["OC-6-jte", "OC-6-jtc"]
+
+
+def test_a_chelate_donor_is_rotated_about_its_partner():
+    syms, X = _hexaaqua()
+    # replace the +x and +y waters by one N-C-C-N chelate (N at 2.10 A on +x and +y)
+
+    syms = ["Cu", "N", "C", "C", "N"]
+    Xn = [[0, 0, 0], [2.10, 0, 0], [2.55, 1.30, 0], [1.30, 2.55, 0], [0, 2.10, 0]]
+    for v in ([-1, 0, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]):
+        v = np.array(v, float)
+        o = 2.10 * v
+        perp = np.array([v[1], v[2], v[0]])
+        syms += ["O", "H", "H"]
+        Xn += [o.tolist(), (o + 0.6 * v + 0.75 * perp).tolist(), (o + 0.6 * v - 0.75 * perp).tolist()]
+    X = np.array(Xn, float)
+    table = dict(TABLE)
+    table[("J", "Cu", "2", "6", "N", "elong_ax")] = (99, 2.50)      # makes the N-O axis the best
+    table[("J", "Cu", "2", "6", "N", "elong_eq")] = (99, 2.02)
+    Y = JT.distort_frame(syms, X, table, "elong")
+    assert Y is not None
+    d = {i: float(np.linalg.norm(Y[i])) for i in (1, 4)}
+    assert sorted(round(v, 2) for v in d.values()) == [2.1, 2.5]
+    # the chelate moved rigidly: N-C-C-N bond lengths unchanged
+    for a, b in ((1, 2), (2, 3), (3, 4)):
+        assert np.linalg.norm(Y[a] - Y[b]) == pytest.approx(np.linalg.norm(X[a] - X[b]))
