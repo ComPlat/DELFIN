@@ -8452,6 +8452,10 @@ def create_tab(ctx):
         var MAXH = 280;
         function grow(ta) {
             if (!ta) return;
+            // Empty: back to the stylesheet's resting height.
+            if (!ta.value) { ta.style.height = ''; return; }
+            // Not rendered (a hidden tab): scrollHeight would read 0.
+            if (ta.offsetParent === null) return;
             ta.style.height = 'auto';
             ta.style.height = Math.min(ta.scrollHeight, MAXH) + 'px';
         }
@@ -8460,20 +8464,43 @@ def create_tab(ctx):
             return window.__delfinQ ? window.__delfinQ(sel)
                                     : document.querySelector(sel);
         }
-        // Grow while typing (also fires on the programmatic /clear,/search
-        // value-set dispatches above, so the box shrinks back when cleared).
+        // A send empties the box from Python: the widget writes .value
+        // without an 'input' event, after a kernel round trip no fixed
+        // delay covers -- the box kept its grown height until the next
+        // keystroke. So every write to this box's value re-measures it,
+        // whoever makes it. Hooked on the element (the widget may render
+        // a new one), not on the prototype every textarea shares.
+        var native = window.HTMLTextAreaElement
+            ? Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value')
+            : null;
+        function hook(ta) {
+            if (!ta || ta.__delfinGrowHooked || !native || !native.set) return;
+            try {
+                Object.defineProperty(ta, 'value', {
+                    configurable: true, enumerable: true,
+                    get: function() { return native.get.call(this); },
+                    set: function(v) { native.set.call(this, v); grow(this); }
+                });
+                ta.__delfinGrowHooked = true;
+            } catch (err) {}
+        }
+        // Hooked now and whenever the box is focused: a box is focused
+        // before anyone types into it, and a re-rendered one is new.
+        hook(inputTA());
+        document.addEventListener('focusin', function(e) {
+            if (e.target && e.target.tagName === 'TEXTAREA' &&
+                e.target.closest && e.target.closest('.delfin-agent-input')) {
+                hook(e.target);
+            }
+        });
+        // Typing (and the shortcuts above, which set the value through the
+        // prototype and then fire 'input').
         document.addEventListener('input', function(e) {
             if (e.target && e.target.tagName === 'TEXTAREA' &&
                 e.target.closest && e.target.closest('.delfin-agent-input')) {
+                hook(e.target);
                 grow(e.target);
-            }
-        });
-        // After a send the value is cleared from Python without firing an
-        // 'input' event — reset the height shortly after any send click.
-        document.addEventListener('click', function(e) {
-            if (e.target && e.target.closest &&
-                e.target.closest('.delfin-agent-send-row')) {
-                setTimeout(function() { grow(inputTA()); }, 60);
             }
         });
     })();
