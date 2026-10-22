@@ -63,9 +63,10 @@ step: offer it in the answer, run it only when it was asked for.
   constants) decide what counts as one conformer; state them.
 - Degeneracy: GOAT gives every conformer degeneracy 1 (unless CONFDEGEN
   is set) and no factor for mirror images; CREST counts rotamers into the
-  degeneracy. Mirror images (gauche+/gauche- of butane) have the same
-  energy: say whether the ensemble lists both, and count the degeneracy g
-  explicitly when populations are reported: p_i ~ g_i exp(-E_i/RT).
+  degeneracy. Two conformers that are mirror images of each other have
+  the same energy: say whether the ensemble lists both, and count the
+  degeneracy g explicitly when populations are reported:
+  p_i ~ g_i exp(-E_i/RT).
 - Name the quantity: xtb energies are ΔE on the xtb surface. Populations
   from ΔE are not populations from ΔG; an experiment measures ΔH or ΔG.
 - A global minimum from one search is the lowest found, not proven: say
