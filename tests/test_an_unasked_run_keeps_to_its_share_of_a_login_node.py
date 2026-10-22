@@ -20,7 +20,6 @@ before.
 from __future__ import annotations
 
 import json
-import os
 import sys
 
 import pytest
@@ -144,5 +143,13 @@ def test_a_background_job_starts_bound(tmp_path, monkeypatch, started):
     monkeypatch.setattr(bash_jobs._Registry, "start", fake_start)
     A._doc_executor.execute("bash_background", {"command": "ls"},
                             _perms(tmp_path))
-    assert seen["argv"][:4] == [
+    assert seen["cpu_set"] == [0, 1]
+
+
+def test_the_job_registry_binds_what_it_starts(monkeypatch):
+    from delfin.agent import bash_jobs
+    monkeypatch.setattr(C.shutil, "which", lambda name: None)
+    assert bash_jobs._bound_to(["bash", "-c", "x"], [0, 1])[:4] == [
         sys.executable, "-m", "delfin.agent.cpu_share", "0,1"]
+    assert bash_jobs._bound_to(["bash", "-c", "x"], None) == [
+        "bash", "-c", "x"]
