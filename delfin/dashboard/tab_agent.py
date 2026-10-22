@@ -4562,7 +4562,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'📷 <code>{name_html}</code></div>'
             f'<img src="data:{mime};base64,{b64}" '
-            f'style="max-width:100%;border-radius:4px;display:block;" '
+            # Never wider than reading size: a 300 dpi figure is 3000 px
+            # and filled the whole chat; a small image is not enlarged.
+            f'style="max-width:min(900px,100%);height:auto;border-radius:4px;'
+            f'display:block;margin:0 auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -4590,8 +4593,12 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🎨 <code>{name_html}</code></div>'
             f'<div style="max-width:100%;overflow:auto;">'
+            # A vector drawing is shown at reading size, centred: at its
+            # own 576 px a plot sat small in the corner of a 1500 px chat.
+            # It scales without blur; 900 px keeps a wide chat calm.
             f'<img src="data:image/svg+xml;base64,{b64}" '
-            f'style="max-width:100%;display:block;" alt="{name_html}"/>'
+            f'style="width:min(900px,100%);height:auto;display:block;'
+            f'margin:0 auto;" alt="{name_html}"/>'
             f'</div></div>'
         )
 
@@ -6294,8 +6301,9 @@ def create_tab(ctx):
         options=_perm_options_for_mode(mode_dropdown.value),
         value="ask_all",
         description="Perms:",
-        layout=widgets.Layout(width="195px"),
-        style={"description_width": "42px"},
+        layout=widgets.Layout(width="205px"),
+        # 48, not 42: at 42 px the label was cut to "Per...".
+        style={"description_width": "48px"},
         tooltip=("Plan = read only · Ask All = asks before every file change "
                  "and every shell command · Accept Edits = file changes go "
                  "through, shell still asks · Bypass = asks nothing inside "
@@ -6375,7 +6383,7 @@ def create_tab(ctx):
     )
     stop_btn = widgets.Button(
         description="Stop",
-        button_style="danger",
+        button_style="",
         layout=widgets.Layout(width="80px"),
     )
     stop_btn.disabled = True
@@ -6539,6 +6547,23 @@ def create_tab(ctx):
             btn = git_buttons[cmd]
             btn.disabled = bool(reasons[cmd])
             btn.tooltip = reasons[cmd] or tip
+        # Outside a git checkout the four buttons and the base field can
+        # do nothing at all; shown greyed out, they took a third of the
+        # control row and pushed the rest onto a second line. They come
+        # back the moment the session's folder is a repository.
+        in_repo = not all(r.startswith("Not a git repository")
+                          for r in reasons.values())
+        shown = "" if in_repo else "none"
+        for w in (git_base, *git_buttons.values()):
+            if w.layout.display != shown:
+                w.layout.display = shown
+
+    # The first look, before any status refresh: a session that opens in
+    # a folder without git starts without the git controls.
+    try:
+        _refresh_git_buttons()
+    except Exception:
+        pass
 
     def _on_git_button(cmd: str) -> None:
         reason = _git_button_state().get(cmd, "")
@@ -7525,11 +7550,10 @@ def create_tab(ctx):
     # so the row looks like one coherent strip.
     # Kept by name: when nothing is open the grey line goes back to this,
     # because an empty placeholder would read as "nothing to propose".
-    _INPUT_HINT = (
-        "Message the agent... (Enter = send, Shift+Enter = newline)\n"
-        "KIT tip: say 'also work in /path' to grant write access \u2014 "
-        "the agent persists it after one confirm click."
-    )
+    # One calm line. The KIT write-access tip it used to carry stays in the
+    # write-access line of the Details fold (kit_dirs_status), where it is
+    # read when wanted rather than on every empty input.
+    _INPUT_HINT = "Message DELFIN\u2026  (Enter to send, Shift+Enter for a new line)"
     input_textarea = widgets.Textarea(
         placeholder=_INPUT_HINT,
         layout=widgets.Layout(
@@ -7831,6 +7855,10 @@ def create_tab(ctx):
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
             }
             viewer.zoomTo();
+            // zoomTo fits the bounding sphere, which leaves a chain small in
+            // a wide stage; a quarter closer still keeps it inside. Not for
+            // an orbital: its lobes reach past the atoms.
+            if (fmt !== 'cube') viewer.zoom(1.25);
             viewer.render();
             // Keep one in-memory copy of the source text for the fullscreen
             // lightbox (wireFullscreen rebuilds from it), then drop the copy
@@ -7886,7 +7914,7 @@ def create_tab(ctx):
             if (btnNext) btnNext.onclick = function() { stop(); step(1); };
             if (btnReset) btnReset.onclick = function() {
                 stop(); viewer.setFrame(0);
-                viewer.zoomTo(); viewer.render(); setCounter();
+                viewer.zoomTo(); viewer.zoom(1.25); viewer.render(); setCounter();
             };
         }
 
@@ -8471,19 +8499,18 @@ def create_tab(ctx):
         # the session compacts, and it costs six characters.
         ctx_pct = state.get("_fold_ctx")
         if ctx_pct is not None:
-            parts.append(f"ctx {ctx_pct:.0f}%")
+            parts.append(f"Context {ctx_pct:.0f}%")
         n_tools = int(state.get("_fold_tools", 0) or 0)
         if n_tools:
-            last = str(state.get("_fold_last_tool", "") or "")
-            parts.append(f"Tool calls {n_tools}" + (f" (last: {last})" if last else ""))
-        sec_total, sec_blocked = state.get("_fold_security", (0, 0))
-        if sec_total:
-            parts.append(f"⚠ Containment {sec_blocked} blocked / "
-                         f"{sec_total - sec_blocked} flagged")
-        t_in, t_out, t_cost = state.get("_fold_tokens", (0, 0, 0.0))
-        if t_in or t_out:
-            parts.append(f"{t_in:,} in / {t_out:,} out"
-                         + (f" · {_fmt_cost(t_cost)}" if t_cost > 0 else ""))
+            parts.append(f"{n_tools} tool call{'s' if n_tools != 1 else ''}")
+        # A warning sign only for what was refused. Flagged-but-allowed
+        # events and the last tool's internal name were in this line on
+        # every busy session and read as an alarm that was not one; they
+        # are in the sub-folds below (Containment, Tool calls) and the
+        # token counts in the status row, one click away.
+        _sec_total, sec_blocked = state.get("_fold_security", (0, 0))
+        if sec_blocked:
+            parts.append(f"⚠ {sec_blocked} blocked")
         return " · ".join(parts) if parts else "Details"
 
     def _refresh_subfolds():
@@ -12760,6 +12787,11 @@ def create_tab(ctx):
         # pressing it again is the one thing left to do when the first
         # stop did not take.
         stop_btn.disabled = not (is_streaming or _turn_thread_alive())
+        # Red only while there is something to stop: a pale red button
+        # on an idle tab drew the eye to a control that could do nothing.
+        _stop_style = "" if stop_btn.disabled else "danger"
+        if stop_btn.button_style != _stop_style:
+            stop_btn.button_style = _stop_style
         mode_dropdown.disabled = is_streaming
         model_dropdown.disabled = is_streaming
         effort_dropdown.disabled = is_streaming
@@ -23487,6 +23519,7 @@ def create_tab(ctx):
         "refresh_loop": _refresh_loop_panel,
         "auto_tick": _auto_tick,
         "auto_after_turn": _auto_after_turn,
+        "fold_title": _fold_title,
     }
 
 
