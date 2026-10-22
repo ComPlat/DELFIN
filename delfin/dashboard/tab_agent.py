@@ -1262,8 +1262,10 @@ _AGENT_CSS = """\
     bottom: 6px;
     z-index: 5;
     flex: 0 0 auto;
-    align-self: flex-end;
-    margin: -4px 2px 0 0;
+    /* Centred: at the right edge it lay over a card's own controls (the
+       3D viewer's Fullscreen button) whenever the reader scrolled up. */
+    align-self: center;
+    margin: -4px auto 0 auto;
     padding: 3px 10px;
     border: 1px solid #475569;
     border-radius: 999px;
@@ -6083,7 +6085,9 @@ def create_tab(ctx):
         # a third thing again. One word for three concepts, and the one it
         # was taken from is the one the user reads next to it.
         description="Mode:",
-        layout=widgets.Layout(width="200px"),
+        # 160: the longest option ("Dashboard") fits; at 200 the control
+        # row wrapped on a 1366 px screen.
+        layout=widgets.Layout(width="160px"),
         style={"description_width": "45px"},
     )
     mode_desc_html = widgets.HTML(
@@ -6388,7 +6392,7 @@ def create_tab(ctx):
         options=_perm_options_for_mode(mode_dropdown.value),
         value="ask_all",
         description="Perms:",
-        layout=widgets.Layout(width="205px"),
+        layout=widgets.Layout(width="190px"),
         # 48, not 42: at 42 px the label was cut to "Per...".
         style={"description_width": "48px"},
         tooltip=("Plan = read only · Ask All = asks before every file change "
