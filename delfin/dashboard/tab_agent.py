@@ -2355,6 +2355,33 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame > .delfin-agent-background {
     margin: 0 8px 6px; border-radius: 8px; border: 1px solid #e2e8f0;
 }
+/* The transcript keeps its height while the agent works. The working line
+   (one widget, with the slow-phase hint under it) lies over the
+   transcript's lower edge in the same grid cell instead of taking its
+   height: in a flex column the transcript went 737 -> 691 -> 657 -> 691
+   -> 737 px through one turn at 1920x1080 (measured), and a reader at the
+   end saw all of it move each time. The transcript keeps that much room
+   below its last message for good, so at the end nothing lies under the
+   line. The task line, the Background box and the docks follow in rows
+   below, as before. */
+.delfin-agent-root .delfin-agent-chat-frame {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-auto-rows: auto;
+}
+.delfin-agent-chat-frame > .delfin-agent-chat-host { grid-area: 1 / 1; }
+.delfin-agent-chat-frame > .delfin-agent-working-slot {
+    grid-area: 1 / 1; align-self: end; z-index: 3;
+}
+.delfin-agent-chat-host .delfin-agent-chat { padding-bottom: 84px; }
+/* The slow-phase hint under the working line: the same inset strip. */
+.delfin-agent-chat-frame .delfin-activity-hint {
+    margin: 0 8px 6px; border-radius: 8px; border: 1px solid #fde68a;
+}
+.delfin-agent-chat-frame:has(> .delfin-agent-working-slot .delfin-agent-working) .delfin-chat-jump {
+    bottom: 84px;
+}
 </style>
 """
 
@@ -7926,6 +7953,9 @@ def create_tab(ctx):
 
     # Working indicator (animated spinner)
     working_html = widgets.HTML(value="")
+    # Placed over the transcript's lower edge by the stylesheet, so its
+    # coming and going does not resize the transcript.
+    working_html.add_class("delfin-agent-working-slot")
 
     # Queue indicator (shown when messages are queued during streaming)
     queue_html = widgets.HTML(value="")
@@ -8502,6 +8532,42 @@ def create_tab(ctx):
             st.top = 0;
             st.mark = 0;
         };
+        // The reader's own input: a scroll with none of it just before is
+        // not the reader's. Measured 2026-10-22: while the agent waited, the
+        // browser moved a following reader 12 px up every ~1.5 s with no
+        // script writing scrollTop, and the 150 ms poll put it back 60-85 ms
+        // later -- a visible jitter at the end of the chat. A wheel, a touch,
+        // a navigation key, or a pointer held on the chat (the scrollbar) is
+        // the reader; 300 ms after it covers inertia and key repeat.
+        var inputUntil = 0, pressed = false;
+        function readerInput() {
+            inputUntil = Date.now() + 300;
+        }
+        function onChat(e) {
+            return !!(e.target && e.target.closest
+                      && e.target.closest('.delfin-agent-chat-host'));
+        }
+        document.addEventListener('wheel', function(e) {
+            if (onChat(e)) readerInput();
+        }, {capture: true, passive: true});
+        document.addEventListener('touchmove', function(e) {
+            if (onChat(e)) readerInput();
+        }, {capture: true, passive: true});
+        document.addEventListener('keydown', function(e) {
+            if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
+                readerInput();
+        }, true);
+        document.addEventListener('pointerdown', function(e) {
+            if (onChat(e)) { pressed = true; readerInput(); }
+        }, true);
+        function released() {
+            if (pressed) { pressed = false; readerInput(); }
+        }
+        document.addEventListener('pointerup', released, true);
+        document.addEventListener('pointercancel', released, true);
+        function byReader() {
+            return pressed || Date.now() < inputUntil;
+        }
         // Scroll events do not bubble, so capture them at the document. That
         // also survives the chat element being replaced on every refresh.
         document.addEventListener('scroll', function(e) {
@@ -8511,6 +8577,15 @@ def create_tab(ctx):
             var st = stateFor(c);
             st.top = c.scrollTop;
             if (st.auto) { st.auto = false; return; }
+            // Following, moved, and not by the reader: back to the end in
+            // this event, which runs before the next paint, so the move is
+            // never seen.
+            if (st.follow && !byReader()
+                    && c.scrollTop < c.scrollHeight - c.clientHeight - 1) {
+                setTop(c, c.scrollHeight, st);
+                st.top = c.scrollTop;
+                return;
+            }
             var end = atEnd(c);
             if (end === st.follow) return;
             st.follow = end;
