@@ -209,3 +209,20 @@ def test_pins_scope_answers_pins_but_not_checks(tmp_path, monkeypatch):
     assert PH.md_distance("Pt", "N", atom=nh3.GetAtomWithIdx(0), mol=nh3) == pytest.approx(2.051)
     monkeypatch.delenv(BV.FLAG)
     assert MT._pin_ml_bond_length("Pt", "N") == before
+
+
+def test_fragment_donor_that_lost_its_charge_reads_its_environment(monkeypatch):
+    # decompose() hands a quinolinate O over neutral and H-free ('pil'); the complex knows it as
+    # 'pix' next to a methanol O ('sp3l', 0.13 A longer, so no per-element target)
+    monkeypatch.setenv(BV.FLAG, "1")
+    monkeypatch.setattr(BV, "_CTX", {"metal": "Zn", "ox": 2, "cn": 6, "spins": [], "spin": None,
+                                     "by_class": {("O", "pix"): 2.058, ("O", "sp3l"): 2.192,
+                                                  ("N", "pix"): 2.139},
+                                     "by_element": {"N": 2.139}, "levels": ["N"]})
+    frag = Chem.AddHs(Chem.MolFromSmiles("O=C1C=CC=C2C=CC=NC12"))
+    o = frag.GetAtomWithIdx(0)
+    assert BV.donor_class(o) == "pil"
+    assert BV.target_for_donor("Zn", "O", atom=o) == pytest.approx(2.058)
+    meoh = Chem.AddHs(Chem.MolFromSmiles("CO"))
+    assert BV.target_for_donor("Zn", "O", atom=meoh.GetAtomWithIdx(1)) == pytest.approx(2.192)
+    assert BV.target_for_donor("Zn", "O") is None

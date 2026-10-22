@@ -245,6 +245,10 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # targets, so _have_targets, but NOT the bite pin -- dropping the donor-donor entries
         # is the whole point of it (see _bite_free_bounds).
         _bite_free = _bite_free_bounds()
+        if not _bite_free:
+            # bond-valence targets: embed the ring at the radii it is seated at (default OFF)
+            from delfin.manta import _ml_targets_bv as _bvt
+            _bite_free = _bvt.embed_at_targets()
         _use_bm = (_have_targets and (_chel_bite or harden or force_bite or _bite_free)) \
             or _oc6_vertex or _ring_b
         if _use_bm:

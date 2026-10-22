@@ -75,6 +75,9 @@ SCOPE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE"
 _PIN_DEPTH = [0]           # > 0 while a pin or snap asks for its target length
 HISTORIC_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_HISTORIC"
 LEVELS_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LEVELS"
+# The metallacycle of a chelate is embedded with its M-D radii at the targets (bounds pinned, donor-donor
+# left to the ligand) instead of RDKit dative lengths; see embed_at_targets.
+EMBED_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_EMBED"
 ALL_LEVELS = ("N", "D", "R", "Re", "Ro", "Roe")
 DEFAULT_LEVELS = ("N", "D", "R", "Re")
 B_BV = 0.37
@@ -94,6 +97,20 @@ _CTX: Optional[dict] = None
 
 def bv_targets_enabled() -> bool:
     return os.environ.get(FLAG, "0") == "1"
+
+
+def embed_at_targets() -> bool:
+    """True when a chelate of the complex being built embeds its metallacycle at the target radii.
+
+    The seating (_orient_chelate_to_vertices) moves each donor radially onto its target.  The
+    metallacycle is embedded with RDKit's own dative M-D length, close to the covalent sum the
+    historic targets were; a bond-valence target 0.15-0.2 A away (Co(III)-O 2.04 -> 1.89, Zn(II)-N
+    1.93 -> 2.14) then moves every donor against its own backbone, the donor-backbone bonds
+    collapse, the self-gate rejects every isomer and the complex falls to legacy (CHELATE_EMPTY;
+    AFEFIB, EGEPIR, FOJVIL, UDOMEG on dev300).  Embedding the ring at the very radii it is seated
+    at leaves the rescale nothing to move: the bite comes out of the ring closure."""
+    return (bv_targets_enabled() and _CTX is not None
+            and os.environ.get(EMBED_ENV, "0") == "1")
 
 
 def _min_n() -> int:
@@ -536,6 +553,25 @@ def current_context() -> Optional[dict]:
     return _CTX
 
 
+def _same_environment_target(ctx, donor: str, cls: Optional[str]) -> Optional[float]:
+    """Target of the complex's donors of this element in the same environment (t0..t3, pi, sp3),
+    whatever their x/l flag, when they agree within ELEMENT_SPREAD_MAX.
+
+    The ligand fragments the builder works on are not the SMILES cut: decompose() hands a
+    phenolate or quinolinate O over as a neutral, H-free atom, so the fragment reads 'pil' where
+    the complex has 'pix'.  The class lookup then misses, and with a second O class in the
+    complex (FOJVIL: methanol O 2.19, quinolinate O 2.06) the element lookup refuses as well --
+    the donor kept its covalent-sum length 1.88 next to a quinolinate N at its table length 2.14.
+    The environment is read from the bonds, which the fragment keeps; only the charge is lost."""
+    if not cls:
+        return None
+    env = cls[:-1]
+    vals = [t for (el, c), t in ctx["by_class"].items() if el == donor and c and c[:-1] == env]
+    if not vals or max(vals) - min(vals) > ELEMENT_SPREAD_MAX:
+        return None
+    return float(sum(vals) / len(vals))
+
+
 def target_for_donor(metal: str, donor: str, atom=None) -> Optional[float]:
     """Target M-D length of the complex being built, or None (caller keeps its value).
 
@@ -552,9 +588,13 @@ def target_for_donor(metal: str, donor: str, atom=None) -> Optional[float]:
     if atom is not None:
         try:
             if atom.GetSymbol() == donor:
-                t = ctx["by_class"].get((donor, donor_class(atom)))
+                cls = donor_class(atom)
+                t = ctx["by_class"].get((donor, cls))
                 if t is not None:
                     return float(t)
+                t = _same_environment_target(ctx, donor, cls)
+                if t is not None:
+                    return t
         except Exception:
             pass
     t = ctx["by_element"].get(donor)
