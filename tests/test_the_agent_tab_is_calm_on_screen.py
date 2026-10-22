@@ -143,3 +143,15 @@ def test_figures_are_shown_at_reading_size(tmp_path):
         "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"))
     html = tab_agent._render_artifact_body(png)
     assert "max-width:min(900px,100%)" in html
+
+
+def test_a_plot_call_is_named_by_its_file_and_title_not_its_numbers():
+    from delfin.dashboard import tab_agent
+    spec = {"kind": "line", "x": list(range(25)), "y": [0.1] * 25,
+            "title": "Butane rotation", "filename": "rotation.svg"}
+    html = tab_agent._tool_param_html({"spec": spec}, '{"spec": {...}}')
+    assert "rotation.svg (line)" in html and "Butane rotation" in html
+    assert "0.1" not in html and "[0," not in html
+    assert "rotation &lt;b&gt;" in tab_agent._tool_param_html(
+        {"path": "rotation <b>"}, "")
+    assert tab_agent._tool_param_html({}, "<raw>") == "&lt;raw&gt;"
