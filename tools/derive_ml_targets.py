@@ -244,6 +244,7 @@ def main(argv=None):
         rows = MD.build_table(recs, b, rho, a.min_n, a.boot)
         if a.jt:
             rows += MD.jt_rows(recs, "Cu", 2, a.min_n, a.boot)
+            rows += MD.jt_rows_sp5(recs, "Cu", 2, a.min_n, a.boot)
             head.append("J rows: Cu(II) CN6 axial/equatorial M-D per element and Jahn-Teller form (elongated / compressed)")
         if a.spin:
             summ = MD.label_spins(recs)

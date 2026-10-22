@@ -1,4 +1,4 @@
-"""Jahn-Teller frames for Cu(II) (DELFIN_FFFREE_ML_TARGETS_BV_JT, default OFF).
+"""Jahn-Teller frames for Cu(II) CN6 and square-pyramidal CN5 (DELFIN_FFFREE_ML_TARGETS_BV_JT, default OFF).
 
 WHY.  Cu(II) is d9: one hole in the e_g set, and the octahedron distorts.  Among the CSD crystals of
 Cu(II) CN6 with three trans pairs, 36 % are elongated (two long axial bonds, ~2.39 A against 2.02 A
@@ -33,46 +33,69 @@ def jt_mode() -> str:
     return v if v in ("elong", "both", "all") else ""
 
 
-def _jt_lengths(table, element: str, form: str):
-    ax = table.get(("J", "Cu", "2", "6", element, f"{form}_ax"))
-    eq = table.get(("J", "Cu", "2", "6", element, f"{form}_eq"))
-    return (ax[1] if ax else None), (eq[1] if eq else None)
+def _jt_len(table, cn: int, element: str, label: str):
+    row = table.get(("J", "Cu", "2", str(cn), element, label))
+    return row[1] if row else None
 
 
-def _rotate_to_length(X, atoms, metal, a, pivot, target):
-    """Rigidly rotate ``atoms`` about the axis through ``pivot`` perpendicular to the plane
-    (metal, a, pivot) so that |metal - a| becomes ``target``; None if unreachable."""
-    M, A, P = X[metal], X[a], X[pivot]
-    n = np.cross(A - P, M - P)
+def _rotate_about(X, atoms, metal, a, p1, p2, target):
+    """Rigidly rotate ``atoms`` about the line through p1 (and p2; with p2 None the line through p1
+    perpendicular to the plane metal-a-p1) so that |metal - a| becomes ``target``; None if not
+    reachable within 90 degrees."""
+    M, A, P = X[metal], X[a], X[p1]
+    n = (X[p2] - P) if p2 is not None else np.cross(A - P, M - P)
     if np.linalg.norm(n) < 1e-6:
         return None
-    n /= np.linalg.norm(n)
-    rr = A - P
-    best = None
-    for k in range(1, 721):                      # scan both senses, 0.25 deg steps up to 90 deg
-        th = np.radians(0.25 * ((k + 1) // 2) * (1 if k % 2 else -1))
+    n = n / np.linalg.norm(n)
+
+    def rot(v, th):
         c, s = np.cos(th), np.sin(th)
-        Ar = P + rr * c + np.cross(n, rr) * s + n * (n @ rr) * (1 - c)
-        if abs(np.linalg.norm(Ar - M) - target) < 0.005:
+        return v * c + np.cross(n, v) * s + n * (n @ v) * (1 - c)
+
+    best = None
+    for k in range(1, 721):                      # both senses, 0.25 deg steps up to 90 deg
+        th = np.radians(0.25 * ((k + 1) // 2) * (1 if k % 2 else -1))
+        if abs(np.linalg.norm(P + rot(A - P, th) - M) - target) < 0.005:
             best = th
             break
     if best is None:
         return None
-    c, s = np.cos(best), np.sin(best)
     Y = X.copy()
     for j in atoms:
-        v = X[j] - P
-        Y[j] = P + v * c + np.cross(n, v) * s + n * (n @ v) * (1 - c)
+        Y[j] = P + rot(X[j] - P, best)
     return Y
 
 
-def distort_frame(syms, X, table, form: str) -> Optional[np.ndarray]:
-    """New coordinates of one Cu(II) CN6 frame in the given JT form, or None (left as it is).
+def _move_donor(Y, frags, frag_of, dons, mi, i, target, fixed):
+    """Bring donor i to ``target`` A from the metal: translate a single-donor ligand; rotate a
+    bi- or tridentate about its other donor(s) when none of them is in ``fixed`` motion."""
+    others = [j for j in dons[i] if j != i]
+    if any(j in fixed for j in others):
+        return None
+    if not others:
+        dd = float(np.linalg.norm(Y[i] - Y[mi]))
+        Z = Y.copy()
+        shift = (target - dd) * (Y[i] - Y[mi]) / dd
+        for j in frags[frag_of[i]]:
+            Z[j] = Z[j] + shift
+        return Z
+    if len(others) == 1:
+        return _rotate_about(Y, frags[frag_of[i]], mi, i, others[0], None, target)
+    if len(others) == 2:
+        return _rotate_about(Y, frags[frag_of[i]], mi, i, others[0], others[1], target)
+    return None
 
-    A donor can take its JT length when it is the only donor of its ligand (rigid translation along
-    its M-D bond) or one of the two donors of a bidentate ligand whose other donor is not on the axis
-    (rigid rotation of the chelate about that other donor).  The axis is the trans pair of such donors
-    whose elements differ most between the axial and equatorial lengths; ties to the lower index."""
+
+def distort_frame(syms, X, table, form: str) -> Optional[np.ndarray]:
+    """New coordinates of one Cu(II) frame in the given JT form, or None (left as it is).
+
+    CN6 (``elong`` / ``comp``): the axis is a trans pair; each axial donor reaches the J-row axial
+    length -- a single-donor ligand by rigid translation along its M-D bond, a bi- or tridentate by
+    rigid rotation about its other donor(s), which stay in place.  The pair whose elements differ
+    most between axial and equatorial length wins, ties to the lower atom index.  Equatorial
+    single-donor ligands then take the equatorial length.
+    CN5 square pyramid (``elong`` only): the apical donor (the one without a trans partner) takes the
+    apical length, basal single-donor ligands the basal length."""
     from delfin.manta import _elements as EL
     from delfin.manta._d8_square_planar import _fragments
     mi = [i for i, s in enumerate(syms) if s == "Cu"]
@@ -82,59 +105,59 @@ def distort_frame(syms, X, table, form: str) -> Optional[np.ndarray]:
     d = np.linalg.norm(X - X[mi], axis=1)
     cand = [i for i in range(len(syms)) if i != mi and syms[i] != "H"
             and d[i] < 1.25 * (EL.covalent_radius("Cu") + EL.covalent_radius(syms[i]))]
-    if len(cand) != 6:
+    if len(cand) not in (5, 6):
         return None
+    cn = len(cand)
     frags, frag_of = _fragments(syms, X, mi, cand)
     dons = {i: [j for j in cand if frag_of[j] == frag_of[i]] for i in cand}
     u = {i: (X[i] - X[mi]) / d[i] for i in cand}
-
-    def handle(i, other_axial):
-        if len(dons[i]) == 1:
-            return "mono"
-        if len(dons[i]) == 2 and other_axial not in dons[i]:
-            return "bi"
-        return None
-
-    best, best_key = None, None
+    trans = {}
     for a in cand:
         b = min((x for x in cand if x != a), key=lambda x: float(u[a] @ u[x]))
-        if not (a < b and float(u[a] @ u[b]) < -0.8):
-            continue
-        if handle(a, b) is None or handle(b, a) is None:
-            continue
-        gap, ok = 0.0, True
-        for i in (a, b):
-            ax, eq = _jt_lengths(table, syms[i], form)
-            if ax is None or eq is None:
-                ok = False
-                break
-            gap += abs(ax - eq)
-        if ok and (best_key is None or (gap, -a) > best_key):
-            best, best_key = (a, b), (gap, -a)
-    if best is None:
-        return None
+        trans[a] = b if float(u[a] @ u[b]) < -0.8 else None
+    if cn == 5:
+        if form != "elong":
+            return None
+        lone = [i for i in cand if trans[i] is None or trans.get(trans[i]) != i]
+        if len(lone) != 1:
+            return None
+        ax_label, eq_label = "sp5_ap", "sp5_bas"
+        axis = (lone[0],)
+    else:
+        ax_label, eq_label = f"{form}_ax", f"{form}_eq"
+        axis, best_key = None, None
+        for a in cand:
+            b = trans[a]
+            if b is None or not a < b or trans.get(b) != a:
+                continue
+            if b in dons[a]:
+                continue                                   # both axial donors in one ligand
+            gap, ok = 0.0, True
+            for i in (a, b):
+                ax, eq = _jt_len(table, 6, syms[i], ax_label), _jt_len(table, 6, syms[i], eq_label)
+                if ax is None or eq is None or len(dons[i]) > 3:
+                    ok = False
+                    break
+                gap += abs(ax - eq)
+            if ok and (best_key is None or (gap, -a) > best_key):
+                axis, best_key = (a, b), (gap, -a)
+        if axis is None:
+            return None
     Y = X.copy()
-    for i in best:
-        ax, _eq = _jt_lengths(table, syms[i], form)
-        if handle(i, best[0] if i == best[1] else best[1]) == "mono":
-            shift = (ax - d[i]) * u[i]
-            for j in frags[frag_of[i]]:
-                Y[j] = Y[j] + shift
-        else:
-            pivot = [j for j in dons[i] if j != i][0]
-            Z = _rotate_to_length(Y, frags[frag_of[i]], mi, i, pivot, ax)
-            if Z is None:
-                return None
-            Y = Z
-    for i in cand:                               # equatorial single-donor ligands: their length
-        if i in best or len(dons[i]) != 1:
+    for i in axis:
+        t = _jt_len(table, cn, syms[i], ax_label)
+        if t is None:
+            return None
+        Z = _move_donor(Y, frags, frag_of, dons, mi, i, t, set(axis) - {i})
+        if Z is None:
+            return None
+        Y = Z
+    for i in cand:
+        if i in axis or len(dons[i]) != 1:
             continue
-        _ax, eq = _jt_lengths(table, syms[i], form)
-        if eq is not None:
-            dd = float(np.linalg.norm(Y[i] - Y[mi]))
-            shift = (eq - dd) * (Y[i] - Y[mi]) / dd
-            for j in frags[frag_of[i]]:
-                Y[j] = Y[j] + shift
+        t = _jt_len(table, cn, syms[i], eq_label)
+        if t is not None:
+            Y = _move_donor(Y, frags, frag_of, dons, mi, i, t, set())
     return Y
 
 
@@ -142,7 +165,7 @@ def apply_jt(results, ctx, table) -> List[Tuple]:
     """Elongate (and with ``both`` add compressed copies of) the frames of a Cu(II) CN6 complex."""
     mode = jt_mode()
     if not mode or not results or not ctx or ctx.get("metal") != "Cu" or ctx.get("ox") != 2 \
-            or ctx.get("cn") != 6:
+            or ctx.get("cn") not in (5, 6):
         return results
     from delfin.manta._fix_sp2n_planarize import _format_xyz, _parse_xyz
     out, extra = [], []

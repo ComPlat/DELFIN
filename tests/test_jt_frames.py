@@ -74,3 +74,16 @@ def test_all_keeps_the_frame_as_built(monkeypatch):
     monkeypatch.setenv(JT.JT_ENV, "all")
     out = JT.apply_jt(res, {"metal": "Cu", "ox": 2, "cn": 6}, TABLE)
     assert [lbl for _x, lbl in out] == ["OC-6", "OC-6-jte", "OC-6-jtc"] and out[0] == res[0]
+
+
+def test_square_pyramid_gets_a_long_apical_bond():
+    syms, X = _hexaaqua()
+    keep = [i for i in range(len(syms)) if not (16 <= i <= 18)]      # drop the -z water
+    syms = [syms[i] for i in keep]
+    X = X[keep]
+    table = {("J", "Cu", "2", "5", "O", "sp5_ap"): (99, 2.29), ("J", "Cu", "2", "5", "O", "sp5_bas"): (99, 1.95)}
+    Y = JT.distort_frame(syms, X, table, "elong")
+    o = [i for i, s in enumerate(syms) if s == "O"]
+    d = sorted(round(float(np.linalg.norm(Y[i])), 3) for i in o)
+    assert d == pytest.approx([1.95, 1.95, 1.95, 1.95, 2.29], abs=1e-3)
+    assert JT.distort_frame(syms, X, table, "comp") is None

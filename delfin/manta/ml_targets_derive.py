@@ -884,3 +884,30 @@ def jt_rows(recs, metal: str = "Cu", ox: int = 2, min_n: int = 10, boot: int = 2
         rows.append(("J", metal, str(ox), "6", e, lab, len(g), float(np.median(v)), lo, hi,
                      float(np.percentile(v, 25)), float(np.percentile(v, 75)), len(v)))
     return rows
+
+
+def jt_rows_sp5(recs, metal: str = "Cu", ox: int = 2, min_n: int = 10, boot: int = 200):
+    """Apical and basal M-D medians of square-pyramidal CN5 crystals of one ion (the donor without a
+    trans partner while the other four form two trans pairs): rows ('J', metal, ox, '5', element,
+    'sp5_ap' | 'sp5_bas')."""
+    groups = defaultdict(lambda: defaultdict(list))
+    for r in recs:
+        if r["metal"] != metal or int(r["ox"]) != ox or int(r["cn"]) != 5 or len(r["donors"]) != 5:
+            continue
+        tr = r.get("trans") or []
+        lone = [k for k, t in enumerate(tr) if t < 0]
+        paired = [k for k, t in enumerate(tr) if t >= 0 and tr[t] == k]
+        if len(lone) != 1 or len(paired) != 4:
+            continue
+        for j, (e, c, d, *_x) in enumerate(r["donors"]):
+            groups[(e, "sp5_ap" if j == lone[0] else "sp5_bas")][r["id"]].append(d)
+    rows = []
+    for (e, lab) in sorted(groups):
+        g = list(groups[(e, lab)].values())
+        if len(g) < min_n:
+            continue
+        v = [x for gg in g for x in gg]
+        lo, hi = _boot_ci(g, boot)
+        rows.append(("J", metal, str(ox), "5", e, lab, len(g), float(np.median(v)), lo, hi,
+                     float(np.percentile(v, 25)), float(np.percentile(v, 75)), len(v)))
+    return rows

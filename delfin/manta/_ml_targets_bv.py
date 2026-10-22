@@ -481,9 +481,10 @@ def build_context(smiles: str, spin: Optional[str] = None) -> Optional[dict]:
     # legacy pair table (measured on held-out crystals 0.063 A median error) instead of the FF-free
     # covalent sum (0.126 A), so that switching a complex onto the FF-free path does not move its
     # unmeasured donors further from the crystal.  Not for heavy metalloid donors, whose legacy
-    # values are the known overshoot METALLOID_MD_LEN replaces (DELFIN_FFFREE_ML_TARGETS_BV_HISTORIC=0
-    # turns this off).
-    if os.environ.get(HISTORIC_ENV, "1") == "1":
+    # values are the known overshoot METALLOID_MD_LEN replaces.  Off until measured in a build
+    # (DELFIN_FFFREE_ML_TARGETS_BV_HISTORIC=1 turns it on;
+    # default 0).
+    if os.environ.get(HISTORIC_ENV, "0") == "1":
         from delfin.manta.ml_tables import _METAL_LIGAND_BOND_LENGTHS, _METALLOID_MD_DONORS
         for i, el, cls in donors:
             if i in tg or el == "H" or cls is None or el in _METALLOID_MD_DONORS:
