@@ -8461,6 +8461,42 @@ def create_tab(ctx):
             st.top = 0;
             st.mark = 0;
         };
+        // The reader's own input: a scroll with none of it just before is
+        // not the reader's. Measured 2026-10-22: while the agent waited, the
+        // browser moved a following reader 12 px up every ~1.5 s with no
+        // script writing scrollTop, and the 150 ms poll put it back 60-85 ms
+        // later -- a visible jitter at the end of the chat. A wheel, a touch,
+        // a navigation key, or a pointer held on the chat (the scrollbar) is
+        // the reader; 300 ms after it covers inertia and key repeat.
+        var inputUntil = 0, pressed = false;
+        function readerInput() {
+            inputUntil = Date.now() + 300;
+        }
+        function onChat(e) {
+            return !!(e.target && e.target.closest
+                      && e.target.closest('.delfin-agent-chat-host'));
+        }
+        document.addEventListener('wheel', function(e) {
+            if (onChat(e)) readerInput();
+        }, {capture: true, passive: true});
+        document.addEventListener('touchmove', function(e) {
+            if (onChat(e)) readerInput();
+        }, {capture: true, passive: true});
+        document.addEventListener('keydown', function(e) {
+            if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
+                readerInput();
+        }, true);
+        document.addEventListener('pointerdown', function(e) {
+            if (onChat(e)) { pressed = true; readerInput(); }
+        }, true);
+        function released() {
+            if (pressed) { pressed = false; readerInput(); }
+        }
+        document.addEventListener('pointerup', released, true);
+        document.addEventListener('pointercancel', released, true);
+        function byReader() {
+            return pressed || Date.now() < inputUntil;
+        }
         // Scroll events do not bubble, so capture them at the document. That
         // also survives the chat element being replaced on every refresh.
         document.addEventListener('scroll', function(e) {
@@ -8470,6 +8506,15 @@ def create_tab(ctx):
             var st = stateFor(c);
             st.top = c.scrollTop;
             if (st.auto) { st.auto = false; return; }
+            // Following, moved, and not by the reader: back to the end in
+            // this event, which runs before the next paint, so the move is
+            // never seen.
+            if (st.follow && !byReader()
+                    && c.scrollTop < c.scrollHeight - c.clientHeight - 1) {
+                setTop(c, c.scrollHeight, st);
+                st.top = c.scrollTop;
+                return;
+            }
             var end = atEnd(c);
             if (end === st.follow) return;
             st.follow = end;
