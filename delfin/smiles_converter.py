@@ -720,6 +720,12 @@ def smiles_to_xyz_isomers(*args, **kwargs):
             if isinstance(r_hs, tuple) and len(r_hs) == 2 and isinstance(r_hs[0], list):
                 _hs = [(xyz, (f"{lbl}-hs" if lbl else "hs")) for xyz, lbl in r_hs[0]]
             r = (_ls + _hs, r[1] if _ls else (r_hs[1] if isinstance(r_hs, tuple) else r[1]))
+        # Cu(II) Jahn-Teller frames (DELFIN_FFFREE_ML_TARGETS_BV_JT, default OFF -> never entered).
+        if outermost and isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
+            from delfin.manta import _jt_frames as _jtf
+            if _jtf.jt_mode() and _bvt.current_context() is not None:
+                r = (_jtf.apply_jt(r[0], _bvt.current_context(),
+                                   _bvt.load_table(_bvt.table_path())), r[1])
         # --- Metalloid dual-M-D-distance pass (DELFIN_FFFREE_METALLOID_MD_BOTH; default OFF) ------
         # For systems with a metalloid donor, ALSO build the manifold at the SHORT covalent-sum
         # M-metalloid distance and APPEND it (never drops the offset frames).  The eye's gate is

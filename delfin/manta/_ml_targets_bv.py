@@ -275,7 +275,7 @@ def load_table(path: str) -> Dict[tuple, Tuple[int, float]]:
                 if not ln.strip() or ln.startswith("#"):
                     continue
                 p = ln.rstrip("\n").split("\t")
-                if len(p) < 8 or p[0] not in ("N", "D", "R", "P", "F"):
+                if len(p) < 8 or p[0] not in ("N", "D", "R", "P", "F", "J"):
                     continue
                 try:
                     if p[0] == "P":

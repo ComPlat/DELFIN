@@ -206,6 +206,7 @@ def main(argv=None):
     p.add_argument("--min-n", type=int, default=10)
     p.add_argument("--boot", type=int, default=200)
     p.add_argument("--exclude", default="", help="drop records of these families/formulas (id;SMILES files)")
+    p.add_argument("--jt", action="store_true", help="add Cu(II) Jahn-Teller axial/equatorial rows (J)")
     p.add_argument("--spin", action="store_true",
                    help="label spin states (3d d4-d7, CN >= 5) and add per-spin rows and low-spin shares")
     a = ap.parse_args(argv)
@@ -241,6 +242,9 @@ def main(argv=None):
                         f"b = 0.37, rho = 1: {f['literature_score']:.4f} A (n = {f['literature_n']})")
             print("# fit", {k: v for k, v in f.items() if k != "grid"}, flush=True)
         rows = MD.build_table(recs, b, rho, a.min_n, a.boot)
+        if a.jt:
+            rows += MD.jt_rows(recs, "Cu", 2, a.min_n, a.boot)
+            head.append("J rows: Cu(II) CN6 axial/equatorial M-D per element and Jahn-Teller form (elongated / compressed)")
         if a.spin:
             summ = MD.label_spins(recs)
             nl = Counter(r.get("spin") for r in recs if r.get("spin"))

@@ -843,3 +843,44 @@ def jt_form(r: dict, ref_median=None) -> Optional[str]:
     if p[2] - p[0] <= JT_TIGHT:
         return "undistorted"
     return "other"
+
+
+def jt_rows(recs, metal: str = "Cu", ox: int = 2, min_n: int = 10, boot: int = 200):
+    """Axial and equatorial M-D medians per donor element for the Jahn-Teller forms of one ion
+    (CN6, three trans pairs): rows ('J', metal, ox, '6', element, 'elong_ax' | 'elong_eq' |
+    'comp_ax' | 'comp_eq').  The axial pair of an elongated octahedron is its longest trans pair,
+    of a compressed one its shortest (pair lengths relative to the class medians)."""
+    sel = [r for r in recs if r["metal"] == metal and int(r["ox"]) == ox and int(r["cn"]) == 6]
+    acc = defaultdict(list)
+    for r in sel:
+        for e, c, d, *_t in r["donors"]:
+            acc[(e, c)].append(d)
+    ref = {(metal, ox, 6, e, c): float(np.median(v)) for (e, c), v in acc.items() if len(v) >= 10}
+    groups = defaultdict(lambda: defaultdict(list))
+    for r in sel:
+        form = jt_form(r, ref)
+        if form not in ("elongated", "compressed"):
+            continue
+        tr = r["trans"]
+        pairs = []
+        for k, t in enumerate(tr):
+            if t > k and tr[t] == k:
+                dev = [r["donors"][j][2] - ref.get((metal, ox, 6, r["donors"][j][0], r["donors"][j][1]),
+                                                     r["donors"][j][2]) for j in (k, t)]
+                pairs.append((sum(dev) / 2.0, k, t))
+        pairs.sort()
+        ax = pairs[-1] if form == "elongated" else pairs[0]
+        tag = "elong" if form == "elongated" else "comp"
+        for j, (e, c, d, *_x) in enumerate(r["donors"]):
+            pos = "ax" if j in (ax[1], ax[2]) else "eq"
+            groups[(e, f"{tag}_{pos}")][r["id"]].append(d)
+    rows = []
+    for (e, lab) in sorted(groups):
+        g = list(groups[(e, lab)].values())
+        if len(g) < min_n:
+            continue
+        v = [x for gg in g for x in gg]
+        lo, hi = _boot_ci(g, boot)
+        rows.append(("J", metal, str(ox), "6", e, lab, len(g), float(np.median(v)), lo, hi,
+                     float(np.percentile(v, 25)), float(np.percentile(v, 75)), len(v)))
+    return rows
