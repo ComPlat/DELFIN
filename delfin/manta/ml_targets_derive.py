@@ -261,9 +261,11 @@ def record_from_smiles_crystal(rid: str, smi: str, el, X) -> dict:
         x = s2x[i]
         t = tp.get(x)
         rec.append([e, c, round(float(Dm[x]), 4)] + (list(x2c[t]) if t is not None else [None, None]))
+    pos = {s2x[i]: k for k, (i, _e, _c) in enumerate(heavy)}
+    trans = [pos.get(tp.get(s2x[i]), -1) for i, _e, _c in heavy]
     return {"id": rid, "st": "ok", "src": "smiles", "root": root_of(rid), "metal": metal, "ox": ox,
             "cn": len(donors), "nx": BV.n_x_donors(donors),
-            "formula": formula_key(Counter(el)), "donors": rec}
+            "formula": formula_key(Counter(el)), "donors": rec, "trans": trans}
 
 
 # ------------------------------------------------------------------------------------------------
@@ -803,3 +805,41 @@ def spin_rows(recs, min_n: int = 10, boot: int = 200):
             rows.append(("F",) + key + ("*", "*", ls + hs, ls / (ls + hs), float("nan"), float("nan"),
                                          float("nan"), float("nan"), ls + hs))
     return rows
+
+
+# ------------------------------------------------------------------------------------------------
+# Jahn-Teller form of a crystal (counting only; the table rows per form come with the JT switch)
+# ------------------------------------------------------------------------------------------------
+JT_SPLIT = 0.15            # A: one trans pair this much longer/shorter than the other two -> distorted
+JT_TIGHT = 0.08            # A: the other two pairs agree within this
+
+
+def jt_form(r: dict, ref_median=None) -> Optional[str]:
+    """'elongated', 'compressed', 'undistorted' or 'other' for a CN6 record with three trans pairs;
+    None when the record has no three clean trans pairs.  Pair lengths are taken relative to the
+    class median (ref_median[(metal, ox, cn, element, class)]) when given, so a pair of long donors
+    (e.g. two Br among N) is not read as a distortion."""
+    tr = r.get("trans")
+    if int(r["cn"]) != 6 or not tr or len(r["donors"]) != 6:
+        return None
+    pairs, seen = [], set()
+    for k, t in enumerate(tr):
+        if t < 0 or k in seen or tr[t] != k:
+            continue
+        seen |= {k, t}
+        dev = []
+        for j in (k, t):
+            e, c, d, *_x = r["donors"][j]
+            ref = ref_median.get((r["metal"], int(r["ox"]), 6, e, c)) if ref_median else None
+            dev.append(d - ref if ref is not None else d)
+        pairs.append(sum(dev) / 2.0)
+    if len(pairs) != 3:
+        return None
+    p = sorted(pairs)
+    if p[2] - p[1] >= JT_SPLIT and p[1] - p[0] <= JT_TIGHT:
+        return "elongated"
+    if p[1] - p[0] >= JT_SPLIT and p[2] - p[1] <= JT_TIGHT:
+        return "compressed"
+    if p[2] - p[0] <= JT_TIGHT:
+        return "undistorted"
+    return "other"
