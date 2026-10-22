@@ -1624,6 +1624,28 @@ def create_tab(ctx):
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
 
+    # -- spin density widgets -----------------------------------------------
+    calc_spin_density_btn = widgets.Button(
+        description='Plot Spin Density',
+        button_style='primary',
+        layout=widgets.Layout(width='140px', min_width='140px', height='26px'),
+    )
+    calc_spin_density_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_spin_density_panel = widgets.VBox(
+        [
+            widgets.HTML('<b>Spin Density</b>'),
+            widgets.HTML(
+                '<span style="color:#555;">Generate the spin density (alpha-beta) cube via orca_plot and display in 3D viewer. Only available for open-shell (UKS/UHF) calculations.</span>'
+            ),
+            calc_spin_density_btn,
+            calc_spin_density_status,
+        ],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
+
 
     # -- preselection widgets ----------------------------------------------
     calc_preselect_title = widgets.HTML('<b>Preselection</b>')
@@ -4913,6 +4935,18 @@ def create_tab(ctx):
             f"}}, 80);"
         )
 
+    def _calc_show_spin_density_panel(show):
+        if show:
+            calc_spin_density_status.value = ''
+            calc_spin_density_panel.layout.display = 'block'
+        else:
+            calc_spin_density_panel.layout.display = 'none'
+        _run_js(
+            f"setTimeout(function(){{"
+            f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
+            f"}}, 80);"
+        )
+
     def _calc_show_nmr_panel(show):
         if show:
             calc_nmr_status.value = ''
@@ -5497,6 +5531,144 @@ def create_tab(ctx):
                 calc_mo_plot_btn.disabled = False
 
         threading.Thread(target=_run_mo_plot, daemon=True).start()
+        calc_options_dropdown.value = '(Options)'
+
+    def calc_on_spin_density(_button=None):
+        selected_path = _calc_get_selected_path()
+        _calc_refresh_mo_plot_info()
+        if selected_path is None or selected_path.suffix.lower() != '.out':
+            calc_spin_density_status.value = '<span style="color:#d32f2f;">Select a .out file first.</span>'
+            return
+
+        scheme, _homo_index = _calc_mo_detect_spin(selected_path)
+        if scheme != 'UKS':
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">Spin density requires an open-shell calculation '
+                '(UKS/UHF). This job looks closed-shell (RKS/RHF).</span>'
+            )
+            return
+
+        gbw_path = _calc_mo_find_gbw(selected_path)
+        if gbw_path is None:
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">No suitable .gbw file found for selected job.</span>'
+            )
+            return
+
+        orca_plot_exe = shutil.which('orca_plot') or _orca_plot_binary()
+        if not orca_plot_exe:
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">orca_plot not found in PATH or ORCA env variables.</span>'
+            )
+            return
+
+        gbw_dir = gbw_path.parent
+        project_dir = _calc_mo_project_dir(selected_path) or gbw_dir
+        calc_spin_density_btn.disabled = True
+        calc_spin_density_status.value = (
+            '<span style="color:#1976d2;">Generating spin density cube ...</span>'
+        )
+
+        def _run_spin_density():
+            created_temp_files = []
+            env = os.environ.copy()
+            env['ORCA_SCRDIR'] = str(gbw_dir)
+            env['ORCA_TMPDIR'] = str(gbw_dir)
+            env.setdefault('TMPDIR', str(gbw_dir))
+
+            try:
+                dens_candidates = [
+                    project_dir / f'{gbw_path.stem}.densitiesinfo',
+                    gbw_dir / f'{gbw_path.stem}.densitiesinfo',
+                    project_dir / 'initial.densitiesinfo',
+                    gbw_dir / 'initial.densitiesinfo',
+                ]
+                dens_src = next((p for p in dens_candidates if p.exists()), None)
+                if dens_src is not None:
+                    for dens_dest in {gbw_dir / dens_src.name, gbw_dir / f'{gbw_path.stem}.densitiesinfo'}:
+                        if dens_dest.exists():
+                            continue
+                        try:
+                            shutil.copy2(dens_src, dens_dest)
+                            created_temp_files.append(dens_dest)
+                        except Exception:
+                            pass
+
+                # The spin density plot type lives in orca_plot's plot-type
+                # submenu ("1 - Enter type of plot"): menu item 3 is
+                # "(scf) spin density" (scfp = total electron density is 2).
+                # Empirically verified against ORCA 6.1.1 (orca_plot asks
+                # "Is this the one you want (y/n)?" and confirms the default
+                # density name <base>.scfr). Sequence:
+                #   1 = enter plot type, 3 = spin density, y = accept the
+                #   default density file, 11 = generate the plot, 12 = exit.
+                spin_type_candidates = [3]
+                generated = []
+                failures = []
+                for spin_type in spin_type_candidates:
+                    orca_input = f"1\n{spin_type}\ny\n11\n12\n"
+                    try:
+                        result = subprocess.run(
+                            [orca_plot_exe, gbw_path.name, '-i'],
+                            input=orca_input.encode(),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            cwd=str(gbw_dir),
+                            env=env,
+                            timeout=120,
+                            check=False,
+                        )
+                    except subprocess.TimeoutExpired:
+                        failures.append(f'spin type {spin_type}: timeout after 120s')
+                        continue
+                    except Exception as exc:
+                        failures.append(f'spin type {spin_type}: {exc}')
+                        continue
+
+                    cubes = sorted(gbw_dir.glob('*.cube'), key=lambda p: p.stat().st_mtime_ns)
+                    nonempty = [p for p in cubes if p.stat().st_size > 44]
+                    if nonempty:
+                        generated.append(nonempty[-1])
+                        break
+
+                    stderr_raw = (result.stderr or result.stdout or b'').decode(errors='ignore')
+                    m = re.search(r"Filename:\s*(\S+\.densitiesinfo)", stderr_raw)
+                    if m and dens_src is not None:
+                        retry_path = Path(m.group(1)).expanduser()
+                        if not retry_path.is_absolute():
+                            retry_path = gbw_dir / retry_path
+                        try:
+                            retry_path.parent.mkdir(parents=True, exist_ok=True)
+                            if not retry_path.exists():
+                                shutil.copy2(dens_src, retry_path)
+                                created_temp_files.append(retry_path)
+                        except Exception:
+                            pass
+
+                if generated:
+                    shown = ', '.join(path.name for path in generated[:6])
+                    calc_spin_density_status.value = (
+                        '<span style="color:#2e7d32;">'
+                        f'Generated spin density cube(s): {_html.escape(shown)}'
+                        ' — click the file in the list to view it in 3D.</span>'
+                    )
+                else:
+                    failure_text = '; '.join(failures[:2]) if failures else 'No spin density cube was generated.'
+                    if failures and len(failures) > 2:
+                        failure_text += f' ... (+{len(failures) - 2} more)'
+                    calc_spin_density_status.value = (
+                        f'<span style="color:#d32f2f;">{_html.escape(failure_text)}</span>'
+                    )
+            finally:
+                for temp_path in created_temp_files:
+                    try:
+                        if temp_path.exists():
+                            temp_path.unlink()
+                    except Exception:
+                        pass
+                calc_spin_density_btn.disabled = False
+
+        threading.Thread(target=_run_spin_density, daemon=True).start()
         calc_options_dropdown.value = '(Options)'
 
     def calc_on_xyz_batch_refresh(_button=None):
@@ -8610,7 +8782,7 @@ def create_tab(ctx):
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.out'):
-            out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR']
+            out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR', 'Spin Density']
             if rmsd_available:
                 out_options.append('RMSD')
             calc_options_dropdown.options = out_options
@@ -9694,6 +9866,19 @@ def create_tab(ctx):
             calc_content_area.layout.display = 'block'
             _calc_run_print_nmr()
             _calc_reset_options_dropdown()
+        elif change['new'] == 'Spin Density':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(True)
+            calc_content_area.layout.display = 'block'
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
@@ -13690,6 +13875,7 @@ def create_tab(ctx):
     calc_mo_plot_beta_cb.observe(_calc_update_mo_spin_button_styles, names='value')
     _calc_update_mo_spin_button_styles()
     calc_mo_plot_btn.on_click(calc_on_mo_plot)
+    calc_spin_density_btn.on_click(calc_on_spin_density)
     calc_nmr_submit_btn.on_click(_calc_on_nmr_submit)
     calc_censo_nmr_submit_btn.on_click(_calc_on_censo_nmr_submit)
     calc_report_btn.on_click(calc_on_report)
@@ -15604,6 +15790,9 @@ def create_tab(ctx):
         'calc_on_download': calc_on_download,
         'calc_download_btn': calc_download_btn,
         'calc_download_status': calc_download_status,
+        # Spin density (exposed for tests: fire the button, read the status)
+        'calc_spin_density_btn': calc_spin_density_btn,
+        'calc_spin_density_status': calc_spin_density_status,
         'calc_download_targets': _calc_download_targets,
         'calc_update_download_btn': calc_update_download_btn,
         # Delete (exposed for blocking only — agent must NOT click)
