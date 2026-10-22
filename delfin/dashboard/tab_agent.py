@@ -2292,6 +2292,9 @@ _AGENT_CSS = """\
 }
 .delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary) {
     background: #ffffff; border: 1px solid #cbd5e1; color: #334155;
+    /* The 40 px shell button holds an icon and "/": with the border and
+       the default padding its label was cut to ">_ ..." (measured). */
+    padding: 0 4px;
 }
 .delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary):hover {
     background: #f1f5f9;
