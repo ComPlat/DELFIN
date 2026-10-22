@@ -1787,13 +1787,35 @@ def _claim_value(quantity: str) -> tuple[float, float] | None:
     return readings[0] if readings else None
 
 
+def _value_is_observed(value: float, quantum: float,
+                       pool: list[float]) -> bool:
+    """Is ``value``, printed to half-unit ``quantum``, one the tools returned?
+
+    Either as before (within ``_grounded_in_observations``' tolerance of a
+    returned number or of a difference of two), or as a returned number
+    rounded to the claim's printed precision: 2.571 printed as "2.6".
+    The rounding applies to returned numbers only, never to differences,
+    and never to integers: a half unit of 0.5 grounds most invented
+    values. Measured on the GFN2-xTB butane pools, random claims in
+    [0.1, 10] kcal/mol: one decimal 7.2% -> 19.6% grounded by
+    coincidence, two decimals 4.8% -> 5.0%, three decimals unchanged;
+    correct values rounded to one decimal 18.5% -> 100% grounded.
+    """
+    if _grounded_in_observations(value, pool):
+        return True
+    if quantum >= 0.5:
+        return False
+    reach = quantum * (1.0 + 1e-9)
+    return any(abs(value - known) <= reach for known in pool)
+
+
 def _claim_is_observed(quantity: str, pool: list[float]) -> bool:
     """Does the number inside a matched claim come from the tools?
 
     Any reading the claim admits will do — see ``_claim_readings``.
     """
-    return any(_grounded_in_observations(value, pool)
-               for value, _tol in _claim_readings(quantity))
+    return any(_value_is_observed(value, quantum, pool)
+               for value, quantum in _claim_readings(quantity))
 
 
 def _restates_a_grounded_claim(
@@ -1828,7 +1850,7 @@ def _restates_a_grounded_claim(
         if there is None or other_unit == unit:
             continue
         other = _claim_value(other_qty)
-        if other is None or not _grounded_in_observations(other[0], pool):
+        if other is None or not _value_is_observed(other[0], other[1], pool):
             continue
         # Both roundings ride along into eV, and neither claim can be
         # held to more precision than it printed.
