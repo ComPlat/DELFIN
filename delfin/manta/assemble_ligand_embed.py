@@ -6,6 +6,7 @@ statement is the original text, only the imports below are new.
 from __future__ import annotations
 
 import numpy as np
+import math
 import os
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -146,6 +147,47 @@ def _tighten_ring_bounds(bm, mh, tol=0.06):
             bm[hi][lo] = float(max(d13 - tol, 0.0))
 
 
+def _metal_free_ligand_bounds(lmol, mh, mi):
+    """Bounds matrix of ``mh`` (ligand + placeholder metal ``mi`` + H) whose ligand-ligand entries
+    are those of the ligand ALONE, and whose metal row is left for the caller to set.
+
+    RDKit writes the 1-3 and 1-4 bounds of every ring from its ring-angle rule, and the chelate ring
+    through the placeholder metal is a ring to it: a five-membered metallacycle gets the regular
+    pentagon's 108 deg at every member.  A quinolinate's C8a and C8 sit in the aromatic six-rings
+    as well, whose 120 deg the same matrix also asks for, so the ligand's own 1-3 distances are
+    stated twice and contradict.  Measured on FOJVIL (Zn quinolinate, 22.10.2026): with the M-D
+    radii pinned, triangle smoothing fails for every config; the unconstrained fallback embed then
+    returns the compromise -- the donor N-C bond at 1.16 A and Zn-O at 2.5-2.75 A -- which the
+    radial rescale onto the short covalent-sum radii had been stretching back by accident.  The
+    metal does not change the ligand's bond lengths and angles; it only closes the ring, and that
+    is what the metal row (M-D radii) states.  Returns None when the ligand-only matrix cannot be
+    matched atom for atom (the caller keeps the historic matrix)."""
+    try:
+        from rdkit.Chem import rdDistGeom as _DG
+        lh = Chem.AddHs(lmol)
+        nl = lh.GetNumAtoms()
+        if mh.GetNumAtoms() != nl + 1:
+            return None
+        # mh: ligand heavy atoms, metal at mi, then the hydrogens in the ligand's order
+        idx = [i if i < mi else i + 1 for i in range(nl)]
+        for i in range(nl):
+            a, b = lh.GetAtomWithIdx(i), mh.GetAtomWithIdx(idx[i])
+            if a.GetAtomicNum() != b.GetAtomicNum():
+                return None
+            if sorted(idx[n.GetIdx()] for n in a.GetNeighbors()) != sorted(
+                    n.GetIdx() for n in b.GetNeighbors() if n.GetIdx() != mi):
+                return None
+        bl = _DG.GetMoleculeBoundsMatrix(lh)
+        bm = _DG.GetMoleculeBoundsMatrix(mh)
+        for i in range(nl):
+            for j in range(nl):
+                if i != j:
+                    bm[idx[i]][idx[j]] = bl[i][j]
+        return bm
+    except Exception:
+        return None
+
+
 def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                         harden=False, force_bite=False):
     """Embed a chelating ligand TOGETHER with a placeholder metal bonded to its
@@ -245,10 +287,11 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # targets, so _have_targets, but NOT the bite pin -- dropping the donor-donor entries
         # is the whole point of it (see _bite_free_bounds).
         _bite_free = _bite_free_bounds()
-        if not _bite_free:
-            # bond-valence targets: embed the ring at the radii it is seated at (default OFF)
-            from delfin.manta import _ml_targets_bv as _bvt
-            _bite_free = _bvt.embed_at_targets()
+        # bond-valence targets: embed the ring at the radii it is seated at, the ligand's own
+        # bounds for every ligand pair (default OFF; see _metal_free_ligand_bounds)
+        from delfin.manta import _ml_targets_bv as _bvt
+        _bv_embed = _bvt.embed_at_targets() and _have_targets
+        _bite_free = _bite_free or _bv_embed
         _use_bm = (_have_targets and (_chel_bite or harden or force_bite or _bite_free)) \
             or _oc6_vertex or _ring_b
         if not _use_bm and os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
@@ -260,6 +303,10 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                 from rdkit import DistanceGeometry as _DGs
                 nA = mh.GetNumAtoms()
                 bm = _DG.GetMoleculeBoundsMatrix(mh)
+                if _bv_embed:
+                    _mfb = _metal_free_ligand_bounds(lmol, mh, mi)
+                    if _mfb is not None:
+                        bm = _mfb
                 dset = {int(d) for d in donor_idxs}
                 tp = ([np.asarray(p, float) for p in donor_target_pos]
                       if _have_targets else None)
@@ -335,6 +382,23 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                             _setb(int(da), int(donor_idxs[b]),
                                   float(np.linalg.norm(_tp_use[a] - _tp_use[b])),
                                   tol=_dd_tol)
+                    if _bv_embed:
+                        # the metal on the donor's lone-pair side: M-D-X >= 95 deg for every heavy
+                        # neighbour X of a donor (the reset above left M...X at 1.2 A, so the
+                        # ring could close with the metal beside the donor-X bond)
+                        _cmin = math.cos(math.radians(95.0))
+                        for a, da in enumerate(donor_idxs):
+                            _r = float(np.linalg.norm(_tp_use[a]))
+                            for _nb in mh.GetAtomWithIdx(int(da)).GetNeighbors():
+                                _x = _nb.GetIdx()
+                                if _x == mi or _nb.GetAtomicNum() == 1 or _x in dset:
+                                    continue
+                                _dx = 0.5 * (bm[min(_x, int(da))][max(_x, int(da))]
+                                             + bm[max(_x, int(da))][min(_x, int(da))])
+                                _lo = math.sqrt(_r * _r + _dx * _dx - 2.0 * _r * _dx * _cmin)
+                                _l, _h = min(_x, mi), max(_x, mi)
+                                bm[_h][_l] = max(float(bm[_h][_l]), _lo)
+                                bm[_l][_h] = max(float(bm[_l][_h]), _lo + 0.1)
                 _smooth = _DGs.DoTriangleSmoothing(bm)
                 if _smooth:
                     ep = _DG.EmbedParameters()
