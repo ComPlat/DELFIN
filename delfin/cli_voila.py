@@ -13,6 +13,7 @@ import importlib.util
 import importlib.resources
 import ipaddress
 import os
+import re
 import socket
 import shutil
 import stat
@@ -811,6 +812,17 @@ _BENIGN_STDERR_SUBSTRINGS = (
 )
 
 
+#: A server warning with no text: jupyter_server logs ``str(e)`` of the
+#: ``WebSocketClosedError`` raised for each kernel message that reaches a
+#: browser connection which has closed, and that exception has no text.
+_EMPTY_WARNING_RE = re.compile(rb"^(\[W [^\]]*\])\s*$")
+
+_CLOSED_CONNECTION_NOTE = (
+    b" kernel output reached a browser connection that had closed (page "
+    b"reloaded, tab closed or connection lost); repeats directly after "
+    b"it are not shown\n")
+
+
 def _forward_filtered_stderr(stream) -> None:
     """Forward the child's stderr to ours, dropping only benign noise lines.
 
@@ -819,11 +831,23 @@ def _forward_filtered_stderr(stream) -> None:
     hidden (fail-loud preserved). A ``warnings.warn`` header is printed with an
     indented source snippet on the next line; that snippet is dropped too when
     its header was dropped.
+
+    A run of warnings without text (``_EMPTY_WARNING_RE``) is printed once,
+    with what it means, instead of one empty header per kernel message.
     """
     drop_indented_continuation = False
+    in_empty_run = False
     out = getattr(sys.stderr, "buffer", None)
     try:
         for raw in iter(stream.readline, b""):
+            empty = _EMPTY_WARNING_RE.match(raw)
+            if empty:
+                if in_empty_run:
+                    continue
+                in_empty_run = True
+                raw = empty.group(1) + _CLOSED_CONNECTION_NOTE
+            else:
+                in_empty_run = False
             text = raw.decode("utf-8", "replace")
             if drop_indented_continuation and text[:1].isspace():
                 drop_indented_continuation = False

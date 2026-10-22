@@ -2373,6 +2373,22 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame > .delfin-agent-chat-host { grid-area: 1 / 1; }
 .delfin-agent-chat-frame > .delfin-agent-working-slot {
     grid-area: 1 / 1; align-self: end; z-index: 3;
+    /* Off the transcript's scrollbar (10 px, below) with 8 px to spare:
+       across the full cell the line lay on it (field report 2026-10-22). */
+    margin-right: 18px;
+}
+/* The transcript's scrollbar: a thin rounded bar like the input's, of a
+   known width, so the working line laid over the transcript can keep off
+   it. Chromium and Safari; Firefox takes its thin bar. */
+.delfin-agent-chat-host::-webkit-scrollbar { width: 10px; }
+.delfin-agent-chat-host::-webkit-scrollbar-track { background: transparent; }
+.delfin-agent-chat-host::-webkit-scrollbar-thumb {
+    background: #cbd5e1; border-radius: 8px; border: 2px solid #f8fafc;
+}
+.delfin-agent-chat-host::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+.delfin-agent-chat-host::-webkit-scrollbar-button { display: none; }
+@supports not selector(::-webkit-scrollbar) {
+    .delfin-agent-chat-host { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
 }
 .delfin-agent-chat-host .delfin-agent-chat { padding-bottom: 84px; }
 /* The slow-phase hint under the working line: the same inset strip. */
@@ -4353,7 +4369,8 @@ def _formula_card_html(path: Path, name_html: str) -> str | None:
         '<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">'
         f'\U0001F9EA <code>{name_html}</code> '
         '<span style="color:#9ca3af;">(structural formula)</span></div>'
-        f'<img src="data:image/svg+xml;base64,{data}" alt="{name_html}" '
+        f'<img src="data:image/svg+xml;base64,{data}" alt="{name_html}"'
+        f'{_img_box(svg.encode("utf-8"))} '
         'style="display:block;margin:0 auto;width:min(560px,100%);'
         'height:auto;"/>'
         '<div style="text-align:center;margin-top:6px;font-size:15px;'
@@ -4689,9 +4706,9 @@ def _render_pdf_preview(p) -> str | None:
     import base64
     b64 = base64.b64encode(png).decode("ascii")
     return (
-        f'<img src="data:image/png;base64,{b64}" '
-        f'style="max-width:100%;border:1px solid #f3f4f6;border-radius:4px;'
-        f'display:block;" alt="page 1 of {pages}"/>'
+        f'<img src="data:image/png;base64,{b64}"{_img_box(png)} '
+        f'style="max-width:100%;height:auto;border:1px solid #f3f4f6;'
+        f'border-radius:4px;display:block;" alt="page 1 of {pages}"/>'
         f'<div style="font-size:11px;color:#9ca3af;margin-top:3px;">'
         f'page 1 of {pages}</div>'
     )
@@ -4775,6 +4792,70 @@ def _render_artifact_inline(path) -> str | None:
     return body + link
 
 
+def _img_box(data: bytes) -> str:
+    """`` width="W" height="H"`` read from an image's header, or "".
+
+    Input: the image's bytes (PNG, GIF, JPEG or SVG text). Output: the two
+    attributes for its ``<img>``. With them the browser reserves the box
+    before the data URI is decoded; without them an image is 0 px tall
+    until then, and Python replaces the whole transcript on every update,
+    so every update collapsed the images above the end for a moment. The
+    CSS keeps scaling them (max-width, height: auto); only the aspect ratio
+    is taken from these numbers.
+    """
+    import struct
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+            w, h = struct.unpack(">II", data[16:24])
+        elif data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+            w, h = struct.unpack("<HH", data[6:10])
+        elif data[:2] == b"\xff\xd8":
+            i, w, h = 2, 0, 0
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+                    h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                    break
+                i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+        else:
+            head = data[:4096].decode("utf-8", "ignore")
+            tag = re.search(r"<svg\b[^>]*>", head)
+            if not tag:
+                return ""
+            tag = tag.group(0)
+
+            def _len(name):
+                m = re.search(name + r'\s*=\s*["\']\s*([\d.]+)\s*(px|pt)?\s*["\']',
+                              tag)
+                return float(m.group(1)) if m else None
+
+            w, h = _len("width"), _len("height")
+            if not (w and h):
+                vb = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[\s,]+[-\d.]+'
+                               r'[\s,]+([\d.]+)[\s,]+([\d.]+)\s*["\']', tag)
+                if not vb:
+                    return ""
+                w, h = float(vb.group(1)), float(vb.group(2))
+        w, h = int(round(w)), int(round(h))
+    except Exception:
+        return ""
+    if w <= 0 or h <= 0:
+        return ""
+    return f' width="{w}" height="{h}"'
+
+
+def _img_box_b64(b64: str) -> str:
+    """``_img_box`` of a base64-encoded PNG, read from its first 24 bytes."""
+    import base64
+    try:
+        return _img_box(base64.b64decode(b64[:32]))
+    except Exception:
+        return ""
+
+
 def _render_artifact_body(path) -> str | None:
     """Render a workspace artifact as inline HTML for the chat.
 
@@ -4827,7 +4908,7 @@ def _render_artifact_body(path) -> str | None:
             f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'📷 <code>{name_html}</code></div>'
-            f'<img src="data:{mime};base64,{b64}" '
+            f'<img src="data:{mime};base64,{b64}"{_img_box(data)} '
             # Never wider than reading size: a 300 dpi figure is 3000 px
             # and filled the whole chat; a small image is not enlarged.
             f'style="max-width:min(900px,100%);height:auto;border-radius:4px;'
@@ -4862,7 +4943,8 @@ def _render_artifact_body(path) -> str | None:
             # A vector drawing is shown at reading size, centred: at its
             # own 576 px a plot sat small in the corner of a 1500 px chat.
             # It scales without blur; 900 px keeps a wide chat calm.
-            f'<img src="data:image/svg+xml;base64,{b64}" '
+            f'<img src="data:image/svg+xml;base64,{b64}"'
+            f'{_img_box(text.encode("utf-8"))} '
             f'style="width:min(900px,100%);height:auto;display:block;'
             f'margin:0 auto;" alt="{name_html}"/>'
             f'</div></div>'
@@ -4939,8 +5021,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
             f'<code style="color:#374151;">{_html.escape(first[:120])}</code></div>'
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="display:block;border-radius:4px;" '
+            f'<img src="data:image/png;base64,{b64}"'
+            f'{_img_box_b64(b64)} '
+            f'style="display:block;border-radius:4px;max-width:100%;'
+            f'height:auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -4969,8 +5053,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
             f'({mol.GetNumAtoms()} atoms, {mol.GetNumBonds()} bonds)</div>'
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="display:block;border-radius:4px;" '
+            f'<img src="data:image/png;base64,{b64}"'
+            f'{_img_box_b64(b64)} '
+            f'style="display:block;border-radius:4px;max-width:100%;'
+            f'height:auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -8291,11 +8377,96 @@ def create_tab(ctx):
         }
 
 
+        // Viewers already built, kept across transcript rebuilds. Python
+        // replaces the whole transcript on every update, and each card used
+        // to build its viewer again with a new WebGL context: three cards
+        // made 15 canvases in 40 s (measured), Chrome keeps about 16
+        // contexts, and a long session with many cards froze the page. A
+        // rebuilt card that shows the same molecule (same stage id, same
+        // coordinates) gets the kept stage moved into it -- canvas, context
+        // and current frame included; a changed molecule is built anew.
+        //
+        // Chrome drops the oldest context past about 16, so a kept stage that
+        // no rebuilt card claimed within KEEP_IDLE_MS (its card left the
+        // transcript) gives its context back, and at most KEEP_MAX are kept.
+        var KEEP_MAX = 12, KEEP_IDLE_MS = 10000;
+        var kept3d = window.__delfinMol3DKept || (window.__delfinMol3DKept = []);
+        // FNV-1a over the whole text: two conformers may share their length
+        // and their first lines, never their full coordinates.
+        function hashOf(text) {
+            var h = 0x811c9dc5;
+            for (var i = 0; i < text.length; i++) {
+                h ^= text.charCodeAt(i);
+                h = Math.imul(h, 0x01000193) >>> 0;
+            }
+            return h.toString(16);
+        }
+        function keyOf(stage, card) {
+            var d = card.getAttribute('data-mol3d') || '';
+            return (stage.id || '') + '|' + d.length + '|' + hashOf(d);
+        }
+        function release(kept) {
+            var cv = kept.stage.querySelector('canvas');
+            if (!cv) return;
+            try {
+                var gl = cv.getContext('webgl2') || cv.getContext('webgl');
+                var ext = gl && gl.getExtension('WEBGL_lose_context');
+                if (ext) ext.loseContext();
+            } catch (e) {}
+        }
+        // An entry's clock starts when a sweep first finds it detached, so a
+        // rebuild after a long quiet spell still finds every viewer it had.
+        var sweep = null;
+        function prune() {
+            var now = Date.now(), waiting = false;
+            for (var i = kept3d.length - 1; i >= 0; i--) {
+                var k = kept3d[i];
+                if (k.stage.isConnected) { k.gone = 0; continue; }
+                if (!k.gone) k.gone = now;
+                if (now - k.gone >= KEEP_IDLE_MS || kept3d.length > KEEP_MAX) {
+                    kept3d.splice(i, 1);
+                    release(k);
+                } else {
+                    waiting = true;
+                }
+            }
+            if (waiting && !sweep) {
+                sweep = setTimeout(function() { sweep = null; prune(); },
+                                   KEEP_IDLE_MS + 100);
+            }
+        }
+        function reuse(card, stage, key) {
+            prune();
+            for (var i = kept3d.length - 1; i >= 0; i--) {
+                var kept = kept3d[i];
+                if (kept.key !== key || kept.stage.isConnected) continue;
+                stage.parentNode.replaceChild(kept.stage, stage);
+                card.__delfinMol3DDone = true;
+                card.__delfinViewer = kept.viewer;
+                card.__delfinMol3DData = kept.data;
+                card.__delfinMol3DTitle = kept.title;
+                card.__delfinMol3DStyle = kept.style;
+                card.__delfinViewerData = kept.data;
+                if (kept.frames > 1) {
+                    wireTrajectory(card, kept.stage, kept.viewer, kept.frames);
+                }
+                wireFullscreen(card, kept.viewer, kept.frames, kept.iso);
+                try { kept.viewer.resize(); kept.viewer.render(); } catch (e) {}
+                kept.gone = 0;
+                kept3d.splice(i, 1);
+                kept3d.push(kept);
+                return true;
+            }
+            return false;
+        }
+
         window.__delfinMol3D = function(el) {
             var card = el.closest ? el.closest('.delfin-chat-mol3d') : null;
             if (!card || card.__delfinMol3DDone) return;
             var stage = card.querySelector('.delfin-mol3d-stage');
             if (!stage) return;
+            var key = keyOf(stage, card);
+            if (reuse(card, stage, key)) return;
             var tries = 0;
             function attempt() {
                 // Gone: the chat was rebuilt under us and this card no
@@ -8322,6 +8493,18 @@ def create_tab(ctx):
                     card.__delfinViewerData =
                         card.getAttribute('data-mol3d') || '';
                     build(card, stage);
+                    if (card.__delfinViewer) {
+                        kept3d.push({
+                            key: key, stage: stage, viewer: card.__delfinViewer,
+                            data: card.__delfinMol3DData || card.__delfinViewerData,
+                            title: card.__delfinMol3DTitle,
+                            style: card.__delfinMol3DStyle,
+                            frames: parseInt(card.getAttribute('data-mol3d-frames') || '1', 10),
+                            iso: parseFloat(card.getAttribute('data-mol3d-iso') || '0.02'),
+                            gone: 0
+                        });
+                        prune();
+                    }
                     // The small build removes the attribute; fullscreen
                     // needs the text again -- restore it from the copy.
                     if (card.querySelector('.delfin-mol3d-fullscreen')
