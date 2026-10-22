@@ -66,6 +66,10 @@ def test_the_box_is_read_from_the_header_alone():
     assert tab_agent._img_box(b"not an image") == ""
     svg = b'<svg viewBox="0 0 120 80" xmlns="http://www.w3.org/2000/svg"/>'
     assert tab_agent._img_box(svg) == ' width="120" height="80"'
+    # RDKit writes its attributes in single quotes (the formula card).
+    rdkit = (b"<svg version='1.1' baseProfile='full' width='560px' "
+             b"height='300px' viewBox='0 0 560 300'>")
+    assert tab_agent._img_box(rdkit) == ' width="560" height="300"'
 
 
 def _rule(selector: str) -> str:
@@ -101,3 +105,14 @@ def test_offering_to_read_a_file_is_not_a_claim_about_it(tmp_path):
 
 def test_the_png_helper_is_a_png():
     assert base64.b64encode(_png(1, 1))[:8] == b"iVBORw0K"
+
+
+def test_the_structural_formula_card_has_its_size(tmp_path):
+    from delfin.dashboard import chat_viewer, tab_agent
+    path = tmp_path / "butane.smi"
+    path.write_text("CCCC butane\n")
+    html = tab_agent._show_molecule_card_html(
+        chat_viewer.render_molecule_tool_result(
+            str(path), workspace_root=str(tmp_path)))
+    [tag] = _img_tags(html)
+    assert re.search(r'width="\d+" height="\d+"', tag), tag

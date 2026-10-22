@@ -543,6 +543,13 @@ def scan_for_ungrounded_code_claims(
                 continue
             if named_in and path.strip("./") and path.strip("./") in named_in:
                 continue
+            # Asked about, offered, to be made, or an example ("soll ich da
+            # reinschauen?", "if you like I read x.py"): the clause claims
+            # nothing about the file, so whether it was read is no question.
+            # Field report 2026-10-22: an offer to read AUFGABE.md drew
+            # "cited but not read this turn: AUFGABE.md".
+            if _cited_as_not_existing(text, _s, _e):
+                continue
             # A bare file name is a name, not a place. "chain_setup.py"
             # lives in delfin/co2/, "CONTROL.txt" in every run folder --
             # neither is at the workspace root, and both were flagged as
