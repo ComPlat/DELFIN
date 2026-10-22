@@ -4672,34 +4672,40 @@ class AgentEngine:
         return full_response + _guard_note
 
     def _note_session_language(self, user_message: str) -> None:
-        """Fix the session's language from the FIRST message that says one.
+        """Set the answer language from the user's latest message that says one.
 
-        The rule the user asked for, in their words: the language you start
-        writing in is the one the session runs in. It is stronger than
-        "the language of the latest message" for the case that actually
-        hurt — a long unattended run where the answer arrives minutes
-        later — because it can be STATED UP FRONT rather than checked
-        afterwards.
+        Input: one turn's message. A message the user typed that
+        ``detect_language`` can place (three function words of one
+        language, twice the other's; three words at least) sets the
+        language -- the first such message and every later one. A message
+        it cannot place ("ok", "hi", "ja mach das") keeps the current one,
+        and so does a turn the system starts (HarnessText: a finished job,
+        a wake-up, a message from another session), so a long unattended
+        run does not drift.
 
-        Set once. A later message in another language does not move it;
-        that is the point of a session language, and it is what stops an
-        English run drifting German halfway through.
+        Decided by the user on 2026-10-22, replacing "the first message
+        sets it for good": in a field session the first long message was
+        an English task, the user then asked "was kannst du?" in German,
+        and the model, told English by the pin and asked in German, wrote
+        both. A change of language changes the system prompt once, and
+        that turn's prompt is not served from the cache.
         """
-        if getattr(self, "_session_language", ""):
-            return
+        try:
+            from .harness_rows import HarnessText as _HT
+            if isinstance(user_message, _HT):
+                return                  # the system talking, not the user
+        except Exception:
+            pass
         text = str(user_message or "")
-        if text.lstrip().startswith(("[Verify]", "[Message from the session")):
+        if text.lstrip().startswith(("[Verify]", "[Message from the session",
+                                     "[watch", "[auto")):
             return                      # the harness talking, always English
         try:
             from . import verify_guard as _vg
-            # A lower floor than the answer-judging default: see
-            # detect_language. The question here is which language the
-            # user opened in, and the hit-count and margin rules already
-            # refuse a fragment.
-            # Five words: "kannst du die tabelle prüfen?" is five, and the
-            # three-hit, two-to-one rule below is what keeps a fragment
-            # from pinning anything.
-            found = _vg.detect_language(text, min_words=5)
+            # Three words: "was kannst du?" and "what can you do?" are
+            # placed; "ok danke" and "ja mach das" are not, and the
+            # three-hit, two-to-one rule keeps a fragment from moving it.
+            found = _vg.detect_language(text, min_words=3)
         except Exception:
             found = ""
         if found:
@@ -4728,13 +4734,14 @@ class AgentEngine:
         if not name:
             return ""
         return (
-            f"SESSION LANGUAGE: {name}. Every answer in this session is "
-            f"written in {name} — the first message set it, and a later "
-            f"message in another language does not change it. It outranks "
-            f"a remembered language preference and any rule about the "
-            f"latest message. This covers what you SAY. What goes into "
-            f"code is English either way: comments, docstrings, "
-            f"identifiers, log and error strings."
+            f"SESSION LANGUAGE: {name}. Answer in {name} — the language "
+            f"of the user's latest message that says one; a turn the "
+            f"system starts (a finished job, a wake-up) keeps it. One "
+            f"answer is in one language: never the same text twice in two "
+            f"languages. It outranks a remembered language preference. "
+            f"This covers what you SAY. What goes into code is English "
+            f"either way: comments, docstrings, identifiers, log and error "
+            f"strings."
         )
 
     def _nudge_language_if_wrong(self, chunks) -> None:
@@ -8788,6 +8795,12 @@ class AgentEngine:
         # as a lesson from the user's past. Found in the user's real
         # history on 2026-09-11.
         if str(user_task or "").lstrip().startswith("[Verify]"):
+            return {}
+        # A turn the provider refused before any work (an expired key, no
+        # connection, an unknown model) says nothing about the task; see
+        # outcome_tracker.NOT_A_TASK_ERRORS.
+        from delfin.agent.outcome_tracker import is_task_outcome
+        if not is_task_outcome(error_type):
             return {}
         duration = 0.0
         if start_time:
