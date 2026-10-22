@@ -51,6 +51,7 @@ def posix(monkeypatch):
     monkeypatch.delenv("DELFIN_KERNEL_TRANSPORT", raising=False)
     root = tempfile.mkdtemp(prefix="kt", dir="/tmp")
     monkeypatch.setattr(V, "_TMP_ROOT", root)
+    monkeypatch.delenv(V.PRIVATE_TMP_ENV, raising=False)
     yield root
     shutil.rmtree(root, ignore_errors=True)
 
@@ -196,3 +197,19 @@ def test_a_tmp_others_may_rename_in_is_not_used(posix, deep, monkeypatch,
                         lambda p: Open(real(p)) if p == posix else real(p))
     assert V._kernel_transport_args() == []
     assert "TCP" in capsys.readouterr().err
+
+
+def test_the_private_tmp_can_be_named_and_is_checked_the_same_way(
+        posix, deep, monkeypatch, tmp_path):
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    import tempfile
+    named = tempfile.mkdtemp(prefix="kn", dir="/tmp")
+    monkeypatch.setenv(V.PRIVATE_TMP_ENV, named)
+    try:
+        V._kernel_transport_args()
+        chosen = os.environ["JUPYTER_RUNTIME_DIR"]
+        assert chosen == os.path.join(named, f"delfin-k-{os.getuid()}")
+        assert _private(chosen)
+    finally:
+        import shutil
+        shutil.rmtree(named, ignore_errors=True)

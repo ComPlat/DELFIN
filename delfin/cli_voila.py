@@ -599,7 +599,11 @@ def _is_private_dir(path: str) -> bool:
 
 #: Where the fixed and the one-off runtime directories are made: short on
 #: every Unix, unlike $TMPDIR on macOS (/var/folders/...).
+#: ``DELFIN_PRIVATE_TMP`` replaces it (the test suite points it at a
+#: directory of its own, so no test server writes the user's real
+#: /tmp/delfin-k-<uid>); the same checks apply to it.
 _TMP_ROOT = "/tmp"
+PRIVATE_TMP_ENV = "DELFIN_PRIVATE_TMP"
 
 
 def _private_runtime_dir(fits) -> str | None:
@@ -638,7 +642,8 @@ def _private_runtime_dir(fits) -> str | None:
             candidate = ""
         if candidate and _is_private_dir(candidate) and fits(candidate):
             return candidate
-    base = _TMP_ROOT if os.path.isdir(_TMP_ROOT) else tempfile.gettempdir()
+    root = os.environ.get(PRIVATE_TMP_ENV, "").strip() or _TMP_ROOT
+    base = root if os.path.isdir(root) else tempfile.gettempdir()
     try:
         bst = os.lstat(base)
     except OSError:
