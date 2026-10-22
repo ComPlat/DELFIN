@@ -78,7 +78,9 @@ def test_a_refused_turn_is_not_recorded(history, tmp_path, monkeypatch):
             route:
               - session_manager
     """))
-    with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+    client = MagicMock()
+    client.model = "kit.deepseek-v4-flash"     # written to the record as text
+    with patch("delfin.agent.engine.create_client", return_value=client):
         engine = AgentEngine(repo_dir=tmp_path, backend="cli", mode="quick",
                              pack_dir=tmp_path)
     for error in ("AuthenticationError", "PermissionDeniedError",

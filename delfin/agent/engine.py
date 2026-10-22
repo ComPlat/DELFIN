@@ -8796,6 +8796,12 @@ class AgentEngine:
         # history on 2026-09-11.
         if str(user_task or "").lstrip().startswith("[Verify]"):
             return {}
+        # A turn the provider refused before any work (an expired key, no
+        # connection, an unknown model) says nothing about the task; see
+        # outcome_tracker.NOT_A_TASK_ERRORS.
+        from delfin.agent.outcome_tracker import is_task_outcome
+        if not is_task_outcome(error_type):
+            return {}
         duration = 0.0
         if start_time:
             import time
