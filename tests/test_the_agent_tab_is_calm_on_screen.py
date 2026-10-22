@@ -17,8 +17,6 @@ Measured in a real page at 1920x1080 with a filled chemistry session
 
 from __future__ import annotations
 
-import re
-
 
 def _tab(tmp_path, monkeypatch, workspace):
     from delfin.agent import scheduler as S
