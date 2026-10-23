@@ -116,3 +116,49 @@ def test_correct_results_passthrough_on_empty():
     assert correct_results(None, []) == []
     res = [(_benzene(0.0), "flat")]
     assert correct_results(None, res) == res
+
+
+def _puckered_toluene():
+    """Puckered benzene whose ring C0 carries a methyl lifted 0.30 A out of the ring plane, with its
+    three hydrogens at 1.09 A (tetrahedral)."""
+    lines, r = [], 1.39
+    for k in range(6):
+        ang = 2 * math.pi * k / 6
+        z = 0.12 * (1 if k % 2 == 0 else -1)
+        lines.append(("C", np.array([r * math.cos(ang), r * math.sin(ang), z])))
+    c0 = lines[0][1]
+    cm = c0 + np.array([1.47, 0.0, 0.30])
+    u = (cm - c0) / np.linalg.norm(cm - c0)
+    a = np.cross(u, [0.0, 0.0, 1.0]); a /= np.linalg.norm(a)
+    b = np.cross(u, a)
+    for k in range(3):
+        phi = 2 * math.pi * k / 3
+        d = math.cos(math.radians(70.5)) * u + math.sin(math.radians(70.5)) * (math.cos(phi) * a + math.sin(phi) * b)
+        lines.append(("H", cm + 1.09 * d))
+    lines.insert(6, ("C", cm))
+    body = "\n".join(f"{s} {p[0]:12.6f} {p[1]:12.6f} {p[2]:12.6f}" for s, p in lines)
+    return f"{len(lines)}\ntoluene\n{body}\n"
+
+
+def _ch(pts):
+    return [float(np.linalg.norm(pts[h] - pts[6])) for h in (7, 8, 9)]
+
+
+def test_dragged_methyl_leaves_its_hydrogens_without_the_switch(monkeypatch):
+    monkeypatch.delenv("DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H", raising=False)
+    xyz = _puckered_toluene()
+    _s, p0, _ = _parse_xyz(xyz)
+    _s, p1, _ = _parse_xyz(correct_xyz(xyz))
+    assert abs(p1[6][2] - p0[6][2]) > 0.05                  # the methyl C was dragged
+    assert np.abs(p1[7:10] - p0[7:10]).max() == 0.0         # its hydrogens were not
+    assert max(abs(d - 1.09) for d in _ch(p1)) > 0.05       # -> stretched / squeezed C-H
+
+
+def test_dragged_methyl_carries_its_hydrogens_with_the_switch(monkeypatch):
+    xyz = _puckered_toluene()
+    monkeypatch.delenv("DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H", raising=False)
+    _s, poff, _ = _parse_xyz(correct_xyz(xyz))
+    monkeypatch.setenv("DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H", "1")
+    _s, pon, _ = _parse_xyz(correct_xyz(xyz))
+    assert np.abs(pon[:7] - poff[:7]).max() < 1e-9          # ring + methyl C exactly as without the switch
+    assert max(abs(d - 1.09) for d in _ch(pon)) < 1e-6      # every C-H kept

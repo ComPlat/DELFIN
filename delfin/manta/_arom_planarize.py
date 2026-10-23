@@ -370,6 +370,8 @@ def _flatten_system(
 
     aset = set(atoms)
     moved = False
+    _carry = carry_h_enabled()
+    _carried: Set[int] = set()
     # Project every NON-frozen ring-system atom onto the plane along ``normal``.
     for idx in atoms:
         if idx in frozen:
@@ -401,7 +403,36 @@ def _flatten_system(
             if np.linalg.norm(shift) > 1e-9:
                 pts[j] = pts[j] - shift
                 moved = True
+                if _carry and syms[j] != "H":
+                    # the substituent's own hydrogens ride with it (same shift)
+                    for h in _riding_hydrogens(j, ring_atom, aset, nbrs, syms, frozen):
+                        if h not in _carried:
+                            pts[h] = pts[h] - shift
+                            _carried.add(h)
     return moved
+
+
+# ===== THE SUBSTITUENT'S HYDROGENS RIDE WITH IT (DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H, default OFF) =====
+#
+# THE DEFECT.  ``_flatten_system`` drags the first substituent heavy atom of a ring (the methyl C
+# of a methylpyridine, the CH2 of an ethyl) onto the ring plane, but not that atom's own hydrogens.
+# Measured on the legacy post-processing census (DELFIN_LEGCONF_TRACE, COPMEC, 23.10.2026): frames
+# with an X-H above 1.20 A go 7 -> 37 of 85 in this one step; the methyl H3 umbrella stays intact
+# (H...H 1.76-1.83 A) while its carbon has moved 0.2-0.35 A away from it (C-H 1.26-1.45 A).
+# THE FIX.  The hydrogens bonded to a dragged substituent atom receive the same shift -- a rigid
+# translation of the C-H group, every C-H length and H-C-H angle unchanged.  The never-worse and
+# M-D guards read the same quantities as before.  Off -> byte-identical.
+def carry_h_enabled() -> bool:
+    """THE one read site of DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H (default 0)."""
+    return os.environ.get("DELFIN_FFFREE_AROM_PLANARIZE_CARRY_H", "0") == "1"
+
+
+def _riding_hydrogens(j, ring_atom, aset, nbrs, syms, frozen):
+    """Hydrogens geometrically bonded to substituent atom ``j`` (not ring atoms, not ``frozen``,
+    not also bonded to the ring atom the substituent hangs on)."""
+    ring_nb = set(nbrs[ring_atom])
+    return [h for h in nbrs[j]
+            if syms[h] == "H" and h not in aset and h not in frozen and h not in ring_nb]
 
 
 def correct_xyz(xyz: str) -> str:
@@ -477,6 +508,8 @@ def correct_xyz(xyz: str) -> str:
             for ra in atoms:
                 for j in nbrs[ra]:
                     touched.add(j)
+                    if carry_h_enabled():   # ... and the hydrogens that rode with j
+                        touched.update(h for h in nbrs[j] if syms[h] == "H")
             for i in touched:
                 work[i] = before[i]
             continue
