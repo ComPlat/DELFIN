@@ -146,3 +146,30 @@ def test_the_follow_logic_watches_the_shown_messages():
     js = blocks[0]
     assert "__delfinWatchChat" in js
     assert "> .delfin-agent-chat" in js
+
+
+def _mol3d_js() -> str:
+    blocks = [n.value for n in ast.walk(ast.parse(_SRC.read_text()))
+              if isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and "__delfinMol3DInstalled" in n.value]
+    assert len(blocks) == 1
+    return blocks[0]
+
+
+def test_the_wheel_over_a_molecule_scrolls_the_chat():
+    """3Dmol takes every wheel event over its canvas for zoom and cancels
+    it. Measured in the real page at 1920x1080: a 25-frame trajectory card
+    fills the chat, and forty wheel steps down from inside it moved the
+    chat by 0 px -- the reader could not get past the molecule. A wheel
+    over a molecule in the chat now scrolls the chat; it zooms with Ctrl
+    (a trackpad pinch arrives as one) or after the molecule was clicked,
+    until the pointer leaves it."""
+    js = _mol3d_js()
+    i = js.index("'wheel'")
+    guard = js[max(0, i - 1500): i + 1500]
+    assert "capture: true" in guard and "passive: true" in guard
+    assert "ctrlKey" in guard
+    assert "stopPropagation" in guard
+    assert "preventDefault" not in guard
+    assert ".delfin-agent-chat-host" in guard
+    assert "'pointerdown'" in guard
