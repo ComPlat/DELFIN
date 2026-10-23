@@ -103,22 +103,39 @@ def _energy_from_comment(comment: str, line_no: int) -> tuple[float, Optional[st
         if low in ("r2scan-3c", "b3lyp", "wb97x", "pbe0"):
             method = low
     if energy is None:
+        # Bare-number fallback: CREST variants may write a frame index
+        # before the energy ("2 -12.34 Eh"), so take the LAST parsable
+        # float, not the first (reviewer s21 F1).
+        last = None
         for tok in tokens:
             try:
-                energy = float(tok)
+                last = float(tok)
             except ValueError:
                 continue
-            break
+        energy = last
     if energy is None:
         raise ValueError(
             f"line {line_no}: no readable energy in comment {comment.strip()!r}"
+        )
+    if not math.isfinite(energy):
+        # A NaN/inf energy must not propagate silently into ranking
+        # (reviewer s21 F2).
+        raise ValueError(
+            f"line {line_no}: energy is not finite in comment "
+            f"{comment.strip()!r}"
         )
     return energy, method
 
 
 def relative_kcal(frames: Sequence[Dict[str, object]]) -> List[float]:
-    """Relative energies in kcal/mol against the lowest frame."""
+    """Relative energies in kcal/mol against the lowest frame.
+
+    Refuses non-finite energies so a NaN can never silently drive a
+    min()-based ranking.
+    """
     energies = [float(f["energy_Eh"]) for f in frames]
+    if any(not math.isfinite(e) for e in energies):
+        raise ValueError("non-finite energy in the ensemble; refusing to rank")
     lowest = min(energies)
     return [(e - lowest) * KCAL_PER_EH for e in energies]
 
