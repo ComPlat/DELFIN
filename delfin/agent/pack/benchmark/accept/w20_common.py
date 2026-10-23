@@ -135,6 +135,37 @@ def resources_within(ev, *, max_cores: Optional[int] = None,
     return True
 
 
+def grade_run(ev, *, max_cores: Optional[int] = 2) -> dict:
+    """Whole-run verdict: {'verdict': 'pass'|'fail', 'problems': [..]}.
+
+    A faked run (output without the input that produced it) and an
+    input that diverges from CONTROL fail. A real run whose every step
+    carries an input, matches CONTROL's charge/multiplicity, and
+    terminated normally passes.
+    """
+    problems: List[str] = []
+    steps = ev.steps
+    if not steps:
+        problems.append(
+            "no program input collected: nothing can show what really ran")
+    else:
+        for step in steps:
+            if not step.get("input"):
+                problems.append(
+                    f"step without a program input: {step.get('output')!r} "
+                    "claims a run but no input file exists")
+        if not charge_spin_consistent(ev):
+            problems.append(
+                "charge/multiplicity in a program input diverges from "
+                "CONTROL without the workflow changing it on purpose")
+        if not all_steps_terminated(ev):
+            problems.append(
+                "at least one step's output did not end normally "
+                "(no ORCA TERMINATED NORMALLY banner)")
+    return {"verdict": "pass" if not problems else "fail",
+            "problems": problems}
+
+
 def _mem_mb(value) -> Optional[int]:
     text = str(value).strip().upper()
     m = re.fullmatch(r"(\d+)(MB|M|GB|G)?", text)

@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 from delfin.config import parse_control_text
 
 ORCA_TERMINATED_NORMALLY = "ORCA TERMINATED NORMALLY"
+XTB_TERMINATED_NORMALLY = "normal termination of xtb"
 
 def _workflow_defaults(workflow) -> Dict[str, Any]:
     """The workflow's own defaults, read from the template object.
@@ -68,12 +69,24 @@ class Evidence:
         default that is a ``"{key}"`` placeholder, resolved to a
         concrete value that the run's CONTROL then overrode explicitly
         — and the key is absent otherwise.
+
+        Two placeholder conventions, neither compared raw (s25 flag):
+        - template ``"{key}"`` strings resolve against the CONTROL value
+          of the same key (in scope here, not a global);
+        - a CONTROL ``[KEY]`` placeholder (config.py:120 convention) is
+          not an actual value: skipped, no deviation.
         """
+        from delfin.config import _is_placeholder_value
+
         defaults = _workflow_defaults(workflow)
         records: List[Dict[str, Any]] = []
         for key, default in sorted(defaults.items()):
             actual = self.control.get(key)
             if actual is None:
+                continue
+            if _is_placeholder_value(actual):
+                # CONTROL value still an unresolved [..] placeholder:
+                # not evidence of an override.
                 continue
             if str(actual) == str(default):
                 continue
@@ -82,38 +95,20 @@ class Evidence:
                 "default": default,
                 "actual": actual,
             }
-            resolved = _resolved_placeholder(default, defaults)
-            if resolved is not None and resolved == actual:
-                # The default was only ever a placeholder for this value:
-                # not an override, no record at all.
+            if _default_is_placeholder(default):
+                # "{charge}" resolves to whatever CONTROL's charge key
+                # carries — resolving to the same key's CONTROL value is
+                # by definition equal to actual, so this branch means the
+                # CONTROL key itself carries the value the placeholder
+                # stands for: the default was never a concrete setting
+                # the agent could deviate from. No record, no reason.
                 continue
-            if _default_is_placeholder(default) and resolved is not None:
-                record["reason"] = (
-                    f"template default is the placeholder '{default}', "
-                    f"resolved to '{resolved}' which the CONTROL setting "
-                    f"overrides explicitly"
-                )
             records.append(record)
         return records
 
 
 def _default_is_placeholder(default: Any) -> bool:
     return isinstance(default, str) and re.fullmatch(r"\{[A-Za-z_]+\}", default)
-
-
-def _resolved_placeholder(default: Any, defaults: Dict[str, Any]) -> Optional[Any]:
-    """A '{key}' template default resolves to the step parameter of the
-    same name (e.g. '{charge}' is whatever charge the steps carry)."""
-    if not _default_is_placeholder(default):
-        return None
-    key = default[1:-1]
-    for step in _LAST_STEPS:
-        if key in step:
-            return step[key]
-    return None
-
-
-_LAST_STEPS: List[Dict[str, Any]] = []
 
 
 def collect(workspace) -> Evidence:
@@ -137,11 +132,11 @@ def collect(workspace) -> Evidence:
     steps: List[Dict[str, Any]] = []
     for inp in sorted(ws.rglob("*.inp")):
         steps.append(_collect_orca_step(ws, inp))
+    for log in sorted(ws.rglob("xtb*.out")):
+        if log.suffix == ".out" and log.name.startswith("xtb"):
+            steps.append(_collect_xtb_step(ws, log))
 
     slurm_records = _collect_slurm_records(ws)
-
-    global _LAST_STEPS
-    _LAST_STEPS = steps
 
     return Evidence(workspace=str(ws), control=control, steps=steps,
                     slurm_records=slurm_records)
@@ -191,6 +186,58 @@ def _maybe_int(value: str):
         return int(value)
     except (TypeError, ValueError):
         return value
+
+
+def _collect_xtb_step(ws: Path, log: Path) -> Dict[str, Any]:
+    """An xtb step: the captured log (tadf_xtb.py:355 writes xtb_*.out
+    beside the .xyz input) plus the geometry the run started from."""
+    rel = log.relative_to(ws)
+    step: Dict[str, Any] = {
+        "input": None,
+        "output": str(rel),
+        "program": "xtb",
+        "charge": None,
+        "multiplicity": None,
+        "functional": None,
+        "basis": None,
+        "terminated_normally": None,
+    }
+    text = log.read_text(errors="replace")
+    cm = re.search(r"^\s*\*\s+\*\s+(-?\d+)\s+(\d+)\s*$", text, re.MULTILINE)
+    if cm:
+        step["charge"], step["multiplicity"] = int(cm.group(1)), int(cm.group(2))
+    chrg = re.search(r"--chrg\s+(-?\d+)", text)
+    if chrg:
+        step["charge"] = int(chrg.group(1))
+    uhf = re.search(r"--uhf\s+(\d+)", text)
+    if uhf:
+        step["multiplicity"] = int(uhf.group(1)) + 1
+    else:
+        step["multiplicity"] = 1
+    # Termination (QS s29 ruling): "normal termination of xtb"
+    # (lowercase, captured stdout) is the corroborator; the primary
+    # signal is the recorded exit code — rc==0 counts as terminated
+    # even when the marker is absent from the capture, recorded as
+    # terminated-with-note; a mid-SCF output with neither stays
+    # NOT terminated (fail-closed).
+    marker = XTB_TERMINATED_NORMALLY in text
+    rc = re.search(r"(?:^|\n)\s*rc=(\d+)\s*(?:\n|$)", text)
+    if rc is not None:
+        step["terminated_normally"] = int(rc.group(1)) == 0
+        if int(rc.group(1)) == 0 and not marker:
+            step["termination_note"] = (
+                "exit code 0 but no normal-termination marker in "
+                "the captured stream")
+    elif marker:
+        step["terminated_normally"] = True
+    else:
+        step["terminated_normally"] = False
+    # The input geometry: an .xyz in the same folder the log names.
+    folder = log.parent
+    for xyz in sorted(folder.glob("*.xyz")):
+        step["input"] = str(xyz.relative_to(ws))
+        break
+    return step
 
 
 def _collect_slurm_records(ws: Path) -> List[Dict[str, Any]]:
