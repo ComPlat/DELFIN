@@ -52,9 +52,14 @@ def test_broken_estimate_does_not_kill_the_round():
     with tempfile.TemporaryDirectory() as tmp:
         record = run_nightly(_config(tmp, _tasks(),
                                      accounting=_BrokenEstimate()))
-        assert record.ended_at > 0
-        assert len(record.instances) == 3
-        assert all("accounting exploded" in i.error for i in record.instances)
+    assert record.ended_at > 0
+    assert len(record.instances) == 3
+    # Recorded on the instance (skip_reason per the fix's contract; 'error'
+    # stays reserved for a failed run itself), visible to the report.
+    for inst in record.instances:
+        assert inst.ran is False
+        assert "accounting" in inst.skip_reason.lower()
+        assert "exploded" in inst.skip_reason.lower()
 
 
 def test_broken_charge_does_not_kill_the_round():
@@ -69,9 +74,12 @@ def test_broken_charge_does_not_kill_the_round():
     with tempfile.TemporaryDirectory() as tmp:
         record = run_nightly(_config(tmp, _tasks(),
                                      accounting=_BrokenCharge()))
-        assert record.ended_at > 0
-        assert len(record.instances) == 3
-        assert all("charge exploded" in i.error for i in record.instances)
+    assert record.ended_at > 0
+    assert len(record.instances) == 3
+    for inst in record.instances:
+        assert inst.ran is False
+        assert "charge" in inst.skip_reason.lower()
+        assert "exploded" in inst.skip_reason.lower()
 
 
 def test_empty_seed_file_refuses_holdout():

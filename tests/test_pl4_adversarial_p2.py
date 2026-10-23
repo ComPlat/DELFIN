@@ -7,6 +7,8 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from delfin.agent.bench_nightly import (InstanceRecord, RunRecord,
                                         run as run_nightly)
 from delfin.agent.bench_report import write as write_report
@@ -53,23 +55,27 @@ class _CountingAccounting:
     def __init__(self, estimate=0.6):
         self._est = estimate
         self.ledger = 0.0
+        self.charges = 0
 
     def estimate(self, task):
         return self._est
 
     def charge(self, core_hours):
         self.ledger += core_hours
+        self.charges += 1
 
 
 def test_double_charge_of_started_instances():
-    """charge() must fire once per started instance. On 31944f81 it fires
-    twice (bench_nightly.py:210 inside the try, again at :219)."""
+    """charge() must fire once per started instance. On 31944f81 it fired
+    twice (bench_nightly.py:210 inside the try, again at :219). Assert the
+    CALL COUNT, not a float sum: 3 x 0.6 accumulates 1.7999999999999998."""
     acct = _CountingAccounting(estimate=0.6)
     with tempfile.TemporaryDirectory() as tmp:
         record = run_nightly(_config(tmp, _tasks(3), accounting=acct))
     assert record.instances[0].ran
-    # One instance, one charge of 0.6 — not 1.2.
-    assert acct.ledger == 0.6
+    # Three started instances, exactly three charges — on 31944f81: 6.
+    assert acct.charges == 3
+    assert acct.ledger == pytest.approx(1.8)
 
 
 def test_spent_equals_ledger_after_round():
@@ -77,7 +83,7 @@ def test_spent_equals_ledger_after_round():
     acct = _CountingAccounting(estimate=0.6)
     with tempfile.TemporaryDirectory() as second:
         record = run_nightly(_config(second, _tasks(3), accounting=acct))
-    assert record.spent_core_hours == acct.ledger
+    assert record.spent_core_hours == pytest.approx(acct.ledger)
 
 
 def test_seed_log_never_carries_the_seed_value_in_fix_path():
