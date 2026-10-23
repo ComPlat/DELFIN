@@ -3209,6 +3209,7 @@ def create_tab(ctx):
         'orca_template_delete_btn': orca_template_delete_btn,
         'orca_template_delete_confirm_btn': orca_template_delete_confirm_btn,
         'orca_preview': orca_preview,
+        'orca_slurm_time': orca_slurm_time,
         'orca_check_btn': orca_check_btn,
         'orca_output': orca_output,
         'orca_submit_btn': orca_submit_btn,          # destructive: starts real ORCA job

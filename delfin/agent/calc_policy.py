@@ -133,6 +133,45 @@ def default_threads(kind: str, env: Optional[dict] = None) -> int:
     return max(1, min(4, os.cpu_count() or 1))
 
 
+def unasked_cpu_set(kind: Optional[str] = None) -> Optional[list]:
+    """The CPUs a command run without a dialog is bound to, or None.
+
+    On a login node: LOGIN_LOCAL_CORES CPUs drawn at random from this
+    process's own set, so concurrent sessions spread over the node instead
+    of all sharing the first two. Elsewhere None: a workstation is the
+    user's own machine, and a Slurm allocation is bound by its cgroup.
+    None also where the affinity call does not exist, or where the process
+    already holds no more than that many CPUs.
+    """
+    kind = kind or host_kind()
+    if kind != "login_node":
+        return None
+    getter = getattr(os, "sched_getaffinity", None)
+    if getter is None:
+        return None
+    try:
+        allowed = sorted(getter(0))
+    except OSError:
+        return None
+    if len(allowed) <= LOGIN_LOCAL_CORES:
+        return None
+    import random
+    return sorted(random.sample(allowed, LOGIN_LOCAL_CORES))
+
+
+def bound_argv(argv: list, cpus: Optional[list]) -> list:
+    """``argv`` started on ``cpus``: taskset where installed, else the
+    cpu_share launcher. Unchanged when ``cpus`` is empty."""
+    if not cpus:
+        return list(argv)
+    spec = ",".join(str(c) for c in cpus)
+    taskset = shutil.which("taskset")
+    if taskset:
+        return [taskset, "-c", spec, *argv]
+    import sys
+    return [sys.executable, "-m", "delfin.agent.cpu_share", spec, *argv]
+
+
 def _memory_mb() -> Optional[int]:
     try:
         with open("/proc/meminfo", encoding="ascii") as fh:
@@ -449,12 +488,27 @@ def orca_resources(text: str) -> tuple:
     return cores, maxcore
 
 
+def stated_pal(text: str) -> Optional[int]:
+    """The cores an ORCA input states (%pal nprocs or PALn), else None."""
+    stated = re.search(r"%\s*pal\b.*?\bnprocs\s+\d+", text, re.I | re.S) or \
+        any(re.search(r"\bPAL\d+\b", kw, re.I)
+            for kw in re.findall(r"^\s*!.*$", text, re.M))
+    return orca_resources(text)[0] if stated else None
+
+
 def check_orca_input(path: Path) -> tuple:
     """(cores, maxcore, problem) for one ORCA input file."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0, None, f"orca: input {path.name} does not exist"
+    return check_orca_text(text, path.parent, path.name)
+
+
+def check_orca_text(text: str, base_dir: Path, name: str) -> tuple:
+    """(cores, maxcore, problem) for an ORCA input given as text;
+    ``base_dir`` resolves an ``* xyzfile`` reference."""
+    path = Path(base_dir) / name
     try:
         from delfin.api import validate_orca_input
         errors = [i for i in validate_orca_input(text)
@@ -833,52 +887,82 @@ def judge_command(segments: list, cwd: Path,
     return Verdict(True, True, "; ".join(summaries), "")
 
 
+def judge_orca_job(text: str, pal: int, maxcore: int, time_limit: str, *,
+                   base_dir: Path, name: str, kind: Optional[str] = None,
+                   pal_is_the_request: bool = False,
+                   limits_of: Optional[Callable] = None,
+                   jobs_now: Optional[Callable] = None) -> Verdict:
+    """The verdict for one ORCA input sent as a job.
+
+    The cores are the input's own PAL where it states one, else ``pal``
+    (the ORCA Builder submits that way). With ``pal_is_the_request`` the
+    job requests ``pal`` cores whatever the input says (the ops
+    submit_calculation), and an input asking for more is a setup error.
+    On a workstation the job runs locally; elsewhere it goes to Slurm.
+    """
+    limits_of = limits_of or partition_limits
+    jobs_now = jobs_now or queued_jobs
+    kind = kind or host_kind()
+    _cores, _mc, problem = check_orca_text(text, base_dir, name)
+    if problem:
+        return Verdict(True, False, "", problem)
+    stated = stated_pal(text)
+    if pal_is_the_request and stated and stated > int(pal):
+        return Verdict(True, False, "", (
+            f"{name} asks for {stated} cores and the job requests {pal}"))
+    cores = int(pal) if pal_is_the_request else (stated or int(pal))
+    if kind == "workstation":
+        limit = local_core_limit(kind)
+        if cores > limit:
+            return Verdict(True, False, "", (
+                f"{name}: {cores} cores exceed the {limit} that run on this "
+                "machine without asking"))
+        return Verdict(True, True, f"{name}: {cores} core(s) on this machine",
+                       "")
+    limits = limits_of(None)
+    if limits is None:
+        return Verdict(True, False, "", (
+            f"{name}: the partition's limits could not be read (scontrol)"))
+    want_s, max_s = slurm_seconds(time_limit), slurm_seconds(
+        limits.get("MaxTime", ""))
+    if want_s is not None and max_s is not None and want_s > max_s:
+        return Verdict(True, False, "", (
+            f"{name}: time {time_limit} exceeds the partition limit "
+            f"{limits.get('MaxTime')}"))
+    max_cpn = _int(limits.get("MaxCPUsPerNode", ""))
+    if max_cpn and cores > max_cpn:
+        return Verdict(True, False, "", (
+            f"{name}: {cores} cores exceed the partition limit of {max_cpn} "
+            "per node"))
+    queued = jobs_now()
+    if queued is None:
+        return Verdict(True, False, "", f"{name}: the queue could not be read")
+    if queued + 1 > MAX_QUEUED_JOBS:
+        return Verdict(True, False, "", (
+            f"{name}: {queued} of your jobs are pending or running; at most "
+            f"{MAX_QUEUED_JOBS} are submitted without asking"))
+    return Verdict(True, True, (f"{name}: {cores} core(s), {time_limit} via "
+                                "Slurm"), "")
+
+
 def judge_orca_submission(folder: Path, pal: int, maxcore: int,
                           time_limit: str, *, kind: Optional[str] = None,
                           limits_of: Optional[Callable] = None,
                           jobs_now: Optional[Callable] = None) -> Verdict:
     """The verdict for the ops ``submit_calculation`` in ORCA mode."""
-    limits_of = limits_of or partition_limits
-    jobs_now = jobs_now or queued_jobs
-    kind = kind or host_kind()
     inputs = sorted(Path(folder).glob("*.inp"))
     if len(inputs) != 1:
         return Verdict(True, False, "", (
             f"submit_calculation: {len(inputs)} .inp files in the folder; "
             "exactly one is checked"))
-    _cores, _mc, problem = check_orca_input(inputs[0])
-    if problem:
-        return Verdict(True, False, "", problem)
-    if kind == "workstation":
-        limit = local_core_limit(kind)
-        if pal > limit:
-            return Verdict(True, False, "", (
-                f"submit_calculation: pal {pal} exceeds {limit} cores on "
-                "this machine"))
-        return Verdict(True, True,
-                       f"{inputs[0].name}: {pal} core(s) on this machine", "")
-    limits = limits_of(None)
-    if limits is None:
-        return Verdict(True, False, "", (
-            "submit_calculation: the partition's limits could not be read"))
-    want_s, max_s = slurm_seconds(time_limit), slurm_seconds(
-        limits.get("MaxTime", ""))
-    if want_s is not None and max_s is not None and want_s > max_s:
-        return Verdict(True, False, "", (
-            f"submit_calculation: time {time_limit} exceeds the partition "
-            f"limit {limits.get('MaxTime')}"))
-    max_cpn = _int(limits.get("MaxCPUsPerNode", ""))
-    if max_cpn and pal > max_cpn:
-        return Verdict(True, False, "", (
-            f"submit_calculation: pal {pal} exceeds {max_cpn} per node"))
-    queued = jobs_now()
-    if queued is None or queued + 1 > MAX_QUEUED_JOBS:
-        return Verdict(True, False, "", (
-            "submit_calculation: the queue could not be read" if queued is None
-            else f"submit_calculation: {queued} of your jobs are pending or "
-                 f"running; at most {MAX_QUEUED_JOBS} without asking"))
-    return Verdict(True, True, (f"{inputs[0].name}: {pal} core(s), "
-                                f"{time_limit} via Slurm"), "")
+    try:
+        text = inputs[0].read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return Verdict(True, False, "", f"{inputs[0].name} cannot be read")
+    return judge_orca_job(text, pal, maxcore, time_limit,
+                          base_dir=Path(folder), name=inputs[0].name,
+                          kind=kind, pal_is_the_request=True,
+                          limits_of=limits_of, jobs_now=jobs_now)
 
 
 def judge_orca_run(input_file: Path, *, kind: Optional[str] = None) -> Verdict:
