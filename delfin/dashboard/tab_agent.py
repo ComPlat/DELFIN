@@ -8331,6 +8331,33 @@ def create_tab(ctx):
         if (window.__delfinMol3DInstalled) return;
         window.__delfinMol3DInstalled = true;
 
+        // The wheel over a molecule in the chat scrolls the chat. 3Dmol
+        // takes every wheel event over its canvas for zoom and cancels it,
+        // so a card as tall as the chat stopped the reader dead: measured,
+        // forty wheel steps from inside a trajectory card moved the chat
+        // by 0 px. Stopped here, in the capture phase at the document,
+        // the event never reaches 3Dmol and nothing cancels it, so the
+        // browser scrolls. It zooms with Ctrl (a trackpad pinch arrives as
+        // a wheel with ctrlKey) or once the molecule has been clicked,
+        // until the pointer leaves it. The fullscreen view is not inside
+        // the chat and keeps its plain wheel zoom.
+        var zoomStage = null;
+        function chatStage(t) {
+            var s = t && t.closest ? t.closest('.delfin-mol3d-stage') : null;
+            return s && s.closest('.delfin-agent-chat-host') ? s : null;
+        }
+        document.addEventListener('pointerdown', function(e) {
+            zoomStage = chatStage(e.target);
+        }, {capture: true, passive: true});
+        document.addEventListener('pointerover', function(e) {
+            if (zoomStage && chatStage(e.target) !== zoomStage) zoomStage = null;
+        }, {capture: true, passive: true});
+        document.addEventListener('wheel', function(e) {
+            var stage = chatStage(e.target);
+            if (!stage || e.ctrlKey || stage === zoomStage) return;
+            e.stopPropagation();
+        }, {capture: true, passive: true});
+
         function build(card, stage) {
             var data = card.getAttribute('data-mol3d') || '';
             var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
