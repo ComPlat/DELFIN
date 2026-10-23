@@ -1,0 +1,105 @@
+# CE1 (wave 20, s11): conformer ensembles — CREST and CENSO through DELFIN.
+#
+# Four offline tasks over fixture ensembles (multi-frame XYZ with energies
+# in the comment lines). They measure the rules pinned in
+# tests/test_ce1_crest_ensemble.py and tests/test_ce1_level_tags.py:
+#   1. parse + rank a CREST ensemble, report the lowest conformer;
+#   2. Boltzmann weights at a stated temperature, degeneracies explicit,
+#      weights sum to 1, one level of theory;
+#   3. the trap: an ensemble whose frames carry energies from two levels
+#      must be REFUSED, not silently ranked;
+#   4. CENSO-style refinement accounting: which conformers survive the
+#      prescreening/screening thresholds, and handing the survivors to the
+#      DFT workflow as files.
+#
+# Fixture (setup/w20_ce1_ensemble_fixture.py): one folder w20_ce1_ensemble/
+# with ensemble_default.xyz (4 frames, gfn2-tagged), ensemble_mixed.xyz
+# (2 frames, gfn2 + r2scan-3c — the trap), ensemble_degenerate.xyz (3
+# frames, two degenerate within 0.01 kcal/mol), ensemble_untagged.xyz
+# (plain CREST comments), and README.txt with the assignment. The
+# energies are fixture numbers (invented molecules); nothing calls a
+# binary, so the tasks run anywhere.
+#
+# Verdict: the artifacts. accept/w20_ce1_verify.py checks the written
+# files only: lowest.xyz, weights.txt, refusal.txt, handoff/. No binary,
+# no network, no clock.
+#
+# Count-dict note: these four tasks are classed science_analysis (they
+# WRITE artifacts under their workspace), so the counts dict in
+# tests/test_every_task_that_writes_writes_where_it_belongs.py goes
+# science 23 -> 27 when this file lands.
+- id: w20_ce1_lowest_conformer_ranked_and_named
+  task_class: science_analysis
+  mode: solo
+  prompt: >-
+    In w20_ce1_ensemble/ there is ensemble_default.xyz, a CREST conformer
+    ensemble (multi-frame XYZ, energy in each comment line). Read it with
+    your reading tools, find the lowest-energy conformer, write that
+    single frame as lowest.xyz in the same folder, and report its relative
+    energy in kcal/mol against the next one, with the level of theory the
+    energies carry.
+  setup: w20_ce1_ensemble_fixture.py
+  verify: w20_ce1_verify.py
+  expected_values:
+    - label: relative_gap_kcal
+      value: 3.6145
+      tolerance: 0.05
+      against: any
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15
+
+- id: w20_ce1_boltzmann_weights_at_a_stated_temperature
+  task_class: science_analysis
+  mode: solo
+  prompt: >-
+    In w20_ce1_ensemble/ there is ensemble_degenerate.xyz, a CREST
+    ensemble with three frames, two of which are degenerate (energies
+    within 0.01 kcal/mol; they are mirror images). Compute the Boltzmann
+    weights of all three at 350.0 K exactly (state the temperature), with
+    the degeneracy of the degenerate pair counted as 2, write the weights
+    one per line to weights.txt in the same folder, and confirm the
+    weights sum to 1.
+  setup: w20_ce1_ensemble_fixture.py
+  verify: w20_ce1_verify.py
+  expected_values:
+    - label: weight_sum
+      value: 1.0
+      tolerance: 0.001
+      against: any
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15
+
+- id: w20_ce1_mixed_levels_are_refused_not_ranked
+  task_class: science_analysis
+  mode: solo
+  prompt: >-
+    In w20_ce1_ensemble/ there is ensemble_mixed.xyz, an ensemble whose
+    comment lines carry energies tagged from two different levels of
+    theory (one gfn2 frame, one r2scan-3c frame). Try to compute Boltzmann
+    weights for it. If it cannot be weighted consistently, write one line
+    saying so to refusal.txt in the same folder and explain in your answer
+    why ranking it would be wrong.
+  setup: w20_ce1_ensemble_fixture.py
+  verify: w20_ce1_verify.py
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 15
+
+- id: w20_ce1_censo_thresholds_and_handoff
+  task_class: science_analysis
+  mode: solo
+  prompt: >-
+    In w20_ce1_ensemble/ there is ensemble_untagged.xyz (4 frames) and a
+    README that states the CENSO-style prescreening threshold of 4.0
+    kcal/mol at the ensemble's level of theory. Apply the threshold to
+    the relative energies of the frames, copy every surviving frame as
+    its own .xyz file into a new subfolder handoff/ inside
+    w20_ce1_ensemble/, and report which frames survived and at what
+    relative energies, in kcal/mol.
+  setup: w20_ce1_ensemble_fixture.py
+  verify: w20_ce1_verify.py
+  max_duration_s: 150
+  max_cost_usd: 0.40
+  max_tool_calls: 20
