@@ -19,9 +19,13 @@ VENV_PY="$ROOT/.venv/bin/python"
 UV="$HOME/.local/bin/uv"
 # PyPI has no aarch64 dist of pymol -> built from GitHub source below instead.
 SKIP_DEPS_RE='^pymol-open-source'
-# Everything except QM binaries (not pip anyway) and ai-retro, whose
-# aizynthfinder pins rdkit<2023 and conflicts with DELFIN's rdkit>=2023.3.
-EXTRAS="${DELFIN_PI_EXTRAS:-agent docs dev analysis mlp-full ai-foundation ai-screening ai-complex csp}"
+# Every extra pyproject.toml defines, minus these (so new extras arrive on
+# the Pi by themselves): ai-retro (aizynthfinder pins rdkit<2023, conflicts
+# with DELFIN's rdkit>=2023.3), orca (QM, out of scope), pymol (built below).
+SKIP_EXTRAS="${DELFIN_PI_SKIP_EXTRAS:-ai-retro orca pymol}"
+# Not in any extra, but a doctor check wants an OCR engine (tesseract via apt).
+EXTRA_PIP="pytesseract"
+DELFIN_GIT_URL="${DELFIN_GIT_URL:-https://github.com/ComPlat/DELFIN.git}"
 # Pinned to the commit verified on a Pi 5 (render test), not the moving master.
 PYMOL_GIT="git+https://github.com/schrodinger/pymol-open-source.git@edcda80f3a73ebf0b5922991f85910d17ffbcce5"
 
@@ -29,19 +33,21 @@ cd "$ROOT"
 [[ -x "$VENV_PY" ]] || { echo "error: $VENV_PY missing - run pi_bootstrap.sh first" >&2; exit 1; }
 
 install_deps() {
-    "$VENV_PY" - "$EXTRAS" "$SKIP_DEPS_RE" > "$ROOT/requirements.pi.txt" <<'EOF'
+    "$VENV_PY" - "$SKIP_EXTRAS" "$SKIP_DEPS_RE" > "$ROOT/requirements.pi.txt" <<'EOF'
 import re, sys, tomllib
-extras, skip = sys.argv[1].split(), re.compile(sys.argv[2])
+skip_extras, skip = set(sys.argv[1].split()), re.compile(sys.argv[2])
 proj = tomllib.load(open("src/pyproject.toml", "rb"))["project"]
 deps = list(proj["dependencies"])
-for e in extras:
-    deps += proj.get("optional-dependencies", {}).get(e, [])
+for name, extra in proj.get("optional-dependencies", {}).items():
+    if name not in skip_extras:
+        deps += extra
 for d in dict.fromkeys(deps):
     if not skip.match(d):
         print(d)
 EOF
     # CPU torch: PyPI's aarch64 torch drags in multi-GB CUDA (sbsa) wheels.
-    "$UV" pip install --python "$VENV_PY" --torch-backend cpu -r "$ROOT/requirements.pi.txt"
+    # shellcheck disable=SC2086
+    "$UV" pip install --python "$VENV_PY" --torch-backend cpu -r "$ROOT/requirements.pi.txt" $EXTRA_PIP
     "$UV" pip install --python "$VENV_PY" --no-deps -e "$ROOT/src"
     if ! "$VENV_PY" -c "import pymol" 2>/dev/null; then
         echo "==> building pymol from source (optional, only for report images)"
@@ -50,6 +56,47 @@ EOF
         "$UV" pip install --python "$VENV_PY" --no-deps "$PYMOL_GIT" \
             || echo "warning: pymol build failed - DOCX/ESP report images unavailable" >&2
     fi
+}
+
+# Digest of what tui/node_modules is built from (packages + DELFIN patches).
+tui_inputs_hash() {
+    [[ -f "$1/tui/package.json" ]] || return 0
+    cat "$1/tui/package.json" "$1/tui/bun.lock" "$1"/tui/patches/* 2>/dev/null | sha256sum | cut -d' ' -f1
+}
+
+# A deploy replaces src/; keep the window's packages and the patched OpenTUI
+# library (minutes to build) when their inputs did not change.
+carry_tui_modules() {
+    local from="$1" to="$2"
+    [[ -d "$from/tui/node_modules" && -d "$to/tui" && ! -e "$to/tui/node_modules" ]] || return 0
+    if [[ "$(tui_inputs_hash "$from")" == "$(tui_inputs_hash "$to")" ]]; then
+        mv "$from/tui/node_modules" "$to/tui/node_modules"
+    fi
+}
+
+# Everything beyond pip, best-effort and idempotent: the terminal UI (pinned
+# Bun + bun.lock packages) with the patched OpenTUI library for xterm.js
+# terminals (VS Code), Playwright's Chromium, OCR for pytesseract, the
+# manual search index, and a git checkout for the agent to work in.
+set_up_extras() {
+    # shellcheck disable=SC1091
+    ( source "$ROOT/agent.env" && source "$ROOT/.venv/bin/activate" \
+        && cd "$ROOT/work" && python -P -m delfin.agent.cli tui --setup </dev/null ) \
+        || echo "warning: terminal UI setup failed (retry: delfin-agent tui --setup)" >&2
+    if [[ -x "$ROOT/src/tui/scripts/build-opentui-native.sh" ]]; then
+        ( cd "$ROOT/src/tui" && { scripts/build-opentui-native.sh --check >/dev/null 2>&1 \
+            || scripts/build-opentui-native.sh </dev/null; } ) \
+            || echo "warning: patched OpenTUI build failed (prebuilt library stays)" >&2
+    fi
+    if "$VENV_PY" -c "import playwright" 2>/dev/null; then
+        "$VENV_PY" -m playwright install chromium </dev/null \
+            || echo "warning: playwright chromium install failed" >&2
+        sudo -n "$VENV_PY" -m playwright install-deps chromium </dev/null >/dev/null 2>&1 || true
+    fi
+    "$ROOT/.venv/bin/delfin-docs-index" >/dev/null 2>&1 \
+        || echo "warning: doc index build failed (retry: delfin-docs-index)" >&2
+    [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
+        || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
 }
 
 restart_dashboard() {
@@ -73,7 +120,10 @@ install)
     old_hash="$(sha256sum src/pyproject.toml 2>/dev/null | cut -d' ' -f1 || true)"
     new_hash="$(sha256sum src.new/pyproject.toml | cut -d' ' -f1)"
     rm -rf src.prev
-    [[ -d src ]] && mv src src.prev
+    if [[ -d src ]]; then
+        carry_tui_modules src src.new
+        mv src src.prev
+    fi
     mv src.new src
 
     if [[ "$old_hash" != "$new_hash" ]] || ! "$VENV_PY" -c "import delfin" 2>/dev/null; then
@@ -83,6 +133,7 @@ install)
         echo "==> pyproject unchanged: code swapped, no reinstall needed"
     fi
     smoke
+    set_up_extras
     restart_dashboard
     if [[ "$run_tests" == "--test" ]]; then
         echo "==> pytest (not slow)"
@@ -95,8 +146,10 @@ install)
 rollback)
     [[ -d src.prev ]] || { echo "error: no src.prev to roll back to" >&2; exit 1; }
     mv src src.bad && mv src.prev src && mv src.bad src.prev
+    carry_tui_modules src.prev src
     if ! cmp -s src/pyproject.toml src.prev/pyproject.toml; then install_deps; fi
     smoke
+    set_up_extras
     restart_dashboard
     ;;
 status)

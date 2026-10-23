@@ -42,7 +42,8 @@ apt-get update -q
 apt-get install -y -q \
     git curl ca-certificates build-essential cmake pkg-config tmux htop rsync jq \
     libxrender1 libxext6 libsm6 libgl1 libglib2.0-0 libfreetype6 \
-    openbabel openmpi-bin libopenmpi-dev bubblewrap nodejs npm \
+    openbabel openmpi-bin libopenmpi-dev bubblewrap nodejs npm gh \
+    tesseract-ocr tesseract-ocr-eng tesseract-ocr-deu \
     libglew-dev libpng-dev libfreetype-dev libxml2-dev libglm-dev libnetcdf-dev
 
 echo "==> [2/5] agent user '$AGENT_USER'"
@@ -132,11 +133,14 @@ fi
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/delfin-agent" <<'EOF'
 #!/usr/bin/env bash
-# delfin-agent <args>  ==  python -m delfin.agent.cli <args>  inside the venv
+# delfin-agent <args> inside the venv, always the deployed code: `python -m`
+# would put the cwd first on sys.path and run a checkout's delfin instead
+# (e.g. inside ~/delfin/work/DELFIN). Hence the entry point, else -P.
 set -euo pipefail
 source "$HOME/delfin/agent.env"
 source "$HOME/delfin/.venv/bin/activate"
-exec python -m delfin.agent.cli "$@"
+[[ -x "$HOME/delfin/.venv/bin/delfin-agent" ]] && exec "$HOME/delfin/.venv/bin/delfin-agent" "$@"
+exec python -P -m delfin.agent.cli "$@"
 EOF
 chmod +x "$HOME/.local/bin/delfin-agent"
 grep -q 'delfin/.venv/bin/activate' "$HOME/.bashrc" || cat >> "$HOME/.bashrc" <<'EOF'
