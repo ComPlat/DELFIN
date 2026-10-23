@@ -65,9 +65,10 @@ flavour() {
 board_section() {
     local model
     model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+    # "Raspberry Pi 5"* covers the 500, "Raspberry Pi 4"* the 400.
     case "$1:$model" in
-        2712:"Raspberry Pi 5"*|2712:"Raspberry Pi Compute Module 5"*|2712:"Raspberry Pi 500"*) echo "[pi5]" ;;
-        v8:"Raspberry Pi 4"*|v8:"Raspberry Pi 400"*|v8:"Raspberry Pi Compute Module 4"*) echo "[pi4]" ;;
+        2712:"Raspberry Pi 5"*|2712:"Raspberry Pi Compute Module 5"*) echo "[pi5]" ;;
+        v8:"Raspberry Pi 4"*|v8:"Raspberry Pi Compute Module 4"*) echo "[pi4]" ;;
         *) return 1 ;;
     esac
 }
