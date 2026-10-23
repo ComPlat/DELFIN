@@ -138,6 +138,17 @@ class _BaseClient:
     #: provider kit/ollama/openai whatever ``backend`` says.
     supplies_session_id: bool = False
 
+    def preset_session_id(self, session_id: str) -> bool:
+        """Take ``session_id`` as the id of the conversation not begun yet.
+
+        For a backend that announces its id: one that can be told the id
+        up front answers True, and the session has its id before the
+        first turn -- the service's log and presence are keyed by it from
+        the start. False (the default): the id stays "" until the stream
+        announces it.
+        """
+        return False
+
     def stream_message(
         self,
         system: str,
@@ -267,6 +278,9 @@ class CLIClient(_BaseClient):
             )
         self._proc: subprocess.Popen | None = None
         self._session_id: str = ""
+        #: The id a new conversation is started under (``--session-id``)
+        #: until the CLI has announced it; from then on it is resumed.
+        self._new_session_id: str = ""
         # DELFIN's file gate in front of the CLI's own tools (cli_gate):
         # the same read/write boundary, and the same dialog, as every
         # other backend. One token per client; the relay carries the
@@ -365,7 +379,10 @@ class CLIClient(_BaseClient):
         if self.effort in ("low", "medium", "high", "xhigh", "max"):
             cmd.extend(["--effort", self.effort])
 
-        if session_id:
+        if session_id and session_id == self._new_session_id:
+            # Nothing to resume yet: the conversation begins under this id.
+            cmd.extend(["--session-id", session_id])
+        elif session_id:
             cmd.extend(["--resume", session_id])
 
         self._proc = subprocess.Popen(
@@ -473,6 +490,7 @@ class CLIClient(_BaseClient):
                 sid = data.get("session_id", "")
                 if sid:
                     self._session_id = sid
+                    self._new_session_id = ""
                     yield StreamEvent(type="session_init", text=sid)
 
             elif dtype == "stream_event":
@@ -742,6 +760,15 @@ class CLIClient(_BaseClient):
             except Exception:
                 pass
             self._proc = None
+
+    def preset_session_id(self, session_id: str) -> bool:
+        """A new conversation is started with ``--session-id``. Not while
+        one is live (a running process, an announced id): that one goes on
+        under the id it has."""
+        if self._session_id or (self._proc is not None and self._proc.poll() is None):
+            return False
+        self._new_session_id = session_id
+        return True
 
     @property
     def session_id(self) -> str:

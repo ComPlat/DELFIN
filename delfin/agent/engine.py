@@ -7588,9 +7588,19 @@ class AgentEngine:
         # silent — an empty id is not an error, it is the unscoped bucket.
         # Anything that does not declare the capability exactly gets an id,
         # which is the safe direction.
-        if getattr(self.client, "supplies_session_id", False) is True:
-            return ""
         import uuid as _u
+        if getattr(self.client, "supplies_session_id", False) is True:
+            # One that can be told the id of a conversation not begun yet
+            # (the Claude CLI: --session-id) gets it now: a service session
+            # needs its id before the first turn, it keys the event log.
+            # It must be a UUID in its canonical form there.
+            sid = str(_u.uuid4())
+            try:
+                if self.client.preset_session_id(sid) is True:
+                    return sid
+            except Exception:
+                pass
+            return ""
         return _u.uuid4().hex
 
     def _sync_task_session(self) -> None:
