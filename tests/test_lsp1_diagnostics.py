@@ -101,7 +101,9 @@ def test_no_ruff_on_path_is_one_line_note(tmp_path, monkeypatch):
 def test_ruff_is_a_directory_not_a_tool(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     (bin_dir / "ruff").mkdir(parents=True)
-    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    # PATH holds only the directory: which() skips a directory, and a ruff
+    # later on the host's PATH would answer instead.
+    monkeypatch.setenv("PATH", str(bin_dir))
     p = _make_file(tmp_path, "def go():\n    beta()\n")
     found = diag.check(p, tmp_path)
     assert found == []

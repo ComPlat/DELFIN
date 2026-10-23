@@ -17460,7 +17460,8 @@ class _DocToolExecutor:
                 raise
             if _dr1_step is not None:
                 _step_journal.auto_finish(
-                    _sid, _dr1_step, ok=not result.startswith('{"error"'),
+                    _sid, _dr1_step,
+                    ok=not str(result).startswith('{"error"'),
                     result=result)
 
         # Track mtime after a successful read so the write tools can verify

@@ -299,25 +299,26 @@ def _scrub(text: str) -> str:
 
 
 def _step_state_lines(session_id: str) -> list[str]:
-    """The step journal's last finished step, so compaction keeps it.
+    """The step journal's last finished side effect, so compaction keeps it.
 
     DR1: a session that died mid-turn and resumes after a compaction
-    must still see which step was last RECORDED as finished — that
-    step must not be repeated; its result digest is replayable via
-    ``cli_resume.replay_step``. One clipped line, never raises
-    (best-effort, like every reader here). No journal -> no section.
+    must still see which step that could change something was last
+    RECORDED as finished — that step must not be repeated. A read-only
+    step is left out: repeating it changes nothing. One clipped line,
+    never raises (best-effort, like every reader here). No journal, or
+    only reads -> no section.
     """
     try:
         from . import step_journal
-        last = step_journal.last_finished_step(session_id)
+        last = step_journal.last_finished_step(session_id,
+                                               side_effect_only=True)
     except Exception:
         return []
     if not last:
         return []
     step_no = last.get("step", "?")
     tool = last.get("tool") or "?"
-    return [_clip(f"step {step_no} ({tool}) — must not be repeated; "
-                  f"result replayable via replay_step",
+    return [_clip(f"step {step_no} ({tool}) finished — do not repeat it",
                   _MAX_TASKSTATE_CHARS)]
 
 

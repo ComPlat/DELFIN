@@ -725,6 +725,16 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
     )
     if partial:
         note += "\n\n" + partial
+    # The step journal says which call was in flight when the process
+    # died: a started step without a recorded result may or may not have
+    # run. Best-effort, like the note itself.
+    try:
+        from . import step_journal
+        steps = step_journal.render_resume_note(session_id)
+    except Exception:
+        steps = None
+    if steps:
+        note += "\n\n" + steps
     return note
 
 

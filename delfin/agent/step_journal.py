@@ -62,7 +62,11 @@ READONLY_TOOLS: frozenset[str] = frozenset({
 })
 
 _MAX_ARGS_HEAD = 160
-_MAX_NOTE_LINES = 40   # journal reads bounded; files self-trim below
+_MAX_NOTE_LINES = 40   # a read looks at the last lines only
+#: Bytes read from the end of the journal per read. Every tool call reads
+#: it (auto_start), so a read must not grow with the session: 40 lines of
+#: at most ~1 KB each fit with room to spare.
+_TAIL_BYTES = 256 * 1024
 
 
 def _args_head(arguments: Any) -> str:
@@ -309,10 +313,17 @@ def read_steps(session: str, *, root: "str | Path | None" = None,
     notes: list[str] = []
     steps: list[dict[str, Any]] = []
     try:
-        lines = p.read_text(encoding="utf-8").splitlines()
+        with p.open("rb") as fh:
+            size = fh.seek(0, 2)
+            start = max(0, size - _TAIL_BYTES)
+            fh.seek(start)
+            data = fh.read()
     except OSError:
         return [], ["step journal unreadable: " + p.name]
-    if len(lines) > max_lines:
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if start and lines:
+        lines = lines[1:]          # the first line is cut at the seek point
+    if len(lines) > max_lines or start:
         lines = lines[-max_lines:]
         notes.append(
             f"step journal trimmed to the last {max_lines} lines")
@@ -397,17 +408,23 @@ def finished_result(session: str, *, step: int, turn: int | None = None,
 
 
 def last_finished_step(session: str, *,
-                       root: "str | Path | None" = None) -> dict[str, Any] | None:
+                       root: "str | Path | None" = None,
+                       side_effect_only: bool = False,
+                       ) -> dict[str, Any] | None:
     """The newest finished step — the number compaction keeps.
 
-    ``working_state`` carries this into the compaction block so a later
-    context rebuild knows how far the turn had actually got, not just how
-    many tool calls a coarse checkpoint had counted.
+    ``working_state`` carries this into the compaction block (with
+    ``side_effect_only``: the newest step that could change something) so
+    a later context rebuild knows how far the turn had actually got, not
+    just how many tool calls a coarse checkpoint had counted.
     """
     steps, _ = read_steps(session, root=root)
     for entry in reversed(steps):
-        if entry.get("kind") == "finish":
-            return entry
+        if entry.get("kind") != "finish":
+            continue
+        if side_effect_only and not side_effecting(str(entry.get("tool"))):
+            continue
+        return entry
     return None
 
 
@@ -424,6 +441,9 @@ def render_resume_note(session: str, *, root: "str | Path | None" = None,
     it is read, never swallowed.
     """
     open_out, notes = open_steps(session, root=root)
+    # That a read looked at the tail only is how every long journal is
+    # read, not something the resumed session has to know.
+    notes = [n for n in notes if not n.startswith("step journal trimmed")]
     if not open_out and not notes:
         return None
     lines: list[str] = []

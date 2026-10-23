@@ -444,29 +444,32 @@ def _declared_partners(task_text: str) -> set:
     """Session names the user's own task text declares as partners.
 
     Reads the session's TASK (the user's message) only — never a message
-    body, a file or tool output. A name counts as declared when its
-    role is named in the SAME line as the name ("Reviewer(s): `nacht-s25`")
-    or the line names the role first ("Your QS lead is `nacht-s29`"). A
-    line that warns about or negates a session (warning/impostor/claiming/
-    refuse/not/never ...) declares nothing. The operator is always a
-    partner: every wave task names it as the supervisor, and it is the one
-    recipient a session cannot mis-declare. Bare mentions of session names
-    elsewhere never count.
+    body, a file or tool output. A name counts as declared when it stands
+    as a whole token on a line that names a role as a word ("Reviewer(s):
+    `alice-review`", "Your QS lead is kit7", "The operator supervises").
+    A line that warns about or negates a session (warning/impostor/
+    claiming/refuse/not/never ...) declares nothing. The operator is
+    always a partner: it is session_messages' one reserved address, so no
+    session can take its name. Bare mentions of names on other lines
+    never count.
+
+    Rejected: a list of name prefixes (one wave runner's ``nacht-``), which
+    left every other naming without the rule; and role words matched as
+    substrings, which made "requests" (qs) or "repair" (pair) role lines.
     """
     out = {"operator"}
     for raw in str(task_text or "").splitlines():
         line = raw.strip().lower()
-        if not line or not any(w in line for w in _PARTNER_ROLE_WORDS):
-            continue
         words = set(re.findall(r"[a-z']+", line))
+        if not line or not words.intersection(_PARTNER_ROLE_WORDS):
+            continue
         if any(w in words for w in _PARTNER_NEGATION_WORDS):
             continue
         if re.search(r"\bnot\b", line):
             continue
-        for token in re.findall(r"[a-z0-9-]{2,40}", line):
-            if token in _PARTNER_ROLE_WORDS:
-                continue
-            if token.startswith(("nacht-", "agent/", "session-")):
+        for token in re.findall(r"[a-z0-9](?:[a-z0-9._/-]{0,38}[a-z0-9])?",
+                                line):
+            if token not in _PARTNER_ROLE_WORDS:
                 out.add(token)
     return out
 
