@@ -62,7 +62,11 @@ LOGIN_LOCAL_CORES = 2
 LOGIN_LOCAL_SECONDS = 1800
 MAX_QUEUED_JOBS = 4
 
-LOCAL_PROGRAMS = ("xtb", "crest", "orca")
+LOCAL_PROGRAMS = ("xtb", "crest", "orca", "delfin")
+# The forms of `delfin` that run the pipeline on the CONTROL.txt of the
+# directory they start in. Every other form (--define, --purge, cleanup,
+# a subcommand) is not a calculation here and keeps its own decision.
+_DELFIN_RUN_FORMS = ((), ("--recalc",))
 _WRAPPERS = ("time", "nice", "nohup", "setsid", "timeout")
 _GEOMETRY_SUFFIXES = (".xyz", ".coord", ".sdf", ".mol", ".tmol")
 
@@ -338,6 +342,11 @@ def _parse_run(segment: str) -> Optional[_Run]:
     program = os.path.basename(words[0])
     if program not in LOCAL_PROGRAMS + ("sbatch",):
         return None
+    if program == "delfin" and tuple(
+            w for w in words[1:]
+            if not re.fullmatch(r"\d*>>?|\d*>&\d+|&>>?|\S*>\S*", w)
+    ) not in _DELFIN_RUN_FORMS:
+        return None
     argv = []
     skip = False
     for w in words[1:]:
@@ -566,6 +575,9 @@ def _check_local(run: _Run, cwd: Path, kind: str, tool_wall_s: float,
             return "", "orca: no input file named"
         cores, maxcore, problem = check_orca_input(inp)
         name = inp.name
+    elif run.program == "delfin":
+        cores, maxcore, problem = check_delfin_folder(cwd)
+        name = "(CONTROL.txt)"
     else:
         cores, problem = _check_xtb_like(run, cwd, kind)
         geom = _geometry_argument(run.argv, cwd)
@@ -580,13 +592,13 @@ def _check_local(run: _Run, cwd: Path, kind: str, tool_wall_s: float,
                 else "")
         return "", (f"{run.program} {name} asks for {cores} cores; at most "
                     f"{limit} run {where} without asking.{hint}")
-    if run.program == "orca" and maxcore:
+    if run.program in ("orca", "delfin") and maxcore:
         total = _memory_mb()
         share = (total // 2) if total else None
         if kind == "login_node":
             share = min(share or 8000, LOGIN_LOCAL_CORES * 4000)
         if share and cores * maxcore > share:
-            return "", (f"orca {name} asks for {cores * maxcore} MB "
+            return "", (f"{run.program} {name} asks for {cores * maxcore} MB "
                         f"({cores} x %maxcore {maxcore}); at most {share} MB "
                         f"run {where} without asking.")
     if kind == "login_node":
@@ -816,13 +828,18 @@ def check_sbatch(run: _Run, cwd: Path,
             if not problem and cores > job_cores:
                 problem = (f"orca {inp.name} asks for {cores} cores and the "
                            f"job requests {job_cores}")
+        elif crun.program == "delfin":
+            cores, _mc, problem = check_delfin_folder(here)
+            if not problem and cores > job_cores:
+                problem = (f"CONTROL.txt asks for {cores} cores and the job "
+                           f"requests {job_cores} (PAL in CONTROL.txt)")
         else:
             cores, problem = _check_xtb_like(crun, here, "slurm_job")
         if problem:
             return "", "sbatch: " + problem
     if not calcs:
-        return "", ("sbatch: the job script runs no orca, xtb or crest line "
-                    "this check can read")
+        return "", ("sbatch: the job script runs no orca, xtb, crest or "
+                    "delfin line this check can read")
     queued = jobs_now()
     if queued is None:
         return "", "sbatch: the queue could not be read (squeue)"
@@ -911,6 +928,18 @@ def judge_orca_job(text: str, pal: int, maxcore: int, time_limit: str, *,
         return Verdict(True, False, "", (
             f"{name} asks for {stated} cores and the job requests {pal}"))
     cores = int(pal) if pal_is_the_request else (stated or int(pal))
+    return _judge_job_resources(name, cores, time_limit, kind,
+                                limits_of, jobs_now)
+
+
+def _judge_job_resources(name: str, cores: int, time_limit: str, kind: str,
+                         limits_of: Callable, jobs_now: Callable) -> Verdict:
+    """The resource half of a job verdict, its setup already checked.
+
+    On a workstation the job runs locally (at most local_core_limit
+    cores); elsewhere it goes to Slurm: the partition's time and per-node
+    cores, and the queue cap.
+    """
     if kind == "workstation":
         limit = local_core_limit(kind)
         if cores > limit:
@@ -963,6 +992,164 @@ def judge_orca_submission(folder: Path, pal: int, maxcore: int,
                           base_dir=Path(folder), name=inputs[0].name,
                           kind=kind, pal_is_the_request=True,
                           limits_of=limits_of, jobs_now=jobs_now)
+
+
+# --------------------------------------------------------------------------
+# The DELFIN pipeline (CONTROL.txt)
+# --------------------------------------------------------------------------
+
+def _smiles_symbols(smiles: str) -> Optional[list]:
+    """Element symbols of a SMILES with its hydrogens, or None."""
+    try:
+        from rdkit import Chem
+        mol = Chem.MolFromSmiles(smiles.strip())
+        if mol is None:
+            return None
+        mol = Chem.AddHs(mol)
+        return [a.GetSymbol() for a in mol.GetAtoms()]
+    except Exception:
+        return None
+
+
+def geometry_text_symbols(text: str) -> Optional[list]:
+    """Element symbols of DELFIN's geometry text: coordinate lines (with or
+    without the xyz header), or a SMILES on its own."""
+    lines = [l for l in (text or "").splitlines() if l.strip()]
+    if not lines:
+        return None
+    if len(lines) == 1 and len(lines[0].split()) == 1:
+        return _smiles_symbols(lines[0])
+    return _xyz_symbols("\n".join(lines))
+
+
+def check_delfin_control(text: str, base_dir: Path,
+                         geometry_text: Optional[str] = None) -> tuple:
+    """(cores, maxcore, problem) for a DELFIN job given by its CONTROL text.
+
+    Read with DELFIN's own functions, as the pipeline reads it:
+    validate_control_text and, for OCCUPIER, occupier_sequence_problems.
+    The geometry is ``geometry_text`` (the Submit tab's input), else the
+    CONTROL's SMILES, else its input_file under ``base_dir``. For classic
+    and manually, a multiplicity_0 that is set must fit the electrons at
+    `charge`; OCCUPIER takes its multiplicities from the sequence of the
+    electron count's parity, which occupier_sequence_problems checks.
+    """
+    try:
+        from delfin.config import (occupier_sequence_problems,
+                                   parse_control_text, validate_control_text)
+    except Exception:
+        return 0, None, "CONTROL.txt: DELFIN's CONTROL reader is not available"
+    if geometry_text is not None:
+        converts = len([l for l in geometry_text.splitlines()
+                        if l.strip()]) == 1 and len(
+                            geometry_text.split()) == 1
+        errors = validate_control_text(text, converts_smiles=converts)
+    else:
+        errors = validate_control_text(text)
+    if errors:
+        return 0, None, "CONTROL.txt: " + "; ".join(errors[:3])
+    try:
+        cfg = parse_control_text(text)
+    except Exception as exc:
+        return 0, None, f"CONTROL.txt cannot be read: {exc}"
+    method = str(cfg.get("method") or "").strip().lower()
+    if method == "occupier":
+        problems = occupier_sequence_problems(cfg)
+        if problems:
+            return 0, None, "OCCUPIER: " + "; ".join(problems[:2])
+    if geometry_text is None:
+        smiles = str(cfg.get("SMILES") or "").strip()
+        if smiles:
+            geometry_text = smiles
+        else:
+            name = str(cfg.get("input_file") or "input.txt").strip()
+            try:
+                geometry_text = _resolve(Path(base_dir), name).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError:
+                return 0, None, f"CONTROL.txt: input_file {name} does not exist"
+    symbols = geometry_text_symbols(geometry_text)
+    if not symbols:
+        return 0, None, ("the DELFIN job's geometry could not be read "
+                         "(format not checked here)")
+    electrons = electrons_of(symbols)
+    if electrons is None:
+        return 0, None, "the DELFIN job's geometry contains an unknown element"
+    charge = _int(cfg.get("charge"))
+    if charge is None:
+        return 0, None, "CONTROL.txt: charge is not a whole number"
+    n = electrons - charge
+    mult = _int(cfg.get("multiplicity_0"))
+    if method in ("classic", "manually") and mult is not None and (
+            mult < 1 or not spin_allowed(n, mult - 1)):
+        return 0, None, (f"CONTROL.txt: {n} electrons at charge {charge} "
+                         f"cannot have multiplicity {mult}")
+    return (_int(cfg.get("PAL")) or 1), _int(cfg.get("maxcore")), ""
+
+
+def check_delfin_folder(folder: Path) -> tuple:
+    """(cores, maxcore, problem) for the CONTROL.txt in ``folder``."""
+    control = Path(folder) / "CONTROL.txt"
+    try:
+        text = control.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0, None, f"no CONTROL.txt in {Path(folder).name or folder}"
+    return check_delfin_control(text, Path(folder))
+
+
+def judge_delfin_job(text: str, pal: int, maxcore: int, time_limit: str, *,
+                     base_dir: Path, name: str,
+                     geometry_text: Optional[str] = None,
+                     pal_is_the_request: bool = False,
+                     kind: Optional[str] = None,
+                     limits_of: Optional[Callable] = None,
+                     jobs_now: Optional[Callable] = None) -> Verdict:
+    """The verdict for one DELFIN job sent to run (Submit tab, ops).
+
+    The cores are the CONTROL's PAL. With ``pal_is_the_request`` the job
+    requests ``pal`` cores, and a PAL above it is a setup error.
+    """
+    limits_of = limits_of or partition_limits
+    jobs_now = jobs_now or queued_jobs
+    kind = kind or host_kind()
+    cores, _mc, problem = check_delfin_control(text, base_dir, geometry_text)
+    if problem:
+        return Verdict(True, False, "", problem)
+    if pal_is_the_request and cores > int(pal):
+        return Verdict(True, False, "", (
+            f"{name} asks for {cores} cores and the job requests {pal} "
+            "(PAL in CONTROL.txt)"))
+    if pal_is_the_request:
+        cores = int(pal)
+    return _judge_job_resources(name, cores, time_limit, kind, limits_of,
+                                jobs_now)
+
+
+def judge_delfin_submission(folder: Path, pal: int, maxcore: int,
+                            time_limit: str, *, kind: Optional[str] = None,
+                            limits_of: Optional[Callable] = None,
+                            jobs_now: Optional[Callable] = None) -> Verdict:
+    """The verdict for the ops ``submit_calculation`` in DELFIN mode."""
+    control = Path(folder) / "CONTROL.txt"
+    try:
+        text = control.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return Verdict(True, False, "", f"no CONTROL.txt in {folder}")
+    return judge_delfin_job(text, pal, maxcore, time_limit,
+                            base_dir=Path(folder), name="CONTROL.txt",
+                            pal_is_the_request=True, kind=kind,
+                            limits_of=limits_of, jobs_now=jobs_now)
+
+
+def judge_delfin_run(folder: Path, *, kind: Optional[str] = None) -> Verdict:
+    """The verdict for the ops ``pipeline_run`` (a local pipeline run)."""
+    run = _Run("delfin", [], {}, None, False)
+    kind = kind or host_kind()
+    # The ops tool has no wall-time limit of its own.
+    summary, problem = _check_local(run, Path(folder), kind, None)
+    if problem:
+        return Verdict(True, False, "", problem)
+    return Verdict(True, True, summary, "")
 
 
 def judge_orca_run(input_file: Path, *, kind: Optional[str] = None) -> Verdict:

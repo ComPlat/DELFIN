@@ -3769,6 +3769,44 @@ def _orca_builder_verdict(refs):
         return None
 
 
+def _submit_tab_verdict(refs):
+    """calc_policy's verdict for the Submit tab's single job, or None.
+
+    Reads what `/submit` sends: the CONTROL text, the coordinates or
+    SMILES, and the time. A batch (several entries submitted at once) is
+    not judged here and keeps the dialog; so does a tab without its
+    widgets.
+    """
+    try:
+        control = str(refs["control_widget"].value or "")
+        coords = str(refs["coords_widget"].value or "")
+    except Exception:
+        return None
+    batch = refs.get("smiles_batch_widget")
+    if batch is not None and str(getattr(batch, "value", "") or "").strip():
+        return None
+    if not control.strip() or not coords.strip():
+        return None
+    try:
+        from pathlib import Path as _P
+        from delfin.agent import calc_policy as _cp
+        from delfin.dashboard.helpers import resolve_time_limit
+        from delfin.dashboard.input_processing import parse_resource_settings
+        time_limit = resolve_time_limit(refs["job_type_widget"],
+                                        refs["custom_time_widget"],
+                                        "48:00:00")
+        # The job's request, read as the tab's submit reads it (48 cores
+        # and 4500 MB where the CONTROL states none).
+        pal, maxcore = parse_resource_settings(control)
+        return _cp.judge_delfin_job(
+            control, int(pal or 48), int(maxcore or 4500),
+            str(time_limit or ""), base_dir=_P.cwd(),
+            name="the Submit tab's job", geometry_text=coords,
+            pal_is_the_request=True)
+    except Exception:
+        return None
+
+
 def _command_tier(cmd: str) -> int:
     """Classify a slash command: 0=read, 1=navigate, 2=configure, 3=mutate."""
     cl = cmd.lower().strip()
@@ -17080,7 +17118,25 @@ def create_tab(ctx):
                         ctx.select_tab("Job Status")
                     except Exception as exc:
                         _append_system_message(f"Submit error: {exc}")
-                _confirm_or_exec("submit_job", f"Submit job '{job_name}' from Submit tab?", _do_submit, cmd_for_zone="/submit")
+                # The same check as the agent's other routes (calc_policy,
+                # reading the CONTROL with DELFIN's own functions).
+                _verdict = _submit_tab_verdict(ctx.submit_refs)
+                if _verdict is not None and _verdict.admit:
+                    try:
+                        from delfin.agent import security_events as _se
+                        _se.record("calculation_admitted", "/submit",
+                                   _verdict.summary[:200], blocked=False)
+                    except Exception:
+                        pass
+                    _append_system_message(
+                        f"🧪 Started without asking (setup and resources "
+                        f"checked): {_verdict.summary}")
+                    _do_submit()
+                    return True
+                _ask = f"Submit job '{job_name}' from Submit tab?"
+                if _verdict is not None and _verdict.reason:
+                    _ask += f" Not started unasked: {_verdict.reason}"
+                _confirm_or_exec("submit_job", _ask, _do_submit, cmd_for_zone="/submit")
             else:
                 _append_system_message("Submit tab not available.")
             return True

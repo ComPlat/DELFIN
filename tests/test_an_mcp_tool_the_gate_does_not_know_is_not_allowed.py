@@ -147,6 +147,17 @@ def test_an_unrecognised_mcp_tool_is_refused_head_less(tmp_path, tool):
     assert "read-only" in out
 
 
+def test_a_calculation_refused_head_less_says_both_reasons(tmp_path,
+                                                           monkeypatch):
+    """A failed calculation check adds its reason to the refusal; the
+    refusal still says the tool is not a read-only one."""
+    monkeypatch.chdir(tmp_path)
+    out = _gate("mcp__delfin-ops__pipeline_run", {},
+                _perms(tmp_path, "default"))
+    assert out is not None and "read-only" in out
+    assert "no CONTROL.txt" in out
+
+
 def test_a_self_supplied_allow_mutate_does_not_change_the_verdict(tmp_path):
     """The ops server's consent model, seen from the gate: the flag is the
     model's own word about the model, so it must not move the decision."""
