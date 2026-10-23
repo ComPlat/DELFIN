@@ -18,7 +18,9 @@ torch is installed as the CPU build (`--torch-backend cpu`).
 Known limits, not Pi-specific: `schnetpack` does not import with torch 2.13
 (`T_co` was removed from torch), `architector` needs `xtb` (QM, out of scope).
 `uv pip check` reports pymol's numpy>=2 metadata and the `pymol` vs
-`pymol-open-source` name; both are expected. First boot takes ~10 min on a
+`pymol-open-source` name; both are expected. The deployed tree has no `.git`,
+so `test_pre_refactor_api_preserved` (needs `git show`) fails under `--test`;
+clone the repo into `~/delfin/work` when the agent should work on git history. First boot takes ~10 min on a
 Pi 5 with a fast connection.
 
 ## Files
