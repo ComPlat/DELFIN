@@ -236,14 +236,25 @@ _REASON_WORDS = ("because", "reason", "rationale", "instead of", "necessary",
                  "artifact", "problem", "fail", "insufficient")
 
 
+def _sentences(text: str) -> list[str]:
+    """Split on sentence enders; a 'sentence' is the unit a justification
+    must live in to count for a mention inside it (A4 fix)."""
+    parts = re.split(r"(?<=[.!?;])\s+|\n+", text)
+    return [p for p in parts if p.strip()]
+
+
 def check_deviations(answer_text, deviations) -> list[Claim]:
     """Check that each workflow deviation has a stated reason in the answer.
 
     ``deviations`` is an iterable of records shaped by CB0A's
     ``deviations()``: ``{"parameter": ..., "default": ..., "actual":
-    ...}``. A deviation counts as *stated* when its actual value appears
-    in the answer AND a justification word occurs in the answer window
-    around it. Never raises.
+    ..., "reason": optional}``. The CB0A<->SC1 contract (QS ruling
+    s29, 2026-10-23): a non-empty ``reason`` string on the record
+    short-circuits the wording check — the workflow's evidence itself
+    names the deviation. Without it, the answer must justify: every
+    sentence mentioning the deviation must carry a justification word
+    (A4 fix: sentence-anchored, not a ±200 window; handles
+    reason-before and reason-after the mention alike). Never raises.
     """
     try:
         text = str(answer_text or "")[:_SCAN_LIMIT]
@@ -258,10 +269,24 @@ def check_deviations(answer_text, deviations) -> list[Claim]:
                 continue
             if actual.lower() not in low:
                 continue  # deviation not even mentioned: CB0A reports it
-            # find the mention and look for a reason word nearby
-            idx = low.find(actual.lower())
-            window = low[max(0, idx - 200):idx + len(actual) + 200]
-            if any(w in window for w in _REASON_WORDS):
+            # A record-level reason (CB0A contract: reason? field) is
+            # structure the workflow itself supplies: it short-circuits
+            # the word list entirely (QS ruling s29, 2026-10-23).
+            reason = rec.get("reason")
+            if isinstance(reason, str) and reason.strip():
+                continue
+            # The justification is anchored to the SAME SENTENCE as the
+            # mention (A4 fix): a reason word in a neighbouring sentence
+            # must not excuse this deviation, and every occurrence of the
+            # value is checked, not only the first.
+            hit = False
+            for sentence in _sentences(low):
+                if actual.lower() not in sentence:
+                    continue
+                if any(w in sentence for w in _REASON_WORDS):
+                    hit = True
+                    break
+            if hit:
                 continue
             out.append(Claim(
                 code="deviation-unexplained",
