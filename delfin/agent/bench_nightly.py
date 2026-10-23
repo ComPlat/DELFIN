@@ -155,8 +155,16 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
         record.seed_log = seed
     elif seed_path and Path(seed_path).is_file():
         seed = _read_seed(seed_path)
-        record.holdout_ran = True
-        record.seed_log = "holdout seed file present"
+        if not seed:
+            # An existing-but-empty seed file is not a seed (s19 F3).
+            seed = None
+            record.seed_log = "holdout seed file empty"
+            record.holdout_refusal_reason = (
+                "holdout seed file is empty; refusing to grade the "
+                "holdout on a meaningless seed")
+        else:
+            record.holdout_ran = True
+            record.seed_log = "holdout seed file present"
     else:
         record.seed_log = "holdout seed file absent"
         record.holdout_refusal_reason = (
@@ -172,13 +180,38 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
     spent = 0.0
     for task in tasks:
         inst = InstanceRecord(task_id=task.id, task_class=task.task_class)
-        est = float(accounting.estimate(task))
+        try:
+            est = float(accounting.estimate(task))
+        except Exception as exc:
+            # A broken stage-1a interface is recorded on the instance,
+            # not allowed to kill the round (s19 F1).
+            inst.skip_reason = ("accounting estimate failed: %s: %s"
+                                % (type(exc).__name__, exc))
+            record.instances.append(inst)
+            continue
+        if est < 0:
+            # A negative estimate must never reduce the day's spend —
+            # it would let later instances fit for free (s19 F4).
+            inst.skip_reason = ("negative resource estimate %.3f refused"
+                                % est)
+            record.refused_over_budget += 1
+            record.instances.append(inst)
+            continue
         # Budget in code: the estimate joins the day's spend BEFORE the
         # instance starts; == the limit fits, above it is refused.
         if spent + est > budget:
             inst.skip_reason = (
                 "over daily budget: estimate %.3f + spent %.3f exceeds "
                 "limit %.3f core-hours" % (est, spent, budget))
+            record.refused_over_budget += 1
+            record.instances.append(inst)
+            continue
+        try:
+            accounting.charge(est)
+        except Exception as exc:
+            # Same rule as the estimate: recorded, not fatal (s19 F2).
+            inst.skip_reason = ("accounting charge failed: %s: %s"
+                                % (type(exc).__name__, exc))
             record.refused_over_budget += 1
             record.instances.append(inst)
             continue

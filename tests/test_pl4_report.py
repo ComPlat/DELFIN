@@ -74,11 +74,15 @@ def test_report_weakest_tasks_queue():
     })
     report = json.loads(write_report(rec, history=[]))
     queue = report["weakest_queue"]
-    ids = [t["task_id"] for t in queue]
-    assert ids[0] == "worse_reproduction"
-    assert ids[1] == "bad_trap"
+    cls_by_id = {i.task_id: i.task_class for i in rec.instances}
+    classes = [cls_by_id[t["task_id"]] for t in queue]
+    # weakest first, quality 5 then 10
+    assert classes[0] == "worse_reproduction"
+    assert classes[1] == "bad_trap"
     # strong tasks are not queued
-    assert "good_consistency" not in ids
+    assert "good_consistency" not in classes
+    assert [t["quality"] for t in queue] == sorted(
+        t["quality"] for t in queue)
 
 
 def test_report_stop_verdict_two_flat_rounds():
