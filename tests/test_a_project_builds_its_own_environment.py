@@ -99,6 +99,10 @@ def test_every_cage_gives_each_cache_a_writable_home(monkeypatch, tmp_path):
     monkeypatch.setattr(A, "_bash_isolation_decision",
                         lambda perms, mode=None: ("bwrap", "auto"))
     monkeypatch.setattr(A, "_BWRAP_RUNTIME_FAILURE", None)
+    # The cage as it is where it holds: the environment it builds is the
+    # question here, not whether this host's kernel has Landlock (the
+    # Raspberry Pi OS kernel does not, and refuses the cage instead).
+    monkeypatch.setattr(A, "_landlock_functional", lambda: True)
     p = A.KitToolPermissions(workspace=tmp_path, mode="default")
     argv = A._bash_isolation_argv("true", tmp_path, p, caged_unasked=True)
     env = {argv[i + 1]: argv[i + 2] for i, a in enumerate(argv)
