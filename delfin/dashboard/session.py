@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import html as _html
 import os
+import sys
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -529,9 +530,36 @@ def _server_stdout():
     A kernel's print never gets there. ipykernel captures Python-level AND
     fd-level stdout and forwards both to the frontend as stream output,
     which under Voila is nowhere -- a server log stayed at zero bytes
-    through two kept sessions before this was measured. The server that
-    spawned this kernel is its parent, and on Linux its stdout is a path.
+    through two kept sessions before this was measured.
+
+    The stdout the kernel was started with IS the server's, so it is
+    reached from inside the kernel:
+
+    * what ipykernel redirected it keeps a copy of
+      (``_original_stdstream_copy``); written there directly, a line
+      reaches the terminal and not the page;
+    * a kernel stream that does not watch its descriptor (ipykernel skips
+      the redirect under pytest, PYTEST_CURRENT_TEST) left fd 1 and 2 as
+      they were started.
+
+    Only where neither holds is the parent's stdout opened through /proc
+    -- which a protected server (process_guard: its /proc belongs to
+    root) refuses, so on Linux that route alone left the terminal
+    without the address.
     """
+    for stream, fd in ((sys.stdout, 1), (sys.stderr, 2)):
+        copy = getattr(stream, "_original_stdstream_copy", None)
+        if not (isinstance(copy, int) and copy >= 0):
+            if getattr(stream, "_should_watch", None) is not False:
+                continue
+            copy = fd                   # never redirected
+        try:
+            # A duplicate: closing what is returned leaves the kernel's
+            # own descriptor open.
+            return os.fdopen(os.dup(copy), "w", encoding="utf-8",
+                             errors="replace")
+        except OSError:
+            continue
     for fd in (1, 2):
         try:
             return open(f"/proc/{os.getppid()}/fd/{fd}", "w",
