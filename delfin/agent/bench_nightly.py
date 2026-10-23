@@ -231,7 +231,6 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
         # EF1's ledger was already charged above (once per started
         # instance, s19 F5) — the spent counter only mirrors it.
         inst.core_hours = est
-        inst.ran = True
         # P3: jobs go through DELFIN's own submit path when a submitter
         # is configured; the staging lines come from the REAL
         # _cbatch_staging_lines (reused, never copied) and show the
@@ -251,6 +250,11 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
                               % (type(exc).__name__, exc))
                 record.instances.append(inst)
                 continue
+            # F7: ran means "started", so only a SUBMITTED instance
+            # counts as ran — a submission failure never ran.
+            inst.ran = True
+        else:
+            inst.ran = True
         try:
             t0 = now()
             result = runner(task, model=model)
