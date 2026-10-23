@@ -282,8 +282,13 @@ def test_the_counts_still_match_what_was_measured():
     # the guard.
     # behavior 16 -> 18 on 2026-10-19: two act tasks (behavior_act) in
     # tasks_auto_behavior.yaml, editing the behaviour workspace's game.html.
+    #
+    # chemistry 5 -> 12 on 2026-10-20: tasks_w20_workflows.yaml (wave 20,
+    # package CB0B) -- one practice task per workflow family, setup
+    # scripts w20_classic_opt_freq.py and w20_rest.py write only
+    # <workspace>/w20_<family>_1/ and refuse to overwrite.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 5, "generalist": 22,
+                      "science": 23, "chemistry": 12, "generalist": 22,
                       "other": 71}, counts
 
 
