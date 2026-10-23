@@ -282,8 +282,13 @@ def test_the_counts_still_match_what_was_measured():
     # the guard.
     # behavior 16 -> 18 on 2026-10-19: two act tasks (behavior_act) in
     # tasks_auto_behavior.yaml, editing the behaviour workspace's game.html.
+    # chemistry 5 -> 10 on 2026-10-XX: the five tasks_w20_or2.yaml tasks
+    # (package OR2, wave 20 — spectra, spin states, redox). Each setup
+    # writes its own fixture folder under the chemistry workspace
+    # (or2/formaldehyde, or2/spin, or2/redox, or2/redox_mixed);
+    # MAX_ATOMS <= 20 in every setup.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 5, "generalist": 22,
+                      "science": 23, "chemistry": 10, "generalist": 22,
                       "other": 71}, counts
 
 
