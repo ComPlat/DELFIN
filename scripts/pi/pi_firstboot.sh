@@ -37,6 +37,10 @@ if "$agent_home/delfin/.venv/bin/python" -m playwright install-deps chromium </d
     touch /var/lib/delfin-playwright-deps.done
 fi
 
+# Host lockdown: sshd key only, firewall, fail2ban, security updates.
+LOGIN_USER="$LOGIN_USER" AGENT_USER="$AGENT_USER" \
+    bash "$agent_home/delfin/src/scripts/pi/pi_harden_host.sh"
+
 touch "$MARKER"
 echo "=== delfin firstboot done $(date -Is) ==="
 

@@ -58,6 +58,25 @@ Free inside the frame, and nothing widens the frame but a person:
   `main` in the repository settings (pull requests only), so what the agent
   pushes reaches `main` through review.
 
+The host around it (`pi_harden_host.sh`, run by the first boot; run it again
+as root any time, it is idempotent):
+
+- SSH by key only for every user, no root login, no X11 forwarding, 3 tries,
+  only the login and the agent user. fail2ban bans repeated failures.
+- nftables: inbound default deny. SSH only from private IPv4 nets (LAN, VPN)
+  and link-local IPv6; add trusted IPv6 prefixes with `SSH_V6="..."` (a Pi
+  on a routed IPv6 network is otherwise reachable from far beyond the LAN).
+  mDNS, DHCP and ICMP are allowed, outbound is open (agent egress is
+  DELFIN's proxy's job). Over SSH the firewall is armed with a 120 s
+  rollback: confirm from a new SSH session with `--confirm`.
+- rpcbind / NFS off.
+- Debian security updates install themselves (unattended-upgrades).
+  Raspberry Pi kernel and firmware stay manual, so the Landlock kernel is
+  never replaced behind your back: `sudo apt update && sudo apt full-upgrade`
+  from time to time, then check `uname -r` after the reboot.
+- sudo asks for the login user's password once it has one: set it with
+  `sudo passwd pi`, then run `pi_harden_host.sh` again.
+
 ## Landlock kernel
 
 The cage of the agent's commands is bubblewrap plus Landlock. Raspberry Pi OS
@@ -112,6 +131,7 @@ unchanged; then it takes seconds.
 | `pi_install.sh` | Pi (agent user) | Unpack a source tarball, install deps when `pyproject.toml` changed, keep `src.prev` for rollback |
 | `pi_firstboot.sh` | Pi (cloud-init) | First boot: `pi_bootstrap.sh` + `pi_install.sh` from the card |
 | `pi_github_deploy_key.sh` | Pi (agent user) | Push access to one repository via a deploy key, GitHub host key pinned |
+| `pi_harden_host.sh` | Pi (root) | Host lockdown: sshd key only, nftables, fail2ban, security updates, sudo password |
 
 ## New card (Windows)
 
@@ -138,10 +158,14 @@ ssh pi@delfin-pi.local tail -f /var/log/delfin-firstboot.log
 
 ## Accounts and access
 
-- `pi`: desktop autologin, SSH by key only, password locked. Set one for local
-  logins with `sudo passwd pi`.
+- `pi`: desktop autologin, SSH by key only, password locked. Set one with
+  `sudo passwd pi` and rerun `pi_harden_host.sh`, so sudo asks for it.
 - `delfin`: agent user, no root (it may restart its dashboard service), SSH by
-  the same key.
+  the same key. More devices (a phone with Termius, another laptop): create a
+  key there and append its public line to `~/.ssh/authorized_keys` of the
+  user; passwords are not accepted over SSH.
+- Over a VPN `*.local` (mDNS) does not resolve: use the Pi's IP
+  (`hostname -I` on the Pi) in `~/.ssh/config`.
 - API keys are entered on the Pi, never on the card:
   `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`). With the KIT toolbox pass a model it serves, e.g.
