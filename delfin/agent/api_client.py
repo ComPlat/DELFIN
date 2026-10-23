@@ -7806,9 +7806,10 @@ def _with_calculation_note(result: str, notes: list) -> str:
 def _mcp_calculation_verdict(base: str, args: dict):
     """calc_policy's verdict for an ops tool that starts a calculation.
 
-    ``submit_calculation`` in ORCA mode and ``run_orca_input`` are checked;
-    every other tool (a DELFIN pipeline folder, a recalc, the workflow
-    runners) is not, and returns None: the dialog stays. So does
+    ``submit_calculation`` (ORCA and DELFIN mode), ``run_orca_input`` and a
+    plain ``pipeline_run`` on a CONTROL.txt are checked; every other tool
+    (a recalc, --define, extra arguments, the other workflow runners) is
+    not, and returns None: the dialog stays. So does
     delfin-tools ``run_application``/``submit_application``: an
     application's ``inputs`` are its own schema, which carries no charge,
     spin or geometry this check could read.
@@ -7824,6 +7825,19 @@ def _mcp_calculation_verdict(base: str, args: dict):
                 str(a.get("time_limit") or "12:00:00"))
         if base == "run_orca_input" and a.get("input_file"):
             return calc_policy.judge_orca_run(Path(str(a["input_file"])))
+        if base == "submit_calculation" and str(a.get("mode") or "delfin") \
+                == "delfin":
+            return calc_policy.judge_delfin_submission(
+                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                int(a.get("maxcore") or 6000),
+                str(a.get("time_limit") or "12:00:00"))
+        if base == "pipeline_run":
+            control = Path(str(a.get("control_file") or "CONTROL.txt"))
+            if (a.get("define") or a.get("extra_args") or a.get("overwrite")
+                    or control.name != "CONTROL.txt"):
+                return None
+            return calc_policy.judge_delfin_run(control.parent if str(
+                control.parent) not in ("", ".") else Path.cwd())
     except Exception:
         return None
     return None

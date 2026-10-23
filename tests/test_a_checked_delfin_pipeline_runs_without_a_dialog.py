@@ -167,3 +167,25 @@ def test_a_batch_keeps_its_dialog(cluster):
     from delfin.dashboard.tab_agent import _submit_tab_verdict
     assert _submit_tab_verdict(_refs(_control(), WATER,
                                      batch="a, O\nb, CCO\n")) is None
+
+
+def test_the_shell_gate_starts_a_checked_run(tmp_path, monkeypatch):
+    """Through the bash gate _dispatch uses: `delfin` was an acting
+    command, asked every time; checked, it starts, and other forms keep
+    their own decision."""
+    from delfin.agent import api_client as A
+    monkeypatch.setattr(C, "host_kind", lambda env=None: "workstation")
+    monkeypatch.setattr(C, "_available_cpus", lambda: 8)
+    _folder(tmp_path, pal=2)
+
+    def gate(cmd):
+        perms = A.KitToolPermissions(workspace=tmp_path, mode="default",
+                                     agent_role="solo_agent")
+        perms.confirm_callback = None
+        return A._doc_executor._gate_bash_call("bash", {"command": cmd},
+                                               perms, [], [], [])
+    assert gate("delfin") is None
+    assert gate("delfin --purge") is not None
+    _folder(tmp_path, pal=48)
+    out = gate("delfin")
+    assert out is not None and "delfin (CONTROL.txt) asks for 48 cores" in out
