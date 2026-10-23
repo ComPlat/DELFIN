@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================================
+# First-boot provisioning for a freshly flashed Pi SD card / SSD.
+#
+# Lives on the boot partition as /boot/firmware/delfin/ next to:
+#   pi_bootstrap.sh  pi_install.sh  delfin-src.tgz  VERSION
+# and is started once by cloud-init (runcmd) as root. Needs network (LAN).
+# Result: same state as `deploy_pi.sh --bootstrap` followed by a deploy.
+# Log: /var/log/delfin-firstboot.log   Marker: /var/lib/delfin-firstboot.done
+# ============================================================================
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+LOGIN_USER="${LOGIN_USER:-pi}"
+AGENT_USER="${AGENT_USER:-delfin}"
+MARKER=/var/lib/delfin-firstboot.done
+
+exec >> /var/log/delfin-firstboot.log 2>&1
+echo "=== delfin firstboot $(date -Is) ==="
+[[ -f "$MARKER" ]] && { echo "already done"; exit 0; }
+
+for _ in $(seq 60); do
+    curl -fsS --max-time 5 https://astral.sh >/dev/null 2>&1 && break
+    echo "waiting for network..."; sleep 5
+done
+
+SUDO_USER="$LOGIN_USER" AGENT_USER="$AGENT_USER" bash "$HERE/pi_bootstrap.sh"
+
+agent_home="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
+install -o "$AGENT_USER" -g "$AGENT_USER" -m 755 "$HERE/pi_install.sh" "$agent_home/delfin/pi_install.sh"
+sudo -iu "$AGENT_USER" bash "$agent_home/delfin/pi_install.sh" install "$(cat "$HERE/VERSION")" \
+    < "$HERE/delfin-src.tgz"
+
+touch "$MARKER"
+echo "=== delfin firstboot done $(date -Is) ==="
