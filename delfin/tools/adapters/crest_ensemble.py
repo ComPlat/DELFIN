@@ -67,7 +67,9 @@ def parse_ensemble(path: Path) -> List[Dict[str, object]]:
         frames.append(
             {
                 "n_atoms": natom,
-                "energy_Eh": _energy_from_comment(comment, i + 2),
+                "degeneracy": 1,  # never invented here; grouping is explicit
+                "energy_Eh": _energy_from_comment(comment, i + 2)[0],
+                "method": _energy_from_comment(comment, i + 2)[1],
                 "symbols": [a.split()[0] for a in atoms],
                 "positions": [
                     tuple(float(x) for x in a.split()[1:4]) for a in atoms
@@ -80,29 +82,38 @@ def parse_ensemble(path: Path) -> List[Dict[str, object]]:
     return frames
 
 
-def _energy_from_comment(comment: str, line_no: int) -> float:
+def _energy_from_comment(comment: str, line_no: int) -> tuple[float, Optional[str]]:
+    """(energy, level-tag-or-None) from a frame comment line.
+
+    Level tag convention (pinned in tests/test_ce1_level_tags.py): a token
+    starting with gfn/xtb or one of the named functionals below tags the
+    frame's level of theory; no such token means the frame is untagged and
+    the frame dict carries method=None.
+    """
     tokens = comment.split()
-    method = None
+    method: Optional[str] = None
+    energy = None
     for j, tok in enumerate(tokens):
-        if tok.lower() == "energy:" and j + 1 < len(tokens):
-            value = float(tokens[j + 1])
-            # "energy: -12.34 Eh" or "energy: -12.34" (Eh is CREST's unit)
-            return value
-        if tok.lower().startswith("gfn") or tok.lower().startswith("xtb"):
-            method = tok.lower()
-        if tok.lower() in ("r2scan-3c", "b3lyp", "wb97x", "pbe0"):
-            method = tok.lower()
-    # fall back: bare number comment
-    for tok in tokens:
-        try:
-            value = float(tok)
-        except ValueError:
+        low = tok.lower()
+        if low == "energy:" and j + 1 < len(tokens):
+            energy = float(tokens[j + 1])  # Eh, CREST's comment-line unit
             continue
-        if method is not None:
-            return value
-    raise ValueError(
-        f"line {line_no}: no readable energy in comment {comment.strip()!r}"
-    )
+        if low.startswith("gfn") or low.startswith("xtb"):
+            method = low
+        if low in ("r2scan-3c", "b3lyp", "wb97x", "pbe0"):
+            method = low
+    if energy is None:
+        for tok in tokens:
+            try:
+                energy = float(tok)
+            except ValueError:
+                continue
+            break
+    if energy is None:
+        raise ValueError(
+            f"line {line_no}: no readable energy in comment {comment.strip()!r}"
+        )
+    return energy, method
 
 
 def relative_kcal(frames: Sequence[Dict[str, object]]) -> List[float]:
@@ -124,6 +135,13 @@ def boltzmann_weights(
     if temperature_K <= 0:
         raise ValueError(f"temperature must be positive, got {temperature_K}")
     methods = {f.get("method") for f in frames if f.get("method") is not None}
+    untagged = any(f.get("method") is None for f in frames)
+    if methods and untagged:
+        raise ValueError(
+            "the ensemble is only PARTIALLY tagged with a level of theory "
+            f"({', '.join(sorted(str(m) for m in methods))}); the level of "
+            "the untagged frames is undetectable, refusing to weight"
+        )
     if len(methods) > 1:
         raise ValueError(
             "the ensemble mixes energies from more than one level of "
