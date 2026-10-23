@@ -44,7 +44,9 @@ EOF
     "$UV" pip install --python "$VENV_PY" --no-deps -e "$ROOT/src"
     if ! "$VENV_PY" -c "import pymol" 2>/dev/null; then
         echo "==> building pymol from source (optional, only for report images)"
-        "$UV" pip install --python "$VENV_PY" "$PYMOL_GIT" \
+        # --no-deps: pymol's master declares numpy>=2 and would upgrade past
+        # DELFIN's numpy<2 pin; a numpy-2 build runs fine on numpy 1.26.
+        "$UV" pip install --python "$VENV_PY" --no-deps "$PYMOL_GIT" \
             || echo "warning: pymol build failed - DOCX/ESP report images unavailable" >&2
     fi
 }
