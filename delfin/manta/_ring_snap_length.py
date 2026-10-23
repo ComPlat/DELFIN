@@ -97,3 +97,48 @@ def ride_hydrogens(
         for h in hydrogens_of.get(parent, ()):
             out.setdefault(h, d)
     return out
+
+
+def inplane_trilaterate(x, partners, origin, normal, iters: int = 20):
+    """The point of the plane (``origin``, unit ``normal``) whose distances to ``partners`` are closest
+    (least squares) to their distances from ``x``.  The sp2 flattener's replacement for the foot point
+    of ``x``: the foot point shortens every bond by the cosine of its tilt, this point keeps them as far
+    as a planar centre can.  Starts at the foot point, Gauss-Newton in two in-plane coordinates; falls
+    back to the foot point if it does not lower the worst relative bond error."""
+    x = np.asarray(x, float)
+    n = np.asarray(normal, float)
+    P = [np.asarray(p, float) for p in partners]
+    L = [float(np.linalg.norm(x - p)) for p in P]
+    foot = x - float(np.dot(x - origin, n)) * n
+    e1 = P[0] - origin
+    e1 = e1 - float(np.dot(e1, n)) * n
+    if np.linalg.norm(e1) < 1e-9:
+        return foot
+    e1 = e1 / np.linalg.norm(e1)
+    e2 = np.cross(n, e1)
+
+    def _worst(q):
+        return max(abs(float(np.linalg.norm(q - p)) - t) / t for p, t in zip(P, L) if t > 1e-9)
+
+    q = foot.copy()
+    for _ in range(iters):
+        r, J = [], []
+        for p, t in zip(P, L):
+            v = q - p
+            d = float(np.linalg.norm(v))
+            if d < 1e-9:
+                continue
+            r.append(d - t)
+            J.append([float(np.dot(v, e1)) / d, float(np.dot(v, e2)) / d])
+        if not r:
+            break
+        J = np.array(J)
+        r = np.array(r)
+        try:
+            step = np.linalg.lstsq(J, -r, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            break
+        q = q + step[0] * e1 + step[1] * e2
+        if float(np.linalg.norm(step)) < 1e-7:
+            break
+    return q if _worst(q) < _worst(foot) else foot

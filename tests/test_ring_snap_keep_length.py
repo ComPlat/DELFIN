@@ -79,3 +79,29 @@ def test_snap_projection_restores_every_bond_not_only_the_mean(monkeypatch):
     xyz = "\n".join(f"{s} {x:.6f} {y:.6f} {z:.6f}" for s, (x, y, z) in zip(["C"] * 6 + ["H"] * 6, P)) + "\n"
     P1 = _coords(_snap_aromatic_rings_in_xyz(xyz, mol))
     assert max(abs(a - b) for a, b in zip(_benzene_cc(P1), _benzene_cc(P))) < 2e-3
+
+
+def test_sp2_flatten_keeps_the_three_bonds_better_with_the_switch(monkeypatch):
+    from rdkit.Chem import AllChem
+    from delfin.manta.topology_checks import _flatten_sp2_atoms_xyz
+    mol = Chem.AddHs(Chem.MolFromSmiles("C=C(C)C"))
+    assert AllChem.EmbedMolecule(mol, randomSeed=3) == 0
+    X = mol.GetConformer().GetPositions()
+    nb = [n.GetIdx() for n in mol.GetAtomWithIdx(1).GetNeighbors() if n.GetAtomicNum() > 1]
+    nrm = np.cross(X[nb[1]] - X[nb[0]], X[nb[2]] - X[nb[0]]); nrm /= np.linalg.norm(nrm)
+    X[1] = X[1] + 0.40 * nrm                          # pyramidalise the sp2 centre
+    syms = [a.GetSymbol() for a in mol.GetAtoms()]
+    xyz = "\n".join(f"{s} {x:.6f} {y:.6f} {z:.6f}" for s, (x, y, z) in zip(syms, X)) + "\n"
+    L0 = [float(np.linalg.norm(X[1] - X[j])) for j in nb]
+
+    def _err(out):
+        Y = _coords(out)
+        return max(abs(float(np.linalg.norm(Y[1] - Y[j])) - t) for j, t in zip(nb, L0))
+
+    monkeypatch.delenv(FLAG, raising=False)
+    e_off = _err(_flatten_sp2_atoms_xyz(xyz, mol))
+    monkeypatch.setenv(FLAG, "1")
+    out_on = _flatten_sp2_atoms_xyz(xyz, mol)
+    Y = _coords(out_on)
+    assert abs(float(np.dot(Y[1] - Y[nb[0]], nrm))) < 1e-6      # planar
+    assert _err(out_on) < e_off                       # never worse; a planar centre cannot keep all three
