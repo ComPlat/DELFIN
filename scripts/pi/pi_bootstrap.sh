@@ -222,6 +222,11 @@ exec delfin-voila --ip 127.0.0.1 --port 8866 --no-browser --token "$(cat "$HOME/
 EOF
 chmod +x "$HOME/.local/bin/delfin-dashboard"
 EOS
+# Enabled once, when the unit is new. Run again, the bootstrap leaves the
+# state an admin chose (stopped and disabled until access is secured, say);
+# `systemctl enable` on every run switched it back on for the next boot.
+dashboard_unit_new=0
+[[ -f /etc/systemd/system/delfin-dashboard.service ]] || dashboard_unit_new=1
 cat > /etc/systemd/system/delfin-dashboard.service <<EOF
 [Unit]
 Description=DELFIN dashboard (loopback only)
@@ -253,7 +258,11 @@ Icon=applications-science
 Categories=Science;Education;
 EOF
 systemctl daemon-reload
-systemctl enable delfin-dashboard.service
+if [[ "$dashboard_unit_new" == "1" ]]; then
+    systemctl enable delfin-dashboard.service
+else
+    echo "    dashboard service left as it was: $(systemctl is-enabled delfin-dashboard.service 2>/dev/null)"
+fi
 
 echo
 echo "Bootstrap done. Agent user: $AGENT_USER (sudo: $AGENT_SUDO)"
