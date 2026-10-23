@@ -984,6 +984,84 @@ def _provider_key(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The chat transcript on the page
+# ---------------------------------------------------------------------------
+
+# Python renders the whole transcript as one string, and ipywidgets puts
+# every assignment of an HTML widget's value in with innerHTML. Assigned
+# directly, that destroyed and rebuilt every message, card and plot about
+# four times a second while the agent streamed: measured in the real page,
+# the 3D canvases a reader had scrolled up to went 3 -> 0 -> 1 -> 2 -> 3 on
+# each update, and a selection or a drag in progress was lost with the node
+# under it.
+#
+# So the value carries the transcript inside an inert <template> (nothing
+# in it is rendered, loaded or run) and, after it, an image whose error
+# handler applies it. The shown messages live in a container of their own,
+# appended to the widget's host beside .widget-html-content -- ipywidgets
+# replaces only the content element, so the container and every node in it
+# survive an update. The handler keeps the longest run of leading messages
+# whose source HTML is unchanged (each shown node carries the source it was
+# made from, so a card's own later DOM changes do not count as a change) and
+# replaces the rest: a streaming answer replaces itself, a new message is
+# appended, everything above stays the same nodes. Any error falls back to
+# the old whole replacement inside the container.
+#
+# Rejected: one ipywidget per message. Same effect, but it changes the DOM
+# every rule and script of the chat is written against.
+_CHAT_MORPH_JS = (
+    "(function(img){var W=window;"
+    "if(!W.__delfinChatMorph){W.__delfinChatMorph=function(img){"
+    "var host=img.closest?img.closest('.delfin-agent-chat-host'):null;"
+    "var src=img.previousElementSibling;"
+    "if(!host||!src||src.tagName!=='TEMPLATE')return;"
+    "var fresh=src.content.firstElementChild;if(!fresh)return;"
+    "var shown=host.__delfinShown;"
+    "if(!shown||shown.parentNode!==host||shown.tagName!==fresh.tagName){"
+    "if(shown&&shown.parentNode===host)host.removeChild(shown);"
+    "shown=document.createElement(fresh.tagName);host.appendChild(shown);"
+    "host.__delfinShown=shown;}"
+    "try{"
+    "Array.from(shown.attributes).forEach(function(a){"
+    "if(!fresh.hasAttribute(a.name))shown.removeAttribute(a.name);});"
+    "Array.from(fresh.attributes).forEach(function(a){"
+    "if(shown.getAttribute(a.name)!==a.value)shown.setAttribute(a.name,a.value);});"
+    "var want=Array.from(fresh.childNodes).filter(function(n){"
+    "return n.nodeType===1||(n.nodeType===3&&n.data.trim());});"
+    "var keys=want.map(function(n){"
+    "return n.nodeType===1?n.outerHTML:'#'+n.data;});"
+    "var have=Array.from(shown.childNodes);var p=0;"
+    "while(p<want.length&&p<have.length&&have[p].__delfinKey===keys[p])p++;"
+    "for(var j=have.length-1;j>=p;j--)shown.removeChild(have[j]);"
+    "var frag=document.createDocumentFragment();"
+    "for(var i=p;i<want.length;i++){var n=document.importNode(want[i],true);"
+    "n.__delfinKey=keys[i];frag.appendChild(n);}"
+    "shown.appendChild(frag);"
+    "}catch(e){shown.innerHTML=fresh.innerHTML;}"
+    "if(W.__delfinWatchChat)W.__delfinWatchChat(host);};}"
+    "W.__delfinChatMorph(img);img.remove();})(this)"
+)
+_CHAT_MORPH_TAG = ('<img src="" alt="" style="display:none" onerror="'
+                   + _html.escape(_CHAT_MORPH_JS, quote=True) + '">')
+
+
+def _chat_value(transcript_html: str) -> str:
+    """The value of the chat widget for ``transcript_html``.
+
+    Input: the transcript element (``<div class="delfin-agent-chat" ...>``
+    with one child per message). Output: that element inside an inert
+    ``<template>``, followed by the tag that applies it to the shown
+    messages (see ``_CHAT_MORPH_JS``). A ``</template`` in the transcript --
+    a message quoting the tag -- is written as ``&lt;/template``, which
+    reads the same in text and in an attribute and cannot end the wrapper.
+    """
+    body = re.sub(r"</(template)", r"&lt;/\1", str(transcript_html or ""),
+                  flags=re.I)
+    return ('<template class="delfin-chat-src">' + body + "</template>"
+            + _CHAT_MORPH_TAG)
+
+
+# ---------------------------------------------------------------------------
 # CSS for the chat interface
 # ---------------------------------------------------------------------------
 
@@ -1251,7 +1329,11 @@ _AGENT_CSS = """\
     display: flex;
     flex-direction: column;
 }
-.delfin-agent-chat-host > .widget-html-content { display: flex;
+/* The widget's own content holds only the inert source and the tag that
+   applies it (_chat_value); the shown messages are the container beside it,
+   which an update does not replace. */
+.delfin-agent-chat-host > .widget-html-content { display: none; }
+.delfin-agent-chat-host > .delfin-agent-chat { display: flex;
     flex-direction: column; min-height: 100%; }
 /* Return to the newest output. Sticky rather than absolute: the chat is its
    own scrollport, so an absolutely placed control would ride away with the
@@ -7752,7 +7834,7 @@ def create_tab(ctx):
 
     # Chat display
     chat_html = widgets.HTML(
-        value=_CHAT_OPEN + '<i>Start a conversation...</i></div>',
+        value=_chat_value(_CHAT_OPEN + '<i>Start a conversation...</i></div>'),
         layout=widgets.Layout(min_height="200px"),
     )
     chat_html.add_class("delfin-agent-chat-host")
@@ -8249,6 +8331,37 @@ def create_tab(ctx):
         if (window.__delfinMol3DInstalled) return;
         window.__delfinMol3DInstalled = true;
 
+        // The wheel over a molecule in the chat scrolls the chat. 3Dmol
+        // takes every wheel event over its canvas for zoom and cancels it,
+        // so a card as tall as the chat stopped the reader dead: measured
+        // once the chat stopped rebuilding its cards, forty wheel steps
+        // down from inside a trajectory card left the reader ~1000 px short
+        // of the end. (While every update rebuilt the cards, the canvas
+        // under the pointer was missing part of the time and wheel steps
+        // fell through to the chat at random.) Stopped here, in the
+        // capture phase at the document,
+        // the event never reaches 3Dmol and nothing cancels it, so the
+        // browser scrolls. It zooms with Ctrl (a trackpad pinch arrives as
+        // a wheel with ctrlKey) or once the molecule has been clicked,
+        // until the pointer leaves it. The fullscreen view is not inside
+        // the chat and keeps its plain wheel zoom.
+        var zoomStage = null;
+        function chatStage(t) {
+            var s = t && t.closest ? t.closest('.delfin-mol3d-stage') : null;
+            return s && s.closest('.delfin-agent-chat-host') ? s : null;
+        }
+        document.addEventListener('pointerdown', function(e) {
+            zoomStage = chatStage(e.target);
+        }, {capture: true, passive: true});
+        document.addEventListener('pointerover', function(e) {
+            if (zoomStage && chatStage(e.target) !== zoomStage) zoomStage = null;
+        }, {capture: true, passive: true});
+        document.addEventListener('wheel', function(e) {
+            var stage = chatStage(e.target);
+            if (!stage || e.ctrlKey || stage === zoomStage) return;
+            e.stopPropagation();
+        }, {capture: true, passive: true});
+
         function build(card, stage) {
             var data = card.getAttribute('data-mol3d') || '';
             var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
@@ -8736,6 +8849,8 @@ def create_tab(ctx):
         // Both use the same per-session decision, including hidden sessions
         // and readers who have deliberately scrolled away.
         var watchedChatSizes = new WeakSet();
+        // The shown messages are the container _chat_value's tag keeps
+        // beside the widget's content; the content itself is empty now.
         var chatSizes = typeof ResizeObserver === 'undefined' ? null
             : new ResizeObserver(function(entries) {
                 var hosts = new Set();
@@ -8746,12 +8861,15 @@ def create_tab(ctx):
                 hosts.forEach(function(c) { window.__delfinChatSync(c); });
             });
         function watchChatSize(c) {
-            if (!chatSizes || !c || watchedChatSizes.has(c)) return;
-            watchedChatSizes.add(c);
-            chatSizes.observe(c);
-            var content = c.querySelector('.widget-html-content');
-            if (content) chatSizes.observe(content);
+            if (!chatSizes || !c) return;
+            [c, c.querySelector(':scope > .delfin-agent-chat')].forEach(
+                function(el) {
+                    if (!el || watchedChatSizes.has(el)) return;
+                    watchedChatSizes.add(el);
+                    chatSizes.observe(el);
+                });
         }
+        window.__delfinWatchChat = watchChatSize;
         if (typeof MutationObserver !== 'undefined' && document.body) {
             new MutationObserver(function(records) {
                 var hosts = new Set();
@@ -12642,12 +12760,12 @@ def create_tab(ctx):
                 body = _render_agent_transcript(_va)
             except Exception as _exc:
                 body = "<i>subagent view unavailable: " + str(_exc)[:120] + "</i>"
-            chat_html.value = (_CHAT_OPEN + body
-                               + "\n" + _SCROLL_TAG + "</div>")
+            chat_html.value = _chat_value(_CHAT_OPEN + body
+                                          + "\n" + _SCROLL_TAG + "</div>")
             return
         msgs = state["chat_messages"]
         if not msgs:
-            chat_html.value = (
+            chat_html.value = _chat_value(
                 _CHAT_OPEN
                 + "<i>Start a conversation...</i>"
                 + _SCROLL_RESET_TAG + "</div>"
@@ -12662,7 +12780,7 @@ def create_tab(ctx):
         # The prefix (all messages before the last) is cached.
         if streaming and n > 1 and _html_cache["prefix_count"] == n - 1:
             last_html = _render_single_msg(msgs[-1])
-            chat_html.value = (
+            chat_html.value = _chat_value(
                 _CHAT_OPEN
                 + _html_cache["prefix"]
                 + "\n" + last_html
@@ -12684,7 +12802,7 @@ def create_tab(ctx):
             _html_cache["prefix"] = ""
             _html_cache["prefix_count"] = 0
 
-        chat_html.value = (
+        chat_html.value = _chat_value(
             _CHAT_OPEN
             + "\n".join(parts)
             + "\n" + _SCROLL_TAG
@@ -19125,7 +19243,7 @@ def create_tab(ctx):
                 parts.append(f'<div class="{css_class}">{content}</div>')
         parts.append(_SCROLL_TAG)
         parts.append("</div>")
-        chat_html.value = "\n".join(parts)
+        chat_html.value = _chat_value("\n".join(parts))
 
     def _retry_last():
         """Remove the last assistant response and re-send the last user message."""
@@ -24144,6 +24262,7 @@ def create_tab(ctx):
         "auto_tick": _auto_tick,
         "auto_after_turn": _auto_after_turn,
         "fold_title": _fold_title,
+        "refresh_chat": _refresh_chat_html,
     }
 
 
