@@ -3733,6 +3733,8 @@ def _format_action_stop_note(
 _TIER3_EXACT = {
     "/submit", "/orca submit", "/recalc auto",
     "/cancel all", "/cancel running", "/cancel pending",
+    # Resubmits the failed job with the fix's CONTROL change and time.
+    "/fix apply",
 }
 _TIER3_PREFIX = ("/recalc ", "/cancel ")
 _TIER3_SAFE_PREFIX = ("/recalc check",)  # these stay tier 0 (read-only)
