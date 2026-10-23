@@ -1485,10 +1485,13 @@ def touch_heartbeat(session_id: str) -> bool:
 def delete_session(session_id: str) -> bool:
     """Delete a session file. Returns True if deleted."""
     filepath = _SESSIONS_DIR / f"{session_id}.json"
-    # Companion files (writer lock, mid-turn checkpoint, elided store) go
-    # with it so a deleted session can't leave orphan sidecars behind.
+    # Companion files (writer lock, mid-turn checkpoint, elided store, the
+    # step journal and its rotated file) go with it so a deleted session
+    # can't leave orphan sidecars behind.
+    from . import step_journal
     for side in (_lock_path(session_id), _turn_checkpoint_path(session_id),
-                 elided_store_path(session_id)):
+                 elided_store_path(session_id),
+                 *step_journal.journal_files(session_id)):
         try:
             side.unlink()
         except OSError:

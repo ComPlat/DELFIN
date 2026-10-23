@@ -3353,6 +3353,18 @@ class AgentEngine:
             self._stop_requested = False
             self._stop_owner_turn = None
         _turn_id = self._turn_id
+        # The step journal numbers its steps per turn, and the executor
+        # sees only the permissions object, so the turn travels on it. A
+        # fresh random key rather than _turn_serial: the serial restarts
+        # at 1 in every process, and a resumed session's first turn would
+        # read as the turn the crashed process was in.
+        try:
+            _kp = self.kit_permissions
+            if _kp is not None:
+                import uuid as _uuid
+                _kp.step_turn_key = _uuid.uuid4().hex
+        except Exception:
+            pass
 
         # This turn's delegated spend starts at zero, and every delegated
         # run from here is routed through a counter that knows which turn

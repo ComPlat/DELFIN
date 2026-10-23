@@ -9234,6 +9234,12 @@ class KitToolPermissions:
     # sub-agent receives through dataclasses.replace stays its own.
     # remember() stores it as the note's ``read_before``.
     turn_untrusted_sources: tuple[str, ...] = ()
+    # The engine turn the tool calls belong to, as an opaque key the
+    # engine renews at every turn start (AgentEngine.stream_response).
+    # The step journal (step_journal.auto_start) opens its next turn
+    # number when the key changes; empty means "continue the current
+    # one", the behaviour of a caller that has no turns.
+    step_turn_key: str = ""
     # The swarm run this agent belongs to (swarm_memory): set by the
     # orchestrator through DELFIN_SWARM_RUN, or at the first delegation
     # (subagents._derive_perms), and copied to every child by the
@@ -17449,7 +17455,9 @@ class _DocToolExecutor:
             _dr1_step = None
             if _sid:
                 _dr1_step = _step_journal.auto_start(
-                    _sid, tool=name, arguments=arguments)
+                    _sid, tool=name, arguments=arguments,
+                    turn_key=str(getattr(permissions, "step_turn_key", "")
+                                 or "") or None)
             try:
                 result = self._dispatch_under_rules(
                     name, arguments, permissions, rule_hit)
