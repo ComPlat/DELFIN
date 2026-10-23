@@ -37,7 +37,9 @@ set -euo pipefail
 
 FIRMWARE=/boot/firmware
 CONFIG_TXT="$FIRMWARE/config.txt"
-BUILD_ROOT="${DELFIN_KERNEL_BUILD_DIR:-/var/tmp/delfin-landlock-kernel}"
+# The build runs as root: in a directory of its own, made fresh (mktemp, 0700),
+# never at a fixed name another user could have created first.
+BUILD_PARENT="${DELFIN_KERNEL_BUILD_PARENT:-/var/tmp}"
 SUFFIX="-landlock"
 BEGIN_MARK="# BEGIN delfin-landlock (pi_kernel_landlock.sh; remove this block for the stock kernel)"
 END_MARK="# END delfin-landlock"
@@ -125,7 +127,8 @@ cmd_build() {
     tarball="$(dpkg -L "linux-source-${upstream%.*}" | grep -m1 '^/usr/src/linux-source-.*\.tar\.xz$')" \
         || die "no source tarball in linux-source-${upstream%.*}"
 
-    rm -rf "$BUILD_ROOT" && mkdir -p "$BUILD_ROOT"
+    BUILD_ROOT="$(mktemp -d "$BUILD_PARENT/delfin-landlock-kernel.XXXXXXXX")"
+    trap 'rm -rf "$BUILD_ROOT"' EXIT
     tar -xJf "$tarball" -C "$BUILD_ROOT"
     local src
     src="$BUILD_ROOT/$(basename "$tarball" .tar.xz)"
