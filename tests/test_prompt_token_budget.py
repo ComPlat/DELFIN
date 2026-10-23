@@ -20,28 +20,270 @@ def _estimate_tokens(text: str) -> int:
     return (len(text) + 3) // 4
 
 
-# Budgets reflect the post-P4 prompts (verify-enforcement, the 8-pattern
-# playbook, ORCA-builder grounding docs were all deliberate additions
-# after the original S2 slim-down) with ~8% headroom, so any further
-# creep fails immediately. A deliberate "prompt diet" — trimming these
-# back down WITH benchmark validation — is on the backlog; shrink the
-# budgets again when it lands.
+# Budgets are set just above the CURRENT prompt sizes, so any regrowth
+# fails immediately. The prompt diet removed duplicated rules (the same
+# contract stated in a role prompt AND a shared addendum), worked examples
+# that restated a rule already given, historical incident narrative, and
+# blocks that re-listed what a tool schema already declares. No behavioral
+# contract was dropped — extending one is fine, but pay for it by trimming
+# elsewhere rather than by raising the number.
+#: The single source for a role prompt's file budget. Read by
+#: tests/test_new_tool_forms_in_prompt.py as well: that file pinned the
+#: same number in its own literal, and raising this one on 2026-09-29
+#: left the copy behind and turned main's gate red. A budget that is
+#: written down twice is a budget that drifts.
+FILE_BUDGETS = {
+    "dashboard_agent.md": 7206,
+    "solo_agent.md": 10830,
+    "office_agent.md": 1688,
+}
+
+
 @pytest.mark.parametrize(
     "filename, max_tokens",
     [
-        ("dashboard_agent.md", 7500),
-        ("solo_agent.md", 13800),
+        # 7950 -> 7150: dropped the two worked ACTION examples (they restate
+        # the plan-first / verify-after-set rules stated above them), the
+        # ORCA counter-example lists, and the duplicated tab-set + command-
+        # discovery blocks.
+        # 7150 -> 7206, sixty-two tokens, for the Diagrams section. A ```mermaid
+        # block is drawn as a diagram in the dashboard chat; without a line
+        # saying so the capability exists and is not used, which is the
+        # shape of every prompt rule that was never in the prompt. Paid
+        # here rather than in solo_agent.md or office_agent.md: explaining
+        # a structure is what the dashboard role is for, and neither of the
+        # other two had a token free. The section names the fence tag
+        # instead of writing one: a fence marker inline opens a block that
+        # never closes, and the loader test caught exactly that.
+        ("dashboard_agent.md", FILE_BUDGETS["dashboard_agent.md"]),
+        # 14200 -> 10600: dropped the worked-example dialogs and the
+        # "how these compound" walk-through, folded the three separate
+        # workspace-location statements into one, compressed the sandbox
+        # internals, and removed tool-signature listings that duplicate the
+        # tool schemas.
+        # 10600 -> 10621, and the 21 are the MEASURED remainder of one rule,
+        # not a round number chosen for comfort. Live 2026-08-14: given
+        # "Behebe den fehlschlagenden Test" — an instruction that names no
+        # test — the agent picked one and EDITED it, fifteen tool calls, an
+        # outright forbidden-signal violation. With an empty workspace the
+        # same agent asks, in numbered form; with files present it guesses.
+        # The autonomy section covered "several valid approaches" and not
+        # "no target named, several candidates present", which is the case
+        # that has something plausible to do and therefore hides.
+        # Paid first: three passages in that same section were compressed,
+        # returning 49 of the rule's 82 tokens. 21 is what is left after
+        # the sentence was cut twice more, and it buys the narrowest form
+        # of the rule — ask before the WRITE, never before the reads.
+        # 10621 -> 10672, fifty-one tokens, for the condition under which
+        # two routing rows apply. The table sent "Gibbs/SPE many folders"
+        # to extract_energy_table with nothing saying the parser is ORCA
+        # -specific -- and on xtb it answers status: ok with every value
+        # null instead of an error, and reads only the LARGEST .out in the
+        # folder, which in the science fixture is the run that did not
+        # converge. So a model following the table gets a confident empty
+        # answer about the wrong file.
+        #
+        # Reported by kit.deepseek-v4-flash, asked after a real task what
+        # got in its way: it formed the hypothesis that it should have
+        # used those parsers, TESTED it against the xtb files, and
+        # refuted its own hypothesis with the tool output. Verified here
+        # before acting -- and the string form is worse than reported,
+        # since properties="scf_converged,single_point" is iterated
+        # character by character into keys s, c, f, _, o, n, v ...
+        # That part is in delfin/api.py and belongs to another owner.
+        # 10672 -> 10735, sixty-three tokens, for two rules added on
+        # 2026-09-24. PROMPT: <message> took 46 of the 48 that were free;
+        # the memory rule needed the remaining 65.
+        #
+        # Measured before the memory rule existed: of 542 per-project
+        # memory stores, 538 were keyed to paths that no longer exist,
+        # holding 358 of the 371 notes ever written, and the role prompt
+        # said nothing about when to write one. The key is fixed in the
+        # same change; the rule is the other half, and a store nobody
+        # writes to is as empty as one nobody can find.
+        #
+        # Raised rather than paid for by trimming, and the reason is the
+        # budget below: the CACHEABLE HEAD is what costs money on every
+        # request, and it still fits with 11 tokens to spare. This file
+        # budget guards the markdown, not the bill.
+        #
+        # 10735 -> 10830, ninety-five tokens, for the rule that a test binds
+        # to DELFIN and not to a machine. Measured the day it was written:
+        # 20 test files carried 22 machine-conditional skips, and the files
+        # gated on xtb collect 639 tests of which 121 do not run when xtb is
+        # absent from PATH. A skip is silent in both directions -- the test
+        # runs on the author's host, runs nowhere in CI, and CI stays green,
+        # so the case is never exercised and nobody is told. The ratchet in
+        # test_a_test_is_bound_to_delfin_not_to_a_machine.py fails a NEW such
+        # file; this rule is the other half, because a guard that only
+        # rejects teaches the shape by refusal, and the prompt can state the
+        # two alternatives (supply the binary, or record its output) that the
+        # guard cannot. Placed beside the existing line forbidding a real
+        # ORCA/xTB/SLURM job in a test -- the same principle from the other
+        # direction -- rather than as a new section, which would have cost a
+        # header and a restatement of the context.
+        ("solo_agent.md", FILE_BUDGETS["solo_agent.md"]),
+        # Written lean from the start: the shared addenda carry the general
+        # contracts, so this prompt only states what is specific to working
+        # on someone's real records. Raised as the mode's surface grew —
+        # series work, record-addressed edits, PDF assembly, remembered
+        # folder conventions, the working folder — each replacing something
+        # the model would otherwise improvise, so each has to be named. The
+        # prose was tightened three times on the way; what is left is
+        # contract, not explanation.
+        # 1600 -> 1657 on 2026-09-09 for one tool that was in the
+        # catalogue and in no routing table. sum_column appeared nowhere in
+        # this prompt, while the arithmetic sentence told the model to
+        # total a column in bash — so a model that followed the prompt read
+        # the CSV with cat and added the amounts in its own text, which is
+        # the failure the office module exists to prevent, and it did it
+        # while obeying every instruction it had been given. Measured on
+        # kit.glm-5.3, office_total_names_what_it_left_out: two bash calls,
+        # no document tool, the five amounts written out and summed in the
+        # answer.
+        #
+        # Paid as far as it goes: the rule was cut twice, and the coverage
+        # principle above it dropped the list of skipped-row kinds, which
+        # the tool now reports itself. 133 tokens became 57, and those 57
+        # buy a routing row plus the sentence that stops the shell
+        # one-liner. Not a relaxation — the prompt was describing a surface
+        # that had changed underneath it.
+        #
+        # 1657 -> 1679 the same day, for draft_email. Generalising the
+        # check above found it: the role could call it and the prompt named
+        # no tool for an email, while the egress rule two sections up tells
+        # the model that sending anything out is asked about first. So the
+        # likely behaviour was to refuse or improvise a text file, when the
+        # tool writes a .eml and has no network at all. 22 tokens for the
+        # row, and the row says the part that resolves the conflict.
+        #
+        # 1679 -> 1688, nine tokens, for the words "reads the column's own
+        # convention". kit.deepseek-v4-flash gave exactly that as its
+        # REASON for going to the shell instead:  "Ich summiere in bash
+        # mit Python, um die Konvention korrekt zu beruecksichtigen" --
+        # then spent 27 of one task's 50 tool calls writing and debugging
+        # the script, for a total sum_column returns in one call and with
+        # the coverage attached. The old rule is what it was echoing, so
+        # removing that rule was necessary and not sufficient: the model
+        # also has to know the tool covers the thing it was worried about.
+        ("office_agent.md", FILE_BUDGETS["office_agent.md"]),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
-    """Role prompts must stay below their per-role token budget."""
+    """Role prompts must stay below their per-role token budget.
+
+    Module markers are removed before counting. They are stripped from
+    every composed prompt (``_strip_lazy_modules`` swallows the marker
+    line whether or not the module survives, and the disabled path
+    substitutes them away), so a marker cannot reach a model and cannot
+    cost a token at runtime. Charging the file for them would make the
+    mechanism that SHRINKS the prompt read as growth, and would price a
+    26-character comment against text the user actually pays for.
+    """
     path = _PROMPT_DIR / filename
     assert path.exists(), f"missing prompt file: {path}"
-    text = path.read_text()
-    actual = _estimate_tokens(text)
+    actual = _estimate_tokens(_selected(path.read_text()))
     assert actual <= max_tokens, (
         f"{filename}: {actual} tokens (>{max_tokens} budget). "
         f"Trim before extending."
+    )
+
+
+def _selected(text: str, *, delfin: bool = True,
+              stacks: frozenset = frozenset({"python"})) -> str:
+    """The file as one workspace receives it, module markers removed.
+
+    Workspace regions (``<!-- context:delfin -->``, ``<!-- stack:X -->``)
+    are selected the way PromptLoader._select_workspace_blocks selects
+    them. The default is the DELFIN tree (every DELFIN block, the Python
+    advice): the largest selection, and the one the budget numbers
+    above were measured on. Counting the raw file instead would charge
+    the DELFIN prompt for the TS/Rust/Go alternatives it never receives
+    (11,251 raw against 10,775 selected, measured 2026-10-14).
+    """
+    import re as _re
+
+    from delfin.agent.prompt_loader import PromptLoader
+
+    text = _re.sub(r"^<!--\s*module:[a-zA-Z0-9_-]+\s*-->\s*$\n?", "",
+                   text, flags=_re.M)
+
+    def _keep(m):
+        if m.group(1) == "context":
+            return m.group(3) if (m.group(2) == "delfin" and delfin) else ""
+        return m.group(3) if m.group(2) in stacks else ""
+
+    return PromptLoader._REGION_RE.sub(_keep, text)
+
+
+@pytest.mark.parametrize("stack", ["python", "node", "rust", "go", "generic"])
+def test_a_foreign_workspace_receives_less_than_the_delfin_tree(stack):
+    """Every foreign selection costs less than the DELFIN one: the
+    alternatives a stack adds must be paid for by the DELFIN blocks it
+    drops. Measured 2026-10-14: DELFIN 10,775; foreign python 10,167,
+    node 10,091, rust 10,042, go 10,040, generic 10,062."""
+    text = (_PROMPT_DIR / "solo_agent.md").read_text()
+    home = _estimate_tokens(_selected(text))
+    foreign = _estimate_tokens(
+        _selected(text, delfin=False, stacks=frozenset({stack})))
+    assert foreign < home, (stack, foreign, home)
+    # No region marker survives a selection (they would reach the model).
+    assert "<!--" not in _selected(
+        text, delfin=False, stacks=frozenset({stack}))
+
+
+# The file budgets above guard the markdown. This one guards what the model
+# actually receives: the CACHEABLE HEAD of the composed prompt (role prompt +
+# shared addenda + project context). It is the part that is re-sent verbatim
+# on every request of a session, so it is where prompt cost is decided.
+@pytest.mark.parametrize(
+    "role_id, mode_id, route, max_stable_tokens",
+    [
+        # 11400 -> 11484 for the machine-independence rule (see the file
+        # budget above). Eighty-four tokens, of which thirteen came from the
+        # head's remaining slack; the rule sits in the stable head and not
+        # behind a lazy-module trigger on purpose, because a quality rule
+        # that loads only when a keyword appears is absent exactly when the
+        # model writes a test without naming one.
+        # 11484 -> 11555 (2026-10-08): two rules moved OUT of the exempt
+        # principles INTO the refusal addendum, where the budget sees them
+        # (71 tokens, measured). The prompt as a whole got smaller by it:
+        # the principles lost ~130 tokens, which the budget does not count.
+        # 11555 -> 11605 (2026-10-19): the go-ahead / default / real-choice
+        # rule of the autonomy section, 50 tokens over the head's slack.
+        # Session 78c36f8c: after 4 of 7 go-aheads no tool acted, and every
+        # choice came as a prose list while ask_user_question was bound.
+        # In the stable head, not behind a trigger: it applies to every
+        # turn that ends, which is every turn.
+        ("solo_agent", "solo", ["solo_agent"], 11605),
+        ("dashboard_agent", "dashboard", ["dashboard_agent"], 10400),
+    ],
+)
+def test_composed_stable_head_within_budget(
+        monkeypatch, role_id, mode_id, route, max_stable_tokens):
+    from delfin import user_settings
+    from delfin.agent.prompt_loader import PromptLoader
+
+    # Pin the lazy-module setting so the budget measures the prompt, not the
+    # machine's local configuration.
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda *a, **k: {"agent": {"slim_prompt": True}})
+
+    report = PromptLoader().prompt_size_report(
+        role_id=role_id, mode_id=mode_id, route=route,
+        task_text="fix the failing test in foo.py",
+        session_key="budget-1")
+    # The maintainer's principles are not a line anyone may trim to make
+    # room: they open every prompt by design. The budget keeps guarding
+    # everything else; the principles themselves are pinned in
+    # tests/test_the_principles_come_first.py.
+    principles = sum(row["tokens"] for row in report["sections"]
+                     if row["name"] == "principles_addendum")
+    actual = report["stable_tokens"] - principles
+    assert actual <= max_stable_tokens, (
+        f"{role_id}: cacheable head is {actual} tokens "
+        f"(>{max_stable_tokens} budget). Trim before extending."
     )
 
 
@@ -64,3 +306,21 @@ def test_dashboard_prompt_keeps_essential_sections():
     ]
     missing = [k for k in must_have if k not in text]
     assert not missing, f"essential sections dropped: {missing}"
+
+
+def test_a_module_marker_never_reaches_a_model():
+    """The budget above excuses markers from the count. That is only
+    honest while they really are removed from every composed prompt."""
+    import re
+
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader()
+    for role, mode in (("solo_agent", "solo"),
+                       ("dashboard_agent", "dashboard"),
+                       ("office_agent", "office")):
+        for task in ("Hallo", "rechne mit ORCA die energie und such im netz"):
+            built = loader.build_system_prompt(
+                role_id=role, mode_id=mode, task_text=task,
+                session_key=f"marker-{role}-{len(task)}")
+            assert not re.search(r"<!--\s*module:", built), (role, mode, task)

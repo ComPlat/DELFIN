@@ -14,6 +14,28 @@ import pytest
 from delfin.agent import session_store as ss
 
 
+@pytest.fixture(autouse=True)
+def _no_background_window_probe(monkeypatch, request):
+    """These tests set context_window_tokens by hand after building an
+    engine. The construction-time window probe runs on a daemon thread and,
+    landing after that assignment, replaced the test's window with the
+    resolved one (a compaction then never became due). Only the probe's
+    background start is switched off; a test that checks the probe keeps it.
+    """
+    if "probe_runs_in_background" in request.node.name:
+        return
+    from delfin.agent.engine import AgentEngine
+    original = AgentEngine._refresh_context_window
+
+    def _refresh(self, *, background=False):
+        if background:
+            return None
+        return original(self, background=background)
+
+    monkeypatch.setattr(AgentEngine, "_refresh_context_window", _refresh)
+
+
+
 @pytest.fixture
 def tmp_archive(monkeypatch, tmp_path):
     """Redirect the transcript archive to a throwaway dir."""
@@ -83,14 +105,14 @@ def test_full_compaction_keeps_user_goal_and_recent(monkeypatch, tmp_path, tmp_a
 
     goal = "GOALSENTINEL implement the dark-mode toggle end to end"
     msgs = [{"role": "user", "content": goal}]
-    for i in range(13):                            # well over _COMPACTION_THRESHOLD
+    for i in range(13):                            # a long history
         role = "assistant" if i % 2 == 0 else "user"
         msgs.append({"role": role, "content": f"turn {i} chatter " * 5})
     last = "RECENTSENTINEL the very latest exchange"
     msgs[-1] = {"role": "user", "content": last}
     eng.messages = msgs
 
-    assert len(eng.messages) >= eng._COMPACTION_THRESHOLD
+    assert len(eng.messages) > eng._KEEP_RECENT
     assert eng._should_auto_compact()              # token pressure present
     eng._compact_history()
 
@@ -130,7 +152,7 @@ def test_full_compaction_archives_old_messages(monkeypatch, tmp_path, tmp_archiv
 
 
 def test_many_short_messages_do_not_compact_at_low_usage(monkeypatch, tmp_path, tmp_archive):
-    """Regression — Jerome 2026-06-13: compaction fired at ~15% window full.
+    """Regression — field report 2026-06-13: compaction fired at ~15% window full.
 
     A long-but-light conversation (well past the 12-message floor, but nowhere
     near the token budget) must NOT trigger full compaction. The live working
@@ -148,7 +170,7 @@ def test_many_short_messages_do_not_compact_at_low_usage(monkeypatch, tmp_path, 
         msgs.append({"role": role, "content": f"step {i}"})
     eng.messages = list(msgs)
 
-    assert len(eng.messages) >= eng._COMPACTION_THRESHOLD
+    assert len(eng.messages) > eng._KEEP_RECENT
     assert not eng._should_auto_compact()        # nowhere near the budget
     eng._compact_history()
 

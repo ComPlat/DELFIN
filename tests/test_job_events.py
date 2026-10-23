@@ -167,7 +167,7 @@ def test_format_completed_includes_followup():
     assert "/calc/Cas_red" in msg
     assert "✅" in msg
     # Suggests an analysis or recalc-check
-    assert "Energien" in msg or "Recalc" in msg
+    assert "Recalc" in msg
 
 
 def test_format_failed_includes_recalc_suggestion():
@@ -177,7 +177,7 @@ def test_format_failed_includes_recalc_suggestion():
     )
     msg = job_events.format_job_event_message(e)
     assert "❌" in msg
-    assert "fehlgeschlagen" in msg
+    assert "failed" in msg
     assert "Recalc" in msg
 
 
@@ -188,7 +188,7 @@ def test_format_timeout_suggests_time_limit_bump():
     )
     msg = job_events.format_job_event_message(e)
     assert "⏱️" in msg
-    assert "Zeitlimit" in msg or "time_limit" in msg
+    assert "time_limit" in msg
 
 
 def test_format_cancelled_no_action_suggestion():
@@ -199,7 +199,7 @@ def test_format_cancelled_no_action_suggestion():
     )
     msg = job_events.format_job_event_message(e)
     assert "🚫" in msg
-    assert "abgebrochen" in msg
+    assert "cancelled" in msg
 
 
 def test_format_unknown_terminal_uses_generic_message():
@@ -274,5 +274,5 @@ def test_e2e_typical_workflow():
     assert notable_first == []
     assert len(notable_second) == 1
     msg = job_events.format_job_event_message(notable_second[0])
-    assert "fehlgeschlagen" in msg
+    assert "failed" in msg
     assert "prod_run" in msg

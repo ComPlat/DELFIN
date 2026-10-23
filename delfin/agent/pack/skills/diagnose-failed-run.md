@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # Diagnose failed run
 > Systematically diagnose a failed/stalled calculation, propose a concrete fix — repair only with confirmation.
 

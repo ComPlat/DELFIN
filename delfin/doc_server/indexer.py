@@ -10,30 +10,107 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import bibliography as _bibliography
+
 
 # ---------------------------------------------------------------------------
 # PDF extraction
 # ---------------------------------------------------------------------------
 
-def _extract_pdf_text(path: Path, quiet: bool = False) -> list[dict[str, Any]]:
+def _pdf_metadata(path: Path) -> dict:
+    """The PDF's own metadata dictionary, or {}. Never raises.
+
+    Separate from the text extraction because the two fail apart: a
+    scanned PDF yields no text and still names itself, and a file with a
+    damaged trailer yields text and no metadata.
+    """
+    try:
+        from pypdf import PdfReader  # type: ignore
+        return dict((PdfReader(str(path)).metadata or {}))
+    except Exception:
+        return {}
+
+
+def _extract_pdf_text(
+    path: Path, quiet: bool = False, report: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Extract text from a PDF file, one entry per page.
 
-    Returns a list of ``{"page": int, "text": str}`` dicts.
+    Returns a list of ``{"page": int, "text": str}`` dicts. When nothing
+    could be extracted, *report* (if given) is filled with ``reason`` — the
+    caller needs to tell "no pypdf" from "scanned or DRM-protected PDF"
+    apart, because both produce the same empty list and neither is a
+    document.
     """
     try:
         from pypdf import PdfReader  # type: ignore
     except ImportError:
         if not quiet:
             print(f"  [skip] pypdf not installed — cannot index {path.name}", file=sys.stderr)
+        if report is not None:
+            report["reason"] = (
+                "pypdf is not installed, so no text could be read from this "
+                "PDF (pip install pypdf)"
+            )
         return []
 
-    reader = PdfReader(str(path))
+    try:
+        reader = PdfReader(str(path))
+        page_count = len(reader.pages)
+    except Exception as exc:            # unreadable / encrypted / corrupt
+        if report is not None:
+            report["reason"] = f"PDF could not be opened: {type(exc).__name__}: {exc}"
+        return []
+
     pages: list[dict[str, Any]] = []
     for i, page in enumerate(reader.pages):
-        text = (page.extract_text() or "").strip()
+        try:
+            text = (page.extract_text() or "").strip()
+        except Exception:
+            text = ""
         if text:
             pages.append({"page": i + 1, "text": text})
+    if not pages and report is not None:
+        report["reason"] = (
+            f"no text on any of the {page_count} page(s) — a scanned or "
+            "image-only PDF needs OCR before it can be searched"
+        )
     return pages
+
+
+#: How long an indexed section may be. Taken from the corpus rather than
+#: picked: the ORCA manual's own numbered sections have a median of about
+#: 1500 characters and retrieve well, so a window of that order keeps a
+#: paper's parts comparable to a manual's instead of competing with them
+#: as one large blob.
+_SECTION_TARGET = 2000
+
+
+def _windows(text, target=_SECTION_TARGET):
+    """Split *text* into parts of roughly *target* characters. Keeps all of it.
+
+    Input: a run of text. Output: the same text, in order, in pieces.
+
+    Split on paragraph boundaries and never inside one, so a part is
+    something a reader can read. A single paragraph longer than the target
+    is emitted whole rather than cut: an over-long part costs ranking,
+    a cut sentence costs meaning.
+    """
+    parts = []
+    buf = []
+    size = 0
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para:
+            continue
+        if buf and size + len(para) > target:
+            parts.append("\n\n".join(buf))
+            buf, size = [], 0
+        buf.append(para)
+        size += len(para) + 2
+    if buf:
+        parts.append("\n\n".join(buf))
+    return parts or ([text.strip()] if text.strip() else [])
 
 
 def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -49,6 +126,15 @@ def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]
         re.MULTILINE,
     )
 
+    if not pages:
+        # No pages with text is NOT a one-section document with an empty
+        # body. It used to be: the chunker emitted ``full_document`` with
+        # ``text=""``, the document reported ``section_count: 1``, the "is
+        # the manual indexed" check passed on the title alone, and every
+        # search against it returned nothing, forever. The caller records
+        # this as an indexing failure instead.
+        return []
+
     full_text = "\n\n".join(
         f"--- PAGE {p['page']} ---\n{p['text']}" for p in pages
     )
@@ -57,16 +143,34 @@ def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]
     matches = list(heading_re.finditer(full_text))
 
     if not matches:
-        # No headings found — treat entire document as one section
+        # No headings found. This kept the first 12000 characters and
+        # dropped the rest without saying so. The corpus measured here has
+        # headings in every PDF, so this branch carried the fault unseen --
+        # it was a test written for it, not a document, that found it.
         clean_text = re.sub(r"--- PAGE \d+ ---\n", "", full_text)
-        return [{
-            "section_id": "full_document",
-            "title": "Full Document",
-            "level": 0,
-            "text": clean_text[:12000],
-        }]
+        return [
+            {"section_id": f"part_{i + 1:03d}",
+             "title": f"Part {i + 1}",
+             "level": 0,
+             "text": part}
+            for i, part in enumerate(_windows(clean_text))
+        ]
 
     sections: list[dict[str, Any]] = []
+
+    # Everything before the first heading. It was dropped entirely, and in
+    # a paper that is the title, the abstract and the introduction -- the
+    # part most searches are aimed at.
+    preamble = re.sub(r"--- PAGE \d+ ---\n?", "",
+                      full_text[:matches[0].start()]).strip()
+    for i, part in enumerate(_windows(preamble)):
+        sections.append({
+            "section_id": f"front_{i + 1:03d}",
+            "title": "Front matter" if i == 0 else f"Front matter {i + 1}",
+            "level": 0,
+            "text": part,
+        })
+
     for i, match in enumerate(matches):
         number = match.group(1)
         title = match.group(2).strip()
@@ -83,16 +187,17 @@ def _chunk_pdf_into_sections(pages: list[dict[str, Any]]) -> list[dict[str, Any]
         section_id = re.sub(r"[^a-z0-9]+", "_", f"ch{number}_{title}".lower()).strip("_")
         section_id = section_id[:80]
 
-        # Cap section size
-        if len(section_text) > 12000:
-            section_text = section_text[:12000] + "\n[... truncated]"
-
-        sections.append({
-            "section_id": section_id,
-            "title": f"{number} {title}",
-            "level": level,
-            "text": section_text,
-        })
+        # Split rather than truncate. The cap used to cut at 12000 and
+        # append a "[... truncated]" marker, which is honest and still
+        # unsearchable.
+        for n, part in enumerate(_windows(section_text)):
+            sections.append({
+                "section_id": section_id if n == 0 else f"{section_id}_{n + 1}",
+                "title": (f"{number} {title}" if n == 0
+                          else f"{number} {title} ({n + 1})"),
+                "level": level,
+                "text": part,
+            })
 
     return sections
 
@@ -244,20 +349,42 @@ def build_index(
             })
 
     documents: dict[str, Any] = {}
+    failed: list[dict[str, Any]] = []
+
+    def _fail(spec: dict, path: Path, reason: str) -> None:
+        failed.append({
+            "doc_id": spec.get("doc_id", ""),
+            "title": spec.get("title", ""),
+            "source_path": str(path),
+            "reason": reason,
+        })
+        if not quiet:
+            print(f"  [fail] {path.name}: {reason}", file=sys.stderr)
+
     for spec in doc_specs:
         path = Path(spec["path"])
         if not path.exists():
             if not quiet:
                 print(f"  [skip] not found: {path}", file=sys.stderr)
+            _fail(spec, path, "file not found")
             continue
 
         doc_type = spec.get("type", _SUPPORTED_EXTENSIONS.get(path.suffix.lower(), "text"))
         if not quiet:
             print(f"  indexing: {path.name} ({doc_type})", file=sys.stderr)
 
+        report: dict[str, Any] = {}
+        bib: dict[str, str] = {}
         if doc_type == "pdf":
-            pages = _extract_pdf_text(path, quiet=quiet)
+            pages = _extract_pdf_text(path, quiet=quiet, report=report)
             sections_list = _chunk_pdf_into_sections(pages)
+            # What the document says it is. A search result that cannot be
+            # traced to a source is an assertion; with this it is a
+            # citation the reader can check.
+            bib = _bibliography.describe(
+                _pdf_metadata(path),
+                (pages[0].get("text", "") if pages else ""),
+                spec["title"])
         elif doc_type == "markdown":
             sections_list = _extract_markdown_sections(path)
         else:
@@ -278,12 +405,29 @@ def build_index(
         sections = {s["section_id"]: s for s in sections_list}
         total_chars = sum(len(s["text"]) for s in sections.values())
 
+        # Zero extracted characters is an indexing FAILURE, not a document
+        # with nothing in it. Recorded WITH the reason, and kept out of
+        # ``documents`` so nothing downstream can report it as present:
+        # a present-and-empty entry answered "yes, indexed" to the manual
+        # check and returned nothing to every search, permanently.
+        if total_chars == 0:
+            _fail(spec, path, report.get("reason")
+                  or "no text could be extracted from this file")
+            continue
+
+        reference = _bibliography.reference(bib) if bib else ""
         documents[spec["doc_id"]] = {
-            "title": spec["title"],
+            # The document's own title when it states one. What stood here
+            # was the filename with its punctuation replaced, which is how
+            # a paper came to be called "1 s2.0 S0021979724009044 main".
+            "title": (bib.get("title") or spec["title"]),
+            "bibliography": bib,
+            "reference": reference,
             "source_path": str(path),
             "source_type": doc_type,
             "section_count": len(sections),
             "total_chars": total_chars,
+            "source_mtime": _mtime(path),
             "sections": sections,
         }
 
@@ -292,6 +436,74 @@ def build_index(
         "built_at": datetime.now(timezone.utc).isoformat(),
         "document_count": len(documents),
         "documents": documents,
+        # Named, with the reason. A file that produced nothing has to be
+        # visible somewhere or the only symptom is a search that never
+        # matches.
+        "failed_documents": failed,
+    }
+
+
+def _mtime(path: Path) -> float:
+    """Source mtime, or 0.0 when it cannot be read."""
+    try:
+        return float(path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def stale_documents(index: dict) -> list[dict[str, Any]]:
+    """Indexed documents whose source changed or vanished since the build.
+
+    ``built_at`` was written by both indexers and compared to nothing, so
+    an answer from a section deleted from the source last month was
+    byte-identical to a fresh hit. Every consumer that hands index content
+    to a reader stamps this alongside it.
+    """
+    out: list[dict[str, Any]] = []
+    for doc_id, doc in (index or {}).get("documents", {}).items():
+        if not isinstance(doc, dict):
+            continue
+        src = doc.get("source_path") or ""
+        if not src:
+            continue
+        path = Path(src)
+        if not path.exists():
+            out.append({"doc_id": doc_id, "source_path": src,
+                        "reason": "source file no longer exists"})
+            continue
+        recorded = doc.get("source_mtime")
+        if not recorded:
+            # Indexed before mtimes were recorded — unknowable, not stale.
+            continue
+        current = _mtime(path)
+        if current > float(recorded) + 1.0:
+            out.append({"doc_id": doc_id, "source_path": src,
+                        "reason": "source file changed after the index was built"})
+    return out
+
+
+def index_provenance(index: dict) -> dict[str, Any]:
+    """What the caller needs to judge an answer from this index.
+
+    Carried on every search and listing payload, INCLUDING an empty one:
+    "nothing matched" and "there is nothing to match against" are the same
+    sentence otherwise.
+    """
+    index = index or {}
+    docs = index.get("documents", {}) or {}
+    failures = [f for f in (index.get("failed_documents", []) or [])
+                if isinstance(f, dict)]
+    return {
+        "built_at": index.get("built_at", ""),
+        "document_count": len(docs),
+        "section_count": sum(
+            len((d or {}).get("sections", {}) or {}) for d in docs.values()
+            if isinstance(d, dict)),
+        "failed_documents": [
+            {"doc_id": f.get("doc_id", ""), "reason": f.get("reason", "")}
+            for f in failures
+        ],
+        "stale_documents": stale_documents(index),
     }
 
 
@@ -370,6 +582,9 @@ def main(argv: list[str] | None = None) -> None:
     total_sections = sum(d["section_count"] for d in index["documents"].values())
     print(f"Index written to: {output_path}", file=sys.stderr)
     print(f"  {doc_count} document(s), {total_sections} section(s)", file=sys.stderr)
+    for entry in index.get("failed_documents", []):
+        print(f"  NOT indexed: {entry['source_path']} — {entry['reason']}",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":

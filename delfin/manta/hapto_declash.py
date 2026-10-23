@@ -7,7 +7,7 @@ atom overlaps.  What it does NOT do is choose the ring's *rotational conformer*:
 the angle of the ring about its M->centroid axis (staggered vs eclipsed relative
 to the legs).  Construction leaves the ring at an arbitrary rotation, so its
 carbons / substituents routinely eclipse the carbonyls and crowd the other
-ligands.  Measured against CCDC piano-stool crystals (find_inter_ligand_clash,
+ligands.  Measured against piano-stool crystal structures (find_inter_ligand_clash,
 F26) the analytical build over-clashes ~3-4x, and the residual after the
 collapse fix is dominated by the eta-face crowding pendant aryls / other rings /
 sigma-donors — contacts that are essentially absent in the crystals.
@@ -95,11 +95,17 @@ _SYM_Z = {s: i for i, s in enumerate(_ELEMENTS) if s}
 
 
 def _is_metal(sym: str) -> bool:
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # This version carries 79 elements, i.e. Sb, Te and Am..Lr in addition -- but the
+    # metalloids are already carried as DONORS in the build.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     return _SYM_Z.get(sym, 0) in _METAL_Z
 
 
 _DEF_GRID = 36           # angular grid resolution over 2*pi (10-degree steps)
-_DEF_CLASH_F = 0.85      # crowding factor; matches the F26 / CCDC reference
+_DEF_CLASH_F = 0.85      # crowding factor; hand-set, matches the F26 detector
 _DEF_MAXROT_DEG = 60.0   # search window (+/-) around each ring's AS-BUILT angle
 _MC_TOL = 1e-3           # max allowed change in any M-(ring atom) distance (A)
 

@@ -1,0 +1,312 @@
+"""The role prompts asserted things the code does the other way.
+
+Each of these was measured against the shipped code, not argued:
+
+* compaction was stated as "message count crosses 12 OR usage crosses
+  95 %". ``_compact_history`` implements AND — it returns early below
+  ``_COMPACTION_THRESHOLD`` and again unless ``_should_auto_compact`` —
+  and the comment right there names the OR version as a removed bug
+  ("compacted at 15 % full → agent confused").
+* "There is no wall-clock penalty for fanning out", while the
+  orchestration pool is ``_ORCH_MAX_WORKERS = 4``. A 12-way fan-out is
+  three rounds, so the sentence is an instruction to over-split.
+* a playbook cited file line counts that were off by thousands
+  (18073 for a 38335-line file, 7435 for a 17057-line one) and function
+  line anchors off by the same order.
+* ``/calc tail`` was documented as "last 50 lines"; the handler reads
+  ``min(size, 8192)`` BYTES off the end.
+
+A prompt statement about the code is a claim like any other. These tests
+re-derive each number from the code so the next divergence fails here
+instead of in a session.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[1]
+_PACK = _ROOT / "delfin" / "agent" / "pack"
+_SOLO = (_PACK / "agents" / "solo_agent.md").read_text(encoding="utf-8")
+_DASH = (_PACK / "agents" / "dashboard_agent.md").read_text(encoding="utf-8")
+_PLAYBOOKS = (_PACK / "shared" / "playbooks.md").read_text(encoding="utf-8")
+
+
+def test_the_compaction_rule_is_stated_as_the_code_implements_it():
+    from delfin.agent.engine import AgentEngine
+
+    src = (_ROOT / "delfin" / "agent" / "engine.py").read_text(encoding="utf-8")
+    body = src[src.index("def _compact_history"):]
+    body = body[:body.index("\n    def ", 10)]
+    # Pressure is asked FIRST and is the only trigger; what remains of the
+    # message count is a floor -- there must be something to summarise
+    # beyond the messages that are kept. The old count gate returned
+    # before anything looked at the budget, which blocked compaction
+    # exactly when it was needed, and it is gone.
+    assert "if not force and not self._should_auto_compact():\n            return" in body
+    assert "if len(self.messages) <= self._KEEP_RECENT:\n            return" in body
+    assert "_COMPACTION_THRESHOLD" not in body
+
+    section = _SOLO[_SOLO.index("## Context management"):]
+    section = section[:section.index("\n## ")]
+    assert " or estimated usage crosses" not in section
+    assert "Message count never triggers it" in section
+    assert str(AgentEngine._KEEP_RECENT) in section
+    assert "95 %" in section
+
+
+def test_the_fanout_advice_names_the_pool_width():
+    from delfin.agent.subagents import _ORCH_MAX_WORKERS
+
+    assert "There is no wall-clock penalty for fanning out" not in _SOLO
+    section = _SOLO[_SOLO.index("**Launch in parallel**"):]
+    section = section[:section.index("\n\n**")]
+    assert f"**{_ORCH_MAX_WORKERS} workers**" in section
+
+
+@pytest.mark.parametrize("rel", [
+    "delfin/build_up_complex.py",
+    "delfin/config.py",
+    "delfin/cli.py",
+    "delfin/orca_recovery.py",
+    "delfin/smiles_converter.py",
+    "delfin/dashboard/tab_agent.py",
+])
+def test_the_playbook_states_no_line_number_it_cannot_keep(rel):
+    """The playbook names files and symbols. It states no line numbers.
+
+    It used to carry a line COUNT per heading and a `(~line N)` per
+    symbol, about six files that live outside delfin/agent/ — build_up_
+    complex, config, cli, orca_recovery, smiles_converter, tab_agent.
+    Eleven claims about code this pack does not own and cannot control.
+    Anyone editing those files has no reason to know a prompt file cites
+    their line numbers, so the claims went stale as ordinary work
+    happened, twice: orca_recovery once, then config.py.
+
+    The guard caught both, which is what it is for — and it caught them
+    AFTER the fact, and the repair was manual each time. smiles_converter
+    alone is 38k lines and changes constantly, so the next break was a
+    matter of when.
+
+    A line number is worth only as much as its accuracy, and a wrong one
+    is worse than none: it sends the model into a neighbouring function
+    with confidence. A symbol name costs the model one grep and never
+    goes stale unless the symbol is actually renamed — which is a real
+    change worth failing over, and is what the test below checks.
+    """
+    heading = rel.removeprefix("delfin/")
+    assert re.search(rf"^## {re.escape(heading)}\b", _PLAYBOOKS,
+                     re.MULTILINE), f"no playbook heading for {heading}"
+    stale = re.findall(r"\(\d+ lines\)|\(~?line \d+\)", _PLAYBOOKS)
+    assert not stale, f"line numbers are back in the playbook: {stale}"
+
+
+@pytest.mark.parametrize("symbol,rel", [
+    ("_parse_control_file", "delfin/config.py"),
+    ("validate_control_text", "delfin/config.py"),
+    ("_load_full_cli_dependencies", "delfin/cli.py"),
+    ("OrcaErrorType", "delfin/orca_recovery.py"),
+    ("OrcaErrorDetector", "delfin/orca_recovery.py"),
+    ("RecoveryStrategy", "delfin/orca_recovery.py"),
+    ("OrcaInputModifier", "delfin/orca_recovery.py"),
+    ("RetryStateTracker", "delfin/orca_recovery.py"),
+    # The MANTA split (2026-10) moved the constructor helpers out of
+    # smiles_converter.py into delfin/manta/ modules; the old path re-exports
+    # them, the definitions are where the playbook now says they are.
+    ("_try_multiple_strategies", "delfin/manta/embed_strategies.py"),
+    ("_manual_metal_embed", "delfin/manta/embed_strategies.py"),
+    ("_find_hapto_groups", "delfin/manta/hapto_detect.py"),
+    ("create_tab", "delfin/dashboard/tab_agent.py"),
+])
+def test_a_symbol_the_playbook_names_exists_in_the_file_it_names(
+        symbol, rel):
+    """What survived when the line numbers went: the symbol has to be
+    there. A rename is a real change and deserves to fail here; a shift
+    of fifteen lines by somebody else's edit does not."""
+    assert f"`{symbol}`" in _PLAYBOOKS, f"playbook no longer names {symbol}"
+    src = (_ROOT / rel).read_text(encoding="utf-8")
+    assert re.search(rf"^(?:def|class) {re.escape(symbol)}\b", src,
+                     re.MULTILINE), f"{symbol} is not defined in {rel}"
+
+
+def test_calc_tail_is_documented_in_the_unit_the_handler_uses():
+    src = (_ROOT / "delfin" / "dashboard" / "tab_agent.py").read_text(
+        encoding="utf-8")
+    handler = src[src.index('if cmd.startswith("/calc tail "):'):]
+    handler = handler[:handler.index('if cmd.startswith("/calc info "):')]
+    assert "min(size, 8192)" in handler
+
+    line = next(ln for ln in _DASH.splitlines()
+                if ln.startswith("- `ACTION: /calc tail"))
+    assert "8 KB" in line
+    assert "50 lines" not in line
+
+
+# ---------------------------------------------------------------------------
+# A tool in the catalogue and in no routing table
+# ---------------------------------------------------------------------------
+#
+# The office prompt's arithmetic rule read "Compute in bash with Python,
+# not in your head: arithmetic over a column is the kind of thing a model
+# gets subtly wrong where nobody can see it." That was true when it was
+# written and stopped being true when sum_column shipped, and nothing
+# noticed, because a prompt sentence has no compiler. The routing table
+# had no row for totalling either.
+#
+# So the correct behaviour, for a model that followed its instructions
+# exactly, was to read the CSV in a shell and write the addition out in
+# its answer. Measured on kit.glm-5.3 in
+# office_total_names_what_it_left_out: two bash calls, no document tool,
+# five amounts added in prose. The benchmark scored it a failure and the
+# prompt had asked for it.
+
+_OFFICE = (_PACK / "agents" / "office_agent.md").read_text(encoding="utf-8")
+
+
+def test_the_office_prompt_routes_a_total_to_the_tool_that_totals():
+    from delfin.agent.api_client import _OFFICE_AGENT_ALLOWED_TOOLS
+
+    assert "sum_column" in _OFFICE_AGENT_ALLOWED_TOOLS, (
+        "premise gone: the role can no longer reach the tool")
+    assert "sum_column" in _OFFICE, (
+        "the role can call sum_column and its prompt never names it")
+
+
+def test_the_prompt_does_not_send_a_column_total_to_the_shell():
+    """The specific sentence that produced the measured failure. Any
+    wording is fine; sending arithmetic over a column to bash is not."""
+    lowered = _OFFICE.lower()
+    for phrase in ("arithmetic over a column",
+                   "compute in `bash` with python, not in your head"):
+        assert phrase not in lowered, (
+            f"the prompt still routes a column total to the shell: {phrase}")
+
+
+def test_every_office_tool_the_role_can_call_is_named_in_its_prompt():
+    """The general form. A tool the model may call and has never been
+    told about is one it will reach for by accident or not at all."""
+    from delfin.agent import api_client as A
+    from delfin.agent import office as _office
+
+    catalogue = {t["function"]["name"] for t in A._DOC_TOOLS_OPENAI}
+    office_backed = {
+        n for n in catalogue
+        if callable(getattr(_office, n, None))
+        and n in A._OFFICE_AGENT_ALLOWED_TOOLS
+    }
+    assert office_backed, "premise gone: no office tool is role-allowed"
+    unnamed = sorted(n for n in office_backed if n not in _OFFICE)
+    assert not unnamed, (
+        "callable by this role, named nowhere in its prompt: "
+        + ", ".join(unnamed))
+
+
+# ---------------------------------------------------------------------------
+# One rule, stated twice, narrowed once
+# ---------------------------------------------------------------------------
+#
+# The dashboard prompt asked for a plan before ≥3 actions in two places.
+# One of them was narrowed on 2026-08-13 to "only when the user did NOT
+# enumerate the steps", because a numbered list read back to the user who
+# just wrote it is pure cost; the benchmark dropped its plan expectation
+# in the same change. The other passage kept the unconditional form.
+#
+# kit.glm-5.3 on workflow_plan_before_act, whose prompt is itself a
+# numbered list ending "Bitte alle 5 schritte ausführen": it answered
+# "Kurzplan: 1) BP86 setzen, 2) def2-TZVP setzen, …" and emitted no ACTION
+# and no tool call at all. Stopping after the plan is the model's error;
+# being told to write one was not.
+#
+# The rule is now stated once, so the two halves cannot drift apart again.
+
+# The prompt is hard-wrapped, so a rule can carry a newline in the middle
+# of the phrase that names it. Match on the flowed text.
+_DASH_FLAT = re.sub(r"\s+", " ", _DASH)
+
+
+def test_the_plan_rule_is_stated_once():
+    hits = re.findall(r"(?i)1-line (?:numbered )?plan", _DASH_FLAT)
+    assert len(hits) == 1, (
+        f"the plan rule appears {len(hits)} times; two statements of one "
+        "rule are how the narrowed and unnarrowed versions came to live "
+        "in the same prompt")
+
+
+def test_the_plan_is_asked_for_only_when_the_user_did_not_enumerate():
+    """Whatever the wording, the exception has to be in the same breath
+    as the rule."""
+    m = re.search(r"(?i)1-line (?:numbered )?plan", _DASH_FLAT)
+    assert m, "the plan rule is gone entirely"
+    para = _DASH_FLAT[max(0, m.start() - 300):m.end() + 400]
+    assert re.search(r"(?i)without enumerating|nicht auf|did NOT enumerate",
+                     para), "the rule no longer names its condition"
+    assert re.search(r"(?i)already wrote the list", para), (
+        "the case where the user wrote the list is not answered next to "
+        "the rule that would otherwise cover it")
+
+
+def test_a_plan_is_never_offered_as_a_substitute_for_acting():
+    """The half that was missing: the prompt said when to write a plan
+    and never said a plan is not the work."""
+    assert re.search(r"(?i)plan INSTEAD of the ACTIONs|plan is not the work",
+                     _DASH_FLAT), (
+        "nothing tells the model that stopping after the plan answers "
+        "nothing")
+
+
+# ---------------------------------------------------------------------------
+# A routing row without the condition that decides whether it applies
+# ---------------------------------------------------------------------------
+#
+# The solo table sent "Gibbs/SPE many folders" to extract_energy_table
+# with nothing saying the parser is ORCA-specific. On xtb output it does
+# not fail: it answers status: ok with every requested value null, and it
+# reads only the LARGEST .out in the folder -- which in the science
+# fixture is the run that did not converge. A model following the table
+# therefore gets a confident empty answer about the wrong file.
+#
+# Same shape as the office prompt that routed a column total to bash: the
+# table names a tool and omits the condition under which it works.
+
+_SOLO_FLAT = re.sub(r"\s+", " ", _SOLO)
+
+
+def test_the_orca_parsers_are_marked_as_orca_parsers():
+    for row in ("Gibbs/SPE/ZPE one folder", "Gibbs/SPE many folders"):
+        idx = _SOLO_FLAT.find(row)
+        assert idx > 0, f"the routing row is gone: {row}"
+        assert "ORCA" in _SOLO_FLAT[idx:idx + 60], (
+            f"{row!r} names a parser without saying it reads ORCA output")
+
+
+def test_the_prompt_says_what_those_parsers_do_on_another_format():
+    """Not an error -- which is the part that has to be said, because a
+    tool that returns ok is normally a tool that worked."""
+    assert re.search(r"(?i)status: ?.?ok.?[^.]{0,40}null", _SOLO_FLAT), (
+        "nothing warns that these parsers answer ok with null values")
+    assert re.search(r"(?i)largest[^.]{0,30}per folder|LARGEST \.out",
+                     _SOLO_FLAT), (
+        "nothing says only one file per folder is read")
+
+
+def test_the_claim_about_those_parsers_is_still_true():
+    """The prompt now asserts something about delfin/api.py. If that
+    changes, the prompt is the thing that becomes wrong."""
+    from pathlib import Path
+
+    from delfin import api
+
+    workspace = (Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+                 / "science_workspace")
+    if not workspace.is_dir():
+        pytest.skip("the science fixture is not in this checkout")
+    rows = api.extract_energy_table(
+        folders=[str(workspace)], properties=["scf_converged", "single_point"])
+    assert rows and rows[0].get("status") == "ok", rows
+    assert rows[0].get("scf_converged") is None, (
+        "the parser now understands xtb; the prompt paragraph is stale")
+    assert rows[0].get("output_file") == "run_d.out", (
+        "it no longer picks the largest file; the prompt paragraph is stale")

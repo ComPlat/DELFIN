@@ -20,10 +20,10 @@ _CHAT = [
 ]
 
 
-def test_default_settings_disabled():
+def test_default_settings_enabled():
     from delfin.user_settings import DEFAULT_SETTINGS
     cfg = DEFAULT_SETTINGS["agent"]["auto_memory"]
-    assert cfg["enabled"] is False
+    assert cfg["enabled"] is True
     assert cfg["max_facts"] >= 1
 
 
@@ -112,7 +112,7 @@ def test_excerpt_drops_tool_noise():
 
 
 # ---------------------------------------------------------------------------
-# Typed project-memory store (repo_root) — "memory like Claude Code"
+# Typed project-memory store (repo_root) — typed persistent memory
 # ---------------------------------------------------------------------------
 
 
@@ -147,6 +147,39 @@ def test_save_facts_typed_dedups_on_body(monkeypatch, tmp_path):
                          repo_root=repo) == 0
 
 
+def test_save_facts_prunes_after_writing(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    repo = tmp_path / "repo"; repo.mkdir()
+    calls = []
+    monkeypatch.setattr(
+        ms, "prune_memories",
+        lambda root, **kw: calls.append((root, kw.get("max_age_days"))) or [])
+    monkeypatch.setattr(
+        md, "auto_memory_settings", lambda *a, **k: {"max_age_days": 45})
+
+    assert md.save_facts(
+        ["project: retain bounded durable context"], repo_root=repo) == 1
+
+    # The configured decay window is threaded through to the pruner.
+    assert calls == [(repo, 45)]
+
+
+def test_auto_memory_settings_parses_max_age_days():
+    cfg = md.auto_memory_settings(
+        {"agent": {"auto_memory": {"max_age_days": "45"}}})
+    assert cfg["max_age_days"] == 45
+    # Absent, malformed or negative -> disabled (None).
+    assert md.auto_memory_settings({})["max_age_days"] is None
+    assert md.auto_memory_settings(
+        {"agent": {"auto_memory": {"max_age_days": "soon"}}},
+    )["max_age_days"] is None
+    assert md.auto_memory_settings(
+        {"agent": {"auto_memory": {"max_age_days": -3}}},
+    )["max_age_days"] is None
+
+
 def test_distill_and_save_threads_repo_root(monkeypatch, tmp_path):
     from pathlib import Path
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -161,3 +194,70 @@ def test_distill_and_save_threads_repo_root(monkeypatch, tmp_path):
     assert n == 1
     mdir = ms._claude_memory_dir(repo)
     assert any(p.name.startswith("feedback_") for p in mdir.glob("*.md"))
+
+
+# ---------------------------------------------------------------------------
+# A "global:" prefix the MODEL wrote does not widen a memory's reach
+# ---------------------------------------------------------------------------
+#
+# The distill briefing used to ask for the prefix and ``save_facts`` used to
+# honour it, which made a sentence read in ONE repository into an entry the
+# user-wide store hands to every other workspace. ``save_typed_memory``
+# refuses that prefix by default and states why: text is the one channel the
+# model controls end to end, and the reach of a memory is not its decision.
+# The distiller no longer opts out of that refusal, and no longer solicits
+# the prefix either.
+
+
+def test_a_distilled_global_prefix_stays_in_the_project_store(
+        monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    repo = tmp_path / "repo"; repo.mkdir()
+    n = md.save_facts(
+        ["global: feedback: never guess ORCA keywords",
+         "project: benchmark suite lands this week"],
+        repo_root=repo,
+    )
+    assert n == 2
+    gdir = tmp_path / ".delfin" / "memory"
+    assert not list(gdir.glob("*.md")) if gdir.is_dir() else True
+    pfiles = [p.name for p in ms._delfin_memory_dir(repo).glob("*.md")]
+    assert any(f.startswith("project_") for f in pfiles)
+    assert any(f.startswith("feedback_") for f in pfiles)
+
+
+def test_the_distill_briefing_does_not_ask_for_the_global_prefix():
+    """Soliciting a prefix that is refused teaches the model to emit it."""
+    for system in (md._DISTILL_SYSTEM, md._DISTILL_SYSTEM_STRUCTURED):
+        assert "global:" not in system
+        assert "global: " not in system
+
+
+def test_save_facts_global_dedups_against_user_store(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    repo = tmp_path / "repo"; repo.mkdir()
+    assert md.save_facts(["global: user: Max works at KIT Karlsruhe"],
+                         repo_root=repo) == 1
+    # Same fact again (with or without the scope prefix) is skipped.
+    assert md.save_facts(["global: user: Max works at KIT Karlsruhe"],
+                         repo_root=repo) == 0
+    assert md.save_facts(["Max works at KIT Karlsruhe"],
+                         repo_root=repo) == 0
+
+
+def test_without_a_repo_root_a_global_fact_falls_back_to_the_flat_store(
+        monkeypatch, tmp_path):
+    """No project store to write to ⇒ the legacy flat JSON store, not the
+    user-wide one. The prefix still buys the model nothing."""
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    n = md.save_facts(["global: user: identity fact without a repo"])
+    assert n == 1
+    gdir = tmp_path / ".delfin" / "memory"
+    assert not (gdir.is_dir() and list(gdir.glob("*.md")))
+    assert any("identity fact without a repo" in str(m.get("text", ""))
+               for m in ms.load_memories())

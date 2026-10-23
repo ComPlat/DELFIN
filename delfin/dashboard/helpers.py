@@ -20,6 +20,63 @@ _BOHR_TO_ANGSTROM = 0.529177210903
 _HARTREE_TO_KCAL_MOL = 627.5094740631
 
 
+def js_string_literal(value):
+    """A JavaScript string literal that stays a string, whatever it holds.
+
+    File content (an .xyz comment line, a molblock, a .cube header) ends
+    up inside ``<script>`` blocks the dashboard renders. ``json.dumps``
+    alone is not enough there: it leaves ``<`` and ``>`` alone, so a
+    ``</script>`` inside the content closes the script element early and
+    whatever follows is parsed as markup. A template literal is worse
+    still: a backtick or ``${`` in the content is executed as code.
+
+    Every ``<``, ``>`` and ``&`` is written as a unicode escape (backslash-u and four hex digits),
+    which JavaScript reads back as the same character while the HTML
+    parser never sees it. ``ensure_ascii`` (the default) already covers
+    U+2028/U+2029 and everything else outside ASCII.
+    """
+    import json
+    return (json.dumps(str(value if value is not None else ""))
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
+
+
+_HREF_RE = re.compile(r'(\bhref\s*=\s*)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
+_SAFE_SCHEMES = ('http://', 'https://', 'mailto:', '#')
+_IMAGE_TYPE_RE = re.compile(r'^image/[A-Za-z0-9.+-]+$')
+
+
+def neutralise_link_targets(markup):
+    """Replace every ``href`` that is not http(s), mailto or a fragment by ``#``.
+
+    For HTML another program converted from a user's document (mammoth's
+    .docx conversion): text there is escaped, but a hyperlink target is
+    copied as written, and a ``javascript:`` target would run on the
+    dashboard's origin when clicked. The target is compared after HTML
+    entity decoding and with whitespace and control characters removed,
+    the forms browsers ignore inside a scheme.
+    """
+    import html as _html_mod
+
+    def _fix(match):
+        target = _html_mod.unescape(match.group(3))
+        target = ''.join(ch for ch in target if ch > ' ').lower()
+        if target.startswith(_SAFE_SCHEMES):
+            return match.group(0)
+        return f'{match.group(1)}{match.group(2)}#{match.group(2)}'
+
+    return _HREF_RE.sub(_fix, str(markup or ''))
+
+
+def image_data_uri(content_type, b64):
+    """A ``data:`` image URI, or '' when *content_type* is not an image type."""
+    content_type = str(content_type or '').strip()
+    if not _IMAGE_TYPE_RE.match(content_type):
+        return ''
+    return f'data:{content_type};base64,{b64}'
+
+
 def parse_neb_final_interp(text):
     """Parse a ``*.final.interp`` file into Images / Interp. sections."""
     sections = {}
@@ -259,6 +316,31 @@ def create_busy_css():
     )
 
 
+def create_page_css():
+    """Return an HTML widget with the page-level layout CSS.
+
+    Voila pads the notebook and every rendered cell vertically. Those few
+    dozen pixels sit on top of the tab bodies, which size themselves as
+    ``calc(100vh - 145px)``, so the page as a whole ends up taller than the
+    viewport and grows its own thin scrollbar. Dropping the vertical padding
+    lifts the header to the top edge and lets the tabs fit inside the window.
+    """
+    return widgets.HTML(
+        "<style>"
+        # Notebook / cell container: no vertical padding, keep the horizontal
+        # padding so the content is not glued to the window edge.
+        ".jp-Notebook, #rendered_cells { "
+        "padding-top: 0 !important; padding-bottom: 0 !important; }"
+        # Every rendered cell (header cell and tab cell).
+        "#rendered_cells .jp-Cell { "
+        "padding-top: 0 !important; padding-bottom: 0 !important; "
+        "margin-top: 0 !important; margin-bottom: 0 !important; }"
+        # JupyterLab puts a 4px gap above each output area.
+        "#rendered_cells .jp-Cell-outputWrapper { margin-top: 0 !important; }"
+        "</style>"
+    )
+
+
 def create_time_limit_widgets(style=None):
     """Create and return ``(toggle, custom)`` time-limit widgets.
 
@@ -411,6 +493,242 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
     }})();
     """
     _append_js(ctx, script)
+
+
+def debounce_input(ctx, class_name='delfin-debounced', delay_ms=350):
+    """Let a text box report its value once typing stops, instead of per keystroke.
+
+    A widget with ``continuous_update=True`` sends every keystroke to the kernel,
+    and a handler that renders a 3D viewer or re-parses a file then runs dozens
+    of times while a line is being typed -- the box lags behind the keyboard and
+    the work is thrown away as soon as the next character arrives.  Setting
+    ``continuous_update=False`` alone would go too far the other way: nothing at
+    all happens until the box loses focus.
+
+    So the widget is declared ``continuous_update=False`` and this script fires
+    its change event *delay_ms* after the last keystroke.  Typing stays smooth,
+    the handler runs once, and pasting still updates without clicking elsewhere.
+    Add ``class_name`` to the widget to opt in.
+    """
+    script = f"""
+    (function() {{
+        window.__delfinDebounceClasses = window.__delfinDebounceClasses || [];
+        if (window.__delfinDebounceClasses.indexOf('{class_name}') === -1) {{
+            window.__delfinDebounceClasses.push('{class_name}');
+        }}
+        window.__delfinDebounceDelay = {int(delay_ms)};
+        function arm(el) {{
+            if (!el || el.__delfinDebounced) return;
+            const tag = (el.tagName || '').toUpperCase();
+            if (tag !== 'TEXTAREA' && tag !== 'INPUT') return;
+            el.__delfinDebounced = true;
+            el.addEventListener('input', function() {{
+                if (el.__delfinDebounceTimer) clearTimeout(el.__delfinDebounceTimer);
+                el.__delfinDebounceTimer = setTimeout(function() {{
+                    el.__delfinDebounceTimer = 0;
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}, window.__delfinDebounceDelay);
+            }});
+            /* Leaving the box must not wait for the timer. */
+            el.addEventListener('blur', function() {{
+                if (el.__delfinDebounceTimer) {{
+                    clearTimeout(el.__delfinDebounceTimer);
+                    el.__delfinDebounceTimer = 0;
+                }}
+            }});
+        }}
+        function scan(root) {{
+            if (!root || !root.querySelectorAll) return;
+            window.__delfinDebounceClasses.forEach(function(cls) {{
+                root.querySelectorAll('.' + cls + ' textarea, .' + cls + ' input')
+                    .forEach(arm);
+            }});
+        }}
+        scan(document);
+        if (window.__delfinDebounceObserver) return;
+        const obs = new MutationObserver(function(muts) {{
+            muts.forEach(function(m) {{
+                m.addedNodes && m.addedNodes.forEach(function(node) {{
+                    if (!node || node.nodeType !== 1) return;
+                    scan(node);
+                }});
+            }});
+        }});
+        obs.observe(document.documentElement, {{ childList: true, subtree: true }});
+        window.__delfinDebounceObserver = obs;
+    }})();
+    """
+    _append_js(ctx, script)
+
+
+def keep_scroll_position(ctx):
+    """Keep the page where it is when widgets are rebuilt under the reader.
+
+    When a container's ``children`` change, the browser removes the old
+    widget views at once and renders the new ones a moment later. In that
+    moment the page is shorter, the scroll position is clamped, and when
+    the content is back the reader is somewhere else -- in Settings a single
+    tick moved the page up by 760 px, and Save sent it to the top.
+
+    Measured in the real page: the shrink never reaches a painted frame, so
+    a ResizeObserver does not see it; the removal of widget views does, and
+    so does a widget view being hidden, which is how a tab switch the reader
+    did not ask for shrinks the page. So a scroll upwards that follows either
+    within half a second, with no wheel, touch, scroll key or held mouse
+    button behind it, is undone as soon as the content is tall enough again.
+
+    Everything the reader does wins: any of those inputs cancels a pending
+    correction, and a click on a tab or a section header is left to the
+    browser, which is where the page is meant to change. The structure
+    editor's scroll hold learnt that a clamp is worse than the jump, so this
+    corrects once and never holds.
+    """
+    script = """
+    (function() {
+        if (window.__delfinScrollKeeper) return;
+        window.__delfinScrollKeeper = true;
+        var INTENT_MS = 400, NAV_MS = 1500, REBUILD_MS = 500, WAIT_MS = 3000;
+        var NAV = '.lm-TabBar-tab, .lm-Collapse-header, .jupyter-widget-Collapse-header, summary';
+        var SCROLL_KEYS = ['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ', 'Tab'];
+        var s = {pane: null, lastTop: 0, held: false, intentAt: -1e9, navAt: -1e9,
+                 rebuildAt: -1e9, pending: null};
+        function now() { return performance.now(); }
+        function busy() {
+            return s.held || now() - s.intentAt < INTENT_MS || now() - s.navAt < NAV_MS;
+        }
+        function intent() { s.intentAt = now(); s.pending = null; }
+        function holdsView(node) {
+            return node.nodeType === 1 && (node.classList.contains('lm-Widget')
+                || !!(node.querySelector && node.querySelector('.lm-Widget')));
+        }
+        function wasHidden(m) {
+            var el = m.target;
+            if (!el.classList || !el.classList.contains('lm-Widget')) return false;
+            var before = m.oldValue || '';
+            if (m.attributeName === 'class') {
+                return el.classList.contains('lm-mod-hidden') && before.indexOf('lm-mod-hidden') === -1;
+            }
+            return el.style.display === 'none' && !/display:\\s*none/.test(before);
+        }
+        function restore(target) {
+            var pane = s.pane, until = now() + WAIT_MS;
+            s.pending = target;
+            (function step() {
+                if (s.pending !== target) return;
+                if (busy() || now() > until) {
+                    s.pending = null;
+                    s.lastTop = pane.scrollTop;
+                    return;
+                }
+                if (pane.scrollHeight - pane.clientHeight >= target - 1) {
+                    s.pending = null;
+                    pane.scrollTop = target;
+                    s.lastTop = target;
+                    return;
+                }
+                requestAnimationFrame(step);
+            })();
+        }
+        function onScroll() {
+            var top = s.pane.scrollTop;
+            if (top < s.lastTop - 2 && !busy() && now() - s.rebuildAt < REBUILD_MS) {
+                if (s.pending === null) restore(s.lastTop);
+                return;
+            }
+            if (s.pending === null) s.lastTop = top;
+        }
+        function attach(tries) {
+            var cells = document.getElementById('rendered_cells');
+            if (!cells && tries > 0) { setTimeout(function() { attach(tries - 1); }, 500); return; }
+            var pane = cells || document.scrollingElement;
+            if (!pane) return;
+            s.pane = pane;
+            s.lastTop = pane.scrollTop;
+            (cells ? pane : window).addEventListener('scroll', onScroll, {passive: true});
+            new MutationObserver(function(records) {
+                for (var i = 0; i < records.length; i++) {
+                    var m = records[i];
+                    if (m.type === 'attributes') {
+                        if (wasHidden(m)) { s.rebuildAt = now(); return; }
+                        continue;
+                    }
+                    for (var j = 0; j < m.removedNodes.length; j++) {
+                        if (holdsView(m.removedNodes[j])) { s.rebuildAt = now(); return; }
+                    }
+                }
+            }).observe(cells ? pane : document.body, {
+                childList: true, subtree: true, attributes: true,
+                attributeFilter: ['class', 'style'], attributeOldValue: true});
+        }
+        var opts = {capture: true, passive: true};
+        window.addEventListener('wheel', intent, opts);
+        window.addEventListener('touchstart', intent, opts);
+        window.addEventListener('touchmove', intent, opts);
+        window.addEventListener('keydown', function(ev) {
+            /* On a control these keys type, choose or press; they scroll
+               only the page itself. Tab moves the focus and may scroll. */
+            var el = ev.target, tag = (el && el.tagName || '').toUpperCase();
+            var control = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+                || tag === 'BUTTON' || (el && el.isContentEditable);
+            if (SCROLL_KEYS.indexOf(ev.key) !== -1 && (!control || ev.key === 'Tab')) intent();
+        }, opts);
+        window.addEventListener('pointerdown', function(ev) {
+            s.held = true;
+            s.pending = null;
+            if (ev.target && ev.target.closest && ev.target.closest(NAV)) s.navAt = now();
+        }, opts);
+        ['pointerup', 'pointercancel', 'dragend'].forEach(function(type) {
+            window.addEventListener(type, function() { s.held = false; }, opts);
+        });
+        window.addEventListener('blur', function() { s.held = false; });
+        attach(20);
+    })();
+    """
+    _append_js(ctx, script)
+
+
+def hand_over_tabs(tabs_widget, children, titles, selected_index=None):
+    """Give *tabs_widget* new children without the selection drifting away.
+
+    The browser rebuilds every tab from the first position that changed,
+    and until the rebuilt ones have rendered the selected index can point
+    at a view that is about to be removed; the first rebuilt tab to render
+    then takes the selection and reports it back. Settings is pinned last,
+    so saving a hidden or moved tab sent the reader to another tab.
+
+    So the selection is first parked on the first tab, which the browser
+    keeps whenever the two lists share it, and only moved to
+    *selected_index* once the new list is in place. When the first tab
+    changed too, the first answer from the browser within a few seconds
+    that is not *selected_index* is corrected once.
+    """
+    old = tuple(tabs_widget.children)
+    new = tuple(children)
+    shared = 0
+    while shared < min(len(old), len(new)) and old[shared] is new[shared]:
+        shared += 1
+    if new != old:
+        current = tabs_widget.selected_index
+        if shared and current is not None and current >= shared:
+            tabs_widget.selected_index = 0
+        tabs_widget.children = new
+    for i, title in enumerate(titles):
+        tabs_widget.set_title(i, title)
+    if selected_index is None:
+        return
+    tabs_widget.selected_index = selected_index
+    if new == old or shared:
+        return
+    import time
+
+    deadline = time.monotonic() + 3.0
+
+    def _correct_once(change):
+        tabs_widget.unobserve(_correct_once, names='selected_index')
+        if time.monotonic() < deadline and change.get('new') != selected_index:
+            tabs_widget.selected_index = selected_index
+
+    tabs_widget.observe(_correct_once, names='selected_index')
 
 
 def disable_spellcheck_global(ctx):

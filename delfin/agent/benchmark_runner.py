@@ -4,9 +4,9 @@ The data plane (``benchmark.py``) defines Task / Trajectory / scoring; this
 module bridges to the real ``AgentEngine`` and feeds it the prompts.  A
 single function — ``run_suite`` — is the entire surface area:
 
-    results = run_suite(load_tasks(), model="kit.qwen3.5-397b-A17b",
+    results = run_suite(load_tasks(), model="kit.deepseek-v4-flash",
                         backend="api", provider="kit")
-    path = write_run(results, model="kit.qwen3.5-397b-A17b")
+    path = write_run(results, model="kit.deepseek-v4-flash")
 
 An engine factory can be injected for unit-testing — the real factory
 defers all heavy imports until invocation so a bench CLI parse fails
@@ -15,9 +15,16 @@ fast on a bad argument before pulling the engine stack.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import contextlib
+import json
+import os
 import re
+import subprocess
+import sys
 import time
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 from .benchmark import (
     BenchmarkResult,
@@ -25,6 +32,7 @@ from .benchmark import (
     Trajectory,
     score_outcome,
 )
+from .benchmark_fixtures import ensure_office_fixtures
 
 
 # ---------------------------------------------------------------------------
@@ -32,16 +40,21 @@ from .benchmark import (
 # ---------------------------------------------------------------------------
 
 
-# Same five ACTION variants tab_agent.py accepts in the dashboard.
+# Same ACTION variants tab_agent.py accepts in the dashboard. Its own
+# pattern is one IGNORECASE regex, and the three spelled out here were
+# case-SENSITIVE apart from the "Action:" line — so "action /tab calc" and
+# "Action /tab calc" routed for a user and were invisible to the benchmark.
+# A mirror that is stricter than the thing it mirrors under-reports what
+# the product does, which is the opposite of what it is for.
 _ACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^\s*ACTION\s*:\s*(/\S.*?)\s*$", re.MULTILINE),
-    re.compile(r"^\s*ACTION\s+(/\S.*?)\s*$", re.MULTILINE),
-    re.compile(r"^\s*Action\s*:\s*(/\S.*?)\s*$", re.MULTILINE),
-    re.compile(r"`(/(?:tab|control|orca|effort|mode|provider|model)\s+\S[^`]*)`"),
+    re.compile(r"^\s*ACTION\s*[:.]?\s*(/\S.*?)\s*$",
+               re.MULTILINE | re.IGNORECASE),
+    re.compile(r"`(/(?:tab|control|orca|submit|recalc|cancel|calc|analyze|check|jobs|ui|workspace|done)\s+\S[^`]*)`"),
 )
 _BARE_SLASH_PREFIXES = (
-    "/tab ", "/control ", "/orca ", "/effort ", "/mode ", "/provider ",
-    "/model ",
+    "/tab ", "/control ", "/orca ", "/submit ", "/recalc ", "/cancel ",
+    "/calc ", "/analyze ", "/check ", "/jobs ", "/ui ", "/workspace ",
+    "/done ",
 )
 
 
@@ -57,6 +70,17 @@ def extract_actions(text: str) -> list[str]:
 
     if not text:
         return []
+    # Same unwrapping the dashboard parser does: a model writes the line
+    # back in the inline code the prompt showed it in, and an anchored
+    # pattern drops it. Mirrored here so the benchmark keeps seeing the
+    # routing a user would get.
+    # Same unwrapping AND the same list tolerance the dashboard parser
+    # has: a model asked for two steps writes them as a numbered list,
+    # and the marker used to hide the action behind it.
+    text = "\n".join(
+        re.sub(r"^\s*(?:[-*+>]\s+|\d+[.)]\s+)+", "", ln.strip())
+          .strip("`*").strip()
+        for ln in text.splitlines())
     out: list[str] = []
     for rx in _ACTION_PATTERNS:
         for m in rx.finditer(text):
@@ -74,18 +98,87 @@ def extract_actions(text: str) -> list[str]:
     return out
 
 
-def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0) -> Trajectory:
-    """Convert ``_run_once``'s return dict into a Trajectory."""
+def _bare(name: str) -> str:
+    name = str(name or "")
+    return name.split("__")[-1] if name.startswith("mcp__") else name
+
+
+def pair_results(calls: list, named: list) -> list[str]:
+    """One result per call, paired by tool name in arrival order.
+
+    Input: the calls in request order (``{"name", "input"}``) and the
+    results as ``(tool name, output)`` in arrival order. Output: a list as
+    long as ``calls``; entry i is call i's result, "" when none arrived.
+
+    Index pairing was wrong in both directions, measured on the 1,040
+    captured attempts of 2026-10-13/14: a call whose arguments were invalid
+    JSON produced a result and, after the model's retry, a second one,
+    while the call list held one entry -- so every later result sat one
+    place too early and the last ones were cut off by the slice to
+    ``len(calls)``; and the engine reports no result for an empty output,
+    which shifts the other way. Pairing by name keeps every result with a
+    call of its own tool. Where a tool has more results than calls, the
+    surplus is the retry of an invalid-JSON call: that error is dropped and
+    the call takes the result that followed it. Rejected: pairing by
+    position, and pairing by content (only bash echoes its command).
+    """
+    by_name: dict[str, list[str]] = {}
+    for name, out in named or []:
+        by_name.setdefault(_bare(name), []).append(str(out or ""))
+    wanted: dict[str, int] = {}
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        wanted[n] = wanted.get(n, 0) + 1
+    for n, outs in by_name.items():
+        surplus = len(outs) - wanted.get(n, 0)
+        i = 0
+        while surplus > 0 and i < len(outs) - 1:
+            if "invalid JSON in arguments" in outs[i][:200]:
+                del outs[i]
+                surplus -= 1
+            else:
+                i += 1
+    taken: dict[str, int] = {}
+    paired: list[str] = []
+    for c in calls or []:
+        n = _bare((c or {}).get("name") or "")
+        k = taken.get(n, 0)
+        outs = by_name.get(n) or []
+        paired.append(outs[k] if k < len(outs) else "")
+        taken[n] = k + 1
+    return paired
+
+
+def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0,
+                       checkout_root: str = "") -> Trajectory:
+    """Convert ``_run_once``'s return dict into a Trajectory.
+
+    ``checkout_root`` is where the repository under test lives. It is
+    carried so the scorer can drop that prefix from tool inputs -- see
+    ``benchmark._strip_checkout_prefix``. Optional, and an omitted root
+    changes nothing, so older callers keep working."""
     text = str(raw.get("text") or "")
     return Trajectory(
         text=text,
         actions=extract_actions(text),
         tool_calls=list(raw.get("tool_calls") or []),
+        # What the tools answered, index-aligned with tool_calls.  The
+        # harness hints (import origin, refusal reason, stale evidence,
+        # process budget) live HERE, not in the calls -- see
+        # ``Trajectory.tool_results``.  An older run_once (or a stub)
+        # that returns no key keeps working: empty list, hint flags 0.
+        tool_results=[str(r) for r in (raw.get("tool_results") or [])],
         duration_s=float(duration_s),
         cost_usd=float(cost_usd),
         input_tokens=int(raw.get("input_tokens") or 0),
         output_tokens=int(raw.get("output_tokens") or 0),
         error=str(raw.get("error") or ""),
+        checkout_root=str(checkout_root or ""),
+        user_interventions=int(raw.get("user_interventions") or 0),
+        channels={str(k): int(v) for k, v in
+                  (raw.get("channels") or {}).items()},
+        model_rounds=(int(raw["model_rounds"])
+                      if raw.get("model_rounds") is not None else None),
     )
 
 
@@ -94,11 +187,116 @@ def trajectory_from_run(raw: dict, *, duration_s: float, cost_usd: float = 0.0) 
 # ---------------------------------------------------------------------------
 
 
-EngineFactory = Callable[[str, str, str, str], Any]
-"""(model, backend, provider, mode) -> engine."""
+# (model, backend, provider, mode, task_class) -> engine. The task class
+# is what decides the write boundary; the mode cannot, because behaviour
+# and generic-project tasks both run as `solo`. Widened rather than
+# guessed at the call site.
+EngineFactory = Callable[..., Any]
 
 
-def _default_engine_factory(model: str, backend: str, provider: str, mode: str) -> Any:
+def _iso(epoch: float) -> str:
+    """Audit-log timestamps are ISO strings compared lexicographically."""
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromtimestamp(
+            float(epoch), _dt.timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _denials_during(engine: Any, *, since_ts: str) -> Optional[int]:
+    """How many tool calls the gates refused in this task's window.
+
+    A cost-side number: guards are supposed to refuse the wrong thing, and
+    a rising count over a suite that already passed means they started
+    refusing the right thing too. That direction never shows up in a pass
+    rate, and it is how a check teaches the model to phrase work so
+    nothing keys on it.
+
+    Returns ``None`` when there was no way to look -- no audit log, no
+    workspace, a mocked engine in a unit test. Reporting 0 there would say
+    "nothing was refused", which is a different sentence from "nobody
+    looked", and this framework has already shipped that confusion once.
+    """
+    try:
+        from delfin.agent import audit_log as _audit
+        perms = getattr(engine, "kit_permissions", None)
+        workspace = getattr(perms, "workspace", None) if perms else None
+        if not workspace:
+            return None
+        report = _audit.build_changes_report(
+            since_ts=since_ts or None, workspace=str(workspace))
+        denied = report.get("denied")
+        # An empty skeleton comes back on any failure, and its window
+        # records count is 0 -- indistinguishable from a clean run that
+        # simply refused nothing. Only a window that actually saw records
+        # can say zero.
+        window = report.get("window") or {}
+        if not window.get("records") and not denied:
+            return None
+        return len(denied or [])
+    except Exception:
+        return None
+
+
+def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Optional[Path]:
+    """The fixture workspace a task class writes into, or ``None``.
+
+    Only the classes that WRITE get one. Office already had this, keyed
+    on the mode; behaviour and generic-project tasks edit toy files just
+    as concretely and had the whole checkout as their workspace, because
+    the mode cannot tell them apart — both run as ``solo``. So the key is
+    the task CLASS, which is what actually decides where a task belongs.
+
+    The per-class task counts are pinned in
+    tests/test_every_task_that_writes_writes_where_it_belongs.py (the
+    figures once written here went stale at 8 while the class held 17).
+    The classes without a workspace read only and are left alone
+    deliberately — see the note in #111 on why moving their root is a
+    separate problem.
+
+    ``None`` when the class writes nothing or the directory is absent: a
+    missing fixture must not silently redirect a run somewhere else.
+    """
+    cls = (task_class or "").strip().lower()
+    rel: Optional[str] = None
+    if (mode or "") == "office" or cls == "office":
+        rel = "office_workspace"
+    elif cls.startswith("behavior"):
+        rel = "behavior_workspace"
+    elif cls == "generic_project":
+        rel = "user_project_workspace"
+    elif cls == "generalist":
+        # Everyday software work on a repository that is not DELFIN: each
+        # task's setup builds its own git repository (Python or Node) in
+        # a subdirectory, and the acceptance script runs that
+        # repository's tests on what the attempt left behind.
+        rel = "generalist_workspace"
+    elif cls.startswith("science"):
+        # The everyday work: read real output, compute something from it,
+        # write the script that does it. Its own fixture rather than the
+        # behaviour one, because these tasks are graded on the ARTIFACT
+        # and want data with the things real data has -- a duplicate
+        # geometry, a run that did not converge.
+        rel = "science_workspace"
+    elif cls == "chemistry":
+        # Chemistry tasks are seeded by their setup script
+        # (chem_start_geometries.py writes chem/<molecule>/start.xyz),
+        # but the folder has to exist BEFORE that script runs:
+        # run_setup launches it with cwd=workspace, and Popen fails on
+        # a non-existent cwd with a bare FileNotFoundError -- observed on
+        # the first SLURM trial, where every sample read "setup script
+        # could not run: [Errno 2]" while the script itself was fine.
+        rel = "chemistry_workspace"
+    if rel is None:
+        return None
+    candidate = Path(root) / "tests" / "fixtures" / rel
+    return candidate if candidate.is_dir() else None
+
+
+def _default_engine_factory(model: str, backend: str, provider: str,
+                            mode: str, task_class: str = "",
+                            permission_mode: str = "") -> Any:
     """Build a real AgentEngine for the given config.
 
     AgentEngine creates its own client internally; we just hand it the
@@ -109,13 +307,130 @@ def _default_engine_factory(model: str, backend: str, provider: str, mode: str) 
     from pathlib import Path as _Path
     from .engine import AgentEngine
 
-    return AgentEngine(
-        repo_dir=_Path(_os.getcwd()).resolve(),
-        backend=backend or "api",
-        provider=provider,
-        model=model,
-        mode=mode or "solo",
-    )
+    # Office mode is DEFINED by working inside one folder, so a task in
+    # that mode has to start there. Pointing it at the repository root
+    # instead left the fixtures three levels down, and whether the model
+    # found them was luck: one run cited the full path, the next answered
+    # "the file is not in the working directory" — and that scored as a
+    # failure of the rubric it never got to exercise. A benchmark that
+    # intermittently measures file discovery instead of the behaviour
+    # under test is worse than no benchmark.
+    root = _Path(_os.getcwd()).resolve()
+    fixtures = workspace_for(root, mode=mode, task_class=task_class)
+    if fixtures is not None:
+        root = fixtures
+
+    kwargs: dict[str, Any] = {
+        "repo_dir": root,
+        "backend": backend or "api",
+        "provider": provider,
+        "model": model,
+        "mode": mode or "solo",
+    }
+    # Only when the task asks for one: an empty value must leave the
+    # engine's own default alone, so every task written before this
+    # existed runs exactly as it did.
+    if permission_mode:
+        kwargs["permission_mode"] = permission_mode
+    return AgentEngine(**kwargs)
+
+
+# Memories a fixture starts with. One directory per workspace under
+# tests/fixtures/memory_seed/, named after it.
+#
+# Memory READ-BACK had no coverage: dash_memory_remember checks that the
+# agent SAVES a fact, and nothing checked that a fact saved in an earlier
+# session comes back in a later one — which is the half a user feels. A
+# task cannot seed its own store, because the store is keyed on the
+# workspace and lives under ~/.delfin.
+#
+# Installed INSIDE the pristine guard, so the seed is present for the
+# attempt and removed with everything else the attempt wrote. That also
+# means a seed can never leak into the user's own store.
+_MEMORY_SEED_REL = Path("tests") / "fixtures" / "memory_seed"
+
+
+def _seed_fixture_memories(root: Path, workspace: Optional[Path]) -> int:
+    """Copy a fixture's seeded memories into its store. Returns the count.
+
+    Best-effort: a missing seed directory is the normal case and must not
+    stop a run.
+    """
+    if workspace is None:
+        return 0
+    try:
+        src = Path(root) / _MEMORY_SEED_REL / Path(workspace).name
+        if not src.is_dir():
+            return 0
+        # Installed through save_typed_memory, not by copying the file.
+        # A copy puts the sidecar in place and leaves MEMORY.md — the index
+        # the recall actually reads — untouched, so the seed sits in the
+        # directory and reaches no prompt. That is how the first version of
+        # this failed, and it looked exactly like a model that does not
+        # recall.
+        import re as _re
+
+        from .memory_store import save_typed_memory
+        n = 0
+        for f in sorted(src.glob("*.md")):
+            raw = f.read_text(encoding="utf-8")
+            head, _, body = raw.partition("---\n")[2].partition("---\n")
+            def _field(name: str) -> str:
+                m = _re.search(rf"^{name}:\s*(.+)$", head, _re.M)
+                return m.group(1).strip() if m else ""
+            mtype = f.name.split("_", 1)[0] or "user"
+            save_typed_memory(
+                (body or raw).strip(),
+                repo_root=Path(workspace),
+                memory_type=mtype,
+                title=_field("name") or f.stem,
+                source=_field("source") or "user",
+            )
+            n += 1
+        return n
+    except Exception:
+        return 0
+
+
+# Hook definitions a fixture starts with. One directory per workspace
+# under tests/fixtures/hooks_seed/, named after it; every file in it is
+# installed into <workspace>/.delfin/ under the same name.
+#
+# The definition cannot simply live in the fixture: `.delfin/` is ignored
+# checkout-wide, so a committed settings.json would exist only in the
+# working copy that wrote it and be absent from every clone -- a task
+# that passes here and fails in CI for no visible reason.
+#
+# Installed INSIDE the pristine guard, like the memory seed, so the file
+# is present for the attempt and gone with everything else the attempt
+# left behind. Nothing here grants trust: the point of the fixture is a
+# workspace that ships hooks nobody has trusted yet, which is what a
+# freshly cloned repository is.
+_HOOKS_SEED_REL = Path("tests") / "fixtures" / "hooks_seed"
+
+
+def _seed_fixture_hooks(root: Path, workspace: Optional[Path]) -> int:
+    """Copy a fixture's seeded hook settings into it. Returns the count.
+
+    Best-effort: a missing seed directory is the normal case and must not
+    stop a run.
+    """
+    if workspace is None:
+        return 0
+    try:
+        src = Path(root) / _HOOKS_SEED_REL / Path(workspace).name
+        if not src.is_dir():
+            return 0
+        dest = Path(workspace) / ".delfin"
+        dest.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for f in sorted(src.glob("*.json")):
+            dest.joinpath(f.name).write_text(
+                f.read_text(encoding="utf-8"), encoding="utf-8")
+            n += 1
+        return n
+    except Exception:
+        return 0
 
 
 def _cost_delta(before: float, after: float) -> float:
@@ -132,6 +447,509 @@ def _cost_delta(before: float, after: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+# Behavior tasks edit toy files under this repo-relative dir. Attempts must
+# start from a PRISTINE copy: an earlier attempt's edits would leak into the
+# next one (observed live: a later repeats run scored against fixtures the
+# first run had already modified, confounding the comparison). The runner
+# snapshots the dir before each attempt and restores it afterwards — the
+# task file's manual git-checkout instructions are thereby mechanised.
+_BEHAVIOR_WS_RELS: tuple[Path, ...] = (
+    Path("tests") / "fixtures" / "behavior_workspace",
+    Path("tests") / "fixtures" / "user_project_workspace",
+    # Office tasks read and edit the same small tables; without a restore
+    # between attempts a later run scores against rows an earlier one
+    # changed.
+    Path("tests") / "fixtures" / "office_workspace",
+    # Science tasks are graded on what they BUILD, so they always leave
+    # something behind. Adding the workspace to workspace_for without
+    # adding it here left the built script sitting in the checkout after
+    # the run -- caught by driving one task end to end and asking whether
+    # the fixture came back.
+    Path("tests") / "fixtures" / "science_workspace",
+    # Same contract as science: chemistry tasks are graded on what they
+    # build, and their setup refuses an existing chem/ tree. Without
+    # restore, repeat 2 collides with repeat 1's fixture.
+    Path("tests") / "fixtures" / "chemistry_workspace",
+    # Generalist tasks build a nested git repository per attempt and are
+    # graded on what is left in it; every setup refuses an existing one.
+    Path("tests") / "fixtures" / "generalist_workspace",
+)
+_BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
+
+
+def checkout_fingerprint(root: Path | str) -> dict[str, tuple[int, int]]:
+    """(size, mtime) for every file under ``root``, excluding the guarded
+    fixture workspaces and anything git already ignores by convention.
+
+    Used to answer one question after a run: did the agent change the
+    checkout outside the directories it is allowed to change? The guard
+    below covers three fixture directories, while the agent's workspace is
+    the whole tree -- so a run once rewrote a test file two directories
+    away and nothing said so.
+    """
+    base = Path(root)
+    guarded = [base / rel for rel in _BEHAVIOR_WS_RELS]
+    # `.claude` holds the worktrees parallel agents check out into. A run
+    # with four of them alive reported 4992 changed files and then "… and
+    # 4992 more", which is not a warning anybody reads twice — and the
+    # walk is O(every file in every worktree) before it says so. Observed
+    # live, 2026-08-12.
+    skip = {".git", "__pycache__", ".pytest_cache", "node_modules",
+            ".claude", ".venv", ".mypy_cache", ".ruff_cache"}
+    out: dict[str, tuple[int, int]] = {}
+    for path in base.rglob("*"):
+        try:
+            if not path.is_file():
+                continue
+            if any(part in skip for part in path.parts):
+                continue
+            if any(g in path.parents for g in guarded):
+                continue
+            st = path.stat()
+            out[str(path.relative_to(base))] = (st.st_size, int(st.st_mtime))
+        except OSError:
+            continue
+    return out
+
+
+def changed_outside_workspaces(
+    root: Path | str, before: dict[str, tuple[int, int]],
+) -> list[str]:
+    """Paths that differ from ``before`` -- added, removed or rewritten.
+
+    Reporting, not reverting: restoring the whole checkout would throw
+    away whatever the developer had uncommitted, which is a worse failure
+    than the one being fixed."""
+    after = checkout_fingerprint(root)
+    changed = {p for p in set(before) | set(after)
+               if before.get(p) != after.get(p)}
+    return sorted(changed)
+
+
+def paths_this_run_wrote(root: Path | str, *,
+                         since_ts: str) -> Optional[set[str]]:
+    """Paths under ``root`` that this run's own tool trace recorded, or
+    ``None`` when there was no way to look.
+
+    Same source as :func:`_denials_during` -- the audit log -- and the
+    same distinction: an empty window means nobody looked, and reporting
+    an empty SET there would relabel every changed file as somebody
+    else's writing. Returned relative to ``root``, because that is how
+    the fingerprint is keyed; comparing absolute against relative would
+    match nothing and quietly attribute the whole diff elsewhere.
+    """
+    try:
+        from delfin.agent import audit_log as _audit
+        base = Path(root).resolve()
+        report = _audit.build_changes_report(
+            since_ts=since_ts or None, workspace=str(base))
+        window = report.get("window") or {}
+        written = report.get("files_written") or []
+        if not window.get("records") and not written:
+            return None
+        out: set[str] = set()
+        for entry in written:
+            raw = str((entry or {}).get("path", "") or "")
+            if not raw:
+                continue
+            try:
+                out.add(str(Path(raw).resolve().relative_to(base)))
+            except (ValueError, OSError):
+                continue        # written outside the checkout
+        return out
+    except Exception:
+        return None
+
+
+def attributed_changes(
+    changed: list[str],
+    written: Optional[set[str]],
+) -> tuple[Optional[list[str]], Optional[list[str]]]:
+    """Split a fingerprint diff into (this run wrote it, nobody here did).
+
+    ``(None, None)`` when ``written`` is ``None``: with no trace to check
+    against, neither column can be filled in honestly.
+    """
+    if written is None:
+        return None, None
+    mine = [p for p in changed if p in written]
+    other = [p for p in changed if p not in written]
+    return mine, other
+
+
+_CHANGE_LIST_CAP = 20
+
+
+def _capped(paths: list[str]) -> list[str]:
+    lines = [f"     {p}" for p in paths[:_CHANGE_LIST_CAP]]
+    if len(paths) > _CHANGE_LIST_CAP:
+        lines.append(f"     … and {len(paths) - _CHANGE_LIST_CAP} more")
+    return lines
+
+
+def format_checkout_change_report(changed: list[str],
+                                  written: Optional[set[str]]) -> str:
+    """What the run may say about a checkout that is not as it was found.
+
+    The diff is a fact about the TREE. Turning it into a sentence about
+    the RUN was the defect: a suite writing into the same checkout put
+    569 files into a warning that named this run as their cause. The two
+    groups are printed apart, and the group the run cannot vouch for says
+    so instead of being counted as its own.
+    """
+    if not changed:
+        return ""
+    mine, other = attributed_changes(changed, written)
+    if mine is None:
+        return "\n".join([
+            f"\n⚠️  {len(changed)} file(s) OUTSIDE the fixture workspaces "
+            f"changed while this run was going — the checkout is not as it "
+            f"was found. This run's own write trace could not be read, so "
+            f"which of them it caused is unknown:",
+            *_capped(changed),
+            "     review with `git status` before trusting the next run.",
+        ])
+    lines: list[str] = []
+    if mine:
+        lines.append(f"\n⚠️  {len(mine)} file(s) this run wrote OUTSIDE the "
+                     f"fixture workspaces — the checkout is not as it was "
+                     f"found:")
+        lines.extend(_capped(mine))
+    if other:
+        lines.append(f"\nℹ️  {len(other)} file(s) changed during this run "
+                     f"that nothing in this run's trace wrote. Another "
+                     f"process writing into the same checkout is "
+                     f"indistinguishable from this run in a size/mtime "
+                     f"diff, so these are not counted against it:")
+        lines.extend(_capped(other))
+    lines.append("     review with `git status` before trusting the next run.")
+    return "\n".join(lines)
+
+
+_fixture_notice_shown = False
+
+
+def _prepare_office_fixtures() -> str:
+    """Build the workbook fixtures, and say once why if it cannot.
+
+    The workbook tasks read files that are generated rather than
+    committed. When they cannot be generated the tasks do not measure a
+    model at all — they measure a missing dependency, and score it as a
+    failing model. That is the one outcome worth being loud about, so the
+    reason is printed rather than logged, once per process.
+    """
+    global _fixture_notice_shown
+    try:
+        _written, reason = ensure_office_fixtures()
+    except Exception as exc:  # a broken builder must not take a run down
+        _written, reason = [], f"the fixture builder raised: {exc}"
+    if reason and not _fixture_notice_shown:
+        _fixture_notice_shown = True
+        print(f"\n⚠️  office workbook fixtures were NOT built: {reason}")
+        print("     Tasks that read a .xlsx will fail for that reason and "
+              "not because of the model — exclude them from any comparison.")
+    return reason
+
+
+def _learning_home_checked(learning_home: Path | str) -> Path:
+    """Resolve a learning home and refuse the user's own state.
+
+    Input: the directory a learning measurement keeps the agent's state
+    in. Output: its resolved path. Raises ``ValueError`` when the
+    directory is the user's home (by ``$HOME`` or by the password
+    database) or lies inside the user's ``~/.delfin``: the measurement
+    would then read the user's past and write into their stores, which is
+    what the scratch home exists to prevent.
+    """
+    import os as _os
+    home = Path(learning_home).expanduser().resolve()
+    real_homes = {Path(_os.path.expanduser("~")).resolve()}
+    try:
+        import pwd as _pwd
+        real_homes.add(Path(_pwd.getpwuid(_os.getuid()).pw_dir).resolve())
+    except Exception:
+        pass
+    for real in real_homes:
+        real_state = real / ".delfin"
+        if home == real or home == real_state or real_state in home.parents:
+            raise ValueError(
+                f"learning home {home} is the user's own state ({real}); "
+                "a learning measurement needs a directory of its own")
+    return home
+
+
+def learning_state_id(learning_home: Path | str) -> str:
+    """Stable id of a learning home, stored on every run record made under
+    it: the first 16 hex digits of the SHA-1 of its resolved path. The path
+    itself is not stored, so a run file does not carry a home directory."""
+    import hashlib
+    resolved = str(Path(learning_home).expanduser().resolve())
+    return hashlib.sha1(resolved.encode("utf-8")).hexdigest()[:16]
+
+
+class _PristineWorkspace:
+    """Snapshot/restore guard for the fixture workspaces (a dir that does not
+    exist under the current working directory is skipped), and a blank
+    scratch home for everything the agent would otherwise read about
+    itself.
+
+    ``failed`` records a snapshot that did not happen. It used to swallow
+    the error and set ``_pairs`` empty, so the restore then did nothing at
+    all -- silently, at the one moment the caller most needed to hear it.
+    """
+
+    def __init__(self, root: Path | None = None, *,
+                 learning_home: Path | str | None = None) -> None:
+        import os as _os
+        base = root or Path(_os.getcwd())
+        self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
+        # The user's own state -- memory stores, outcome history, provider
+        # profile, sessions, logs -- is not snapshotted; it is not seen.
+        # For the duration of the attempt every sink is pointed at an
+        # empty scratch home (state_paths.RedirectedUserState), so the run
+        # reads nobody's past and its own writes vanish with the scratch.
+        #
+        # The memory stores used to be snapshotted and restored like the
+        # fixtures, after benchmark prompts turned up as durable user
+        # preferences (2026-09-08). That kept the writes out but let the
+        # READS in: an attempt still recalled the user's memories, and the
+        # session briefing still quoted the user's outcome history -- which
+        # by then was mostly earlier attempts. A task answered with the
+        # wording of a different task's prompt that way (2026-09-10).
+        # Redirecting also removes the one window the restore had, where
+        # the real store was emptied and copied back.
+        #
+        # ``learning_home`` replaces the fresh scratch home with a kept one
+        # for a learning measurement: the attempt reads what an earlier
+        # attempt under the same directory left and its own writes stay
+        # there for the next. Still nobody's past -- the directory belongs
+        # to the measurement, and the user's real home is refused.
+        self._learning_home = (_learning_home_checked(learning_home)
+                               if learning_home is not None else None)
+        self._scratch_home: Path | None = None
+        self._redirect = None
+        self._pairs: list[tuple[Path, Path]] = []
+        self._snap_root: Path | None = None
+        self.failed = False
+
+    def _enter_scratch_home(self) -> None:
+        import tempfile
+
+        from . import state_paths as _sp
+        if self._learning_home is not None:
+            (self._learning_home / ".delfin").mkdir(parents=True,
+                                                    exist_ok=True)
+            home = self._learning_home
+        else:
+            home = Path(tempfile.mkdtemp(prefix="bench-home-"))
+            self._scratch_home = home
+        self._redirect = _sp.RedirectedUserState(
+            home, keep=_sp.KEPT_BY_A_LIVE_RUN)
+        self._redirect.__enter__()
+
+    def _leave_scratch_home(self) -> None:
+        import shutil
+        redirect, self._redirect = self._redirect, None
+        if redirect is not None:
+            try:
+                redirect.__exit__(None, None, None)
+            except Exception:
+                pass
+        home, self._scratch_home = self._scratch_home, None
+        if home is not None:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def _install_signal_trap(self) -> None:
+        """Turn a termination signal into the exception this guard survives.
+
+        Everything here is restored in ``__exit__``, which Python runs
+        when the block is left -- including on KeyboardInterrupt, because
+        that is an exception. SIGTERM is not: the interpreter exits where
+        it stands, no ``finally`` runs, and the fixture directory keeps
+        whatever the attempt had done to it.
+
+        Observed 2026-09-08. A benchmark run killed by its own `timeout`
+        during an office task left buchungen.csv, rechnungen.csv,
+        kostenstellen_roh.csv, inventar.csv and README.md deleted from
+        the checkout, plus a half-written .wb-*.xlsx beside them. The
+        same shape reaches a user: a scheduled run killed by its runner,
+        a container stopped, a `kill` on a long benchmark.
+
+        The handler only raises. Doing the restore inside it would run
+        filesystem work from a signal context; raising hands control back
+        to the ``with`` statement, which already knows what to do.
+
+        Best-effort: signal handlers can only be installed from the main
+        thread, and a worker thread running a guard keeps the old
+        behaviour rather than refusing to run.
+        """
+        self._prev_signals: dict = {}
+        try:
+            import signal as _signal
+
+            def _raise(signum, frame):
+                raise KeyboardInterrupt(f"signal {signum}")
+
+            for sig in (_signal.SIGTERM, _signal.SIGHUP):
+                try:
+                    self._prev_signals[sig] = _signal.signal(sig, _raise)
+                except (ValueError, OSError, AttributeError):
+                    continue
+        except Exception:
+            self._prev_signals = {}
+
+    def _remove_signal_trap(self) -> None:
+        """Put back whatever was handling those signals before."""
+        try:
+            import signal as _signal
+            for sig, prev in (getattr(self, "_prev_signals", None) or {}).items():
+                try:
+                    _signal.signal(sig, prev)
+                except (ValueError, OSError, TypeError):
+                    continue
+        except Exception:
+            pass
+        self._prev_signals = {}
+
+    def __enter__(self) -> "_PristineWorkspace":
+        import tempfile
+        # One guard at a time over these paths.
+        #
+        # Without it two attempts race: A empties a directory to restore it
+        # and B snapshots the emptiness in that window, then restores it —
+        # and a tracked fixture is gone. That is not hypothetical; it is
+        # how tests/fixtures lost its files repeatedly on 2026-09-08, in a
+        # checkout where a parallel suite and a benchmark run at once.
+        #
+        # A file lock rather than a thread lock: the racing attempts are
+        # separate processes (pytest -n 8, a bench run beside it).
+        # NOT re-entrant, and deliberately not made so. The lock is an
+        # exclusive flock; a second guard inside the first opens a second
+        # descriptor on the same file and waits for a lock its own
+        # process already holds, which is a silent deadlock. It cost a CI
+        # run on 2026-09-09: the job sat at a nested call until the
+        # 25-minute limit cancelled it, with no failure named.
+        #
+        # A depth counter that lets the inner guard stand down was tried
+        # and reverted the same night: per process it made a second
+        # THREAD stand down instead of waiting, so it snapshotted and
+        # restored nothing, and per thread it leaked whenever __enter__
+        # raised after incrementing — every later guard in that thread
+        # then restored nothing too. Both failures are silent and worse
+        # than the deadlock.
+        #
+        # Nothing in the product nests one. What protects against a
+        # future nester is the per-test deadline in CI, which turns a
+        # hang into one named failure in five minutes.
+        self._lock_handle = None
+        try:
+            import fcntl
+            lock_path = Path(tempfile.gettempdir()) / "delfin-bench-ws.lock"
+            self._lock_handle = open(lock_path, "w")
+            fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            # No lock is the old behaviour, not a reason to refuse a run.
+            self._lock_handle = None
+        self._install_signal_trap()
+        try:
+            self._enter_scratch_home()
+            return self._snapshot()
+        except BaseException:
+            # __exit__ is NOT called when __enter__ raises, so everything
+            # taken above has to go here or every later attempt waits on
+            # a holder that is gone. That is a deadlock, not a slow run:
+            # observed as a pytest master with one second of CPU in
+            # forty-five minutes.
+            self._leave_scratch_home()
+            self._release_lock()
+            raise
+
+    def _snapshot(self) -> "_PristineWorkspace":
+        import shutil
+        import tempfile
+        live = [ws for ws in self._bases if ws.is_dir()]
+        if not live:
+            return self
+        # One retry, then refusal. A file appearing or vanishing mid-copy
+        # makes copytree raise, and that really happens: writing new
+        # fixtures into the workspace while a run was in progress raced it
+        # exactly this way. That is transient and deserves a second try.
+        #
+        # A snapshot that fails twice does not. The guard exists to keep
+        # the user's files; a run that cannot keep them has no business
+        # touching them. Carrying on unprotected and silent is what
+        # happened before, and an attempt then deleted a fixture that
+        # nothing put back.
+        #
+        # Only the fixture directories, and only ones that exist. A fixture
+        # that is momentarily absent is another attempt restoring it --
+        # rmtree then copy back -- and deleting it afterwards is how two
+        # parallel runs erase a tracked fixture between them. Observed
+        # exactly that way before this was narrowed.
+        last: Exception | None = None
+        for _attempt in (1, 2):
+            self._pairs = []
+            try:
+                self._snap_root = Path(tempfile.mkdtemp(prefix="bench-ws-"))
+                for i, ws in enumerate(live):
+                    snap = self._snap_root / f"ws{i}"
+                    shutil.copytree(ws, snap)
+                    self._pairs.append((ws, snap))
+                self.failed = False
+                return self
+            except Exception as exc:
+                last = exc
+                if self._snap_root is not None:
+                    shutil.rmtree(self._snap_root, ignore_errors=True)
+                    self._snap_root = None
+        self._pairs = []
+        self.failed = True
+        names = ", ".join(ws.name for ws in live)
+        raise RuntimeError(
+            f"could not snapshot the fixture workspace(s) {names}: {last}. "
+            f"Refusing to run: without the snapshot nothing can restore "
+            f"them afterwards, and an attempt that deletes a fixture would "
+            f"leave it deleted.")
+
+    def __exit__(self, *exc) -> None:
+        import shutil
+        try:
+            try:
+                for ws, snap in self._pairs:
+                    shutil.rmtree(ws, ignore_errors=True)
+                    shutil.copytree(snap, ws)
+            finally:
+                if self._snap_root is not None:
+                    shutil.rmtree(self._snap_root, ignore_errors=True)
+        finally:
+            try:
+                self._leave_scratch_home()
+            finally:
+                # Released only once the directories are whole again: the
+                # window this closes is exactly the one where another
+                # attempt would snapshot a half-restored directory.
+                self._release_lock()
+
+    def _release_lock(self) -> None:
+        # The signal trap belongs to the same window as the lock: both go
+        # up when the guard takes over and come down when it is done, on
+        # every path out including the failed-snapshot one.
+        self._remove_signal_trap()
+        handle = getattr(self, "_lock_handle", None)
+        if handle is None:
+            return
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
+        self._lock_handle = None
+
+
 def _run_task_once(
     task: Task,
     *,
@@ -143,20 +961,200 @@ def _run_task_once(
     max_tokens: int,
     run_once: Callable[..., dict],
     clock: Callable[[], float],
+    learning_home: Path | None = None,
 ) -> BenchmarkResult:
     """Single attempt — kept private so retry-aggregation logic lives
     in one place at the public ``run_task`` entry."""
     try:
-        engine = engine_factory(model, backend, provider, task.mode)
+        # Passed positionally for the four a factory has always taken, and
+        # by keyword for the fifth — a test double with the old signature
+        # keeps working, which is the point of not making it positional.
+        try:
+            engine = engine_factory(model, backend, provider, task.mode,
+                                    task.task_class,
+                                    permission_mode=task.permission_mode)
+        except TypeError:
+            engine = engine_factory(model, backend, provider, task.mode,
+                                    task.task_class)
     except Exception as exc:
         traj = Trajectory(error=f"engine init failed: {exc}")
         return score_outcome(
             task, traj, model=model, profile_name=profile_name, ts=clock(),
         )
+    # Run budget from the task caps: a benchmark task must not burn an
+    # unbounded multiple of its declared cost/duration budget (observed:
+    # one task at 27x its cost cap). Generous factors keep legitimate
+    # thoroughness possible; the engine's wind-down asks the agent to
+    # wrap up at 80% and refuses new turns past 110%.
+    try:
+        if float(task.max_cost_usd or 0) > 0:
+            engine.run_budget_usd = max(1.0, float(task.max_cost_usd) * 4.0)
+        if float(task.max_duration_s or 0) > 0:
+            engine.run_budget_s = max(120.0, float(task.max_duration_s) * 4.0)
+    except Exception:
+        pass
     cost_before = float(getattr(engine, "cost_usd", 0.0) or 0.0)
     t0 = clock()
+    verify_ok: "Optional[bool]" = None
+    verify_output = ""
+    _ws_seen = ""
     try:
-        raw = run_once(engine, task.prompt, max_tokens=max_tokens)
+        with _toolchain_on_path(task.task_class), \
+                _PristineWorkspace(learning_home=learning_home):
+            _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
+                                task_class=task.task_class)
+            _ws_seen = str(Path(_ws).resolve()) if _ws else ""
+            _seed_fixture_memories(Path(os.getcwd()), _ws)
+            _seed_fixture_hooks(Path(os.getcwd()), _ws)
+            if task.setup:
+                # Inside the guard, so what it builds is removed with the
+                # rest of the attempt -- including a nested git
+                # repository, which the snapshot/restore handles and
+                # `git clean` would not.
+                setup_ok, setup_output = run_setup(
+                    task.setup, _ws, root=Path(os.getcwd()))
+                if not setup_ok:
+                    # Not a model failure: the question was never put.
+                    # "engine init failed" is the phrase is_unmeasured
+                    # already knows, and this is the same category of
+                    # event -- the turn never got a fair chance to run.
+                    raise _SetupFailed(
+                        f"engine init failed: task setup "
+                        f"{task.setup!r} did not run: {setup_output[:300]}")
+            # Collect tool RESULTS alongside the calls: the Wave-4 hint
+            # scorers read them from the Trajectory.  Collected here via
+            # the callback _run_once offers (its return contract is
+            # pinned to five keys by the JSON tests); aligned by index
+            # with the calls -- a placeholder per observed call keeps
+            # the pairing even when a result never arrives.  A test
+            # double whose run_once takes no such kwarg keeps working:
+            # results stay empty, hint flags read 0, the run itself is
+            # unaffected.
+            _results: list[tuple[str, str]] = []
+
+            def _collect_result(name: str, output: str) -> None:
+                _results.append((str(name or ""), output))
+
+            # Interventions: each permission denial is the harness
+            # steering the run; counted in-stream, forwarded only when
+            # the run_once accepts it (old test doubles keep working
+            # and read 0 -- see the user_interventions docstring).
+            _denied: list[str] = []
+
+            def _collect_denial(name: str) -> None:
+                _denied.append(name)
+
+            from . import channels as _channels
+            _channels.reset()
+            with _fixture_calc_dirs(_ws), _pinned_behaviour():
+                try:
+                    raw = run_once(engine, task.prompt,
+                                   max_tokens=max_tokens,
+                                   on_tool_result=_collect_result,
+                                   on_permission_denied=_collect_denial)
+                except TypeError:
+                    # Old test doubles / run_once signatures take only
+                    # max_tokens; no callbacks means results and
+                    # interventions read 0 -- the docstrings say so.
+                    raw = run_once(engine, task.prompt,
+                                   max_tokens=max_tokens)
+                # KG4 (wave 17): a task may declare mid-run scripted person
+                # messages. Each is delivered as its own user turn after the
+                # previous turn's run_once completed — that is what a person
+                # steer IS at this layer, and the accept script for
+                # lr_steered_goal requires the run's records to attest the
+                # steer being followed. The declared text goes in verbatim;
+                # a task with no declaration runs exactly one turn, exactly
+                # as before.
+                for _when, _text in (getattr(task, "mid_run_messages", None)
+                                     or ()):
+                    if _when != "after":
+                        raise ValueError(
+                            f"task {task.id}: unsupported mid_run_messages "
+                            f"trigger {_when!r} (only 'after' is wired)")
+                    try:
+                        _mraw = run_once(engine, _text,
+                                         max_tokens=max_tokens,
+                                         on_tool_result=_collect_result,
+                                         on_permission_denied=_collect_denial)
+                    except TypeError:
+                        _mraw = run_once(engine, _text, max_tokens=max_tokens)
+                    _mraw["tool_results"] = pair_results(
+                        _mraw.get("tool_calls") or [], _results)
+                    # The steer TEXT, not the run's output text: the accept's
+                    # marker check needs the message that was delivered.
+                    _mraw["steer_text"] = _text
+                    raw.setdefault("mid_runs", []).append(_mraw)
+                    # The steer reached the session: counted after the
+                    # overwrite below (operator finding 1).
+                    raw["user_interventions"] = (
+                        int(raw.get("user_interventions", 0)) + 1)
+            # KG4 transport (operator findings 1-3): the accept scripts
+            # run as subprocesses with only the workspace
+            # (run_acceptance :1274), so the facts they must judge have
+            # to cross as a file. Written ONLY for tasks that declare
+            # mid_run_messages — every other task's workspace is
+            # untouched. Minimal content: the steer deliveries (the
+            # fixture text the accept's marker check needs) and the tool
+            # CALL NAMES recorded in the runs after each steer — no
+            # transcript text; the file sits in a workspace a later
+            # agent can read. Nothing computed, nothing guessed: the
+            # accept script does the judging against its rubric.
+            # A task class without a fixture workspace resolves _ws to
+            # None (workspace_for :289-292) — Path(None) raised and the
+            # except at the bottom replaced the raw dict, silently
+            # discarding mid_runs and the intervention count. No
+            # workspace -> no facts file: the accepts read it from the
+            # workspace the run had, and a run without one has no
+            # fixture to grade anyway.
+            if _ws and getattr(task, "mid_run_messages", None):
+                _facts_path = Path(_ws) / ".longrun_facts.json"
+                try:
+                    _facts_path.write_text(
+                        json.dumps({
+                            "steer_delivered": [
+                                {"text": _m.get("steer_text", "")}
+                                for _m in (raw.get("mid_runs") or [])],
+                            "actions": [
+                                {"tool_calls": [
+                                    c.get("name", "") for c in
+                                    (_m.get("tool_calls") or [])
+                                    if isinstance(c, dict)]}
+                                for _m in (raw.get("mid_runs") or [])],
+                        }),
+                        encoding="utf-8")
+                except Exception:
+                    _facts_path.unlink(missing_ok=True)
+            raw["tool_results"] = pair_results(raw.get("tool_calls") or [],
+                                               _results)
+            # Operator finding 1: the line below OVERWRITES any earlier
+            # count, so delivered steers are added HERE — after it — and
+            # separately in steers_delivered, so a run where the steer
+            # was never delivered stays distinguishable.
+            raw["user_interventions"] = (
+                len(_denied) + len(raw.get("mid_runs") or []))
+            raw["steers_delivered"] = len(raw.get("mid_runs") or [])
+            # Which mechanisms this attempt reached (channels.py).
+            raw["channels"] = _channels.snapshot()
+            # Model rounds: one assistant message per round.
+            try:
+                raw["model_rounds"] = sum(
+                    1 for m in (getattr(engine, "messages", None) or [])
+                    if isinstance(m, dict) and m.get("role") == "assistant")
+            except Exception:
+                pass
+            # Inside the guard on purpose: it puts the workspace back on
+            # the way out, so anything the task produced exists only
+            # here. A check that ran afterwards would find the fixture.
+            if task.verify:
+                verify_ok, verify_output = run_acceptance(
+                    task.verify, _ws, root=Path(os.getcwd()))
+    except _SetupFailed as exc:
+        # Passed through verbatim: the prefix is what marks the attempt
+        # unmeasured, and wrapping it in "_run_once raised" would hide it
+        # behind a phrase that reads like a model failure.
+        raw = {"text": "", "tool_calls": [], "input_tokens": 0,
+               "output_tokens": 0, "error": str(exc)}
     except Exception as exc:
         raw = {"text": "", "tool_calls": [], "input_tokens": 0,
                "output_tokens": 0, "error": f"_run_once raised: {exc}"}
@@ -164,10 +1162,289 @@ def _run_task_once(
     cost_after = float(getattr(engine, "cost_usd", 0.0) or 0.0)
     traj = trajectory_from_run(
         raw, duration_s=t1 - t0, cost_usd=_cost_delta(cost_before, cost_after),
+        checkout_root=str(Path(os.getcwd()).resolve()),
     )
+    traj.denials = _denials_during(engine, since_ts=_iso(t0))
+    traj.workspace = _ws_seen
+    traj.verify_ok = verify_ok
+    traj.verify_output = verify_output
     return score_outcome(
         task, traj, model=model, profile_name=profile_name, ts=clock(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Executable acceptance
+# ---------------------------------------------------------------------------
+#
+# Every other check in this suite reads what the model WROTE about its
+# work. For a task whose subject is a working program that is the wrong
+# question, and no amount of pattern care fixes it -- a rubric that reads
+# prose about a program can be satisfied by prose. So the artifact answers
+# instead: a script we own is handed the workspace and its exit status is
+# the verdict.
+#
+# The script is ours, never the model's, and it is looked up under the
+# packaged benchmark directory so a task cannot name a path outside it.
+_ACCEPTANCE_DIR = Path("delfin") / "agent" / "pack" / "benchmark" / "accept"
+_ACCEPTANCE_TIMEOUT_S = 120
+
+
+def acceptance_path(name: str, root: Path | str | None = None) -> Path:
+    """Resolve an acceptance script name to a path inside the pack.
+
+    Raises ValueError for anything that leaves the directory -- the name
+    comes from a task file, and a task file is data.
+    """
+    base = (Path(root) if root else Path(os.getcwd())) / _ACCEPTANCE_DIR
+    candidate = (base / str(name)).resolve()
+    if not str(candidate).startswith(str(base.resolve()) + os.sep):
+        raise ValueError(
+            f"acceptance script {name!r} is outside {base}")
+    return candidate
+
+
+class _SetupFailed(RuntimeError):
+    """A task's precondition could not be built. Not a model failure."""
+
+
+@contextlib.contextmanager
+def _fixture_calc_dirs(workspace: Path):
+    """Point the calc tools at a fixture archive, if the task built one.
+
+    `search_calcs` and `calc_summary` index the USER's real calc/ and
+    archive/ folders -- 777 calculations on this machine, whose contents
+    nobody chose. A task over them cannot be scored: the right answer
+    differs per developer and changes whenever a real run finishes. That
+    is why "which of my runs used which method", which is daily work for
+    the scientist this agent is for, was completely unmeasured.
+
+    A setup script that creates ``<workspace>/calc_archive/{calc,archive}``
+    gets the tools pointed at it for the length of the attempt, and the
+    previous setting -- usually the dashboard's, sometimes nothing -- is
+    put back afterwards. The engine is rebuilt per attempt but the
+    executor is a module-level singleton, so restoring is not optional:
+    without it the first calc task would silently redirect every later
+    one, including a live session sharing the process.
+    """
+    from .api_client import _doc_executor
+    # A task without a fixture workspace passes None here -- most of the
+    # suite, since only the science and project families get one. The
+    # first version indexed straight into Path(None), and run_task
+    # catches everything the attempt raises, so every dashboard, office
+    # and behaviour task came back "_run_once raised: argument should be
+    # a str or an os.PathLike object" -- an unmeasured error rather than
+    # a model failure, which is at least the honest half, but a whole
+    # suite of them.
+    if not workspace:
+        yield
+        return
+    root = Path(workspace) / "calc_archive"
+    if not (root / "calc").is_dir():
+        yield
+        return
+    previous = getattr(_doc_executor, "_calc_dirs", {})
+    previous_engine = getattr(_doc_executor, "_calc_engine", None)
+    _doc_executor._calc_dirs = {"calc": str(root / "calc"),
+                                "archive": str(root / "archive")}
+    # The engine is built once and cached; a stale one would answer from
+    # the user's archive however the dirs are set.
+    _doc_executor._calc_engine = None
+    try:
+        yield
+    finally:
+        _doc_executor._calc_dirs = previous
+        _doc_executor._calc_engine = previous_engine
+
+
+_SETUP_DIR = Path("delfin") / "agent" / "pack" / "benchmark" / "setup"
+
+
+def setup_path(name: str, root: Path | str | None = None) -> Path:
+    """Resolve a setup script name to a path inside the pack.
+
+    Same containment as :func:`acceptance_path`, for the same reason: the
+    name comes from a task file, and a task file is data.
+    """
+    base = (Path(root) if root else Path(os.getcwd())) / _SETUP_DIR
+    candidate = (base / str(name)).resolve()
+    if not str(candidate).startswith(str(base.resolve()) + os.sep):
+        raise ValueError(f"setup script {name!r} is outside {base}")
+    return candidate
+
+
+def _child_env(root: Path | str | None) -> dict:
+    """The environment a setup or acceptance script runs in: the tree
+    under test first on the import path.
+
+    The scripts import delfin -- a setup checks its fixture through the
+    indexer, an acceptance script reads what the agent wrote through the
+    same code the agent used. A bare ``sys.executable`` resolves that
+    import through whatever delfin is INSTALLED for the interpreter,
+    which on a machine with several checkouts is not the one being
+    benchmarked. Observed 2026-09-10: a self-check that passed on the
+    tree failed under the suite, because the child imported an older
+    checkout's indexer and the record it built had no outcome.
+    """
+    env = dict(os.environ)
+    base = str(Path(root).resolve() if root else Path(os.getcwd()).resolve())
+    prior = env.get("PYTHONPATH", "")
+    parts = [base] + [p for p in prior.split(os.pathsep) if p and p != base]
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    return env
+
+
+def run_setup(
+    name: str, workspace: Path | str, *, root: Path | str | None = None,
+) -> tuple[bool, str]:
+    """Prepare *workspace* for a task. Returns ``(ok, output)``.
+
+    The mirror of :func:`run_acceptance`, and the opposite failure
+    stance. An acceptance script that cannot run leaves the verdict
+    UNKNOWN, because the model's work still happened and may still be
+    judged on everything else. A setup script that cannot run means the
+    question was never put: there is nothing to judge, and scoring the
+    attempt would record a model failure for a fixture that was never
+    built.
+    """
+    try:
+        script = setup_path(name, root)
+    except ValueError as exc:
+        return False, str(exc)
+    if not script.is_file():
+        return False, f"setup script not found: {script}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), str(workspace)],
+            capture_output=True, text=True,
+            timeout=_ACCEPTANCE_TIMEOUT_S,
+            cwd=str(workspace),
+            env=_child_env(root),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"setup script did not finish in {_ACCEPTANCE_TIMEOUT_S}s"
+    except Exception as exc:
+        return False, f"setup script could not run: {exc}"
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return proc.returncode == 0, out
+
+
+def run_acceptance(
+    name: str, workspace: Path | str, *, root: Path | str | None = None,
+) -> tuple["Optional[bool]", str]:
+    """Run one acceptance script against *workspace*.
+
+    Returns ``(ok, output)``. ``ok`` is None when the script could not be
+    run at all -- missing, or it timed out -- which the scorer reads as
+    "not run" rather than as a failure, the same distinction denials and
+    is_unmeasured make.
+    """
+    try:
+        script = acceptance_path(name, root)
+    except ValueError as exc:
+        return None, str(exc)
+    if not script.is_file():
+        return None, f"acceptance script not found: {script}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), str(workspace)],
+            capture_output=True, text=True,
+            timeout=_ACCEPTANCE_TIMEOUT_S,
+            cwd=str(workspace),
+            env=_child_env(root),
+        )
+    except subprocess.TimeoutExpired:
+        return None, (
+            f"acceptance script did not finish in {_ACCEPTANCE_TIMEOUT_S}s")
+    except Exception as exc:
+        return None, f"acceptance script could not run: {exc}"
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if (proc.returncode == TOOLCHAIN_EXIT
+            and "toolchain unavailable" in out):
+        # The host cannot run the check (no cargo, go, or a Node that
+        # runs TypeScript): not run, the same stance as a missing script.
+        return None, out
+    return proc.returncode == 0, out
+
+
+# Exit status a setup or acceptance script uses for "this host lacks the
+# toolchain the task needs", printed with ``toolchain unavailable:``.
+TOOLCHAIN_EXIT = 3
+TOOLCHAIN_ENV = "DELFIN_TOOLCHAIN_BIN"
+_DEFAULT_TOOLCHAIN_BIN = Path("~/micromamba/envs/delfin-toolchains/bin")
+
+
+def toolchain_bin() -> Optional[Path]:
+    """Where node, cargo and go for the generalist tasks live, or None.
+
+    ``$DELFIN_TOOLCHAIN_BIN`` when set, else
+    ``~/micromamba/envs/delfin-toolchains/bin``; only an existing
+    directory counts. Resolved before an attempt's scratch home is
+    entered, so ``~`` is the operator's home."""
+    raw = os.environ.get(TOOLCHAIN_ENV) or str(
+        _DEFAULT_TOOLCHAIN_BIN.expanduser())
+    p = Path(raw).expanduser()
+    return p if p.is_dir() else None
+
+
+@contextlib.contextmanager
+def _toolchain_on_path(task_class: str):
+    """For a generalist attempt: the toolchain directory first on PATH
+    and exported as DELFIN_TOOLCHAIN_BIN, for the setup, the agent's own
+    shell commands and the acceptance script alike; both put back
+    afterwards. Other classes and hosts without the directory: no-op."""
+    tc = toolchain_bin() if (task_class or "") == "generalist" else None
+    if tc is None:
+        yield
+        return
+    saved = {k: os.environ.get(k) for k in ("PATH", TOOLCHAIN_ENV)}
+    os.environ["PATH"] = str(tc) + os.pathsep + (saved["PATH"] or "")
+    os.environ[TOOLCHAIN_ENV] = str(tc)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+#: Settings that change what the harness does during a turn, pinned for a
+#: benchmark attempt to the shipped default unless the operator set the
+#: variable for the whole run (an arm that measures another value). The
+#: attempt otherwise read the user's ~/.delfin_settings.json: on this
+#: host ``auto_verify`` is "syntax" there, so the suite measured a
+#: py_compile-only turn end that no default installation has, and no run
+#: file said so (diagnosis 2026-10-15).
+PINNED_BEHAVIOUR_ENV: dict[str, str] = {
+    "DELFIN_AUTO_VERIFY": "smart",
+    # The shipped default of agent.verify_nudge
+    # (api_client._VERIFY_NUDGE_DEFAULT); an arm of the three-arm
+    # measurement exports its own value.
+    "DELFIN_VERIFY_NUDGE": "off",
+}
+
+
+def pinned_behaviour_settings() -> dict[str, str]:
+    """The values an attempt runs with: the operator's export, else the pin."""
+    return {k: (os.environ.get(k) or v)
+            for k, v in PINNED_BEHAVIOUR_ENV.items()}
+
+
+@contextlib.contextmanager
+def _pinned_behaviour():
+    """Export ``pinned_behaviour_settings()`` for one attempt; restore after."""
+    saved = {k: os.environ.get(k) for k in PINNED_BEHAVIOUR_ENV}
+    os.environ.update(pinned_behaviour_settings())
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def run_task(
@@ -178,13 +1455,23 @@ def run_task(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     run_once: Callable[..., dict] | None = None,
     clock: Callable[[], float] | None = None,
     on_replicate: Callable[[int, BenchmarkResult], None] | None = None,
+    learning_home: Path | str | None = None,
 ) -> BenchmarkResult:
     """Execute one task and return a scored result.
+
+    ``learning_home`` (a learning measurement, PREREG_W15.md): replicate
+    ``k`` runs under ``<learning_home>/<task id>/replicate-<k>``, a home
+    that is kept, so the same call made again later -- the second arm --
+    continues each lineage where the first arm left it. Replicates within
+    one call stay independent of each other. ``None`` (default): every
+    attempt runs under a fresh scratch home that is deleted afterwards.
+    The result carries :func:`learning_state_id` of ``learning_home`` in
+    ``learning_state`` (empty without one).
 
     ``repeats=1`` (default): single sample, returned as-is.
     ``repeats>1``: run the task N times against a FRESH engine each time
@@ -203,7 +1490,14 @@ def run_task(
         from .cli import _run_once as _real_run_once
         run_once = _real_run_once
 
+    # Before the snapshot, never after: the guard restores the workspace
+    # to whatever it held when it was taken, so a workbook written later
+    # is deleted again after the first attempt.
+    _prepare_office_fixtures()
+
     n = max(1, int(repeats))
+    base = (_learning_home_checked(learning_home)
+            if learning_home is not None else None)
     replicates: list[BenchmarkResult] = []
     for i in range(n):
         r = _run_task_once(
@@ -211,6 +1505,8 @@ def run_task(
             model=model, backend=backend, provider=provider,
             profile_name=profile_name, engine_factory=factory,
             max_tokens=max_tokens, run_once=run_once, clock=now,
+            learning_home=(base / task.id / f"replicate-{i + 1}"
+                           if base is not None else None),
         )
         replicates.append(r)
         if on_replicate is not None:
@@ -220,9 +1516,116 @@ def run_task(
                 pass
 
     if n == 1:
-        return replicates[0]
-    from .benchmark import aggregate_replicates
-    return aggregate_replicates(replicates)
+        result = replicates[0]
+    else:
+        from .benchmark import aggregate_replicates
+        result = aggregate_replicates(replicates)
+    if base is not None:
+        result.learning_state = learning_state_id(base)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# One run at a time in one checkout
+# ---------------------------------------------------------------------------
+#
+# Demonstrated 2026-08-12, not argued: a full test-suite run failed two
+# office fixture tests while a benchmark was running, and `git status`
+# caught it mid-attempt -- `D tests/fixtures/office_workspace/buchungen.csv`,
+# deleted by the agent under test, not yet restored by the fixture guard.
+# Neither side was broken. The MEASUREMENT was, and it reported a product
+# defect that did not exist.
+#
+# The same happened again on 2026-08-13 in the other direction: a suite
+# and a live benchmark in one checkout, and the benchmark's own
+# "this run changed N files" report blamed itself for the suite's writes.
+#
+# The lock does not stop anybody. It tells them, which is the whole
+# difference between a run that is wrong and a run that says why.
+# NOT inside the checkout. A sidecar under tests/fixtures/ is a new path
+# appearing during a run, which is exactly what the suite's own leak guard
+# exists to report -- and it would have been right to: the checkout must
+# look the same after a run as before it. Runtime coordination state lives
+# where the rest of this framework's runtime state lives, keyed by the
+# checkout it protects so two checkouts never block each other.
+_RUN_LOCK_DIR = Path.home() / ".delfin" / "benchmark_locks"
+
+
+def _run_lock_path(root: Path) -> Path:
+    import hashlib
+    key = hashlib.sha1(str(Path(root).resolve()).encode("utf-8")).hexdigest()[:16]
+    return _RUN_LOCK_DIR / f"{key}.lock"
+
+
+class BenchmarkRunInProgress(RuntimeError):
+    """Another run holds the fixture workspaces."""
+
+
+@contextlib.contextmanager
+def fixture_run_lock(root: Path | str | None = None, *, owner: str = ""):
+    """Hold the fixture workspaces for the length of one run.
+
+    An exclusive ``flock`` on a sidecar beside the fixtures, so a second
+    benchmark -- or a test suite that takes the same lock -- is told what
+    is happening instead of silently measuring a half-written state. The
+    holder's pid and what it is doing are written into the file, because
+    "resource busy" is not something anybody can act on.
+
+    A filesystem without ``flock`` yields rather than refusing: this is a
+    measurement aid, and refusing to measure at all would be worse than
+    the interference it prevents.
+    """
+    base = Path(root) if root is not None else Path(os.getcwd())
+    path = _run_lock_path(base)
+    handle = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+")
+        import fcntl
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            # "Somebody holds it" and "this filesystem has no flock" are
+            # different answers and only one of them is a refusal. NFS
+            # without lockd, some container overlays: conflating them
+            # turns an unsupported filesystem into a permanent refusal to
+            # measure at all, which is worse than the interference.
+            import errno as _errno
+            if exc.errno not in (_errno.EACCES, _errno.EAGAIN):
+                raise
+            handle.seek(0)
+            held = (handle.read() or "").strip() or "another run"
+            handle.close()
+            raise BenchmarkRunInProgress(
+                f"the fixture workspaces are held by {held}. Two runs in "
+                f"one checkout measure each other's writes -- wait for it, "
+                f"or use a separate checkout.")
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid {os.getpid()}: {owner or 'a benchmark run'}")
+        handle.flush()
+    except BenchmarkRunInProgress:
+        raise
+    except Exception:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        yield                       # no flock here: measure rather than refuse
+        return
+    try:
+        yield
+    finally:
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
 
 
 def run_suite(
@@ -233,11 +1636,12 @@ def run_suite(
     provider: str = "",
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
-    max_tokens: int = 1024,
+    max_tokens: int = 0,
     repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
     on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
     run_once: Callable[..., dict] | None = None,
+    learning_home: Path | str | None = None,
 ) -> list[BenchmarkResult]:
     """Run every task and return scored (optionally aggregated) results.
 
@@ -245,8 +1649,47 @@ def run_suite(
     N times; the returned list still has one entry per task with the
     aggregate stats.  ``progress`` fires once per task with the final
     aggregated result; ``on_replicate`` fires for each individual
-    sample as it lands.
+    sample as it lands. ``learning_home`` is forwarded to ``run_task``.
     """
+
+    import os as _os
+    _root = Path(_os.getcwd())
+    # Held for the whole suite, before the fingerprint is taken: the
+    # baseline this run is compared against has to be a state nobody else
+    # is writing into. Raises BenchmarkRunInProgress and names the holder
+    # if somebody is.
+    with fixture_run_lock(_root, owner=f"benchmark run, model {model}"):
+        return _run_suite_locked(
+            tasks, model=model, backend=backend, provider=provider,
+            profile_name=profile_name, engine_factory=engine_factory,
+            max_tokens=max_tokens, repeats=repeats, progress=progress,
+            on_replicate=on_replicate, run_once=run_once, root=_root,
+            learning_home=learning_home)
+
+
+def _run_suite_locked(
+    tasks: Iterable[Task],
+    *,
+    model: str,
+    backend: str = "api",
+    provider: str = "",
+    profile_name: str = "",
+    engine_factory: EngineFactory | None = None,
+    max_tokens: int = 0,
+    repeats: int = 1,
+    progress: Callable[[Task, BenchmarkResult], None] | None = None,
+    on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
+    run_once: Callable[..., dict] | None = None,
+    root: Path | None = None,
+    learning_home: Path | str | None = None,
+) -> list[BenchmarkResult]:
+    """The suite body, under the fixture lock."""
+    _root = Path(root) if root is not None else Path(os.getcwd())
+    _started_ts = _iso(time.time())
+    try:
+        _before = checkout_fingerprint(_root)
+    except Exception:
+        _before = {}
 
     out: list[BenchmarkResult] = []
     for task in tasks:
@@ -261,6 +1704,7 @@ def run_suite(
             max_tokens=max_tokens, repeats=repeats,
             run_once=run_once,
             on_replicate=per_task_replicate,
+            learning_home=learning_home,
         )
         out.append(result)
         if progress is not None:
@@ -268,6 +1712,20 @@ def run_suite(
                 progress(task, result)
             except Exception:
                 pass  # best-effort progress reporting
+
+    # Say what the run changed outside the directories it may change. The
+    # fixture guard restores those three; everything else the agent touches
+    # persists, and a run that quietly rewrites a test file leaves the next
+    # measurement starting from a different tree than the last.
+    try:
+        _changed = changed_outside_workspaces(_root, _before) if _before else []
+    except Exception:
+        _changed = []
+    if _changed:
+        _written = paths_this_run_wrote(_root, since_ts=_started_ts)
+        _report = format_checkout_change_report(_changed, _written)
+        if _report:
+            print(_report)
     return out
 
 

@@ -37,7 +37,21 @@ USER_SETTINGS_PATH = Path("~/.delfin/settings.json").expanduser()
 REPO_SETTINGS_RELPATH = Path(".delfin/settings.json")
 
 _KIT_KEY = "kit"
-_VALID_MODES = {"plan", "default", "acceptEdits", "bypassPermissions"}
+_VALID_MODES = {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}
+
+# How much the session trusts the agent, least first. Used to decide
+# whether a repo-supplied default_mode may apply: only when it asks for
+# LESS than the user's own setting. diff_approval sits between default
+# and acceptEdits -- it writes without asking each time but stages every
+# change for review, so it is more trusting than "ask me" and less than
+# "just do it".
+_MODE_TRUST = {
+    "plan": 0,
+    "default": 1,
+    "diff_approval": 2,
+    "acceptEdits": 3,
+    "bypassPermissions": 4,
+}
 
 
 def _fresh_defaults() -> dict[str, Any]:
@@ -49,8 +63,10 @@ def _fresh_defaults() -> dict[str, Any]:
     return {
         "default_mode": "default",
         "extra_workspace_dirs": [],
+        "read_dirs": [],
         "allow_patterns": [],
         "deny_patterns": [],
+        "write_allow_globs": [],
     }
 
 _lock = threading.Lock()
@@ -62,8 +78,14 @@ class KitSettings:
 
     default_mode: str = "default"
     extra_workspace_dirs: list[str] = field(default_factory=list)
+    #: Directories the agent may READ in every session, never write: what
+    #: "always allow reading here" on an outside-read dialog saves.
+    read_dirs: list[str] = field(default_factory=list)
     allow_patterns: list[str] = field(default_factory=list)
     deny_patterns: list[str] = field(default_factory=list)
+    #: The repo's own write scope (repo file only). Not part of to_dict, so
+    #: saving the merged view never copies it into the user's file.
+    write_allow_globs: list[str] = field(default_factory=list)
     user_path: Path = USER_SETTINGS_PATH
     repo_path: Optional[Path] = None
 
@@ -71,6 +93,7 @@ class KitSettings:
         return {
             "default_mode": self.default_mode,
             "extra_workspace_dirs": list(self.extra_workspace_dirs),
+            "read_dirs": list(self.read_dirs),
             "allow_patterns": list(self.allow_patterns),
             "deny_patterns": list(self.deny_patterns),
         }
@@ -110,7 +133,8 @@ def _normalize_kit_block(block: Any) -> dict[str, Any]:
     mode = block.get("default_mode")
     if isinstance(mode, str) and mode in _VALID_MODES:
         out["default_mode"] = mode
-    for key in ("extra_workspace_dirs", "allow_patterns", "deny_patterns"):
+    for key in ("extra_workspace_dirs", "read_dirs", "allow_patterns",
+                "deny_patterns", "write_allow_globs"):
         v = block.get(key)
         if isinstance(v, list):
             out[key] = [str(x) for x in v if isinstance(x, (str, os.PathLike))]
@@ -119,25 +143,56 @@ def _normalize_kit_block(block: Any) -> dict[str, Any]:
 
 def _merge(user: dict[str, Any],
            repo: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Merge user + repo settings.
+    """Merge user + repo settings. A repo may TIGHTEN, never WIDEN.
 
-    Repo wins on scalars but only when it has an explicit value (i.e. the
-    repo block was actually present on disk). Lists are unioned with repo
-    entries kept first; ordering preserved, duplicates dropped.
+    The repo block used to win outright on ``default_mode`` -- which
+    accepts ``bypassPermissions`` -- and its ``allow_patterns`` and
+    ``extra_workspace_dirs`` were unioned in, repo entries first. So a
+    checked-out repository shipping
+
+        {"kit": {"default_mode": "bypassPermissions",
+                 "allow_patterns": ["^.*$"],
+                 "extra_workspace_dirs": ["/home/user"]}}
+
+    started the session in bypass mode with every command auto-allowed
+    and $HOME writable, on the first message, with no prompt and no
+    banner.
+
+    The rule now is the one the rest of the framework already follows:
+    hooks are refused from a locked folder, the office lock ignores extra
+    roots, remember_permission refuses to persist a wider mode. A repo
+    can ask for LESS trust -- which is genuinely useful, a project that
+    wants plan mode by default gets it -- and only the person can grant
+    more.
     """
     out = _fresh_defaults()
-    if repo is not None:
-        out["default_mode"] = repo.get("default_mode") or user.get("default_mode") or "default"
+    user_mode = user.get("default_mode") or "default"
+    repo_mode = (repo or {}).get("default_mode") or ""
+    if repo_mode in _MODE_TRUST and _MODE_TRUST[repo_mode] < _MODE_TRUST.get(
+            user_mode, _MODE_TRUST["default"]):
+        out["default_mode"] = repo_mode
     else:
-        out["default_mode"] = user.get("default_mode") or "default"
-    for key in ("extra_workspace_dirs", "allow_patterns", "deny_patterns"):
+        out["default_mode"] = user_mode
+    # deny_patterns tighten, so the repo's are taken. The other two widen:
+    # an auto-allow pattern removes a confirmation, and an extra workspace
+    # dir adds somewhere the agent may write, a read dir somewhere it may
+    # look. Those come from the user's file only.
+    for key in ("extra_workspace_dirs", "read_dirs", "allow_patterns"):
         merged: list[str] = []
-        sources = (repo.get(key, []) if repo else [], user.get(key, []))
-        for src in sources:
-            for item in src:
-                if item not in merged:
-                    merged.append(item)
+        for item in user.get(key, []):
+            if item not in merged:
+                merged.append(item)
         out[key] = merged
+    merged_deny: list[str] = []
+    for src in ((repo or {}).get("deny_patterns", []),
+                user.get("deny_patterns", [])):
+        for item in src:
+            if item not in merged_deny:
+                merged_deny.append(item)
+    out["deny_patterns"] = merged_deny
+    # write_allow_globs only ever narrow where file tools may write, so the
+    # repo's are taken -- and only the repo's: there is no list to widen.
+    out["write_allow_globs"] = list((repo or {}).get("write_allow_globs", []))
     return out
 
 
@@ -170,8 +225,10 @@ def load(repo_dir: Optional[Path | str] = None,
     return KitSettings(
         default_mode=merged["default_mode"],
         extra_workspace_dirs=merged["extra_workspace_dirs"],
+        read_dirs=merged["read_dirs"],
         allow_patterns=merged["allow_patterns"],
         deny_patterns=merged["deny_patterns"],
+        write_allow_globs=merged["write_allow_globs"],
         user_path=user_path,
         repo_path=repo_path,
     )
@@ -245,6 +302,54 @@ def remove_extra_dir(directory: str | os.PathLike, *,
     return _mutate(scope, repo_dir, user_path, m)
 
 
+def read_grant_dir(path: str | os.PathLike) -> str:
+    """The directory "always allow reading" saves for a read of ``path``.
+
+    A directory target is itself; a file is its directory. Empty when that
+    directory may not be opened for reads at all -- home, system and key
+    directories -- because one click on a read must not open them for
+    every future session. The same test the session grant applies.
+    """
+    try:
+        p = Path(path).expanduser().resolve()
+        d = p if p.is_dir() else p.parent
+        from .api_client import _is_grantable_read_dir
+        return str(d) if (d.is_dir() and _is_grantable_read_dir(d)) else ""
+    except Exception:
+        return ""
+
+
+def persist_read_dir(directory: str | os.PathLike, *,
+                     user_path: Optional[Path] = None) -> KitSettings:
+    """Add ``directory`` to the persisted READ-ONLY ``read_dirs`` list.
+
+    User scope only: a repository may not widen what its sessions read.
+    Refuses a directory ``read_grant_dir`` would not offer.
+    """
+    resolved = read_grant_dir(directory)
+    if not resolved or Path(resolved) != Path(directory).expanduser().resolve():
+        raise ValueError(
+            f"{directory} cannot be opened for reading in every session "
+            "(not a directory, or a home, system or key directory)")
+
+    def m(block: dict[str, Any]) -> None:
+        if resolved not in block["read_dirs"]:
+            block["read_dirs"].append(resolved)
+
+    return _mutate("user", None, user_path, m)
+
+
+def remove_read_dir(directory: str | os.PathLike, *,
+                    user_path: Optional[Path] = None) -> KitSettings:
+    """Remove ``directory`` from the persisted read list (safe if absent)."""
+    resolved = str(Path(directory).expanduser().resolve())
+
+    def m(block: dict[str, Any]) -> None:
+        block["read_dirs"] = [d for d in block["read_dirs"] if d != resolved]
+
+    return _mutate("user", None, user_path, m)
+
+
 def persist_pattern(pattern: str, *, kind: str = "allow",
                     scope: str = "user",
                     repo_dir: Optional[Path | str] = None,
@@ -254,6 +359,13 @@ def persist_pattern(pattern: str, *, kind: str = "allow",
         raise ValueError(f"kind must be 'allow' or 'deny', got {kind!r}")
     if not pattern:
         raise ValueError("pattern must be non-empty")
+    # A malformed regex would silently disable matching (or crash the
+    # gate) on every later turn — reject it at persist time instead.
+    import re as _re
+    try:
+        _re.compile(pattern)
+    except _re.error as exc:
+        raise ValueError(f"invalid regex pattern: {exc}") from exc
     key = "allow_patterns" if kind == "allow" else "deny_patterns"
 
     def m(block: dict[str, Any]) -> None:
@@ -294,7 +406,32 @@ def persist_default_mode(mode: str, *,
 # Convenience: derive sensible bash auto-allow regex for a one-shot command
 # ---------------------------------------------------------------------------
 
-def suggest_pattern_for_command(cmd: str) -> str:
+# Heads whose bare-head generalisation would be dangerous: one click on
+# "Allow + Permanent" for an innocuous 'rm build/tmp.txt' must NOT persist
+# a pattern that auto-allows every future rm/curl/ssh. These generalise to
+# the EXACT command instead.
+_NO_BARE_HEAD = frozenset({
+    "rm", "rmdir", "mv", "cp", "dd", "chmod", "chown", "chgrp", "ln",
+    "kill", "pkill", "killall", "curl", "wget", "nc", "ncat", "ssh",
+    "scp", "rsync", "sftp", "sudo", "su", "mkfs", "mount", "umount",
+    "truncate", "shred", "eval", "exec", "sh", "bash", "zsh",
+})
+
+# The same idea one level down: `<head> <verb>` is a fair generalisation
+# only when every invocation of that verb carries the same weight. These
+# do not — `git push` to a feature branch and `git push` to main differ by
+# what they can break, and `git commit -m` differs from `git commit
+# --author=`. Approving one must not persist a rule covering the other, so
+# they generalise to the exact command.
+_NARROW_SUBCOMMANDS = frozenset({
+    "git push", "git commit", "git merge", "git rebase", "git reset",
+    "git clean", "git checkout", "git restore",
+    "pip install", "pip uninstall", "conda remove", "npm publish",
+    "cargo publish", "cargo install", "uv publish",
+})
+
+
+def suggest_pattern_for_command(cmd: str, perms=None) -> str:
     """Translate a shell command into a re-usable auto-allow regex.
 
     Examples::
@@ -302,15 +439,106 @@ def suggest_pattern_for_command(cmd: str) -> str:
         'pytest -xvs tests/foo.py'   -> '^\\s*pytest\\b'
         'git status'                 -> '^\\s*git status\\b'
         'python3 -m delfin.cli x'    -> '^\\s*python3\\s+-m\\s+delfin\\.cli\\b'
+        'rm build/tmp.txt'           -> exact-match pattern (no bare 'rm')
+
+    A compound command (``a && b; c``) is judged by the gate segment by
+    segment, so a rule for its first word covered whatever came first and
+    nothing the gate had actually asked about: field report
+    20261020-140059 confirmed ``python3 - <<EOF … EOF; node --check .t.js;
+    rm -f .t.js`` with "Allow + Permanent", got ``^\\s*python3\\b``, and
+    was asked about ``rm -f .t.js`` again. For a compound the rule is one
+    alternation over the segments ``perms`` (the session's
+    KitToolPermissions; the built-in defaults when None) does not let
+    through, each generalised by the single-command rules below -- so a
+    ``rm`` or ``git push`` in it stays exact. Segments already allowed are
+    left out: naming them would turn a default into a user rule, and a user
+    rule for an interpreter (``node``) also lifts the interpreter check.
     """
-    parts = (cmd or "").strip().split()
+    segments = _blocking_segments(cmd, perms)
+    if len(segments) > 1:
+        parts = [_suggest_one(seg) for seg in segments]
+        parts = [p for p in parts if p]
+        if parts and all(p.startswith(_ANCHOR) for p in parts):
+            inner = []
+            for p in parts:
+                body = p[len(_ANCHOR):]
+                if body not in inner:
+                    inner.append(body)
+            if len(inner) == 1:
+                return _ANCHOR + inner[0]
+            return _ANCHOR + "(?:" + "|".join(inner) + ")"
+    if len(segments) == 1:
+        return _suggest_one(segments[0])
+    return _suggest_one(cmd)
+
+
+#: Every single-command suggestion starts with it; an alternation is built
+#: from what follows.
+_ANCHOR = r"^\s*"
+
+
+def _blocking_segments(cmd: str, perms=None) -> list[str]:
+    """The segments of ``cmd`` the gate would ask about, in order.
+
+    One segment for a plain command. For a compound: those that
+    ``perms._segment_auto_allowed`` refuses, plus those the interpreter
+    rule holds (``python3 - <<EOF`` passes the segment check and is asked
+    about as a whole). Empty when nothing can be singled out -- the caller
+    then falls back to the whole command."""
+    cmd = (cmd or "").strip()
+    if not cmd:
+        return []
+    try:
+        from .api_client import KitToolPermissions, _split_shell_segments
+        segments = _split_shell_segments(cmd)
+    except Exception:
+        return [cmd]
+    if len(segments) <= 1:
+        return segments or [cmd]
+    if perms is None:
+        try:
+            perms = KitToolPermissions(workspace=str(Path.cwd()),
+                                       mode="default")
+        except Exception:
+            return [cmd]
+    out = []
+    for seg in segments:
+        try:
+            blocked = (not perms._segment_auto_allowed(seg)
+                       or perms._interpreter_needs_confirm(seg))
+        except Exception:
+            blocked = True
+        if blocked:
+            out.append(seg)
+    return out
+
+
+def _suggest_one(cmd: str) -> str:
+    """The rule for one command (no chaining operators)."""
+    import re as _re
+    cmd = (cmd or "").strip()
+    parts = cmd.split()
     if not parts:
         return ""
     head = parts[0]
     if head in ("git", "uv", "pip", "conda", "npm", "yarn", "cargo") and len(parts) >= 2:
         verb = parts[1]
+        # Two tokens are the right granularity only when every invocation
+        # of that subcommand carries the same blast radius. For these it
+        # does not: approving `git push -u origin feature` once would
+        # persist `^\s*git\s+push\b`, and from then on `git push origin
+        # main` and `git push --force-with-lease origin main` auto-run in
+        # every future session — the invariant that pushing always goes
+        # through the gate, revoked by a click that asked about a feature
+        # branch. Fall through to the exact-command form instead.
+        if f"{head} {verb}" in _NARROW_SUBCOMMANDS:
+            return r"^\s*" + _re.escape(cmd) + r"\s*$"
         return rf"^\s*{head}\s+{verb}\b"
     if head in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
         mod = parts[2].replace(".", r"\.")
         return rf"^\s*{head}\s+-m\s+{mod}\b"
+    if head in _NO_BARE_HEAD or "/" in head:
+        # Destructive/network/interpreter heads (and path-invoked binaries):
+        # allow exactly THIS command, nothing broader.
+        return r"^\s*" + _re.escape(cmd) + r"\s*$"
     return rf"^\s*{head}\b"

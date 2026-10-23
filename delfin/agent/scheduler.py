@@ -14,25 +14,60 @@ restart. The Scheduler runs a background thread that polls every
 the callback is set by the dashboard once it knows how to dispatch
 into the agent loop. Without a callback, due entries are still
 recorded as overdue but not executed — they fire as soon as a
-callback is bound.
+callback is bound. Headless execution without any dashboard is
+provided by :mod:`delfin.agent.scheduler_daemon`, which passes its
+own fire callback straight into :meth:`Scheduler.tick`.
 
 Failures are isolated: a buggy callback never crashes the
-scheduler thread.
+scheduler thread. Consecutive callback failures are counted per
+entry; after ``_MAX_CONSECUTIVE_FAILURES`` the entry is disabled
+(persisted, with a reason) instead of retrying forever.
+
+Every route to a disabled entry goes through ``Scheduler._disable``,
+which emits an attention event as well as persisting the reason: a
+schedule that stops without saying so cannot be told apart from one
+that is simply not due yet. The save is atomic and merges with what
+is on disk, so a second writer's entries are neither torn nor lost.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Callable, Optional
 
 
 _DEFAULT_PATH = Path.home() / ".delfin" / "cron.json"
 _POLL_S = 30.0
+_MAX_CONSECUTIVE_FAILURES = 3
+# How late a ONE-SHOT wake-up may still be honoured. A one-shot is a
+# statement about a moment ("in two hours, check the calculation"); firing
+# it days later, on a machine whose state has moved on, is not a late
+# version of that request. Observed live: starting the daemon fired an
+# entry that had been due for 85 minutes, against a /tmp workspace left
+# by a test, and spent a real agent turn on it. Wide enough that a closed
+# laptop or a rebooted node still gets its wake-up. Recurring entries are
+# deliberately exempt — firing late IS the schedule.
+_STALE_ONCE_GRACE_S = 4 * 3600
+
+
+class DisableEntry(Exception):
+    """Raised by a fire callback to disable the entry immediately.
+
+    ``tick`` persists the ``disabled`` flag + reason instead of counting
+    the raise as an ordinary (retryable) failure. Used by the headless
+    daemon, e.g. when an entry's workspace no longer exists.
+    """
+
+    def __init__(self, reason: str = ""):
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass
@@ -47,9 +82,26 @@ class ScheduleEntry:
     next_fire_at: float = 0.0
     last_fired_at: float = 0.0
     fire_count: int = 0
+    # Headless-execution metadata (scheduler_daemon):
+    workspace: str = ""             # directory the prompt runs in headlessly
+    budget_usd: float = 0.0         # optional per-run cost cap (0 = default)
+    fail_count: int = 0             # consecutive fire failures
+    disabled: bool = False          # never fired while set (persisted)
+    disabled_reason: str = ""
 
     def is_due(self, now: float | None = None) -> bool:
         return (now or time.time()) >= self.next_fire_at
+
+    def is_stale(self, now: float | None = None) -> bool:
+        """Whether this entry is too late to be worth firing.
+
+        Only one-shots can go stale. A recurring entry firing late is the
+        schedule catching up, which is what it is for; a one-shot names a
+        moment, and the moment is gone.
+        """
+        if self.kind != "once":
+            return False
+        return ((now or time.time()) - self.next_fire_at) > _STALE_ONCE_GRACE_S
 
     def reschedule(self, fired_at: float | None = None) -> bool:
         """Update next_fire_at after a fire. Return True if still active."""
@@ -64,44 +116,250 @@ class ScheduleEntry:
         return False
 
 
+# The keys an entry may carry. A file written by a newer build can hold more,
+# and a reader that passed them all to ScheduleEntry dropped such an entry --
+# and then, taking the missing entry for a deletion, removed it on its next
+# save.
+_ENTRY_FIELDS = frozenset(f.name for f in fields(ScheduleEntry))
+
+
 class Scheduler:
     def __init__(self, path: Path | None = None):
         self.path = path or _DEFAULT_PATH
         self._entries: dict[str, ScheduleEntry] = {}
+        self._removed: set[str] = set()
         self._lock = threading.RLock()
         self._fire_callback: Optional[Callable[[ScheduleEntry], None]] = None
+        # One per open dashboard session: (key, callback, owns), where
+        # owns(session_id) says whether a wake-up belongs to that session.
+        self._listeners: list[tuple[object, Callable[[ScheduleEntry], None],
+                                    Callable[[str], bool]]] = []
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._load()
 
     # --- persistence ------------------------------------------------------
 
-    def _load(self) -> None:
+    def _read_file_or_none(self) -> dict[str, ScheduleEntry] | None:
+        """Parsed entries, or None when the file could not be read at all.
+
+        The difference matters for exactly one caller: dropping entries the
+        file no longer lists. An unreadable or missing file is not an empty
+        schedule, and treating it as one would delete every entry the user
+        has on the first transient read error.
+        """
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return
+            return None
+        out: dict[str, ScheduleEntry] = {}
         for raw in data.get("entries", []):
             try:
-                ent = ScheduleEntry(**raw)
-                self._entries[ent.id] = ent
+                ent = ScheduleEntry(**{k: v for k, v in raw.items()
+                                       if k in _ENTRY_FIELDS})
+                out[ent.id] = ent
             except (TypeError, ValueError):
                 continue
+        return out
+
+    def _read_file(self) -> dict[str, ScheduleEntry]:
+        out = self._read_file_or_none()
+        return {} if out is None else out
+
+    def _absorb_external_changes(self) -> None:
+        """Take in what another process did to this schedule.
+
+        Callers hold ``self._lock``.
+
+        The reload was ``add what I have never seen`` and nothing else,
+        which covers a schedule somebody CREATED elsewhere and no other
+        edit. Measured on the shipped code with a live scheduler and a
+        second one standing in for the CLI:
+
+            disabled elsewhere -> True on disk, still False in the running
+                                  one, and it goes on firing
+            deleted elsewhere  -> gone from disk, still here, and written
+                                  straight BACK by the next _save()
+
+        So both of the things a user reaches for to stop a scheduled agent
+        run did not stop it -- and these runs spend money unattended.
+
+        Everything adopted here only ever STOPS work. A disable is taken
+        and never un-taken, so a local stale-disable is not undone by an
+        older file; a deletion is honoured and recorded in ``_removed``, or
+        the next merge-on-write would resurrect it. Nothing here can start
+        something the user did not ask for.
+
+        Locally-owned firing state -- last_fired_at, fire_count,
+        next_fire_at -- is never overwritten from the file, which is why
+        the record is not simply replaced wholesale: the process that fires
+        an entry is the one that knows when it last fired.
+        """
+        on_disk = self._read_file_or_none()
+        if on_disk is None:
+            return                      # unreadable: absorb nothing
+        for key, ent in on_disk.items():
+            if key in self._removed:
+                continue
+            mine = self._entries.get(key)
+            if mine is None:
+                self._entries[key] = ent
+            elif ent.disabled and not mine.disabled:
+                mine.disabled = True
+                mine.disabled_reason = (ent.disabled_reason
+                                        or mine.disabled_reason)
+        for key in [k for k in self._entries
+                    if k not in on_disk and k not in self._removed]:
+            self._entries.pop(key, None)
+            self._removed.add(key)
+
+    def _load(self) -> None:
+        self._entries.update(self._read_file())
 
     def _save(self) -> None:
+        """Persist atomically, and merge rather than overwrite.
+
+        Two problems, one write. A plain ``write_text`` is not atomic: this
+        was the one state file in the agent that a reader could catch
+        half-written or empty, which for a schedule means entries simply
+        gone. And an in-process Scheduler loads once and never reloads, so
+        its save flattened whatever another process (the headless daemon,
+        the CLI, a second dashboard) had created in the meantime —
+        scheduling into a file that another writer would silently revert.
+
+        Merging on write keeps entries this instance never knew about,
+        while entries it deliberately removed stay removed.
+        """
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"entries": [asdict(e) for e in self._entries.values()]}
-            self.path.write_text(
-                json.dumps(payload, indent=2), encoding="utf-8",
-            )
+            merged = self._read_file()
+            merged.update(self._entries)
+            for entry_id in self._removed:
+                merged.pop(entry_id, None)
+            self._write_json(self.path,
+                             {"entries": [asdict(e) for e in merged.values()]})
+            owners = self._read_owners()
+            if any(entry_id not in merged for entry_id in owners):
+                self._write_json(self._owners_path(), {
+                    k: v for k, v in owners.items() if k in merged})
         except OSError:
             pass
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict) -> None:
+        """Atomic JSON write: a reader never sees a half-written file."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+    # --- which session a wake-up belongs to ------------------------------
+    # Kept beside cron.json, not in it: a build from before this field
+    # passes every key of an entry to ScheduleEntry, so an unknown one made
+    # it drop the entry and then delete it as removed elsewhere. The home
+    # directory is shared by every login node, and not all of them run the
+    # same build.
+
+    def _owners_path(self) -> Path:
+        return self.path.with_name(f"{self.path.stem}_owners.json")
+
+    def _read_owners(self) -> dict[str, str]:
+        try:
+            data = json.loads(self._owners_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return ({str(k): str(v) for k, v in data.items()}
+                if isinstance(data, dict) else {})
+
+    def owner_of(self, entry_id: str) -> str:
+        """The session that scheduled ``entry_id``; "" when none did."""
+        return self._read_owners().get(str(entry_id), "")
+
+    def _set_owner(self, entry_id: str, session_id: str) -> None:
+        try:
+            owners = self._read_owners()
+            owners[str(entry_id)] = str(session_id)
+            self._write_json(self._owners_path(), owners)
+        except OSError:
+            pass
+
+    def add_fire_listener(
+        self, key: object, callback: Callable[[ScheduleEntry], None],
+        owns: Callable[[str], bool],
+    ) -> None:
+        """Fire this session's wake-ups into ``callback``.
+
+        Several dashboard sessions run in one process; a single callback
+        sent every wake-up to whichever session was built last. A wake-up
+        goes to the session that ``owns`` its owner; one without an owner is
+        no session's. Adding with a key that is already there replaces that
+        listener.
+        """
+        with self._lock:
+            self._listeners = [row for row in self._listeners if row[0] != key]
+            self._listeners.append((key, callback, owns))
+
+    def remove_fire_listener(self, key: object) -> None:
+        with self._lock:
+            self._listeners = [row for row in self._listeners if row[0] != key]
+
+    def _callback_for(self, ent: ScheduleEntry
+                      ) -> Optional[Callable[[ScheduleEntry], None]]:
+        if not self._listeners:
+            return self._fire_callback
+        owner = self.owner_of(ent.id)
+        if not owner:
+            # Scheduled before wake-ups had an owner, or from the command
+            # line: no session's, so a new conversation is not woken by it.
+            return self._fire_callback
+        for _key, callback, owns in reversed(self._listeners):
+            try:
+                if owns(owner):
+                    return callback
+            except Exception:
+                continue
+        # Its session is not open here: it stays due until it is.
+        return None
+
+    # --- disable notification (the single choke point) --------------------
+
+    def _disable(self, ent: ScheduleEntry, reason: str) -> None:
+        """Disable an entry AND say so where a user will see it.
+
+        Every route to a disabled entry goes through here. The workspace
+        gate used to raise outside the block that emitted attention, so the
+        one case most worth telling about — a moved or deleted workspace
+        killing the schedule outright — was also the only silent one, while
+        an ordinary run failure did notify. A schedule that stops without
+        saying so is indistinguishable from one that is simply not due yet.
+        """
+        ent.disabled = True
+        ent.disabled_reason = reason
+        try:
+            from .attention import emit_attention
+            emit_attention(
+                "run_failed",
+                title=f"Schedule {ent.id} disabled",
+                detail=f"{ent.reason or ent.prompt[:120]} — {reason}"[:400],
+                workspace=str(ent.workspace or ""),
+            )
+        except Exception:
+            pass        # notification is best-effort; the disable is not
 
     # --- API --------------------------------------------------------------
 
     def schedule_once(
         self, *, delay_seconds: int, prompt: str, reason: str = "",
+        workspace: str = "", budget_usd: float = 0.0, session_id: str = "",
     ) -> ScheduleEntry:
         if delay_seconds < 1:
             raise ValueError("delay_seconds must be >= 1")
@@ -112,8 +370,14 @@ class Scheduler:
             reason=reason,
             delay_seconds=delay_seconds,
             next_fire_at=time.time() + delay_seconds,
+            # Recorded so the headless daemon knows where to run the
+            # prompt; the creating process's cwd is the best default.
+            workspace=str(workspace or os.getcwd()),
+            budget_usd=max(0.0, float(budget_usd or 0.0)),
         )
         with self._lock:
+            if session_id:
+                self._set_owner(ent.id, session_id)
             self._entries[ent.id] = ent
             self._save()
         return ent
@@ -121,6 +385,7 @@ class Scheduler:
     def schedule_interval(
         self, *, every_seconds: int, prompt: str, reason: str = "",
         fire_immediately: bool = False,
+        workspace: str = "", budget_usd: float = 0.0, session_id: str = "",
     ) -> ScheduleEntry:
         if every_seconds < 60:
             raise ValueError("every_seconds must be >= 60 (be sensible)")
@@ -132,20 +397,30 @@ class Scheduler:
             reason=reason,
             every_seconds=every_seconds,
             next_fire_at=first_fire,
+            workspace=str(workspace or os.getcwd()),
+            budget_usd=max(0.0, float(budget_usd or 0.0)),
         )
         with self._lock:
+            if session_id:
+                self._set_owner(ent.id, session_id)
             self._entries[ent.id] = ent
             self._save()
         return ent
 
     def list_entries(self) -> list[ScheduleEntry]:
+        """Every entry in the schedule, including ones another process
+        created since this instance was built."""
         with self._lock:
+            self._absorb_external_changes()
             return list(self._entries.values())
 
     def delete(self, entry_id: str) -> bool:
         with self._lock:
             removed = self._entries.pop(entry_id, None) is not None
+            if not removed and entry_id in self._read_file():
+                removed = True          # created by another process
             if removed:
+                self._removed.add(entry_id)
                 self._save()
             return removed
 
@@ -167,29 +442,76 @@ class Scheduler:
         if self._thread is not None:
             self._thread.join(timeout=2)
 
-    def tick(self) -> int:
-        """Run a single polling pass. Returns number of fires.
+    def tick(
+        self,
+        fire_callback: Callable[[ScheduleEntry], None] | None = None,
+    ) -> int:
+        """Run a single polling pass. Returns number of successful fires.
+
+        ``fire_callback`` overrides the bound callback for this pass — the
+        headless daemon passes its executor here without touching the
+        dashboard binding. Disabled entries are never fired. A callback
+        exception counts as a consecutive failure (entry retried next
+        pass; disabled with a reason after ``_MAX_CONSECUTIVE_FAILURES``);
+        raising :class:`DisableEntry` disables the entry immediately.
 
         Exposed separately so tests don't have to wait for the thread.
         """
         fired = 0
+        changed = False
         now = time.time()
         with self._lock:
+            # Reload first: a long-lived in-process scheduler otherwise
+            # never sees an entry the CLI, the daemon or a second front end
+            # wrote after it was constructed.
+            self._absorb_external_changes()
             for ent in list(self._entries.values()):
-                if not ent.is_due(now):
+                if ent.disabled or not ent.is_due(now):
                     continue
-                cb = self._fire_callback
+                # A one-shot that went unseen for hours is not fired late;
+                # it is disabled with the reason, so the entry can still be
+                # found and understood rather than vanishing.
+                if ent.is_stale(now):
+                    self._disable(ent, (
+                        f"not fired: overdue by "
+                        f"{int(now - ent.next_fire_at)}s, past the "
+                        f"{int(_STALE_ONCE_GRACE_S)}s grace for a one-shot "
+                        "wake-up. Schedule it again if it is still wanted."))
+                    changed = True
+                    continue
+                if fire_callback is not None and self.owner_of(ent.id):
+                    # A wake-up a SESSION scheduled is that session's. The
+                    # override is how the headless daemon fires entries, and
+                    # it used to fire these too: with the dashboard closed,
+                    # a session's "check again in 30 min" became an agent
+                    # turn nobody watched (review 2026-09-16, after a tmux
+                    # that ended mid-run). It waits for its session instead.
+                    continue
+                cb = fire_callback or self._callback_for(ent)
                 if cb is None:
                     continue
                 try:
                     cb(ent)
-                except Exception:
+                except DisableEntry as exc:
+                    self._disable(
+                        ent, exc.reason or "disabled by fire callback")
+                    changed = True
                     continue
+                except Exception as exc:
+                    ent.fail_count += 1
+                    if ent.fail_count >= _MAX_CONSECUTIVE_FAILURES:
+                        self._disable(ent, (
+                            f"disabled after {ent.fail_count} consecutive "
+                            f"failures (last: {str(exc)[:160]})"))
+                    changed = True
+                    continue
+                ent.fail_count = 0
                 fired += 1
                 still_active = ent.reschedule(now)
                 if not still_active:
                     self._entries.pop(ent.id, None)
-            if fired:
+                    self._removed.add(ent.id)
+            if fired or changed:
                 self._save()
         return fired
 
@@ -238,6 +560,7 @@ def reset_scheduler() -> None:
 
 
 __all__ = [
+    "DisableEntry",
     "ScheduleEntry",
     "Scheduler",
     "get_scheduler",

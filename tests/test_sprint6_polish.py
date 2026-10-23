@@ -22,16 +22,16 @@ import pytest
 
 
 def test_mcp_reset_registry_clears_singleton(monkeypatch, tmp_path):
-    """reset_registry() must null out the module-level _REGISTRY so the
-    next get_registry() rebuilds from disk — this is what /mcp reload
-    relies on."""
+    """reset_registry() must drop the cached registry so the next
+    get_registry() rebuilds from disk — this is what /mcp reload relies
+    on. Cached per resolved workspace, so the key comes along."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from delfin.agent import mcp_client as mcp
     mcp.reset_registry()
     r1 = mcp.get_registry()
-    assert mcp._REGISTRY is r1
+    assert mcp._REGISTRIES[mcp.registry_key(None)] is r1
     mcp.reset_registry()
-    assert mcp._REGISTRY is None
+    assert mcp._REGISTRIES == {}
     r2 = mcp.get_registry()
     assert r2 is not r1   # fresh instance after reset
 
@@ -62,15 +62,19 @@ def test_ask_user_question_schema_accepts_preview_field():
 # ---------------------------------------------------------------------------
 
 
-def test_bash_job_status_dict_marks_running_and_finished():
+def test_bash_job_status_dict_marks_running_and_finished(tmp_path):
     """The watcher loop in tab_agent uses status_dict()['exit_code'] to
     decide when to auto-stop; this is a regression guard."""
     from delfin.agent.bash_jobs import get_registry
     reg = get_registry()
+    # A scratch cwd, not the process's. The registry lives at
+    # ``<cwd>/.delfin/bash_jobs.json``, so passing ``Path.cwd()`` wrote a
+    # job record into the DELFIN checkout on every run -- and the
+    # ``.delfin/`` ignore rule kept it out of `git status`.
     job = reg.start(
         "echo hi && sleep 0.1",
         description="watcher-smoke",
-        cwd=str(Path.cwd()),
+        cwd=str(tmp_path),
     )
     assert job is not None
     # Block briefly for stdout to be written + process to exit

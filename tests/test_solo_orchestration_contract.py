@@ -1,6 +1,6 @@
-"""Solo agent orchestration CONTRACT — keep it working like Claude Code.
+"""Solo agent orchestration CONTRACT — keep the proven working loop intact.
 
-The solo_agent role prompt already codifies the Claude-Code working method
+The solo_agent role prompt already codifies the proven agentic working method
 (understand → plan → read → implement → verify → report; live task list; probe
 before assuming; verify after modifying; parallel tool calls; change tactic on
 repeated failure; ask when genuinely uncertain). This test PINS that method as
@@ -29,7 +29,7 @@ def _text() -> str:
     return _SOLO.read_text(encoding="utf-8")
 
 
-# The canonical Claude-Code working loop, expressed as required phrases. Each
+# The canonical agentic working loop, expressed as required phrases. Each
 # maps to a systematic the agent must keep. Update this list CONSCIOUSLY when
 # the method itself changes — never to silence a failure from a careless trim.
 _WORKING_LOOP = [
@@ -62,7 +62,7 @@ _ORCHESTRATION = [
 def test_solo_prompt_keeps_orchestration_systematic(phrase):
     assert phrase in _text(), (
         f"solo_agent orchestration regressed — missing {phrase!r}. "
-        "The agent must keep approaching tasks the Claude-Code way; restore it "
+        "The agent must keep approaching tasks with the proven working loop; restore it "
         "or update this contract consciously."
     )
 

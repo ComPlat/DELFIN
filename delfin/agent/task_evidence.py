@@ -1,0 +1,617 @@
+"""What a completed task can show for its work -- judged on the CLAIM,
+not on the words.
+
+Drop-in replacement for ``api_client.check_completion_claim`` with the
+same arguments and the same return shape (``{verdict, kind, detail,
+note}``, verdict one of ``verified`` / ``unmet`` / ``unchecked``).
+
+WHY THIS MODULE EXISTS. The supervised run of 2026-09-22 (s4) showed the
+old check keying on WORDING rather than work: "eine Tabelle der
+Testfaelle" in a task that wrote a markdown section was reported
+``unmet`` for lack of a .xlsx; a file only mentioned as a reference
+("wie in foo.py beschrieben") made the task ``unmet`` until foo.py
+itself was written. The pattern behind both: a word or a filename is
+treated as a claim whenever it OCCURS in the text, whatever its role.
+
+The distinction this module draws instead: a word or a path is a claim
+only when it is the OBJECT of the task. Concretely,
+
+* a named path accuses only when it comes from the SUBJECT, in no
+  mention context ("wie in X", "analog zu X", "kam aus X", "as in X",
+  "based on X", ...), and no write of it is recorded. A path from the
+  DESCRIPTION, or one that is only referenced, is context: it never
+  turns a finished task ``unmet``.
+* an artefact noun ("Tabelle", "Bericht") promises a file TYPE only
+  with an explicit format word (PDF, Excel, CSV, Word, pptx, ...)
+  attached: "PDF-Bericht erstellen", "Erstelle den Bericht als PDF",
+  "Excel-Tabelle anlegen". Without one, the word describes content, not
+  a container -- the change journal decides.
+* the write/read intent is read from the SUBJECT, not from subject +
+  description: a note instruction in the description ("notiere
+  Stichpunkte in der Antwort") cannot turn a read task into a write
+  task.
+
+And the bias throughout: where the text cannot decide, the answer is
+``unchecked``. A false ``unmet`` makes the agent doubt or redo finished
+work; ``unchecked`` is an honest unknown. Every heuristic here that
+judged correctly yesterday keeps its verdict -- pinned in
+``tests/test_task_evidence_characterization.py``.
+
+The verb tables and the path extraction are the ones the old check
+measured against real office runs (``delfin/agent/german.py`` carries
+their history); they are reused, not reinvented.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from .german import GERMAN_READ_VERB_SOURCE, GERMAN_WRITE_VERB_SOURCE
+from . import evidence_freshness as evidence
+from . import counter_test
+
+__all__ = ["check_completion_claim"]
+
+
+# ---------------------------------------------------------------------------
+# Reused vocabulary -- measured against real office runs, see german.py
+# ---------------------------------------------------------------------------
+
+# Verbs that promise a CHANGE.
+_WRITE_VERB_RE = re.compile(
+    r"(?i)\b(?:add|create|write|implement|build|generate|produce|export|"
+    r"save|fix|repair|patch|refactor|rename|move|update|extend|port|"
+    r"migrate|wire|integrate|remove|delete|split|merge|fill\s+in|"
+    r"fill\s+out|enter|record|book|sort|"
+    r"erstell\w*|schreib\w*|füg\w*|hinzufüg\w*|implementier\w*|bau\w*|"
+    r"erzeug\w*|generier\w*|exportier\w*|speicher\w*|beheb\w*|"
+    r"reparier\w*|korrigier\w*|refaktor\w*|umbenenn\w*|verschieb\w*|"
+    r"aktualisier\w*|erweiter\w*|entfern\w*|lösch\w*|anpass\w*|änder\w*|"
+    r"einbau\w*|einbind\w*|ergänz\w*|umstell\w*|überarbeit\w*|"
+    r"integrier\w*|umbau\w*|aufräum\w*|bereinig\w*)\b"
+    r"|" + GERMAN_WRITE_VERB_SOURCE
+)
+
+# Verbs that promise only LOOKING.
+_READ_VERB_RE = re.compile(
+    r"(?i)\b(?:read|review|analyse|analyze|inspect|examine|check|"
+    r"understand|summarise|summarize|compare|explore|investigate|study|"
+    r"audit|trace|total|count|"
+    r"lies|lese\w*|les\w*|prüf\w*|überprüf\w*|analysier\w*|untersuch\w*|"
+    r"sicht\w*|versteh\w*|vergleich\w*|durchsuch\w*|betracht\w*|"
+    r"anschau\w*|ansehen|recherchier\w*|bewert\w*)\b"
+    r"|" + GERMAN_READ_VERB_SOURCE
+)
+
+_TEST_TASK_RE = re.compile(
+    r"(?i)(?:\b(?:tests?|testing|testsuite|test-suite|pytest|unittest|"
+    r"regression|verify|verification|validate|"
+    r"teste\w*|testen|verifizier\w*|validier\w*)\b"
+    r"|\b\w+tests\b|\b\w+testsuite\b)"
+)
+
+# Wave-10/s1: tasks about RUNNING A CALCULATION. Same evidence shape as
+# the test class (a green run in the window), but the proof comes from
+# the calculation ledger, not the test ledger. Method words (dft, orca)
+# are the strong signal; the optimisation verbs are guarded by the
+# ledger: without a calc ledger the class stays unchecked, so code
+# tasks ("Optimiere den Import") are untouched.
+_CALC_TASK_RE = re.compile(
+    r"(?i)(?:\b(?:calculat\w*|comput\w*|optimiz\w*|optimis\w*|"
+    r"optimier\w*|berechn\w*|rechn\w*|dft|orca)\b)"
+)
+
+# Extensions a subject can name unambiguously enough to key a check on.
+_TASK_PATH_EXTS: frozenset[str] = frozenset({
+    "py", "pyi", "ipynb", "js", "jsx", "ts", "tsx", "json", "yaml", "yml",
+    "toml", "cfg", "ini", "md", "rst", "txt", "csv", "tsv", "sh", "bash",
+    "c", "h", "cc", "cpp", "hpp", "rs", "go", "java", "kt", "rb", "php",
+    "jl", "sql", "html", "htm", "css", "scss", "xml", "tex", "pdf",
+    "docx", "doc", "xlsx", "xls", "pptx", "png", "svg", "jpg", "jpeg",
+    "log", "inp", "out", "xyz", "mol", "sdf", "cif", "dat", "gjf",
+})
+
+_TASK_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~+-]{3,}")
+
+
+# ---------------------------------------------------------------------------
+# A path that is MENTIONED, not targeted
+# ---------------------------------------------------------------------------
+
+# Constructions that make a following path a REFERENCE, not the object of
+# the task: "wie in foo.py", "analog zu check_base.py", "kam aus foo.py",
+# "as described in foo.py", "based on foo.py", "siehe foo.py".
+# The path names where the knowledge came from, not where the work goes.
+_MENTION_BEFORE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"wie\s+in|analog\s+zu|analog\w*|vergleichbar\s+mit|entsprechend|"
+    r"nach\s+Art\s+von|siehe|vgl\.?|vergleiche\s+mit|"
+    r"based\s+on|as\s+described\s+in|as\s+in|as\s+per|following|"
+    r"see|cf\.|compared\s+to|"
+    # Where something came FROM, when it is not the thing being changed:
+    # "der Fehler kam aus foo.py". Only in the passive/past framing --
+    # "aus X erstellen" is a write and must not match.
+    r"stammt\s+aus|kam\s+aus|kommt\s+aus|kommt\s+von|stammt\s+von|"
+    r"originates\s+from|came\s+from|comes\s+from|"
+    r"auf\s+Basis\s+von|anhand\s+von"
+    r")\s*$"
+)
+
+
+def _is_mentioned(path: str, text: str) -> bool:
+    """Whether *path* occurs in *text* only in a mention construction.
+
+    True when every occurrence is preceded (within its sentence fragment)
+    by a reference construction: "wie in", "analog zu", "kam aus", "as
+    described in", ... A path that also stands on its own -- "Behebe den
+    Fehler in bar.py, wie in foo.py" -- is both, and being an object
+    anywhere wins.
+    """
+    try:
+        for m in re.finditer(re.escape(path), text, re.IGNORECASE):
+            before = text[max(0, m.start() - 40):m.start()]
+            # Stop at a clause boundary: a construction only governs the
+            # path directly after it.
+            before = re.split(r"[.;:!?\n]", before)[-1]
+            if _MENTION_BEFORE_RE.search(before):
+                continue
+            return False
+        return bool(re.search(re.escape(path), text, re.IGNORECASE))
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Artefact nouns and the formats they can promise
+# ---------------------------------------------------------------------------
+
+# A format word makes a noun promise a FILE TYPE. Without one, "Tabelle"
+# and "Bericht" describe content (a table in a markdown section is a
+# table) and the change journal decides.
+_FORMAT_PROMISES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pdf", (".pdf",)),
+    ("docx", (".docx",)),
+    ("word", (".docx", ".doc")),
+    ("excel", (".xlsx", ".xls")),
+    ("xlsx", (".xlsx",)),
+    ("csv", (".csv",)),
+    ("pptx", (".pptx",)),
+    ("presentation", (".pptx",)),
+)
+
+# Format words as whole words (with German inflection), and compounds
+# joined by hyphen or directly: "PDF-Bericht", "Excel-Tabelle",
+# "Word-Dokument". "bericht als pdf" (format after the noun) is covered
+# by the second check below.
+_FORMAT_WORD_RE = re.compile(
+    # "word" only as a compound ("Word-Dokument"): bare English "word"
+    # ("explain the word Tabelle") is not a format promise.
+    r"(?i)(?:(?:\b|\w+-)(?:pdf|docx|xlsx|pptx|excel|csv)\b"
+    r"|\bword-|\bword\s+datei\b|\bword\s+dokument\w*\b)"
+)
+
+
+def _format_word(text: str) -> str:
+    """The file-format word a subject carries, "" when none does."""
+    try:
+        m = _FORMAT_WORD_RE.search(text or "")
+        return m.group(0).lower().lstrip("-") if m else ""
+    except Exception:
+        return ""
+
+
+def _unmet_format(subject: str, produced) -> str:
+    """The format a subject explicitly promises but no written file has.
+
+    "" when the subject carries no format word, or when a written path
+    carries the promised extension. *produced* must be write evidence
+    only -- reads prove nothing (see the old check's history).
+    """
+    try:
+        word = _format_word(subject)
+        if not word:
+            return ""
+        # Map the matched word back onto its promise table entry.
+        for name, extensions in _FORMAT_PROMISES:
+            if name in word:
+                suffixes = {Path(str(p).replace("\\", "/")).suffix.lower()
+                            for p in (produced or ())}
+                if any(e in suffixes for e in extensions):
+                    return ""
+                return name
+        return ""
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Path extraction and matching
+# ---------------------------------------------------------------------------
+
+def _paths_in_text(text) -> list[str]:
+    """File paths a text names, in order (same rules as before: a closed
+    extension set, so "version 1.2" and "z.B." are not paths)."""
+    out: list[str] = []
+    try:
+        for token in _TASK_PATH_TOKEN_RE.findall(str(text or "")):
+            token = token.strip(".,;:/")
+            if "." not in token:
+                continue
+            stem, _, ext = token.rpartition(".")
+            if ext.lower() not in _TASK_PATH_EXTS:
+                continue
+            if not stem or not any(c.isalnum() for c in stem):
+                continue
+            if token not in out:
+                out.append(token)
+    except Exception:
+        return out
+    return out
+
+
+def _path_matches(candidate: str, recorded: str) -> bool:
+    """Suffix match, so "mylib/opt/wrapper.py" matches the absolute
+    "/home/u/proj/mylib/opt/wrapper.py" and nothing shorter."""
+    try:
+        c = str(candidate).replace("\\", "/").strip("/").lower()
+        r = str(recorded).replace("\\", "/").strip("/").lower()
+        return bool(c) and bool(r) and (r == c or r.endswith("/" + c))
+    except Exception:
+        return False
+
+
+def _verdict(kind: str, verdict: str, detail: str = "", note: str = "") -> dict:
+    return {"verdict": verdict, "kind": kind, "detail": detail, "note": note}
+
+
+# ---------------------------------------------------------------------------
+# Enumerated parts in the description (Welle 11, phase 2)
+# ---------------------------------------------------------------------------
+
+# A numbered ("1." / "1)") or lettered ("a)" / "a.") item at the start of
+# a line. Dash/bullet lists are deliberately NOT parts: in this repo's
+# task descriptions a dash list is the shape of context notes ("use the
+# gate for tests", "do not push") far more often than of work parts.
+_PART_ITEM_RE = re.compile(
+    r"(?m)^[ \t]*(\d{1,2}|[a-zA-Z])(?:[.)])\s+(\S.*)$")
+
+
+def _enumerated_parts(description: str) -> list[tuple[str, str]]:
+    """The work parts a description enumerates, as (label, text) pairs.
+
+    At least two items make it a parts list -- one numbered line is
+    usually prose numbering, not a decomposition. Contiguous runs of
+    the same kind (digits or letters) are collected; a line that breaks
+    the run ends it.
+    """
+    try:
+        items: list[tuple[str, str]] = []
+        for m in _PART_ITEM_RE.finditer(str(description or "")):
+            items.append((m.group(1), m.group(2)))
+        if len(items) < 2:
+            return []
+        # Mixing "1." with "a)" mid-list is a fragment, not a
+        # decomposition: keep the list only when the labels share their
+        # kind, or it starts as a numbering that continues.
+        kinds = {"d" if label[0].isdigit() else "l" for label, _ in items}
+        if len(kinds) > 1:
+            return []
+        return items
+    except Exception:
+        return []
+
+
+def _part_verdict(part: tuple[str, str], *, changes, observed, tests,
+                  calcs, window_start: float,
+                  current_fingerprint) -> dict:
+    """Judge one enumerated part as if it were the task's subject.
+
+    Reuses the same ladder by calling the check on the part text with
+    the same ledgers; a part's claims are judged the way a subject's
+    are. The subject is NOT included: the part stands alone.
+    """
+    label, text = part
+    sub = check_completion_claim(
+        text, "", changes=changes, observed=observed, tests=tests,
+        calcs=calcs, window_start=window_start,
+        current_fingerprint=current_fingerprint)
+    sub.setdefault("label", label)
+    return sub
+
+
+
+# ---------------------------------------------------------------------------
+# The check
+# ---------------------------------------------------------------------------
+
+def check_completion_claim(
+    subject: str,
+    description: str = "",
+    *,
+    changes=(),
+    observed=None,
+    tests=None,
+    durable_test_runs=None,
+    calcs=None,
+    window_start: float = 0.0,
+    current_fingerprint: dict | None = None,
+) -> dict:
+    """What the session can show for a task about to be marked completed.
+
+    Same contract as ``api_client.check_completion_claim``: returns
+    ``{"verdict", "kind", "detail", "note"}`` with verdict
+    ``verified`` / ``unmet`` / ``unchecked``; pure over its arguments
+    (*changes* the write ledger ``[{path, ts, created}]``, *observed*
+    the read ledger, *tests* the test-evidence ledger, *calcs* the
+    calculation ledger (``[{ts, folder, outcome, worst}]``, wave-10/s1),
+    *window_start* the epoch the task went in_progress).
+
+    The difference is WHAT counts as a claim. Only the object of the
+    task accuses: a path from the subject that is not merely mentioned
+    (``_is_mentioned``), or a file format the subject explicitly names
+    (``_unmet_format``). A path that only occurs in the description, or
+    inside a reference construction, is context. Where the text cannot
+    decide, the answer is ``unchecked`` -- a false ``unmet`` makes the
+    agent doubt or redo finished work, and an honest unknown never
+    does.
+    """
+    try:
+        subject_text = str(subject or "")
+        changed = [c for c in (changes or ()) if isinstance(c, dict)]
+        written = [str(c.get("path", "")) for c in changed if c.get("path")]
+        read_paths = None if observed is None else [
+            str(p) for p in (observed or ())]
+
+        # Intent comes from the SUBJECT. A description can say "notiere
+        # Stichpunkte" without turning a read task into a write task.
+        wants_write = bool(_WRITE_VERB_RE.search(subject_text))
+        reads_only = (not wants_write
+                      and bool(_READ_VERB_RE.search(subject_text)))
+
+        # 0. Enumerated parts (Welle 11, phase 2): when the description
+        #    decomposes the work into numbered/lettered items, each part
+        #    is judged as a task of its own, and one part without
+        #    evidence holds the whole task back. Placed BEFORE the
+        #    single-subject ladder: the first path claim of the subject
+        #    used to decide alone, and the other parts were invisible
+        #    (wave 10, s14: "fertig" with 1 of 5 parts done).
+        parts = _enumerated_parts(description)
+        if len(parts) >= 2:
+            part_results = [
+                _part_verdict(p, changes=changed, observed=observed,
+                              tests=tests, calcs=calcs,
+                              window_start=window_start,
+                              current_fingerprint=current_fingerprint)
+                for p in parts]
+            unmet_parts = [r for r in part_results
+                           if r.get("verdict") == "unmet"]
+            if unmet_parts:
+                first = unmet_parts[0]
+                label = first.get("label", "?")
+                return _verdict(
+                    "parts", "unmet", first.get("detail", ""),
+                    f"part {label} has no evidence: "
+                    f"{first.get('note') or first.get('detail') or 'nothing checkable in it'}"
+                    .strip())
+            if all(r.get("verdict") == "verified" for r in part_results):
+                return _verdict(
+                    "parts", "verified",
+                    f"{len(part_results)} part(s) evidenced")
+            # Some parts verified, none unmet -- at least one unchecked
+            # part. The honest answer for the task as a whole.
+            unchecked_labels = ", ".join(
+                r.get("label", "?") for r in part_results
+                if r.get("verdict") == "unchecked")
+            return _verdict(
+                "parts", "unchecked", "not all parts checkable",
+                f"part(s) {unchecked_labels} name nothing this session "
+                f"can check.")
+
+        # 1. A path the SUBJECT names as its object. The mention guard
+        #    applies only where the path must be WRITTEN: for a read
+        #    task the file is the object being looked at, however the
+        #    sentence carries it.
+        subject_paths = [p for p in _paths_in_text(subject_text)
+                         if reads_only or not _is_mentioned(p, subject_text)]
+        for cand in subject_paths:
+            if any(_path_matches(cand, p) for p in written):
+                return _verdict("path_write", "verified", cand)
+        unmatched = [c for c in subject_paths
+                     if not any(_path_matches(c, p) for p in written)]
+        if unmatched:
+            cand = unmatched[0]
+            seen = (None if read_paths is None
+                    else any(_path_matches(cand, p) for p in read_paths))
+            if reads_only:
+                if seen:
+                    return _verdict("path_read", "verified", cand)
+                if seen is None:
+                    return _verdict("path_read", "unchecked", cand)
+                return _verdict(
+                    "path_untouched", "unmet", cand,
+                    f"names {cand} and this session neither read nor wrote "
+                    f"it.")
+            if wants_write:
+                return _verdict(
+                    "path_unwritten", "unmet", cand,
+                    f"names {cand} and no write of it is recorded"
+                    + (" (it was only read)" if seen else "") + ".")
+            if seen:
+                return _verdict("path_read", "verified", cand)
+            if seen is None:
+                return _verdict("path_read", "unchecked", cand)
+            return _verdict(
+                "path_untouched", "unmet", cand,
+                f"names {cand} and this session neither read nor wrote it.")
+
+        # 2. An explicitly promised file format. Bare "Tabelle" /
+        #    "Bericht" describe content, not a container; the journal
+        #    decides those below.
+        if not reads_only:
+            missing = _unmet_format(subject_text, written)
+            if missing:
+                return _verdict(
+                    "artifact", "unmet", missing,
+                    f"names a {missing} and no {missing} file was written "
+                    f"in this session.")
+            if _format_word(subject_text):
+                return _verdict("artifact", "verified",
+                                _format_word(subject_text))
+
+        # 3. A test / verification task needs a green run in the window --
+        #    and that run must still describe the CURRENT tree state
+        #    (night run 2026-09-26, assignment Y: a green count was quoted
+        #    after the code beneath it had changed; the "2 passed" belonged
+        #    to an older tree). When a *current_fingerprint* is supplied,
+        #    a green run whose state fingerprint is stale does not verify.
+        if _TEST_TASK_RE.search(subject_text):
+            if tests is None:
+                return _verdict("tests", "unchecked", "no test ledger")
+            entries = [e for e in tests if isinstance(e, dict)]
+            in_window = [
+                e for e in entries
+                if float(e.get("ts", 0) or 0) >= float(window_start or 0)
+            ]
+            # A run that executed no tests proves nothing: pytest maps
+            # "all skipped / deselected / nothing collected" to exit 0 and
+            # the runner to status "ok" (delfin/agent/test_runner.py), so
+            # failed == 0 alone cannot separate it from a pass. The bash
+            # path in api_client states the same rule for red-state
+            # clearing ("only a run that demonstrably executed tests").
+            # Only an entry that POSITIVELY says passed == 0 (and no
+            # failure) proves an empty execution. An entry without a
+            # "passed" key is the pre-count ledger shape (only
+            # failed/status) -- it claims nothing about how many tests
+            # ran, and judging it empty broke
+            # test_a_completed_task_must_show_the_work (wave-10 pin).
+            ran_any = [e for e in in_window
+                       if "passed" not in e
+                       or int(e.get("passed", 0) or 0) > 0
+                       or int(e.get("failed", 0) or 0) > 0]
+            if current_fingerprint is not None:
+                # Entries from ledgers that predate stamping carry no
+                # fingerprint; is_stale reports them stale, the safe
+                # direction for an unknown state.
+                fresh_green = [
+                    e for e in in_window
+                    if int(e.get("failed", 0) or 0) == 0
+                    and str(e.get("status", "")) not in ("failed", "error",
+                                                         "gave_up")
+                    and not evidence.is_stale(e, current_fingerprint)]
+            else:
+                fresh_green = [
+                    e for e in in_window
+                    if int(e.get("failed", 0) or 0) == 0
+                    and str(e.get("status", "")) not in ("failed", "error",
+                                                         "gave_up")]
+            fresh_green = [e for e in fresh_green
+                           if e in ran_any]
+            if fresh_green:
+                v = _verdict("tests", "verified",
+                             f"{len(fresh_green)} green run(s)")
+                if durable_test_runs is not None:
+                    try:
+                        # The journal records carry their stamps: a test
+                        # changed after its red run is no control.
+                        written = [entry for entry in changes
+                                   if isinstance(entry, dict)
+                                   and entry.get("path")]
+                        _line = counter_test.assess(
+                            written,
+                            counter_test.normalize_test_runs(durable_test_runs))
+                    except Exception:
+                        _line = None
+                    if _line and _line != "shown":
+                        v["note"] = ((v.get("note") or "") + " " + _line).strip()
+                return v
+            if current_fingerprint is not None and in_window:
+                # Green runs exist but every in-window run is stale for
+                # the current state: the numbers belong to an older
+                # tree -- name that, do not report it as "N failing".
+                stale_in_window = [
+                    e for e in in_window
+                    if evidence.is_stale(e, current_fingerprint)]
+                if stale_in_window and len(stale_in_window) == len(in_window):
+                    why = evidence.note(evidence.is_stale(
+                        stale_in_window[-1], current_fingerprint))
+                    return _verdict(
+                        "tests_stale_state", "unmet", "state moved on",
+                        f"is a test task and every recorded run predates the "
+                        f"current tree state -- {why}")
+            if in_window and not ran_any:
+                return _verdict(
+                    "tests_empty", "unmet", "no tests executed",
+                    "is a test task and every run recorded since it "
+                    "started executed no tests (all skipped, deselected "
+                    "or nothing collected) -- a run that runs nothing "
+                    "does not verify the claim.")
+            if in_window:
+                worst = max(int(e.get("failed", 0) or 0) for e in in_window)
+                return _verdict(
+                    "tests_red", "unmet", f"{worst} failing",
+                    f"is a test task and the runs recorded since it started "
+                    f"were not green ({worst} failure(s) in the last one).")
+            if entries:
+                return _verdict(
+                    "tests_stale", "unmet", "before the task started",
+                    "is a test task and every recorded test run predates "
+                    "it — nothing was run since the work began.")
+            return _verdict(
+                "tests_none", "unmet", "no run recorded",
+                "is a test task and this session recorded no test run at "
+                "all.")
+
+        # 4. Wave-10/s1: a calculation task needs a clean run in the
+        #    window -- a failed run, or a run the result critic flagged
+        #    error-level, does not verify the claim. Only fires when a
+        #    calc ledger exists; without one the answer is unchecked,
+        #    so the optimisation words stay safe for code tasks.
+        if calcs is not None and _CALC_TASK_RE.search(subject_text):
+            entries = [e for e in calcs if isinstance(e, dict)]
+            in_window = [
+                e for e in entries
+                if float(e.get("ts", 0) or 0) >= float(window_start or 0)
+            ]
+            clean = [e for e in in_window
+                     if str(e.get("outcome", "")).lower() == "succeeded"
+                     and str(e.get("worst", "")).lower() in ("ok", "warn",
+                                                             "")]
+            if clean:
+                return _verdict("calc", "verified",
+                                f"{len(clean)} clean run(s)")
+            if in_window:
+                return _verdict(
+                    "calc_red", "unmet",
+                    f"{len(in_window)} run(s), none clean",
+                    "is a calculation task and the runs recorded since it "
+                    "started either failed or carry a critic error.")
+            return _verdict(
+                "calc_none", "unmet", "no run recorded",
+                "is a calculation task and this session recorded no "
+                "calculation run at all.")
+
+        # 5. An edit / refactor task with no path named: the journal has
+        #    to show a mutation. A change earlier in the session still
+        #    counts -- editing first and flipping the status afterwards
+        #    is doing the work, not faking it.
+        if wants_write:
+            if any(c.get("ts", 0) >= float(window_start or 0)
+                   for c in changed):
+                return _verdict("journal_window", "verified",
+                                f"{len(changed)} change(s)")
+            if changed:
+                return _verdict("journal_session", "verified",
+                                "changed before this task started")
+            return _verdict(
+                "no_change", "unmet", "nothing written",
+                "promises a change and this session changed no file at "
+                "all.")
+
+        return _verdict("", "unchecked", "nothing checkable in the subject")
+    except Exception:
+        return _verdict("", "unchecked", "check failed")
+
+
+
+

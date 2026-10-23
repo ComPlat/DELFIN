@@ -1,6 +1,9 @@
 """Cluster utilities for automatic resource detection and configuration."""
 
 import os
+import re
+import subprocess
+import time
 from typing import Optional, Dict, Any
 from delfin.common.logging import get_logger
 
@@ -210,13 +213,70 @@ def auto_configure_resources(config: Dict[str, Any]) -> Dict[str, Any]:
     return updated_config
 
 
+def _slurm_remaining_seconds() -> Optional[int]:
+    """Remaining walltime of the current SLURM job, or None if unknowable.
+
+    ``squeue -h -o %L`` reports time left directly, in the same D-HH:MM:SS
+    family of formats as TimeLimit. It is asked first because it needs no
+    arithmetic; ``scontrol`` (TimeLimit minus RunTime) is the fallback for
+    configurations where squeue is restricted on compute nodes.
+    """
+    job_id = os.getenv('SLURM_JOB_ID')
+    if not job_id:
+        return None
+
+    try:
+        result = subprocess.run(
+            ['squeue', '-h', '-j', job_id, '-o', '%L'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            remaining = _parse_walltime(result.stdout.strip())
+            if remaining is not None:
+                return remaining
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ['scontrol', 'show', 'job', job_id],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            fields = dict(
+                re.findall(r'\b(TimeLimit|RunTime)=(\S+)', result.stdout)
+            )
+            limit = _parse_walltime(fields.get('TimeLimit', ''))
+            runtime = _parse_walltime(fields.get('RunTime', ''))
+            if limit is not None and runtime is not None:
+                return max(0, limit - runtime)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return None
+
+
 def get_walltime_limit() -> Optional[int]:
-    """Get remaining walltime in seconds from cluster scheduler."""
+    """Get remaining walltime in seconds, or None when there is no limit.
+
+    None means "unknown or unlimited" and every caller must read it that way:
+    a wrong number here would make the scheduler refuse jobs that do in fact
+    fit, which is worse than not knowing.
+    """
     # SLURM
     if os.getenv('SLURM_JOB_ID'):
-        # Could use 'squeue' command to get remaining time
-        # For now, return None (no auto-detection)
-        pass
+        remaining = _slurm_remaining_seconds()
+        if remaining is not None:
+            return remaining
+        # The job wrapper stamps the deadline at startup, which still holds
+        # when squeue/scontrol are unreachable from the compute node.
+        end_epoch = os.getenv('DELFIN_JOB_END_EPOCH')
+        if end_epoch:
+            try:
+                return max(0, int(float(end_epoch)) - int(time.time()))
+            except (TypeError, ValueError):
+                pass
+        return None
 
     # PBS
     elif os.getenv('PBS_JOBID'):
@@ -233,26 +293,51 @@ def get_walltime_limit() -> Optional[int]:
 
 
 def _parse_walltime(walltime_str: str) -> Optional[int]:
-    """Parse walltime string (HH:MM:SS or hours) to seconds."""
+    """Parse a walltime string to seconds, or None when it carries no number.
+
+    Covers what SLURM emits for TimeLimit, RunTime and squeue's %L — that is
+    ``D-HH:MM:SS``, ``D-HH:MM``, ``HH:MM:SS`` and ``MM:SS`` — plus the bare
+    hour count used by PBS. The placeholders SLURM uses for "no limit"
+    (UNLIMITED, NOT_SET, INVALID) map to None rather than to zero, so an
+    unlimited job is never mistaken for one that is out of time.
+    """
     if not walltime_str:
         return None
 
     walltime_str = walltime_str.strip()
+    if not walltime_str or walltime_str.upper() in {
+        'UNLIMITED', 'NOT_SET', 'INVALID', 'N/A', 'NONE'
+    }:
+        return None
 
-    # Format: HH:MM:SS
+    days = 0
+    if '-' in walltime_str:
+        day_part, _, walltime_str = walltime_str.partition('-')
+        try:
+            days = int(day_part)
+        except ValueError:
+            return None
+
+    # Formats: HH:MM:SS, MM:SS (and D-HH:MM once the day part is split off)
     if ':' in walltime_str:
         parts = walltime_str.split(':')
-        if len(parts) == 3:
-            try:
-                hours, minutes, seconds = map(int, parts)
-                return hours * 3600 + minutes * 60 + seconds
-            except ValueError:
-                pass
+        try:
+            values = [int(p) for p in parts]
+        except ValueError:
+            return None
+        if len(values) == 3:
+            hours, minutes, seconds = values
+        elif len(values) == 2:
+            # With a day prefix SLURM writes D-HH:MM; without one it is MM:SS.
+            hours, minutes, seconds = (values[0], values[1], 0) if days else (0, values[0], values[1])
+        else:
+            return None
+        return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
-    # Format: hours (integer)
+    # Format: hours (integer or float)
     try:
         hours = float(walltime_str)
-        return int(hours * 3600)
+        return days * 86400 + int(hours * 3600)
     except ValueError:
         pass
 

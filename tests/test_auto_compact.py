@@ -64,7 +64,7 @@ def test_compaction_records_info():
     payloads — user messages are preserved verbatim as the GOALS. To force the
     full summarisation path we use a history dominated by large user messages
     that the slide cannot relieve, so usage stays above the budget and full
-    compaction fires. (We also need > _COMPACTION_THRESHOLD=12 messages — that
+    compaction fires. (We also need more than the kept tail — that
     floor guards against summarising a too-short conversation.)
     """
     eng = _bare_engine()

@@ -30,11 +30,34 @@ class DocSearchEngine:
         keys: list[tuple[str, str]] = []
 
         for doc_id, doc in self._index.get("documents", {}).items():
+            doc_title = doc.get("title", "")
             for section_id, section in doc.get("sections", {}).items():
                 text = section.get("text", "")
                 title = section.get("title", "")
-                # Prepend title for boosted matching
-                corpus.append(f"{title}\n{text}")
+                # The DOCUMENT's title belongs in the corpus too. Without
+                # it a paper cannot be found by its own name: the only
+                # titles indexed were the per-section headings a PDF
+                # chunker invents, and a document's real title was never
+                # searchable text anywhere.
+                #
+                # Measured, four queries each quoting a document's title,
+                # as the RANK of that document in the results:
+                #
+                #     SMILES all around          >20 -> 16
+                #     Theoretical calculations     2 ->  1
+                #     Partial to Total            11 ->  4
+                #     ORCA Manual                  1 ->  1
+                #
+                # Every rank improved or held, and two crossed from
+                # outside the default max_results=10 to inside it. The
+                # first is still outside: a document ABOUT what DELFIN
+                # does competes with DELFIN's own manual on DELFIN's own
+                # vocabulary, and that is a corpus-weighting question this
+                # line does not answer. Not tuned further here -- four
+                # queries chosen by the author are an instrument, not a
+                # ground truth, and fitting a ranking to them would move
+                # the number without moving the retrieval.
+                corpus.append(f"{doc_title}\n{title}\n{text}")
                 keys.append((doc_id, section_id))
 
         if not corpus:
@@ -42,6 +65,14 @@ class DocSearchEngine:
             return
 
         self._corpus_keys = keys
+
+        # ``max_df=0.95`` is a FRACTION of the corpus: with a single section
+        # the ceiling floors to zero documents, below ``min_df=1``, and the
+        # vectoriser raises "max_df corresponds to < documents than min_df"
+        # — so the first PDF a user indexed broke search_docs outright, on
+        # every call, with an exception rather than an empty result. A
+        # one-section corpus has no common terms to drop anyway.
+        max_df = 0.95 if len(corpus) > 1 else 1.0
 
         # Custom token pattern that preserves hyphenated chemistry terms
         # like def2-TZVP, wB97X-D3, RIJCOSX, SARC/J, etc.
@@ -51,16 +82,23 @@ class DocSearchEngine:
             max_features=50000,
             sublinear_tf=True,
             min_df=1,
-            max_df=0.95,
+            max_df=max_df,
         )
         self._tfidf_matrix = self._vectorizer.fit_transform(corpus)
+
+    def provenance(self) -> dict[str, Any]:
+        """When this index was built, how big it is, what failed, what is stale."""
+        from .indexer import index_provenance
+        prov = index_provenance(self._index)
+        prov["corpus_sections"] = len(self._corpus_keys)
+        return prov
 
     def search(
         self,
         query: str,
         doc_filter: str = "",
         max_results: int = 10,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Search the index for sections matching the query.
 
         Parameters
@@ -74,9 +112,27 @@ class DocSearchEngine:
 
         Returns
         -------
-        list of dict
-            Each result: ``{doc_id, section_id, title, doc_title, score, snippet}``.
+        dict
+            ``{"results": [...], "index": {...}}``. Each result:
+            ``{doc_id, section_id, title, doc_title, score, snippet}``.
+
+            The payload carries the index provenance — build time, corpus
+            size, documents that could not be extracted, documents whose
+            source has changed since — because a bare list made "nothing
+            matched your query" and "there is nothing here to match" the
+            same answer, and made a hit from a section deleted from the
+            source last month indistinguishable from a fresh one.
         """
+        return {"results": self._ranked(query, doc_filter, max_results),
+                "index": self.provenance()}
+
+    def _ranked(
+        self,
+        query: str,
+        doc_filter: str = "",
+        max_results: int = 10,
+    ) -> list[dict[str, Any]]:
+        """The ranked hits alone, without the provenance wrapper."""
         self._ensure_built()
 
         if self._vectorizer is None or self._tfidf_matrix is None or not self._corpus_keys:
@@ -119,6 +175,10 @@ class DocSearchEngine:
                 "section_id": section_id,
                 "title": section.get("title", ""),
                 "doc_title": doc.get("title", ""),
+                # Travels with the hit, not only with the document: the
+                # model reads the result, and a citation it has to fetch
+                # separately is one it will not fetch.
+                "reference": doc.get("reference", ""),
                 "score": round(score, 4),
                 "snippet": snippet,
             })

@@ -1,0 +1,5108 @@
+"""The terminal controller: one turn, rendered as it happens.
+
+Division of labour, and the reason for it: ``repl_render`` decides what a
+line says, this module decides when it is written and to which stream.
+Keeping the two apart is what stops this file growing into the thing it
+replaces — a single closure where formatting, threading and state are the
+same 14 000 lines.
+
+Stream discipline: **stdout is the answer, stderr is everything else.**
+Tool lines, notices, thinking, the banner and the prompt all go to stderr,
+so ``delfin-agent -p "..." > answer.txt`` produces exactly the answer and
+nothing about how it was reached.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import queue
+import signal
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+from . import repl_render as rr
+from .harness_rows import HarnessText
+
+__all__ = [
+    "RenderItem", "Transcript", "TurnResult", "run_turn", "TURN_KEYS",
+    "ReplOptions", "TerminalAgent", "read_block", "HISTORY_NAME",
+    "permission_mode", "fresh_context_for_turn",
+]
+
+HISTORY_NAME = "agent_repl_history"
+_HISTORY_LINES = 1000
+_PUMP_TICK_S = 0.05
+_JOIN_NOTICE_AFTER_S = 2.0
+# What leaving costs at most. The last step of the interrupt ladder unwinds
+# through the settle, so the join there has to be bounded: an unbounded one
+# waits for the tool call the interrupt exists to walk away from.
+_JOIN_ABANDON_S = 1.0
+# How long a session whose terminal is gone may take to save and clean up.
+# That work runs on storage that may be the very thing that went wrong, and
+# waiting on it is how a session outlives its terminal.
+_LEAVE_DEADLINE_S = 10.0
+#: Total for the session-end stages of an attended leave (ctrl+d, /exit,
+#: the second idle ctrl+c); setting ``agent.leave_stage_budget_s``.
+_LEAVE_STAGE_BUDGET_S = 300.0
+#: A session-end stage without a timeout of its own (report, indexing,
+#: cycle outcome, episode, eval loop: file and index work, no model).
+_STAGE_DEFAULT_S = 60.0
+#: How long a stage runs before the line saying what is being finished.
+_STAGE_SAY_AFTER_S = 1.0
+_STATUS_TICK_S = 0.25
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+# The keys `cli._run_once` returns, and therefore what --output-format json
+# promises. Named here so the two paths can be asserted equal instead of
+# drifting into two shapes of the same answer. The last four are
+# turn_outcome's: what the turn ended as, for a program reading the result
+# (schema documented in docs/USER_MANUAL.md, "Headless runs").
+TURN_KEYS: frozenset[str] = frozenset({
+    "text", "tool_calls", "input_tokens", "output_tokens", "error",
+    "schema_version", "stop_reason", "denials", "files_changed",
+})
+
+
+@dataclass(frozen=True)
+class RenderItem:
+    """One thing that happened, on its way from the worker to the screen."""
+
+    kind: str                      # text|thinking|tool_use|tool_result
+                                   # |notice|denied|error|done
+    text: str = ""
+    name: str = ""
+    data: dict | None = None
+    # Kept on a result because apply_patch returns only a success object;
+    # the actual diff lives in the matching call's input.  Carrying it
+    # here lets the renderer show what changed without reading the file a
+    # second time or guessing from the current worktree.
+    tool_input: dict | None = None
+
+
+class Transcript:
+    """Owns both streams and the cursor column.
+
+    The column tracking is not decoration. The model streams
+    ``"Let me check the tests"`` with no trailing newline and then calls a
+    tool; without closing the line first, the tool line is appended to the
+    middle of the sentence and the transcript stops being readable exactly
+    when it matters most.
+    """
+
+    def __init__(self, out=None, err=None, *, theme: rr.Theme | None = None,
+                 show_tools: bool = True, show_thinking: bool = False,
+                 width: int | None = None, color: str = "auto") -> None:
+        self.out = out if out is not None else sys.stdout
+        self.err = err if err is not None else sys.stderr
+        self.theme = theme if theme is not None else rr.theme_for(self.err)
+        self.show_tools = show_tools
+        self.show_thinking = show_thinking
+        # A fixed width or a live one. Read once, a terminal resized after
+        # launch went on truncating to the size it had at startup — every
+        # tool line and every status row cut at the wrong column for the
+        # rest of the session. The fixed form stays available because the
+        # tests need a stable width to assert against.
+        self._fixed_width = int(width) if width else 0
+        self._width_cache = self._fixed_width or rr.terminal_width()
+        # A SECOND colour decision, taken about stdout. The theme above
+        # is about stderr, where the chrome goes; the answer goes to
+        # stdout, and the two streams are redirected independently. Asking
+        # stderr about stdout is how `delfin-agent -p "..." > answer.txt`
+        # in a terminal would end up writing escape codes into the file.
+        self._answer_theme = rr.theme_for(self.out, color)
+        # A table is laid out against the width at the moment it is drawn.
+        self._markdown = rr.MarkdownStream(
+            self._answer_theme, width=lambda: self.width)
+        # stdout and stderr normally name the same terminal.  Remember
+        # that fact explicitly: while an answer is streaming the turn UI
+        # is painted on stderr, then the next answer delta continues on
+        # stdout.  A redirected stdout is a different surface and must
+        # never influence where the stderr cursor is restored.
+        self._shared_terminal = self._streams_share_terminal(
+            self.out, self.err)
+        self._screen_answer_open = False
+        self._screen_answer_column = 0
+        # Two flags, because one had to answer two different questions and
+        # got one of them wrong. `_out_open` is about the FILE: stdout ends
+        # mid-line and needs closing before the process exits.
+        # `_break_pending` is about the SCREEN: the next chrome line needs a
+        # visual break first, and only the first one does. Sharing a flag
+        # meant the first tool line cleared it and stdout was left without
+        # its final newline.
+        self._out_open = False
+        self._break_pending = False
+        # A transient line (the wait tick) is on screen and the next
+        # write must erase it first. `_transient_said` is the pipe case:
+        # with no cursor to move, the tick is said once and then dropped
+        # rather than repeated for every tick of the round.
+        self._transient_open = False
+        self._transient_said = False
+
+    @property
+    def width(self) -> int:
+        return self._fixed_width or self._width_cache
+
+    @width.setter
+    def width(self, value: int) -> None:
+        """Assigning a width PINS it, which is what assigning one meant
+        before this became a property. Callers that set it are saying
+        "this is the width", not "start following the terminal from
+        here", and a resize must not undo that."""
+        self._fixed_width = int(value or 0)
+
+    def refresh_width(self) -> int:
+        """Re-ask the terminal. Called from the resize handler."""
+        if not self._fixed_width:
+            self._width_cache = rr.terminal_width()
+        return self.width
+
+    # -- primitives ------------------------------------------------------
+    def answer(self, delta: str) -> None:
+        """Answer text. The only thing that ever reaches stdout.
+
+        The line-open flags follow the MODEL's text, never the styled
+        form: an SGR reset is not a newline, and a delta that ends in one
+        would otherwise be read as a closed line and let the status row
+        repaint over the sentence being written.
+        """
+        if not delta:
+            return
+        self._clear_transient()
+        rendered = self._markdown.feed(delta)
+        self.out.write(rendered)
+        self._flush(self.out)
+        self._track_screen_answer(rendered)
+        self._out_open = not delta.endswith("\n")
+        self._break_pending = self._out_open
+
+    def _release_held_answer(self) -> None:
+        """Write a table the markdown stream is still holding.
+
+        Called before anything else reaches the screen: a held table ends
+        the model's text, and a tool line written first would stand above
+        the table it came after."""
+        held = self._markdown.release()
+        if held:
+            self._clear_transient()
+            self.out.write(held)
+            self._flush(self.out)
+            self._track_screen_answer(held)
+
+    def _err_is_tty(self) -> bool:
+        try:
+            return bool(self.err.isatty())
+        except Exception:
+            return False
+
+    def _clear_transient(self) -> None:
+        """Erase the wait tick before anything else is written.
+
+        Left standing, the next chrome line or answer byte would start
+        halfway along "waiting for the model ... 240s"."""
+        if self._transient_open:
+            self.err.write("\r\x1b[K")
+            self._flush(self.err)
+            self._transient_open = False
+
+    def transient(self, line: str) -> None:
+        """A progress line that the next one replaces.
+
+        The wait tick: the endpoint has not sent a byte yet, and the
+        producer repeats the line every tenth of the request deadline
+        (capped at ten seconds), so a round stalling to the default 600 s
+        deadline produces sixty of them. As chrome that was sixty rows of
+        one sentence; here it is one row, rewritten.
+
+        Written to stderr like all chrome, for the same reason: a
+        redirected stdout must capture the model's bytes and nothing
+        else. With stderr redirected too there is no cursor to move, so
+        the tick is said once as ordinary chrome and the rest are
+        dropped -- a log needs to record that the endpoint went quiet,
+        not to record it sixty times.
+        """
+        if not line:
+            return
+        self._release_held_answer()
+        if not self._err_is_tty():
+            if not self._transient_said:
+                self._transient_said = True
+                self.chrome(line)
+            return
+        if self._break_pending:
+            self.err.write("\n")
+            self._break_pending = False
+            if self._shared_terminal:
+                self._screen_answer_open = False
+                self._screen_answer_column = 0
+        self.err.write("\r\x1b[K" + line)
+        self._flush(self.err)
+        self._transient_open = True
+        if self._shared_terminal:
+            self._screen_answer_open = False
+            self._screen_answer_column = 0
+
+    def chrome(self, line: str) -> None:
+        """Everything that is not the answer, on stderr, on its own line.
+
+        The break that closes a half-written answer line is written to
+        STDERR, not stdout. Both streams share one cursor when they share a
+        terminal, so the visual effect is identical — but a newline on
+        stdout would land inside the answer, and `delfin-agent -p "..." >
+        answer.txt` would capture a line break that the model never wrote.
+        Redirecting stderr alone costs the visual break and keeps the
+        answer exact, which is the right way round.
+        """
+        if not line:
+            return
+        self._clear_transient()
+        self._release_held_answer()
+        if self._break_pending:
+            self.err.write("\n")
+            self._break_pending = False
+            if self._shared_terminal:
+                self._screen_answer_open = False
+                self._screen_answer_column = 0
+        self.err.write(line + "\n")
+        self._flush(self.err)
+        if self._shared_terminal:
+            # Chrome always owns complete lines.  The logical stdout
+            # answer may still be open (and must stay exact in a pipe),
+            # but visually the next answer byte starts on a fresh row.
+            self._screen_answer_open = False
+            self._screen_answer_column = 0
+
+    def finish(self) -> None:
+        """Close the answer stream, so a redirected stdout ends in a newline."""
+        self._clear_transient()
+        tail = self._markdown.flush()
+        if tail:
+            # Held-back bytes and any style still open. Without this a
+            # two-character tail that looked like the start of a marker
+            # would never be printed at all.
+            self.out.write(tail)
+            self._flush(self.out)
+            self._track_screen_answer(tail)
+        if self._out_open:
+            self.out.write("\n")
+            self._flush(self.out)
+            self._track_screen_answer("\n")
+            self._out_open = False
+            self._break_pending = False
+
+    @property
+    def answer_open(self) -> bool:
+        """True while the logical stdout answer ends mid-line.
+
+        This is the file/output contract.  ``screen_answer_open`` is the
+        separate cursor contract used by the live terminal composer.
+        """
+        return self._out_open
+
+    @property
+    def screen_answer_open(self) -> bool:
+        """Whether the shared terminal cursor is after answer text.
+
+        This differs deliberately from :attr:`answer_open`.  A chrome
+        line may visually break a partial answer while stdout must remain
+        byte-for-byte contiguous for redirection.  The bottom composer
+        cares about the former; output correctness cares about the latter.
+        """
+        return self._shared_terminal and self._screen_answer_open
+
+    @property
+    def screen_answer_column(self) -> int:
+        return self._screen_answer_column if self.screen_answer_open else 0
+
+    @staticmethod
+    def _streams_share_terminal(out, err) -> bool:
+        try:
+            if not (out.isatty() and err.isatty()):
+                return False
+        except Exception:
+            return False
+        try:
+            import os
+            return os.fstat(out.fileno()).st_rdev == os.fstat(err.fileno()).st_rdev
+        except Exception:
+            # String-backed model terminals used by tests have no fd.  If
+            # both claim to be TTYs they model the ordinary shared screen.
+            return True
+
+    def _track_screen_answer(self, rendered: str) -> None:
+        """Track the physical column reached by styled answer bytes.
+
+        ANSI styling costs no columns; wide and combining characters do.
+        Only the column is needed: the live composer is drawn immediately
+        below the answer cursor and can therefore return with one relative
+        move, even if painting it made the terminal scroll.
+        """
+        if not self._shared_terminal or not rendered:
+            return
+        from .repl_box import char_width
+
+        width = max(2, int(self.width or 80))
+        clean = rr.strip_control(rendered)
+        for ch in clean:
+            if ch == "\n":
+                self._screen_answer_column = 0
+                self._screen_answer_open = False
+                continue
+            if ch == "\r":
+                self._screen_answer_column = 0
+                continue
+            if ch == "\t":
+                step = 8 - (self._screen_answer_column % 8)
+            else:
+                step = char_width(ch)
+            self._screen_answer_column = (
+                self._screen_answer_column + step) % width
+            self._screen_answer_open = True
+
+    @staticmethod
+    def _flush(stream) -> None:
+        try:
+            stream.flush()
+        except Exception:
+            pass
+
+    # -- dispatch --------------------------------------------------------
+    def render(self, item: RenderItem) -> None:
+        kind = item.kind
+        if kind == "text":
+            self.answer(item.text)
+        elif kind == "notice":
+            self.chrome(rr.notice_line(item.text, theme=self.theme))
+        elif kind == "wait":
+            # Progress, not a line of the record: the tick replaces the
+            # one before it instead of adding a row.
+            self.transient(rr.notice_line(item.text, theme=self.theme))
+        elif kind == "thinking":
+            if self.show_thinking:
+                self.chrome(rr.thinking_line(
+                    item.text, width=self.width, theme=self.theme))
+        elif kind == "tool_use":
+            if self.show_tools:
+                self.chrome(rr.tool_headline(
+                    item.name, item.text, width=self.width, theme=self.theme))
+        elif kind == "tool_result":
+            if self.show_tools:
+                self.chrome(rr.tool_result_line(
+                    item.name, item.text, meta=item.data,
+                    tool_input=item.tool_input,
+                    width=self.width, theme=self.theme))
+        elif kind == "denied":
+            self.chrome(rr.denied_line(item.name, theme=self.theme))
+        elif kind == "error":
+            self.chrome(self.theme.red(f"[error] {item.text}"))
+
+
+@dataclass
+class TurnResult:
+    text: str = ""
+    tool_calls: list[dict] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: str = ""
+    schema_version: int = 1
+    stop_reason: str = "done"
+    denials: list[dict] = field(default_factory=list)
+    files_changed: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "tool_calls": self.tool_calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "error": self.error,
+            "schema_version": self.schema_version,
+            "stop_reason": self.stop_reason,
+            "denials": self.denials,
+            "files_changed": self.files_changed,
+        }
+
+
+def permission_mode(engine) -> str:
+    """The posture, or "" when this backend carries no permissions object.
+
+    create_client builds KitToolPermissions for every chat-API provider
+    (kit, ollama, openai). On the CLI backends there is none, so
+    an empty answer here is a fact the banner has to state rather than
+    paper over with a plausible-looking default.
+    """
+    try:
+        perms = engine.kit_permissions
+    except Exception:
+        return ""
+    mode = getattr(perms, "mode", "") if perms is not None else ""
+    return mode if isinstance(mode, str) else ""
+
+
+def _usage(engine) -> tuple[int, int]:
+    usage = getattr(engine, "token_usage", {}) or {}
+    return int(usage.get("input", 0) or 0), int(usage.get("output", 0) or 0)
+
+
+# Context-budget restart: a long session re-sends the whole history every
+# turn. Once the session's input-token usage is above the budget, the
+# terminal starts the next turn from a small fresh context instead.
+_FRESH_CONTEXT_MARKER = "[Fresh context — full history cut at the token budget]"
+
+
+def _context_tokens(engine) -> int:
+    """Size of the CURRENT/next request context, not the cumulative total.
+
+    The engine's ``_estimate_context_tokens`` counts the messages that are
+    about to be sent (plus the system prompt) — so it naturally shrinks after
+    a fresh restart, and a following turn is judged on its own (now tiny)
+    context, exactly what the budget must gate. Falling back to a char/4
+    estimate over ``engine.messages`` keeps the hook duck-typed for fake
+    engines that lack the estimate method.
+    """
+    # The current-context estimator appears under both a underscored and a
+    # public spelling across engines and the fakes that drive this hook;
+    # accept either so the budget is judged on the current context
+    # regardless of which the engine exposes.
+    for name in ("_estimate_context_tokens", "estimate_context_tokens"):
+        est = getattr(engine, name, None)
+        if callable(est):
+            try:
+                return int(est() or 0)
+            except Exception:
+                pass
+    total = 0
+    for m in getattr(engine, "messages", None) or []:
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content", "")
+        total += len(content) if isinstance(content, str) else len(str(content))
+    return max(1, total // 4)
+
+
+class _OpenTasksBlock:
+    """The session's open tasks, rendered for a fresh start.
+
+    ``TaskState`` -- the object ``fresh_context_for_turn`` was written to
+    render -- is constructed nowhere in the product: the terminal reads
+    ``getattr(self, "_task_state", None)`` and gets None, and the dashboard
+    passes nothing. So a fresh start carried the working-state block and no
+    task at all, on both surfaces, while the engine kept a task store the
+    auto-continue already consults. This renders that store, bounded, and
+    is built where the fresh start is decided so both surfaces get it.
+    """
+
+    def __init__(self, summary: dict):
+        self._summary = summary or {}
+
+    def render(self) -> str:
+        parts = []
+        for status in ("in_progress", "pending", "blocked"):
+            rows = self._summary.get(status) or []
+            for row in rows[:6]:
+                subject = str((row or {}).get("subject") or "").strip()
+                if not subject:
+                    continue
+                reason = str((row or {}).get("blocked_reason") or "").strip()
+                line = f"- [{status}] {subject[:160]}"
+                if reason:
+                    line += f" (blocked: {reason[:120]})"
+                parts.append(line)
+        if not parts:
+            return ""
+        return "Open tasks when the context was cut:\n" + "\n".join(parts)
+
+
+def open_tasks_for_fresh_start(engine) -> "_OpenTasksBlock | None":
+    """What the engine knows about its open tasks, or None. Never raises."""
+    try:
+        client = getattr(engine, "client", None)
+        summary = client._open_task_state() if client is not None else None
+    except Exception:
+        return None
+    if not isinstance(summary, dict) or summary.get("state") != "open":
+        return None
+    return _OpenTasksBlock(summary)
+
+
+def fresh_context_for_turn(
+    engine,
+    task_state,
+    *,
+    token_budget: int,
+    working_state_block: str = "",
+) -> str:
+    """One fresh, small turn context when the current context is over budget.
+
+    Returns ``""`` while the CURRENT context is at or under ``token_budget``
+    (the caller keeps the full history). Above it, returns a bounded block
+    built from ``task_state.render()`` — which names the open phase — plus an
+    optional ``working_state_block``, prefixed with a marker so the model
+    knows history was deliberately cut. Deterministic, no model call, never
+    raises: a broken engine/state degrades to ``""`` and the full history.
+
+    The budget is judged on the current context (``engine._estimate_context_
+    tokens``, which counts the messages about to be sent) rather than the
+    session's cumulative input-token usage — a cumulative number never
+    shrinks, so once it passed the budget every following turn would restart
+    fresh and the session would lose its memory for good. The current-context
+    estimate drops back under the budget the moment the fresh start happens,
+    so turn N+1 resumes a normal small history.
+
+    ``task_state`` is duck-typed — anything with ``render()`` works, so the
+    test drives it with a fake engine and a real ``task_state.TaskState``.
+    """
+    if _context_tokens(engine) <= token_budget:
+        return ""
+    if task_state is None:
+        task_state = open_tasks_for_fresh_start(engine)
+    try:
+        core = task_state.render() if task_state is not None else ""
+    except Exception:
+        core = ""
+    parts = [_FRESH_CONTEXT_MARKER]
+    if working_state_block:
+        block = str(working_state_block).strip()
+        if block:
+            parts.append(block)
+    if core and core.strip():
+        parts.append(core.strip())
+    return "\n\n".join(parts)
+
+
+_DEFAULT_FRESH_BUDGET = 900_000  # the operator's stated threshold (in tokens)
+
+
+def _archive_cut_history(engine, history: list) -> None:
+    """Best-effort archive of the history a fresh start is about to drop.
+
+    The engine keeps the cut history so it can be reviewed later via
+    ``engine.cut_history()`` instead of being silently lost. Two engine
+    shapes are accepted: a setter ``cut_history(history)`` (preferred, the
+    operator's engine patch) and a getter ``cut_history()`` with a plain
+    ``_archived`` slot (the reviewer's fake engine). Never raises.
+    """
+    try:
+        engine.cut_history(history)
+        return
+    except (TypeError, AttributeError):
+        pass
+    except Exception:
+        return
+    try:
+        engine._archived = list(history)
+    except Exception:
+        pass
+
+
+def _resolve_fresh_budget(context_budget, engine) -> int:
+    """What the fresh-start budget is for this turn, or 0 to disable.
+
+    ``context_budget`` (from the terminal's options) wins when given; else
+    the engine's own ``context_budget``; else the operator's default. A 0
+    disables the fresh restart entirely (the caller keeps the history).
+    """
+    if context_budget is None:
+        context_budget = getattr(engine, "context_budget", None)
+    if context_budget is None:
+        # The operator's 900k is a CEILING, not the budget. It was taken
+        # from a session that re-sent >900k tokens per turn -- the sum
+        # over every round of a turn -- and is compared here against the
+        # CURRENT context, which a model's window bounds. GLM 5.3's window
+        # is 131,072: a 900k budget on it is 6.9x the whole window and can
+        # never fire, so the fresh start was dead for every KIT model while
+        # one session paid 20.5M input tokens over 22 turns (2026-10-08).
+        #
+        # The window itself, not a fraction of it: the sliding trim (0.70
+        # -> 0.50) and compaction (0.95) run first and keep a session
+        # under it. A fresh start is for the case they could not -- a
+        # context that is still over the window after both -- which is a
+        # harder reset than either, and should not pre-empt them.
+        window = int(getattr(engine, "context_window_tokens", 0) or 0)
+        if window > 0:
+            return min(_DEFAULT_FRESH_BUDGET, window)
+        return _DEFAULT_FRESH_BUDGET
+    return int(context_budget or 0)
+
+
+#: The compaction kinds that leave a summary of the compacted messages in
+#: the history. ``summary_unavailable`` (nothing could be summarised) and the
+#: trim-only kinds do not, and count as a compaction that did not happen.
+_SUMMARY_KINDS = ("summary", "deterministic_digest")
+
+
+def _compact_to_fit(engine, budget: int) -> bool:
+    """Try a forced compaction before a fresh start; True when it fits.
+
+    Input: an engine whose current context is over ``budget``. Output: True
+    when ``engine._compact_history(force=True)`` produced a summary and the
+    context is then at or under ``budget``; False when the engine has no
+    compaction, it raised, it summarised nothing, or the result is still
+    over (the kept recent messages alone can exceed a small window).
+
+    Semantics: a switch to a model with a smaller window put the history
+    over the budget, and the fresh start archived it wholesale -- the next
+    turn knew only the working-state block and the open tasks. A
+    compaction keeps a summary of the task in context and archives the
+    compacted messages the same way, so it is tried first; the fresh start
+    stays the fallback. A compaction that ran and does not fit is kept: the
+    fresh start then cuts the compacted history, whose older part is
+    already in the archive.
+
+    Cost: one summariser call (max_tokens 1500, input capped at 60k chars by
+    ``_llm_summarize_old_messages``), only on a turn whose context is over
+    the fresh-start budget; extractive and free on the CLI backend. Rejected:
+    compacting at the model switch itself -- the switch has no worker
+    thread of its own, and the first turn after it is where the window is
+    checked on both surfaces anyway.
+    """
+    compact = getattr(engine, "_compact_history", None)
+    if not callable(compact):
+        return False
+    before = getattr(engine, "last_compaction_info", None)
+    try:
+        compact(force=True)
+    except Exception:
+        return False
+    info = getattr(engine, "last_compaction_info", None)
+    if info is before or not isinstance(info, dict):
+        return False
+    if info.get("kind") not in _SUMMARY_KINDS:
+        return False
+    return _context_tokens(engine) <= budget
+
+
+def prepare_fresh_turn(engine, prompt: str, *, workspace=None,
+                       task_state=None, context_budget=None) -> str:
+    """The message to send for this turn, starting fresh when over budget.
+
+    The dashboard's entry to the same fresh restart the terminal's run_turn
+    performs: under the budget it returns ``prompt`` unchanged; over it, it
+    archives the history, arms the engine's one-shot ``start_fresh`` and
+    returns the fresh block fused with ``prompt``. Never raises.
+
+    Package B1: a session without its task stops and asks. When the
+    person gave no task (no unmarked user row in this session's history
+    and no prompt that is a person typing now), the ONE plain
+    instruction is fused in front of the prompt and a notice names it
+    for the person watching. Nothing is refused: the turn proceeds.
+    The check runs BEFORE the budget branch, so it fires on every
+    dashboard/cli turn, not only on fresh starts.
+    """
+    try:
+        from . import task_presence as _tp
+        _history = list(getattr(engine, "messages", None) or [])
+        _ws = workspace if workspace is not None else getattr(
+            getattr(engine, "kit_permissions", None), "workspace", None)
+        _status, _reason = _tp.assess(_history, workspace=_ws, prompt=prompt)
+        _note = _tp.instruction_for(_status)
+        if _note and not isinstance(prompt, HarnessText):
+            # A HarnessText wake never carries the instruction (PR #324
+            # hang: the fused "stop and ask" in front of a job-finished
+            # wake made the model ask — a question nobody answers in an
+            # unattended session). A wake is harness transport, not where
+            # a person gives a task. And a None prompt fuses the note
+            # alone instead of raising past the swallow-guard below.
+            was_harness = isinstance(prompt, HarnessText)
+            body = prompt if isinstance(prompt, str) else ""
+            prompt = _note + "\n\n" + body
+            if was_harness:
+                prompt = HarnessText(prompt)
+    except Exception:
+        pass
+    try:
+        budget = _resolve_fresh_budget(context_budget, engine)
+        if budget <= 0:
+            return prompt
+        if (_context_tokens(engine) > budget
+                and _compact_to_fit(engine, budget)):
+            return prompt
+        block = ""
+        try:
+            from .working_state import build_working_state_block
+            block = build_working_state_block(
+                list(getattr(engine, "messages", []) or []),
+                session_id=str(getattr(engine, "session_id", "") or ""),
+                workspace=workspace,
+                refusals=getattr(engine, "_refusal_entries", lambda: None)(),
+            )
+        except Exception:
+            block = ""
+        fresh = fresh_context_for_turn(engine, task_state, token_budget=budget,
+                                       working_state_block=block)
+        if not fresh:
+            return prompt
+        _archive_cut_history(engine, list(getattr(engine, "messages", None) or []))
+        engine.start_fresh = fresh
+        return fresh + "\n\n" + prompt
+    except Exception:
+        return prompt
+
+
+def run_turn(engine, prompt: str, *, sink: Callable[[RenderItem], None],
+             max_tokens: int = 0, memory_context: str | None = None,
+             context_budget=None, task_state=None,
+             working_state_block: str = "") -> TurnResult:
+    """One turn, with every callback turned into a RenderItem.
+
+    The accounting mirrors ``cli._run_once`` deliberately — same token
+    deltas, same result keys — so the interactive and the headless path
+    report the same turn the same way.
+
+    While the CURRENT context (``engine.estimate_context_tokens()`` /
+    ``_estimate_context_tokens()``) is over the fresh-start budget, the turn
+    starts from a small fresh block built by ``fresh_context_for_turn``
+    (which names the open phase) instead of re-sending the whole history:
+    ``run_turn`` ARCHIVES the history it drops (``engine.cut_history``), arms
+    ``engine.start_fresh`` with that block so the engine keeps just the one
+    message, and fuses the block with the prompt this turn must answer, so
+    the current user message is never lost. Under the budget (or with a 0
+    budget) it arms nothing and the caller keeps the full history.
+
+    ``memory_context`` None (the default) takes what every surface sends
+    with a turn: the project instruction files and the per-turn hints of
+    ``turn_context``, the same call ``cli.cmd_run`` and the dashboard
+    make. A string is sent as given.
+
+    ``sink`` is called from whatever thread ``stream_response`` runs on.
+    It must not touch the terminal; in the REPL it is a queue put, and the
+    main thread does the writing.
+    """
+    chunks: list[str] = []
+    tool_calls: list[dict] = []
+    tool_inputs: list[tuple[str, dict]] = []
+    result = TurnResult()
+
+    def _emit(item: RenderItem) -> None:
+        try:
+            sink(item)
+        except Exception:
+            pass
+
+    def _on_token(text: str) -> None:
+        if text:
+            chunks.append(text)
+            _emit(RenderItem("text", text=text))
+
+    def _on_notice(text: str) -> None:
+        if text:
+            _emit(RenderItem("notice", text=text))
+
+    def _on_wait(text: str) -> None:
+        # The first-byte tick, on its own kind so the renderer can
+        # rewrite one row rather than append one per tick.
+        if text:
+            _emit(RenderItem("wait", text=text))
+
+    def _on_thinking(text: str) -> None:
+        if text:
+            _emit(RenderItem("thinking", text=text))
+
+    from . import turn_outcome
+    observer = turn_outcome.TurnObserver(
+        workspace=getattr(getattr(engine, "kit_permissions", None),
+                          "workspace", None))
+
+    def _on_tool_use(name: str, input_json: str) -> None:
+        parsed = rr._as_dict(input_json)
+        observer.saw_tool_use(name)
+        tool_calls.append({"name": name, "input": parsed})
+        tool_inputs.append((name, parsed))
+        _emit(RenderItem("tool_use", name=name, text=input_json or ""))
+
+    def _take_tool_input(name: str) -> dict | None:
+        """Match a result to the oldest outstanding call of that tool."""
+        for index, (queued_name, parsed) in enumerate(tool_inputs):
+            if queued_name == name:
+                tool_inputs.pop(index)
+                return parsed
+        return None
+
+    # One result, one line. The engine reports a tool result on two
+    # callbacks — the head slice on on_tool_result, the verdict and the
+    # true size on on_tool_result_meta — and rendering each as it arrives
+    # drew every call twice, the second time with a body it did not have.
+    # The text is held until the verdict catches up.
+    pending: dict[str, Any] = {
+        "name": "", "text": "", "held": False, "tool_input": None,
+    }
+
+    def _flush_pending() -> None:
+        if pending["held"]:
+            _emit(RenderItem("tool_result", name=pending["name"],
+                             text=pending["text"],
+                             tool_input=pending["tool_input"]))
+            pending.update(name="", text="", held=False, tool_input=None)
+
+    def _on_tool_result(name: str, output: str) -> None:
+        # A second result before the first was completed means the meta
+        # callback is not firing on this path; do not lose the first line.
+        _flush_pending()
+        pending.update(name=name, text=output or "", held=True,
+                       tool_input=_take_tool_input(name))
+
+    def _on_tool_result_meta(name: str, meta: dict) -> None:
+        text = pending["text"] if pending["held"] and pending["name"] == name else ""
+        tool_input = (pending["tool_input"]
+                      if pending["held"] and pending["name"] == name
+                      else _take_tool_input(name))
+        if pending["held"] and pending["name"] != name:
+            _flush_pending()
+        pending.update(name="", text="", held=False, tool_input=None)
+        _emit(RenderItem("tool_result", name=name, text=text, data=dict(meta),
+                         tool_input=tool_input))
+
+    def _on_denied(name: str) -> None:
+        _take_tool_input(name)
+        turn_outcome.denied(name, "backend_denied", "")
+        _emit(RenderItem("denied", name=name))
+
+    _turn_started = time.monotonic()
+    in_before, out_before = _usage(engine)
+    from . import turn_context
+    if memory_context is None:
+        memory_context = turn_context.memory_context(engine, prompt)
+    prompt = turn_context.user_message(prompt)
+    # Package B1: a session without its task stops and asks. assess keys
+    # on the RAW prompt (before the fusion at ~863 re-wraps it), so a
+    # wake prompt's HarnessText type is still visible here. The ONE
+    # plain instruction is fused in front of the prompt and a notice
+    # names it for the person watching. Nothing is refused: the turn
+    # proceeds with its full prompt either way.
+    try:
+        from . import task_presence as _tp
+        _ws = getattr(getattr(engine, "kit_permissions", None),
+                      "workspace", None)
+        _status, _reason = _tp.assess(
+            list(getattr(engine, "messages", None) or []),
+            workspace=_ws, prompt=prompt)
+        _note = _tp.instruction_for(_status)
+        if _note and not isinstance(prompt, HarnessText) \
+                and not _tp.instruction_present(prompt):
+            # A HarnessText wake never carries the instruction (PR #324
+            # hang: the fused "stop and ask" in front of a job-finished
+            # wake made the model ask — a question nobody answers in an
+            # unattended session). And a prompt that already carries the
+            # instruction (prepare_fresh_turn fused it; cli.py:830 hands
+            # its result here) is never fused AGAIN. A non-str prompt
+            # fuses the note alone instead of raising past the
+            # swallow-guard below.
+            prompt = _note + "\n\n" + (prompt if isinstance(prompt, str)
+                                       else "")
+            _emit(RenderItem("notice", text=_note))
+    except Exception:
+        pass
+    user_message = prompt
+    budget = _resolve_fresh_budget(context_budget, engine)
+    if budget > 0 and (_context_tokens(engine) <= budget
+                       or not _compact_to_fit(engine, budget)):
+        try:
+            fresh = fresh_context_for_turn(
+                engine, task_state, token_budget=budget,
+                working_state_block=working_state_block)
+        except Exception:
+            fresh = ""
+        if fresh:
+            # This turn starts over budget: archive the history the fresh
+            # start is about to drop, arm the engine's one-shot swap so it
+            # keeps exactly the fused message, and fuse the fresh block with
+            # the current prompt so the answer targets this turn's question.
+            dropped = list(getattr(engine, "messages", None) or [])
+            _archive_cut_history(engine, dropped)
+            try:
+                engine.start_fresh = fresh
+            except Exception:
+                pass
+            user_message = fresh + "\n\n" + prompt
+            if isinstance(prompt, HarnessText):
+                user_message = HarnessText(user_message)
+    with observer:
+        try:
+            full_text = engine.stream_response(
+                user_message=user_message,
+                memory_context=memory_context,
+                on_token=_on_token,
+                on_notice=_on_notice,
+                on_wait=_on_wait,
+                on_thinking=_on_thinking,
+                on_tool_use=_on_tool_use,
+                on_tool_result=_on_tool_result,
+                on_tool_result_meta=_on_tool_result_meta,
+                on_permission_denied=_on_denied,
+                max_tokens=max_tokens,
+            ) or ""
+        except Exception as exc:
+            result.error = str(exc)
+            full_text = ""
+            _emit(RenderItem("error", text=result.error))
+    _outcome = observer.summary(
+        error=result.error,
+        engine_stop_reason=str(
+            getattr(engine, "last_turn_stop_reason", "") or ""))
+    result.schema_version = _outcome["schema_version"]
+    result.stop_reason = _outcome["stop_reason"]
+    result.denials = _outcome["denials"]
+    result.files_changed = _outcome["files_changed"]
+
+    _flush_pending()
+    in_after, out_after = _usage(engine)
+    result.text = (full_text or "".join(chunks)).strip()
+    result.tool_calls = tool_calls
+    result.input_tokens = max(0, in_after - in_before)
+    result.output_tokens = max(0, out_after - out_before)
+
+    # KG4 phase 1: the metrics contract agent_metrics.py states ("one
+    # JSONL line per finished agent turn") was kept only by the
+    # dashboard's turn footer; a `delfin-agent chat` turn never wrote a
+    # line. run_turn is the one place a non-dashboard turn ends with its
+    # numbers computed -- record here from exactly those numbers.
+    # Best-effort: record_chat_turn swallows every failure, a metrics
+    # write never breaks the turn it describes.
+    try:
+        from . import agent_metrics as _metrics
+        _metrics.record_chat_turn(
+            engine, result,
+            duration_s=time.monotonic() - _turn_started,
+            mode=str(getattr(engine, "mode", "") or ""),
+        )
+    except Exception:
+        pass
+
+    # The answer was streamed before the sanitiser ran on it, and a
+    # terminal cannot un-print. Say so rather than let the screen and the
+    # recorded answer quietly disagree.
+    try:
+        from .text_sanitize import sanitize_agent_text
+        cleaned = sanitize_agent_text(result.text).text
+        if cleaned != result.text:
+            result.text = cleaned
+            _emit(RenderItem("notice", text=(
+                "The model leaked tool-channel text into the answer above; "
+                "the recorded answer is the cleaned version.")))
+    except Exception:
+        pass
+
+    _emit(RenderItem("done"))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# The interactive loop
+# ---------------------------------------------------------------------------
+
+_BLOCK_FENCE = '"""'
+
+
+def _read_block_tail(read_line: Callable[[str], str], first: str, *,
+                     cont: str = "… ") -> str:
+    """What follows the first line of a read_block message.
+
+    Both read_block and read_block_wakeable share this so there is ONE
+    source of truth for the continuation grammar: a bare \"\"\" line opens
+    and closes a block, and a line ending in a backslash continues onto the
+    next. ``first`` is the line already read (by a blocking read for
+    read_block, or by the wake-aware first read for read_block_wakeable).
+    """
+    if first.strip() == _BLOCK_FENCE:
+        lines: list[str] = []
+        while True:
+            line = read_line(cont)
+            if line.strip() == _BLOCK_FENCE:
+                break
+            lines.append(line)
+        return "\n".join(lines)
+
+    parts = [first]
+    while parts[-1].endswith("\\"):
+        parts[-1] = parts[-1][:-1]
+        parts.append(read_line(cont))
+    return "".join(parts) if len(parts) > 1 else parts[0]
+
+
+def read_block(read_line: Callable[[str], str], *, prompt: str = "> ",
+               cont: str = "… ") -> str:
+    """One message, which may span several lines.
+
+    Two forms, both deterministic and both testable without a terminal: a
+    line ending in a backslash continues onto the next, and a line that is
+    exactly \"\"\" opens a block that ends at the next one.
+
+    Bracketed paste is the real fix for a multi-line paste becoming N
+    separate turns, and it needs raw mode — so it arrives with the key
+    layer, and the fence is what the help text points at until then.
+    """
+    return _read_block_tail(read_line, read_line(prompt), cont=cont)
+
+
+def read_block_wakeable(read_line: Callable[[str], str],
+                        wake: Callable[[], str], *,
+                        ready: Callable[[], bool],
+                        prompt: str = "> ", cont: str = "… ",
+                        tick: float = 0.25) -> tuple[str, bool]:
+    """Idle-capable read_block for the readline (non-raw terminal) path.
+
+    readline's read blocks on ``input()`` with no wake timer, so an idle
+    session on that path never saw an incoming session_message until a key
+    was pressed (wave-12 finding 3; the raw path already wakes via
+    read_boxed). This variant polls the terminal with ``ready`` (True when a
+    key is already waiting); while nothing is typed it calls ``wake`` — the
+    caller's throttled message check, e.g. repl._wake_text — and returns a
+    non-empty wake result as the NEXT PROMPT without ever blocking on a key.
+    Returns ``(text, from_wake)``; ``from_wake`` is True exactly when the
+    prompt came from ``wake`` rather than a typed first line. Only the FIRST
+    line is wake-aware; the continuation tail reads through ``read_line`` as
+    before. ``tick`` is the idle sleep between polls (tests pass 0).
+    """
+    import time as _time
+    while True:
+        try:
+            if ready():
+                first = read_line(prompt)
+                return _read_block_tail(read_line, first, cont=cont), False
+        except (EOFError, KeyboardInterrupt):
+            raise
+        woke = wake()
+        if woke:
+            return woke, True
+        _time.sleep(tick)
+
+
+@dataclass
+class ReplOptions:
+    cwd: Path = field(default_factory=Path.cwd)
+    max_tokens: int = 0
+    show_thinking: bool = False
+    show_tools: bool = True
+    color: str = "auto"
+    banner: str = ""
+    #: ``-n/--name``. The address an operator reaches this session by, and
+    #: the title it shows in the list of open sessions.
+    session_name: str = ""
+    #: Above this CURRENT-context token budget (per ``_estimate_context_tokens``)
+    #: the terminal starts the next turn from a small fresh context (engine
+    #: ``start_fresh`` one-shot) instead of re-sending the whole history.
+    #: None (default) resolves it as the dashboard and ``cmd_run`` do:
+    #: the engine's ``context_budget``, else min(900k, the model's window)
+    #: (``_resolve_fresh_budget``). 0 disables the restart hook. The
+    #: default was 0, so the terminal was the one surface that never
+    #: started fresh.
+    context_budget: int | None = None
+
+
+def _is_a_note(text: str) -> bool:
+    """True when ``text`` is a "#" note rather than a pasted document.
+
+    The check used to be ``startswith("#")`` against the whole
+    submission, and a brief pasted into a terminal arrives as ONE
+    submission. A task beginning "# Gemeinsamer Teil" therefore went
+    into the memory store instead of to the model -- done to five
+    sessions at once on 2026-09-20, each of which printed a line about
+    remembering and then sat at an empty prompt with its assignment
+    gone.
+
+    A note is one line. A document has more than one, and that is the
+    whole distinction: "#" plus a few words is still a note, because
+    guessing otherwise would take the feature away from the people who
+    use it.
+    """
+    body = str(text or "")
+    if not body.startswith("#"):
+        return False
+    if not body[1:].strip():
+        return False                       # a lone "#" says nothing
+    return len([ln for ln in body.strip().splitlines() if ln.strip()]) == 1
+
+
+def _fit_to_width(text: str, width: int) -> str:
+    """*text* cut to *width* display columns, never folded.
+
+    Measured in columns rather than characters: the spinner and the
+    notices carry emoji, and one of those is two columns wide. Counting
+    characters let a line that "fit" wrap anyway, which is the fault this
+    exists to stop.
+    """
+    from .repl_box import string_width
+
+    if width <= 0:
+        return ""
+    # UI strings may carry trusted SGR colour.  It occupies no terminal
+    # columns; counting its bytes both shortens a line unnecessarily and
+    # can cut an escape sequence in half.  Keep styling when the visible
+    # text fits, and fall back to safe plain text when truncation is needed.
+    visible = rr.strip_control(text)
+    if string_width(visible) <= width:
+        return text
+    cut = visible
+    while cut and string_width(cut) > max(1, width - 1):
+        cut = cut[:-1]
+    return cut + "…"
+
+
+def shell_escape(engine, command: str) -> list[str]:
+    """`!cmd` for any surface: through the agent's gate, lines for a person.
+
+    Input: the engine and the command after the `!`. Output: the lines to
+    show. Semantics: identical to the terminal's `_shell_out` -- the same
+    deny-list, secret scan, auto-allow list and approval the model's own
+    bash calls go through, because a shell escape that skipped them would
+    let someone do from the agent's prompt exactly what the agent may not.
+
+    Extracted so the dashboard runs the same code: it had no `!` at all
+    (goal 5 of the 2026-10-08 brief), and a second implementation would be
+    a second place for the gate to be forgotten. Never raises.
+    """
+    command = str(command or "").strip()
+    if not command:
+        return []
+    executor = getattr(engine, "run_gated_bash", None)
+    if not callable(executor):
+        return ["! is not available on this backend — it runs through the "
+                "same gate the agent uses, and this one has none"]
+    try:
+        out = executor(command)
+    except Exception as exc:
+        return [f"[error] {exc}"]
+    return TerminalAgent._shell_lines(out)
+
+
+def shell_escape_result(engine, command: str) -> dict:
+    """`!cmd` through the agent's gate, as fields rather than lines.
+
+    Input: the engine and the command after the `!`. Output: a dict with
+    ``command``, ``stdout``, ``stderr`` (escape sequences and C0 controls
+    removed, tabs and newlines kept), ``exit_code`` (None when nothing
+    ran), ``refused`` (the gate's reason, "" when it let the command
+    through) and ``error`` ("" or why nothing could run). Never raises.
+
+    The same executor call as shell_escape, so the same gate. For a
+    surface that renders the streams itself -- the dashboard puts them
+    in preformatted blocks -- where shell_escape's lines would have to be
+    parsed back apart, and its 200-line cap is the terminal's choice.
+
+    stdout and stderr arrive on separate pipes, so their interleaving is
+    not recoverable here; each keeps its own order. Merging them with
+    2>&1 would change the command the user approved.
+    """
+    command = str(command or "").strip()
+    run = {"command": command, "stdout": "", "stderr": "",
+           "exit_code": None, "refused": "", "error": ""}
+    if not command:
+        return run
+    executor = getattr(engine, "run_gated_bash", None)
+    if not callable(executor):
+        run["error"] = ("! is not available on this backend — it runs "
+                        "through the same gate the agent uses, and this one "
+                        "has none")
+        return run
+    try:
+        out = executor(command)
+    except Exception as exc:
+        run["error"] = str(exc)
+        return run
+    import json
+
+    text = str(out or "")
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        payload = None
+    if not isinstance(payload, dict):
+        run["stdout"] = rr.strip_control(text)
+        return run
+    if payload.get("error"):
+        run["refused"] = str(payload["error"])
+        return run
+    run["stdout"] = rr.strip_control(str(payload.get("stdout", "") or ""))
+    run["stderr"] = rr.strip_control(str(payload.get("stderr", "") or ""))
+    code = payload.get("exit_code")
+    run["exit_code"] = code if isinstance(code, int) else None
+    return run
+
+
+def _leave_stage_budget_s() -> float:
+    """``agent.leave_stage_budget_s``, else ``_LEAVE_STAGE_BUDGET_S``."""
+    try:
+        from delfin.user_settings import load_settings
+        cfg = (load_settings() or {}).get("agent") or {}
+        value = float(cfg.get("leave_stage_budget_s", _LEAVE_STAGE_BUDGET_S))
+    except Exception:
+        return _LEAVE_STAGE_BUDGET_S
+    return value if value >= 0 else _LEAVE_STAGE_BUDGET_S
+
+
+def _stage_budget_s(name: str) -> float:
+    """A stage's own limit, from the timeout its work already has.
+
+    Skill learning drafts with one model call, whose request timeout is
+    ``api_client._request_timeout_s()`` (600 s, DELFIN_REQUEST_TIMEOUT_S);
+    the stage gets that plus 30 s. The other stages call no model and
+    had no timeout; each gets ``_STAGE_DEFAULT_S``. Both are capped by
+    what is left of the total budget.
+    """
+    if name == "skill learning":
+        try:
+            from .api_client import _request_timeout_s
+            return float(_request_timeout_s()) + 30.0
+        except Exception:
+            return _LEAVE_STAGE_BUDGET_S
+    return _STAGE_DEFAULT_S
+
+
+class _LeaveStages:
+    """``run_stage(name, fn)`` for ``cli._end_session`` on an attended leave.
+
+    Input: a stage's name and its best-effort callable (it never raises).
+    Each stage runs on a daemon thread while the main thread waits in
+    0.1 s steps, so a signal handler can act between them. Per stage:
+    ``_stage_budget_s(name)``, capped by what is left of the total
+    (``agent.leave_stage_budget_s``, default 300 s). A stage still running
+    after ``_STAGE_SAY_AFTER_S`` is named on stderr with its limit and
+    "Ctrl+C skips what is left". At its limit it is left unfinished (said)
+    and the next stage starts. Ctrl+C, SIGHUP or SIGTERM sets
+    ``skipped_by``: the stage under way and every later one are skipped
+    (said once), and the short leave deadline is armed for the rest of
+    the process. With the terminal gone, or no holder, stages run inline
+    under the deadline already armed, as before.
+
+    Rejected: one deadline for the whole leave. Skill learning makes a
+    model call whose request timeout is 600 s; the 10 s deadline cut it,
+    and the eval loop after it, on almost every attended leave on a slow
+    endpoint. Also rejected: stopping at the first stage that runs out of
+    time. The later stages (indexing, outcome, episode) call no model and
+    would be lost to one that did.
+    """
+
+    def __init__(self, agent: "TerminalAgent", out=None) -> None:
+        self.agent = agent
+        self.out = out
+        self.skipped_by: int | None = None
+        self._budgeted: bool | None = None
+        self._t0 = 0.0
+        self._total = _LEAVE_STAGE_BUDGET_S
+        self._said_skip = False
+
+    def _say(self, text: str) -> None:
+        stream = self.out or sys.stderr
+        try:
+            stream.write(text + "\n")
+            stream.flush()
+        except Exception:
+            pass                    # a terminal that hung up takes no line
+
+    def _skip(self, name: str) -> None:
+        if not self._said_skip:
+            self._said_skip = True
+            self._say(f"Skipped the rest of the session end, from {name} on. "
+                      "The session is saved.")
+        self.agent._stages_skipped()
+
+    def __call__(self, name: str, fn) -> None:
+        if self._budgeted is None:
+            self._budgeted = self.agent._stages_begin(self)
+            self._t0 = time.monotonic()
+            self._total = _leave_stage_budget_s()
+        if not self._budgeted:
+            fn()
+            return
+        if self.skipped_by is not None:
+            self._skip(name)
+            return
+        left = self._total - (time.monotonic() - self._t0)
+        budget = min(left, _stage_budget_s(name))
+        if budget <= 0:
+            self._say(f"{name}: no time left of the "
+                      f"{self._total:.0f} s session-end budget; not run.")
+            return
+        done = threading.Event()
+
+        def _run() -> None:
+            try:
+                fn()
+            finally:
+                done.set()
+
+        threading.Thread(target=_run, name=f"session end: {name}",
+                         daemon=True).start()
+        start = time.monotonic()
+        said = False
+        while not done.wait(0.1):
+            if self.skipped_by is not None:
+                self._skip(name)
+                return
+            ran = time.monotonic() - start
+            if not said and ran >= _STAGE_SAY_AFTER_S:
+                said = True
+                self._say(f"Finishing the session: {name} (up to "
+                          f"{budget:.0f} s). Ctrl+C skips what is left.")
+            if ran >= budget:
+                self._say(f"{name} did not finish within {budget:.0f} s; "
+                          "left unfinished.")
+                return
+
+
+class TerminalAgent:
+    """Reads, runs one turn, renders it, repeats.
+
+    The threading model is the whole design, and it is deliberately
+    lopsided:
+
+      MAIN THREAD                        WORKER ("agent-turn", daemon)
+      owns stdin, owns every write       runs engine.stream_response
+      pumps the queue and renders        callbacks only put on the queue
+      handles SIGINT                     never touches the terminal
+
+    Two consequences that are the point rather than a side effect.
+
+    A ``KeyboardInterrupt`` cannot cross ``stream_response``, because
+    Python delivers signals to the main thread and the turn runs on the
+    worker. That matters more than it looks: the engine's turn body
+    catches ``Exception``, not ``BaseException``, so an interrupt raised
+    inside it would skip the cleanup that pops the unanswered user
+    message — and the alternation sanitiser then resolves two consecutive
+    user messages by keeping the NEWEST, silently overwriting the question
+    that was asked. An interrupt has to arrive as ``request_stop()``, and
+    the turn has to unwind through its own stop path.
+
+    And rendering happens on one thread only, so a half-written answer
+    line cannot be cut in two by a tool line from somewhere else.
+    """
+
+    def __init__(self, engine, opts: ReplOptions | None = None, *,
+                 out=None, err=None, read_line: Callable[[str], str] | None = None,
+                 broker=None):
+        self.engine = engine
+        self.broker = broker
+        # The broker marks its waits on the CURRENT engine's activity
+        # state; read per request, since /model rebuilds the engine.
+        if broker is not None and getattr(broker, "activity", 0) is None:
+            try:
+                broker.activity = lambda: getattr(self.engine, "activity",
+                                                  None)
+            except Exception:
+                pass
+        # The phase whose slow line was already said (activity seq).
+        self._slow_said_seq = -1
+        self.opts = opts or ReplOptions()
+        try:
+            # The name `delfin-agent pause <session>` reaches this engine by.
+            engine.pause_key = str(getattr(self.opts, "session_name", "") or "").strip()
+        except Exception:
+            pass
+        self.out = out if out is not None else sys.stdout
+        self.err = err if err is not None else sys.stderr
+        self.transcript = Transcript(
+            self.out, self.err,
+            theme=rr.theme_for(self.err, self.opts.color),
+            show_tools=self.opts.show_tools,
+            show_thinking=self.opts.show_thinking,
+            color=self.opts.color,
+        )
+        self._read_line = read_line or self._input
+        self._q: queue.Queue[RenderItem] = queue.Queue()
+        self._turn_active = threading.Event()
+        self._interrupts = 0
+        self._idle_interrupts = 0
+        self._prev_sigint = None
+        self._prev_sigwinch = None
+        # The leave (see begin_leaving): started, its deadline armed, and
+        # whether the caller holds the signals until its save is done.
+        self._leaving = False
+        self._leave_armed = False
+        self._leave_held = False
+        self._leave_gone = False         # armed because the terminal went
+        self._leave_timer = None
+        self._leave_code = 0
+        self._stages = None              # the session-end stages under way
+        # How much history was already on disk when this session started.
+        self._hist_base = 0
+        # Set by the resize handler, acted on by the loop. A signal handler
+        # runs between bytecodes of whatever the main thread was doing, so
+        # it records and the loop repaints.
+        self._width_dirty = False
+        self._stdin = sys.stdin
+        # What the user is typing WHILE a turn runs, and the last tool
+        # result, so Ctrl+O has something to expand.
+        self._input_line = ""
+        self._input_cursor = 0
+        self._last_result_text = ""
+        # The live composer is one owned region: progress above the same
+        # two-rule input box and key hint used while idle. Input and status
+        # used to compete for one row, so an empty input vanished behind
+        # the spinner and typing hid all progress info.
+        self._bottom = ""
+        self._bottom_cursor = (-1, -1)
+        self._bottom_rows = 0
+        self._bottom_below = 0
+        self._bottom_anchor_gap = 0
+        self._bottom_anchor_column = 0
+        self._show_tasks = False
+        self._turn_t0 = 0.0
+        self._turn_base = (0, 0, 0.0)
+        self._spin = 0
+        self._last_paint = 0.0
+        # Characters this turn streamed to the pump as text or thinking
+        # (rendered content). The provider's output-token count is
+        # cumulative but only lands on the FINAL message_delta on
+        # OpenAI-compatible endpoints (usage arrives with the last
+        # chunk, include_usage), so mid-turn the status line would
+        # otherwise show a false ↓0 while tokens are visibly streaming.
+        # This char count is the honest basis for a MARKED estimate.
+        self._streamed_chars = 0
+        # Typed during a turn: queued, never injected. A queued message
+        # cannot be lost and cannot land in a context nobody could see.
+        self.queued: list[str] = []
+        # The first prompt the user gave this process (not a wake, not a
+        # continuation): the task the session end records an outcome and
+        # an episode for (cli._end_session). "" until one is sent.
+        self.first_task = ""
+        self._quit = False
+
+    # -- input -----------------------------------------------------------
+    def _input(self, prompt: str) -> str:
+        """Read one line, without the prompt landing in the answer.
+
+        ``input(prompt)`` writes the prompt to STDOUT, which is the one
+        stream that must carry the answer and nothing else — so
+        `delfin-agent > answer.txt` would collect a `> ` for every turn.
+
+        When stdout is a terminal the prompt still goes through ``input``,
+        because readline needs to know the prompt to redraw the line
+        correctly during history search and on a wrapped line. When stdout
+        is redirected there is nothing to redraw, so the prompt goes to
+        stderr where the rest of the chrome lives.
+        """
+        try:
+            interactive_out = bool(self.out.isatty())
+        except Exception:
+            interactive_out = False
+        if interactive_out:
+            return input(prompt)
+        self.err.write(prompt)
+        self._flush_err()
+        return input()
+
+    def _flush_err(self) -> None:
+        try:
+            self.err.flush()
+        except Exception:
+            pass
+
+    def _notice(self, text: str) -> None:
+        self.transcript.render(RenderItem("notice", text=text))
+
+    # -- interrupts ------------------------------------------------------
+    def _on_sigint(self, signum, frame) -> None:
+        """Runs on the main thread, BETWEEN two bytecodes — possibly inside
+        a write. So it never prints: it puts on the queue and lets the pump
+        do the writing. Getting that wrong produces interleaved output once
+        every few interrupts, which is the worst kind of bug to reproduce.
+        """
+        if self._leaving:
+            return              # the leave is under way and has a deadline
+        if not self._turn_active.is_set():
+            raise KeyboardInterrupt
+        self._interrupts += 1
+        if self._interrupts == 1:
+            self._stop_engine()
+            self._q.put(RenderItem("notice", text=(
+                "Interrupt — ending this turn. A tool call already running "
+                "finishes first; a shell command is capped at its own "
+                "timeout, so this can take a moment.")))
+            return
+        if self._interrupts == 2:
+            # What the third one does: raise here, unwind through turn()'s
+            # finally with a bounded join, and return 130 from the loop. It
+            # cannot cancel the call, so it does not claim to.
+            self._q.put(RenderItem("notice", text=(
+                "Still waiting on the running tool call. Once more leaves "
+                "this session without it: the call is not cancelled, and "
+                "anything it started keeps running.")))
+            return
+        raise KeyboardInterrupt
+
+    def _stop_engine(self) -> None:
+        """The dashboard's stop pair, so both surfaces stop the same way."""
+        try:
+            self.engine.request_stop()
+        except Exception:
+            pass
+        client = getattr(self.engine, "client", None)
+        if client is not None and hasattr(client, "signal_stop"):
+            try:
+                client.signal_stop()
+            except Exception:
+                pass
+
+    # -- one turn --------------------------------------------------------
+    def _begin_turn_resets_the_abort(self) -> None:
+        """An abort belongs to the turn it ended, not to the session.
+
+        [a] abort refuses everything still in flight -- "refuse
+        everything that arrives after". Without this reset the refusal
+        posture survived into every later turn, and a session that
+        aborted ONCE answered every question for hours with a silent
+        "user denied" nobody had decided. The next turn starts from a
+        clean posture: its questions are asked.
+        """
+        if self.broker is not None:
+            try:
+                self.broker.reset_abort()
+            except Exception:
+                pass
+
+    def _working_state_block(self) -> str:
+        """Deterministic, redacted recap for a fresh start, or "".
+
+        Rebuilt from the session's own records (files changed, last test
+        outcomes, open tasks, denials) via ``working_state.py`` — never from
+        model text, never via a model call, best-effort.
+        """
+        try:
+            from .working_state import build_working_state_block
+            return build_working_state_block(
+                list(getattr(self.engine, "messages", []) or []),
+                session_id=str(getattr(self.engine, "session_id", "") or ""),
+                workspace=getattr(self.opts, "cwd", None),
+                refusals=getattr(self.engine, "_refusal_entries", lambda: None)(),
+            )
+        except Exception:
+            return ""
+
+    def turn(self, prompt: str) -> TurnResult:
+        if not self.first_task and not isinstance(prompt, HarnessText):
+            self.first_task = str(prompt)
+        # The fresh-start decision lives in run_turn (the public turn path),
+        # which both the interactive and the headless route share: it judges
+        # the CURRENT context, ARCHIVES the history it drops, arms the
+        # engine's one-shot start_fresh with the fresh block and fuses that
+        # block with this turn's prompt. The terminal only hands run_turn the
+        # raw prompt plus where to find the budget, the task state and the
+        # working-state recap, so a fresh block names the open phase.
+        result_box: list[TurnResult] = []
+
+        def _worker() -> None:
+            try:
+                result_box.append(run_turn(
+                    self.engine, prompt, sink=self._q.put,
+                    max_tokens=self.opts.max_tokens,
+                    context_budget=getattr(self.opts, "context_budget", None),
+                    task_state=getattr(self, "_task_state", None),
+                    working_state_block=self._working_state_block()))
+            except BaseException as exc:            # noqa: BLE001
+                # The worker must never die silently: a turn that vanished
+                # looks exactly like a turn that answered nothing.
+                self._q.put(RenderItem("error", text=str(exc)))
+                self._q.put(RenderItem("done"))
+
+        import time as _time
+
+        self._begin_turn_resets_the_abort()
+        self._interrupts = 0
+        self._turn_t0 = _time.monotonic()
+        self._last_paint = 0.0
+        # New turn, new streamed-char count: the estimate must not
+        # carry the previous turn's characters into this one.
+        self._streamed_chars = 0
+        # The engine's counters are cumulative for the SESSION, so the live
+        # line differences against this baseline. Without it the first turn
+        # looks right and every later one reports the whole conversation.
+        try:
+            _st = self.engine.get_status() or {}
+            self._turn_base = (int(_st.get("input_tokens", 0) or 0),
+                               int(_st.get("output_tokens", 0) or 0),
+                               float(_st.get("cost_usd", 0.0) or 0.0))
+        except Exception:
+            self._turn_base = (0, 0, 0.0)
+        compaction_before = getattr(self.engine, "last_compaction_info", None)
+
+        from . import repl_keys as rk
+
+        self._turn_active.set()
+        worker = threading.Thread(target=_worker, name="agent-turn", daemon=True)
+        worker.start()
+        abandoning = False
+        leaving = False
+        try:
+            self._pump(worker)
+        except KeyboardInterrupt:
+            # The last step of the ladder. It travels through the finally
+            # below, so the settle there must not wait on the running call.
+            abandoning = True
+            raise
+        except rk.TerminalLeft:
+            # No next turn will run, so there is nothing to settle for: the
+            # worker is told to stop and left behind, and nothing is written
+            # to a terminal that may no longer take it.
+            leaving = True
+            self._stop_for_leaving()
+            raise
+        finally:
+            self._turn_active.clear()
+            if not leaving:
+                self._settle(worker, abandon=abandoning)
+        self.transcript.finish()
+        self._report_compaction(compaction_before)
+        self._report_tasks()
+        self._report_lessons()
+        result = result_box[0] if result_box \
+            else TurnResult(error="turn produced nothing")
+        # A turn that ended on a question or a denial leaves its note for
+        # the next prompt (read and consumed by _wake_text). The result
+        # comes before the note: the note reads the turn's own words.
+        denied = bool(getattr(self, "_denied_in_turn", False))
+        self.__dict__.pop("_denied_in_turn", None)
+        self._note_turn_blocked(result.text, denied=denied)
+        # B4 target 1: a turn that ended blocked IS a wait — register it
+        # so ops health shows on_whom/for_what and the idle poll can
+        # satisfy it. register_once keeps it idempotent. A registry
+        # failure (ValueError, OSError) costs one log line; other errors
+        # propagate.
+        self._register_blocked_wait(result.text, denied=denied)
+        self._offer_next_steps()
+        self._report_status()
+        # For the length-continuation: a length end WITH a tool call is
+        # the tool loop's to carry on, not ours.
+        self.__dict__["_turn_used_tools"] = bool(result.tool_calls)
+        # The endpoint continuation reads the finished turn's error
+        # (and its status) after the fact: the classification happens
+        # at the prompt, where waiting belongs, not inside the turn.
+        self.__dict__["_last_turn_result"] = result
+        if not result.error:
+            # A turn that answered says the model exists and was
+            # spelled right -- the fact a later "model not found"
+            # is judged on (outage, not typo). Kept for the session;
+            # the pause budget bounds what a wrong judgement costs.
+            self.__dict__["_endpoint_model_answered"] = True
+            self.__dict__["_endpoint_pauses"] = 0
+        return result
+
+    def _pump(self, worker: threading.Thread) -> None:
+        from . import repl_keys as rk
+
+        with rk.RawMode(self._stdin) as raw:
+            decoder = rk.KeyDecoder()
+            while True:
+                if self.broker is not None:
+                    pending = self.broker.take()
+                    if pending is not None:
+                        self._answer(pending, raw)
+                        continue
+                if self._width_dirty:
+                    # The handler recorded the new size; the repaint
+                    # happens here, on the thread that owns the terminal.
+                    self._width_dirty = False
+                    # Erase with the OLD geometry, then ask for the new
+                    # width before laying the composer out again.  Reversing
+                    # that order sizes the erase from a picture that is not
+                    # on screen; omitting refresh_width repaints forever at
+                    # the launch-time width after SIGWINCH.
+                    self._clear_bottom()
+                    self.transcript.refresh_width()
+                    self._repaint_bottom(force=True)
+                if raw.active:
+                    for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
+                        self._on_key(event, decoder)
+                    self._repaint_bottom()
+                    # Operator mail, mid-turn: the dashboard steers a
+                    # message into the running turn between rounds
+                    # (push_steer); the terminal dropped it at the
+                    # prompt instead, so a long turn was deaf to its
+                    # supervisor for exactly as long as it ran
+                    # (assignment 8, point b, 2026-09-22). Same
+                    # throttle as the idle wake, same rendering (it
+                    # reads as coming from another session, never as
+                    # user input).
+                    try:
+                        self._steer_operator_mail()
+                    except Exception:
+                        pass
+                    # The heartbeat of a session IN a turn. Presence was
+                    # renewed only at the prompt and on a broker question,
+                    # so a turn longer than session_presence._STALE_S --
+                    # one model round after another, no question asked --
+                    # dropped the session out of open_sessions(), and a
+                    # peer got "no other open session 'runde2c-s4'" while
+                    # s4 was working (measured 2026-09-21). The pump runs
+                    # for the whole turn, so the refresh travels with it;
+                    # announce itself throttles unchanged records to one
+                    # write per heartbeat, never one per read.
+                    try:
+                        self._announce_presence()
+                    except Exception:
+                        pass
+                try:
+                    self._say_slow_phase()
+                except Exception:
+                    pass
+                try:
+                    item = self._q.get(
+                        timeout=0.0 if raw.active else _PUMP_TICK_S)
+                except queue.Empty:
+                    if not worker.is_alive() and self._q.empty():
+                        self._clear_bottom()
+                        return
+                    continue
+                if item.kind == "done":
+                    self._clear_bottom()
+                    return
+                if item.kind == "denied":
+                    # A refusal inside the turn is the second half of the
+                    # turn-end blocked signal: _note_turn_blocked reads
+                    # this flag, so the next prompt says what the turn
+                    # stopped on even when its own words do not.
+                    self._denied_in_turn = True
+                if (item.kind == "wait" and raw.active and self._can_redraw()
+                        and self._activity_snapshot() is not None):
+                    # The status row already says it, with a clock that
+                    # ticks every repaint; the first-byte tick's own row
+                    # above it counted in tenths of the deadline.
+                    continue
+                self._count_streamed(item)
+                self._render_around_bottom(item)
+
+    # -- keys during a turn ----------------------------------------------
+    def _count_streamed(self, item: "RenderItem") -> None:
+        """Feed one rendered item into the streamed-char estimate.
+
+        Called from the pump for every item the worker streamed: the
+        text and thinking the model produced this turn. Tool results
+        are NOT model output and are deliberately not counted --
+        counting them would present a tool's output as the model's
+        tokens.
+        """
+        if item.kind in ("text", "thinking") and item.text:
+            self._streamed_chars += len(item.text)
+
+    def _on_key(self, event, decoder) -> None:
+        from . import repl_keys as rk
+
+        if event.kind == rk.EOF:
+            # ctrl+d on an empty line leaves, during a turn as at the
+            # prompt. It is also all `script` passes down when the terminal
+            # above it goes away, so dropping it here kept a session
+            # running with nobody left to see it.
+            raise rk.TerminalLeft("ctrl+d", 0)
+        if event.kind == rk.INTERRUPT:
+            self._stop_engine()
+            self._clear_input_line()
+            self.transcript.chrome(self.transcript.theme.yellow(
+                "! Esc — ending this turn. A running tool call finishes "
+                "first."))
+            return
+        if event.kind == rk.SUBMIT:
+            text = event.text.strip()
+            self._clear_input_line()
+            # A question open: its answer, never the bypass offer's.
+            if self.broker is not None and getattr(self, "_bypass_offer", None):
+                pending = getattr(self.broker, "pending", None)
+                try:
+                    if callable(pending) and pending():
+                        self._bypass_offer = None
+                except Exception:
+                    self._bypass_offer = None
+            if self._answer_bypass_offer(text):
+                return
+            # A choice question that arrived while this line was being
+            # typed takes the line as its answer; it is then not queued.
+            if text and self.broker is not None:
+                try:
+                    took = self.broker.answer_question_with_text(text)
+                except Exception:
+                    took = False
+                if took:
+                    self._show_user_input(text)
+                    return
+            if text:
+                self._show_user_input(text, queued=True)
+                self.queued.append(text)
+                self._recall_later(text)
+                self.transcript.chrome(self.transcript.theme.dim(
+                    f"queued ({len(self.queued)}) — goes out when this turn "
+                    "ends, or ctrl+g to send it into this one"))
+            return
+        if event.kind == rk.STEER:
+            self._clear_input_line()
+            if event.text.strip():
+                self._show_user_input(event.text.strip())
+            self._steer(event.text.strip())
+            return
+        if event.kind == rk.CYCLE_MODE:
+            self._clear_input_line()
+            self._cycle_mode()
+            self._draw_input_line(decoder.buffer, cursor=decoder.cursor)
+            return
+        if event.kind == rk.EXPAND:
+            self._clear_input_line()
+            self._expand_last_result()
+            self._draw_input_line(decoder.buffer, cursor=decoder.cursor)
+            return
+        if event.kind == rk.TASKS:
+            self._show_tasks = not self._show_tasks
+            self._clear_bottom()
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"task list {'on' if self._show_tasks else 'off'}"))
+            self._repaint_bottom(force=True)
+            return
+        if event.kind == rk.REDRAW:
+            self._clear_bottom()
+            # Ctrl+L is also the recovery key when a multiplexer swallowed
+            # SIGWINCH.  A redraw at the stale width is not a recovery.
+            self.transcript.refresh_width()
+            self._repaint_bottom(force=True)
+            return
+        if event.kind == rk.EDIT:
+            self._draw_input_line(event.text, cursor=decoder.cursor)
+
+    def _steer(self, text: str) -> None:
+        """Put what was typed into the turn that is running.
+
+        The engine already carries the whole mechanism: the client's steer
+        inbox is drained between tool rounds AND at a turn that would
+        otherwise end, so a message sent late still continues the turn
+        rather than being answered next time. What was missing was a way
+        to reach it from a keyboard.
+
+        A backend without the inbox is told about, never worked around:
+        `steer` returns False there, and the message becomes a queued one
+        with the reason on screen. Dropping it would lose something the
+        user typed, and pretending it landed would be worse.
+        """
+        # Stripped here, not only at the call site. `push_steer` drops a
+        # blank of its own accord, so an unstripped one would send nothing
+        # and still print that it had — a line on screen asserting an
+        # effect that did not happen.
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            delivered = bool(self.engine.steer(text))
+        except Exception:
+            delivered = False
+        self._recall_later(text)
+        if delivered:
+            self._auto_note_user(steer=True)
+            self.transcript.chrome(self.transcript.theme.cyan(
+                "→ sent into the running turn"))
+            return
+        self.queued.append(text)
+        self.transcript.chrome(self.transcript.theme.dim(
+            f"this backend takes no message mid-turn — queued "
+            f"({len(self.queued)}) instead"))
+
+    def _posture_now(self) -> str:
+        """The approval posture, or "" where this backend has no gate.
+
+        Read fresh each time the box is drawn: shift+tab changes it, and
+        a row that shows the posture you had two turns ago is worse than
+        one that shows none.
+        """
+        try:
+            return str(getattr(self.engine.kit_permissions, "mode", "") or "")
+        except Exception:
+            return ""
+
+    def _cycle_mode(self) -> None:
+        """Shift+Tab, one step along the ladder (posture_cycle): default,
+        acceptEdits, plan, bypassPermissions.
+
+        Bypass is stepped over where the managed policy disallows it or no
+        filesystem layer holds each command. The first step onto it in a
+        session switches nothing: it is offered, and only a ``y`` line
+        (``_answer_bypass_offer``) switches. shift+tab with the offer open
+        moves on past bypass.
+        """
+        from . import posture_cycle as _pc
+        try:
+            current = str(getattr(self.engine.kit_permissions, "mode", "")
+                          or "default")
+        except Exception:
+            self.transcript.chrome(self.transcript.theme.dim(
+                "this backend carries no permission gate"))
+            return
+        offer = getattr(self, "_bypass_offer", None)
+        self._bypass_offer = None
+        nxt, ask = _pc.step(self.engine, _pc.BYPASS if offer else current,
+                            confirmed=bool(getattr(self, "_bypass_confirmed", False)))
+        if ask:
+            import time as _time
+            self._bypass_offer = (current, _time.monotonic())
+            self.transcript.chrome(self.transcript.theme.red(
+                f"⏵⏵ {_pc.OFFER}: type y and enter to switch; any other "
+                f"line stays in {current}"))
+            return
+        if nxt == _pc.BYPASS:
+            why = _pc.enter_bypass(self.engine, via="REPL shift+tab")
+            if why:
+                self.transcript.chrome(self.transcript.theme.red(
+                    f"not switched: {why}"))
+                return
+        else:
+            try:
+                self.engine.set_kit_permission_mode(nxt)
+            except Exception as exc:
+                self.transcript.chrome(self.transcript.theme.red(
+                    f"could not switch mode: {exc}"))
+                return
+        self.transcript.chrome(self.transcript.theme.cyan(
+            f"approval → {nxt}"))
+
+    def _answer_bypass_offer(self, text: str) -> bool:
+        """A line typed while bypass is offered. True when the line was
+        the answer (and is not to be sent): ``y`` after the pause
+        (posture_cycle._DELIBERATE_S), which switches; a ``y`` sooner is
+        taken and switches nothing. Any other line leaves the posture
+        where it was and goes on as typed (False)."""
+        from . import posture_cycle as _pc
+        offer = getattr(self, "_bypass_offer", None)
+        if not offer:
+            return False
+        self._bypass_offer = None
+        was, at = offer
+        if str(text or "").strip().lower() not in ("y", "yes"):
+            self.transcript.chrome(self.transcript.theme.dim(f"still {was}"))
+            return False
+        import time as _time
+        if _time.monotonic() - at < _pc._DELIBERATE_S:
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"too soon to be an answer: still {was} (shift+tab offers it again)"))
+            return True
+        why = _pc.enter_bypass(self.engine, via="REPL shift+tab, confirmed with y")
+        if why:
+            self.transcript.chrome(self.transcript.theme.red(
+                f"not switched: {why}"))
+            return True
+        self._bypass_confirmed = True
+        self.transcript.chrome(self.transcript.theme.red(
+            "approval → bypassPermissions"))
+        return True
+
+    def _expand_last_result(self) -> None:
+        if not self._last_result_text:
+            self.transcript.chrome(self.transcript.theme.dim(
+                "nothing to expand yet"))
+            return
+        body = rr.result_body(self._last_result_text)
+        for line in rr.strip_control(body).splitlines():
+            self.transcript.chrome("  " + line)
+
+    # -- what a typed line means ------------------------------------------
+    def _handle_line(self, line: str) -> str:
+        """Returns the text to send to the model, or "" when it was handled.
+
+        Order matters and is the dashboard's: a builtin, then a user
+        command, then a skill, then a subagent command, then the model.
+        The same `/deploy` has to mean the same thing on both surfaces.
+        """
+        from . import repl_commands as rc
+
+        if line.startswith(rc.SHELL_PREFIX) and len(line) > 1:
+            self._shell_out(line[1:].strip())
+            return ""
+        if _is_a_note(line):
+            self._remember(line[1:].strip())
+            return ""
+
+        result = rc.dispatch(line, self._ctx())
+        if not result.handled:
+            near = rc.nearest_builtin(line)
+            if near:
+                # A typo of a command is not a question for the model: it
+                # cost a turn and the answer was about the typo.
+                head = line.strip().split()[0]
+                self.transcript.chrome(self.transcript.theme.yellow(
+                    f"unknown command {head} — did you mean {near}? "
+                    "Nothing was sent; ↑ brings the line back."))
+                return ""
+            return rc.expand_at_references(line, self.opts.cwd)
+        if result.output:
+            for out_line in result.output.splitlines():
+                self.transcript.chrome(out_line)
+        if result.clear:
+            self._start_fresh()
+        if result.quit:
+            self._quit = True
+        return result.prompt
+
+    def _ctx(self):
+        from . import repl_commands as rc
+        return rc.ReplContext(
+            engine=self.engine, workspace=self.opts.cwd,
+            session_id=str(getattr(self.engine, "session_id", "") or ""),
+            # getattr: an agent built without __init__ (tests) has neither.
+            ask=getattr(self, "_read_line", None), say=self._say_chrome,
+            auto=self._auto_controller())
+
+    # -- auto mode ---------------------------------------------------------
+    def _auto_controller(self):
+        """This session's auto_mode.AutoController, made on first use; None
+        when it cannot be made. The queue probe is the user-first rule: a
+        line waiting in ``queued`` refuses the iteration's next tool call."""
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            try:
+                from . import auto_mode
+                engine = getattr(self, "engine", None)
+                ctl = auto_mode.AutoController(
+                    getattr(getattr(self, "opts", None), "cwd", None)
+                    or Path.cwd(),
+                    session_id=str(getattr(engine, "session_id", "") or ""))
+            except Exception:
+                return None
+            self._auto = ctl
+        if not getattr(ctl, "_probe_of", None) is self:
+            try:
+                ctl.user_waiting = lambda: bool(getattr(self, "queued", None))
+                ctl._probe_of = self
+            except Exception:
+                pass
+        return ctl
+
+    def _say_auto(self, ctl) -> None:
+        """Print what the controller has to say, as chrome. Never raises."""
+        try:
+            for note in ctl.pop_notices():
+                for line in str(note).splitlines():
+                    self.transcript.chrome(self.transcript.theme.dim(
+                        "◆ " + line))
+        except Exception:
+            pass
+
+    def _auto_note_user(self, *, steer: bool = False) -> None:
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            return
+        try:
+            ctl.note_user_input(getattr(self, "engine", None), steer=steer)
+        except Exception:
+            pass
+
+    def _auto_after_turn(self, result) -> None:
+        """An auto turn ended: judge it; any other turn: note its end."""
+        ctl = self.__dict__.get("_auto")
+        if ctl is None:
+            return
+        try:
+            if ctl.iteration is not None:
+                ctl.finish_iteration(self.engine,
+                                     getattr(result, "text", "") or "",
+                                     getattr(result, "error", "") or "")
+            else:
+                ctl.note_turn_end()
+        except Exception:
+            pass
+        self._say_auto(ctl)
+
+    def _auto_wake(self, typed: str, woke: str) -> str:
+        """The idle prompt's turn when auto mode is on: the controller's
+        next iteration (wrapping a job wake into it), else the plain wake.
+        A message from another session's operator is a person: it pauses
+        auto mode and is delivered as it always was."""
+        import time as _time
+
+        ctl = self.__dict__.get("_auto")
+        kind = self.__dict__.pop("_wake_kind", "")
+        if ctl is None or not getattr(ctl, "enabled", False):
+            return woke
+        if woke and kind == "mail":
+            self._auto_note_user()
+            return woke
+        now = _time.monotonic()
+        if not woke and now - self.__dict__.get("_auto_last_look", -1e9) \
+                < self._WAKE_EVERY_S:
+            return ""
+        self._auto_last_look = now
+        try:
+            self._auto_controller()
+            prompt = ctl.next_prompt(self.engine, typed=typed,
+                                     wake=str(woke or ""),
+                                     pause_key=self._presence_key())
+        except Exception:
+            prompt = ""
+        self._say_auto(ctl)
+        return prompt or woke
+
+    def _posture_hint(self) -> str:
+        """The posture for the hint row, and auto mode's line when it is on."""
+        posture = self._posture_now()
+        ctl = self.__dict__.get("_auto")
+        line = ""
+        try:
+            line = ctl.status_line() if ctl is not None else ""
+        except Exception:
+            line = ""
+        if not line:
+            return posture
+        return f"{posture} · {line}" if posture else line
+
+    def _say_chrome(self, text: str) -> None:
+        """Print a handler's mid-command text as chrome, line by line."""
+        for line in str(text or "").splitlines():
+            self.transcript.chrome(line)
+
+    def _start_fresh(self) -> None:
+        try:
+            self.engine.messages.clear()
+        except Exception:
+            pass
+
+    def _shell_out(self, command: str) -> None:
+        """`!cmd` runs through the AGENT's gate, not around it.
+
+        A shell escape that skipped the deny-list and the approval prompt
+        would be a way to do from the agent's prompt exactly what the
+        agent may not do, which is worse than not having the affordance.
+        The output joins the session, so the model can see what happened.
+        """
+        if not command:
+            return
+        # One implementation for both surfaces (shell_escape); the terminal
+        # only adds its off-thread run and its colours.
+        executor = getattr(self.engine, "run_gated_bash", None)
+        if not callable(executor):
+            self.transcript.chrome(self.transcript.theme.dim(
+                shell_escape(self.engine, command)[0]))
+            return
+        out = self._off_thread(lambda: executor(command))
+        if isinstance(out, Exception):
+            self.transcript.chrome(
+                self.transcript.theme.red(f"[error] {out}"))
+            return
+        for line in self._shell_lines(out):
+            self.transcript.chrome("  " + line)
+
+    @staticmethod
+    def _shell_lines(out) -> list[str]:
+        """What the user asked to see, not the envelope it arrived in.
+
+        The tool returns a JSON result because that is what a MODEL needs;
+        a person typing `!git status` wants the output of git status.
+        """
+        import json
+
+        text = str(out or "")
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            if payload.get("error"):
+                return [f"refused: {payload['error']}"]
+            parts = [str(payload.get("stdout", "") or ""),
+                     str(payload.get("stderr", "") or "")]
+            text = "\n".join(p for p in parts if p.strip())
+            code = payload.get("exit_code")
+            if code not in (0, None):
+                text += f"\n(exit {code})"
+        lines = rr.strip_control(text).splitlines()
+        if len(lines) > 200:
+            lines = lines[:200] + [f"… {len(lines) - 200} more lines"]
+        return lines
+
+    def _off_thread(self, work):
+        """Run something that can hit the gate, and stay able to answer it.
+
+        Anything routed through the permission gate may ask for approval,
+        and the broker parks that question for THE MAIN THREAD to answer.
+        Calling such work directly from the main thread is therefore a
+        deadlock: the asker waits for the answerer, which is itself. So it
+        runs on a worker while this thread keeps answering — the same
+        arrangement a turn already uses, for the same reason.
+        """
+        box: list = []
+
+        def _run():
+            try:
+                box.append(work())
+            except Exception as exc:      # noqa: BLE001
+                box.append(exc)
+
+        worker = threading.Thread(target=_run, name="agent-gated", daemon=True)
+        worker.start()
+        while worker.is_alive() or not box:
+            if self.broker is not None:
+                pending = self.broker.take()
+                if pending is not None:
+                    # Entered for the prompt and released again as soon as
+                    # it is answered: the span that needs cbreak is the
+                    # keystroke, not the command that raised it.
+                    raw = self._raw_for_prompt()
+                    try:
+                        self._answer(pending, raw)
+                    finally:
+                        self._release_prompt_raw(raw)
+                    continue
+            worker.join(timeout=_PUMP_TICK_S)
+            if not worker.is_alive():
+                break
+        return box[0] if box else None
+
+    def _raw_for_prompt(self):
+        """A keystroke reader for a prompt raised outside a turn.
+
+        Entered here, released by ``_release_prompt_raw``, and the pairing
+        is load-bearing twice: a reader that is never left holds the
+        terminal in cbreak with echo off, so the next idle ``input()``
+        shows nothing of what is typed — and every ``RawMode.__enter__``
+        registers an atexit hook that only ``restore`` takes back, so an
+        unreleased one leaves a hook behind per approval.
+        """
+        from . import repl_keys as rk
+        raw = rk.RawMode(self._stdin)
+        return raw.__enter__()
+
+    @staticmethod
+    def _release_prompt_raw(raw) -> None:
+        """Give the terminal back, whatever the reader turned out to be."""
+        restore = getattr(raw, "restore", None)
+        if callable(restore):
+            try:
+                restore()
+            except Exception:
+                pass
+
+    def _remember(self, text: str) -> None:
+        """`#note` writes a memory, marked as the user's own."""
+        if not text:
+            return
+        try:
+            from . import memory_store
+            # The names the store actually takes. It was called with
+            # kind=/workspace=/author= and raised on every single note,
+            # so "#" had never once worked on this path -- the error
+            # about remembering was the only thing it ever produced.
+            memory_store.save_typed_memory(
+                text=text, memory_type="user", repo_root=self.opts.cwd,
+                scope="project", source=memory_store.SOURCE_USER)
+            self.transcript.chrome(self.transcript.theme.dim("remembered"))
+        except Exception as exc:
+            self.transcript.chrome(
+                self.transcript.theme.red(f"could not remember: {exc}"))
+
+    # -- approvals --------------------------------------------------------
+    def _answer(self, req, raw) -> None:
+        """Answer one request -- or refuse it, when the terminal leaves.
+
+        A request taken off the queue is out of reach of ``abort_all``, so
+        a session leaving from inside the dialog refuses it here. Left
+        alone, the asking thread would wait out the request's expiry.
+        """
+        from . import repl_keys as rk
+
+        try:
+            self._answer_request(req, raw)
+        except rk.TerminalLeft:
+            try:
+                if self.broker is not None:
+                    self.broker.resolve(req, self._refuse(req))
+            except Exception:
+                pass
+            raise
+
+    def _answer_request(self, req, raw) -> None:
+        """Render one request and read the answer. Main thread only.
+
+        The worker is blocked inside the gate waiting on this, which is
+        what makes reading from stdin here safe: nothing else can be
+        writing to the terminal, and nothing else is reading from it.
+        """
+        from . import terminal_confirm as tc
+
+        self._clear_bottom()
+        # The status row is down while a dialog waits, so the dialog says
+        # what the turn is doing: nothing, until this is answered.
+        self.transcript.chrome(self.transcript.theme.dim(
+            "⏸ waiting for your "
+            + ("answer" if req.kind == tc.ASK else "approval")
+            + " — the turn is paused until you answer"))
+        if req.kind == tc.ASK:
+            self._answer_question(req, raw)
+            return
+
+        suggestion = (self.broker.suggest_pattern(req.command)
+                      if req.is_shell and req.command else "")
+        options = tc.options_for(req, suggestion=suggestion)
+        self.transcript.chrome(tc.render_request(
+            req, theme=self.transcript.theme, width=self.transcript.width,
+            options=options))
+
+        allowed = {o.key for o in options}
+        while True:
+            # Answered from outside (approvals approve/deny) while the
+            # dialog was waiting: it is OVER. Reading on would take the
+            # keys of the next prompt line -- a typed command acted as
+            # [a] abort of a question long since answered, and the turn
+            # it belonged to never ran. Check before every key: the
+            # answer can land in the middle of the loop too.
+            if getattr(req, "resolved", False):
+                self._say_ended_elsewhere(req)
+                return
+            key = self._read_key(raw, allowed | {"\x1b"},
+                                 stop=lambda: getattr(req, "resolved", False))
+            if not key:
+                continue                # answered while waiting: see above
+            if key in ("\x1b", "n"):
+                if self._apply(req, self._refuse(req)):
+                    self.transcript.chrome(
+                        self.transcript.theme.dim("  refused"))
+                return
+            if key == "?":
+                self.transcript.chrome(tc.render_help(req, options))
+                continue
+            if key == "a":
+                # This one first, the rest after: abort_all resolves
+                # everything still queued, so asking it first would make
+                # the answer to THIS request late by construction and the
+                # line below would report an expiry that never happened.
+                landed = self._apply(req, self._refuse(req))
+                denied = self.broker.abort_all()
+                self._stop_engine()
+                extra = (f" and {len(denied)} other request(s) in flight"
+                         if denied else "")
+                head = ("! aborted — this was refused" if landed
+                        else "! aborted")
+                self.transcript.chrome(self.transcript.theme.yellow(
+                    f"{head}{extra}, and the turn is ending"))
+                return
+            if key == "y":
+                self._apply(req, self._allow(req))
+                return
+            if key == "d" and req.kind == tc.PLAN:
+                if self._apply(req, {"approved": True, "new_mode": "default"}):
+                    self.transcript.chrome(self.transcript.theme.cyan(
+                        "approval → default"))
+                return
+            if key == "e" and req.kind == tc.PLAN:
+                if self._apply(req,
+                               {"approved": True, "new_mode": "acceptEdits"}):
+                    self.transcript.chrome(self.transcript.theme.cyan(
+                        "approval → acceptEdits"))
+                return
+            if key == "e":
+                # The mode switch is a posture for the session, so it is
+                # reported on its own terms — it happens whether or not the
+                # answer to this request still had somewhere to land.
+                ok, msg = self.broker.accept_edits()
+                self.transcript.chrome(self.transcript.theme.cyan(f"  {msg}"))
+                self._apply(req, self._allow(req))
+                return
+            if key == "R":
+                ok, msg = self.broker.persist_read(tc.read_dir_for(req))
+                self.transcript.chrome(
+                    self.transcript.theme.cyan(f"  {msg}") if ok
+                    else self.transcript.theme.red(f"  {msg}"))
+                self._apply(req, self._allow(req))
+                return
+            if key in ("A", "k"):
+                pattern = (self.broker.exact_pattern(req.command) if key == "A"
+                           else suggestion)
+                if self._confirm_persist(pattern, raw):
+                    ok, msg = self.broker.persist(pattern)
+                    self.transcript.chrome(
+                        self.transcript.theme.cyan(f"  {msg}") if ok
+                        else self.transcript.theme.red(f"  {msg}"))
+                self._apply(req, self._allow(req))
+                return
+            # Unreachable in practice: _read_key only ever returns a key
+            # from `allowed`. Kept as a hard stop rather than a fallthrough
+            # so a future key added to the menu and not to this chain
+            # cannot silently mean "yes".
+            self.transcript.chrome(self.transcript.theme.dim(
+                "  that key does nothing here"))
+
+    def _say_ended_elsewhere(self, req) -> None:
+        """Close a dialog whose question something else already ended.
+
+        An expiry resolves the request too, and it is not an answer from
+        anywhere: say which of the two ended it. Nothing is applied -- the
+        request is resolved, and a second answer would only be discarded
+        and reported as late.
+        """
+        self._clear_bottom()
+        if getattr(req, "expired", False):
+            self.transcript.chrome(self.transcript.theme.yellow(
+                "  too late — that request expired and was refused "
+                "without you"))
+        else:
+            self.transcript.chrome(self.transcript.theme.dim(
+                "  answered elsewhere"))
+
+    def _apply(self, req, decision) -> bool:
+        """Hand the answer to the broker, and say when it arrived too late.
+
+        ``resolve`` discards an answer to a request that had already
+        expired or been aborted — the gate was told "no" on the user's
+        behalf and the model has moved on. Printing "refused" or
+        "approval → default" regardless puts an effect on the screen that
+        nothing applied, so every line that describes an answer is printed
+        only when this returned True.
+        """
+        if self.broker.resolve(req, decision):
+            return True
+        self.transcript.chrome(self.transcript.theme.yellow(
+            "  too late — that request had already expired and was refused "
+            "without you, so this key changed nothing"))
+        return False
+
+    def _confirm_persist(self, pattern: str, raw) -> bool:
+        """A second keystroke, against the consequence spelled out.
+
+        Both facts surprise people, so both are on screen: it is GLOBAL
+        (the merge rule takes allow-patterns from the user file only, and
+        ignores a repository's) and it is PERMANENT.
+        """
+        if not pattern:
+            return False
+        self.transcript.chrome(
+            f"  persist  {pattern}\n"
+            "  Every future command matching it runs without asking — in "
+            "this project and every other, in this session and every "
+            "future one.")
+        self.transcript.chrome("  [y] persist   [any other key] just this once")
+        return self._read_key(raw, {"y", "n", "\x1b"}) == "y"
+
+    def _answer_question(self, req, raw) -> None:
+        """ask_user_question: a number key picks, a typed line answers.
+
+        A digit on an empty line picks that option; any other printable
+        key starts a free-text answer, sent with Enter
+        (``approval_answers.typed_answer``: an option when the line names
+        one, free text otherwise). Esc on an empty line skips the
+        question; on a typed line it clears the line.
+        """
+        from .approval_answers import option_labels, typed_answer
+        payload = req.payload or {}
+        question = str(payload.get("question", "") or "(no question given)")
+        # Labels, never str(dict): the options arrive normalised as
+        # {label, description}, and their repr was shown AND returned.
+        options = option_labels(payload.get("options"))[:9]
+        self.transcript.chrome(self.transcript.theme.bold(f"? {question}"))
+        for i, opt in enumerate(options, 1):
+            self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
+        from . import terminal_confirm as tc
+        outside = tc.outside_answer_line(getattr(req, "published", None),
+                                         choice=True)
+        if outside and options:
+            self.transcript.chrome(self.transcript.theme.dim("  " + outside))
+        if not options:
+            self._apply(req, {"answers": []})
+            return
+        self.transcript.chrome(self.transcript.theme.dim(
+            f"  1-{len(options)} picks · or type your own answer and press "
+            "Enter · esc skips"))
+        allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
+        while True:
+            # Same as _answer_request: an answer from outside ends the
+            # dialog, and later keys belong to the prompt that follows.
+            if getattr(req, "resolved", False):
+                self._say_ended_elsewhere(req)
+                return
+            key = self._read_answer(raw, allowed,
+                                    stop=lambda: getattr(req, "resolved", False))
+            if not key:
+                continue                # answered while waiting
+            if isinstance(key, tuple):  # ("text", line)
+                if self._apply(req, typed_answer(key[1], payload)):
+                    self.transcript.chrome(
+                        f"  → {rr.strip_control(key[1])}")
+                return
+            if key == "\x1b":
+                self._apply(req, {"answers": []})
+                return
+            self._apply(req, {"answers": [options[int(key) - 1]]})
+            return
+
+    def _read_answer(self, raw, allowed: set[str], *, stop=None):
+        """One choice key, or a typed line, for a choice question.
+
+        Returns a key from ``allowed`` (a digit picks, Esc skips), a
+        ``("text", line)`` tuple for a line ended with Enter, or "" when
+        ``stop`` ended the wait. Digits only pick on an empty line; once
+        typing has started they belong to the text. Without a terminal it
+        is ``_read_key``: an unanswerable question is skipped, never
+        answered with invented text.
+        """
+        from . import repl_keys as rk
+
+        if raw is None or not getattr(raw, "active", False):
+            return self._read_key(raw, allowed, stop=stop)
+        line = ""
+        while True:
+            if stop is not None and stop():
+                return ""
+            chunk = raw.read_ready(0.1)
+            if not chunk:
+                continue
+            if chunk[0] == "\x1b":
+                if not line:
+                    return "\x1b"
+                line = ""                # Esc / an arrow clears the line
+                self._echo_answer(line)
+                continue
+            for ch in chunk:
+                if ch == "\x04":
+                    raise rk.TerminalLeft("ctrl+d", 0)
+                if ch in ("\r", "\n"):
+                    if line.strip():
+                        self._echo_answer("", done=True)
+                        return ("text", line.strip())
+                    continue
+                if ch in ("\x7f", "\x08"):
+                    line = line[:-1]
+                    continue
+                if not line and ch in allowed:
+                    return ch
+                if ch.isprintable():
+                    line += ch
+            self._echo_answer(line)
+
+    def _echo_answer(self, line: str, *, done: bool = False) -> None:
+        """Show the answer being typed on one redrawn row (terminals only)."""
+        if not self._can_redraw():
+            return
+        try:
+            row = "" if done else "  > " + rr.strip_control(line)
+            self.err.write("\r\x1b[2K" + row[: max(10, self.transcript.width - 1)])
+            self.err.flush()
+        except Exception:
+            pass
+
+    def _read_key(self, raw, allowed: set[str], *, stop=None) -> str:
+        """One keystroke, from the reader the key layer already owns.
+
+        ``stop`` is asked between the 0.1 s reads; when it says the
+        question is over, the wait ends with "" and no key is taken. The
+        dialog checked for an outside answer only BEFORE it started to
+        wait, so an answer that landed during the wait -- the usual case,
+        a supervisor answers a dialog that is already on screen -- left
+        it reading on: the session never got back to its prompt, mail
+        waiting there was never delivered, and the next key typed into
+        the pane went to a question long since answered.
+        """
+        from . import repl_keys as rk
+
+        if raw is not None and getattr(raw, "active", False):
+            while True:
+                if stop is not None and stop():
+                    return ""
+                chunk = raw.read_ready(0.1)
+                if not chunk:
+                    continue
+                for ch in chunk:
+                    if ch == "\x04":
+                        # ctrl+d is leaving, not an unclaimed key: a dialog
+                        # that ignored it waited on a terminal that was gone.
+                        raise rk.TerminalLeft("ctrl+d", 0)
+                    if ch in allowed:
+                        return ch
+                if chunk[0] == "\x1b":
+                    return "\x1b"
+                # Enter, arrows, anything unclaimed: ignored, never a
+                # default. A default-yes turns approval into a rhythm, and
+                # rhythm is what this whole layer exists to break.
+        # No terminal to read from: an unanswerable prompt is a refusal,
+        # never a silent yes — and the refusal has to be a key the caller
+        # offered, because that is the chain it goes back into. A hardcoded
+        # "n" reached `int(key)` on the question path, where the keys are
+        # digits: the prompt raised instead of being answered and the
+        # asking thread waited on a request nobody would resolve.
+        for refusal in ("n", "\x1b"):
+            if refusal in allowed:
+                return refusal
+        # Every caller offers one of those two. If one ever does not, Esc
+        # still reads as "refuse" in each chain rather than as a choice.
+        return "\x1b"
+
+    @staticmethod
+    def _allow(req):
+        from . import terminal_confirm as tc
+        return True if req.kind == tc.CONFIRM else req.decision
+
+    @staticmethod
+    def _refuse(req):
+        from . import terminal_confirm as tc
+        if req.kind == tc.PLAN:
+            return {"approved": False, "new_mode": "plan"}
+        if req.kind == tc.ASK:
+            return {"answers": []}
+        return False
+
+    # -- the live bottom composer -----------------------------------------
+    def _can_redraw(self) -> bool:
+        """Only a terminal gets cursor control.
+
+        Redrawing needs \r and an erase sequence, and those are exactly
+        the characters this codebase strips out of tool output before
+        printing it. Writing them into a redirected stderr would put
+        control codes in a log file for a line nobody can see anyway.
+        """
+        try:
+            return bool(self.err.isatty())
+        except Exception:
+            return False
+
+    def _set_bottom(self, text: str, status: str | None = None, *,
+                    cursor: int | None = None) -> None:
+        """Paint the live composer without surrendering the answer cursor.
+
+        The active form is the idle prompt with progress above it::
+
+            ⠴ 12s  model  mode  ↑0 ↓0  esc to interrupt
+            ─────────────────────────────
+            > the next message, wrapped onto as many rows as it needs
+            ─────────────────────────────
+              mode · esc interrupt · shift+tab approval mode · /help
+
+        ``status=None`` retains the small two-row primitive used by a few
+        callers and screen-model tests.  In the active form the cursor is
+        returned to the input row, with the status and help still visible.
+
+        If a model sentence is only half streamed, the composer starts on
+        the following row.  Clearing it later walks back to the exact
+        answer column before the next stdout delta is written.  Relative
+        movement is intentional: unlike save/restore cursor, it remains
+        correct when drawing the composer scrolls a terminal at its edge.
+        """
+        width = max(2, int(getattr(self.transcript, "width", 0) or 80))
+        if status is None:
+            # The compatibility primitive is still deliberately one line.
+            # The live path below owns wrapping and its dynamic row count.
+            rule = "─" * (width - 1)
+            line = _fit_to_width(text, width - 1)
+            rows_on_screen = [rule, line]
+            cursor_row = 1
+            cursor_col = min(self._display_width(line), width - 1)
+        else:
+            from . import repl_box as rb
+
+            raw = text or ""
+            at = len(raw) if cursor is None else int(cursor)
+            at = max(0, min(at, len(raw)))
+            view = rb.render_box(
+                raw, at, width, _box_hint(self._posture_hint()))
+            box_rows = list(view.rows)
+            if view.hint_row is not None:
+                box_rows[view.hint_row] = self.transcript.theme.dim(
+                    box_rows[view.hint_row])
+            rows_on_screen = [_fit_to_width(status, width - 1), *box_rows]
+            # BoxView.cursor is relative to the CONTENT, while the full
+            # form has a rule before its content.  The narrow fallback has
+            # only its content row and therefore no offset.
+            content_offset = 0 if len(view.rows) == 1 else 1
+            cursor_row = 1 + content_offset + view.cursor[0]
+            cursor_col = view.cursor[1] + (2 if view.border else 0)
+            cursor_col = min(max(0, cursor_col), width - 1)
+
+        state = "\n".join(rows_on_screen)
+        cursor_state = (cursor_row, cursor_col)
+        if (state == self._bottom
+                and cursor_state == getattr(self, "_bottom_cursor", None)):
+            return
+        self._clear_bottom()
+        self._bottom = state
+        self._bottom_cursor = cursor_state
+        if not self._can_redraw():
+            return
+
+        answer_open = bool(getattr(
+            self.transcript, "screen_answer_open", False))
+        answer_col = int(getattr(
+            self.transcript, "screen_answer_column", 0) or 0)
+        out = ["\r\n" if answer_open else ""]
+        for i, row in enumerate(rows_on_screen):
+            if i:
+                out.append("\r\n")
+            out.extend(("\r\x1b[K", row))
+        rows = len(rows_on_screen)
+        below = rows - 1 - cursor_row
+        natural_col = self._display_width(rows_on_screen[-1])
+        if below or cursor_col != natural_col:
+            if below:
+                out.append(f"\x1b[{below}A")
+            out.append("\r")
+            if cursor_col:
+                out.append(f"\x1b[{cursor_col}C")
+        self.err.write("".join(out))
+        self._bottom_rows = rows
+        self._bottom_below = below
+        self._bottom_anchor_gap = 1 if answer_open else 0
+        self._bottom_anchor_column = min(max(0, answer_col), width - 1)
+        self._flush_err()
+
+    def _clear_bottom(self) -> None:
+        """Erase the rows this zone drew, and leave the cursor on the first.
+
+        The count is kept rather than assumed. The transcript continues
+        from there, so a line rendered next lands on the rule's row rather
+        than below a rule nobody erased.
+        """
+        if not self._bottom:
+            return
+        self._bottom = ""
+        self._bottom_cursor = (-1, -1)
+        rows = int(getattr(self, "_bottom_rows", 0) or 0)
+        below = int(getattr(self, "_bottom_below", 0) or 0)
+        anchor_gap = int(getattr(self, "_bottom_anchor_gap", 0) or 0)
+        anchor_col = int(getattr(self, "_bottom_anchor_column", 0) or 0)
+        self._bottom_rows = 0
+        self._bottom_below = 0
+        self._bottom_anchor_gap = 0
+        self._bottom_anchor_column = 0
+        if not self._can_redraw() or rows <= 0:
+            return
+        out = []
+        if below:
+            out.append(f"\x1b[{below}B")
+        out.append("\r\x1b[K")
+        out.append("\x1b[1A\r\x1b[K" * (rows - 1))
+        if anchor_gap:
+            out.append("\x1b[1A\r")
+            if anchor_col:
+                out.append(f"\x1b[{anchor_col}C")
+        self.err.write("".join(out))
+        self._flush_err()
+
+    @staticmethod
+    def _display_width(text: str) -> int:
+        """Columns in a trusted UI row (ANSI styling costs none)."""
+        from .repl_box import string_width
+        return string_width(rr.strip_control(text or ""))
+
+    def _show_user_input(self, text: str, *, queued: bool = False) -> None:
+        """Keep a submitted message in the transcript after its box clears.
+
+        The editable box is transient by design.  Without this permanent
+        copy, pressing Enter made the user's task disappear precisely when
+        a slow first turn left them waiting minutes for an answer.  Control
+        sequences are stripped because pasted text is still untrusted
+        terminal input; line structure remains so a pasted traceback is
+        recognisable as the message that was sent.
+        """
+        cleaned = rr.strip_control(text or "").strip()
+        if not cleaned:
+            return
+        lines = cleaned.splitlines() or [cleaned]
+        marker = self.transcript.theme.bold("» ")
+        continuation = "  "
+        shown = [marker + lines[0]]
+        shown.extend(continuation + line for line in lines[1:])
+        if queued:
+            shown[-1] += self.transcript.theme.dim("  (queued)")
+        self.transcript.chrome("\n".join(shown))
+
+    def _teardown_screen(self) -> None:
+        """Give the screen back to the shell, on a row of its own.
+
+        Leaving used to draw nothing: the prompt stayed where it was and
+        the shell wrote its own into the middle of it --
+
+            (.venv) [user@host]$ ^C────────────────────────────
+            (.venv) [user@host]$  mode · /help
+
+        Erasing from the cursor to the end of the screen takes the input
+        row and the hint under it; the rule above stays in the scrollback,
+        where it marks the end of the session rather than getting in the
+        way of the next command.
+        """
+        self._clear_bottom()
+        if not self._can_redraw():
+            return
+        try:
+            self.err.write("\r\x1b[J")
+            self._flush_err()
+        except Exception:
+            pass
+
+    def _draw_input_line(self, text: str, *, cursor: int | None = None) -> None:
+        """Record the draft and its cursor, then repaint its whole box."""
+        self._input_line = text or ""
+        at = len(self._input_line) if cursor is None else int(cursor)
+        self._input_cursor = max(0, min(at, len(self._input_line)))
+        self._repaint_bottom(force=True)
+
+    def _clear_input_line(self) -> None:
+        self._input_line = ""
+        self._input_cursor = 0
+        self._clear_bottom()
+
+    def _activity_snapshot(self):
+        """The engine's activity snapshot, or None without one."""
+        from . import activity as _act
+        target = _act.resolve_attr(getattr(self, "engine", None))
+        if target is None:
+            return None
+        try:
+            return target.snapshot()
+        except Exception:
+            return None
+
+    def _say_slow_phase(self) -> None:
+        """One transcript line when the current phase is past its
+        threshold: what is slow, and how to stop it here. Once per phase
+        (keyed on the activity's seq), never once per repaint."""
+        snap = self._activity_snapshot()
+        if snap is None or not snap.active \
+                or snap.seq == self.__dict__.get("_slow_said_seq", -1):
+            return
+        from . import activity as _act
+        hint = _act.slow_hint(snap, "terminal")
+        if not hint:
+            return
+        self._slow_said_seq = snap.seq
+        self._render_around_bottom(RenderItem("notice", text=hint))
+
+    def _status_line(self) -> str:
+        """Elapsed, model, posture, what this turn has cost so far.
+
+        Read from get_status() and differenced against a baseline taken at
+        turn start, because the engine's counters are cumulative for the
+        session — reporting them raw would show the whole conversation's
+        cost as this turn's.
+        """
+        import time as _time
+
+        self._spin = (self._spin + 1) % len(_SPINNER)
+        elapsed = max(0.0, _time.monotonic() - self._turn_t0)
+        try:
+            status = self.engine.get_status() or {}
+        except Exception:
+            status = {}
+        base_in, base_out, base_cost = self._turn_base
+        tin = max(0, int(status.get("input_tokens", 0) or 0) - base_in)
+        tout = max(0, int(status.get("output_tokens_live",
+                                     status.get("output_tokens", 0)) or 0)
+                   - base_out)
+        # Provider truth wins whenever it exists mid-turn (Anthropic
+        # counts on message_delta). Only where it does not -- OpenAI-
+        # compatible streams, whose usage arrives with the last chunk --
+        # fall back to a MARKED estimate from the streamed characters,
+        # or to an ellipsis before the first token. A bare ↓0 during a
+        # streaming turn is a false exact number, not a missing value.
+        if tout > 0:
+            out_bits = f"↓{tout}"
+        elif self._streamed_chars > 0:
+            out_bits = f"↓~{max(1, self._streamed_chars // 4)}"
+        else:
+            out_bits = "↓…"
+        cost = max(0.0, float(status.get("cost_usd", 0.0) or 0.0) - base_cost)
+        model = str(getattr(getattr(self.engine, "client", None), "model", "")
+                    or "?")
+        mode = permission_mode(self.engine) or str(status.get("mode", "") or "")
+
+        # The phase first, from the engine's own state (activity.py): what
+        # the turn waits on, with that phase's clock, then the turn's.
+        # Without an activity state (a double, a foreign engine) the row
+        # keeps its old head: the turn's seconds and the model.
+        snap = self._activity_snapshot()
+        if snap is not None and snap.active:
+            from . import activity as _act
+            bits = [f"{_SPINNER[self._spin]} {_act.line(snap)}",
+                    f"turn {elapsed:.0f}s"]
+            if snap.phase not in (_act.MODEL_WAIT, _act.STREAMING):
+                bits.append(model)
+        else:
+            bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
+        if mode:
+            bits.append(mode)
+            # Said only when a command is not held by a layer; an
+            # isolated session's line is unchanged. Read once per session:
+            # this line is redrawn several times a second, and the
+            # isolation of a process does not change while it runs.
+            _iso = getattr(self, "_isolation_word", None)
+            if _iso is None:
+                try:
+                    from .isolation_posture import isolation_status
+                    _iso = isolation_status(
+                        self.engine.kit_permissions).short()
+                except Exception:
+                    _iso = ""
+                self._isolation_word = _iso
+            if _iso:
+                bits.append(_iso)
+        bits.append(f"↑{tin} {out_bits}")
+        if cost > 0:
+            bits.append(f"${cost:.4f}")
+        bits.append("esc to interrupt")
+        line = "  ".join(bits)
+        return self.transcript.theme.dim(
+            rr.truncate_middle(line, max(20, self.transcript.width - 1)))
+
+    def _repaint_bottom(self, *, force: bool = False) -> None:
+        """Keep input and turn information visible at the same time."""
+        import time as _time
+
+        if not self._can_redraw():
+            return
+        now = _time.monotonic()
+        if not force and (now - self._last_paint) < _STATUS_TICK_S:
+            return
+        self._last_paint = now
+        if self._turn_active.is_set():
+            self._set_bottom(
+                self._input_line, self._status_line(),
+                cursor=getattr(self, "_input_cursor", len(self._input_line)))
+        elif self._input_line:
+            # Defensive/legacy path: _draw_input_line is a turn-time API,
+            # but a direct caller still gets a visible editable row.
+            self._set_bottom(self._typed_row(self._input_line))
+
+    def _typed_row(self, text: str) -> str:
+        """The line being typed, cut to one screen row like the status row.
+
+        `_clear_bottom` erases with a single `\\r\\x1b[K`, which reaches one
+        line — so a row that ran past COLUMNS and wrapped left its first
+        half stranded in the transcript. The END is what survives the cut
+        here rather than the middle: that is where the cursor is, and a
+        person typing has to see the characters they are typing.
+        """
+        width = max(20, self.transcript.width - 1)
+        row = "> " + (text or "")
+        if len(row) <= width:
+            return row
+        return "…" + row[len(row) - (width - 1):]
+
+    def _render_around_bottom(self, item: RenderItem) -> None:
+        """Rendering must not tear whatever is on the bottom row.
+
+        Erase it, write the transcript line, put it back — the classic
+        bottom-line problem, and the reason typing during a turn is worth
+        having rather than merely possible.
+        """
+        held_input = self._input_line
+        held_cursor = getattr(self, "_input_cursor", len(held_input))
+        self._clear_bottom()
+        if item.kind == "tool_result" and item.text:
+            self._last_result_text = item.text
+        self.transcript.render(item)
+        self._input_line = held_input
+        self._input_cursor = held_cursor
+        self._repaint_bottom(force=True)
+
+    def _settle(self, worker: threading.Thread, *,
+                abandon: bool = False) -> None:
+        """Join, THEN clear the stop. Both halves are load-bearing.
+
+        The turn gate refuses a second concurrent turn by RETURNING a
+        sentence rather than raising, so returning to the prompt while a
+        stopped worker is still unwinding makes the next turn render
+        machinery speech as the model's answer. And ``clear_stop`` refuses
+        while the owning turn is in flight, so clearing before the join is
+        a silent no-op that leaves the brake armed for the next turn.
+
+        ``abandon`` is the last step of the interrupt ladder, and it is the
+        one case where waiting is the wrong answer: the thread being joined
+        is running the tool call the user is escaping, so the join gets a
+        bound and what is left is said out loud rather than waited out.
+        """
+        worker.join(timeout=_JOIN_ABANDON_S if abandon
+                    else _JOIN_NOTICE_AFTER_S)
+        if worker.is_alive() and abandon:
+            self._notice(
+                "Leaving the running tool call behind — it was asked to stop "
+                "and has not yet, and anything it started keeps running.")
+        elif worker.is_alive():
+            self._notice("Waiting for the running tool call to finish…")
+            worker.join()
+        # Drain whatever the worker queued while we were joining.
+        while True:
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                break
+            if item.kind != "done":
+                self.transcript.render(item)
+        try:
+            self.engine.clear_stop()
+        except Exception:
+            pass
+
+    # -- what a finished turn has to say ----------------------------------
+    def _report_compaction(self, before) -> None:
+        """A long session silently losing its early history is worth a line."""
+        after = getattr(self.engine, "last_compaction_info", None)
+        if not after or after == before:
+            return
+        try:
+            line = self.engine._compaction_status_line()
+        except Exception:
+            return
+        if line:
+            self.transcript.chrome(self.transcript.theme.dim(
+                line.lstrip("- ")))
+
+    def _report_status(self) -> None:
+        """The user's own status line, if they configured one.
+
+        Reused rather than re-derived: it already never raises, and it
+        already refuses to run a workspace-supplied command.
+
+        The "if" is enforced here. `render_status_line` falls back to a
+        built-in template when nothing is configured, so this printed a
+        line after every turn whose two fields — mode and branch — the
+        banner and the live turn line already carry. A sentence in a
+        docstring is not a condition; the condition is.
+        """
+        try:
+            from . import status_line as sl
+            if not sl.has_custom_status_line(self.opts.cwd):
+                return
+            status = self.engine.get_status() or {}
+            text = sl.render_status_line(sl.StatusContext(
+                workspace=self.opts.cwd,
+                mode=permission_mode(self.engine) or str(status.get("mode", "")),
+                model=str(getattr(getattr(self.engine, "client", None),
+                                  "model", "") or ""),
+                tokens=int(status.get("input_tokens", 0) or 0)
+                + int(status.get("output_tokens", 0) or 0),
+                cost_usd=float(status.get("cost_usd", 0.0) or 0.0),
+            ))
+        except Exception:
+            return
+        if text:
+            self.transcript.chrome(self.transcript.theme.dim(text))
+
+    def _offer_next_steps(self) -> None:
+        """What could come next, offered as numbers the user can type.
+
+        Drawn from the tasks the agent itself left open, so a suggestion
+        is never a guess about what the user wants and costs no tokens
+        to produce. A turn that closed everything offers nothing, which
+        is the honest answer to "what now".
+
+        Never raises: a courtesy that can take the prompt with it is not
+        a courtesy.
+        """
+        self._next_steps = []
+        try:
+            from . import task_ticker
+            steps = task_ticker.next_steps(
+                self.opts.cwd,
+                session_id=str(getattr(self.engine, "session_id", "") or ""))
+        except Exception:
+            return
+        if not steps:
+            return
+        self._next_steps = list(steps)
+        theme = self.transcript.theme
+        self.transcript.chrome(theme.dim("  next"))
+        for i, step in enumerate(steps, 1):
+            self.transcript.chrome(theme.dim(f"    {i}  {step[:100]}"))
+
+    def _tab_suggestion(self, buffer: str):
+        """The next suggestion to put on an empty line, or None.
+
+        None means "not mine": the line has something in it, or nothing
+        is on offer, and Tab goes back to completing a ``/command``. That
+        separation is the whole design — the two meanings of the key
+        never meet, because one only applies to an empty line.
+
+        Pressing on past the last suggestion gives the line back empty. A
+        cycle with no way out is a prompt the user has to erase by hand.
+        """
+        steps = getattr(self, "_next_steps", None) or []
+        if not isinstance(steps, list) or not steps:
+            return None
+        text = buffer or ""
+        if not text:
+            return steps[0]
+        try:
+            at = steps.index(text)
+        except ValueError:
+            return None          # the user typed; this is not the offer
+        if at + 1 >= len(steps):
+            return ""            # one past the last: the line comes back
+        return steps[at + 1]
+
+    def _expand_next_step(self, text: str) -> str:
+        """A bare number at the prompt means the suggestion of that number.
+
+        Only a bare number, and only while an offer stands: "2" is a
+        message in its own right in a conversation about numbers, and it
+        must stay one when nothing was offered.
+        """
+        steps = getattr(self, "_next_steps", None) or []
+        raw = (text or "").strip()
+        if not steps or not raw.isdigit():
+            return text
+        i = int(raw)
+        if 1 <= i <= len(steps):
+            chosen = steps[i - 1]
+            self.transcript.chrome(
+                self.transcript.theme.dim(f"  → {chosen[:100]}"))
+            return chosen
+        return text
+
+    def _report_lessons(self) -> None:
+        """One line per lesson the agent proposed in this turn, once each:
+        the person decides whether to share it (/share), the agent never
+        does. Never raises."""
+        try:
+            from .knowledge_commands import end_of_turn_hints
+            lines = end_of_turn_hints()
+        except Exception:
+            return
+        for line in lines:
+            self.transcript.chrome(self.transcript.theme.dim(line))
+
+    def _report_tasks(self) -> None:
+        """Open work, when the agent left some and the user wants to see it."""
+        if not self._show_tasks:
+            return
+        try:
+            from . import task_ticker
+            text = task_ticker.render_text(
+                self.opts.cwd,
+                session_id=str(getattr(self.engine, "session_id", "") or ""),
+                # A blocked reason older than the last user message reads
+                # as stale.
+                last_message_at=getattr(self.engine, "last_user_message_at",
+                                        None))
+        except Exception:
+            return
+        if text and text != "(no tasks)":
+            for line in text.splitlines():
+                self.transcript.chrome(self.transcript.theme.dim(line))
+
+    # -- the loop --------------------------------------------------------
+    def _note_turn_blocked(self, text: str, denied: bool = False) -> None:
+        """Record, after a turn, whether it ended blocked on something.
+
+        Called at the terminal's turn end (after ``_report_tasks``, which
+        read the same task store). If the turn's own words end with an
+        open question or report a denial, and open tasks remain, the
+        note is stored for the next idle prompt (_wake_text delivers it
+        once, then it is consumed). Never raises: a courtesy note must
+        not take the turn it follows down with it.
+        """
+        try:
+            if not (text or "").strip():
+                return
+            engine = getattr(self, "engine", None)
+            sid = str(getattr(engine, "session_id", "") or "")
+            from .agent_tasks import OPEN_STATUSES, get_store, \
+                resolve_session_scope
+            store = get_store(Path(self.opts.cwd))
+            tasks = store.list(session_id=resolve_session_scope(sid))
+            open_tasks = [t for t in tasks or []
+                          if t.get("status") in OPEN_STATUSES]
+            if not open_tasks:
+                return
+            from . import job_wake
+            note = job_wake.note_turn_blocked(text, open_tasks, denied=denied)
+            if note:
+                self.__dict__["_blocked_note"] = note
+        except Exception:
+            return
+
+    def _register_blocked_wait(self, text: str = "", denied: bool = False
+                               ) -> None:
+        """A turn that ended blocked registers that wait (B4 target 1).
+
+        Operator finding: on_whom must name who REALLY holds the turn,
+        not always the operator. Classification from what the turn end
+        already knows: a denial or a question waits on the PERSON (an
+        approval, an answer); anything else is the operator.
+        register_once keeps it idempotent.
+
+        Never swallows broadly: only ValueError/OSError from the
+        registry is caught and logged — a wider except here hid two real
+        bugs in wave 17. Everything else propagates, so a test sees it.
+        """
+        try:
+            from .job_wake import _ends_with_open_question as _question
+            from .wait_registry import SessionWaits, register_once
+            # A session with no broker (broker=None) registers no wait, so
+            # ops health and the status footer stay unchanged for every
+            # unsupervised user (operator finding, pty regression: a
+            # "waiting" footer pushed the draft line). Broker presence
+            # alone is NOT the marker: cli.py:2114 builds a broker for
+            # every person at a tty. The documented marker (cli.py:2116):
+            # a person at the keyboard passes --confirm-timeout 0 (wait
+            # for the answer as long as it takes); a session nobody
+            # watches (a wave run in tmux) passes --confirm-timeout > 0.
+            # So: supervised = broker present AND timeout_s > 0 — the
+            # broker's own attribute (terminal_confirm.py:641) decides,
+            # no new flag, no env guess.
+            _broker = getattr(self, "broker", None)
+            if _broker is None or not float(
+                    getattr(_broker, "timeout_s", 0) or 0) > 0:
+                return
+            # The hook's own previous wait is satisfied the moment a new
+            # turn ran: whatever it waited on got its answer. Clear it
+            # before judging THIS turn, so the footer shows at most the
+            # current wait and disappears after an unblocked turn. Waits
+            # on another session's reply are not the hook's footprint and
+            # stay (operator finding 2).
+            _own_values = ("answer", "operator")
+            waits_key = self._presence_key()
+            for old in SessionWaits(waits_key).list():
+                if (str(old.get("kind")) == "message_from"
+                        and str(old.get("value")) in _own_values):
+                    SessionWaits(waits_key).clear(str(old.get("id") or ""))
+            # The session branch was dropped (operator finding 3): the
+            # turn-end hook knows no message recipient, so it was dead
+            # code. on_whom "session" waits are registered by whoever
+            # sends a message and parks on the reply — not here.
+            if denied or _question(text):
+                whom, value, what = "person", "answer", \
+                    "turn ended blocked; waiting on the person"
+            else:
+                whom, value, what = "operator", "operator", \
+                    "turn ended blocked; waiting on the operator"
+            register_once("message_from", value, on_whom=whom,
+                          for_what=what, key=self._presence_key())
+        except (ValueError, OSError) as exc:
+            # OSError too: the registry file is written here at every
+            # turn end — a full disk / a lost lock must cost one record,
+            # not the session's turn loop. Anything else (NameError,
+            # ImportError, TypeError) propagates: that is the bug class
+            # we want loud. The record goes to the session's own failure
+            # log, never to the person's terminal (operator finding,
+            # pty test: a root-logger warning on stderr drew a line onto
+            # the screen). record_failure itself never raises
+            # (failure_log.py:36), so no outer wrapper is added — an
+            # ImportError on this in-package relative import must stay
+            # visible (reviewer finding).
+            from .failure_log import record_failure
+            record_failure("wait_registration", "", str(exc))
+            return
+
+    def _checkpoint_session(self) -> None:
+        """Save the conversation after a finished turn. Never raises.
+
+        The conversation used to be saved only on the way out --
+        cmd_chat's finally -- so a process killed by SIGKILL (an
+        expired job, a killed node) lost the whole session and ``-r``
+        came back to an empty conversation. Saving at every turn end
+        makes a kill cost at most the turn it interrupts: the
+        mid-turn checkpoint (session_store.save_turn_checkpoint)
+        still covers that one, and every FINISHED turn is already on
+        disk. The saver is cli._save_session -- the same call the
+        exit path makes, so the record and the resume are one
+        contract, not two.
+
+        Locked sessions are skipped silently: the writer lock exists
+        so two processes never tear the file, and a turn-end save
+        that cannot take it is no reason to end the turn.
+        """
+        try:
+            engine = getattr(self, "engine", None)
+            if engine is None:
+                return
+            from .cli import _save_session
+            _save_session(engine, Path(self.opts.cwd))
+        except Exception:
+            pass
+
+    #: Follow-up turns for "announced but not done" in a row, before the
+    #: session waits for real input again (wave-12: sessions sat idle after
+    #: "Let me …"; a cap keeps a model that only ever announces from looping).
+    _ANNOUNCE_FOLLOWUP_CAP = 3
+
+    def _continue_after_announcement(self) -> str:
+        """The engine's pending follow-up note, at most _ANNOUNCE_FOLLOWUP_CAP
+        times in a row; "" when there is none, the cap is reached or the
+        session is paused. Consumes the note either way. Never raises."""
+        engine = getattr(self, "engine", None)
+        note = str(getattr(engine, "pending_turn_continuation", "") or "")
+        try:
+            if engine is not None and hasattr(engine, "clear_turn_continuation"):
+                engine.clear_turn_continuation()
+        except Exception:
+            pass
+        if not note:
+            return ""
+        try:
+            from . import session_pause as _sp
+            if _sp.wake_blocked(self._presence_key()):
+                self._say_nothing_runs()
+                return ""
+        except Exception:
+            pass
+        done = int(getattr(self, "_announce_followups", 0) or 0)
+        if done >= self._ANNOUNCE_FOLLOWUP_CAP:
+            self._say_nothing_runs()
+            return ""
+        self._announce_followups = done + 1
+        return note
+
+    def _say_nothing_runs(self) -> None:
+        """The turn ended on an announced step and no follow-up will run
+        (the cap is spent, or the session is paused): say so, or the user
+        reads "I'll do it now" and cannot tell a finished turn from a hung
+        model (bug report davh 414e5a17). Never raises."""
+        try:
+            from .engine import AgentEngine
+            from . import repl_render as rr
+            self.transcript.chrome(rr.notice_line(
+                AgentEngine.NOTHING_RUNS_NOTICE.strip(),
+                theme=getattr(self.transcript, "theme", None)))
+        except Exception:
+            pass
+
+    def run(self, first_prompt: str = "") -> int:
+        from . import repl_keys as rk
+
+        self._leaving = False
+        self._install_sigint()
+        self._load_history()
+        self._install_completer()
+        # Before the first prompt, so a session is addressable from the
+        # moment it exists rather than from its first idle poll.
+        self._announce_presence()
+        self._arm_presence_heartbeat()
+        if self.opts.banner:
+            for line in self.opts.banner.splitlines():
+                self.transcript.chrome(line)
+        pending = first_prompt.strip()
+        # A line queued during the preceding turn is printed at the moment
+        # Enter consumes it.  Do not print it a second time when its turn
+        # starts; ordinary idle-prompt input has not been shown yet.
+        pending_already_shown = False
+        # True while ``pending`` came from _wake_text, not from the keys.
+        woke = False
+        try:
+            while True:
+                if not pending and self.queued:
+                    pending = self.queued.pop(0)
+                    pending_already_shown = True
+                if not pending:
+                    pending_already_shown = False
+                    woke = False
+                    try:
+                        from .repl_keys import raw_mode_supported
+                        if raw_mode_supported(self._stdin):
+                            # The framed box, only on a raw terminal —
+                            # a pipe or a redirect keeps the readline
+                            # path except that IT too wakes on a session
+                            # message now (wave-12 finding 3).
+                            raw = self.read_boxed()
+                            woke = isinstance(raw, HarnessText)
+                            pending = raw.strip()
+                        else:
+                            # readline's input() blocks forever, so an idle
+                            # session on this path never saw an incoming
+                            # session_message until a key was pressed. The
+                            # wakeable read polls stdin via _line_ready and
+                            # hands the throttled message check (_wake_text)
+                            # the idle time as its prompt.
+                            text, from_wake = read_block_wakeable(
+                                self._read_line,
+                                lambda: self._wake_text(""),
+                                ready=self._line_ready)
+                            woke = bool(from_wake)
+                            pending = text.strip()
+                    except EOFError:
+                        self.begin_leaving(0)
+                        self.transcript.chrome("")
+                        return 0
+                    except KeyboardInterrupt:
+                        self._idle_interrupts += 1
+                        if self._idle_interrupts >= 2:
+                            self.begin_leaving(130)
+                            self.transcript.chrome("")
+                            return 130
+                        self.transcript.chrome(
+                            "(interrupt — once more to leave)")
+                        continue
+                self._idle_interrupts = 0
+                if not pending:
+                    continue
+                if not pending_already_shown:
+                    self._show_user_input(pending)
+                pending_already_shown = False
+                # A bare number stands for the suggestion of that number,
+                # and only while one is on offer.
+                pending = self._expand_next_step(pending)
+                pending = self._handle_line(pending)
+                if self._quit:
+                    self.begin_leaving(0)
+                    return 0
+                if not pending:
+                    continue
+                if woke:
+                    pending = HarnessText(pending)
+                elif not isinstance(pending, HarnessText):
+                    # Read off the keyboard: lifts a stall stop.
+                    try:
+                        self.engine.note_person_message()
+                    except Exception:
+                        pass
+                    # ...and comes before auto mode, which pauses.
+                    self._auto_note_user()
+                woke = False
+                pending_prompt = pending          # visible past the try
+                last = None
+                try:
+                    last = self.turn(pending)
+                except KeyboardInterrupt:
+                    self.begin_leaving(130)
+                    self.transcript.chrome("")
+                    return 130
+                # The turn finished: the conversation goes on disk now,
+                # not only when the process leaves through its finally.
+                # A SIGKILL at the next prompt must cost nothing (see
+                # _checkpoint_session).
+                self._checkpoint_session()
+                # A turn cut at the token ceiling without a tool call is
+                # a stall, not an answer: on a model that thinks
+                # invisibly the ceiling goes to thinking, the visible
+                # answer ends at finish_reason "length", and the session
+                # stands at the prompt half-way through the edit
+                # (operator point d, 2026-09-22). Continue it, at most
+                # twice; the third time the operator hears it.
+                # A turn that DIED on the endpoint, rather than ending
+                # AT it, has its own continuation -- one that waits out
+                # the outage first. An error turn never also ends at
+                # length, so the two continuations never stack.
+                # A turn from real input (the user, a wake) re-arms the cap
+                # on announced-work follow-ups.
+                self._announce_followups = 0
+                continuation = self._continue_after_length(pending_prompt)
+                if not continuation:
+                    continuation = (
+                        self._continue_after_endpoint_failure())
+                if not continuation:
+                    continuation = self._continue_after_announcement()
+                # A line typed during the turn -- above all /exit from the
+                # user or a supervisor -- goes before every automatic
+                # follow-up; the continuation is dropped, not deferred.
+                while continuation and not self.queued:
+                    self._show_user_input(continuation, queued=True)
+                    self._checkpoint_session()
+                    # A continued turn is a turn: the third Ctrl+C
+                    # raises KeyboardInterrupt out of turn() here the
+                    # same way it does in the first one above, and the
+                    # same hatch applies -- leave with 130 instead of
+                    # raising out of run() past every handler.
+                    try:
+                        last = self.turn(HarnessText(continuation))
+                    except KeyboardInterrupt:
+                        self.begin_leaving(130)
+                        self.transcript.chrome("")
+                        return 130
+                    self._checkpoint_session()
+                    continuation = self._continue_after_length(continuation)
+                    if not continuation:
+                        continuation = (
+                            self._continue_after_endpoint_failure())
+                    if not continuation:
+                        continuation = self._continue_after_announcement()
+                # Judged after its follow-ups: an iteration is the turn and
+                # every continuation the harness added to it.
+                self._auto_after_turn(last)
+                pending = ""
+        except rk.TerminalLeft as left:
+            # Whatever the session was doing -- at the prompt, in a turn,
+            # in a dialog -- the terminal is gone and so is the session.
+            # Returning (rather than dying) is what saves it for a resume.
+            # The deadline comes first: everything after it can hang.
+            self.begin_leaving(left.code, terminal_gone=True)
+            self._stop_for_leaving()
+            self._end_what_it_started()
+            return left.code
+        finally:
+            # Every way out, an exception included, is a leave from here
+            # on: a repeated signal no longer unwinds the cleanup below.
+            self.begin_leaving(1)
+            _ctl = self.__dict__.get("_auto")
+            if _ctl is not None and getattr(_ctl, "enabled", False):
+                try:
+                    _ctl.stop("the session ended")
+                except Exception:
+                    pass
+            try:
+                self._teardown_screen()
+            except OSError:
+                pass            # a line that hung up takes no erase sequence
+            self._save_history()
+            self._withdraw_presence()
+            self._restore_sigint()
+            self._restore_sigwinch()
+
+    # -- plumbing --------------------------------------------------------
+    def _install_sigint(self) -> None:
+        try:
+            self._prev_sigint = signal.signal(signal.SIGINT, self._on_sigint)
+        except (ValueError, OSError):
+            # Not the main thread, or no signal support. The loop still
+            # works; Ctrl+C simply behaves as the default.
+            self._prev_sigint = None
+        self._install_leave_signals()
+        self._install_sigwinch()
+
+    def _install_leave_signals(self) -> None:
+        """SIGHUP and SIGTERM leave the way a closed terminal does.
+
+        Left at their defaults they end the process on the spot: nothing
+        refuses the question in flight, and the conversation, which is
+        saved on the way out, is lost. Caught, they unwind through the
+        loop's cleanup, under the same deadline as any other leave.
+        """
+        self._prev_leave: dict = {}
+        for name in ("SIGHUP", "SIGTERM"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                self._prev_leave[sig] = signal.signal(
+                    sig, self._on_leave_signal)
+            except (ValueError, OSError):
+                pass
+
+    def _on_leave_signal(self, signum, _frame) -> None:
+        """Same rule as the other handlers: never print, only unwind.
+
+        Once the leave has begun, a repeat is ignored: raised again, it
+        would unwind the cleanup or the save that the first one started,
+        and the leave already ends by its deadline.
+        """
+        if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
+            return
+        from . import repl_keys as rk
+        raise rk.TerminalLeft(signal.Signals(signum).name.lower(),
+                              128 + int(signum))
+
+    def _on_held_sigint(self, signum, frame) -> None:
+        """SIGINT outside run() while the leave is held: KeyboardInterrupt
+        as by default; once the leave has begun, ignored during the save
+        and a skip of what is left during the session-end stages."""
+        if self._leaving:
+            if self._stages is not None:
+                self._stages.skipped_by = int(signum)
+            return
+        raise KeyboardInterrupt
+
+    def begin_leaving(self, code: int, *, terminal_gone: bool = False) -> None:
+        """The session is leaving with exit *code*; idempotent.
+
+        From here SIGHUP, SIGTERM and SIGINT are ignored by this agent's
+        handlers. The leave deadline (``_LEAVE_DEADLINE_S``, then
+        ``os._exit(code)``) is armed once: always when the terminal is
+        gone (hangup, SIGHUP, SIGTERM), and for every other way out --
+        ctrl+d at the prompt, /exit, the second idle ctrl+c -- while the
+        caller holds the leave (``leave_held``). Without a holder a
+        returning run() arms nothing: an in-process caller (the service
+        worker, a test) is not ended by a timer it did not ask for.
+        """
+        self._leaving = True
+        if self._leave_armed or not (terminal_gone or self._leave_held):
+            return
+        self._leave_armed = True
+        self._leave_gone = terminal_gone
+        self._leave_code = int(code)
+        self._arm_leave_deadline(code)
+
+    def leave_stages(self) -> "_LeaveStages":
+        """The runner ``cli._end_session`` hands each session-end stage to
+        (``run_stage``); see ``_LeaveStages``."""
+        return _LeaveStages(self)
+
+    def _stages_begin(self, runner: "_LeaveStages") -> bool:
+        """The save is done and the session-end stages start. True when
+        they run under their own budget: an attended leave, held. Its short
+        deadline, which bounded the cleanup and the save, is cancelled.
+        False when the terminal is gone (or nothing holds the leave): the
+        stages run inline under whatever deadline is armed, as before."""
+        if self._leave_gone or not self._leave_held:
+            return False
+        timer = self._leave_timer
+        if timer is not None:
+            timer.cancel()
+            self._leave_timer = None
+        self._leave_armed = False
+        self._stages = runner
+        return True
+
+    def _stages_skipped(self) -> None:
+        """Ctrl+C, SIGHUP or SIGTERM during the stages: what is left is
+        skipped and the process ends within the short deadline, kept armed
+        past ``leave_held`` (the session is saved by now)."""
+        if self._leave_armed:
+            return
+        self._leave_armed = True
+        self._leave_gone = True
+        self._arm_leave_deadline(self._leave_code)
+
+    @contextlib.contextmanager
+    def leave_held(self):
+        """For the owner of the process that saves the session after run().
+
+        Input: none. Inside the block, SIGHUP and SIGTERM take the REPL's
+        leave handler and SIGINT ``_on_held_sigint``, so run()'s restore
+        returns to them instead of to the defaults; every way out of run()
+        arms the leave deadline. Once the leave has begun, a repeated
+        signal is ignored until the block ends, so the save after run()
+        is ended only by the deadline or by SIGKILL. On exit the previous
+        handlers are back. A deadline armed because the terminal went
+        stays armed (as before), and bounds the session-end stages too.
+        One armed by ctrl+d, /exit or ctrl+c bounds the cleanup and the
+        save; the stages after it run under their own budget
+        (``_LeaveStages``), and whatever is still armed at the end of the
+        block is cancelled, so it never outlives the leave in a process
+        that goes on (``main()`` called in-process: os._exit(0) there
+        would end a test run with exit status 0).
+
+        Rejected: restoring the defaults at the end of run(), as before.
+        A second SIGHUP or SIGTERM then ended the process by the default
+        action in the middle of ``_finish_interactive_session``'s save,
+        and a SIGINT raised KeyboardInterrupt there (exit 130).
+        """
+        held: dict = {}
+        for name, handler in (("SIGHUP", self._on_leave_signal),
+                              ("SIGTERM", self._on_leave_signal),
+                              ("SIGINT", self._on_held_sigint)):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                held[sig] = signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+        self._leave_held = True
+        try:
+            yield self
+        finally:
+            self._leave_held = False
+            self._stages = None
+            timer = self._leave_timer
+            if self._leave_armed and not self._leave_gone and timer:
+                timer.cancel()
+                self._leave_timer = None
+                self._leave_armed = False
+            for sig, prev in held.items():
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, OSError, TypeError):
+                    pass
+
+    def _restore_leave_signals(self) -> None:
+        for sig, prev in (getattr(self, "_prev_leave", None) or {}).items():
+            try:
+                signal.signal(sig, prev)
+            except (ValueError, OSError, TypeError):
+                pass
+        self._prev_leave = {}
+
+    def _stop_for_leaving(self) -> None:
+        """Nothing may go on waiting for a terminal that is gone.
+
+        The turn is told to stop, and every question -- in flight or still
+        to come from a worker that has not noticed yet -- is refused.
+        """
+        self._stop_engine()
+        if self.broker is not None:
+            try:
+                self.broker.abort_all()
+            except Exception:
+                pass
+
+    def _end_what_it_started(self) -> None:
+        """Background shells and MCP servers go with the session.
+
+        An atexit hook stops the shells at a normal exit, but it runs only
+        after the interpreter has joined every worker thread -- a
+        subagent's among them -- and the deadline's os._exit skips it. A
+        session whose terminal is gone ends them itself.
+        """
+        try:
+            from . import bash_jobs
+            bash_jobs.get_registry().stop_running()
+        except Exception:
+            pass
+        try:
+            from . import mcp_client
+            mcp_client.reset_registry()
+        except Exception:
+            pass
+
+    def _arm_leave_deadline(self, code: int) -> None:
+        """The process ends by *code* within the deadline, cleaned up or not.
+
+        What follows the loop -- saving the session, the report, the
+        lifeline ending what the session started -- normally takes well
+        under a second. When it does not, the terminal is gone either way
+        and the process does not get to outlive it by waiting.
+        """
+        timer = threading.Timer(_LEAVE_DEADLINE_S, os._exit, args=(code,))
+        timer.daemon = True
+        timer.start()
+        self._leave_timer = timer
+
+    def _install_sigwinch(self) -> None:
+        """Notice the window changing size.
+
+        SIGWINCH does not exist on every platform, and the signal cannot
+        be installed off the main thread — both are ordinary, so both are
+        silent. What is not silent is the consequence of ignoring it: the
+        width is read once at startup and everything truncates to it
+        forever, so widening the window gains nothing and narrowing it
+        wraps every tool line.
+        """
+        sig = getattr(signal, "SIGWINCH", None)
+        if sig is None:
+            self._prev_sigwinch = None
+            return
+        try:
+            self._prev_sigwinch = signal.signal(sig, self._on_sigwinch)
+        except (ValueError, OSError):
+            self._prev_sigwinch = None
+
+    def _on_sigwinch(self, _signum, _frame) -> None:
+        """Record the new size. Never paint from a signal handler.
+
+        A handler runs between bytecodes of whatever the main thread was
+        doing — including halfway through a write to the same terminal —
+        so drawing here interleaves with the write it interrupted. Same
+        rule the interrupt handler follows: set state, let the loop act.
+        """
+        self.transcript.refresh_width()
+        self._width_dirty = True
+
+    def _restore_sigwinch(self) -> None:
+        sig = getattr(signal, "SIGWINCH", None)
+        if sig is None or self._prev_sigwinch is None:
+            return
+        try:
+            signal.signal(sig, self._prev_sigwinch)
+        except (ValueError, OSError):
+            pass
+        self._prev_sigwinch = None
+
+    def _restore_sigint(self) -> None:
+        if self._prev_sigint is not None:
+            try:
+                signal.signal(signal.SIGINT, self._prev_sigint)
+            except (ValueError, OSError):
+                pass
+        self._restore_leave_signals()
+
+    @staticmethod
+    def history_path() -> Path:
+        from . import state_paths
+        return state_paths.ensure_dir(Path.home() / ".delfin") / HISTORY_NAME
+
+    def _install_completer(self) -> None:
+        """Tab completes commands and paths INSIDE the workspace only.
+
+        Offering paths outside it would advertise files the agent may not
+        read, which is worse than no completion: it invites a request that
+        is then refused.
+        """
+        try:
+            import readline
+        except ImportError:
+            return
+        from . import repl_commands as rc
+
+        def _complete(text: str, state: int):
+            try:
+                if text.startswith("@"):
+                    hits = ["@" + p for p in
+                            rc.complete_path(text, self.opts.cwd)]
+                elif text.startswith("/"):
+                    hits = [n for n in sorted(rc.BUILTINS)
+                            if n.startswith(text.lower())]
+                else:
+                    return None
+                return hits[state] if state < len(hits) else None
+            except Exception:
+                return None
+
+        try:
+            readline.set_completer(_complete)
+            readline.set_completer_delims(" \t\n")
+            readline.parse_and_bind("tab: complete")
+            # Pinned rather than inherited. Recent GNU readline defaults
+            # this on and older builds — and libedit, which macOS links —
+            # do not, so whether a pasted block arrived as one message
+            # depended on which library the interpreter happened to find.
+            # During a turn the key layer brackets the paste itself; this
+            # is the same guarantee at the idle prompt.
+            readline.parse_and_bind("set enable-bracketed-paste on")
+        except Exception:
+            pass
+
+    def _recall_later(self, text: str) -> None:
+        """Put a line typed DURING a turn into the recallable history.
+
+        Deliberately not called `_remember`: that name is taken by the
+        `#note` handler, which writes a durable MEMORY. Two things a user
+        might call remembering, and conflating them would have turned
+        every queued line into a stored memory.
+
+        Only the idle prompt goes through readline, so everything typed
+        while the agent worked — most of what gets typed in a busy
+        session — was absent from the up-arrow afterwards. Retyping it is
+        what a history exists to prevent.
+        """
+        if not text:
+            return
+        try:
+            import readline
+            readline.add_history(text)
+        except Exception:
+            pass                     # no readline: the queue still works
+
+    def _load_history(self) -> None:
+        try:
+            import readline
+        except ImportError:
+            return
+        try:
+            path = self.history_path()
+            readline.set_history_length(_HISTORY_LINES)
+            if path.exists():
+                readline.read_history_file(str(path))
+            # Where this session's own lines begin. Everything above it
+            # came off disk and is already in the file; appending it again
+            # would grow the file by its own length on every exit.
+            self._hist_base = readline.get_current_history_length()
+        except Exception:
+            # libedit behaves differently, and a missing file is normal on
+            # a first run. Neither is worth refusing to start over.
+            pass
+
+    def _save_history(self) -> None:
+        try:
+            import readline
+            from . import state_paths
+            path = self.history_path()
+            # Append only what THIS session added. Writing the whole
+            # in-memory buffer means two terminals open in two projects
+            # each load the file at start and write their own copy at
+            # exit, so whichever quits last erases the other's session.
+            # libedit carries no append_history_file, and there the whole
+            # write is the only option — losing the merge beats losing
+            # the file.
+            added = 0
+            try:
+                added = max(
+                    0, readline.get_current_history_length() - self._hist_base)
+            except Exception:
+                added = 0
+            appended = False
+            if added and hasattr(readline, "append_history_file"):
+                try:
+                    readline.append_history_file(added, str(path))
+                    appended = True
+                except Exception:
+                    appended = False
+            if not appended:
+                readline.write_history_file(str(path))
+            # Prompts describe the user's project, so the file is theirs
+            # alone -- the same 0600 every other state file here gets.
+            state_paths.secure_file(path)
+        except Exception:
+            pass
+
+
+
+    # -- the framed idle prompt ------------------------------------------
+    #: How often the idle prompt looks for work that finished. The read
+    #: loop ticks ten times a second; asking the job registry that often
+    #: would be a poll, and this is a look.
+    _WAKE_EVERY_S = 5.0
+    # Scheduler-backed watch look: at most one squeue per this many seconds.
+    _WATCH_EVERY_S = 30.0
+
+    def _steer_operator_mail(self) -> None:
+        """Take waiting mail and steer it into the running turn.
+
+        The mirror of _operator_messages for a session that is not at
+        its prompt: same inbox, same rendering (the header says the
+        message is from another session, never from the user), but the
+        destination is the turn -- engine.steer, the same call the
+        dashboard makes -- so the model sees it between rounds instead
+        of at the end. On the idle wake's throttle, never per read;
+        the rendered text is shown on the transcript because a steer
+        is not echoed either. A backend that takes no steer returns
+        False and the message is put back, unread, so the prompt path
+        delivers it when the turn ends -- a fallback, not a loss.
+        """
+        import time as _time
+        now = _time.monotonic()
+        if now - getattr(self, "_mail_steer_last", 0.0) < self._WAKE_EVERY_S:
+            return
+        self._mail_steer_last = now
+        key = self._presence_key()
+        if not key:
+            return
+        from . import session_messages as _msgs
+        messages = _msgs.take(key)
+        if not messages:
+            return
+        text = HarnessText("\n\n".join(_msgs.render(m) for m in messages))
+        ids = [str(m.get("id") or "") for m in messages]
+
+        def _read() -> None:
+            # Run by the client when the text goes into a request: a steer
+            # still queued when the turn stops was never read.
+            for mid in ids:
+                try:
+                    _msgs.mark_read(mid)
+                except Exception:
+                    pass
+
+        delivered = False
+        try:
+            delivered = bool(self.engine.steer(text, on_delivered=_read))
+        except Exception:
+            delivered = False
+        if not delivered:
+            # The turn could not take it: the messages go back, newest
+            # last, so the prompt path sees them in the order they
+            # arrived.
+            for message in messages:
+                try:
+                    _msgs.send(key, str(message.get("text") or ""),
+                               from_key=str(message.get("from") or ""),
+                               from_title=str(
+                                   message.get("from_title") or ""))
+                except Exception:
+                    pass
+            return
+        for message in messages:
+            sender = (message.get("from_title") or message.get("from")
+                      or "an operator")
+            body = " ".join(str(message.get("text") or "").split())
+            self.transcript.chrome(
+                self.transcript.theme.dim(f"✉ {sender} → into the running "
+                                          f"turn: {body[:300]}"))
+
+    #: At most this many self-continuations of a length-cut turn; the
+    #: next one is the operator's to drive, and the operator is told.
+    _MAX_LENGTH_CONTINUATIONS = 2
+
+    def _continue_after_length(self, answered_prompt: str) -> str:
+        """Whether the finished turn should be continued, and with what.
+
+        A turn that ended at ``length`` WITHOUT a tool call spent its
+        ceiling -- on a model that thinks invisibly, largely on
+        thinking -- and stopped mid-answer. The terminal sends
+        "continue" on its own, at most twice: the same message the
+        person at the keyboard would type, rendered as a continuation
+        and not as their words. A tool-carrying length end is left to
+        the tool loop (the next round carries the work); a normal end
+        needs no help. After the second continuation a third length
+        end goes to the operator over session_message -- the channel
+        that reaches a person not watching six panes -- and the turn
+        is left at the prompt for them.
+        """
+        try:
+            reason = str(getattr(self.engine, "last_turn_stop_reason",
+                                 "") or "")
+        except Exception:
+            return ""
+        if reason != "length":
+            self.__dict__["_length_continuations"] = 0
+            return ""
+        if getattr(self, "_turn_used_tools", False):
+            # The model meant to go on; the tool loop owns it.
+            self.__dict__["_length_continuations"] = 0
+            return ""
+        done = int(getattr(self, "_length_continuations", 0) or 0)
+        if done >= self._MAX_LENGTH_CONTINUATIONS:
+            try:
+                self.engine._notify_operator_of_stall(
+                    "a turn keeps ending at the token ceiling without "
+                    "finishing; the session is standing at the prompt "
+                    "mid-answer after two self-continuations")
+            except Exception:
+                pass
+            return ""
+        self.__dict__["_length_continuations"] = done + 1
+        self.transcript.chrome(self.transcript.theme.dim(
+            "↻ the answer was cut at the token ceiling — continuing "
+            f"({done + 1}/{self._MAX_LENGTH_CONTINUATIONS})"))
+        return "continue"
+
+    # -- a turn that died on the endpoint ----------------------------
+    #
+    # The pause schedule: 60 s, 120 s, 300 s, then every 300 s. The
+    # whole pause -- waiting included -- is capped at 60 minutes: the
+    # outage of 2026-09-25 lasted 65, a cap at half an hour would have
+    # given up five minutes early, and a full hour of unattended
+    # self-retry is still bounded by the operator's own watch cycle.
+    _ENDPOINT_PAUSE_S = (60.0, 120.0, 300.0)
+    _ENDPOINT_PAUSE_CEIL_S = 300.0
+    _ENDPOINT_PAUSE_BUDGET_S = 3600.0
+
+    def _endpoint_time(self) -> float:
+        clock = getattr(self, "_endpoint_clock", None)
+        if clock is not None:
+            return float(clock.time())
+        import time as _time
+        return _time.monotonic()
+
+    def _endpoint_do_sleep(self, seconds: float) -> None:
+        sleeper = getattr(self, "_endpoint_sleep", None)
+        if sleeper is not None:
+            sleeper(seconds)
+        else:                                   # pragma: no cover
+            import time as _time
+            _time.sleep(seconds)
+
+    def _endpoint_read_key(self, timeout: float) -> "str | None":
+        """One key chunk inside the pause wait, "" when the wait ran out,
+        or None when there is no terminal to wait on.
+
+        Factored out so a test can deliver a keypress without a
+        terminal. The real path holds the terminal in cbreak and reads
+        with a timeout -- a key a person presses during the wait must
+        cancel it, and the wait is long enough that polling for one
+        matters.
+        """
+        from . import repl_keys as rk
+        with rk.RawMode(self._stdin) as raw:
+            if not raw.active:
+                # No terminal to read (a pipe, a redirect): no key can
+                # arrive, and spinning on a clock that never advances
+                # buys nothing. None tells the caller to sleep instead;
+                # "" means the wait already ran its full length here.
+                return None
+            deadline = self._endpoint_time() + timeout
+            while True:
+                left = deadline - self._endpoint_time()
+                if left <= 0:
+                    return ""
+                chunk = raw.read_ready(min(left, _PUMP_TICK_S))
+                if chunk:
+                    return chunk
+
+    def _endpoint_error_is_retryable(self, exc: Exception) -> bool:
+        """Transient -> retry. Model-not-found -> only after a prior
+        answer from the same model. Everything else -> never.
+
+        "Model 'X' not found" is ambiguous: the outage of 2026-09-25
+        wore exactly that message, and so does a typo'd model name.
+        The fact that separates them lives in THIS session: a model
+        that already answered here exists and was spelled right, so
+        its not-found is the outage; one that never answered here was
+        probably never spelled right anywhere.
+        """
+        from .api_client import (_is_transient_api_error,
+                                 _is_context_length_error)
+        if _is_context_length_error(exc):
+            return False                # deterministic: a 400 that
+                                        # fails again identically
+        if _is_transient_api_error(exc):
+            return True
+        if "not found" in str(exc).lower() and "model" in str(exc).lower():
+            return bool(getattr(self, "_endpoint_model_answered", False))
+        return False
+
+    def _continue_after_endpoint_failure(self) -> str:
+        """Whether a turn that died on an endpoint error continues.
+
+        The in-turn retry (api_client._is_transient_api_error, 3
+        attempts inside the stream) covers the short hiccup. An
+        outage longer than that still ends the turn -- and on
+        2026-09-25 the session then stood at its prompt until the
+        operator nudged it, 31 times in one day. This method waits
+        the outage out and sends the continuation itself: the same
+        "continue" the person at the keyboard would have typed, as a
+        NEW turn, with a prompt that says exactly what happened.
+
+        Any key during the wait cancels it -- no further turn, the
+        session stands at the prompt like today, and the person keeps
+        the wheel. After the 60-minute budget the same is true, and
+        the operator hears it over session_message, the channel that
+        reaches someone not watching six panes.
+        """
+        result = getattr(self, "_last_turn_result", None)
+        if result is None or not getattr(result, "error", ""):
+            # A turn that produced nothing (the worker died) counts as
+            # neither: without an error there is nothing to classify.
+            return ""
+        # Rebuild the exception the engine raised, for classification.
+        # The turn died before the turn's own accounting; run_turn put
+        # the engine's text in result.error and the [error] line on the
+        # screen already. The class name is not in the text, but the
+        # classification reads status_code and message, not the class.
+        text = str(result.error)
+        exc = type("_EndpointFailure", (Exception,), {})(text)
+        try:
+            status = getattr(result, "error_status", None)
+        except Exception:
+            status = None
+        if isinstance(status, int):
+            exc.status_code = status
+        if not self._endpoint_error_is_retryable(exc):
+            return ""
+        pause_started = getattr(self, "_endpoint_pause_started", None)
+        if not int(getattr(self, "_endpoint_pauses", 0) or 0):
+            # The first pause of this outage starts the budget clock;
+            # later calls (one per failed retry) inherit it, so the
+            # 60 minutes bound the OUTAGE, not each single wait.
+            pause_started = self._endpoint_time()
+            self.__dict__["_endpoint_pause_started"] = pause_started
+        while True:
+            done = int(getattr(self, "_endpoint_pauses", 0) or 0)
+            wait = (self._ENDPOINT_PAUSE_S[done]
+                    if done < len(self._ENDPOINT_PAUSE_S)
+                    else self._ENDPOINT_PAUSE_CEIL_S)
+            if (pause_started + self._ENDPOINT_PAUSE_BUDGET_S
+                    - self._endpoint_time()) < wait:
+                # The budget is spent. Stillstand wie heute, plus the
+                # note to the operator when one is reachable.
+                self.__dict__["_endpoint_pauses"] = 0
+                try:
+                    self.engine._notify_operator_of_stall(
+                        "the endpoint stayed unavailable for a full "
+                        "hour of self-retry; this session is standing "
+                        "at the prompt mid-answer")
+                except Exception:
+                    pass
+                return ""
+            self.__dict__["_endpoint_pauses"] = done + 1
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"endpoint unavailable — retrying in {wait:.0f} s, "
+                "any key to stop"))
+            try:
+                chunk = self._endpoint_read_key(wait)
+                if chunk is None:
+                    # No terminal: the key wait could not wait, so sleep.
+                    # On a terminal the key wait already took the whole
+                    # pause -- sleeping again doubled every pause.
+                    self._endpoint_do_sleep(wait)
+            except KeyboardInterrupt:
+                # Ctrl+C during the pause cancels the pause, like a key;
+                # it must not leave run() the way an unhandled one would.
+                chunk = "\x03"
+            if chunk:
+                # A key: the person takes over. No turn, no further
+                # retry, and the next outage starts from 60 s again.
+                self.__dict__["_endpoint_pauses"] = 0
+                return ""
+            return ("The endpoint failed mid-turn; continue exactly "
+                    "where you were.")
+
+    def _presence_key(self) -> str:
+        """The address an operator reaches this session by.
+
+        The name from ``-n`` when there is one, because that is what a
+        person can type; the head of the session id otherwise, so a
+        session is never unreachable for want of a name.
+        """
+        opts = getattr(self, "opts", None)
+        name = str(getattr(opts, "session_name", "") or "").strip()
+        if name:
+            return name
+        engine = getattr(self, "engine", None)
+        return str(getattr(engine, "session_id", "") or "")[:8]
+
+    def _arm_presence_heartbeat(self) -> None:
+        """Let the broker refresh presence whenever it asks something.
+
+        The idle poll is the only other heartbeat, and a session that
+        goes from one approval into the next never reaches it.
+        """
+        broker = getattr(self, "broker", None)
+        if broker is None:
+            return
+        try:
+            broker.on_activity = self._announce_presence
+        except Exception:
+            pass
+
+    def _announce_presence(self) -> None:
+        """Say this session is open. Never raises.
+
+        A terminal session announced nothing, so it was missing from
+        ``open_sessions`` and the ``session_message`` tool told other
+        sessions it does not exist. Repeated from the idle poll, which is
+        the heartbeat: ``announce`` writes only when the record changed
+        or the interval elapsed.
+        """
+        try:
+            from . import session_presence
+            session_presence.announce(
+                self._presence_key(),
+                session_id=str(getattr(self.engine, "session_id", "") or ""),
+                title=str(getattr(self.opts, "session_name", "") or ""),
+                workspace=str(getattr(self.opts, "cwd", "") or ""))
+        except Exception:
+            pass
+
+    def _withdraw_presence(self) -> None:
+        """Take the session out of the list. Never raises."""
+        try:
+            from . import session_presence
+            session_presence.withdraw(self._presence_key())
+        except Exception:
+            pass
+
+    def _operator_messages(self, typed: str) -> str:
+        """What was left in this session's inbox, ready for the prompt.
+
+        ``session_messages.send`` wrote a file that nobody read: ``take``
+        was called in the dashboard and nowhere else. The only way into a
+        terminal session was its terminal, and that way has a trap -- an
+        approval dialog reads single keys, so text arriving while one is
+        up does not queue, its first character ANSWERS the dialog.
+
+        Delivered where the job wake-up is delivered: at the idle prompt,
+        between reads. Never during a turn, and never while a dialog
+        holds the reader, so the trap cannot arise here. The remaining
+        guard is the dashboard's -- never while something is typed,
+        because a draft belongs to whoever typed it, and a message that
+        waits is not a message that is lost.
+        """
+        if typed.strip():
+            return ""
+        # One guard around the whole of it. A wake-up that throws takes
+        # the prompt with it, and the prompt is the thing the user is
+        # standing at -- the case that proves it drives a bare object
+        # with no engine and no transcript at all.
+        try:
+            key = self._presence_key()
+            if not key:
+                return ""
+            from . import session_messages as _msgs
+            messages = _msgs.take(key)
+            if not messages:
+                return ""
+            for message in messages:
+                # Named only when its signature checks (session_messages).
+                sender = _msgs.sender_label(message)
+                # The senders this delivery carried, so the wake path can
+                # satisfy a message_from wait for them (package KG1).
+                self.__dict__.setdefault("_mail_senders", []).append(sender)
+                # The text too, not only the sender: the message becomes
+                # the next prompt, and a prompt is not echoed. Somebody
+                # watching the pane has to be able to read what arrived.
+                body = " ".join(str(message.get("text") or "").split())
+                # It becomes the next prompt: read, as opposed to a message
+                # that merely left the inbox.
+                try:
+                    _msgs.mark_read(str(message.get("id") or ""))
+                except Exception:
+                    pass
+                self.transcript.chrome(
+                    self.transcript.theme.dim(f"✉ {sender}: {body[:300]}"))
+            return "\n\n".join(_msgs.render(m) for m in messages)
+        except Exception:
+            return ""
+
+    def _line_ready(self) -> bool:
+        """True when a key is already waiting on stdin, else False.
+
+        The idle-capable read (read_block_wakeable) polls this to know
+        whether a real read would block. When nothing is ready it hands the
+        throttled message check (_wake_text) the idle time instead, so an
+        incoming session_message starts a turn even on the readline path.
+        Never raises. A reader that is not this terminal's own input (a
+        test or a script hands one in), or a stdin select cannot watch,
+        reads as "ready": the blocking read is the old behaviour, whereas
+        "not ready" there would poll forever without ever reading.
+        """
+        if getattr(self, "_read_line", None) != getattr(self, "_input", None):
+            return True
+        try:
+            import select
+            r, _, _ = select.select([self._stdin], [], [], 0)
+            return bool(r)
+        except Exception:
+            return True
+
+    def _wake_text(self, typed: str) -> str:
+        """The idle prompt's next turn nobody typed, or "": the plain wake
+        (:meth:`_wake_text_plain`), or auto mode's next iteration when it
+        is on (:meth:`_auto_wake`)."""
+        woke = self._wake_text_plain(typed)
+        if self.__dict__.get("_auto") is None:
+            self.__dict__.pop("_wake_kind", None)
+            return woke
+        return self._auto_wake(typed, woke)
+
+    def _wake_text_plain(self, typed: str) -> str:
+        """The message a job that finished hands an idle prompt, or "".
+
+        Nothing in the terminal used to wake an agent. A background job
+        that finished DURING a turn was reported at the end of it, but
+        one that finished afterwards sat there: the drain is a pull, and
+        the only thing that pulls is a turn, and the only thing that
+        starts a turn is the user typing. A run started before a quiet
+        night was simply never looked at again (reported 2026-09-18).
+
+        Two guards, both the dashboard's:
+
+        * never while something is typed — a wake-up must not take a
+          half-written message away;
+        * never when the user has turned it off
+          (``agent.wake_on_job_end``).
+
+        Never raises: a wake-up that throws would take the prompt with
+        it, and the prompt is the thing the user is standing at.
+        """
+        import time as _time
+
+        # Wave-12 finding 2 / phase 4: a paused session must not be woken.
+        # The pause flag (session_pause) is checked here, on the shared wake
+        # path, so no job end and no partner message starts a turn while it
+        # is set. Same "never raises" rule: a flag read that throws just
+        # reads as NOT paused.
+        try:
+            from . import session_pause as _sp
+            if _sp.wake_blocked(self._presence_key()):
+                return ""
+        except Exception:
+            pass
+
+        if typed.strip():
+            return ""
+        now = _time.monotonic()
+        if now - getattr(self, "_wake_last_look", 0.0) < self._WAKE_EVERY_S:
+            return ""
+        self._wake_last_look = now
+        # The operator comes first, and is not subject to
+        # ``agent.wake_on_job_end``: switching off the report of a
+        # finished job must not switch off a person.
+        self._announce_presence()       # the poll doubles as the heartbeat
+        mail = self._operator_messages(typed)
+        # Package KG1 phase 3: a registered WAIT wakes the session when its
+        # event arrives (or its deadline passes), with a note naming the
+        # event. It fires once (due consumes what it fires), and only when
+        # nothing is typed -- the same guards the mail path already holds.
+        # A delivered message satisfies a message_from wait for its sender;
+        # the mail itself becomes the prompt, the note is merged under it.
+        try:
+            from .wait_registry import due as _due, wait_note
+            events = [("message_from", s)
+                      for s in self.__dict__.pop("_mail_senders", [])]
+            hits = _due(_time.time(), events, key=self._presence_key())
+        except Exception:
+            hits = []
+        if mail:
+            self._wake_kind = "mail"
+            if hits:
+                mail = mail + "\n" + "\n".join(wait_note(w) for w in hits)
+            return HarnessText(mail)
+        if hits:
+            notes = "\n".join(wait_note(w) for w in hits)
+            self._wake_kind = "wait"
+            return HarnessText(notes)
+        try:
+            from . import job_wake
+            if not job_wake.wake_enabled():
+                return ""
+            seen = self.__dict__.setdefault("_wake_seen", set())
+            # Only this session's shells: the same scoping the dashboard
+            # tick applies to watched jobs and background agents.
+            # getattr on SELF as well: a caller without an engine attribute
+            # at all would raise here, and the except below would turn the
+            # whole wake-up into an empty line -- silently, which is how a
+            # notification path fails worst.
+            _eng = getattr(self, "engine", None)
+            sid = str(getattr(_eng, "session_id", "") or "")
+            done = job_wake.finished_shells(seen, session_id=sid)
+            # The missing half of the wave-10 idle (90 minutes after a
+            # finished SLURM job): the same session-scoped watch file the
+            # dashboard tick drains, now pulled at the idle prompt too.
+            # Only for a session that HAS one -- an empty id would read
+            # every session's watches, which is the scoping bug of
+            # 2026-09-28 again. check_agent_jobs asks the scheduler
+            # (squeue) whenever a watch exists, so this look has its own,
+            # slower gate: the shell look above runs every _WAKE_EVERY_S,
+            # but a scheduler query from every idle terminal every few
+            # seconds is the per-widget squeue load the cluster operators
+            # objected to (one query per _WATCH_EVERY_S at most).
+            _opts = getattr(self, "opts", None)
+            _ws = str(getattr(_opts, "cwd", "") or "")
+            _now = _time.monotonic()
+            if (sid and _ws and _now - getattr(self, "_watch_last_look", -1e9)
+                    >= self._WATCH_EVERY_S):
+                self._watch_last_look = _now
+                done = done + job_wake.finished_watched_jobs(
+                    _ws, seen, session_id=sid)
+            # A turn that ended blocked leaves its note here, so the
+            # next prompt opens on the state and not on a task list
+            # with no sentence about it (wave-10: an hour at a
+            # question nobody answered). Consumed on read.
+            _note = self.__dict__.pop("_blocked_note", "")
+            prompt = job_wake.wake_prompt(done)
+            if prompt:
+                self._wake_kind = "job"
+            if _note:
+                prompt = (prompt + "\n\n" + _note) if prompt else _note
+            return HarnessText(prompt) if prompt else ""
+        except Exception:
+            return ""
+
+    #: How often the line under the prompt re-reads what is running. The
+    #: box is redrawn on every keystroke; asking the registries that
+    #: often would be a poll, and this is a glance.
+    _BACKGROUND_STATUS_EVERY_S = 3.0
+
+    def _background_status(self) -> str:
+        """What is still out, in one line, for under the input area.
+
+        The dashboard has had a panel for this; the terminal had `/bash`,
+        which you had to think of asking — so a suite started twenty
+        minutes ago was remembered or it was not. Same collector as the
+        panel, so the two cannot drift.
+
+        Cached between glances, and never raises: a decoration that can
+        take the prompt with it is not a decoration.
+
+        The last view is kept, not just its line: the arrow walk under
+        the prompt walks THAT list, and re-rendering the line with a
+        selection needs the same rows the unselected line came from —
+        two collectors could return two different worlds between two
+        keys.
+        """
+        import time as _time
+
+        now = _time.monotonic()
+        if now - getattr(self, "_bg_status_at", 0.0) < \
+                self._BACKGROUND_STATUS_EVERY_S:
+            return getattr(self, "_bg_status", "")
+        self._bg_status_at = now
+        wait_line = self._wait_status()
+        try:
+            from . import background_view as _bgv
+            view = _bgv.collect(self.opts.cwd)
+            self._bg_view = view
+            self._bg_now = _time.time()
+            self._bg_status = _bgv.status_line(view, now=self._bg_now)
+        except Exception:
+            self._bg_status = ""
+        if wait_line:
+            self._bg_status = (wait_line + " | " + self._bg_status) \
+                if self._bg_status else wait_line
+        return self._bg_status
+
+    def _wait_status(self) -> str:
+        """The registered waits, in one line under the input area.
+
+        Package KG1 phase 3: a session parked on a wait must SHOW that it
+        is waiting and WHAT for -- otherwise an idle terminal reads as a
+        dead one, and the person has no way to see (or clear) the thing
+        that suppresses the nudges. Never raises: a decoration.
+        """
+        try:
+            from .wait_registry import SessionWaits
+            waits = SessionWaits(self._presence_key()).list()
+            if not waits:
+                return ""
+            rows = ", ".join(
+                f"{w.get('kind')}={w.get('value')}" for w in waits[:4])
+            more = "" if len(waits) <= 4 else f" (+{len(waits) - 4})"
+            return f"waiting: {rows}{more}"
+        except Exception:
+            return ""
+
+    def _bg_status_selected(self, selected: int | None) -> str:
+        """The status line with one row marked, from the cached view.
+
+        ``selected`` is an index into what the line shows. None (or a
+        stale index, or no view) gives the unselected line unchanged —
+        a mark that outlives its row must not move onto another one.
+
+        Rendered with the ``now`` the cached view was collected at, so
+        a walk between two glances cannot jump a duration forward: the
+        rows are frozen with the list they came from.
+        """
+        view = getattr(self, "_bg_view", None)
+        if selected is None or not view:
+            return self._background_status()
+        try:
+            from . import background_view as _bgv
+            return _bgv.status_line(view, selected=selected,
+                                    now=getattr(self, "_bg_now", None))
+        except Exception:
+            return self._background_status()
+
+    def _bg_id_at(self, index: int) -> str:
+        """The id Enter would take for the row at *index*, or ""."""
+        view = getattr(self, "_bg_view", None)
+        if not view:
+            return ""
+        try:
+            from . import background_view as _bgv
+            return _bgv.selected_id(view, index,
+                                    now=getattr(self, "_bg_now", None))
+        except Exception:
+            return ""
+
+    def read_boxed(self) -> str:
+        """One message through the framed box, on a raw terminal only.
+
+        Everything the readline prompt did is preserved: history (the
+        same readline list, via _BoxHistory), completion (the SAME
+        completer _install_completer put on readline), multi-line
+        blocks and backslash continuations (read_block's grammar,
+        applied to what the box collected), bracketed paste (the key
+        layer's), and the Ctrl+C-twice-to-leave ladder.
+
+        A pipe, a redirect or a terminal without termios never reaches
+        here: run() falls back to the readline path when
+        raw_mode_supported() is false. The turn path (_pump,
+        _repaint_bottom) is untouched — a turn that cannot be
+        interrupted is worse than a plain prompt.
+
+        Drawing discipline: the box is always the LAST thing on the
+        screen, and it is redrawn row by row with \\r\\x1b[K, so no row
+        ever wraps and no absolute cursor addressing is needed — the
+        cursor is placed by writing the rows and then moving UP and
+        across, relative to where the writes left it. That is why this
+        works without asking the terminal where it is.
+        """
+        from . import repl_keys as rk
+        from . import repl_box as rb
+
+        # Bound to the live RawMode inside read_boxed's `with` — a
+        # detached instance has no fd and read_ready would return ""
+        # forever, which is exactly the hang a first run would show.
+        read_raw: list = []          # [callable] once the context opens
+
+        #: How long the idle prompt waits for a key before looking around.
+        #: It is not keystroke latency: read_ready is a select, so a key
+        #: returns at once and a signal (SIGWINCH) interrupts the wait —
+        #: this only sets how often an idle prompt wakes to do nothing.
+        #: At 0.1 s that was ten times a second where readline blocked.
+        _IDLE_TICK_S = 0.5
+
+        def _read_chunk() -> str:
+            # RawMode.read_ready: one chunk or "" after a short timeout,
+            # with paste-marker stitching already in the decoder.
+            return read_raw[0](_IDLE_TICK_S) if read_raw else ""
+
+        class _BlankDecoder:
+            """A decoder-shaped blank, so _clear_box can size a box."""
+            buffer = ""
+            cursor = 0
+
+
+        def _view(decoder, selected: int | None = None) -> rb.BoxView:
+            if search.active:
+                # The search prompt is the box while it lasts: the query
+                # where typed text went, the readline-style label as the
+                # hint row, so it is visible WHICH mode the keys drive.
+                return rb.viewport(
+                    rb.render_box(search.query, len(search.query),
+                                    self.transcript.width,
+                                    search.hint(),
+                                    status=self._background_status()),
+                    _BOX_MAX_CONTENT_ROWS)
+            return rb.viewport(
+                rb.render_box(decoder.buffer, decoder.cursor,
+                                self.transcript.width,
+                                _box_hint(self._posture_hint()),
+                                status=self._bg_status_selected(selected)),
+                _BOX_MAX_CONTENT_ROWS)
+
+        # Where the last _draw left the terminal: rows below the
+        # cursor to the box's end, and what was last painted. Drawing
+        # is relative — the cursor is walked DOWN to the box's end and
+        # UP to its top border, never addressed absolutely — because
+        # the box sits wherever the transcript ended, and asking the
+        # terminal where that is needs a cursor-position reply this
+        # loop has no reader for.
+        # What is ON SCREEN, which is the only thing the walk may be
+        # measured against: how many rows the box has and how many of
+        # them sit below the cursor. The first version kept only
+        # "below" and climbed by the NEW view's height, so every paint
+        # mixed two geometries.
+        _state = {"below": 0, "rows": 0, "painted": None}
+
+        def _draw(decoder, selected: int | None = None, *,
+                  force: bool = False) -> None:
+            view = _view(decoder, selected)
+            if not force and _state["painted"] == (view.rows,
+                                                    view.cursor):
+                return                      # nothing changed on screen
+            _state["painted"] = (view.rows, view.cursor)
+            on_screen = _state["rows"]
+            out = []
+            # Walk back over WHAT IS THERE. On the first paint nothing
+            # is, and climbing would have painted the box over the last
+            # rows of the transcript -- the banner at start-up, the end
+            # of the answer after a turn.
+            if on_screen:
+                if _state["below"]:
+                    out.append(f"\x1b[{_state['below']}B")   # to box end
+                if on_screen > 1:
+                    out.append(f"\x1b[{on_screen - 1}A")     # to its top
+            out.append("\r")
+            for i, row in enumerate(view.rows):
+                if i:
+                    out.append("\r\n")
+                out.append("\x1b[K" + row)
+            # A box that shrank (a line unwrapped) leaves rows of the
+            # old one standing below it.
+            spare = max(0, on_screen - len(view.rows))
+            for _ in range(spare):
+                out.append("\r\n\x1b[K")
+            if spare:
+                out.append(f"\x1b[{spare}A")
+            # Rows written: the cursor sits after the LAST row. Put it
+            # on the cursor's row and column: up by the rows below it,
+            # then across (the content rows start at column zero;
+            # clamped so a cursor on a border column cannot wrap).
+            crow, ccol = view.cursor
+            below = len(view.rows) - 1 - (crow + 1)     # minus top border
+            _state["below"] = below
+            _state["rows"] = len(view.rows)
+            # A form that draws a frame needs its width stepped over;
+            # the two-rule form and the narrow row do not, and adding
+            # the offset there put the cursor two columns past the text.
+            offset = 2 if getattr(view, "border", True) else 0
+            col = min(ccol + offset, max(1, self.transcript.width - 1))
+            if below:
+                out.append(f"\x1b[{below}A")
+            out.append(f"\r\x1b[{col}C")
+            self.err.write("".join(out))
+            self._flush_err()
+
+        def _clear_box(_decoder=None) -> None:
+            """Erase the box and leave the cursor one row BELOW where
+            its end was — the transcript continues from there.
+
+            Sized from what is ON SCREEN, never from the decoder: after
+            a submit the decoder has already dropped its buffer, so a
+            view built from it describes an empty box while a taller one
+            is still painted. The rows the erase then missed stayed in
+            the scrollback as a stray border.
+            """
+            n = _state["rows"]
+            if not n:
+                return
+            out = []
+            if _state["below"]:
+                out.append(f"\x1b[{_state['below']}B")   # to box end
+            if n > 1:
+                out.append(f"\x1b[{n - 1}A")             # to top border
+            out.append("\r")
+            out.append("\x1b[K\r\n" * n)
+            # A row that WRAPPED on the physical screen occupies more
+            # rows than the view counted — the status line under the
+            # input can exceed the width the box was sized for — so the
+            # counted erase misses its tail, and the tail shows through
+            # the next answer. Erase to the end of the screen as well:
+            # it reaches below the box only, and the transcript above
+            # is untouched because the walk never climbs past the top.
+            out.append("\x1b[J")
+            _state["below"] = 0
+            _state["rows"] = 0
+            _state["painted"] = None
+            self.err.write("".join(out))
+            self._flush_err()
+
+        def _word_before(text: str) -> str:
+            i = len(text)
+            while i > 0 and text[i - 1] not in " \t\n":
+                i -= 1
+            return text[i:]
+
+        class _ReverseSearch:
+            """Ctrl+R's mode, over the SAME readline store the arrows use.
+
+            The decoder reports the key; the history is here, in the
+            loop, where _BoxHistory lives — a decoder that knew about
+            history would be a key layer reading a data store. Typing
+            extends the query (chars the box would otherwise insert),
+            Ctrl+R again steps to an older match, Enter accepts — and
+            submits, like readline — Esc restores the draft and leaves.
+            """
+
+            def __init__(self):
+                self.active = False
+                self.query = ""
+                self.draft = ""
+                self.pos = 0          # index into the history, newest first
+
+            def start(self, buffer: str) -> None:
+                self.active = True
+                self.query = ""
+                self.draft = buffer
+                self.pos = 0
+
+            def _entries(self) -> list[str]:
+                try:
+                    import readline
+                    n = readline.get_current_history_length()
+                    return [readline.get_history_item(i)
+                            for i in range(n, 0, -1)]
+                except Exception:
+                    return []
+
+            def _match(self) -> str | None:
+                if not self.query:
+                    return self.draft or None
+                for offset, entry in enumerate(self._entries()):
+                    if offset < self.pos:
+                        continue
+                    if self.query in entry:
+                        self.pos = offset
+                        return entry
+                return None
+
+            def older(self) -> None:
+                """Ctrl+R again: keep the query, take the next match up."""
+                self.pos += 1
+
+            def hint(self) -> str:
+                match = self._match()
+                if match is None:
+                    return f"(reverse-i-search)`{self.query}': no match"
+                return f"(reverse-i-search)`{self.query}': {match}"
+
+            def accept(self) -> str:
+                """What Enter submits: the match, else the query."""
+                match = self._match()
+                return match if match is not None else self.query
+
+            def leave(self) -> str:
+                """What Esc restores: the draft from before the search."""
+                self.active = False
+                return self.draft
+
+        search = _ReverseSearch()
+
+        def _complete_word(text: str) -> str:
+            """The box's Tab: the same completer readline's Tab runs.
+
+            Delegates to the readline module's completer — the one
+            _install_completer installed — so the two prompts cannot
+            drift. A unique hit completes in place; several list on the
+            transcript, exactly as readline does.
+            """
+            try:
+                import readline
+                fn = readline.get_completer()
+            except Exception:
+                return text
+            if fn is None:
+                return text
+            word = _word_before(text)
+            hits: list[str] = []
+            for state in range(200):            # a runaway completer stops
+                hit = fn(word, state)
+                if hit is None:
+                    break
+                hits.append(hit)
+            if not hits:
+                return text
+            if len(hits) == 1:
+                return text[:len(text) - len(word)] + hits[0]
+            # Readline fills the longest common prefix FIRST and lists
+            # only beside it. Listing alone — what this did — left the
+            # box at what was typed, so "/mod" + Tab showed /mode and
+            # /model below and the user retyped the four letters the
+            # hits already shared.
+            prefix = hits[0]
+            for hit in hits[1:]:
+                while not hit.startswith(prefix):
+                    prefix = prefix[:-1]
+            if len(prefix) > len(word):
+                text = text[:len(text) - len(word)] + prefix
+            _clear_box(_BlankDecoder())
+            for hit in hits[:20]:
+                self.transcript.chrome(self.transcript.theme.dim(hit))
+            return text
+
+        def _collect() -> str:
+            """read_block's grammar over what the box collects."""
+            decoder = rk.KeyDecoder()
+            history = _BoxHistory()
+            # The arrow walk over the status line's rows. None means no
+            # walk is on; an index marks the row Enter would take. It
+            # lives only while the buffer is EMPTY — one letter types a
+            # message, and a message goes to the model, not to a job.
+            selected: int | None = None
+            while True:
+                _draw(decoder, selected)    # dedup: only real change paints
+                chunk = _read_chunk()
+                if not chunk:
+                    if self._width_dirty:
+                        self._width_dirty = False
+                        self.transcript.refresh_width()
+                        # rows differ under the new width, so the next
+                        # _draw's own comparison repaints them
+                    woke = self._wake_text(decoder.buffer)
+                    if woke:
+                        _clear_box()
+                        return woke
+                    continue
+                submit_text = None
+                for event in decoder.feed(chunk):
+                    kind = event.kind
+                    if search.active and kind == rk.EDIT:
+                        # While searching, printable keys extend the
+                        # query; the decoder already put them in its
+                        # buffer, so the query follows the buffer.
+                        search.query = decoder.buffer
+                    elif search.active and kind in (rk.SUBMIT, rk.STEER):
+                        submit_text = search.accept()
+                        search.active = False
+                    elif search.active and kind == rk.INTERRUPT:
+                        restored = search.leave()
+                        decoder.buffer = restored
+                        decoder.cursor = len(restored)
+                    elif search.active and kind == rk.SEARCH:
+                        search.older()
+                    elif kind == rk.SEARCH:
+                        selected = None     # a search is not a walk
+                        search.start(decoder.buffer)
+                        decoder.buffer = ""
+                        decoder.cursor = 0
+                    elif kind == rk.SUBMIT:
+                        # Enter with a row of the status line selected
+                        # walks INTO that job — the list below the input
+                        # was always a report you had to retype a handle
+                        # for; now Enter is the way in. Only on an empty
+                        # buffer: a message is a message.
+                        if selected is not None and not event.text.strip():
+                            job_id = self._bg_id_at(selected)
+                            if job_id:
+                                _clear_box(decoder)
+                                return f"/bash {job_id}"
+                        submit_text = event.text
+                    elif kind == rk.HISTORY_PREV:
+                        # On an empty line the arrows walk the status
+                        # line's jobs first — the thing under the prompt
+                        # is what the empty prompt is about. Only when
+                        # there is nothing to walk (or the walk is off
+                        # the end) does the readline history take over,
+                        # as it always did.
+                        if not decoder.buffer and selected is None \
+                                and self._bg_id_at(0):
+                            selected = 0
+                        elif not decoder.buffer and selected is not None \
+                                and self._bg_id_at(selected + 1):
+                            selected += 1
+                        else:
+                            older = history.up(decoder.buffer)
+                            if older is not None:
+                                decoder.buffer = older
+                                decoder.cursor = len(older)
+                                selected = None
+                    elif kind == rk.HISTORY_NEXT:
+                        if not decoder.buffer and selected is not None:
+                            if selected > 0 and self._bg_id_at(selected - 1):
+                                selected -= 1
+                            else:
+                                selected = None    # off the top: back to typing
+                        else:
+                            newer = history.down()
+                            if newer is not None:
+                                decoder.buffer = newer
+                                decoder.cursor = len(newer)
+                            selected = None
+                    elif kind == rk.EXPAND:
+                        # The result is still there after the turn ends,
+                        # which is when there is time to read it. At the
+                        # idle prompt this key emptied nothing and showed
+                        # nothing; the box keeps what was typed.
+                        _clear_box(decoder)
+                        self._expand_last_result()
+                    elif kind in (rk.STEER, rk.TASKS):
+                        # Turn-time keys. There is no turn here, and the
+                        # decoder has already taken the line into the
+                        # event — so without this branch Ctrl+G emptied
+                        # the box and nothing happened, which is the one
+                        # outcome a key must never have.
+                        text = getattr(event, "text", "") or ""
+                        if text:
+                            decoder.buffer = text
+                            decoder.cursor = len(text)
+                    elif kind == rk.COMPLETE:
+                        # On an empty line Tab walks the offer; with
+                        # something typed it completes a /command as it
+                        # always has. It FILLS — pressing return stays the
+                        # user's, because a key that sent the turn would
+                        # make an offer into a trap.
+                        picked = self._tab_suggestion(decoder.buffer)
+                        if picked is not None:
+                            decoder.buffer = picked
+                            decoder.cursor = len(picked)
+                        else:
+                            done = _complete_word(decoder.buffer)
+                            if done != decoder.buffer:
+                                decoder.buffer = done
+                                decoder.cursor = len(done)
+                    elif kind == rk.CYCLE_MODE:
+                        _clear_box(decoder)
+                        self._cycle_mode()
+                    elif kind == rk.REDRAW:
+                        self.transcript.refresh_width()
+                    elif kind == rk.EOF:
+                        raise EOFError
+                    elif kind == rk.INTERRUPT:
+                        # Esc at the idle prompt clears the line, like
+                        # readline's Ctrl+U — not the session. It also
+                        # drops a selection: the escape out of a walk
+                        # leaves the walk.
+                        decoder.buffer = ""
+                        decoder.cursor = 0
+                        selected = None
+
+                if submit_text is None:
+                    # The walk lives only on an empty buffer: one typed
+                    # letter is a message, and a message goes to the
+                    # model, not to a job. Plain keys never come through
+                    # here as events — the decoder eats them straight
+                    # into its buffer — so the check is on the buffer.
+                    if decoder.buffer and selected is not None:
+                        selected = None
+                    if self._width_dirty:
+                        self._width_dirty = False
+                        self.transcript.refresh_width()
+                    continue
+                _clear_box(decoder)
+                if self._answer_bypass_offer(submit_text):
+                    continue
+                return submit_text
+
+        with rk.RawMode(self._stdin) as raw:
+            read_raw.append(raw.read_ready)
+            text = _collect()
+            if text.strip() == _BLOCK_FENCE:
+                block: list[str] = []
+                decoder = rk.KeyDecoder()
+                while True:
+                    _draw(decoder)
+                    chunk = _read_chunk()
+                    if not chunk:
+                        continue
+                    done = False
+                    for event in decoder.feed(chunk):
+                        if event.kind == rk.SUBMIT:
+                            _clear_box(decoder)
+                            if event.text.strip() == _BLOCK_FENCE:
+                                done = True
+                            else:
+                                block.append(event.text)
+                        elif event.kind == rk.EDIT:
+                            pass
+                        elif event.kind == rk.EOF:
+                            raise EOFError
+                    if done:
+                        return "\n".join(block)
+            # Backslash continuation, read_block's other half.
+            parts = [text]
+            while parts[-1].endswith("\\"):
+                parts[-1] = parts[-1][:-1]
+                parts.append(_collect())
+            result = "".join(parts) if len(parts) > 1 else parts[0]
+            _BoxHistory().add(result)
+            return result
+
+# ---------------------------------------------------------------------------
+# The framed idle prompt
+# ---------------------------------------------------------------------------
+
+_BOX_HINT = "esc interrupt · shift+tab approval mode · /help"
+
+
+def _box_hint(posture: str) -> str:
+    """The hint row, with the approval posture in front of it.
+
+    The posture was in the banner, and the banner scrolls away after the
+    first turn. So the one fact that decides what the next command will
+    do — whether it asks, or edits, or asks nothing at all — was off
+    screen for the rest of the session. The hint row was always drawn, so
+    saying it there costs no row at all.
+    """
+    name = str(posture or "").strip()
+    return f"{name} · {_BOX_HINT}" if name else _BOX_HINT
+#: Content rows the box shows at most. Anything taller is a viewport
+#: with … markers (repl_box.viewport): a 300-line paste into a 24-row
+#: window would otherwise push the frame off the top of the screen.
+_BOX_MAX_CONTENT_ROWS = 6
+
+
+class _BoxHistory:
+    """History for the box, backed by the SAME store readline uses.
+
+    The readline module's in-memory list is the single source of truth:
+    the readline path (pipes, non-terminals) and the box path (raw
+    terminal) must recall the same lines, and a second file would drift
+    within one session. Only the box path can WRITE through here, so
+    the readline path keeps its own save logic untouched.
+    """
+
+    def __init__(self):
+        self._loaded = False
+        self._index = -1          # -1: browsing; >= 0: walking the list
+        self._draft = ""
+
+    def _ensure(self) -> bool:
+        """readline present; the file is ALREADY loaded.
+
+        ``TerminalAgent.run`` calls ``_load_history`` before the first
+        prompt on every path, so re-reading the file here would load
+        every line twice and double the file on save. All this class
+        needs is the module; the in-memory list is shared state.
+        """
+        if self._loaded:
+            return True
+        try:
+            import readline  # noqa: F401
+        except ImportError:
+            return False
+        self._loaded = True
+        return True
+
+    def up(self, draft: str) -> str | None:
+        """One step back; None when there is nothing older."""
+        if not self._ensure():
+            return None
+        try:
+            import readline
+            n = readline.get_current_history_length()
+        except Exception:
+            return None
+        if n == 0:
+            return None
+        if self._index < 0:
+            self._index = n - 1
+            self._draft = draft
+        elif self._index > 0:
+            self._index -= 1
+        else:
+            return None
+        try:
+            import readline
+            return readline.get_history_item(self._index + 1)
+        except Exception:
+            return None
+
+    def down(self) -> str | None:
+        """One step forward; the draft when the walk runs off the end."""
+        if self._index < 0:
+            return None
+        self._index += 1
+        try:
+            import readline
+            n = readline.get_current_history_length()
+        except Exception:
+            n = 0
+        if self._index >= n:
+            self._index = -1
+            return self._draft
+        try:
+            import readline
+            return readline.get_history_item(self._index + 1)
+        except Exception:
+            return None
+
+    def add(self, text: str) -> None:
+        """Same store, same order, as the readline path's add_history."""
+        if not text:
+            return
+        try:
+            import readline
+            readline.add_history(text)
+        except Exception:
+            pass
+        self._index = -1
+        self._draft = ""

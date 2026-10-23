@@ -1,0 +1,649 @@
+"""Numbers, dates and reconciliation — the arithmetic that fails quietly.
+
+A cell reading "1.234,50" is a string. Handed to arithmetic it either
+raises or, worse, parses as 1.234 — off by a factor of a thousand with
+no error anywhere. Dates carry the same trap: 03.04.2026 and 04/03/2026
+are the same day under two conventions and different days under one.
+
+The decision is made per COLUMN. A single "1.234" is genuinely
+ambiguous; a column holding it next to one value with both separators is
+not. Where the column stays ambiguous the answer is to say so, not to
+pick the reading that looks plausible.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from delfin.agent import office
+from delfin.agent.api_client import _DocToolExecutor, KitToolPermissions
+
+openpyxl = pytest.importorskip("openpyxl")
+
+
+@pytest.fixture
+def ws(tmp_path):
+    d = tmp_path / "ws"
+    d.mkdir()
+    return d
+
+
+def _perms(ws) -> KitToolPermissions:
+    perms = KitToolPermissions(workspace=str(ws))
+    perms.mode = "acceptEdits"
+    perms.task_session_id = "office-data"
+    return perms
+
+
+# ---------------------------------------------------------------------------
+# Number conventions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value,convention,expected", [
+    ("1.234,50", office.DECIMAL_COMMA, 1234.5),
+    ("1.234.567,89", office.DECIMAL_COMMA, 1234567.89),
+    ("-1.234,50", office.DECIMAL_COMMA, -1234.5),
+    ("0,5", office.DECIMAL_COMMA, 0.5),
+    ("1,234.50", office.DECIMAL_POINT, 1234.5),
+    ("1234.50", office.DECIMAL_POINT, 1234.5),
+    ("12345", office.PLAIN_NUMBER, 12345.0),
+    ("1.234,50 EUR", office.DECIMAL_COMMA, 1234.5),
+    ("€ 89,90", office.DECIMAL_COMMA, 89.9),
+])
+def test_numbers_parse_under_their_convention(value, convention, expected):
+    assert office.parse_number(value, convention) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", ["n/a", "", "abc", "-", "1.2.3.x", None])
+def test_non_numbers_return_none(value):
+    assert office.parse_number(value, office.DECIMAL_COMMA) is None
+
+
+def test_a_value_with_both_separators_settles_the_column():
+    convention, why = office.detect_number_convention(
+        ["1.234,50", "89,90", "12,00"])
+    assert convention == office.DECIMAL_COMMA
+    assert "settle" in why
+    convention, _ = office.detect_number_convention(["1,234.50", "89.90"])
+    assert convention == office.DECIMAL_POINT
+
+
+def test_a_non_three_digit_group_settles_the_column():
+    """"89,90" cannot be a thousands separator — the tail is two digits."""
+    assert office.detect_number_convention(["89,90"])[0] == office.DECIMAL_COMMA
+    assert office.detect_number_convention(["89.90"])[0] == office.DECIMAL_POINT
+
+
+def test_repeated_separators_settle_the_column():
+    assert office.detect_number_convention(
+        ["1.234.567"])[0] == office.DECIMAL_COMMA
+    assert office.detect_number_convention(
+        ["1,234,567"])[0] == office.DECIMAL_POINT
+
+
+def test_an_undecidable_column_is_reported_not_guessed():
+    convention, why = office.detect_number_convention(["1.234", "2.500"])
+    assert convention == office.AMBIGUOUS
+    assert "two different numbers" in why
+
+
+def test_a_column_mixing_conventions_is_ambiguous():
+    convention, why = office.detect_number_convention(["1.234,50", "1,234.50"])
+    assert convention == office.AMBIGUOUS
+    assert "mixes" in why
+
+
+def test_a_column_without_separators_needs_no_convention():
+    assert office.detect_number_convention(["1", "22", "333"])[0] == \
+        office.PLAIN_NUMBER
+
+
+# ---------------------------------------------------------------------------
+# Date conventions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value,convention,expected", [
+    ("31.07.2026", office.DAY_FIRST, "2026-07-31"),
+    ("1.8.2026", office.DAY_FIRST, "2026-08-01"),
+    ("07/31/2026", office.MONTH_FIRST, "2026-07-31"),
+    ("2026-07-31", office.ISO_DATE, "2026-07-31"),
+    ("31.07.26", office.DAY_FIRST, "2026-07-31"),
+])
+def test_dates_parse_under_their_convention(value, convention, expected):
+    assert office.parse_date(value, convention) == expected
+
+
+def test_an_impossible_date_is_rejected():
+    assert office.parse_date("31.02.2026", office.DAY_FIRST) is None
+    assert office.parse_date("nicht am 1.", office.DAY_FIRST) is None
+
+
+def test_a_day_above_twelve_settles_the_column():
+    convention, why = office.detect_date_convention(
+        ["01/02/2026", "31/07/2026"])
+    assert convention == office.DAY_FIRST
+    assert "above 12" in why
+    assert office.detect_date_convention(
+        ["01/02/2026", "07/31/2026"])[0] == office.MONTH_FIRST
+
+
+def test_dotted_dates_are_day_first():
+    assert office.detect_date_convention(["01.02.2026"])[0] == office.DAY_FIRST
+
+
+def test_iso_dates_are_recognised():
+    assert office.detect_date_convention(["2026-07-31"])[0] == office.ISO_DATE
+
+
+def test_a_column_that_could_be_read_either_way_is_ambiguous():
+    convention, why = office.detect_date_convention(
+        ["01/02/2026", "03/04/2026"])
+    assert convention == office.AMBIGUOUS
+    assert "either way" in why
+
+
+def test_a_column_mixing_date_conventions_is_ambiguous():
+    assert office.detect_date_convention(
+        ["31/07/2026", "07/31/2026"])[0] == office.AMBIGUOUS
+
+
+# ---------------------------------------------------------------------------
+# Column profiles reach the reader
+# ---------------------------------------------------------------------------
+
+_GERMAN = ("Name;Datum;Betrag;Anzahl\n"
+           "Müller;31.07.2026;1.234,50;3\n"
+           "Özdemir;01.08.2026;89,90;12\n"
+           "Schmidt;12.09.2026;12.000,00;7\n"
+           "Weber;02.10.2026;n/a;4\n")
+
+
+def test_reading_a_table_reports_kinds_and_conventions(ws):
+    p = ws / "kosten.csv"
+    p.write_bytes(_GERMAN.encode("cp1252"))
+    result = office.read_sheet(p)
+    by_name = {c["name"]: c for c in result["column_profile"]}
+    assert by_name["Name"]["kind"] == "text"
+    assert by_name["Datum"]["kind"] == "date"
+    assert by_name["Datum"]["convention"] == office.DAY_FIRST
+    assert by_name["Betrag"]["kind"] == "number"
+    assert by_name["Betrag"]["convention"] == office.DECIMAL_COMMA
+    assert by_name["Anzahl"]["convention"] == office.PLAIN_NUMBER
+
+
+def test_the_decimal_comma_warning_reaches_the_notes(ws):
+    p = ws / "kosten.csv"
+    p.write_bytes(_GERMAN.encode("cp1252"))
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "decimal comma" in notes
+    assert "factor of a thousand" in notes
+
+
+def test_values_that_would_be_silently_dropped_are_named(ws):
+    p = ws / "kosten.csv"
+    p.write_bytes(_GERMAN.encode("cp1252"))
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "n/a" in notes
+    assert "leave them out" in notes
+
+
+def test_both_findings_are_reported_for_the_same_column(ws):
+    """A column can use a decimal comma AND hold unparseable values; each
+    on its own is enough to make a naive total wrong."""
+    p = ws / "kosten.csv"
+    p.write_bytes(_GERMAN.encode("cp1252"))
+    notes = office.read_sheet(p)["notes"]
+    assert any("decimal comma" in n for n in notes)
+    assert any("not numbers" in n for n in notes)
+
+
+def test_an_ambiguous_column_tells_the_reader_to_ask(ws):
+    p = ws / "amb.csv"
+    p.write_text("Posten,Wert\nA,1.234\nB,2.500\n", encoding="utf-8")
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "Ask which reading is meant" in notes
+
+
+def test_the_profile_is_shown_next_to_the_grid(ws):
+    p = ws / "kosten.csv"
+    p.write_bytes(_GERMAN.encode("cp1252"))
+    out = _DocToolExecutor()._dispatch(
+        "read_document", {"path": str(p)}, _perms(ws))
+    assert "Betrag: number (decimal_comma)" in out
+    assert "Datum: date (day_first)" in out
+    assert "not parseable" in out
+
+
+def test_paging_does_not_promote_a_data_row_to_a_header(ws):
+    wb = openpyxl.Workbook()
+    wb.active.append(["Posten", "Betrag"])
+    for n in range(1, 40):
+        wb.active.append([f"P{n}", n])
+    wb.save(ws / "lang.xlsx")
+    wb.close()
+    result = office.read_sheet(ws / "lang.xlsx", start_row=10, max_rows=5)
+    names = [c["name"] for c in result["column_profile"]]
+    assert names == ["A", "B"]        # positional, not the row that was read
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+
+_BOOKINGS = ("Beleg;Name;Betrag;Datum\n"
+             "R-001;Müller;1.234,50;31.07.2026\n"
+             "R-002;Özdemir;89,90;01.08.2026\n"
+             "R-003;Schmidt;450,00;02.08.2026\n"
+             "R-005;Weber;12,00;03.08.2026\n")
+_INVOICES = ("Beleg,Name,Betrag,Datum\n"
+             "R-001,Müller,1234.50,2026-07-31\n"
+             "R-002,Özdemir,98.90,2026-08-01\n"
+             "R-003,Schmidt,450.00,2026-08-02\n"
+             "R-004,Neu,77.00,2026-08-06\n")
+
+
+@pytest.fixture
+def pair(ws):
+    left = ws / "buchungen.csv"
+    right = ws / "rechnungen.csv"
+    left.write_bytes(_BOOKINGS.encode("cp1252"))
+    right.write_text(_INVOICES, encoding="utf-8")
+    return left, right
+
+
+def test_the_same_value_written_two_ways_is_not_a_difference(pair):
+    """The two tables come from different systems. 1.234,50 and 1234.50
+    are the same amount, and 31.07.2026 is 2026-07-31."""
+    left, right = pair
+    result = office.compare_tables(left, right, key="Beleg")
+    assert "R-001" in result["equal"]
+    assert "R-003" in result["equal"]
+
+
+def test_a_real_difference_is_caught(pair):
+    left, right = pair
+    result = office.compare_tables(left, right, key="Beleg")
+    keys = {d["key"] for d in result["differing"]}
+    assert keys == {"R-002"}
+    diff = result["differing"][0]["differences"][0]
+    assert diff["column"] == "Betrag"
+    assert diff["left"] == "89,90" and diff["right"] == "98.90"
+
+
+def test_one_sided_rows_are_reported_per_side(pair):
+    left, right = pair
+    result = office.compare_tables(left, right, key="Beleg")
+    assert result["only_left"] == ["R-005"]
+    assert result["only_right"] == ["R-004"]
+
+
+def test_every_input_row_is_accounted_for(pair):
+    left, right = pair
+    result = office.compare_tables(left, right, key="Beleg")
+    assert result["rows_accounted_for"] is True
+    covered = (result["equal_count"] + result["differing_count"]
+               + result["only_left_count"] + result["only_right_count"])
+    assert covered == 5          # 3 matched + 1 left-only + 1 right-only
+
+
+def test_a_duplicate_key_is_reported_instead_of_joined(ws):
+    """A duplicate key turns the join into a cross product, and the result
+    looks perfectly plausible."""
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("K,V\nA,1\nA,2\nB,3\n", encoding="utf-8")
+    right.write_text("K,V\nA,1\nB,3\n", encoding="utf-8")
+    result = office.compare_tables(left, right, key="K")
+    assert "A" not in result["equal"]
+    reasons = [e["reason"] for e in result["not_comparable"]]
+    assert any("more than once" in r for r in reasons)
+    assert any("cross product" in n for n in result["notes"])
+    assert result["equal"] == ["B"]
+
+
+def test_an_empty_key_is_reported_not_dropped(ws):
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("K,V\nA,1\n,2\n", encoding="utf-8")
+    right.write_text("K,V\nA,1\n", encoding="utf-8")
+    result = office.compare_tables(left, right, key="K")
+    assert any(e["reason"] == "empty key" for e in result["not_comparable"])
+    assert result["rows_accounted_for"] is True
+
+
+def test_an_unknown_key_column_lists_the_real_ones(pair):
+    left, right = pair
+    with pytest.raises(office.OfficeError) as exc:
+        office.compare_tables(left, right, key="Belegnummer")
+    assert "Beleg" in str(exc.value)
+
+
+def test_only_the_named_columns_are_compared(pair):
+    left, right = pair
+    result = office.compare_tables(
+        left, right, key="Beleg", columns=["Name"])
+    assert result["compared_columns"] == ["Name"]
+    assert result["differing_count"] == 0     # the names all agree
+
+
+def test_tables_can_be_compared_across_formats(ws, pair):
+    left, _ = pair
+    wb = openpyxl.Workbook()
+    wb.active.append(["Beleg", "Betrag"])
+    wb.active.append(["R-001", 1234.5])
+    wb.active.append(["R-002", 89.9])
+    xlsx = ws / "aus_system.xlsx"
+    wb.save(xlsx)
+    wb.close()
+    result = office.compare_tables(left, xlsx, key="Beleg")
+    assert result["compared_columns"] == ["Betrag"]
+    assert set(result["equal"]) == {"R-001", "R-002"}
+
+
+def test_comparison_through_the_tool_reports_every_group(ws, pair):
+    left, right = pair
+    out = _DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right), "key": "Beleg",
+    }, _perms(ws))
+    for label in ("equal:", "differing:", "only left:", "only right:",
+                  "not comparable:"):
+        assert label in out
+    assert "R-002" in out
+    assert "89,90 | 98.90" in out
+
+
+def test_the_tool_requires_a_key(ws, pair):
+    left, right = pair
+    out = json.loads(_DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right),
+    }, _perms(ws)))
+    assert "key is required" in out["error"]
+
+
+def test_comparing_something_that_is_not_a_table_is_refused(ws, pair):
+    left, _ = pair
+    doc = ws / "brief.docx"
+    doc.write_bytes(b"PK\x03\x04not really")
+    out = json.loads(_DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(doc), "key": "Beleg",
+    }, _perms(ws)))
+    assert "not a table" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Two systems, two vocabularies
+# ---------------------------------------------------------------------------
+
+def test_the_key_may_be_named_differently_on_each_side(ws):
+    """Requiring one name would push the caller into renaming a column
+    first — writing to a file just to be able to read it."""
+    left = ws / "buchungen.csv"
+    right = ws / "rechnungen.csv"
+    left.write_text("Beleg,Betrag\nR-001,10\nR-002,20\n", encoding="utf-8")
+    right.write_text("Belegnummer,Betrag\nR-001,10\nR-002,20\n",
+                     encoding="utf-8")
+    result = office.compare_tables(left, right, key="Beleg",
+                                   right_key="Belegnummer")
+    assert result["equal_count"] == 2
+    assert result["right_key"] == "Belegnummer"
+
+
+def test_value_columns_may_be_paired_by_name(ws):
+    """Two exports of the same facts routinely disagree on every column
+    name. Without pairs those columns drop out of the comparison, which
+    reports agreement over something it never checked."""
+    left = ws / "buchungen.csv"
+    right = ws / "rechnungen.csv"
+    left.write_text("Beleg,Betrag\nR-001,289.90\n", encoding="utf-8")
+    right.write_text("Belegnummer,Rechnungsbetrag\nR-001,298.90\n",
+                     encoding="utf-8")
+    result = office.compare_tables(
+        left, right, key="Beleg", right_key="Belegnummer",
+        columns={"Betrag": "Rechnungsbetrag"})
+    assert result["differing_count"] == 1
+    assert result["differing"][0]["differences"][0]["column"] == "Betrag"
+    assert "Betrag / Rechnungsbetrag" in result["compared_columns"]
+
+
+def test_differently_named_value_columns_are_not_silently_skipped(ws):
+    """The default shared-column rule cannot see them, so a comparison
+    that finds nothing must not read as 'everything agrees'."""
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("Beleg,Betrag\nR-001,10\n", encoding="utf-8")
+    right.write_text("Belegnummer,Rechnungsbetrag\nR-001,99\n",
+                     encoding="utf-8")
+    with pytest.raises(office.OfficeError) as exc:
+        office.compare_tables(left, right, key="Beleg",
+                              right_key="Belegnummer")
+    assert "share no comparable column" in str(exc.value)
+
+
+def test_the_sheet_a_comparison_actually_used_is_named(ws):
+    """A workbook with one sheet per month compared against a whole year
+    reports hundreds of one-sided rows — a result that reads like a
+    catastrophe when the only thing wrong is which sheet was taken."""
+    left = ws / "jahr.xlsx"
+    wb = openpyxl.Workbook()
+    first = wb.active
+    first.title = "2026-02"
+    first.append(["Beleg", "Betrag"])
+    first.append(["R-001", "10"])
+    second = wb.create_sheet("2026-03")
+    second.append(["Beleg", "Betrag"])
+    second.append(["R-002", "20"])
+    wb.save(left)
+    wb.close()
+
+    right = ws / "lieferant.csv"
+    right.write_text("Beleg,Betrag\nR-001,10\nR-002,20\n", encoding="utf-8")
+
+    notes = " ".join(office.compare_tables(left, right, key="Beleg")["notes"])
+    assert "2026-02" in notes and "2026-03" in notes
+    assert "ACTIVE sheet" in notes
+
+
+def test_a_gross_size_asymmetry_is_called_what_it_usually_is(ws):
+    """Hundreds of one-sided rows are far more often the wrong period or
+    filter than that many genuinely missing records."""
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("Beleg,Betrag\nR-001,10\n", encoding="utf-8")
+    right.write_text(
+        "Beleg,Betrag\n" + "".join(f"R-{i:03d},{i}\n" for i in range(1, 60)),
+        encoding="utf-8")
+    notes = " ".join(office.compare_tables(left, right, key="Beleg")["notes"])
+    assert "scope mismatch" in notes
+
+
+def test_a_single_sheet_workbook_needs_no_scope_warning(ws):
+    left = ws / "eins.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.append(["Beleg", "Betrag"])
+    wb.active.append(["R-001", "10"])
+    wb.save(left)
+    wb.close()
+    right = ws / "r.csv"
+    right.write_text("Beleg,Betrag\nR-001,10\n", encoding="utf-8")
+    notes = " ".join(office.compare_tables(left, right, key="Beleg")["notes"])
+    assert "ACTIVE sheet" not in notes
+
+
+# ---------------------------------------------------------------------------
+# A JSON string where the schema asked for an object
+# ---------------------------------------------------------------------------
+
+def test_a_json_string_argument_is_parsed_not_iterated(ws, pair):
+    """Field case: the model sent columns as a JSON *string*. Passed
+    through, a string iterates character by character, so the first
+    column name became '{' and the error named a column nobody wrote.
+    Three attempts produced the same nonsense and the loop guard ended
+    the turn."""
+    import json as _json
+
+    left, right = pair
+    out = _DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right), "key": "Beleg",
+        "columns": _json.dumps({"Betrag": "Betrag"}),
+    }, _perms(ws))
+    assert "no column '{'" not in out
+    assert "Betrag" in out
+
+
+def test_a_json_list_string_is_parsed_too(ws, pair):
+    import json as _json
+
+    left, right = pair
+    out = _DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right), "key": "Beleg",
+        "columns": _json.dumps(["Betrag"]),
+    }, _perms(ws))
+    assert "no column" not in out
+
+
+def test_a_bare_column_name_is_one_column_not_its_letters(ws, pair):
+    left, right = pair
+    out = _DocToolExecutor()._dispatch("compare_tables", {
+        "left": str(left), "right": str(right), "key": "Beleg",
+        "columns": "Betrag",
+    }, _perms(ws))
+    assert "no column 'B'" not in out
+
+
+def test_the_coercion_leaves_real_objects_alone():
+    from delfin.agent.api_client import _as_structured
+
+    assert _as_structured({"a": "b"}, dict) == {"a": "b"}
+    assert _as_structured(["a"], list) == ["a"]
+    assert _as_structured(None, dict) is None
+    # Not JSON and not a container: handed on unchanged, so the tool's own
+    # error message describes what was really sent.
+    assert _as_structured("kein json", dict) == "kein json"
+
+
+# ---------------------------------------------------------------------------
+# What a German export does to delimiter detection
+# ---------------------------------------------------------------------------
+
+def test_a_decimal_comma_does_not_win_over_the_real_separator(ws):
+    """Counting occurrences picks the comma: it appears in every amount.
+    The separator is the one that gives every row the same field count."""
+    p = ws / "export.csv"
+    p.write_bytes(
+        ("Kostenstelle;Bezeichnung;Budget\n"
+         "4711;Institut für Chemie;125.000,00\n"
+         "4712;Beschaffung;48.500,00\n"
+         "4713;Technischer Dienst;76.200,00\n").encode("cp1252"))
+    result = office.read_sheet(p)
+    assert result["columns"] == 3
+    assert "Institut für Chemie" in result["grid"]
+
+
+def test_the_delimiter_choice_survives_commas_inside_values(ws):
+    p = ws / "komma.csv"
+    p.write_text(
+        "Nr;Text;Wert\n1;eins, zwei und drei;10,50\n2;vier, fünf;20,00\n",
+        encoding="utf-8")
+    result = office.read_sheet(p)
+    assert result["columns"] == 3
+    assert "eins, zwei und drei" in result["grid"]
+
+
+def test_tab_files_stay_tab_separated(ws):
+    p = ws / "t.tsv"
+    p.write_text("A\tB\n1\t2\n", encoding="utf-8")
+    assert office.read_sheet(p)["columns"] == 2
+
+
+def test_the_sniffer_is_callable_on_its_own():
+    assert office.sniff_delimiter("a;b;c\n1;2;3\n") == ";"
+    assert office.sniff_delimiter("a,b,c\n1,2,3\n") == ","
+    assert office.sniff_delimiter("a\tb\n1\t2\n", ".tsv") == "\t"
+
+
+# ---------------------------------------------------------------------------
+# Rows that do not fit their header
+# ---------------------------------------------------------------------------
+
+def test_a_shifted_row_is_reported(ws):
+    """An unquoted separator inside a value moves every field after it by
+    one, so a personnel-number column quietly starts holding amounts.
+    Nothing about the resulting table looks wrong."""
+    p = ws / "schief.csv"
+    p.write_text(
+        "Name,Vorhaben,Betrag,Personalnummer\n"
+        "Meier,Waage,100,80001\n"
+        "Schmidt,Digitalwaage 0,1 mg,240,80002\n",
+        encoding="utf-8")
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "do not have the header's 4 column(s)" in notes
+    assert "rows 3" in notes
+
+
+def test_a_clean_table_is_not_accused(ws):
+    p = ws / "sauber.csv"
+    p.write_text("A,B\n1,2\n3,4\n", encoding="utf-8")
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "do not have the header" not in notes
+
+
+def test_trailing_blank_lines_are_not_counted_as_shifted(ws):
+    p = ws / "leerzeile.csv"
+    p.write_text("A,B\n1,2\n\n\n", encoding="utf-8")
+    notes = " ".join(office.read_sheet(p)["notes"])
+    assert "do not have the header" not in notes
+
+
+# ---------------------------------------------------------------------------
+# A document reference is not a number
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("value", [
+    "R-001", "X-001", "INV-20000", "A1", "BES-2026-08", "4711-B",
+])
+def test_a_reference_is_not_read_as_a_number(value):
+    """The cleanup stripped every character that was not a digit or a
+    separator, so "R-001" became "-001" and read as -1."""
+    assert office.parse_number(value, office.DECIMAL_COMMA) is None
+    assert office._numeric_body(value) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("1.234,50 EUR", 1234.5),
+    ("€ 89,90", 89.9),
+    ("1 234,50", 1234.5),          # thin space from a spreadsheet
+    (" 1.234,50 ", 1234.5),
+    ("-5,5", -5.5),
+    ("4711", 4711.0),
+])
+def test_the_noise_a_number_may_carry_still_parses(value, expected):
+    assert office.parse_number(value, office.DECIMAL_COMMA) == pytest.approx(
+        expected)
+
+
+def test_a_percentage_is_not_silently_turned_into_a_count():
+    """Stripping the sign would change what the value means."""
+    assert office.parse_number("12%", office.DECIMAL_COMMA) is None
+
+
+def test_a_reference_column_profiles_as_text(ws):
+    assert office.profile_column(["R-001", "R-002", "R-003"],
+                                 name="Beleg")["kind"] == "text"
+    assert office.profile_column(["1.234,50", "89,90"],
+                                 name="Betrag")["kind"] == "number"
+
+
+def test_two_different_references_no_longer_compare_equal(ws):
+    """The worst shape this bug had: both sides normalised to -1, so a
+    reconciliation reported two different records as agreeing."""
+    left = ws / "l.csv"
+    right = ws / "r.csv"
+    left.write_text("Vorgang,Referenz\nA,R-001\nB,R-002\n", encoding="utf-8")
+    right.write_text("Vorgang,Referenz\nA,X-001\nB,R-002\n", encoding="utf-8")
+    result = office.compare_tables(left, right, key="Vorgang")
+    assert result["equal"] == ["B"]
+    assert [d["key"] for d in result["differing"]] == ["A"]
+    difference = result["differing"][0]["differences"][0]
+    assert difference["left"] == "R-001" and difference["right"] == "X-001"

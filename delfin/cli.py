@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -14,6 +15,7 @@ from dataclasses import asdict
 from typing import Optional
 from delfin.common.logging import configure_logging, get_logger
 from delfin.common.paths import resolve_path
+from delfin import recalc_control, smart_recalc
 from .qm_runtime import check_tools as check_qm_tools, get_qm_tools_root, get_csp_tools_root, get_mlp_tools_root, run_tool as run_qm_tool
 
 logger = get_logger(__name__)
@@ -190,6 +192,47 @@ def _get_step_file_patterns() -> tuple[set[str], set[str]]:
         )
     }
     return step_file_names, step_file_glob_patterns
+
+
+def _run_doctor_subcommand(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="delfin doctor",
+        description="Installation self-check: ORCA, xTB, OpenMPI, scratch dir, "
+        "SLURM, KIT key and doc index. No computations, no network.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print raw results as JSON (one object per check) and exit.",
+    )
+    parser.add_argument(
+        "--scratch",
+        default=None,
+        help="Scratch directory to probe (default: $DELFIN_SCRATCH > $TMPDIR > system temp).",
+    )
+    args = parser.parse_args(argv)
+
+    from .doctor import run_all, exit_code  # lazy: keep CLI startup light
+
+    results = run_all(scratch_dir=args.scratch)
+
+    if args.json:
+        print(json.dumps([asdict(r) for r in results], indent=2))
+        return exit_code(results)
+
+    width = max((len(r.name) for r in results), default=0)
+    for r in results:
+        print(f"{r.status.upper():7s}  {r.name:<{width}s}  {r.detail}")
+        if r.status in ("missing", "broken") and r.fix_hint:
+            print(f"         {'':<{width}s}  fix: {r.fix_hint}")
+    n_ok = sum(1 for r in results if r.status == "ok")
+    n_missing = sum(1 for r in results if r.status == "missing")
+    n_broken = sum(1 for r in results if r.status == "broken")
+    print(
+        f"\n{n_ok} ok, {n_missing} missing, {n_broken} broken "
+        f"({len(results)} checks)"
+    )
+    return exit_code(results)
 
 
 def _run_qm_check_subcommand(argv: list[str]) -> int:
@@ -716,6 +759,35 @@ def _apply_occupier_overrides(
             override_map[folder_name] = int(preferred_index)
         except Exception:
             override_map[folder_name] = preferred_index
+
+        # Fix: also record the override in .delfin_occ_auto_state.json.
+        # Without this, the state file keeps the pre-override winner and
+        # downstream consumers (e.g. the CO2 coordinator chain via
+        # _spin_from_state_json) read the stale multiplicity, silently
+        # ignoring the manual override.
+        try:
+            from delfin.occupier_auto import record_auto_preference, infer_parity_from_m
+            from delfin.occupier_sequences import infer_species_delta
+            from delfin.copy_helpers import extract_preferred_spin
+            # The authoritative m/BS for the override is the winning entry
+            # in OCCUPIER.txt itself (retagged "<-- OVERRIDE"), not the
+            # rule-based sequence replay, which may renumber indices.
+            m_val, bs_val = extract_preferred_spin(folder_path)
+            if m_val is not None:
+                parity = infer_parity_from_m(m_val)
+                if parity is not None:
+                    _delta = infer_species_delta(folder_path)
+                    record_auto_preference(
+                        parity, int(preferred_index), _delta,
+                        m_value=m_val, bs_value=bs_val,
+                        root=workspace_root,
+                    )
+                    logger.info(
+                        "[recalc] Recorded override in auto-state: delta=%s index=%s m=%s BS=%s (%s)",
+                        _delta, preferred_index, m_val, bs_val, folder_name,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update auto-state for %s: %s", folder_name, exc)
 
         # Wipe all top-level classic artefacts for this stage so the pipeline
         # rebuilds `{base}.inp` with OPT+FREQ keywords and reruns ORCA on the
@@ -1404,6 +1476,55 @@ def _is_enabled_flag(value: object) -> bool:
     return str(value or "").strip().lower() in {"on", "yes", "true", "1"}
 
 
+def _run_inputs_as_read(control_file_path: Path, config: dict) -> tuple:
+    """The CONTROL text and the geometry input text this run starts from (None where unreadable)."""
+    try:
+        control_text = control_file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        control_text = None
+    entry = str(config.get("input_file") or "input.txt").strip() or "input.txt"
+    geometry_path = Path(entry) if Path(entry).is_absolute() else control_file_path.parent / entry
+    try:
+        geometry_text = geometry_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        geometry_text = None
+    return control_text, geometry_text
+
+
+def _note_control_change(config: dict, workspace_root: Path, control_text, geometry_text) -> None:
+    """Tell the workflows what an edit since the last completed run reaches (recalc_control)."""
+    if control_text is None:
+        return
+    change = recalc_control.change_since_last_run(workspace_root, control_text, geometry_text)
+    config["_recalc_change"] = change
+    smart = smart_recalc.smart_mode_enabled()
+    smart_recalc.mark_control_edited(smart and change is not None and change.computation)
+    if change is None:
+        logger.info("[recalc] No record of the CONTROL the finished jobs were computed with; "
+                    "finished jobs are kept as they are.")
+        return
+    if not change.keys and not change.input_changed:
+        logger.info("[recalc] CONTROL unchanged since the last completed run.")
+        return
+    logger.info("[recalc] Changed since the last completed run: %s.", change.describe())
+    if not smart:
+        logger.warning("[recalc] Classic recalc keeps every finished job; the change reaches only "
+                       "jobs that were not finished. Smart recalc computes what it changes.")
+        return
+    config["_recalc_rebuild_structure"] = change.structure
+    config["_recalc_regenerate_fob_inputs"] = change.reaches_occupier_fobs
+    config["_recalc_regenerate_main_inputs"] = change.reaches_occupier_frequency_jobs
+    if change.structure:
+        logger.info("[recalc] The starting structure is built again, and what follows from it.")
+    elif change.reaches_occupier_frequency_jobs:
+        logger.info("[recalc] ORCA inputs are written anew (OCCUPIER %s); a job whose input "
+                    "changed runs again.",
+                    "configurations and frequency jobs" if change.reaches_occupier_fobs
+                    else "frequency jobs")
+    elif change.computation:
+        logger.info("[recalc] The edit reaches no OCCUPIER input; OCCUPIER keeps its finished jobs.")
+
+
 def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
     """Run CO2 coordinator in recalc mode when enabled via CONTROL."""
     if not _is_enabled_flag(config.get("co2_coordination", "off")):
@@ -1458,6 +1579,16 @@ def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     arg_list = list(argv if argv is not None else sys.argv[1:])
+    if arg_list and arg_list[0] == "cluster":
+        from delfin.cluster_bench.cli import main as _cluster_main
+
+        return _cluster_main(arg_list[1:])
+    if arg_list and arg_list[0] == "review":
+        from delfin.review import main as _review_main
+
+        return _review_main(arg_list[1:])
+    if arg_list and arg_list[0] == "doctor":
+        return _run_doctor_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_check":
         return _run_qm_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_run":
@@ -1685,6 +1816,22 @@ def main(argv: list[str] | None = None) -> int:
     # Auto-configure cluster resources if not explicitly set
     config = auto_configure_resources(config)
 
+    # The structure builder reads its construction preset at import time, so the
+    # environment has to carry it before anything pulls delfin.smiles_converter
+    # in.  Setting it later -- inside the conversion call, where it would read
+    # naturally -- is too late: by then the module has already decided which
+    # builder it is.  `delfin-manta` sets it in the same place and for the same
+    # reason.
+    try:
+        from delfin.common.manta_settings import apply_construction_env
+        _manta_env = apply_construction_env(config)
+    except Exception as exc:  # noqa: BLE001 - a preset must never stop a run
+        logger.warning("MANTA construction preset not applied: %s", exc)
+    else:
+        if _manta_env:
+            logger.debug("MANTA construction environment: %d flags set",
+                         len(_manta_env))
+
     # Initialize global job manager with configuration
     global_mgr = get_global_manager()
     global_mgr.initialize(config)
@@ -1725,6 +1872,13 @@ def main(argv: list[str] | None = None) -> int:
     if RECALC_MODE and force_rerun_outputs:
         config["_recalc_force_outputs"] = force_rerun_outputs
 
+    # What this run is computed from, compared with what the finished jobs were
+    # computed from (recalc_control).  Read now: an edit made while the run is
+    # going belongs to the next one.
+    run_control_text, run_geometry_text = _run_inputs_as_read(control_file_path, config)
+    if RECALC_MODE:
+        _note_control_change(config, workspace_root, run_control_text, run_geometry_text)
+
     # Populate optional flags with safe defaults so reduced CONTROL files remain usable
     try:
         default_config = {
@@ -1740,16 +1894,9 @@ def main(argv: list[str] | None = None) -> int:
             'DONTO': 'FALSE',
             'DOSOC': 'TRUE',
             'FOLLOWIROOT': 'TRUE',
-            'IROOT': '1',
-            'NROOTS': '15',
-            'ESD_nroots': 15,
-            'ESD_maxdim': None,
-            'TDDFT_maxiter': None,
-            'ESD_TDDFT_maxiter': None,
-            'TDA': 'FALSE',
             'NACME': 'TRUE',
             'ETF': 'TRUE',
-            'implicit_solvation_model': 'CPCM',
+            'implicit_solvation_model': '',
             'maxcore': 3800,
             'maxiter': 125,
             'maxiter_occupier': 125,
@@ -2142,6 +2289,10 @@ def main(argv: list[str] | None = None) -> int:
         if RECALC_MODE and not _run_co2_recalc_if_enabled(config, workspace_root):
             return _finalize(1)
 
+        # A classic recalc keeps finished jobs whatever CONTROL says, so they
+        # still belong to the CONTROL recorded before it.
+        if run_control_text is not None and (not RECALC_MODE or smart_recalc.smart_mode_enabled()):
+            recalc_control.record_completed_run(workspace_root, run_control_text, run_geometry_text)
         return _finalize(0)
     except KeyboardInterrupt:
         logger.warning("Execution interrupted by user; shutting down...")

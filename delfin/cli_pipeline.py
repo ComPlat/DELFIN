@@ -259,6 +259,7 @@ def _submit_slurm(yaml_path: str, args) -> int:
 #SBATCH --job-name={job_name}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task={cores}
+#SBATCH --threads-per-core=1
 #SBATCH --mem={mem}
 #SBATCH --time={time_limit}
 #SBATCH --nodes={nodes}
@@ -283,15 +284,20 @@ echo "End: $(date)"
     script_path = Path(args.work_dir or ".") / f"{job_name}_slurm.sh"
     script_path.write_text(script)
 
-    # Submit
-    result = subprocess.run(
-        [sbatch, str(script_path)],
-        capture_output=True, text=True,
-    )
+    # Submit. A partition named in the YAML stays; without one the job gets the
+    # partitions it fits -- a cluster with no default partition refuses it
+    # otherwise, and with several it starts where there is room first.
+    from delfin.slurm_submit import sbatch_command
+
+    cmd = sbatch_command(sbatch, script_path)
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode == 0:
         print(f"SLURM job submitted: {result.stdout.strip()}")
         print(f"Script: {script_path}")
+        partitions = [part for part in cmd if part.startswith("--partition=")]
+        if partitions:
+            print(f"Partitions: {partitions[0].split('=', 1)[1]}")
         return 0
     else:
         print(f"SLURM submission failed: {result.stderr}", file=sys.stderr)

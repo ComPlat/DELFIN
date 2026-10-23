@@ -1,10 +1,14 @@
 """SLURM job backend: sbatch / squeue / scancel."""
 
 import os
+import re
+import shutil
 import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from delfin.qm_runtime import (
     binary_env_var_name,
@@ -13,15 +17,90 @@ from delfin.qm_runtime import (
     settings_selectable_tools,
 )
 from delfin.runtime_setup import _tool_environment_overrides
+from delfin.slurm_submit import (  # noqa: F401 -- normalize_time_limit is re-exported
+    PROFILE_GPU_PARTITIONS,
+    PROFILE_PARTITIONS,
+    detect_site_profile,
+    discover_gpu_partitions,
+    normalize_time_limit,
+    partition_accepts,
+    partition_list,
+    time_limit_seconds,
+)
 
 from .backend_base import JobBackend, JobInfo, SubmitResult
 from .input_processing import parse_resource_settings, parse_inp_resources
+
+
+#: What a pending job's reason code means, in words a user can act on.
+_PENDING_REASONS: dict[str, str] = {
+    'Priority': 'Waiting for jobs with higher priority to start first.',
+    'Resources': 'Next in line: waiting for enough free cores and memory on one node.',
+    'None': 'Being scheduled; it should start shortly.',
+    'Dependency': 'Waiting for a job it depends on to finish.',
+    'DependencyNeverSatisfied': 'Will never start: the job it depends on failed. Cancel it.',
+    'BeginTime': 'Not to start before its requested begin time.',
+    'JobHeldUser': 'Held by you. Release it with: scontrol release <jobid>',
+    'JobHeldAdmin': 'Held by the cluster administrators.',
+    'ReqNodeNotAvail': 'The nodes it needs are unavailable, often reserved for maintenance.',
+    'Reservation': 'Waiting for a reservation to become active.',
+    'PartitionTimeLimit': 'Will never start: its time limit is above the partition maximum.',
+    'PartitionNodeLimit': 'Will never start: it asks for more nodes than the partition allows.',
+    'BadConstraints': 'Will never start: no node matches what it asks for.',
+    'InvalidAccount': 'Will never start: the account is not valid.',
+    'InvalidQOS': 'Will never start: the QOS is not valid.',
+    'NodeDown': 'A node it needs is down.',
+    'Prolog': 'Starting: its node is being prepared.',
+    'Cleaning': 'Waiting for a node to finish cleaning up after a previous job.',
+}
+
+
+def describe_pending_reason(reason: str) -> str:
+    """The reason SLURM gives for a job's state, explained.
+
+    Takes the bare code (``Priority``), squeue's %R form (``(Priority)``) or a
+    code with detail (``ReqNodeNotAvail, Reserved for maintenance``). A code
+    nobody explained comes back as it is -- still better than no reason.
+    """
+    code = str(reason or '').strip()
+    if code.startswith('(') and code.endswith(')'):
+        code = code[1:-1].strip()
+    if not code:
+        return ''
+    if SlurmJobBackend._is_env_hold(code):
+        return ('Its launch failed and SLURM held it. DELFIN releases such a '
+                'job on the next refresh of the job list.')
+    head = code.split(',', 1)[0].strip()
+    if head in _PENDING_REASONS:
+        return _PENDING_REASONS[head]
+    if head.startswith('QOS') and 'Limit' in head:
+        return ('A limit of the queue (QOS) is reached, for example cores per '
+                'user; it starts when your other jobs finish.')
+    if head.startswith('Assoc') and 'Limit' in head:
+        return ("Your account's limit is reached, for example total cores of "
+                'the group; it starts when running jobs of the account finish.')
+    return code
 
 
 class SlurmJobBackend(JobBackend):
     """SLURM cluster backend (sbatch/squeue/scancel)."""
 
     _auto_detected_cache: dict[str, str] | None = None
+
+    # Minimum seconds between two ``squeue`` calls. Several widgets poll job
+    # state on their own timer -- the agent activity panel ticks every 5 s --
+    # and each uncached call forks a query at the cluster controller, which is
+    # a shared, single-instance service. Queue state does not change on that
+    # scale, so all callers share one result per interval; submit and cancel
+    # drop the cache so the UI still reacts to the user immediately. Sites can
+    # widen or (at their own risk) narrow this via DELFIN_SQUEUE_MIN_INTERVAL.
+    _JOBS_CACHE_SECONDS = 25.0
+    #: sshare's numbers change once per PriorityCalcPeriod (5 min by default),
+    #: so asking more often only loads the controller.
+    _FAIRSHARE_CACHE_SECONDS = 300.0
+    #: Account limits change when the site edits them; sacctmgr asks the
+    #: accounting database the whole cluster shares.
+    _LIMITS_CACHE_SECONDS = 3600.0
 
     # Tools with expensive system-wide scans (module spider, deep /opt
     # traversal) that are not needed for auto-export to SLURM jobs.
@@ -42,6 +121,21 @@ class SlurmJobBackend(JobBackend):
             cls._auto_detected_cache = detected
         return cls._auto_detected_cache
 
+    # What every SLURM site gets. Python started from a venv on a network HOME
+    # is an I/O problem on any cluster, not on one: the job runs the venv from
+    # node-local disk when that disk exists and has room, and from where it is
+    # otherwise (Section 7 of submit_delfin.sh). A variable the user exported
+    # themselves is left as they set it.
+    # The runtime wheel cache is off, and no site profile turns it on. It only
+    # saves start-up time, by building a wheel on the compute node -- and that
+    # build depends on what the site's venv happens to contain. On a venv made
+    # with "python -m venv" it failed and took the calculation with it. Whoever
+    # wants it exports DELFIN_RUNTIME_CACHE=1, which is left as they set it.
+    _GENERIC_ENV: dict[str, str] = {
+        'DELFIN_STAGE_VENV': '1',
+        'DELFIN_RUNTIME_CACHE': '0',
+    }
+
     # Site-specific environment variables injected into every sbatch call
     # based on the SLURM profile name from settings.
     _PROFILE_ENV: dict[str, dict[str, str]] = {
@@ -49,30 +143,48 @@ class SlurmJobBackend(JobBackend):
             'DELFIN_MODULES': 'devel/python/3.11.7-gnu-14.2',
             'DELFIN_STAGE_ORCA': '1',
             'DELFIN_STAGE_VENV': '1',
-            'DELFIN_RUNTIME_CACHE': '1',
             'DELFIN_NODE_CORES': '96',
             'DELFIN_NODE_MEM_MB': str(384 * 1024),
             'DELFIN_HIGHMEM_MB': str(2304 * 1024),
         },
     }
 
+    # SLURM holds a job (state PENDING, reason "…requeued held") when the
+    # controller's user-environment retrieval fails: it runs a login shell as
+    # the user, bounded by GetEnvTimeout (default 2 s), and a slow ~/.bashrc on
+    # a busy login node pushes it over. The hold is transient — releasing the
+    # job re-attempts retrieval, which almost always succeeds. DELFIN releases
+    # such holds automatically so submits are not silently stuck.
+    _ENV_HOLD_MARKERS = (
+        'user_env_retrieval_failed',
+        'launch_failed_requeued_held',
+    )
+
+    # Partitions a site's CPU jobs may start in; see delfin.slurm_submit.
+    _PROFILE_PARTITIONS: dict[str, tuple[str, ...]] = PROFILE_PARTITIONS
+
     @staticmethod
     def _detect_profile() -> str:
         """Auto-detect the site profile from hostname / FQDN."""
-        try:
-            fqdn = socket.getfqdn().lower()
-        except Exception:
-            fqdn = ""
-        hostname = os.environ.get("HOSTNAME", "").lower() or fqdn.split(".")[0]
-        if "scc.kit.edu" in fqdn or hostname.startswith("uc3"):
-            return "bwunicluster3"
-        return ""
+        return detect_site_profile()
 
     def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None,
-                 slurm_profile=None):
+                 slurm_profile=None, partitions=None, gpu_partitions=None):
         self.submit_templates_dir = Path(submit_templates_dir)
         explicit_profile = str(slurm_profile or '').strip()
         self.slurm_profile = explicit_profile or self._detect_profile()
+        # Settings first, then the environment, then the site profile. Empty
+        # everywhere means the template's own #SBATCH --partition decides.
+        self.partitions = (
+            self._partition_list(partitions)
+            or self._partition_list(os.environ.get('DELFIN_SLURM_PARTITIONS', ''))
+            or self._PROFILE_PARTITIONS.get(self.slurm_profile, ())
+        )
+        self._partition_verdicts: dict[tuple, bool] = {}
+        # GPU candidates are worked out when a GPU job is first submitted:
+        # finding them may ask scontrol, which a CPU-only session never needs.
+        self._gpu_partitions_setting = gpu_partitions
+        self._gpu_candidates: Optional[tuple] = None
         self.orca_base = orca_base
         explicit = {
             canonical_tool_name(name): str(value).strip()
@@ -86,40 +198,65 @@ class SlurmJobBackend(JobBackend):
             for tool_name, path in self._auto_detected_tools().items():
                 explicit[tool_name] = path
         self.tool_binaries = explicit
+        self._jobs_cache: Optional[List[JobInfo]] = None
+        self._jobs_cache_at: Optional[float] = None
+        #: key -> (monotonic time of the last attempt, last good answer)
+        self._throttle_cache: dict = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
     def _resolve_resources(self, job_dir, inp_file=None, pal=40, maxcore=6000):
-        """Determine PAL and memory from CONTROL / .inp / defaults."""
+        """PAL and memory for a job, from the file that job actually reads.
+
+        An ORCA job reads the .inp it is submitted with, so its %pal and
+        %maxcore come first. A CONTROL.txt beside it belongs to the DELFIN
+        run the folder came from: taken first, a recalc whose input was edited
+        down to 12 processes still reserved CONTROL's 40 cores and 240 GB and
+        waited for them -- and one edited up ran more processes than it had
+        cores. A DELFIN job (no inp_file) reads CONTROL.txt, so there it comes
+        first. Whatever is still missing falls back to the other source, then
+        to the caller's values.
+        """
         pal_used = None
         maxcore_used = None
+        job_path = Path(job_dir)
 
-        # 1) Try CONTROL.txt
-        try:
-            control_path = Path(job_dir) / 'CONTROL.txt'
-            if control_path.exists():
-                pal_used, maxcore_used = parse_resource_settings(control_path.read_text())
-        except Exception:
-            pal_used, maxcore_used = None, None
+        def fill(pal_found, maxcore_found):
+            nonlocal pal_used, maxcore_used
+            if pal_used is None:
+                pal_used = pal_found
+            if maxcore_used is None:
+                maxcore_used = maxcore_found
 
-        # 2) Fallback to .inp file
+        def from_submitted_inp():
+            try:
+                candidate = job_path / inp_file if inp_file else None
+                if candidate is not None and candidate.exists():
+                    fill(*parse_inp_resources(candidate.read_text()))
+            except Exception:
+                pass
+
+        def from_control():
+            try:
+                control_path = job_path / 'CONTROL.txt'
+                if control_path.exists():
+                    fill(*parse_resource_settings(control_path.read_text()))
+            except Exception:
+                pass
+
+        if inp_file:
+            from_submitted_inp()
+            from_control()
+        else:
+            from_control()
+
+        # Still missing: the first .inp of the folder.
         if pal_used is None or maxcore_used is None:
             try:
-                inp_candidate = None
-                if inp_file:
-                    cand = Path(job_dir) / inp_file
-                    if cand.exists():
-                        inp_candidate = cand
-                if inp_candidate is None:
-                    inp_files = sorted(Path(job_dir).glob('*.inp'))
-                    inp_candidate = inp_files[0] if inp_files else None
-                if inp_candidate is not None and inp_candidate.exists():
-                    pal_inp, maxcore_inp = parse_inp_resources(inp_candidate.read_text())
-                    if pal_used is None:
-                        pal_used = pal_inp
-                    if maxcore_used is None:
-                        maxcore_used = maxcore_inp
+                inp_files = sorted(job_path.glob('*.inp'))
+                if inp_files:
+                    fill(*parse_inp_resources(inp_files[0].read_text()))
             except Exception:
                 pass
 
@@ -182,21 +319,95 @@ class SlurmJobBackend(JobBackend):
 
     @staticmethod
     def _time_limit_seconds(time_limit: str) -> int:
-        """Convert HH:MM:SS or MM:SS or bare minutes to total seconds."""
-        parts = str(time_limit).split(':')
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-        elif len(parts) == 2:
-            return int(parts[0]) * 60 + int(parts[1])
-        return int(parts[0]) * 60  # SLURM treats bare number as minutes
+        """SLURM's time formats in seconds; see delfin.slurm_submit."""
+        return time_limit_seconds(time_limit)
 
     def _append_profile_env(self, env_vars: str) -> str:
-        """Inject site-specific env vars based on the SLURM profile."""
-        profile_env = self._PROFILE_ENV.get(self.slurm_profile, {})
-        if not profile_env:
+        """Inject the generic job env, and the site profile's on top of it."""
+        merged = {
+            key: value for key, value in self._GENERIC_ENV.items()
+            if key not in os.environ
+        }
+        merged.update(self._PROFILE_ENV.get(self.slurm_profile, {}))
+        if not merged:
             return env_vars
-        exports = [f'{key}={value}' for key, value in profile_env.items()]
+        exports = [f'{key}={value}' for key, value in merged.items()]
         return f'{env_vars},{",".join(exports)}'
+
+    @staticmethod
+    def _runtime_location_env() -> dict[str, str]:
+        """Where this DELFIN runs from, so the job runs the same one.
+
+        The job used to find it by walking up from the submit directory to a
+        ``software/delfin`` -- one layout. A pip install, a conda environment
+        or a checkout anywhere else was never found, and the job took whatever
+        ``python`` its PATH offered.
+        """
+        env: dict[str, str] = {}
+        prefix = Path(sys.prefix)
+        if sys.prefix != getattr(sys, 'base_prefix', sys.prefix) or (prefix / 'conda-meta').is_dir():
+            env['DELFIN_VENV'] = str(prefix)
+        repo = Path(__file__).resolve().parents[2]
+        if (repo / 'pyproject.toml').is_file() and (repo / '.git').exists():
+            env['DELFIN_REPO'] = str(repo)
+        mpirun = shutil.which('mpirun')
+        if mpirun:
+            ompi_home = Path(mpirun).resolve().parent.parent
+            # Only an OpenMPI that stands on its own: the job copies this
+            # directory to node-local disk, and /usr is not something to copy.
+            if (ompi_home / 'bin' / 'ompi_info').is_file() and str(ompi_home) not in ('/', '/usr', '/usr/local'):
+                env['DELFIN_OMPI_HOME'] = str(ompi_home)
+        return {key: value for key, value in env.items() if key not in os.environ}
+
+    def _append_runtime_location_env(self, env_vars: str) -> str:
+        location = self._runtime_location_env()
+        if not location:
+            return env_vars
+        exports = [f'{key}={value}' for key, value in location.items()]
+        return f'{env_vars},{",".join(exports)}'
+
+    @staticmethod
+    def _partition_list(value) -> tuple:
+        return partition_list(value)
+
+    def _partitions_for(self, job_dir, submit_script, time_limit, pal, mem_mb,
+                        submit_env) -> str:
+        """The candidate partitions this request fits, as one --partition value.
+
+        A partition whose nodes cannot hold the request -- cpu_il has 64 cores
+        and 256 GB per node -- makes SLURM reject the whole job when it is
+        listed, so each candidate is asked first with ``sbatch --test-only``,
+        which submits nothing. One question per partition per request shape
+        for the life of the dashboard. '' keeps the template's own partition.
+        """
+        candidates = self.partitions
+        if not candidates:
+            return ''
+        if len(candidates) == 1:
+            return candidates[0]
+        fitting = []
+        for name in candidates:
+            key = (name, str(time_limit), int(pal), int(mem_mb), str(submit_script))
+            verdict = self._partition_verdicts.get(key)
+            if verdict is None:
+                verdict = self._partition_accepts(
+                    name, job_dir, submit_script, time_limit, pal, mem_mb, submit_env)
+                if verdict is not None:
+                    self._partition_verdicts[key] = verdict
+            if verdict:
+                fitting.append(name)
+        return ','.join(fitting)
+
+    @staticmethod
+    def _partition_accepts(name, job_dir, submit_script, time_limit, pal, mem_mb,
+                           submit_env) -> Optional[bool]:
+        """True or False as SLURM answered, None when it could not be asked."""
+        return partition_accepts(
+            name, job_dir, submit_script,
+            resource_args=(f'--time={time_limit}', '--ntasks=1',
+                           f'--cpus-per-task={pal}', f'--mem={mem_mb}M'),
+            submit_env=submit_env,
+        )
 
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
                 job_name, submit_script, *, gpu=None, partition=None,
@@ -215,13 +426,34 @@ class SlurmJobBackend(JobBackend):
             SLURM job-array spec, e.g. ``"0-9"`` or ``"0-9%4"`` (max 4
             concurrent). Passed as ``--array=<array>`` when set.
         """
+        try:
+            time_limit = normalize_time_limit(time_limit)
+        except ValueError as problem:
+            # Said to the user the way sbatch's own refusals are: callers show
+            # stderr when the return code is not 0.
+            return subprocess.CompletedProcess(
+                args=['sbatch'], returncode=1, stdout='',
+                stderr=(f'Invalid time limit {str(time_limit)!r}: {problem}. Use HH:MM:SS, '
+                        'D-HH:MM:SS, or a duration such as 48h, 2d or 90min.'),
+            )
         env_vars = self._append_profile_env(env_vars)
+        env_vars = self._append_runtime_location_env(env_vars)
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
-        total_secs = self._time_limit_seconds(time_limit)
+        total_secs = (self._time_limit_seconds(time_limit)
+                      if time_limit[:1].isdigit() else 3 * 86400)
         usr1_offset = max(30, min(300, total_secs // 2))
+        # Pass DELFIN_* variables via the sbatch process environment, NOT via
+        # `--export=ALL,VAR=…`. Passing explicit variables with --export makes
+        # slurmd fetch the user's login environment on the compute node at
+        # launch (bounded by GetEnvTimeout, default 2 s) — on bwUniCluster3
+        # that times out intermittently and the job is requeued/held with
+        # "user env retrieval failed". A plain `--export=ALL` propagates the
+        # full submission environment (including these variables) without
+        # triggering that retrieval. Verified by an A/B test pinned to the
+        # same compute node: plain/ALL-only completed, ALL,VARS failed.
         cmd = [
             'sbatch',
-            f'--export=ALL,{env_vars}',
+            '--export=ALL',
             f'--time={time_limit}',
             f'--signal=B:USR1@{usr1_offset}',
             '--ntasks=1',
@@ -229,19 +461,145 @@ class SlurmJobBackend(JobBackend):
             f'--mem={mem_mb}M',
             f'--job-name={job_name}',
         ]
+        submit_env = {**os.environ, **self._env_vars_to_dict(env_vars)}
+        # Inherited SBATCH_* input variables act like sbatch CLI options.
+        # SBATCH_GET_USER_ENV has NO command-line negation, so if a user's
+        # shell exports it, env retrieval would come back despite
+        # --export=ALL. SBATCH_EXPORT could likewise fight our flag.
+        submit_env.pop('SBATCH_GET_USER_ENV', None)
+        submit_env.pop('SBATCH_EXPORT', None)
         if gpu:
             cmd.append(f'--gres={gpu}')
+        if not partition and not gpu:
+            partition = self._partitions_for(
+                job_dir, submit_script, time_limit, pal, mem_mb, submit_env)
         if partition:
             cmd.append(f'--partition={partition}')
         if array:
             cmd.append(f'--array={array}')
         cmd.append(str(submit_script))
-        return subprocess.run(
+        result = subprocess.run(
             cmd,
             cwd=str(job_dir),
             capture_output=True,
             text=True,
+            env=submit_env,
         )
+        if result.returncode == 0:
+            # Best-effort recovery for the transient env-retrieval hold.
+            # Silent side effect: never raises, never mutates result.stdout
+            # (downstream extracts the job id from its last token).
+            self._release_env_hold(result.stdout)
+            # The queue just changed by our own doing -- show it at once
+            # instead of making the user wait out the squeue rate limit.
+            self._invalidate_jobs_cache()
+        return result
+
+    @staticmethod
+    def _env_vars_to_dict(env_vars: str) -> dict[str, str]:
+        """Parse the ``KEY=val,KEY2=val2`` export string into a dict.
+
+        Same comma/equals grammar sbatch used for ``--export=ALL,<str>``, so
+        the constraint (no commas inside values) is unchanged.
+        """
+        parsed: dict[str, str] = {}
+        for chunk in (env_vars or '').split(','):
+            chunk = chunk.strip()
+            if not chunk or '=' not in chunk:
+                continue
+            key, value = chunk.split('=', 1)
+            key = key.strip()
+            if key:
+                parsed[key] = value
+        return parsed
+
+    @staticmethod
+    def _job_id_from_submit(stdout: str) -> str | None:
+        """Extract the numeric job id from ``Submitted batch job N``."""
+        match = re.search(r'Submitted batch job (\d+)', stdout or '')
+        return match.group(1) if match else None
+
+    @classmethod
+    def _is_env_hold(cls, text: str) -> bool:
+        """True if ``text`` (an scontrol Reason token or a squeue reason
+        field) describes the transient user-env-retrieval hold. ``scontrol``
+        writes it with underscores, ``squeue`` with spaces — normalise both."""
+        normalized = (text or '').lower().replace('_', ' ')
+        return any(marker.replace('_', ' ') in normalized
+                   for marker in cls._ENV_HOLD_MARKERS)
+
+    @staticmethod
+    def _release_job_quietly(job_id: str) -> None:
+        """Best-effort ``scontrol release`` — never raises. Idempotent: a
+        release on an already-pending job is a harmless no-op."""
+        try:
+            subprocess.run(
+                ['scontrol', 'release', str(job_id)],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            pass
+
+    def _scontrol_job_state(self, job_id: str) -> str | None:
+        """Return ``scontrol show job`` output (lowercased) or None if the job
+        cannot be queried (finished, gone, or scontrol unavailable)."""
+        try:
+            result = subprocess.run(
+                ['scontrol', 'show', 'job', str(job_id), '-o'],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        text = (result.stdout or '').lower()
+        return text if 'jobstate=' in text else None
+
+    def _release_env_hold(self, stdout: str, *, attempts: int = 6,
+                          delay: float = 0.5, max_releases: int = 2) -> None:
+        """Release a job SLURM held because user-env retrieval failed.
+
+        Polls briefly after submit for the hold to appear, then runs
+        ``scontrol release``. Best-effort: never raises, never touches the
+        SubmitResult so job-id parsing downstream stays intact.
+        """
+        job_id = self._job_id_from_submit(stdout)
+        if not job_id:
+            return
+        releases = 0
+        try:
+            for _ in range(max(1, attempts)):
+                info = self._scontrol_job_state(job_id)
+                if info is None:
+                    return  # not queryable -> nothing to recover
+                reason_match = re.search(r'reason=(\S+)', info)
+                reason = reason_match.group(1) if reason_match else ''
+                if self._is_env_hold(reason):
+                    subprocess.run(
+                        ['scontrol', 'release', str(job_id)],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    releases += 1
+                    print(
+                        f'[DELFIN] Auto-released SLURM env-retrieval hold on '
+                        f'job {job_id} (attempt {releases}).',
+                        file=sys.stderr, flush=True,
+                    )
+                    if releases >= max_releases:
+                        return
+                    time.sleep(delay)
+                    continue
+                # A concrete non-hold scheduler reason (Priority, Resources, …)
+                # or a running/completing state means the controller accepted
+                # the job past env retrieval — nothing to do.
+                if reason and reason not in ('none', 'null', '(null)'):
+                    return
+                if ('jobstate=running' in info or 'jobstate=completing' in info
+                        or 'jobstate=completed' in info):
+                    return
+                time.sleep(delay)  # reason not set yet; re-check shortly
+        except Exception:
+            return
 
     # ------------------------------------------------------------------
     # Public interface
@@ -417,71 +775,233 @@ class SlurmJobBackend(JobBackend):
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
-    @staticmethod
-    def _detect_gpu_partition() -> str:
-        """Auto-detect the first available GPU partition on this cluster."""
-        try:
-            result = subprocess.run(
-                ['sinfo', '-h', '-o', '%P', '--partition=gpu,gpu_4,gpu_8,gpu_a100'],
-                capture_output=True, text=True, timeout=5,
+    def _gpu_partition_candidates(self) -> tuple:
+        """Settings, then DELFIN_SLURM_GPU_PARTITIONS, then the site profile,
+        then every GPU partition scontrol reports.
+
+        This used to ask sinfo for partitions named gpu, gpu_4, gpu_8 and
+        gpu_a100. bwUniCluster 3.0 refuses sinfo and has none of those names,
+        so no GPU was ever found and every GPU job ran on CPUs.
+        """
+        if self._gpu_candidates is None:
+            self._gpu_candidates = (
+                self._partition_list(self._gpu_partitions_setting)
+                or self._partition_list(os.environ.get('DELFIN_SLURM_GPU_PARTITIONS', ''))
+                or PROFILE_GPU_PARTITIONS.get(self.slurm_profile, ())
+                or discover_gpu_partitions()
             )
-            if result.returncode == 0 and result.stdout.strip():
-                # sinfo returns partition names, possibly with '*' for default
-                return result.stdout.strip().split('\n')[0].rstrip('*')
-        except Exception:
-            pass
-        # Fallback: try generic 'gpu'
-        try:
-            result = subprocess.run(
-                ['sinfo', '-h', '-o', '%P'],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
-                    name = line.strip().rstrip('*')
-                    if 'gpu' in name.lower():
-                        return name
-        except Exception:
-            pass
-        return ''
+        return self._gpu_candidates
+
+    def _gpu_partitions_for(self, job_dir, submit_script, time_limit, pal, mem_mb,
+                            gres='gpu:1') -> str:
+        """The GPU partitions that can run this request, as one --partition value.
+
+        Each candidate is asked with sbatch --test-only and the job's own GPU,
+        time, cores and memory, so a 30-minute partition is left out of a
+        24-hour job without knowing its name. '' when none can: the job then
+        runs on CPUs.
+        """
+        candidates = self._gpu_partition_candidates()
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else ''
+        fitting = []
+        for name in candidates:
+            key = ('gpu', gres, name, str(time_limit), int(pal), int(mem_mb), str(submit_script))
+            verdict = self._partition_verdicts.get(key)
+            if verdict is None:
+                verdict = partition_accepts(
+                    name, job_dir, submit_script,
+                    resource_args=(f'--gres={gres}', f'--time={time_limit}', '--ntasks=1',
+                                   f'--cpus-per-task={pal}', f'--mem={mem_mb}M'),
+                )
+                if verdict is not None:
+                    self._partition_verdicts[key] = verdict
+            if verdict:
+                fitting.append(name)
+        return ','.join(fitting)
 
     def submit_mlp(self, job_dir, job_name, xyz_file, backend='ani2x',
                    time_limit='24:00:00', pal=4, maxcore=4000,
-                   charge=0, mult=1) -> SubmitResult:
-        """Submit an MLP job — automatically requests GPU if available."""
+                   charge=0, mult=1, task='optimize') -> SubmitResult:
+        """Submit an MLP job — automatically requests GPU if available.
+
+        ``task`` is ``optimize`` or ``single_point``; the job runs DELFIN's
+        mlp_optimize or mlp_single_point step on the GPU it was given, or on
+        its CPUs when it was given none.
+        """
+        task_name = str(task or 'optimize').strip().lower().replace('-', '_')
+        if task_name not in ('optimize', 'single_point'):
+            return SubmitResult(1, '', f"Unknown MLP task {task!r}: use 'optimize' or 'single_point'.")
         pal_used = max(1, int(pal))
         maxcore_used = max(1, int(maxcore))
         mem_used = pal_used * maxcore_used
         env_vars = (
             f'DELFIN_MODE=mlp,DELFIN_JOB_NAME={job_name},'
             f'DELFIN_XYZ_FILE={xyz_file},'
-            f'DELFIN_MLP_BACKEND={backend},'
+            f'DELFIN_MLP_BACKEND={backend},DELFIN_MLP_TASK={task_name},'
             f'DELFIN_CHARGE={charge},DELFIN_MULT={mult},'
             f'DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
         )
-        # Auto-detect GPU partition — if found, request 1 GPU
-        gpu_partition = self._detect_gpu_partition()
+        # One GPU in whichever GPU partition can run the job first; none that
+        # can, and it runs on CPUs in the CPU partitions.
+        submit_script = self.submit_templates_dir / 'submit_delfin.sh'
+        try:
+            asked_time = normalize_time_limit(time_limit)
+        except ValueError:
+            asked_time = ''  # _sbatch refuses it with the reason
+        gpu_partitions = (self._gpu_partitions_for(job_dir, submit_script, asked_time,
+                                                   pal_used, mem_used)
+                          if asked_time else '')
         env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
-            job_name, self.submit_templates_dir / 'submit_delfin.sh',
-            gpu='gpu:1' if gpu_partition else None,
-            partition=gpu_partition or None,
+            job_name, submit_script,
+            gpu='gpu:1' if gpu_partitions else None,
+            partition=gpu_partitions or None,
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
-    def list_jobs(self) -> List[JobInfo]:
+    def _jobs_cache_seconds(self) -> float:
+        raw = os.environ.get('DELFIN_SQUEUE_MIN_INTERVAL', '').strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                pass
+        return self._JOBS_CACHE_SECONDS
+
+    def _invalidate_jobs_cache(self) -> None:
+        """Force the next list_jobs() to ask SLURM again."""
+        self._jobs_cache = None
+        self._jobs_cache_at = None
+
+    def list_jobs(self, force: bool = False) -> List[JobInfo]:
+        """Active jobs of this user, at most one squeue per cache interval.
+
+        Pass ``force=True`` for an explicit user-triggered refresh; periodic
+        widgets must not, or the rate limit has no effect.
+        """
+        # The gate is the time of the last *attempt*, not of the last success:
+        # a failing squeue must be rate-limited too, otherwise a busy
+        # controller gets hit at full tick rate exactly when it can least
+        # afford it.
+        if not force and self._jobs_cache_at is not None:
+            age = time.monotonic() - self._jobs_cache_at
+            if 0.0 <= age < self._jobs_cache_seconds():
+                return list(self._jobs_cache or [])
+
+        jobs = self._query_jobs()
+        self._jobs_cache_at = time.monotonic()
+        if jobs is None:
+            # Hold the last good answer rather than flashing an empty queue
+            # at the user over one hiccup.
+            return list(self._jobs_cache or [])
+        self._jobs_cache = jobs
+        return list(jobs)
+
+    def _throttled(self, key: str, seconds: float, query):
+        """query()'s answer, asked at most once per ``seconds``.
+
+        As in list_jobs(), the gate is the last attempt, and a failed query
+        (None) keeps the last good answer.
+        """
+        entry = self._throttle_cache.get(key)
+        if entry is not None and 0.0 <= time.monotonic() - entry[0] < seconds:
+            return entry[1]
+        value = query()
+        if value is None and entry is not None:
+            value = entry[1]
+        self._throttle_cache[key] = (time.monotonic(), value)
+        return value
+
+    def account_standing(self) -> Optional[dict]:
+        """This user's fairshare and account limits; None when SLURM tells neither.
+
+        ``fairshare`` (0 to 1, higher starts sooner), ``level_fs``,
+        ``norm_shares`` and ``effective_usage`` come from sshare; ``account``,
+        ``cpu_limit``, ``max_jobs`` and ``max_submit`` from the association of
+        the default account. Throttled, so every refresh may ask.
+        """
+        limits = self._throttled('limits', self._LIMITS_CACHE_SECONDS, self._query_account_limits)
+        account = (limits or {}).get('account')
+        share = self._throttled('fairshare', self._FAIRSHARE_CACHE_SECONDS,
+                                lambda: self._query_fairshare(account))
+        if not limits and not share:
+            return None
+        return {**(share or {}), **(limits or {})}
+
+    @staticmethod
+    def _query_rows(cmd) -> Optional[List[List[str]]]:
+        """Rows of a parsable (-P -n) SLURM query; None when it failed."""
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return [[field.strip() for field in line.split('|')]
+                for line in result.stdout.splitlines() if line.strip()]
+
+    def _query_fairshare(self, account=None) -> Optional[dict]:
+        """sshare's row for ``account`` (the first row when none matches)."""
+        rows = self._query_rows(['sshare', '-U', '-P', '-n', '-o',
+                                 'Account,User,NormShares,EffectvUsage,FairShare,LevelFS'])
+        parsed = []
+        for row in rows or []:
+            if len(row) < 6:
+                continue
+            try:
+                norm_shares, usage, fairshare = (float(value) for value in row[2:5])
+            except ValueError:
+                continue
+            try:
+                level_fs = float(row[5])
+            except ValueError:
+                level_fs = None
+            parsed.append({'account': row[0], 'norm_shares': norm_shares, 'effective_usage': usage,
+                           'fairshare': fairshare, 'level_fs': level_fs})
+        if not parsed:
+            return None
+        return next((entry for entry in parsed if entry['account'] == account), parsed[0])
+
+    def _query_account_limits(self) -> Optional[dict]:
+        """The default account and its association's CPU and job limits."""
+        rows = self._query_rows(['sacctmgr', '-P', '-n', 'show', 'user', os.environ.get('USER', ''),
+                                 'withassoc', 'format=DefaultAccount,Account,Partition,GrpTRES,MaxJobs,MaxSubmit'])
+        rows = [row for row in rows or [] if len(row) >= 6]
+        if not rows:
+            return None
+        default = rows[0][0]
+        mine = [row for row in rows if row[1] == default] or rows
+        # A partition-wide association over one limited to a partition.
+        row = next((candidate for candidate in mine if not candidate[2]), mine[0])
+        tres = dict(part.split('=', 1) for part in row[3].split(',') if '=' in part)
+
+        def number(text):
+            return int(text) if str(text).isdigit() else None
+
+        return {'account': row[1], 'cpu_limit': number(tres.get('cpu', '')),
+                'max_jobs': number(row[4]), 'max_submit': number(row[5])}
+
+    #: Everything the job table shows, from one squeue. Why a job waits and
+    #: SLURM's estimate of its start (%r, %S) needed a second, unthrottled
+    #: ``squeue --start`` on every refresh before. '|' separates the fields:
+    #: a node list or a reason can contain spaces.
+    _SQUEUE_FORMAT = '%i|%P|%j|%u|%t|%M|%D|%l|%C|%m|%S|%r|%R'
+
+    def _query_jobs(self) -> Optional[List[JobInfo]]:
+        """Ask SLURM. Returns None when the query failed, [] when idle."""
         try:
             result = subprocess.run(
                 ['squeue', '-u', os.environ.get('USER', ''),
-                 '-o', '%.12i %.12P %.35j %.10u %.3t %.12M %.6D %R'],
+                 '-o', self._SQUEUE_FORMAT],
                 capture_output=True, text=True, timeout=10,
             )
         except Exception:
-            return []
+            return None
 
         if result.returncode != 0:
-            return []
+            return None
 
         lines = result.stdout.strip().split('\n')
         if len(lines) < 2:
@@ -491,32 +1011,62 @@ class SlurmJobBackend(JobBackend):
         for line in lines[1:]:
             if not line.strip():
                 continue
-            parts = line.split()
-            if not parts:
+            fields = self._parse_squeue_line(line)
+            if fields is None:
                 continue
-            job_id = parts[0].strip()
-            partition = parts[1].strip() if len(parts) > 1 else ''
-            name = parts[2].strip() if len(parts) > 2 else 'unknown'
-            user = parts[3].strip() if len(parts) > 3 else ''
-            status = parts[4].strip() if len(parts) > 4 else ''
-            time_used = parts[5].strip() if len(parts) > 5 else ''
-            nodes = parts[6].strip() if len(parts) > 6 else ''
-            reason = parts[7].strip() if len(parts) > 7 else ''
+            if self._is_env_hold(line):
+                # Dispatch-time env-retrieval holds recur after submit; clear
+                # them on every refresh so DELFIN jobs don't stay stuck.
+                self._release_job_quietly(fields['job_id'])
 
             jobs.append(JobInfo(
-                job_id=job_id,
-                name=name,
-                status=status,
+                job_id=fields['job_id'],
+                name=fields['name'],
+                status=fields['status'],
+                start_time=fields['start'],
+                time_limit=fields['time_limit'],
                 extra={
-                    'partition': partition,
-                    'user': user,
-                    'time_used': time_used,
-                    'nodes': nodes,
-                    'reason': reason,
+                    'partition': fields['partition'],
+                    'user': fields['user'],
+                    'time_used': fields['time_used'],
+                    'nodes': fields['nodes'],
+                    'reason': fields['reason'],
+                    'reason_code': fields['reason_code'],
+                    'time_limit': fields['time_limit'],
+                    'cpus': fields['cpus'],
+                    'memory': fields['memory'],
+                    'start_estimate': fields['start'],
                     'raw_line': line,
                 },
             ))
         return jobs
+
+    @staticmethod
+    def _parse_squeue_line(line: str) -> Optional[dict]:
+        """One squeue line, in the '|' format or the plain one of older output."""
+        if line.count('|') >= 12:
+            parts = line.split('|')
+            job_id, partition = (s.strip() for s in parts[:2])
+            name = '|'.join(parts[2:-10]).strip()
+            (user, status, time_used, nodes, time_limit, cpus, memory, start,
+             reason_code, reason) = (s.strip() for s in parts[-10:])
+        else:
+            parts = line.split(None, 7)
+            if not parts:
+                return None
+            parts += [''] * (8 - len(parts))
+            job_id, partition, name, user, status, time_used, nodes, reason = (
+                s.strip() for s in parts)
+            time_limit = cpus = memory = start = ''
+            reason_code = reason[1:-1] if reason.startswith('(') and reason.endswith(')') else ''
+        if start in ('N/A', 'Unknown', 'None'):
+            start = ''
+        return {
+            'job_id': job_id, 'partition': partition, 'name': name or 'unknown',
+            'user': user, 'status': status, 'time_used': time_used, 'nodes': nodes,
+            'time_limit': time_limit, 'cpus': cpus, 'memory': memory, 'start': start,
+            'reason_code': reason_code, 'reason': reason,
+        }
 
     def cancel_job(self, job_id) -> Tuple[bool, str]:
         try:
@@ -525,6 +1075,7 @@ class SlurmJobBackend(JobBackend):
                 capture_output=True, text=True,
             )
             if result.returncode == 0:
+                self._invalidate_jobs_cache()
                 return True, f'Job {job_id} cancelled successfully.'
             else:
                 return False, f'Error cancelling job {job_id}: {result.stderr or result.stdout}'
@@ -532,33 +1083,25 @@ class SlurmJobBackend(JobBackend):
             return False, f'Error cancelling job {job_id}: {e}'
 
     def get_pending_start_times(self):
-        try:
-            result = subprocess.run(
-                ['squeue', '-u', os.environ.get('USER', ''), '--start',
-                 '-o', '%.12i %.35j %.20S'],
-                capture_output=True, text=True, timeout=10,
-            )
-        except Exception:
-            return []
+        """Pending jobs with SLURM's start estimate and why they wait.
 
-        if result.returncode != 0:
-            return []
-
-        lines = result.stdout.strip().split('\n')
-        if len(lines) <= 1:
-            return []
-
+        Read from the job listing, which carries both, so asking costs no
+        squeue of its own.
+        """
         pending = []
-        for line in lines[1:]:
-            if not line.strip() or 'N/A' in line:
+        for job in self.list_jobs():
+            if (job.status or '').upper() not in ('PD', 'PENDING'):
                 continue
-            parts = line.split(None, 2)
-            if len(parts) >= 3:
-                pending.append({
-                    'id': parts[0].strip(),
-                    'name': parts[1].strip(),
-                    'start': parts[2].strip(),
-                })
+            extra = job.extra or {}
+            reason = extra.get('reason_code') or extra.get('reason', '')
+            pending.append({
+                'id': str(job.job_id),
+                'name': job.name,
+                'start': extra.get('start_estimate', ''),
+                'reason': reason,
+                'explanation': describe_pending_reason(reason),
+                'partition': extra.get('partition', ''),
+            })
         return pending
 
     @property

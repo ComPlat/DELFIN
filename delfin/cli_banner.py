@@ -20,21 +20,23 @@ synthetically accessible.
 To use DELFIN, install ORCA 6.1.1 and add it to your PATH. CREST 3.0.2 is optional.
 
 ORCA 6.1.1 is available free of charge for academic use under the ORCA License Agreement.
-It is developed and copyrighted by the Max Planck Society; all non-academic use
-requires a separate commercial license from the ORCA team. The full licensing terms
-and registration steps are provided via the official ORCA portal:
+It is developed at the Max Planck Institute for Coal Research (Max-Planck-Institut
+fuer Kohlenforschung) together with FACCTs GmbH; all non-academic use requires a
+separate commercial license. The full licensing terms and registration steps
+are provided via the official ORCA portal:
 https://orcaforum.kofo.mpg.de/app.php/dlext/?cat=3. Users are responsible for
 ensuring compliance with the ORCA license and applicable export regulations.
 
-xTB 6.7.1+ is distributed under the GNU Lesser General Public License (LGPL v3)
-by the Grimme group. Source code and binaries are available from
-https://github.com/grimme-lab/xtb. Please observe the LGPL requirements if you
-modify or redistribute xTB.
+xTB 6.7.1+ is distributed under the GNU Lesser General Public License, version 3
+or later (LGPL-3.0-or-later), by the Grimme group. Source code and binaries are
+available from https://github.com/grimme-lab/xtb. Please observe the LGPL
+requirements if you modify or redistribute xTB.
 
-CREST 3.0.2 is released under the GNU General Public License (GPL v3) and
-maintained by the Grimme group. See https://crest-lab.github.io/ for downloads
-and license details. DELFIN does not bundle CREST or xTB; users must obtain them
-separately and comply with their licenses.
+CREST 3.0.2 is released under the GNU Lesser General Public License, version 3
+or later (LGPL-3.0-or-later), and maintained by the Grimme group. See
+https://crest-lab.github.io/ for downloads and license details. DELFIN does not
+bundle CREST or xTB; users must obtain them separately and comply with their
+licenses.
 """.strip()
     print(f"\n{banner}\n\n{info}\n")
 

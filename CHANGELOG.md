@@ -7,6 +7,373 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — open ports are on screen and can be closed; a server never runs in the foreground
+
+- **The ports a background job really listens on** (read from /proc for the
+  job and its children, any server: http.server, vite, flask, node) show in
+  the dashboard's Background panel and the terminal's status line, with the
+  address to open; the row's × closes the job and its port.
+- **`/ports` in the terminal** lists the open ports with address and job;
+  `/ports close <port|job_id>` closes one.
+- **A server started with plain bash is refused at once**, before any
+  question, naming bash_background: `python -m http.server`, `npm run dev`,
+  `vite`, `flask run`, `uvicorn`, `jupyter lab` and the like, unless
+  backgrounded (`&`) or bounded (`timeout`). In session 7cc700dc the call
+  waited its full 120 s and was killed before the agent used bash_background.
+
+### Security — what runs unasked writes nothing, loads no script and reaches nothing
+
+- **sed asks when it edits in place or reads its script from a file**, in
+  every spelling GNU sed accepts: `-i`/`-f` alone or in a bundle, and every
+  prefix of `--in-place` and `--file` (`--i`, `--fi`). `sed --i …
+  .delfin/settings.json` and `sed -n -f x.sed` (a script file with an `e`
+  command) ran unasked. Printing sed stays free.
+- **An install of `.`, `..` or a path outside the workspace is no project
+  install**: `npm install ..` and `uv pip install ../other` are asked.
+- **The headless page check reaches nothing**: the browser runs outside the
+  cage, so it resolves no name, connects only through a proxy that does not
+  exist (the loopback included), sends no WebRTC UDP, works offline, and
+  loads only files under the page's own directory. A page that asks for
+  anything else is not judged by the browser (its static checks still run).
+  Before, a page reached a loopback listener by `<img>`, fetch, WebSocket
+  and STUN, and a word of a file outside the workspace came back in an
+  error message.
+
+### Changed — KIT runs on its best model, and a model KIT does not serve is explained
+
+- **GLM-5.3 Flash is the KIT default and first in the ranking** (KIT serves
+  `kit.glm-5.3-flash`; `kit.glm-5.3` returned "Model not found" on
+  2026-10-20), DeepSeek V4 Flash the fallback: the dashboard's KIT default (was `azure.gpt-5.1`), the strong
+  routing tier (was `azure.gpt-5.4`) and `KIT_BEST_MODEL`. DeepSeek is the
+  cheap default (was `azure.gpt-5-nano`) and stays the action watcher's model.
+- **A model KIT does not serve is explained and replaced**: a "Model not
+  found" from the endpoint moves the session once per turn to the best KIT
+  model it serves, by that ranking, with a notice naming both models, and
+  the round is sent again. Off KIT the error is explained and raised. When
+  the dashboard's default is missing from the live list it now picks the
+  best served model by the same ranking instead of the list's first entry.
+  `kit.glm-5.3` had answered "400 - Model not found" and nothing else.
+
+### Changed — the agent reaches its own server, and the watcher waits for a slow endpoint
+
+- **A caged command reaches the server its own session started**: the egress
+  proxy admits, for a session's token, the loopback ports that session's
+  running background jobs listen on (read from /proc for the job and its
+  children) and connects to the loopback itself. Other ports, other
+  sessions' servers and the process token are refused as before. The agent
+  could not `curl` its own game server ("port 8324 is not allowed") and asked
+  the user to test every change.
+- **The second opinion waits as long as the endpoint currently takes**:
+  without a `timeout_s` setting, 1.5 x the 75th percentile of the last 20
+  first-token times, between the 20 s default and 90 s. The KIT proxy
+  answered in 18.5 s median with 45 % past 20 s, so the watcher failed again
+  and again and each failure under Bypass became a question.
+
+### Added — a project builds and uses its own environment, in any language
+
+A browser game's agent (2026-10-19) could neither `npm install three` nor fetch
+it from a CDN (curl exit 56: unknown under Bypass), and rebuilt a 3D renderer
+by hand. A venv with pip worked; nothing else did.
+
+- **Installs into the project run where the cage holds**, like the stack test
+  runners (`caged_test_runners`): `npm install|i|ci|add`, `npm init -y`,
+  `yarn [install|add]`, `pnpm install|i|add` and `uv venv`, `uv pip
+  install|sync`, `uv add|sync|lock`, with package specs and listed flags
+  only. Without a cage they are asked; global installs, `--prefix`,
+  `--system`, `--target`, paths and URLs are never admitted, nor are `cargo
+  install` and `go install` (they write into the home directory). Under
+  Bypass they no longer count as leaving the workspace.
+  `.venv/bin/python -m pip install` is free like `.venv/bin/pip install`.
+- **The egress proxy knows the package indexes**: `registry.npmjs.org`,
+  `cdn.jsdelivr.net`, `unpkg.com`, crates.io, the Go module proxy -- for
+  reading; uploads stay held.
+- **Each package manager's cache lands in the cage's temp dir**
+  (`npm_config_cache`, `YARN_CACHE_FOLDER`, `npm_config_store_dir`,
+  `UV_CACHE_DIR`) under bubblewrap, Landlock and Seatbelt: npm failed before
+  fetching anything because `~/.npm` is not writable in the cage.
+- **npm's 407 is named with its cause**: npm before 10 never sends the proxy
+  credentials (measured: npm 9.2 opens its CONNECT with no
+  Proxy-Authorization; npm 10 sends it), so the agent tells the user to
+  update instead of retrying. Verified end to end in the Landlock cage: npm
+  10 installs into `node_modules`, a venv and pip install work.
+
+### Added — the harness checks, remembers and measures what the agent does, for any task
+
+Six changes from the same session (2026-10-19, `78c36f8c`), each general:
+
+- **Every edited file is checked by its kind** at the end of the turn
+  (`artifact_check.py`), not only `.py`: `node --check` for JavaScript; for
+  an HTML page its inline scripts (at their HTML line), its missing local
+  `src`/`href`, and with the new optional `browser` extra (Playwright) the
+  page loaded headless with its uncaught and console errors; JSON parsed;
+  `bash -n`. A broken file sends the model back to fix it. A two-hour
+  browser game had not one harness check, and the model asked the user to
+  test every edit.
+- **A weak agent driver is named for every provider** (`agent_fitness`):
+  no tools, a small window, the vendor's smallest tier (nano, lite, tiny,
+  micro) or a small parameter count. In the dashboard preflight, the
+  terminal's startup banner (by name, no network) and after `/model`. Only
+  `kit.*` names were checked, so `azure.gpt-5-nano` went unwarned.
+- **The user's yes holds for the session** for the identical action in a
+  second-opinion dialog. One server was asked about in three turns.
+- **A running job is handed back, not started twice**: the same command in
+  the same directory, or a file server on the same address. A started file
+  server names its URL. One session started eight.
+- **A file the model already has is not sent twice**: the same lines,
+  unchanged (size and nanosecond mtime), with the earlier result still in
+  the request byte for byte (`reread.py`). A 441-line page was read whole
+  again and again while requests grew past 400k input tokens.
+- **The benchmark measures acting on a clear order** (`behavior: act`): an
+  edit that landed and no question before it; two tasks on a one-file page.
+
+### Fixed — an agent's edit reaches the file, and a refused one is not reported as made
+
+One session (2026-10-19, gpt-5-nano building a browser game in one HTML
+file) spent fifty minutes without a single change landing while telling the
+user each change was made. Four causes, each fixed where it sat:
+
+- `apply_patch` accepts the `*** Begin Patch` envelope GPT-family models
+  send, under `patch` or `input` as well as `diff`. The envelope is
+  translated into a unified diff against the file before any gate runs, so
+  the write gate, approval preview and undo journal see the real change;
+  it cannot reach outside the workspace or into a secret. All six calls of
+  the session had been refused with "diff is required".
+- A static file server (`python -m http.server`, `npx serve`, `php -S`,
+  ...) no longer locks the files it serves against edits. It reads them per
+  request, so an edit is what running it is for.
+- An awk program's `>` counts as a write only before a string or a name
+  (`print > "f"`). `/<\/script>/{f=0}` and `$3 >= 5` were refused as
+  writes to `/{f=0}` and `=` outside the workspace.
+- "Ich habe ... entfernt" / "I've updated ..." in a turn where no file
+  change landed gets a `[verify]` caveat naming how many writes failed.
+
+The Background panel and the terminal status line name a running server's
+address (`⚙ http://127.0.0.1:8038/ 50m00s [8678a5da]`), as a link in the
+dashboard.
+
+The same session asked the user 22 times under `bypassPermissions` (the
+action watcher timed out, and every command off the auto-allow list counts
+as leaving the workspace); all 22 were approved. Now free, because they
+write nothing but stdout and reach nothing but the loopback: `sed` without
+`-i`/`-f` (a `w`/`e` in the script is still caught), `node --check` and
+`node --version` and `true`/`false`/`:`. Under Bypass, `curl` to
+`127.0.0.1`, `localhost` or `[::1]` with only non-writing options no longer
+counts as leaving the workspace; in default mode it is still asked, as is
+starting a listener (`python -m http.server`): on a shared machine the
+loopback reaches other users' services too. awk's program is no longer read
+as a path by the outside-read gate (grep and sed patterns already were not).
+
+### Changed — a go-ahead is acted on, and a choice is decided or asked as a choice
+
+In the same session 4 of 7 go-aheads ("Ja", "ja mach", "Patch a + B") were
+answered with the plan again and no tool that acts, and every choice (width
+10, 12 or 16) came as a numbered prose list although `ask_user_question`
+was bound. Both answers end in a question, where the announced-action
+trigger stands down. Two more triggers in the tool loop (`go_ahead.py`),
+once each per turn, never in plan mode or a delegate:
+
+- the user gave a go-ahead and the turn called nothing that acts: sent back
+  once to act now. An explicit order ("mach", "setz um", "warum machst du
+  nicht einfach") always counts; a bare "ja"/"ok" only as the answer to an
+  offer or question in the agent's previous answer, so "ok" after a
+  finished report stays an acknowledgement;
+- the answer ends asking the user to pick between options written as text:
+  sent back once to pick the sensible default and act, or to ask with
+  `ask_user_question` (named only when an ask dialog is bound).
+
+`solo_agent.md` and the `ask_user_question` description no longer tell the
+model to write choices as prose: a clear instruction is the go-ahead, a
+choice with a sensible default is made and named, and only a choice that is
+truly the user's is asked, with options and a recommendation. Head budget
+11555 -> 11605 tokens.
+
+### Changed — PyMOL is an optional extra, so DELFIN installs on glibc 2.34 (RHEL 9)
+
+`pymol-open-source` moves from the core dependencies to the new `pymol` extra
+(`pip install "delfin-complat[pymol]"`). PyPI carries it only as
+manylinux_2_35 wheels (3.2.0a0; 3.1.0a0 is cp311-only, there is no sdist), so
+on an HPC login node running RHEL 9 (glibc 2.34) with Python 3.12 the
+requirement had no candidate at all and `pip install -e . -c
+env/reference-environment.lock` ended in ResolutionImpossible; a conda-forge
+PyMOL did not satisfy pip either. PyMOL only renders the ESP, dipole-moment and
+orbital pictures of the reports; those are now skipped with a logged notice
+naming the extra, and nothing else changes. The reference lock keeps its
+`pymol-open-source==3.2.0a0` pin (a constraint applies only when the extra is
+requested) and the CI reference-environment job requests the extra so the pin
+stays exercised.
+
+## [1.3.3] - 2026-09-19
+
+### Added — Landing 4: hydrogen placement with three guards (AB:hplace6k4)
+
+`H_PLACEMENT`, `H_CONTACT_GATE`, `H_PARENT_REGAIN`, `H_EYE_GATE` and `H_SP3_ONLY`
+join `cli_manta._CHAMPION_FLAGS` (34 -> 39).  The three-stage hydrogen rotor
+(`delfin/manta/_h_placement.py`) now runs by default, fenced by a whole-frame
+inter-ligand contact census before and after, a topology gate that lets an H
+regain its own parent, the eye's own severity profile as an exit gate (a frame
+whose profile got worse falls back), and the rule that only tetrahedral or
+pyramidal centres are rotated — a coordinated centre keeps its lone pair and the
+only move there is the swap H <-> lone pair.  6000-pool A/B on the 34-flag
+champion: never-worse with the landing gate open — 449 systems affected, 5374
+byte-identical, 0 capabilities lost / 1 gained, every loss term 0, hard frames
+-3.0 points on the intersection; the nine blockers of the previous attempt heal.
+Every flag remains overridable through the environment.
+
+### Changed — The default CONTROL job fits the larger CPU partition
+
+The shipped CONTROL now uses `PAL=48` with `maxcore=4500`, requesting 216 GB
+instead of 288 GB. This fits a 256 GB `cpu_il` node, so the default dashboard
+job can start in either `cpu` or `cpu_il` rather than being confined to the
+smaller `cpu` partition. The ORCA Builder keeps its independent
+`PAL=12` / `MaxCore=6000` default (72 GB).
+
+### Added — Jobs start in whichever partition frees first, and say why they wait
+
+A CPU job is submitted to every partition of the site that can hold it; SLURM starts it in whichever can run it first. On bwUniCluster 3.0 that is `cpu` and `cpu_il` (264 Ice Lake nodes, 64 cores and 256 GB each): for 40 cores, 240 GB and 2 days `sbatch --test-only` expected a start twelve days earlier in `cpu_il` than in `cpu`. PAL, maxcore and the time limit are not touched. Whether a request fits a partition is asked of SLURM with `sbatch --test-only`, once per request shape, because listing a partition the request does not fit makes SLURM reject the whole job. Configurable with `runtime.slurm.partitions` or `DELFIN_SLURM_PARTITIONS`; a site without a profile keeps its template's partition.
+
+The Job Status tab shows for each waiting job why it waits, in words (`Priority`, `Resources`, QOS and account limits, held jobs, maintenance), and SLURM's estimated start with the time until then. Both come from the one throttled `squeue`; the separate `squeue --start` on every refresh is gone.
+
+### Changed — A Job Status tab that reads at a glance
+
+Summary cards (running, waiting, CPUs in use, next expected start) above a table of one line per job, however long its name or reason: status as a coloured label, name with job id, partitions as tags, CPUs and memory in GB, runtime with a progress bar that turns orange near the limit, and for a waiting job a short reason ("Priority", "Queue limit", "Held by you" in red when waiting will not help) with its explanation and the expected start. Text that does not fit ends in an ellipsis and is whole in the tooltip; on narrow panes partition, runtime and resources give way in that order. An empty queue says what will appear there.
+
+### Fixed — Submitting from the dashboard
+
+- An ORCA job is sized by the `.inp` it runs. A `CONTROL.txt` beside it used to decide PAL and maxcore, so a recalc edited down to 12 processes still reserved and waited for 40 cores and 240 GB, and one edited up ran more processes than it had cores.
+- Time fields accept what people type: `48h`, `2d`, `90min` become SLURM limits, and an empty or unreadable value is refused with a message instead of a traceback.
+
+### Fixed — An ML-potential job computes something, on the GPU it was given
+
+`submit_mlp` sent jobs with `DELFIN_MODE=mlp`, and the job runner had no such mode: every one ended in "Unknown mode: mlp". The runner now runs DELFIN's `mlp_optimize` or `mlp_single_point` step (`task=` on `submit_mlp`, `DELFIN_MLP_TASK` in the job) on the job's GPU when PyTorch can use one and on its CPUs otherwise, writes `mlp_result.json` (energy, convergence, device, GPU) and the optimised structure, and says how to install a backend that is missing instead of failing with a bare import error.
+
+The MLP installer checked PyTorch by finding a `torch` directory, so a remnant without its libraries counted as installed and every backend on top of it failed; it now imports it and installs it again when that fails. It installed the CPU-only build, so a job given a GPU computed on the CPU anyway; it now installs the build from PyPI, which uses a GPU where there is one. `DELFIN_TORCH_VARIANT=cpu` keeps the smaller CPU-only build.
+
+### Fixed — GPU partitions are found on bwUniCluster 3.0
+
+A GPU job looked for partitions named `gpu`, `gpu_4`, `gpu_8` or `gpu_a100` with `sinfo`. bwUniCluster 3.0 refuses `sinfo` and has none of those names, so no GPU was ever found and every GPU job ran on CPUs. The candidates now come from `runtime.slurm.gpu_partitions`, `DELFIN_SLURM_GPU_PARTITIONS`, the site profile (`gpu_h100`, `gpu_a100_il`, `gpu_h100_il` and the 30-minute `*_short` ones on bwUniCluster 3.0), or, on any other cluster, every GPU partition `scontrol` reports apart from `dev_*`. Each is asked with `sbatch --test-only --gres=gpu:1` and the job's own time, cores and memory, and the job is listed for all that fit; when none does, it runs on CPUs.
+
+### Fixed — Jobs from the command line
+
+`delfin-step --slurm`, `delfin-pipeline --slurm` and the tools runtime (`platform.submit_application(backend="slurm")`) wrote batch scripts without a partition, which a cluster without a default partition refuses; bwUniCluster has none. They now get the partitions they fit, chosen exactly as for dashboard jobs by the new `delfin.slurm_submit`, which imports nothing of the dashboard. A partition named in a pipeline's YAML stays. The runtime's script also had no time limit and no memory, so the partition defaults applied, ten minutes and 2000 MB per CPU on bwUniCluster: it now states `--time` (`slurm_time`, 24 h by default), `--mem` from cores × maxcore, and one node. `delfin-step` gains `--slurm-time` and requests memory when a step is given a maxcore.
+
+### Fixed — A time limit in days no longer breaks the submit
+
+`2-00:00:00` and SLURM's other day formats raised `ValueError` while the submit worked out the early-warning signal.
+
+### Added — One installer for every site
+
+`install.sh` (`delfin/installers/install_delfin.sh`) installs DELFIN on any Linux workstation or cluster login node: profiles `core`, `standard` and `all`, `--only`, `--dry-run`, `--update` and `--repair`. It needs no root and no module system -- Python 3.10/3.11 comes from the machine or from micromamba, ORCA is found where it was unpacked, and OpenMPI is built with the same configure flags as before, in the version the ORCA directory name gives (4.1.8 when there is no ORCA yet). The bwUniCluster scripts are now thin wrappers around it.
+
+`delfin/installer.py` is the one list of what DELFIN installs and the one way it is installed, updated and repaired (`python -m delfin.installer --list | --status | --install | --update | --repair`). The shell installer, the on-demand installs, the Tools tab, the CENSO auto-install and the new **Update all tools** / **Repair all tools** buttons in Settings all read it.
+
+### Changed — Job venv staging
+
+A SLURM job no longer unpacks a hand-made `delfin_venv.tar`. It packs the venv the dashboard runs in -- passed as `DELFIN_VENV` -- into a cache keyed by the venv's contents (`~/.cache/delfin/venv`), so the tar changes exactly when the venv does, and it runs the venv directly when node-local disk is missing or too small. Staging is on for every SLURM site, not only bwUniCluster; module names and node sizes stay in the site profile.
+
+### Fixed
+
+- Asking for one package on demand installed others of its family as well (cclib brought CENSO, anmr and Packmol; MACE brought ANI-2x, whose switch was spelt `INSTALL_TORCHANI` on one side and `INSTALL_ANI2X` on the other).
+- The Tools tab installed QM programs into the packaged directory and installed `morfeus` from PyPI, which is not morfeus-ml.
+- `install_qm_tools.sh all` left out g-xTB and MOPAC; Settings had no g-xTB button.
+- A missing tool is installed when it is needed, beyond the QM programs: Packmol and Genarris before a run gives up, xtb and crest in the NMR workflow instead of "must already exist", and AI packages through `qm_health.provide`. Licensed programs are still never fetched.
+- Repair builds OpenMPI again when it is present but does not start (`ompi_info` fails).
+
+## [1.3.2] - 2026-09-07
+
+### Added — Construction (MANTA landing #31)
+
+`PUCKER_SYMM` and `PUCKER_SYMM_ADD` join `cli_manta._CHAMPION_FLAGS`
+(`delfin/manta/_ring_pucker.py`). Two rings that lie in one orbit of the molecule's
+automorphism group are indistinguishable, so the cartesian product over their pucker
+states generates duplicates. Reducing the product per orbit does not mainly save
+compute: because the combination cap cuts by fold depth, a smaller product means the
+deep states — all rings folded at once — are reached at all instead of being cut off.
+The add guard builds the champion's combination set first and fills up with the
+reduced one afterwards, so the champion frame set is contained by construction.
+
+Measured as a never-worse A/B on 6000 CCDC systems (`symmfoldadd6k`): 5819 systems
+compared, 123 affected, 107 in the judged intersection. Every never-worse term is
+zero, and the existing stock is provably untouched.
+
+This landing is a coverage gain, not a quality gain. What carries it is the stock
+being provably untouched. The hard-frame fraction on the judged intersection does
+fall by 0.0013, but that margin is smaller than a single frame: had one of the
+649 frames been hard, the sign would flip. All five systems that are known to
+build non-deterministically sit inside that judged set. The number is real as
+computed and below what this sample can resolve, so it establishes nothing about
+quality and is not read as if it did.
+
+The reduction only merges what a genuine automorphism maps onto each other, never
+what merely shares a rank multiset; where the automorphism search does not hold, the
+full product is used, so the fallback is always the larger set. Both flags remain
+overridable through the environment, and `PUCKER_SYMM_ADD` can be left off by anyone
+who needs the combination cap to hold, at the cost of the deeper fold states.
+
+## [1.3.1] - 2026-09-07
+
+### Changed — Construction (refinement of MANTA champion #30)
+
+`DELFIN_FFFREE_INTERLIG_PAIR_FACTOR` now defaults to `0.70` instead of `0.65`
+(`delfin/manta/converter_backend.py`). The inter-ligand pair gate that guards
+backbone re-embedding uses this factor as its contact threshold; at `0.65` it sat
+below the eye's own threshold of `0.70`, so every pair in the band between the two
+was a collision for the eye and invisible to the gate.
+
+Measured as a never-worse A/B on 6000 CCDC systems (`pairgate70`): 5811 systems
+compared, 1100 affected, 968 in the judged intersection. Every never-worse term is
+zero — no capability, isomer, crystal isomer, polyhedron or frame lost, no torn
+ligand bond, no good regression, no build lost — with capability gained on one
+system and the existing stock provably untouched. Against the 1.3.0 landing at
+`0.65` the hard-frame fraction on the affected systems falls from 0.0638 to 0.0512,
+so the appended frames are measurably cleaner while nothing in the stock is lost.
+
+Counted file by file afterwards, against the state that carried factor 0.65: on 250
+systems the tighter gate rejects 1424 previously appended frames, and three systems
+gain frames. No stock frame is affected anywhere — on all 250 the champion's own
+frame set is still contained in full. So this change makes the manifold cleaner by
+making it slightly smaller, and the frames it removes are the ones whose contacts
+the eye itself counts as collisions.
+
+The factor stays overridable through the environment, so an interrupted run can be
+pinned to its original value and stay byte-identical.
+
+## [1.3.0] - 2026-09-06
+
+### Added — Construction (MANTA champion #24-#30, 2026-08-03 to 2026-09-05)
+
+Seven construction flags landed in `cli_manta._CHAMPION_FLAGS`, each behind a
+never-worse A/B on 1000 to 6000 CCDC systems with the evidence recorded next
+to the flag: `RING_PUCKER` (Cremer-Pople pucker siblings), `LP_SIBLING`
+(lone-pair-oriented sibling), `SIGMA_ENSEMBLE` (ETKDG conformer ensemble as
+siblings), `BETA_SIBLING` (+`_STRICT`, donor-plane sibling), `TPR6`
+(+`_EARLY_TM`, trigonal-prismatic CN6 sibling), and `BACKBONE_REEMBED` with
+`INTERLIG_PAIR_GATE` (ligand backbone re-embedding with a pairwise
+never-worse contact gate in front of it; pool 6000, capability +7/-0, first
+landing written by the loop's own landing gate). All additive: frames are
+appended, never replaced; builds are byte-deterministic.
+
+### Changed
+
+- All German comments and docstrings in the package translated to English;
+  an AST comparison with docstrings stripped proves the code unchanged in
+  every touched file.
+- `_energy_terms.py`: f-string rewritten for Python 3.11 (`requires-python <3.12`).
+- `staged_patches/native_grip_canonical.patch` removed (stale since June).
+
+### Tests
+
+- Six slow tests that document known construction defects are marked
+  `xfail(strict=True)` with the defect named in the reason, so the nightly
+  run is green while the defects stay visible and a root fix is noticed
+  (distibine builds no frame; Cd MA2B2C2 all-trans isomer has one trans pair;
+  Theorem-D flag adds no cf-isomers for YIVROM; D-AQIWAZ pyridine not
+  metal-bonded; cyclam bimetal pucker sibling fails the graph gate).
+- `test_multihapto_patches.py`: the rollback test asserted the pre-wire-in
+  Sn-Ir regression (> 3.25 A); the construction no longer has it (2.194 A
+  with both patches off), so the test now asserts the bonded distance.
+
+## [1.2.0] - 2026-07-23
+
 ### Added — Agent (long-session continuity + production parity)
 
 A multi-sprint pass on the dashboard agent. Solo mode is now suitable for

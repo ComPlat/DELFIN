@@ -95,7 +95,7 @@ def test_malformed_arguments_default_to_empty(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Live-panel registry (Claude-Code-style subagent monitoring)
+# Live-panel registry (subagent monitoring)
 # ---------------------------------------------------------------------------
 
 def test_running_registry_roundtrip(tmp_path, monkeypatch):
@@ -148,7 +148,7 @@ def test_background_flag_in_subagent_schema():
 
 
 # ---------------------------------------------------------------------------
-# Finished-subagent sessions + resume (Claude-Code SendMessage analog)
+# Finished-subagent sessions + resume (follow-up messages to finished subagents)
 # ---------------------------------------------------------------------------
 
 def _ev(**kw):
@@ -293,3 +293,96 @@ def test_resume_id_in_subagent_schema():
            / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
     i = src.find('"name": "subagent"')
     assert '"resume_id"' in src[i:i + 4000], "resume_id param missing"
+
+
+# ---------------------------------------------------------------------------
+# Documented limits must match the code (field question: "are subagents
+# broken?" — they were not, but the prompt understated their budget by 5x
+# on wall-clock, which makes delegating real work look infeasible).
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_states_the_real_subagent_limits():
+    from pathlib import Path
+    import delfin.agent.subagents as sa
+    prompt = (Path(sa.__file__).resolve().parent / "pack" / "agents"
+              / "solo_agent.md").read_text(encoding="utf-8")
+    idx = prompt.find("**Backend limits per subagent run**")
+    assert idx > 0
+    block = prompt[idx:idx + 260]
+    assert f"{sa._MAX_TOOL_CALLS} tool calls" in block
+    assert f"{int(sa._MAX_WALL_S)} s wall-clock" in block
+    assert f"{sa._MAX_OUTPUT_TOKENS} output tokens" in block
+
+
+def test_module_docstring_states_the_real_limits():
+    import delfin.agent.subagents as sa
+    doc = sa.__doc__ or ""
+    assert f"max {sa._MAX_TOOL_CALLS} tool calls" in doc
+    assert f"max {int(sa._MAX_WALL_S)} seconds" in doc
+    assert f"max {sa._MAX_OUTPUT_TOKENS} tokens" in doc
+
+
+def test_explicit_user_request_for_subagents_is_binding():
+    from pathlib import Path
+    import delfin.agent.subagents as sa
+    prompt = (Path(sa.__file__).resolve().parent / "pack" / "agents"
+              / "solo_agent.md").read_text(encoding="utf-8")
+    assert "When the user asks for sub-agents, use them" in prompt
+    assert "outranks your own judgement" in prompt
+    # The only writer preset must not be discouraged any more.
+    assert "Use sparingly; the others are sharper." not in prompt
+
+
+def test_wall_clock_is_the_raised_budget_and_the_others_are_not():
+    """Two measurements, and they bind different things.
+
+    2026-07-29 delegation round: the runs that died at the cap had made 10
+    and 3 tool calls — ~30 s per call on that endpoint — and nothing was
+    ever truncated. So for explore-shaped work wall-clock is the one that
+    binds, and raising call count or output size would not have helped.
+    That is why output size has never moved.
+
+    2026-10-08: the presets became specialists, and two of them have a
+    method the old numbers cannot hold. `verifier` runs the covering tests
+    and then the same tests on the base as a control, and the full suite
+    takes 2520 s on this installation — more than the whole 900 s budget
+    for one of its two runs. Both wall-clock and call count moved for
+    that, which does not contradict the 2026-07 finding: 40 calls was
+    never the limit that bit explore, and is not the limit being raised
+    for explore's sake.
+
+    Asserted as floors against the constants rather than as literals: a
+    budget written down twice is a budget that drifts, which is what the
+    sibling assertion below was fixed for.
+    """
+    import delfin.agent.subagents as sa
+    assert sa._MAX_WALL_S >= 3600.0
+    assert sa._MAX_TOOL_CALLS >= 120
+    assert sa._MAX_OUTPUT_TOKENS == 16000
+
+
+def test_subagent_budgets_are_tunable_from_settings():
+    from delfin.user_settings import DEFAULT_SETTINGS
+    cfg = (DEFAULT_SETTINGS.get("agent") or {}).get("subagents")
+    assert cfg, "budgets must be discoverable in the settings defaults"
+    import delfin.agent.subagents as sa
+    # Read from the constant, not typed. This literal said 900 and had to
+    # be found by a failing test when the constant moved -- the same
+    # "written down twice" defect FILE_BUDGETS carries a comment about.
+    assert cfg["max_wall_s"] == int(sa._MAX_WALL_S)
+    assert cfg["max_tool_calls"] == sa._MAX_TOOL_CALLS
+    assert cfg["max_output_tokens"] == sa._MAX_OUTPUT_TOKENS
+
+
+def test_settings_override_wins_over_the_default(monkeypatch):
+    import delfin.user_settings as us
+    import delfin.agent.subagents as sa
+    monkeypatch.setattr(
+        us, "load_settings",
+        lambda: {"agent": {"subagents": {"max_wall_s": 1800}}})
+    assert sa._subagent_limits()["max_wall_s"] == 1800.0
+    # An absent/zero value falls back rather than disabling the guard.
+    monkeypatch.setattr(us, "load_settings",
+                        lambda: {"agent": {"subagents": {"max_wall_s": 0}}})
+    assert sa._subagent_limits()["max_wall_s"] == sa._MAX_WALL_S

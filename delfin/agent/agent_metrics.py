@@ -36,6 +36,184 @@ _LOG_PATH = Path.home() / ".delfin" / "agent_metrics.jsonl"
 _MAX_LINES = 50_000
 
 
+# ---------------------------------------------------------------------------
+# What a turn delegated
+#
+# A turn's own tokens are billed to the parent model. The runs it hands to
+# sub-agents are billed separately and were recorded in a different file
+# (``~/.delfin/subagent_telemetry.jsonl``) that nothing ever joined back to
+# a turn. Every number a user reads for a turn -- the live terminal line,
+# ``/cost``, ``/usage``, ``get_status`` -- was therefore the cost of the
+# part of the turn the parent model produced itself, and a turn that handed
+# the work to five sub-agents reported a few cents.
+#
+# The delegated half is carried BESIDE the direct half, never folded into
+# it: "this session cost $6" and "this session cost $6, of which $5.40 was
+# delegated" call for different actions, and one figure cannot say which.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DelegateSpend:
+    """Tokens and USD spent by delegated runs, never mixed with the parent's.
+
+    ``cost_usd`` is MEASURED spend only, exactly like the engine's own
+    counter: a delegate on a model with no published rate adds nothing to
+    it and increments ``unpriced`` instead. Adding an unpriced run as 0.0
+    would report "we cannot price this" as "this was free", which is the
+    same defect as an applied bound that is never named.
+    """
+
+    count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    unpriced: int = 0
+
+    def add_payload(self, payload: Any, *, provider: str = "") -> bool:
+        """Book one finished delegate from the runner's own return value.
+
+        Returns False when there was nothing to book, so a caller cannot
+        mistake a malformed payload for a run that cost nothing.
+        """
+        if not isinstance(payload, dict):
+            return False
+        try:
+            tin = max(0, int(payload.get("input_tokens") or 0))
+        except (TypeError, ValueError):
+            tin = 0
+        try:
+            tout = max(0, int(payload.get("output_tokens") or 0))
+        except (TypeError, ValueError):
+            tout = 0
+        self.count += 1
+        self.input_tokens += tin
+        self.output_tokens += tout
+        try:
+            from . import pricing
+            usd = pricing.resolve(
+                str(payload.get("model") or ""), provider).cost(tin, tout)
+        except Exception:
+            usd = None
+        if usd is None:
+            self.unpriced += 1
+        else:
+            self.cost_usd += float(usd)
+        return True
+
+    def merge(self, other: "DelegateSpend") -> None:
+        """Add another tally into this one, field for field."""
+        self.count += int(other.count)
+        self.input_tokens += int(other.input_tokens)
+        self.output_tokens += int(other.output_tokens)
+        self.cost_usd += float(other.cost_usd)
+        self.unpriced += int(other.unpriced)
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "DelegateSpend":
+        """Rebuild from a persisted record. A missing or unreadable record
+        is a fresh tally, never an exception: a session saved before this
+        existed still has to load."""
+        if not isinstance(data, dict):
+            return cls()
+        out = cls()
+        for name in ("count", "input_tokens", "output_tokens", "unpriced"):
+            try:
+                setattr(out, name, max(0, int(data.get(name) or 0)))
+            except (TypeError, ValueError):
+                pass
+        try:
+            out.cost_usd = max(0.0, float(data.get("cost_usd") or 0.0))
+        except (TypeError, ValueError):
+            pass
+        return out
+
+
+@dataclass
+class DelegateLedger:
+    """The three questions a delegated run's cost has to answer.
+
+    ``turn``
+        Delegates the CURRENT turn started and waited for. Reset at the
+        start of every turn.
+    ``session``
+        Every delegate this session, whenever it finished. ``turn`` and
+        ``background`` are both subsets of it.
+    ``background``
+        The part of ``session`` that finished outside any turn -- a
+        backgrounded delegate returns long after the turn that started it,
+        so there is no turn it can honestly be charged to.
+
+    A delegate is booked into ``session`` and into exactly ONE of ``turn``
+    or ``background``, which is what makes double-counting impossible
+    rather than merely unlikely.
+    """
+
+    turn: DelegateSpend = field(default_factory=DelegateSpend)
+    session: DelegateSpend = field(default_factory=DelegateSpend)
+    background: DelegateSpend = field(default_factory=DelegateSpend)
+
+    def as_dict(self) -> dict:
+        return {
+            "turn": self.turn.as_dict(),
+            "session": self.session.as_dict(),
+            "background": self.background.as_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "DelegateLedger":
+        """Rebuild a session's delegated spend.
+
+        ``turn`` is deliberately NOT restored: a session that has just
+        been resumed has no turn in flight, so carrying a per-turn bucket
+        would charge the first turn after the resume for delegates that
+        belonged to a turn in another process.
+        """
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            turn=DelegateSpend(),
+            session=DelegateSpend.from_dict(data.get("session")),
+            background=DelegateSpend.from_dict(data.get("background")),
+        )
+
+
+def format_turn_delegation(direct_cost_usd: float,
+                           spend: DelegateSpend | None) -> str:
+    """The one line a turn owes when it delegated -- and nothing when it
+    did not.
+
+    A "delegated $0.00" line after every turn is noise that trains a
+    reader to skip the place the real number appears, so the empty case
+    returns the empty string and the caller prints nothing at all.
+
+    Tokens are stated unconditionally because they are measured on every
+    provider; the USD split only appears when there is a rate behind it,
+    so a KIT/local run says what it spent instead of printing a $0.0000
+    that reads as free.
+    """
+    if spend is None or int(getattr(spend, "count", 0) or 0) <= 0:
+        return ""
+    parts = [
+        f"this turn delegated {spend.count} sub-agent"
+        f"{'' if spend.count == 1 else 's'}: "
+        f"↑{spend.input_tokens:,} ↓{spend.output_tokens:,} tokens"
+    ]
+    if spend.cost_usd > 0:
+        direct = float(direct_cost_usd or 0.0)
+        parts.append(
+            f"${direct:.4f} direct + ${spend.cost_usd:.4f} delegated "
+            f"= ${direct + spend.cost_usd:.4f}")
+    if spend.unpriced:
+        parts.append(
+            f"{spend.unpriced} on a model with no published rate "
+            f"(not in the figure)")
+    return " · ".join(parts)
+
+
 @dataclass
 class TurnMetrics:
     """One finished agent turn. Mirrors the per-turn footer plus a
@@ -58,7 +236,39 @@ class TurnMetrics:
     cooperative_stop: bool = False           # stale-kill watchdog fired
     task_class: str = ""                     # simple / moderate / complex (heuristic)
     user_corrected: bool = False             # user's NEXT message was a redirect
+    # What the turn DELEGATED, kept apart from what it spent itself. The
+    # columns above describe the parent model only; without these a turn
+    # that handed the work to five sub-agents is recorded as one of the
+    # cheapest turns in the log, and every aggregate built on cost_usd
+    # ranks "delegates a lot" as "cheap".
+    #
+    # Same measured-only rule as cost_usd: delegated_cost_usd counts
+    # delegates whose model has a published rate (or a real zero), and
+    # delegates_unpriced counts the rest instead of adding them as free.
+    delegate_count: int = 0                  # delegates this turn waited for
+    delegated_input_tokens: int = 0
+    delegated_output_tokens: int = 0
+    delegated_cost_usd: float = 0.0          # measured delegate spend
+    delegates_unpriced: int = 0              # delegates with no rate on record
+    #: What this turn's own cost_usd means: "measured" (the backend said
+    #: so, or a published rate applied), "non_billing" (the provider
+    #: charges no USD at all — a measured zero) or "unknown" (no rate,
+    #: nothing observed). The engine resolves this per turn and used to
+    #: keep it to itself, so every report read an unpriced turn's 0.0 as
+    #: free: a session of 16 turns showed "$0.00" with nothing behind it
+    #: (2026-09-17). "" only in a record written before this existed.
+    price_state: str = ""
     extras: dict = field(default_factory=dict)  # for future fields
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Direct + delegated.
+
+        Derived rather than stored: a total written beside its parts is a
+        third number that can contradict them after any edit, and the
+        JSONL record is the parts.
+        """
+        return float(self.cost_usd) + float(self.delegated_cost_usd)
 
 
 def record_turn(metrics: "TurnMetrics", *, path: Path | None = None) -> None:
@@ -110,6 +320,23 @@ def read_turns(
     return out
 
 
+def _num(value: Any, *, whole: bool = False) -> float:
+    """A number from a record field, or 0 when it is not one.
+
+    A metrics line is written by whatever ran the turn, and one bad
+    field used to take the whole aggregate down with a ValueError --
+    ``cost_usd: "x"`` and nothing could be reported at all. A record
+    that cannot be read contributes nothing and the rest still counts.
+    """
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number or number in (float("inf"), float("-inf")):
+        return 0.0
+    return float(int(number)) if whole else number
+
+
 def aggregate_by_model(
     records: list[dict] | None = None,
     *,
@@ -121,8 +348,12 @@ def aggregate_by_model(
     Fields per model:
       n_turns                  total turns observed
       avg_duration_s           mean wall-clock
-      avg_cost_usd             mean cost per turn
-      total_cost_usd           sum
+      avg_cost_usd             mean DIRECT cost per turn
+      total_cost_usd           sum of the direct cost
+      total_delegated_cost_usd sum of what those turns delegated
+      avg_delegated_cost_usd   mean delegated cost per turn
+      total_cost_usd_incl_delegated  direct + delegated
+      delegating_turns         turns that delegated at least one run
       avg_tokens_out           mean output tokens
       tool_error_rate          tools_errors / max(1, tool_calls)
       silent_exit_rate         silent / total
@@ -134,28 +365,54 @@ def aggregate_by_model(
         records = read_turns(path=path)
     if since_s is not None:
         cut = time.time() - float(since_s)
-        records = [r for r in records if float(r.get("ts") or 0) >= cut]
+        records = [r for r in records if _num(r.get("ts")) >= cut]
     by_model: dict[str, list[dict]] = defaultdict(list)
     for r in records:
         by_model[r.get("model") or "?"].append(r)
     out: dict[str, dict[str, Any]] = {}
     for model, rows in by_model.items():
         n = max(1, len(rows))
-        total_tool = sum(int(r.get("tool_calls") or 0) for r in rows)
-        total_tool_err = sum(int(r.get("tool_errors") or 0) for r in rows)
+        total_tool = sum(_num(r.get("tool_calls"), whole=True) for r in rows)
+        total_tool_err = sum(_num(r.get("tool_errors"), whole=True) for r in rows)
         silent = sum(1 for r in rows if r.get("silent_exit"))
         coop = sum(1 for r in rows if r.get("cooperative_stop"))
         usercorr = sum(1 for r in rows if r.get("user_corrected"))
-        cost_total = sum(float(r.get("cost_usd") or 0) for r in rows)
-        dur_total = sum(float(r.get("duration_s") or 0) for r in rows)
-        out_tok_total = sum(int(r.get("output_tokens") or 0) for r in rows)
-        cont_total = sum(int(r.get("continuation_rounds") or 0) for r in rows)
+        cost_total = sum(_num(r.get("cost_usd")) for r in rows)
+        # The half the aggregates could not see. Kept as its own sum so
+        # "this model got dearer" stays distinguishable from "this model
+        # started delegating" -- the two call for opposite changes.
+        deleg_total = sum(
+            _num(r.get("delegated_cost_usd")) for r in rows)
+        delegating = sum(
+            1 for r in rows if _num(r.get("delegate_count"), whole=True) > 0)
+        dur_total = sum(_num(r.get("duration_s")) for r in rows)
+        out_tok_total = sum(_num(r.get("output_tokens"), whole=True) for r in rows)
+        unpriced = sum(1 for r in rows
+                       if str(r.get("price_state") or "") == "unknown")
+        non_billing = sum(1 for r in rows
+                          if str(r.get("price_state") or "") == "non_billing")
+        # The other half of what a turn costs. It was recorded on every
+        # turn and reported by nothing, so a report that wanted it had
+        # to sum the raw records itself (2026-09-17).
+        in_tok_total = sum(_num(r.get("input_tokens"), whole=True) for r in rows)
+        cont_total = sum(_num(r.get("continuation_rounds"), whole=True) for r in rows)
         out[model] = {
             "n_turns": len(rows),
             "avg_duration_s": dur_total / n,
             "avg_cost_usd": cost_total / n,
             "total_cost_usd": cost_total,
+            # Read the cost WITH these: a total of 0.00 over unpriced
+            # turns is "not measured", not "free".
+            "unpriced_turns": unpriced,
+            "non_billing_turns": non_billing,
+            "total_delegated_cost_usd": deleg_total,
+            "avg_delegated_cost_usd": deleg_total / n,
+            "total_cost_usd_incl_delegated": cost_total + deleg_total,
+            "delegating_turns": delegating,
             "avg_tokens_out": out_tok_total / n,
+            "total_tokens_out": out_tok_total,
+            "avg_tokens_in": in_tok_total / n,
+            "total_tokens_in": in_tok_total,
             "tool_error_rate": total_tool_err / max(1, total_tool),
             "silent_exit_rate": silent / n,
             "cooperative_stop_rate": coop / n,
@@ -220,6 +477,13 @@ def compare_windows(
         "n_old": len(rows_old),
         "n_new": len(rows_new),
         "avg_cost_usd":         _delta("avg_cost_usd",         "lower_is_better"),
+        # Direct spend can fall while the total rises, because the work
+        # moved to sub-agents. Comparing only the direct figure reports
+        # that as an improvement.
+        "avg_delegated_cost_usd": _delta(
+            "avg_delegated_cost_usd", "lower_is_better"),
+        "total_cost_usd_incl_delegated": _delta(
+            "total_cost_usd_incl_delegated", "lower_is_better"),
         "avg_duration_s":       _delta("avg_duration_s",       "lower_is_better"),
         "tool_error_rate":      _delta("tool_error_rate",      "lower_is_better"),
         "silent_exit_rate":     _delta("silent_exit_rate",     "lower_is_better"),
@@ -230,9 +494,88 @@ def compare_windows(
     }
 
 
+def record_chat_turn(engine, result, *, duration_s: float = 0.0,
+                     mode: str = "") -> None:
+    """The metrics line for a chat / window turn, from what the turn
+    already measured.
+
+    ``repl.run_turn`` (delfin/agent/repl.py:718) is the one place a
+    non-dashboard turn ends with its numbers computed: token deltas in
+    ``result``, the engine carrying session, model, mode and delegated
+    spend. This turns them into the same TurnMetrics record the
+    dashboard's footer writes (tab_agent.py:21585), so one chat turn
+    leaves exactly one line -- the contract agent_metrics states in its
+    header.
+
+    Best-effort like ``record_turn``: any failure is swallowed -- a
+    metrics write never breaks the turn it describes.
+    """
+    try:
+        model = str(getattr(engine, "model", "") or "")
+        profile_name = "default"
+        try:
+            from delfin.agent.model_profiles import get_profile
+            profile_name = (str(get_profile(model).notes or "")
+                            or "default")[:80]
+        except Exception:
+            pass
+        tool_errors = 0
+        try:
+            tool_errors = int(len(getattr(result, "denials", None) or []))
+        except Exception:
+            tool_errors = 0
+        delegation: dict = {}
+        try:
+            sp = engine.delegate_spend().turn
+            delegation = {
+                "delegate_count": sp.count,
+                "delegated_input_tokens": sp.input_tokens,
+                "delegated_output_tokens": sp.output_tokens,
+                "delegated_cost_usd": sp.cost_usd,
+                "delegates_unpriced": sp.unpriced,
+            }
+        except Exception:
+            pass
+        rec_mode = str(mode or getattr(engine, "mode", "") or "")
+        record_turn(TurnMetrics(
+            session_id=str(getattr(engine, "session_id", "") or ""),
+            model=model,
+            profile_name=profile_name,
+            mode=rec_mode,
+            duration_s=max(0.0, float(duration_s or 0.0)),
+            input_tokens=int(getattr(result, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(result, "output_tokens", 0) or 0),
+            # No cost on the chat path: the engine's price state here is
+            # not the dashboard's own metering (tab_agent.py:21594 uses its
+            # per-turn delta). An unpriced model must not read as $0.00
+            # free, so the chat record simply carries no cost figure and
+            # reports keep treating price_state as the truth about it.
+            # Do NOT "fix" this into cost_usd=0.0 without pricing here.
+            cost_usd=0.0,
+            # tool_errors = denials, deliberately different from the
+            # dashboard: its counter (_turn_tool_errors, set at 21624,
+            # read at 21597) is never incremented anywhere, so the
+            # dashboard records tool_errors=0 for every turn. The chat
+            # record at least carries the refusal count the field name
+            # loosely covers; the field itself predates both writers.
+            tool_errors=tool_errors,
+            tool_calls=int(len(getattr(result, "tool_calls", None) or [])),
+            silent_exit=bool(
+                not str(getattr(result, "text", "") or "").strip()
+                and not getattr(result, "tool_calls", None)),
+            **delegation,
+        ))
+    except Exception:
+        return
+
+
 __all__ = [
+    "DelegateLedger",
+    "DelegateSpend",
+    "format_turn_delegation",
     "TurnMetrics",
     "record_turn",
+    "record_chat_turn",
     "read_turns",
     "aggregate_by_model",
     "compare_windows",

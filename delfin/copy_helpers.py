@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .config import OCCUPIER_parser
 from .common.paths import ensure_relative_link
+from .smart_recalc import first_configuration_finished
 from .occupier import run_OCCUPIER
 from .occupier_sequences import (
     infer_species_delta,
@@ -160,7 +161,12 @@ def extract_preferred_spin(folder: Path) -> Tuple[Optional[int], Optional[str]]:
         return None, None
 
     for idx, line in enumerate(lines):
-        if "<-- PREFERRED VALUE" not in line:
+        if "<-- PREFERRED VALUE" not in line and "<-- OVERRIDE" not in line:
+            # A manual override retags the winning FSPE entry from
+            # "<-- PREFERRED VALUE" to "<-- OVERRIDE", so a file carrying
+            # an override no longer marks the winner the old way. Accept
+            # both markers so the override wins over the stale automatic
+            # preference (e.g. for the CO2 coordinator spin handoff).
             continue
         for follow in lines[idx:]:
             stripped = follow.strip()
@@ -231,15 +237,22 @@ def prepare_occ_folder_only_setup(folder_name, charge_delta=0, parent_dir: Optio
     if not input_txt.exists():
         raise FileNotFoundError(f"input.txt not found in {folder}")
 
-    input_txt.rename(input_xyz)
-    with input_xyz.open("r", encoding="utf-8") as f:
+    with input_txt.open("r", encoding="utf-8") as f:
         lines = f.readlines()
+    input_txt.unlink()
     coord_count = _count_xyz_coord_lines(lines)
-    with input_xyz.open("w", encoding="utf-8") as f:
-        f.write(f"{coord_count}\n\n")
-        f.writelines(lines)
-    shutil.copy(input_xyz, folder / "input0.xyz")
-    print(f"[{folder_name}] Renamed to input.xyz and added header lines.")
+    geometry = f"{coord_count}\n\n" + "".join(lines)
+    # input0.xyz is where the first configuration starts; input.xyz is where
+    # it ends.  A stage set up again (a recalc that reruns one of its FoBs)
+    # used to put the start back over the finished geometry -- 120 archived
+    # stages hold an unoptimised start in input.xyz next to a complete
+    # output.out -- and the comparison then handed that start on.
+    (folder / "input0.xyz").write_text(geometry, encoding="utf-8")
+    if first_configuration_finished(folder):
+        print(f"[{folder_name}] input.xyz is the finished first configuration's geometry; kept.")
+    else:
+        input_xyz.write_text(geometry, encoding="utf-8")
+        print(f"[{folder_name}] Renamed to input.xyz and added header lines.")
 
     # Update CONTROL.txt
     control_txt = folder / "CONTROL.txt"

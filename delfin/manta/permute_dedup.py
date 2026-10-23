@@ -1,7 +1,7 @@
 """permute_dedup.py — UNIVERSAL permutation-invariant duplicate removal (FF-free).
 
-ROOT-CAUSE fix for the #1 user-reported pool defect: "es gibt sehr viele gleiche
-Strukturen im Pool — Ununterscheidbarkeit von Atomen — Duplikate müssen raus".
+ROOT-CAUSE fix for the #1 user-reported pool defect: "there are very many identical
+structures in the pool — indistinguishability of atoms — duplicates have to go".
 
 The defect
 ----------

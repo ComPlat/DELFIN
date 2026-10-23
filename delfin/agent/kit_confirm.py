@@ -35,35 +35,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-# Directories never AUTO-granted for the session from a single-file approval:
-# approving a read of e.g. /etc/hostname must not silently open all of /etc.
-_NON_GRANTABLE_DIRS = frozenset({
-    "/", "/etc", "/root", "/usr", "/bin", "/sbin", "/lib", "/lib64",
-    "/var", "/sys", "/proc", "/dev", "/boot", "/run", "/srv", "/cdrom",
-})
-_SECRET_DIR_NAMES = frozenset({
-    ".ssh", ".gnupg", ".gpg", ".aws", ".azure", ".kube", ".docker",
-})
-
-
-def _is_grantable_session_dir(path: str) -> bool:
-    """Whether ``path`` is safe to auto-grant for the rest of the session. The
-    single approved read still proceeds — this only governs whether we BROADEN
-    to the parent directory, which must not be a system root (or its direct
-    child) or a secret directory. Fail closed on any error."""
-    try:
-        p = Path(path).expanduser().resolve()
-        if str(p) in _NON_GRANTABLE_DIRS:
-            return False
-        if len(p.parts) >= 2 and ("/" + p.parts[1]) in _NON_GRANTABLE_DIRS:
-            return False
-        if set(p.parts) & _SECRET_DIR_NAMES:
-            return False
-        return True
-    except Exception:
-        return False
-
-
 @dataclass
 class _ConfirmRequest:
     seq: int
@@ -75,10 +46,17 @@ class _ConfirmRequest:
     remember_pattern: Optional[str] = None
     persist_pattern: Optional[str] = None  # value for ~/.delfin/settings.json
     persist_kind: Optional[str] = None     # 'allow_pattern' or 'extra_dir'
-    # Directory to grant for THIS session (non-persisted) when a plain
-    # "Erlauben (1×)" approves an outside-workspace access — so the agent
-    # can keep reading in that dir without re-prompting per file (bug 065503).
-    session_dir: Optional[str] = None
+    #: Where this request is parked for a supervisor, or None when the
+    #: room could not be written. The window that asked is not the only
+    #: way to answer it.
+    published: Optional[Any] = None
+    #: Set when the decision came from the room rather than from a click,
+    #: with the reason a refusal carried.
+    answered_from_outside: bool = False
+    outside_reason: str = ""
+    #: Expired by three answers without the code, not by absence: the
+    #: window does not go "away" for it.
+    code_spent: bool = False
 
 
 class KitConfirmBroker:
@@ -96,10 +74,39 @@ class KitConfirmBroker:
         self._history: list[_ConfirmRequest] = []
         self._seq = 0
         self._timeout_s = default_timeout_s
+        # True when the most recent decision was a TIMEOUT (user absent),
+        # not an actual click on deny. Consumers distinguish the two.
+        # Per THREAD, not per broker. Requests arrive on whichever
+        # thread is running tools -- the turn worker, a subagent, a
+        # background job -- and they overlap. With one flag for all of
+        # them, an answer to one request cleared the expiry of another,
+        # and the expired one was then recorded as a REFUSAL: a path
+        # permanently closed that the user never saw. The flag is read
+        # off ``__self__`` by the gate, so it stays an attribute and
+        # keeps its name; only its storage moved.
+        self._timed_out = threading.local()
+        #: The session this broker belongs to, stamped on every request
+        #: it parks in the inbox. Set by whoever builds the broker; "" is
+        #: honest about not knowing rather than claiming someone else's.
+        #: ``follow_session`` replaces the fixed value with a source read
+        #: at request time.
+        self._session_id = ""
+        self._session_source: Optional[Any] = None
+        # When a window expired with nobody answering, the moment it did.
+        # Until it is cleared (a real decision) or a window has passed,
+        # further requests are not made to wait again: the answer would be
+        # the same, and each wait costs the agent the whole window. Two
+        # sessions spent five minutes each this way on 2026-09-17, one of
+        # them on a `git add`.
+        self._away_since: Optional[float] = None
         self._on_request: Optional[Any] = None  # UI callback to refresh the panel
+        # UI callback for an EXPIRED request: the panel clears itself when the
+        # window closes, which looks to the user like the prompt vanished for
+        # no reason. Signature: (title, waited_s) -> None; best-effort.
+        self._on_timeout: Optional[Any] = None
         # Optional persistence hook: callable(kind, pattern) -> (ok, msg).
         # When a remember_permission request goes through the broker and the
-        # user ticks "Dauerhaft speichern", the broker forwards the
+        # user clicks "Allow + Permanent", the broker forwards the
         # suggested pattern here. The dashboard wires this to
         # engine.persist_kit_pattern so it survives across sessions.
         self._persist_callback: Optional[Any] = persist_callback
@@ -110,8 +117,183 @@ class KitConfirmBroker:
 
     # -- public API --------------------------------------------------------
 
+    @property
+    def session_id(self) -> str:
+        """The id stamped on a request raised now.
+
+        Input: none. Output: the source's current value when
+        ``follow_session`` bound one, else the value last assigned.
+        A source that raises or returns nothing yields "" (unattributed),
+        never the previous session's id.
+        """
+        source = getattr(self, "_session_source", None)
+        if source is None:
+            return str(getattr(self, "_session_id", "") or "")
+        try:
+            return str(source() or "")
+        except Exception:
+            return ""
+
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        self._session_id = str(value or "")
+
+    def follow_session(self, source: Optional[Any]) -> None:
+        """Read the session id from *source* at each request.
+
+        Input: a zero-argument callable returning the current session
+        id, or None to return to the assigned value. Semantics: the
+        dashboard builds one broker per tab and keeps it across engine
+        rebuilds, session switches, restores and the engine minting a
+        new id; a value copied once at construction is wrong after the
+        first of these. Reading at request time costs one attribute
+        lookup per approval.
+
+        Rejected: stamping inside ``set_kit_confirm_callback`` (the tab
+        also passes the callback to the engine constructor, and a copied
+        id goes stale the same way); wrapping ``callback`` per engine
+        (the gate reads ``last_timed_out`` off ``callback.__self__``).
+        """
+        self._session_source = source
+
+    @property
+    def last_timed_out(self) -> bool:
+        """Whether THIS thread's last dialog expired rather than being
+        refused. See the note in __init__ for why it is per thread."""
+        return bool(getattr(self._timed_out, "value", False))
+
+    @last_timed_out.setter
+    def last_timed_out(self, value: bool) -> None:
+        self._timed_out.value = bool(value)
+
+    #: How often the wait looks in the room for an answer left there.
+    #: One second: the file is a stat and, at most, one small read, and
+    #: an approval nobody is watching for is the case this exists for --
+    #: a second of latency on it costs nothing a user can feel.
+    _ROOM_POLL_S = 1.0
+
+    def _publish_for_supervisors(self, req: "_ConfirmRequest",
+                                 preview: str):
+        """Park *req* in the approval room. Returns the path, or None.
+
+        Never raises: the dialog has to work on a host where the room
+        cannot be written, which is the same rule the attention event
+        above follows.
+        """
+        try:
+            from . import terminal_confirm as _tc
+            return _tc.publish_waiting(
+                surface=_tc.DASHBOARD,
+                session_id=str(getattr(self, "session_id", "") or ""),
+                session_key=str(getattr(self, "session_id", "") or ""),
+                kind=_tc.CONFIRM,
+                tool=str(req.tool_name or ""),
+                command=str(req.args.get("command") or "") or None,
+                preview=str(preview or ""),
+                answer_at="dashboard or supervisor",
+            )
+        except Exception:
+            return None
+
+    def _wait_on_either_channel(self, req: "_ConfirmRequest") -> bool:
+        """Wait for a click OR for an answer left in the room.
+
+        Input: a parked request. Output: True when it was decided, False
+        when the window closed with nobody answering. Semantics:
+        identical to ``req.event.wait(timeout)`` except that an answer
+        written into the room also ends the wait, and whichever arrives
+        first decides.
+
+        Why not two threads: the decision has to be made once. A reader
+        thread racing the click would need the same lock the click takes,
+        and the deadline is the only thing either of them shares -- so
+        one thread waits on the Event in slices and reads the room
+        between them.
+        """
+        deadline = time.monotonic() + self._timeout_s
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            if req.event.wait(timeout=min(self._ROOM_POLL_S, left)):
+                return True             # a click; it set req.decision
+            outside = self._answer_in_the_room(req)
+            if outside is None:
+                if req.published is not None:
+                    from . import terminal_confirm as _tc
+                    if _tc.code_spent(req.published):
+                        req.code_spent = True
+                        return False    # three unsigned answers: expired
+                continue
+            decision, reason = outside
+            # The click path sets decision under the lock and then sets
+            # the Event; this takes the same order, so a click arriving
+            # in the same instant finds the request already decided and
+            # resolve() discards it -- which is what it does for every
+            # answer that arrives after its request was settled.
+            with self._lock:
+                if req.decision is None:
+                    req.decision = bool(decision)
+                    req.answered_from_outside = True
+                    req.outside_reason = str(reason or "")
+            req.event.set()
+            return True
+
+    def outside_answer_hint(self, req: "_ConfirmRequest") -> str:
+        """The command and one-time code for answering *req* from another
+        terminal, or "". Shown in this window's row only: the window is
+        the human channel, and the code is in no file."""
+        try:
+            from . import terminal_confirm as _tc
+            return _tc.outside_answer_line(getattr(req, "published", None))
+        except Exception:
+            return ""
+
+    def _answer_in_the_room(self, req: "_ConfirmRequest"):
+        """The answer left for *req*, or None. Never raises."""
+        if req.published is None:
+            return None
+        try:
+            from . import terminal_confirm as _tc
+            return _tc.answer_left_for(req.published)
+        except Exception:
+            return None
+
+    def _session_perms(self):
+        """The followed engine's KitToolPermissions, or None (the tab
+        follows the engine through ``follow_activity``)."""
+        source = getattr(self, "_activity_source", None)
+        try:
+            followed = source() if callable(source) else source
+        except Exception:
+            return None
+        return getattr(followed, "kit_permissions", None)
+
+    def follow_activity(self, source: Optional[Any]) -> None:
+        """Mark each wait for a decision on *source*'s activity state.
+
+        Input: a zero-argument callable returning the current engine's
+        ``activity.Activity`` (or the engine), or None. Read per request
+        for the reason ``follow_session`` is: the tab keeps one broker
+        across engine rebuilds. Output: while ``callback`` blocks, the
+        activity reads "waiting for your approval".
+        """
+        self._activity_source = source
+
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Called from the agent worker thread. Blocks until decided.
+
+        The method the gate holds (it reads ``last_timed_out`` off its
+        ``__self__``); the wait itself is ``_ask``, marked on the
+        followed activity for its whole length.
+        """
+        from .activity import APPROVAL, awaiting_person
+        with awaiting_person(getattr(self, "_activity_source", None),
+                             APPROVAL):
+            return self._ask(tool_name, args, preview)
+
+    def _ask(self, tool_name: str, args: dict, preview: str) -> bool:
+        """Queue one request and block until decided or expired.
 
         With the per-action confirm dialog retired, this is now invoked
         only by the Self-Modification Guard (and ``remember_permission``,
@@ -136,8 +318,54 @@ class KitConfirmBroker:
             pass
         self._refresh_panel()
 
-        # Block worker thread until decided or timeout.
-        decided = req.event.wait(timeout=self._timeout_s)
+        # Durable out-of-band attention event: an unattended user learns a
+        # confirm is waiting (desktop/webhook/notify_command) instead of
+        # discovering it in chat scrollback. Best-effort — the confirm
+        # dialog must work even when the inbox cannot be written.
+        attn_id = ""
+        try:
+            from .attention import emit_attention
+            summary = (str(args.get("command", ""))
+                       if tool_name == "bash" else str(args.get("path", "")))
+            attn_id = emit_attention(
+                "confirm_pending",
+                title=f"Confirmation required: {tool_name}",
+                detail=(preview or summary or "")[:400],
+                # Whose request this was. Without it a later session
+                # reads every stale entry in the inbox as its own: a
+                # fresh CLI session that had only said "Hallo" was told
+                # seven requests were waiting for it, and spent a turn
+                # working out that they belonged to a session that had
+                # ended hours before (2026-09-18).
+                session_id=str(getattr(self, "session_id", "") or ""),
+            )
+        except Exception:
+            attn_id = ""
+
+        # Park the whole question where a supervisor can read and answer
+        # it. The widget is not the only way in: a browser tab can be
+        # reloaded, and when it is, the panel is rebuilt around a NEW
+        # broker while this thread is still blocked on the old one's
+        # Event -- so the request became unanswerable and died of the
+        # timeout five minutes later, recorded as absence. The room is
+        # the terminal's, already answered by `delfin-agent approvals`
+        # and by file_confirm's checked reader, so one publish here puts
+        # every dashboard approval on those surfaces too.
+        req.published = self._publish_for_supervisors(req, preview)
+        # Again, now that the row can show the code for an answer from
+        # another terminal (outside_answer_hint).
+        self._refresh_panel()
+
+        # Block worker thread until decided or timeout -- unless a window
+        # has just expired unanswered. Nobody is there to answer this one
+        # either, and the inbox entry above is what the user acts on when
+        # they return.
+        with self._lock:
+            away = self._away_since
+        if away is not None and (time.monotonic() - away) < self._timeout_s:
+            decided = False
+        else:
+            decided = self._wait_on_either_channel(req)
 
         with self._lock:
             try:
@@ -146,21 +374,82 @@ class KitConfirmBroker:
                 pass
             self._history.append(req)
             if not decided and req.decision is None:
-                req.decision = False  # timeout = deny
+                req.decision = False  # blocks the action…
+                # …but record that this was ABSENCE, not refusal. Callers
+                # inspect this flag (via the bound method's __self__) so the
+                # model is told "user away — ask later" instead of "user
+                # denied — never retry", which previously poisoned the rest
+                # of the session after every unattended 300s window.
+                self.last_timed_out = True
+                if self._away_since is None and not req.code_spent:
+                    self._away_since = time.monotonic()
+            else:
+                self.last_timed_out = False
+                # Somebody answered: they are back.
+                self._away_since = None
+            timed_out = self.last_timed_out
 
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
             persist_kind = req.persist_kind
-            session_dir = req.session_dir
 
-        # If the user clicked "Erlauben + Dauerhaft", forward the value
+        # Tell the UI that the prompt EXPIRED rather than letting it
+        # disappear silently — the user was deciding, not ignoring it.
+        if timed_out and self._on_timeout is not None:
+            try:
+                self._on_timeout(getattr(req, "tool_name", "") or "an action",
+                                 self._timeout_s)
+            except Exception:
+                pass
+
+        # The record comes out of the room the moment this request is
+        # settled -- including on a timeout, where nothing is waiting on
+        # it any more and a row read as open is worse than no row at all.
+        if req.published is not None:
+            try:
+                from . import terminal_confirm as _tc
+                _tc.withdraw(req.published)
+            except Exception:
+                pass
+
+        # An approval given where the window that asked could not show it
+        # is exactly what the containment panel is for.
+        if req.answered_from_outside:
+            try:
+                from .api_client import _record_security_event
+                _record_security_event(
+                    "approval_from_outside", req.tool_name or "?",
+                    f"{self.session_id or '?'}: "
+                    f"{'approved' if req.decision else 'refused'} from "
+                    f"outside the dashboard window"
+                    + (f" -- {req.outside_reason}" if req.outside_reason
+                       else ""),
+                    blocked=False)
+            except Exception:
+                pass
+
+        # A real click resolves the inbox event; a TIMEOUT parks it (the
+        # event stays pending) so the user can still act on it later from
+        # the attention inbox in the dashboard. Best-effort.
+        if attn_id and not timed_out:
+            try:
+                from .attention import resolve as _attn_resolve
+                _attn_resolve(
+                    attn_id,
+                    answer="approved" if req.decision else "denied",
+                    acknowledged=True,   # decision already delivered in-band
+                )
+            except Exception:
+                pass
+
+        # If the user clicked "Allow + Permanent", forward the value
         # to the engine's persist hook so it lands in settings.json AND
         # applies to the live perms (so the next call doesn't re-prompt).
         # Persist only fires when the user APPROVED — a deny + persist
         # combination is meaningless for our supported kinds.
         if persist_cb and persist_pat and req.decision:
-            if persist_kind == "extra_dir":
-                cb_kind = "extra_dir"
+            if persist_kind in ("extra_dir", "read_dir"):
+                cb_kind = persist_kind
             else:
                 cb_kind = "allow"
             try:
@@ -170,21 +459,88 @@ class KitConfirmBroker:
             self._set_toast(
                 f"{'OK' if ok else 'FAIL'} persisted: {msg}"
             )
-        # Plain "Erlauben (1×)" on an outside-workspace access: grant the
-        # directory for THIS session only (live perms, not persisted) so the
-        # agent doesn't re-prompt for every file in it (bug 065503). Skipped
-        # when 'Dauerhaft' was used — that already added + persisted the dir.
-        elif persist_cb and req.decision and session_dir:
-            try:
-                ok, msg = persist_cb("extra_dir_session", session_dir)
-            except Exception as exc:
-                ok, msg = False, f"session grant failed: {exc}"
-            self._set_toast(
-                f"{'OK' if ok else 'FAIL'} for this session: {msg}"
-            )
+        # A plain "Allow (once)" on an outside-workspace read grants nothing
+        # here. It used to hand the file's parent directory to the live
+        # permissions as a WRITABLE root (bug 065503, "stop re-prompting per
+        # file"), which is not what the dialog said and not what the user
+        # clicked: approving a read of a file in $HOME made $HOME writable
+        # for the session. The read gate now opens that directory for READS
+        # itself (KitToolPermissions.add_session_read_dir), so the
+        # re-prompting stays solved without a write grant nobody asked for.
 
         self._refresh_panel()
         return bool(req.decision)
+
+    def pending_requests(self) -> list:
+        """The requests still waiting, newest last. A copy."""
+        with self._lock:
+            return list(self._pending)
+
+    def history(self) -> list:
+        """The requests already settled, in the order they settled."""
+        with self._lock:
+            return list(self._history)
+
+    def resolve(self, request, decision: bool, *,
+                persist_pattern: Optional[str] = None,
+                persist_kind: Optional[str] = None) -> bool:
+        """Answer one parked request. Returns whether THIS answer decided it.
+
+        Input: a request, or its ``seq``, and a decision. Output: True
+        when this call is the one that settled it. Semantics: the FIRST
+        answer decides and later ones are discarded; the request leaves
+        the pending queue either way, and the thread blocked on it is
+        woken.
+
+        One resolver for both channels. A request can now be settled
+        from a click OR from the approval room -- `delfin-agent
+        approvals deny`, or a window that replaced this one after a
+        reload -- and a click landing after that must not overwrite it: a
+        refusal given by the supervisor would otherwise become an
+        approval from a stale panel. With the decision taken in two
+        places that rule would have to hold in both, which is how two
+        copies of one answer come to disagree.
+        """
+        req = None
+        with self._lock:
+            if isinstance(request, int):
+                for candidate in list(self._pending) + list(self._history):
+                    if candidate.seq == request:
+                        req = candidate
+                        break
+            else:
+                req = request
+            if req is None:
+                return False
+            first = req.decision is None
+            if first:
+                req.decision = bool(decision)
+                if persist_pattern:
+                    req.persist_pattern = persist_pattern
+                    req.persist_kind = persist_kind
+            # Drop it from the pending queue HERE, in the UI (click) thread,
+            # so the row disappears on THIS click. The worker thread also
+            # removes it (idempotent) and refreshes, but that refresh runs
+            # off the UI thread and may not render -- leaving the row up until
+            # a second click (bug 2026-06-25: the approve buttons needed two
+            # clicks and the row did not disappear).
+            try:
+                self._pending.remove(req)
+            except ValueError:
+                pass
+        req.event.set()
+        self._refresh_panel()
+        return first
+
+    def resolve_all(self, decision: bool) -> int:
+        """Answer every waiting request the same way. Returns how many
+        this call decided. For a window that is going away with requests
+        still on it, and for a test that wants the click path."""
+        answered = 0
+        for req in self.pending_requests():
+            if self.resolve(req, decision):
+                answered += 1
+        return answered
 
     def set_persist_callback(self, callback) -> None:
         """Bind/unbind the persistence hook (callable(kind, pattern) -> (ok, msg))."""
@@ -228,8 +584,9 @@ class KitConfirmBroker:
         # Header text + border are set per refresh: a scary red "Self-
         # Modification Guard" ONLY when a protected-core write is pending,
         # otherwise a neutral "Confirmation required" for ordinary bash /
-        # file confirms (user 2026-06-25: "Self-Mod Guard passt? — was machen?"
-        # on a plain mkdir in a subagent worktree).
+        # file confirms — the red header previously fired for a plain mkdir
+        # in a subagent worktree, where it reads as a false security alarm
+        # (bug 2026-06-25).
         self._title_label = widgets.HTML(value="")
 
         self._panel = widgets.VBox(
@@ -305,9 +662,9 @@ class KitConfirmBroker:
 
     def _build_request_row(self, req: _ConfirmRequest, widgets):
         # ---- 1. Classify the request and compute what (if anything) can
-        # be persisted. The user wants the dauerhaft-button to be
-        # actionable when it makes sense, and CLEARLY explain why it's
-        # disabled when it doesn't. -----------------------------------
+        # be persisted. The "Allow + Permanent" button must be actionable
+        # when it makes sense, and CLEARLY explain why it is unavailable
+        # when it isn't. ----------------------------------------------
         tool = req.tool_name
         cmd = req.args.get("command", "") if tool == "bash" else ""
         path_arg = req.args.get("path", "") if tool != "bash" else ""
@@ -318,13 +675,13 @@ class KitConfirmBroker:
         persist_kind = ""        # 'allow_pattern' / 'extra_dir' / ''
         persist_disabled_reason = ""
         if tool == "bash":
-            persist_pat = _suggest_persist_pattern(cmd)
+            persist_pat = _suggest_persist_pattern(cmd, self._session_perms())
             persist_kind = "allow_pattern"
             if not persist_pat:
                 persist_disabled_reason = (
-                    "Kein generalisierbares Pattern aus dem Bash-Befehl "
-                    "ableitbar — kannst du im Chat mit "
-                    "remember_permission(...) selbst formulieren."
+                    "No generalisable pattern can be derived from the bash "
+                    "command — you can write one yourself in chat via "
+                    "remember_permission(...)."
                 )
         elif tool in ("write_file", "edit_file", "multi_edit"):
             # Two distinct cases — show the RIGHT reason for each, so the
@@ -335,8 +692,8 @@ class KitConfirmBroker:
                 persist_disabled_reason = (
                     "Self-Modification Guard: writes to protected core files "
                     "(api_client.py, kit_confirm.py, engine.py, tab_agent.py) "
-                    "must be approved explicitly every time. Click 'Allow' "
-                    "for THIS action."
+                    "must be approved explicitly every time. Click "
+                    "'Allow (once)' for THIS action."
                 )
             else:
                 # Normal file: there is no per-file persist rule for edits.
@@ -345,25 +702,34 @@ class KitConfirmBroker:
                 persist_disabled_reason = (
                     "There is no per-file persist rule for writes/edits. To "
                     "stop being asked before every edit: switch the Perms "
-                    "dropdown to 'acceptEdits' — write/edit actions then run "
+                    "dropdown to 'Accept Edits' — write/edit actions then run "
                     "without prompting (sandbox + self-modification guard "
                     "stay active)."
                 )
         elif tool == "read_file":
-            # outside-workspace read: persisting = adding the parent
-            # directory as extra_workspace_dir.
-            from pathlib import Path
-            try:
-                parent = str(Path(path_arg).expanduser().resolve().parent)
-                persist_pat = parent
-                persist_kind = "extra_dir"
-            except Exception:
-                persist_disabled_reason = "Path could not be resolved."
+            # An outside-workspace read. "Allow (once)" opens the directory
+            # for READS for this session, and the read gate does that
+            # itself. The PERMANENT button saves the same read-only grant
+            # for every later session. It used to save an extra workspace
+            # dir instead -- WRITABLE, in every later session -- so the
+            # one click that meant "stop asking me about reading here"
+            # handed over write access.
+            from . import kit_settings as _ks
+            persist_pat = _ks.read_grant_dir(path_arg)
+            if persist_pat:
+                persist_kind = "read_dir"
+            else:
+                persist_disabled_reason = (
+                    "This is a home, system or key directory (or no "
+                    "directory at all); reading there is approved one "
+                    "request at a time. To work in it, add it under "
+                    "'Erlaubte Verzeichnisse'.")
         elif tool in ("remember_permission", "remember_permission_bundle"):
             # The click IS the persistence — no separate permanent option.
             persist_disabled_reason = (
-                "This tool action IS the persistence: clicking 'Allow' writes "
-                "the rule straight to settings.json. 'Deny' discards it."
+                "This tool action IS the persistence: clicking 'Allow (once)' "
+                "writes the rule straight to settings.json. 'Deny' discards "
+                "it."
             )
 
         # ---- 2. Header: tool name + path/cmd snippet + rationale ----
@@ -379,7 +745,7 @@ class KitConfirmBroker:
             if rationale else ""
         )
 
-        # ---- 3. Vorschau IMMER sichtbar (nicht in <details>) --------
+        # ---- 3. Preview ALWAYS visible (not inside <details>) -------
         preview_pre = (
             f'<pre style="max-height:280px; overflow:auto; '
             f'font-size:11px; line-height:1.4; padding:6px; '
@@ -390,16 +756,21 @@ class KitConfirmBroker:
             f'</pre>'
         )
 
+        hint = self.outside_answer_hint(req)
+        hint_html = (
+            f'<div style="font-size:11px; color:#9aa5b1; margin:2px 0;">'
+            f'<code>{_html_escape(hint)}</code></div>' if hint else "")
         header = widgets.HTML(
             value=(
                 f'<b>#{req.seq} &middot; {tool}</b>'
                 f'{("&nbsp;&middot;&nbsp;" + subtitle) if subtitle else ""}'
                 f'{rationale_html}'
                 f'{preview_pre}'
+                f'{hint_html}'
             )
         )
 
-        # ---- 4. Dauerhaft-Status row: explicit target file --------
+        # ---- 4. Permanent-status row: explicit target file --------
         target_path = ""
         try:
             from . import kit_settings as _ks
@@ -410,19 +781,22 @@ class KitConfirmBroker:
         if persist_pat and self._persist_callback is not None:
             kind_label = (
                 "bash allow-pattern" if persist_kind == "allow_pattern"
-                else "extra_workspace_dir" if persist_kind == "extra_dir"
+                else "WRITABLE workspace directory" if persist_kind == "extra_dir"
+                else "READ-ONLY directory, no write access"
+                if persist_kind == "read_dir"
                 else persist_kind
             )
             persist_status = widgets.HTML(value=(
                 f'<div style="font-size:10px; color:#6b7280; margin:2px 0;">'
-                f'With <b>Permanent</b>: <code>{_html_escape(persist_pat)}</code> '
+                f'With <b>Allow + Permanent</b>: '
+                f'<code>{_html_escape(persist_pat)}</code> '
                 f'({kind_label}) → <code>{_html_escape(target_path)}</code>'
                 f'</div>'
             ))
         elif persist_disabled_reason:
             persist_status = widgets.HTML(value=(
                 f'<div style="font-size:10px; color:#a16207; margin:2px 0;">'
-                f'<b>Permanent</b> not available: '
+                f'<b>Allow + Permanent</b> not available: '
                 f'{_html_escape(persist_disabled_reason)}'
                 f'</div>'
             ))
@@ -432,47 +806,28 @@ class KitConfirmBroker:
         # ---- 5. Buttons --------------------------------------------
         approve = widgets.Button(
             description="Allow (once)", button_style="success",
-            tooltip="Allow — for a directory access the folder applies for THIS "
-                    "session (no re-prompt per file); otherwise just this one "
-                    "action. Future sessions will ask again.",
+            tooltip="Allow this one action. For an outside-workspace read it "
+                    "also allows READING the other files in that directory "
+                    "for this session — no write access, nothing saved. "
+                    "Future sessions ask again.",
         )
         approve_persist = widgets.Button(
             description="Allow + Permanent",
             button_style="info",
             tooltip=(
                 f"Allow the action AND write the rule to {target_path} "
-                "(applies in future sessions without asking again)."
+                "(applies in future sessions without asking again). For an "
+                "outside read it allows READING in that directory in every "
+                "session — never writing."
             ),
             disabled=(not persist_pat or self._persist_callback is None),
         )
         deny = widgets.Button(description="Deny", button_style="danger")
 
         def _decide(ok: bool, persist: bool = False):
-            with self._lock:
-                req.decision = ok
-                # Approving an outside-workspace access grants its directory
-                # for the rest of this session (live perms, not persisted) so
-                # the agent stops re-prompting per file (bug 065503). The
-                # request() handler skips this when 'Dauerhaft' was clicked —
-                # that path already adds the dir AND persists it.
-                if (ok and persist_kind == "extra_dir" and persist_pat
-                        and _is_grantable_session_dir(persist_pat)):
-                    req.session_dir = persist_pat
-                if persist and persist_pat:
-                    req.persist_pattern = persist_pat
-                    req.persist_kind = persist_kind
-                # Drop it from the pending queue HERE, in the UI (click) thread,
-                # so the row disappears on THIS click. The worker thread also
-                # removes it (idempotent) and refreshes, but that refresh runs
-                # off the UI thread and may not render — leaving the row up until
-                # a second click (bug 2026-06-25: "Erlauben/Dauerhaft braucht 2x
-                # Klick / verschwindet nicht").
-                try:
-                    self._pending.remove(req)
-                except ValueError:
-                    pass
-            req.event.set()
-            self._refresh_panel()
+            self.resolve(req, ok,
+                         persist_pattern=persist_pat if persist else None,
+                         persist_kind=persist_kind if persist else None)
 
         approve.on_click(lambda _b: _decide(True, persist=False))
         approve_persist.on_click(lambda _b: _decide(True, persist=True))
@@ -481,8 +836,8 @@ class KitConfirmBroker:
         # Only show "Allow + Permanent" when something is actually persistable
         # AND a persist hook is wired. Otherwise it was rendered DISABLED — a
         # dead button that does nothing on click and leaves the dialog up
-        # (the user's "Dauerhaft geht garnicht, Fenster verschwindet nicht").
-        # Show only buttons that really act and dismiss the row.
+        # (reported as: the permanent option had no effect and the panel did
+        # not close). Show only buttons that really act and dismiss the row.
         _can_persist = bool(persist_pat) and self._persist_callback is not None
         _buttons = [approve] + ([approve_persist] if _can_persist else []) + [deny]
         return widgets.VBox(
@@ -558,14 +913,17 @@ def _is_protected_path(path_arg: str) -> bool:
     return False
 
 
-def _suggest_persist_pattern(cmd: str) -> str:
+def _suggest_persist_pattern(cmd: str, perms=None) -> str:
     """Regex form for ``~/.delfin/settings.json`` allow_patterns.
 
     Delegates to ``kit_settings.suggest_pattern_for_command`` so the same
-    rules apply that the engine consumes on load.
+    rules apply that the engine consumes on load. ``perms`` is the
+    session's KitToolPermissions: with it, a compound command's rule
+    covers the segments THIS session's gate asked about, its own rules
+    included.
     """
     try:
         from .kit_settings import suggest_pattern_for_command
-        return suggest_pattern_for_command(cmd)
+        return suggest_pattern_for_command(cmd, perms)
     except Exception:
         return ""

@@ -21,7 +21,8 @@ something useful turns up, not preemptively.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import threading
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -44,7 +45,11 @@ class ModelProfile:
 
     # Hard cap on auto-continuation rounds in the dashboard's
     # ACTION-execute loop. Weak models hallucinate longer chains.
-    max_tool_rounds: int = 50
+    # 50 -> 100 on 2026-10-06. The dataclass default is what a profile
+    # that does not mention the field gets -- _SONNET among them -- so
+    # it is the third place the same number had to be changed. One
+    # figure everywhere a user can reach: see the note on _GLM_5_3.
+    max_tool_rounds: int = 100
 
     # Tool-result truncation cap in KB. Weak models choke on 5KB.
     tool_result_cap_kb: int = 5
@@ -59,6 +64,84 @@ class ModelProfile:
     # models should respond quickly so we kill earlier.
     stale_kill_after_s: float = 120.0
 
+    # How many times a turn may write to memory before the tool is held
+    # back for the rest of the turn. 0 means no cap (a valid opt-OUT for
+    # a user who wants none).
+    #
+    # Universal as of 2026-09-18. It started as one model's knob —
+    # measured 2026-09-08, workflow_verify_after_modify in acceptEdits:
+    # GLM issued six consecutive `remember` calls and then answered
+    # with a fragment ending in a colon where the two ACTION lines
+    # should have been, while DeepSeek on the same run called it zero
+    # times and solved the task in two calls. That read as one model
+    # over-applying a shared rule, so the cap lived on that model's
+    # profile only.
+    #
+    # The trace archive (33 sessions, 99 ts-gap-grouped turns, counted
+    # 2026-09-18) says the CLASS is not model-specific: no recorded turn
+    # ever made more than ONE memory write (`remember` once in the whole
+    # archive, `forget` zero), while every tool that legitimately
+    # repeats — bash to 31 calls/turn, task_create to 5 — is outside the
+    # memory-write class. Two allowed, refused from the third on, has
+    # zero false positives across the entire archive, on any model.
+    # The weak model exposed the shape; every model can hit it.
+    #
+    # The no-progress guard in api_client cannot help: it keys on name
+    # AND arguments, and six remembers with different content read as
+    # progress. This cap keys on the tool NAME alone, per TURN, and
+    # never aborts the turn — the model is steered back to answering
+    # and the tool is held back, nothing more.
+    max_memory_writes_per_turn: int = 2
+
+    # Typical seconds for a turn whose prompt the endpoint cannot serve
+    # from its prefix cache — the first turn of a session, and any turn
+    # after the head of the prompt changed. 0 means "not a concern".
+    # Only used to warn the user before the wait, never to shorten it.
+    slow_cold_start_s: float = 0.0
+
+    # Keep every lazy prompt module on, whatever the task says. A module
+    # that triggers mid-session is inserted ahead of the ones already
+    # active, and every byte after it goes cold for the prefix cache.
+    # For a model whose cold prompt costs minutes and whose warm one
+    # costs seconds, a few thousand tokens of always-on prose are the
+    # cheaper side of that trade.
+    all_prompt_modules: bool = False
+
+    # The highest effort level this model can put to use; "" means any.
+    # On kit.glm-5.3 every level above the default buys hidden reasoning
+    # and minutes, not answers: four field reports (2026-09-07 .. -11) ran
+    # it at "high", one of them 989 output tokens for a 224-character
+    # reply, and the benchmark arms at medium and low did not differ. The
+    # dashboard offers only the levels up to this one, a saved choice
+    # above it is brought down and said so, and the request never
+    # carries a level above it.
+    max_effort: str = ""
+
+    # Add MODEL_NOTES["terse_tool_rounds"] to the solo prompt: at most one
+    # short line beside a tool call. For a model whose decode, not its
+    # prefill, is the cost. Archive 2026-09-16 .. 10-14: kit.deepseek-v4-
+    # flash wrote prose beside 38 of 38 tool calls, p50 593 characters,
+    # at ~6 s per 100 output tokens -- about 11 s per tool round. GLM-flash
+    # decodes at ~0.9 s per 100 and stays off.
+    terse_tool_rounds: bool = False
+
+    # Add MODEL_NOTES["concise_answers"]: lead with the result, no recap of
+    # the steps. Benchmark store, 950 kit.deepseek-v4-flash attempts: within
+    # a task, answers longer than the task median passed 0.79 (n=406) and
+    # shorter ones 0.75 (n=399), at a duration p50 of 55 s against 40 s;
+    # passing answers p50 2146 characters against 710 on kit.glm-5.3.
+    concise_answers: bool = False
+
+    # Send the OpenAI ``user`` field with an opaque per-session value
+    # (``session_route_key``), so a router that keys sticky routes on it
+    # sends a session's requests to the replica that holds its prefix.
+    # Archive 2026-09-16 .. 10-14, kit.glm-5.3: 408 of 2066 requests cold
+    # (cached/input < 0.2) with system prompt and turn prefix unchanged and
+    # under 300 s since the previous request, ~740 min of time to first
+    # token. The KIT endpoint accepts the field (HTTP 200, 2026-10-14);
+    # whether it routes on it is unmeasured -- the A/B decides.
+    session_affinity: bool = False
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -70,7 +153,13 @@ STRONG_DEFAULT = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="medium",
-    max_tool_rounds=50,
+    # 50 -> 100 with the KIT profiles on 2026-10-06, and for the same
+    # reason: this is the budget every installation had before the
+    # profile branch became reachable, and it is what the fallback in
+    # _resolve_max_tool_rounds already documents. It also covers a
+    # model nobody has measured, which is what a fresh install on an
+    # unlisted endpoint gets.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
@@ -91,14 +180,134 @@ WEAK_DEFAULT = ModelProfile(
 
 # --- Concrete profiles ------------------------------------------------------
 
-# kit.qwen3.5-397b-A17b — currently the strongest tool-calling-capable
-# model on KIT Toolbox for our scope. 397B MoE with 17B active params,
-# excellent agentic tool routing, no silent-reasoning footguns.
+# kit.glm-5.3 — the endpoint calls it the best open-source model it hosts
+# (intelligence 6/6) and rates its speed 2/6. Both halves are visible in
+# what it does here.
+#
+# Measured 2026-09-07 on the KIT deployment, same 15k-token DELFIN prompt,
+# three alternating pairs: ~7-12s when the endpoint can serve the prompt
+# head from its prefix cache, 199s / 266s when a single changed byte at the
+# top makes it cold. DeepSeek on the same endpoint, same prompt, the same
+# minute: 4-7s warm, 5-16s cold. So the number that decides a GLM session is
+# not tokens per second, it is whether the head of the prompt is stable.
+#
+# It also spends the completion budget on hidden reasoning BEFORE any
+# content: asked for max_tokens=32 it returned 32 reasoning tokens and an
+# empty message, twice. That is the "[empty turn]" the users report. The
+# capability entry marks it a reasoning family so the 2048-token floor in
+# api_client applies; without that floor a tight budget yields nothing.
+_GLM_5_3 = ModelProfile(
+    compact_prompt=False,        # capability is what it is for; keep it
+    core_tools_only=False,
+    # Chosen for cost, and only for cost. Measured 2026-09-07 through the
+    # engine on one real question: 355 output tokens and 49.5s unset, 92
+    # tokens at "high", 47 tokens and 23.4s at "low" — hidden reasoning is
+    # most of what a GLM turn spends, and low is the only knob that
+    # shortens it.
+    #
+    # It is NOT chosen for quality. A first benchmark arm said 3/5 at
+    # "medium" against 5/5 at "low" and that looked decisive; repeating
+    # each arm showed why it was not. dash_nav_calc_typo is bimodal on
+    # this model — medium gave FAIL, PASS, FAIL and low gave PASS then
+    # four FAILs — so the effort setting does not decide it and neither
+    # arm's first sample meant what it appeared to. The safety task
+    # leans low (4/4 against 2/3) on numbers too small to carry a claim.
+    effort_default="low",
+    # 20 -> 100 on 2026-10-06. The 20 was measured as loop protection for
+    # a small model, and it cost a user every long task: a fresh install
+    # stopped after 20 tool calls on real coding work, and the dashboard's
+    # own help text said "Default 500" while 20 was in force. 500 is the
+    # figure this file already documents as the fallback and the figure
+    # every installation ran on until 2026-08-05, when `None` made the
+    # profile branch reachable for the first time.
+    #
+    # What still stops a degenerate loop: the per-turn cost circuit-breaker
+    # and the consecutive-failure abort. This module's own comments call
+    # those "the real safety nets", and they are the ones that bound cost
+    # rather than bounding honest multi-file work.
+    #
+    # Not measured, and said so rather than implied: the 413 recorded turns
+    # available here were all collected UNDER the 20-round cap, so their
+    # distribution is censored at exactly the point this number sets
+    # (median 2, max 21). They cannot support 500 and are not offered as
+    # support for it. The evidence is one user's repeated reports plus the
+    # note left by whoever raised the default to 500 in the first place.
+    max_tool_rounds=100,
+    tool_result_cap_kb=5,
+    strict_action_prefix=False,
+    # A cold prompt head measured at 266s. 120s would kill a turn that was
+    # about to answer, and killing it also throws away the prefill it just
+    # paid for -- the retry starts cold again.
+    stale_kill_after_s=420.0,
+    # Six `remember` calls in one turn, measured; two is generous for the
+    # facts a turn actually turns up, and the seventh is what turned a
+    # working turn into a fragment. This is now the dataclass default
+    # (see ModelProfile.max_memory_writes_per_turn); kept here explicitly
+    # so the profile states its own number.
+    max_memory_writes_per_turn=2,
+    # 199 / 266 / 268s measured. The user cannot be given the time back,
+    # but they can be told what the silence is: the same wait reported as
+    # a hang reads as a cache warming up once it is named.
+    slow_cold_start_s=200.0,
+    # The head that never moves: 7-12s warm against 199-266s cold, measured
+    # 2026-09-07, and a module triggered on turn two left 19% of the prompt
+    # cold on turn two, measured 2026-09-11.
+    all_prompt_modules=True,
+    # Low only, decided 2026-09-15 after report 20260915-084010: at medium
+    # the session spent 222k characters of hidden reasoning, often minutes
+    # before a single tool call, on a 45-line change -- and the arms above
+    # showed no answer that low did not give.
+    max_effort="low",
+    # Off by default, decided by the A/B of 2026-10-15/16 (5 rounds per arm,
+    # 68 tasks): with a stable `user` on 94% of requests the cache-hit share
+    # (0.624 vs 0.627), the cold share after the first request (0.274 vs
+    # 0.265) and TTFT did not move, and wall time per attempt was if anything
+    # higher (+9 s, p=0.068). The KIT gateway does not appear to route on
+    # `user`. The mechanism stays; `kit.glm.session_affinity: true` turns it on.
+    session_affinity=False,
+    notes=(
+        "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
+        "start. Reasoning-first: needs the thinking token floor. Cold "
+        "prompt head ~200-270s vs ~10s warm, so prefix stability decides "
+        "the session."
+    ),
+)
+
+# kit.deepseek-v4-flash — a coding line, rated 4/6 intelligence and 6/6
+# speed by the endpoint, and the measurements agree: the 15k-token prompt
+# answers in 4-7s warm and 5-16s cold, i.e. it barely notices the thing
+# that costs GLM minutes. No reasoning tokens observed in any probe.
+_DEEPSEEK_V4_FLASH = ModelProfile(
+    compact_prompt=False,
+    core_tools_only=False,
+    effort_default="medium",
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
+    tool_result_cap_kb=5,
+    strict_action_prefix=False,
+    stale_kill_after_s=120.0,
+    terse_tool_rounds=True,
+    concise_answers=True,
+    notes=(
+        "KIT DeepSeek V4 Flash — fast on this deployment, cold and warm "
+        "alike. Coding line, native function calling."
+    ),
+)
+
+# kit.qwen3.5-397b-A17b — RETIRED from the KIT listing on 2026-09-07. The
+# profile stays: the tuning below was measured, a restored session or a
+# saved setting may still name the model, and if it returns this is what it
+# was tuned to. Nothing here is a claim about what the endpoint serves --
+# model_capabilities._KIT_RETIRED is where that question is answered.
+#
+# 397B MoE with 17B active params, excellent agentic tool routing, no
+# silent-reasoning footguns.
 _QWEN35_397B = ModelProfile(
     compact_prompt=False,        # full 7.5k slim prompt is fine
     core_tools_only=False,       # handles the 45-tool surface cleanly
     effort_default="medium",     # MoE doesn't need high; medium is sharp
-    max_tool_rounds=20,          # rarely needs more than 6-8 in practice
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,  # accept fault-tolerant form anyway
     stale_kill_after_s=90.0,     # responsive — fail fast if hung
@@ -146,7 +355,8 @@ _AZURE_GPT5 = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="low",         # critical — see api_client reasoning detector
-    max_tool_rounds=20,
+    # Raised with the others on 2026-10-06; see the note on _GLM_5_3.
+    max_tool_rounds=100,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=180.0,    # reasoning legitimately takes time
@@ -168,7 +378,10 @@ _SONNET = ModelProfile(
 
 # Registry — exact match first, longest-prefix second.
 _PROFILES: dict[str, ModelProfile] = {
-    # KIT Toolbox
+    # KIT Toolbox — served as of 2026-09-07
+    "kit.glm-5.3": _GLM_5_3,
+    "kit.deepseek-v4-flash": _DEEPSEEK_V4_FLASH,
+    # KIT Toolbox — retired from the listing, tuning kept (see above)
     "kit.qwen3.5-397b-A17b": _QWEN35_397B,
     "kit.gpt-oss-120b": _GPT_OSS_120B,
     "kit.gemma4-31b-it": _GEMMA4_31B,
@@ -192,10 +405,249 @@ _PROFILES: dict[str, ModelProfile] = {
 _PREFIX_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
     ("azure.gpt-5", _AZURE_GPT5),
     ("kit.gpt-oss", _GPT_OSS_120B),
+    # Point revisions land under the same name (glm-5.3 → glm-5.4) and a
+    # missed rename costs the stale-kill budget and the reasoning floor,
+    # which is how a working model starts looking broken.
+    ("kit.glm", _GLM_5_3),
+    ("kit.deepseek", _DEEPSEEK_V4_FLASH),
 )
 
 
+# --- user overrides ---------------------------------------------------------
+#
+# The knobs above are measured, and a measurement is a claim about one
+# deployment on one day. The KIT roster changed twice this year and the same
+# model name can be re-pointed at different hardware underneath, so the person
+# in front of the endpoint is sometimes the only one who can see that a number
+# is wrong. ``agent.model_overrides`` lets them fix it without editing Python:
+#
+#     "agent": {
+#       "model_overrides": {
+#         "kit.glm-5.3":  {"stale_kill_after_s": 600, "effort_default": "low"},
+#         "kit.deepseek": {"max_tool_rounds": 30}
+#       }
+#     }
+#
+# Exact name first, then longest prefix — the same two-step the registry uses,
+# so an override reads the way the profiles do. Unknown keys and unusable
+# values are ignored rather than raising: this is a settings file, and a typo
+# in it must not take the agent down. An applied override is written into
+# ``notes``, which is what /model and the agent stats print, so a changed
+# number is visible instead of silently different from the file.
+# Every ModelProfile field, with the type a settings value is read as. A
+# test pins this against the dataclass, so a new knob cannot ship without
+# deciding whether a user may set it.
+_COERCE: dict[str, type] = {
+    "compact_prompt": bool,
+    "max_memory_writes_per_turn": int,
+    "slow_cold_start_s": float,
+    "core_tools_only": bool,
+    "strict_action_prefix": bool,
+    "effort_default": str,
+    "notes": str,
+    "max_tool_rounds": int,
+    "tool_result_cap_kb": int,
+    "stale_kill_after_s": float,
+    "all_prompt_modules": bool,
+    "max_effort": str,
+    "terse_tool_rounds": bool,
+    "concise_answers": bool,
+    "session_affinity": bool,
+}
+
+
+# The prompt text behind each note-type knob, by field name. English, one
+# or two sentences: it rides in the stable head of every solo request for
+# the model that has the knob on, and nowhere else.
+MODEL_NOTES: dict[str, str] = {
+    "terse_tool_rounds": (
+        "Beside a tool call write one short line or nothing. Do not restate "
+        "the task, the plan or the previous result before each call; the "
+        "call says what you are doing."),
+    "concise_answers": (
+        "Final answer: lead with the result -- file:line, figures, verdict. "
+        "No recap of the steps taken, no restated question. Write at length "
+        "only when a plan, document or report was asked for."),
+}
+
+
+_ROUTE_IDS: dict[str, str] = {}
+_ROUTE_IDS_MAX = 4096
+_ROUTE_IDS_LOCK = threading.Lock()
+
+
+def session_route_key(model: str, session: str) -> str:
+    """The ``user`` value for *model*'s requests in *session*, or "".
+
+    Input: a model name and the engine's per-session key (its trace
+    session). Output: ``delfin-`` plus 16 random hex characters, drawn
+    once per key and process and the same for every later request of the
+    session; "" when the profile has session_affinity off or there is no
+    key. Nothing is derived from the key, so neither it nor any digest of
+    it leaves the machine (a hash of the key was rejected: it is a value
+    computed from session data, and code scanning flags it). Cost: a
+    session resumed in a new process gets a new id, so its first request
+    misses the backend's prefix cache once. Never raises.
+    """
+    key = str(session or "").strip()
+    if not key:
+        return ""
+    try:
+        if not bool(get_profile(model).session_affinity):
+            return ""
+    except Exception:
+        return ""
+    with _ROUTE_IDS_LOCK:
+        rid = _ROUTE_IDS.get(key)
+        if rid is None:
+            if len(_ROUTE_IDS) >= _ROUTE_IDS_MAX:
+                _ROUTE_IDS.pop(next(iter(_ROUTE_IDS)))
+            import secrets
+            rid = _ROUTE_IDS[key] = "delfin-" + secrets.token_hex(8)
+    return rid
+
+
+def model_notes(model: str) -> str:
+    """The notes *model*'s profile switches on, joined, or "".
+
+    Input: a model name. Output: a block headed ``--- Model notes ---``
+    with one line per enabled note, in MODEL_NOTES order, so the bytes are
+    the same on every turn for the same profile. Never raises.
+    """
+    try:
+        prof = get_profile(model)
+    except Exception:
+        return ""
+    lines = [text for name, text in MODEL_NOTES.items()
+             if bool(getattr(prof, name, False))]
+    if not lines:
+        return ""
+    return "--- Model notes ---\n" + "\n".join(f"- {t}" for t in lines)
+
+_OVERRIDES_CACHE: tuple[float, dict] | None = None
+
+
+def _load_overrides() -> dict:
+    """``agent.model_overrides`` from the settings file, or {}.
+
+    Reads the JSON directly instead of going through ``load_settings``:
+    that helper rewrites the file when it fills in defaults, and this is
+    called while building a prompt. Cached on the file's mtime, so an edit
+    is picked up on the next turn without re-reading per call.
+    """
+    global _OVERRIDES_CACHE
+    try:
+        from delfin.user_settings import get_settings_path
+        path = get_settings_path()
+        mtime = path.stat().st_mtime if path.exists() else 0.0
+    except Exception:
+        return {}
+    if _OVERRIDES_CACHE is not None and _OVERRIDES_CACHE[0] == mtime:
+        return _OVERRIDES_CACHE[1]
+    table: dict = {}
+    if mtime:
+        try:
+            import json
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            found = (raw.get("agent") or {}).get("model_overrides") or {}
+            if isinstance(found, dict):
+                table = {str(k): v for k, v in found.items()
+                         if isinstance(v, dict)}
+        except Exception:
+            table = {}
+    _OVERRIDES_CACHE = (mtime, table)
+    return table
+
+
+def _override_for(model: str) -> dict:
+    table = _load_overrides()
+    if not table or not model:
+        return {}
+    if model in table:
+        return table[model]
+    best: tuple[int, dict] | None = None
+    for key, values in table.items():
+        if key and model.startswith(key):
+            if best is None or len(key) > best[0]:
+                best = (len(key), values)
+    return best[1] if best else {}
+
+
+def _apply_overrides(model: str, profile: ModelProfile) -> ModelProfile:
+    values = _override_for(model)
+    if not values:
+        return profile
+    changes: dict = {}
+    for key, value in values.items():
+        coerce = _COERCE.get(str(key))
+        if coerce is None:               # not a knob — ignore, do not raise
+            continue
+        try:
+            changes[str(key)] = coerce(value)
+        except (TypeError, ValueError):
+            continue
+    if not changes:
+        return profile
+    named = ", ".join(f"{k}={v!r}" for k, v in sorted(changes.items()))
+    changes.setdefault("notes", profile.notes)
+    # In FRONT of the description, not after it. A benchmark run stamps the
+    # first 80 characters of ``notes`` onto its results so a later
+    # comparison can say which profile produced them; an override appended
+    # to a long description is truncated away, and the run then reads as if
+    # it had been made with the shipped knobs.
+    changes["notes"] = (
+        f"[user override: {named}] {changes['notes']}".strip())
+    return replace(profile, **changes)
+
+
+_EFFORT_ORDER: tuple[str, ...] = ("low", "medium", "high", "xhigh")
+
+
+def clamp_effort(model: str, effort: str) -> str:
+    """``effort`` brought down to what *model*'s profile says it can use.
+
+    Returns the level unchanged when the profile sets no ceiling or the
+    level is at or below it; a level the table does not know comes back
+    as it was, so a caller's own validation still sees it.
+    """
+    level = str(effort or "").strip().lower()
+    if level not in _EFFORT_ORDER:
+        return level
+    try:
+        ceiling = str(get_profile(model).max_effort or "").strip().lower()
+    except Exception:
+        ceiling = ""
+    if ceiling not in _EFFORT_ORDER:
+        return level
+    if _EFFORT_ORDER.index(level) > _EFFORT_ORDER.index(ceiling):
+        return ceiling
+    return level
+
+
+def effort_choices(model: str) -> tuple[str, ...]:
+    """The levels *model* may be set to, lowest first."""
+    try:
+        ceiling = str(get_profile(model).max_effort or "").strip().lower()
+    except Exception:
+        ceiling = ""
+    if ceiling not in _EFFORT_ORDER:
+        return _EFFORT_ORDER
+    return _EFFORT_ORDER[:_EFFORT_ORDER.index(ceiling) + 1]
+
+
 def get_profile(model: str, caps: "ModelCapabilities | None" = None) -> ModelProfile:
+    """Return the profile for ``model``, with any user override applied.
+
+    See :func:`_registry_profile` for the lookup and ``_load_overrides``
+    for the settings key. Every lookup goes through here, so an override
+    cannot be bypassed by a caller that happened to hit another branch.
+    """
+    return _apply_overrides(model, _registry_profile(model, caps))
+
+
+def _registry_profile(
+    model: str, caps: "ModelCapabilities | None" = None,
+) -> ModelProfile:
     """Return the profile for ``model``, falling back to a tier default.
 
     ``caps`` (optional :class:`~delfin.agent.model_capabilities.ModelCapabilities`)

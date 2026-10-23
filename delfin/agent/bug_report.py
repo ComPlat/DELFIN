@@ -23,12 +23,28 @@ dashboard already uses.  Each report is its own sub-directory named
 ``<UTC-timestamp>_<user>_<session>_<rand>`` so many users sharing one
 archive never collide and the directory stays chronologically sortable.
 
+The copy to the remote archive is a second disclosure and has its own
+consent, ``settings["agent"]["bug_upload"]`` (:func:`upload_policy`):
+
+* ``"ask"`` (default; also any unknown value) -- copied only when the
+  caller passes ``consent=True`` because the person said yes for THIS
+  report (the dashboard's Send under a line naming the host, the
+  ``[y/N]`` of ``bug_filing.upload``). With nobody to ask (``--yes``, an
+  unattended caller) the report stays local and the caller says so.
+* ``"never"`` -- every report stays local, whatever a caller passes.
+* ``"always"`` -- the standing opt-in for unattended runs: copied
+  without a question whenever a transfer target is configured.
+
+The gate is inside :func:`push_report_to_remote`, the one function that
+runs rsync, so a caller that does not ask uploads nothing.
+
 The path is **never hard-coded** — it always comes from env / settings.
 """
 
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -45,6 +61,9 @@ _FALLBACK_DIR = Path.home() / ".delfin" / "agent_bugs"
 # Conventional sub-folder appended to the configured transfer remote_path
 # when no explicit bug archive is set.
 _BUG_SUBDIR = "AGENT_BUGS"
+#: The entry points a report can be filed through, recorded per report so
+#: triage can tell a terminal session from a dashboard one.
+SURFACES = ("dashboard", "terminal", "cli")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Caps for bundling referenced workspace files into a report — keep
@@ -100,10 +119,9 @@ def _git_head(repo_dir: str | None) -> str:
     if not repo_dir:
         return ""
     try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-        )
+        from . import safe_git
+        out = safe_git.run(["rev-parse", "--short", "HEAD"], repo_dir,
+                           timeout=5)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""
@@ -117,12 +135,67 @@ def _delfin_version() -> str:
         return ""
 
 
-def settings_snapshot(settings: dict | None = None) -> dict:
-    """Return a redacted, debugging-relevant slice of the settings.
+# The agent settings a maintainer needs to reproduce a bad turn. This is an
+# ALLOW-list, and that direction is the whole point: the previous code took
+# the agent block wholesale, so every field anyone ever adds to it was
+# published by default. The live settings file on the audited machine
+# already carried an ``agent.api_key`` field — legacy, empty, read by
+# nothing — which is exactly the shape that would have shipped.
+_AGENT_SETTINGS_ALLOWED = frozenset({
+    "action_repeat_limit", "auto_memory", "auto_verify",
+    "auto_verify_command", "backend", "bash_isolation", "bug_archive_dir",
+    "bug_upload",
+    "compact_resets_cli", "cost_soft_limit_usd", "effort", "eval_loop",
+    "job_monitor", "max_action_rounds", "max_background_jobs", "max_tokens",
+    "max_tool_rounds", "output_guard", "permission_mode",
+    "permission_profile", "provider", "model", "role_models", "routing",
+    "session_retention_days", "state_retention_days", "subagents",
+    "commit_coauthor", "git_role", "wake_on_job_end",
+})
 
-    Includes the agent + runtime-backend + transfer-target sections (which
-    shape agent behaviour) but NEVER secrets: no API keys (those live in
-    credentials/env, not settings) and no SSH password fields.
+# Key names whose VALUE is never published, at any depth. The allow-list
+# above governs the top level; several allowed entries are nested dicts
+# (routing, subagents, role_models) that a future release could extend with
+# a per-provider credential, and a nested secret is not something the
+# top-level list can see.
+_SECRET_KEY_HINT = re.compile(
+    r"(?i)(api[_-]?key|apikey|secret|password|passwd|token|credential"
+    r"|passphrase|private[_-]?key|auth)"
+)
+
+_REDACTED = "[redacted:settings-key]"
+
+
+def _scrub_settings_value(value: Any, depth: int = 0) -> Any:
+    """Drop credential-shaped keys at any depth of an allowed value."""
+    if depth > 12:
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and _SECRET_KEY_HINT.search(k):
+                out[k] = _REDACTED
+            else:
+                out[k] = _scrub_settings_value(v, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_scrub_settings_value(v, depth + 1) for v in value]
+    return value
+
+
+def settings_snapshot(settings: dict | None = None) -> dict:
+    """Return a debugging-relevant slice of the settings.
+
+    The agent section is filtered through :data:`_AGENT_SETTINGS_ALLOWED`,
+    so a field nobody listed is absent rather than published; every allowed
+    value is then scrubbed of credential-shaped keys at any depth.  The
+    runtime backend and the transfer TARGET (host/user/path/port, never a
+    password) come along because they shape the run.
+
+    This report is made group-readable and rsynced into a shared archive,
+    so "no secrets" has to be a property of the construction, not of a
+    docstring: a report is not the place to find out that a settings field
+    turned out to hold a credential.
     """
     if settings is None:
         try:
@@ -131,7 +204,15 @@ def settings_snapshot(settings: dict | None = None) -> dict:
         except Exception:
             settings = {}
     settings = settings or {}
-    agent = dict((settings.get("agent") or {}))
+    raw_agent = settings.get("agent") or {}
+    agent: dict = {}
+    if isinstance(raw_agent, dict):
+        for key, value in raw_agent.items():
+            if key not in _AGENT_SETTINGS_ALLOWED:
+                continue
+            if _SECRET_KEY_HINT.search(str(key)):
+                continue        # belt and braces: never allow-list a secret
+            agent[key] = _scrub_settings_value(value)
     runtime = settings.get("runtime") or {}
     transfer = settings.get("transfer") or {}
     return {
@@ -144,7 +225,7 @@ def settings_snapshot(settings: dict | None = None) -> dict:
             "remote_path": transfer.get("remote_path", ""),
             "port": transfer.get("port", 22),
         },
-        "features": settings.get("features") or {},
+        "features": _scrub_settings_value(settings.get("features") or {}),
     }
 
 
@@ -162,16 +243,110 @@ def recent_outcomes(limit: int = 10) -> list:
         return []
 
 
-def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
+def _resolve_referenced(
+    original: str, workspace: Path | None = None
+) -> tuple[Path | None, str]:
+    """Resolve one referenced-file entry against its possible bases.
+
+    The dashboard collects RAW tool-input path strings, which are usually
+    *workspace-relative* (``tetris.py``) — resolving them against the
+    report-writer's CWD silently loses exactly the files the report should
+    preserve.  Resolution order:
+
+    1. absolute path — taken as-is,
+    2. ``workspace / relative`` (the session workspace, when known),
+    3. ``cwd / relative`` (legacy behaviour, kept as fallback).
+
+    A relative candidate must stay INSIDE its base after normalising
+    ``..`` and symlinks — a traversal entry like ``../../etc/passwd``
+    is refused instead of bundled.
+
+    Returns ``(path, via)``: ``via`` is ``"absolute"`` / ``"workspace"`` /
+    ``"cwd"`` on success, ``(None, "outside-workspace")`` for a refused
+    escape, and ``(None, "")`` when no base yields an existing file.
+    """
+    raw = Path(original).expanduser()
+    if raw.is_absolute():
+        return (raw, "absolute") if raw.is_file() else (None, "")
+    bases: list[tuple[str, Path]] = []
+    if workspace is not None:
+        bases.append(("workspace", Path(workspace).expanduser()))
+    bases.append(("cwd", Path.cwd()))
+    escaped = False
+    for via, base in bases:
+        try:
+            base_res = base.resolve()
+            candidate = (base / raw).resolve()
+        except Exception:
+            continue
+        if not candidate.is_file():
+            continue
+        if candidate.is_relative_to(base_res):
+            return candidate, via
+        escaped = True
+    return (None, "outside-workspace") if escaped else (None, "")
+
+
+def _secret_reason(src: Path, workspace: Path | None) -> str:
+    """Why ``src`` must never be copied into the shared report archive, or "".
+
+    The report writer runs as the user, outside every agent gate, and the
+    archive is readable by the whole group. The dashboard collects the path
+    of every file the agent TRIED to touch -- including reads the secret
+    deny list refused -- so a prompt-injected read_file("~/.ssh/id_rsa")
+    that was denied still put the real key into the report (security review
+    2026-09-16). Two rules:
+
+    * the agent's own secret deny list (.env, *.key, *.pem, .ssh, .netrc,
+      credentials*, secrets*, id_rsa, ...), matched on the name, the path
+      relative to the workspace and the absolute path;
+    * outside the session workspace, any path with a hidden component
+      (~/.bash_history, ~/.config/..., ~/.docker/config.json, ~/.kube/...):
+      dotfiles outside the project are the user's private configuration.
+    """
+    import fnmatch
+    try:
+        from .api_client import _DEFAULT_PATH_DENY_GLOBS as globs
+    except Exception:
+        return "deny-list-unavailable"
+    resolved = src.resolve()
+    spellings = {resolved.name, str(resolved)}
+    inside = False
+    if workspace is not None:
+        try:
+            rel = resolved.relative_to(Path(workspace).expanduser().resolve())
+            spellings.add(str(rel))
+            inside = True
+        except (ValueError, OSError):
+            inside = False
+    for sp in spellings:
+        sp = sp.replace("\\", "/")
+        if any(fnmatch.fnmatch(sp, g) for g in globs):
+            return "skipped-secret"
+    if not inside and any(part.startswith(".") for part in resolved.parts[1:]):
+        return "skipped-private-dotfile"
+    return ""
+
+
+def _bundle_files(
+    referenced: list, report_dir: Path,
+    *, workspace: str | Path | None = None,
+    failures: list | None = None,
+) -> list[dict]:
     """Copy the files the agent touched into ``report_dir/workspace`` so a
     maintainer has the real inputs for replay, not just the path names.
+
+    Relative entries are resolved via :func:`_resolve_referenced`
+    (absolute → workspace → cwd); each record carries ``resolved_via``
+    so the report shows WHICH base produced the bundled copy.
 
     Size-capped (per-file, count, total) and never raises.  Returns one
     record per referenced path with its bundling ``status``.  A unique
     flattened name avoids basename collisions; ``workspace/MANIFEST.txt``
-    maps bundled name → original absolute path.
+    maps bundled name → original absolute path. A binary file is not
+    copied (status ``excluded-binary``, with ``sha256``).
     """
-    import shutil
+    ws_base = Path(workspace).expanduser() if workspace else None
 
     records: list[dict] = []
     paths = [str(p) for p in (referenced or []) if str(p).strip()]
@@ -187,11 +362,18 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
     bundled = 0
     used_names: set[str] = set()
     for original in paths:
-        rec = {"original": original, "status": "", "bytes": 0, "bundled": ""}
+        rec = {"original": original, "status": "", "bytes": 0, "bundled": "",
+               "resolved_via": ""}
         try:
-            src = Path(original).expanduser()
-            if not src.is_file():
-                rec["status"] = "missing-or-not-a-file"
+            src, via = _resolve_referenced(original, workspace=ws_base)
+            if src is None:
+                rec["status"] = via or "missing-or-not-a-file"
+                records.append(rec)
+                continue
+            rec["resolved_via"] = via
+            _why = _secret_reason(src, ws_base)
+            if _why:
+                rec["status"] = _why
                 records.append(rec)
                 continue
             size = src.stat().st_size
@@ -216,8 +398,25 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
                 name = f"{base}__{n}"
                 n += 1
             used_names.add(name)
+            # Text goes through the same redactor as the report itself: a
+            # config or log the agent read can hold a token that no file
+            # name gives away. A binary file cannot be redacted, so it is
+            # not copied: the record names it with its size and sha256,
+            # enough to ask the reporter for it and to check that a copy
+            # received later is the same file. Rejected: copying it
+            # unredacted (a keyring blob, an sqlite store, a pickle or a
+            # core file can hold a credential the redactor never reads);
+            # a per-report consent to include binaries (nobody can judge
+            # an unreadable blob, so the yes would not be informed).
+            _data = src.read_bytes()
+            if b"\0" in _data[:8192]:
+                rec["status"] = "excluded-binary"
+                rec["sha256"] = hashlib.sha256(_data).hexdigest()
+                records.append(rec)
+                continue
             ws.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, ws / name)
+            _guarded_write(ws / name, _data.decode("utf-8", errors="replace"),
+                           failures)
             manifest.append(f"{name}\t{src}")
             rec["status"] = "bundled"
             rec["bundled"] = f"workspace/{name}"
@@ -238,6 +437,113 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
     return records
 
 
+class RedactionFailed(RuntimeError):
+    """The redactor could not check a text; the text must not be written."""
+
+
+def redact_for_report(text: str) -> tuple[str, int]:
+    """``text`` with every credential DELFIN holds and every credential
+    shape removed, and the number of removals. Raises on any failure.
+
+    Exact values first (file store, keyring, well-known env variables:
+    ``web_tools._known_secret_values``): a KIT key has no prefix, so the
+    shape checks alone pass it unchanged. Then every shape check of the
+    output guard (``output_guard._SECRET_CHECKS`` through
+    ``output_guard._redact``), each one required to run.
+
+    Rejected: ``run_output_guards`` (it honours ``agent.output_guard``,
+    a setting about the final answer on the person's own screen, and it
+    returns the input when redaction raises) and ``scrub_secrets`` (it
+    also returns the input on failure). Both are right for an answer the
+    person reads and wrong for a file that leaves the account.
+    """
+    try:
+        from . import output_guard as og
+        from .web_tools import _known_secret_values
+        guarded = str(text or "")
+        exact = 0
+        for secret in sorted(set(_known_secret_values()), key=len,
+                             reverse=True):
+            n = guarded.count(secret)
+            if n:
+                guarded = guarded.replace(secret, "[redacted:credential]")
+                exact += n
+        findings: list = []
+        for pattern, kind, group, validate in og._SECRET_CHECKS:
+            guarded = og._redact(guarded, pattern, kind, findings,
+                                 group=group, validate=validate)
+    except Exception as exc:
+        raise RedactionFailed(f"{type(exc).__name__}: {exc}") from exc
+    return guarded, exact + len(findings)
+
+
+#: Name of the note a report carries when a file was replaced by a
+#: placeholder because its redaction failed.
+REDACTION_FAILED_NOTE = "REDACTION_FAILED.txt"
+
+
+def _placeholder(path: Path, reason: str) -> str:
+    """What is written instead of a text whose redaction failed: no part
+    of the text, only that it is missing and why; JSON for .json and
+    .jsonl so readers of the report keep working."""
+    if path.suffix in (".json", ".jsonl"):
+        body = json.dumps({"schema": "delfin-bug-report/1",
+                           "redaction_failed": True, "file": path.name,
+                           "reason": reason[:200]}, ensure_ascii=False)
+        return body + "\n"
+    return (f"[{path.name} was not written: its secret redaction failed "
+            f"({reason[:200]}). The original stays with the reporter.]\n")
+
+
+def write_redaction_failed_note(report_dir: Path, failures: list) -> None:
+    """``REDACTION_FAILED.txt`` naming each file :func:`_guarded_write`
+    replaced by a placeholder; nothing when ``failures`` is empty. Shared
+    by the agent's and the viewer's report writers. Never raises."""
+    if not failures:
+        return
+    try:
+        (Path(report_dir) / REDACTION_FAILED_NOTE).write_text(
+            "The secret redaction failed for the files below, so each "
+            "was replaced by a placeholder and its content was not "
+            "written:\n" + "".join(f"  {f}\n" for f in failures)
+            + "The reporter still has the session; ask them directly.\n",
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _guarded_write(path: Path, text: str,
+                   failures: list | None = None) -> int:
+    """Write a rendered report file with the secret redactor applied.
+
+    Everything that reaches this function is about to be chgrp'ed to the
+    archive's maintainer group, given group-read, and rsynced into a shared
+    archive: the system prompt, the raw traceback, every chat and engine
+    message, and the tool trace with its raw tool outputs.
+
+    Returns the number of redactions. Fail-closed: when
+    :func:`redact_for_report` raises, a placeholder (:func:`_placeholder`)
+    is written instead of the text and ``"<file>: <reason>"`` is appended
+    to ``failures``; :func:`write_bug_report` turns that list into
+    ``REDACTION_FAILED.txt``. The report still exists and says what is
+    missing, and nothing unchecked reaches the archive.
+
+    Rejected: writing the unguarded text on a failure (the earlier
+    contract: a broken pattern or an import error then shipped the
+    credential it was meant to remove); failing the whole report (the
+    files that did redact are still worth having).
+    """
+    try:
+        guarded, count = redact_for_report(text)
+    except RedactionFailed as exc:
+        if failures is not None:
+            failures.append(f"{path.name}: {exc}")
+        path.write_text(_placeholder(path, str(exc)), encoding="utf-8")
+        return 0
+    path.write_text(guarded, encoding="utf-8")
+    return count
+
+
 def _report_dirname(user: str, session_id: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     sess = _sanitize(session_id[:8], default="nosess")
@@ -255,6 +561,7 @@ def _render_markdown(
     referenced_files: list | None = None,
     tool_trace: list | None = None,
     turn_metrics: list | None = None,
+    request_metrics: list | None = None,
 ) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
@@ -262,10 +569,11 @@ def _render_markdown(
     lines += ["## Context", "", "| Field | Value |", "|---|---|"]
     # Human report shows the USER-FACING mode name ("Code"), not the internal id
     # ("solo") — the raw value stays in report.json for maintainer tooling.
-    _mode_display = {"solo": "Code", "dashboard": "Dashboard"}
-    for key in ("created_at", "user", "host", "mode", "provider", "model",
+    _mode_display = {"solo": "Code", "dashboard": "Dashboard", "office": "Office", "research": "Research"}
+    for key in ("created_at", "surface", "user", "host", "mode",
+                "provider", "model",
                 "effort", "perms", "backend", "role", "session_id",
-                "input_tokens", "output_tokens", "cost_usd",
+                "workspace", "input_tokens", "output_tokens", "cost_usd",
                 "delfin_version", "git_head", "python"):
         if key in meta and meta[key] not in (None, ""):
             shown = (_mode_display.get(str(meta[key]), str(meta[key]))
@@ -279,11 +587,16 @@ def _render_markdown(
         lines += [f"- `{c}`" for c in denied_commands]
     if referenced_files:
         lines += ["", "## Referenced workspace files", "",
-                   "| File | Status | Size | bundled |", "|---|---|---|---|"]
+                   "| File | Status | Via | Size | bundled |",
+                   "|---|---|---|---|---|"]
         for r in referenced_files:
+            where = r.get('bundled', '') or (
+                f"not copied, sha256 {r['sha256']}" if r.get('sha256')
+                else '—')
             lines.append(
                 f"| `{r.get('original','')}` | {r.get('status','')} | "
-                f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
+                f"{r.get('resolved_via','') or '—'} | "
+                f"{r.get('bytes',0)} | {where} |"
             )
     if tool_trace:
         lines += ["", "## Tool trace", "",
@@ -303,6 +616,17 @@ def _render_markdown(
         try:
             from .turn_metrics import format_summary as _fmt_tm
             lines += ["```", _fmt_tm(turn_metrics, limit=40), "```"]
+        except Exception:
+            pass
+    if request_metrics:
+        lines += ["", "## Requests", "",
+                  "One line per model request — full data in "
+                  "`request_metrics.jsonl`. `cold` = 60 s or more to the "
+                  "first token (the prompt was not served from the cache).",
+                  ""]
+        try:
+            from .turn_metrics import format_requests as _fmt_req
+            lines += ["```", _fmt_req(request_metrics, limit=40), "```"]
         except Exception:
             pass
     if system_prompt and system_prompt.strip():
@@ -354,16 +678,27 @@ def write_bug_report(
     error_text: str = "",
     denied_commands: list | None = None,
     referenced_files: list | None = None,
+    workspace: str | Path | None = None,
     repo_dir: str | None = None,
     extra: dict | None = None,
     settings: dict | None = None,
     archive_dir: str | Path | None = None,
+    surface: str = "",
 ) -> Path:
     """Write a self-contained bug report and return its directory.
 
     Produces ``report.json`` (machine-readable, full payload incl. the
     raw engine message list) and ``report.md`` (human-readable) inside a
     fresh collision-free sub-directory of the resolved archive root.
+
+    ``workspace`` is the SESSION workspace the agent ran in — relative
+    ``referenced_files`` entries (raw tool-input strings) resolve against
+    it before falling back to the report-writer's CWD (legacy).  When
+    omitted, behaviour is unchanged (cwd-relative only).
+
+    ``surface`` names the entry point that filed it (one of
+    :data:`SURFACES`); empty is recorded as ``dashboard``, the only
+    writer before the field existed.
     """
     user = _current_user()
     root = Path(archive_dir).expanduser() if archive_dir else resolve_archive_dir(settings)
@@ -394,8 +729,8 @@ def write_bug_report(
     # from the setgid archive dir). This makes a report readable by the
     # maintainer group WITHOUT the writer needing membership in it — the
     # explicit chgrp in _make_group_readable only succeeds when the writer is a
-    # member, which it may not be (observed 2026-06-25: writer 'qmchem_all' was
-    # not in 'qmchem_shared', so its chgrp failed and the report stayed
+    # member, which it may not be (observed 2026-06-25: the writer was not
+    # in the maintainer group, so its chgrp failed and the report stayed
     # unreadable to the maintainer). chmod on an owned dir always works; ZFS
     # honours setgid for new-file group inheritance. Best-effort.
     try:
@@ -407,6 +742,7 @@ def write_bug_report(
 
     meta: dict[str, Any] = {
         "schema": "delfin-bug-report/1",
+        "surface": surface if surface in SURFACES else "dashboard",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user": user,
         "host": socket.gethostname(),
@@ -418,6 +754,7 @@ def write_bug_report(
         "backend": backend,
         "role": role,
         "session_id": session_id,
+        "workspace": str(workspace) if workspace else "",
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": round(float(cost_usd or 0.0), 4),
@@ -430,7 +767,11 @@ def write_bug_report(
         meta["extra"] = extra
 
     # Bundle the actual files the agent touched (copied under workspace/).
-    bundled_files = _bundle_files(referenced_files or [], report_dir)
+    # Relative entries resolve against the SESSION workspace first — the
+    # report-writer's CWD is not where the agent created them.
+    failures: list = []
+    bundled_files = _bundle_files(referenced_files or [], report_dir,
+                                  workspace=workspace, failures=failures)
 
     # Tool-call trace: the exact sequence of tools the agent ran this session
     # (name / input / output / duration / ok). Shipped so a failed session can
@@ -440,9 +781,10 @@ def write_bug_report(
         from . import tool_trace as _tt
         tool_trace = _tt.read(trace_session or session_id)
         if tool_trace:
-            (report_dir / "tool_trace.jsonl").write_text(
+            _guarded_write(
+                report_dir / "tool_trace.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False) for e in tool_trace)
-                + "\n", encoding="utf-8")
+                + "\n", failures)
     except Exception:
         tool_trace = []
 
@@ -454,11 +796,27 @@ def write_bug_report(
         from . import turn_metrics as _tm
         turn_metrics = _tm.read(trace_session or session_id)
         if turn_metrics:
-            (report_dir / "turn_metrics.jsonl").write_text(
-                "\n".join(json.dumps(e, ensure_ascii=False) for e in turn_metrics)
-                + "\n", encoding="utf-8")
+            _guarded_write(
+                report_dir / "turn_metrics.jsonl",
+                "\n".join(json.dumps(e, ensure_ascii=False)
+                          for e in turn_metrics) + "\n", failures)
     except Exception:
         turn_metrics = []
+
+    # Per request: which ones re-read their prompt cold, and how much of it
+    # came from the cache. Written as each request ends, so a report filed
+    # during a turn has it too.
+    request_metrics: list = []
+    try:
+        from . import turn_metrics as _tm_req
+        request_metrics = _tm_req.read_requests(trace_session or session_id)
+        if request_metrics:
+            _guarded_write(
+                report_dir / "request_metrics.jsonl",
+                "\n".join(json.dumps(e, ensure_ascii=False)
+                          for e in request_metrics) + "\n", failures)
+    except Exception:
+        request_metrics = []
 
     payload = {
         **meta,
@@ -468,18 +826,24 @@ def write_bug_report(
         "referenced_files": bundled_files,
         "tool_trace": tool_trace,
         "turn_metrics": turn_metrics,
+        "request_metrics": request_metrics,
         "settings": settings_snapshot(settings),
-        "recent_outcomes": recent_outcomes(),
+        # Not the outcome history: it holds the prompts of EVERY session of
+        # this user, and the archive is shared with the group.
+        "recent_outcomes": [],
         "chat_messages": chat_messages or [],
         "engine_messages": engine_messages or [],
         "cycle_history": cycle_history or [],
         "last_compaction_info": last_compaction_info or {},
     }
 
-    (report_dir / "report.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
-    (report_dir / "report.md").write_text(
+    # Redact BEFORE _make_group_readable — that call is the moment the
+    # report stops being private.
+    n_redacted = _guarded_write(
+        report_dir / "report.json",
+        json.dumps(payload, ensure_ascii=False, indent=2), failures)
+    n_redacted += _guarded_write(
+        report_dir / "report.md",
         _render_markdown(
             meta, chat_messages or [],
             error_text=error_text,
@@ -488,9 +852,20 @@ def write_bug_report(
             referenced_files=bundled_files,
             tool_trace=tool_trace,
             turn_metrics=turn_metrics,
+            request_metrics=request_metrics,
         ),
-        encoding="utf-8",
+        failures,
     )
+    write_redaction_failed_note(report_dir, failures)
+    if n_redacted:
+        try:
+            (report_dir / "REDACTIONS.txt").write_text(
+                f"{n_redacted} credential-shaped value(s) were redacted from "
+                "this report before it left the writer's machine.\n"
+                "Ask the reporter directly if a redacted value is needed to "
+                "reproduce.\n", encoding="utf-8")
+        except OSError:
+            pass
     _make_group_readable(report_dir)
     return report_dir
 
@@ -509,7 +884,7 @@ def _make_group_readable(report_dir: Path) -> None:
        lost ``g+s``) leaves files in the writer's PRIMARY group, which the
        maintainer is not in — so ``chmod g+r`` then grants read to the wrong
        group and the report is silently unreadable (observed 2026-06-25:
-       files came out ``qmchem_all`` instead of ``qmchem_shared``). Setting
+       files came out in the writer's group, not the maintainer's). Setting
        the group explicitly makes readability deterministic.
     2. MODE — add group read (+ traverse on dirs). The "others" bits are left
        untouched, so the report stays as private as the archive home already
@@ -539,6 +914,40 @@ def _make_group_readable(report_dir: Path) -> None:
             pass
 
 
+#: Values of ``agent.bug_upload``; the first is the default.
+UPLOAD_POLICIES = ("ask", "never", "always")
+
+
+def upload_policy(settings: dict | None = None) -> str:
+    """``agent.bug_upload`` from ``settings`` (default: the settings
+    file): ``ask``, ``never`` or ``always``. Missing, unreadable or
+    unknown is ``ask`` -- the value that uploads only after a yes; an
+    unknown value is never read as ``always``."""
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        except Exception:
+            settings = {}
+    agent = (settings or {}).get("agent") or {}
+    value = str(agent.get("bug_upload") or "").strip().lower() \
+        if isinstance(agent, dict) else ""
+    return value if value in UPLOAD_POLICIES else UPLOAD_POLICIES[0]
+
+
+def upload_refusal(*, consent: bool, settings: dict | None = None) -> str:
+    """Why a report must not be copied to the remote archive now, or ""
+    when it may be. ``consent``: the person said yes for this report."""
+    policy = upload_policy(settings)
+    if policy == "never":
+        return "not uploaded: agent.bug_upload is 'never'"
+    if policy == "ask" and not consent:
+        return ("not uploaded: nobody confirmed copying this report "
+                "(agent.bug_upload is 'ask'; confirm it when filing, or "
+                "set it to 'always' to upload without asking)")
+    return ""
+
+
 def push_report_to_remote(
     report_dir: str | Path,
     *,
@@ -548,6 +957,8 @@ def push_report_to_remote(
     port: int = 22,
     subdir: str = _BUG_SUBDIR,
     timeout: int = 120,
+    consent: bool = False,
+    settings: dict | None = None,
 ) -> tuple[bool, str]:
     """rsync a locally-written report directory into the shared remote
     archive over SSH — the same mechanism the dashboard uses for transfers.
@@ -557,6 +968,12 @@ def push_report_to_remote(
     error string.  Never raises — the caller keeps the local copy either
     way.  No-op (returns ok=False with a reason) when the transfer config
     is incomplete.
+
+    ``consent`` is True only when the person agreed to copy THIS report;
+    ``settings`` (default: the settings file) supplies
+    ``agent.bug_upload``. :func:`upload_refusal` decides, before any
+    command runs; a refusal returns ``(False, reason)`` and the local copy
+    stays where it is.
     """
     report_dir = Path(report_dir)
     host = (host or "").strip()
@@ -566,13 +983,28 @@ def push_report_to_remote(
         return False, "no remote configured (host/user/remote path missing)"
     if not report_dir.is_dir():
         return False, f"local report missing: {report_dir}"
+    refused = upload_refusal(consent=consent, settings=settings)
+    if refused:
+        return False, f"{refused}; the report stays local in {report_dir}"
 
     from delfin.ssh_transfer_jobs import (
         build_ssh_mkdir_command,
         build_rsync_transfer_command,
     )
 
-    target_dir = f"{remote_path.rstrip('/')}/{subdir}"
+    # The configured remote path is where the archive lives, and people
+    # configure it BOTH ways: some point at the parent and expect the
+    # subdir appended, some point straight at the archive folder because
+    # that is the folder they were told bugs go in. Appending blindly turns
+    # the second into ``.../AGENT_BUGS/AGENT_BUGS``, one level below where
+    # anything looks -- ``find_unsolved`` iterates the immediate subdirs,
+    # sees a directory with no report.json, and skips it. Observed
+    # 2026-08-28: two reports from a second user sat there unread while the
+    # triage list showed nothing new.
+    _base = remote_path.rstrip("/")
+    _sub = (subdir or "").strip("/")
+    target_dir = (_base if _sub and _base.rsplit("/", 1)[-1] == _sub
+                  else f"{_base}/{_sub}" if _sub else _base)
     try:
         mk = subprocess.run(
             build_ssh_mkdir_command(host, user, target_dir, port),
@@ -601,6 +1033,15 @@ def push_report_to_remote(
 # ---------------------------------------------------------------------------
 
 _TASK_DRAFTS_DIR = Path.home() / ".delfin" / "bug_tasks"
+
+
+def report_surface(report: dict) -> str:
+    """Which entry point filed *report*: ``dashboard``, ``terminal`` (the
+    REPL's /bug) or ``cli`` (``delfin-agent bug report``). A report
+    without the field predates it and came from the dashboard button, the
+    only writer at the time."""
+    value = str((report or {}).get("surface") or "").strip()
+    return value if value in SURFACES else "dashboard"
 
 
 def load_report(report_dir: str | Path) -> dict:
@@ -636,6 +1077,7 @@ def list_reports(archive_dir: str | Path | None = None) -> list[dict]:
             "name": d.name,
             "path": str(d),
             "created_at": meta.get("created_at", ""),
+            "surface": report_surface(meta),
             "user": meta.get("user", ""),
             "mode": meta.get("mode", ""),
             "model": meta.get("model", ""),

@@ -45,7 +45,9 @@ def test_git_push_is_not_auto_allowed(perms, cmd):
 @pytest.mark.parametrize("cmd", [
     "git status", "git diff", "git log --oneline",
     "git commit -m wip",          # local + reversible → stays auto
-    "git fetch", "git add -A",
+    "git fetch",
+    # Staging NAMED paths is the routine half of `git add` and stays auto.
+    "git add delfin/agent/office.py", "git add tests/ delfin/",
 ])
 def test_safe_git_ops_still_auto_allowed(perms, cmd):
     assert perms.matches_bash_auto_allow(cmd) is True

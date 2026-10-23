@@ -1,5 +1,5 @@
 """Vision wiring: image pixels reach a vision-capable model as image_url
-content; non-vision models / Claude get a text fallback."""
+content; non-vision models / the CLI backend get a text fallback."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def test_no_images_plain_text(tmp_path, monkeypatch):
 
 
 def test_claude_provider_text_fallback(tmp_path, monkeypatch):
-    # Claude uses a different image format → must not get OpenAI image_url.
+    # The CLI backend uses a different image format → must not get OpenAI image_url.
     eng = _engine(tmp_path, monkeypatch, supports_vision=True)
     eng.provider = "claude"
     msg = eng._build_user_message("hi", [_img(tmp_path)])

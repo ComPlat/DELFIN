@@ -8,7 +8,6 @@ calculations (calc/, archive/, remote_archive/).
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 
@@ -27,6 +26,26 @@ class CalcSearchEngine:
     def record_count(self) -> int:
         return len(self._records)
 
+    def provenance(self) -> dict[str, Any]:
+        """Which roots this index covers, which were missing, when it was built.
+
+        Attached to every answer, including an empty one. A zero-record
+        index built over nothing is not the same fact as a zero-result
+        query over a populated one, and the two used to print identically.
+        """
+        prov = dict(self._index.get("provenance") or {})
+        prov.setdefault("built_at", self._index.get("built_at", ""))
+        prov.setdefault("roots", [])
+        prov.setdefault("any_root_scanned", bool(prov.get("roots")))
+        prov["record_count"] = len(self._records)
+        if not prov.get("any_root_scanned"):
+            prov["note"] = (
+                "no calculation directory was scanned — this is an empty "
+                "index, not an empty result. Check that calc/ and archive/ "
+                "exist where this session expects them."
+            )
+        return prov
+
     # ------------------------------------------------------------------
     # Main search
     # ------------------------------------------------------------------
@@ -43,7 +62,7 @@ class CalcSearchEngine:
         has_data: str = "",
         completed: bool | None = None,
         max_results: int = 20,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Search calculations by keyword and/or structured filters.
 
         Parameters
@@ -69,9 +88,35 @@ class CalcSearchEngine:
 
         Returns
         -------
-        list of dict
-            Matching calculation records with a ``score`` field.
+        dict
+            ``{"results": [...], "index": {...}}`` — matching records with a
+            ``score`` field, plus the scan provenance so an empty list can
+            be told apart from an index built over directories that were
+            not there.
         """
+        return {
+            "results": self._ranked(
+                query, source=source, functional=functional,
+                basis_set=basis_set, solvent=solvent, module=module,
+                has_data=has_data, completed=completed,
+                max_results=max_results),
+            "index": self.provenance(),
+        }
+
+    def _ranked(
+        self,
+        query: str = "",
+        *,
+        source: str = "",
+        functional: str = "",
+        basis_set: str = "",
+        solvent: str = "",
+        module: str = "",
+        has_data: str = "",
+        completed: bool | None = None,
+        max_results: int = 20,
+    ) -> list[dict[str, Any]]:
+        """The matching records alone, without the provenance wrapper."""
         results: list[tuple[float, dict]] = []
 
         # Normalise query tokens
@@ -133,13 +178,17 @@ class CalcSearchEngine:
         # Exact match
         for rec in self._records:
             if rec.get("calc_id", "") == calc_id:
-                return _format_result_detailed(rec)
+                out = _format_result_detailed(rec)
+                out["index"] = self.provenance()
+                return out
 
         # Substring match
         q = calc_id.lower()
         for rec in self._records:
             if q in rec.get("calc_id", "").lower():
-                return _format_result_detailed(rec)
+                out = _format_result_detailed(rec)
+                out["index"] = self.provenance()
+                return out
 
         return None
 
@@ -165,7 +214,14 @@ class CalcSearchEngine:
         return sorted(counts.items(), key=lambda x: x[1], reverse=True)
 
     def summary(self) -> dict[str, Any]:
-        """Return a summary of the index contents."""
+        """Return a summary of the index contents.
+
+        Carries the provenance: this claims to cover ALL indexed
+        calculations, the engine is cached for the life of the process, and
+        a root that was never scanned contributes zero without saying so.
+        The reader needs the build time and the root list to know what
+        "all" meant.
+        """
         sources: dict[str, int] = {}
         for rec in self._records:
             s = rec.get("source", "unknown")
@@ -177,6 +233,7 @@ class CalcSearchEngine:
             "basis_sets": self.list_basis_sets()[:10],
             "solvents": self.list_solvents()[:10],
             "modules": self.list_modules(),
+            "index": self.provenance(),
         }
 
 
@@ -218,6 +275,7 @@ def _format_result(rec: dict[str, Any]) -> dict[str, Any]:
         "charge": rec.get("charge", ""),
         "modules": rec.get("modules", []),
         "completed": rec.get("completed"),
+        "outcome": rec.get("outcome", ""),
         "smiles": rec.get("smiles", "")[:80],
     }
 
@@ -234,6 +292,9 @@ def _format_result_detailed(rec: dict[str, Any]) -> dict[str, Any]:
         "aux_basis": rec.get("aux_basis", ""),
         "ri_method": rec.get("ri_method", ""),
         "dispersion": rec.get("dispersion", ""),
+        "metal_basis": rec.get("metal_basis", ""),
+        "relativity": rec.get("relativity", ""),
+        "multiplicity": rec.get("multiplicity", ""),
         "solvation": rec.get("solvation", ""),
         "solvent": rec.get("solvent", ""),
         "charge": rec.get("charge", ""),
@@ -245,6 +306,7 @@ def _format_result_detailed(rec: dict[str, Any]) -> dict[str, Any]:
         "out_files": rec.get("out_files", []),
         "completed": rec.get("completed"),
         "exit_code": rec.get("exit_code"),
+        "outcome": rec.get("outcome", ""),
     }
     # Energies
     for key in ("gibbs_energy", "electronic_energy", "zpe", "run_time_seconds"):

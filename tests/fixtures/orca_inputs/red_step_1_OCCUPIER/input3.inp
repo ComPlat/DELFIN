@@ -1,0 +1,17 @@
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water) OPT PModel MORead
+%pal nprocs 8 end
+%scf maxiter 125 end
+%maxcore 2000
+%moinp "input.gbw"
+%scf
+  BrokenSym 3,2
+  APMethod 2
+end
+* xyz -1 2
+Co 0.000000 0.000000 0.000000   NewGTO "def2-TZVP" end
+O 2.100000 0.000000 0.000000   NewGTO "def2-TZVP" end
+O -2.400000 0.000000 0.000000   NewGTO "def2-TZVP" end
+N 0.000000 2.050000 0.000000   NewGTO "def2-TZVP" end
+C 3.050000 0.000000 0.000000
+H 3.500000 0.950000 0.000000
+*

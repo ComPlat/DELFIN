@@ -92,6 +92,12 @@ _Z_BY_SYMBOL: Dict[str, int] = {
 
 
 def _is_metal_sym(sym: str) -> bool:
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # ⚠ Self-contradiction: _METAL_Z_RANGES covers Ce..Lu, _Z_BY_SYMBOL jumps from
+    # La 57 to Hf 72 -> all lanthanides except La are not metals here.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     z = _Z_BY_SYMBOL.get(sym)
     return z is not None and z in _METAL_Z_RANGES
 
@@ -333,11 +339,79 @@ def planarize_sp2_nitrogen(xyz: str, mol,
         return xyz, report
     if mol.GetNumAtoms() != len(syms):
         return xyz, report
+    # ===== ORDER, NOT JUST COUNT (16.08.2026) =======================================
+    # The guard above checks the COUNT.  But `detect_planar_sp2n_groups` returns
+    # `mol` ATOM INDICES, and those are applied directly to the XYZ coordinates.  If the
+    # count matches but the ORDER does not, the guard does not fire -- and the corrector
+    # flattens the WRONG atoms.  That is not silent ineffectiveness but silent
+    # destruction, and from the outside it could not be told apart from a build defect.
+    #
+    # THE CASE IS NOT HYPOTHETICAL.  `_ffree_shared_tail` warns of it verbatim: a `mol`
+    # parsed from the SMILES carries RDKit's atom order, FF-free frames carry
+    # metal-at-0 plus AddHs(ligand) blocks in build order -- "the two never coincide".
+    # Exactly this break has already turned the ring-pucker emitter there into a null lever.
+    # As long as this corrector runs only on the legacy path (where XYZ comes from the same
+    # `mol`), the check is byte-identically true and costs nothing.  It is the
+    # precondition for being allowed to hook it up anywhere else at all.
+    # ===== AND SINCE THE EVENING OF 16.08.: INSTEAD OF GIVING UP -- TRANSLATE ========
+    # The latch above prevented the silent destruction, but it also left the corrector
+    # INEFFECTIVE on the FF-free path: `pyr131` measured `affected = 2 of 131` on 16.08.
+    # The mapping is determinable, however -- `_frame_atom_map.frame_to_mol_map` reconstructs
+    # it as a true graph isomorphism (complete substructure match over all atoms,
+    # generic bonds, because the frame graph knows no bond orders).
+    # If the order matches -> identity, i.e. byte-identical as before.
+    # If it does not match -> translate instead of aborting.
+    # If it is not determinable -> still abort; a WRONG mapping would be
+    # worse than none.
+    _fmap = None
+    try:
+        _same_order = [a.GetSymbol() for a in mol.GetAtoms()] == list(syms)
+    except Exception:
+        return xyz, report
+    if not _same_order:
+        try:
+            from delfin.manta._frame_atom_map import frame_to_mol_map as _f2m
+            from delfin.manta._coord_angle_corrector import (
+                _build_geometric_adjacency as _adj)
+            _nb, _ = _adj(syms, pts)
+            _m = _f2m(mol, syms, _nb)          # _m[frame] = mol
+        except Exception:
+            _m = None
+        if not _m:
+            return xyz, report
+        _fmap = {int(mi): fi for fi, mi in enumerate(_m)}   # mol -> frame
 
     try:
         groups = detect_planar_sp2n_groups(mol, include_amide_imine)
     except Exception:
         return xyz, report
+    # The groups carry `mol` indices (`n_idx`, `o_idxs`, `c_idx`).  If the order
+    # differs, they are translated to frame indices here ONCE -- generically via the
+    # key names, so that an index kind added later does not silently remain
+    # untranslated.  If even a single index is missing from the mapping, the group is
+    # rejected rather than applied wrongly.
+    if _fmap is not None:
+        _tr = []
+        for g in groups:
+            g2 = dict(g)
+            ok = True
+            for k, v in g.items():
+                if not (k.endswith("_idx") or k.endswith("_idxs")):
+                    continue
+                if isinstance(v, int):
+                    if v not in _fmap:
+                        ok = False
+                        break
+                    g2[k] = _fmap[v]
+                elif isinstance(v, (list, tuple)):
+                    if any(int(x) not in _fmap for x in v):
+                        ok = False
+                        break
+                    g2[k] = type(v)(_fmap[int(x)] for x in v)
+            if ok:
+                _tr.append(g2)
+        groups = _tr
+
     report["n_candidates"] = len(groups)
     if not groups:
         return xyz, report

@@ -1,7 +1,7 @@
 """The internal 'solo' id must surface to the user as 'Code' everywhere — the
 mode was renamed (dropdown shows Dashboard + Code) but the badges leaked the
-old internal name (Jerome report 20260617-152728: 'noch paar Stellen mit Solo
-nicht Code')."""
+old internal name (field report 2026-06-17: a few places still
+said Solo instead of Code)."""
 
 from __future__ import annotations
 
@@ -25,7 +25,9 @@ def test_no_user_facing_solo_label_leaks():
            / "tab_agent.py").read_text(encoding="utf-8")
     assert "Switch the Mode dropdown to **solo**" not in src
     assert "In **solo mode**" not in src
-    assert 'mode-badge">{_html.escape(_mode_label(mode))}' in src
+    # The status line no longer repeats the mode at all (the Mode dropdown
+    # shows it); if a badge comes back it must carry the label, not the id.
+    assert 'mode-badge">{_html.escape(mode)}' not in src
     # Session dropdown label must map the id too: "[Code, N msgs]", not "[solo…".
     assert 'f"{title}  [{_mode_label(mode)}, {n_msgs} msgs]"' in src
     assert 'f"{title}  [{mode}, {n_msgs} msgs]"' not in src

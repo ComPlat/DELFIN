@@ -116,7 +116,7 @@ def test_run_task_happy_path_records_success():
         max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
     )
 
-    def fake_factory(model, backend, provider, mode):
+    def fake_factory(model, backend, provider, mode, task_class=""):
         return _FakeEngine(cost_usd=0.0)
 
     def fake_run_once(engine, prompt, *, max_tokens=4096):
@@ -152,7 +152,7 @@ def test_run_task_failure_when_required_signal_missing():
         max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
     )
 
-    def fake_factory(model, backend, provider, mode):
+    def fake_factory(model, backend, provider, mode, task_class=""):
         return _FakeEngine()
 
     def fake_run_once(engine, prompt, *, max_tokens=4096):
@@ -297,7 +297,7 @@ def test_run_task_repeats_runs_engine_N_times():
     factory_calls = []
     run_once_calls = []
 
-    def factory(model, backend, provider, mode):
+    def factory(model, backend, provider, mode, task_class=""):
         factory_calls.append(model)
         return _FakeEngine()
 
@@ -469,3 +469,43 @@ def test_cli_bench_compare_happy_path(capsys, tmp_path):
     out = capsys.readouterr().out
     assert rc == 0
     assert "BETTER" in out.upper()
+
+
+# ---------------------------------------------------------------------------
+# Pristine behavior workspace: task edits must not leak between attempts
+# ---------------------------------------------------------------------------
+
+def test_workspace_restored_after_each_attempt(tmp_path, monkeypatch):
+    from delfin.agent import benchmark_runner as br
+    from delfin.agent.benchmark import Task
+    ws = tmp_path / "tests" / "fixtures" / "behavior_workspace"
+    ws.mkdir(parents=True)
+    (ws / "thermo.py").write_text("ORIGINAL with unit bug", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    class _Eng:
+        cost_usd = 0.0
+
+    def _run_once(engine, prompt, max_tokens=4096):
+        # The agent mutates a fixture and creates a new file mid-task.
+        (ws / "thermo.py").write_text("FIXED by agent", encoding="utf-8")
+        (ws / "weights.py").write_text("new artifact", encoding="utf-8")
+        return {"text": "done", "tool_calls": [], "error": "",
+                "input_tokens": 1, "output_tokens": 1}
+
+    task = Task(id="t_ws", task_class="beh", mode="solo", prompt="p",
+                expected_signals=(), forbidden_signals=(),
+                max_duration_s=10, max_cost_usd=0.1, max_tool_calls=2)
+    br.run_task(task, model="m", backend="api", provider="kit",
+                profile_name="p",
+                engine_factory=lambda *a: _Eng(),
+                max_tokens=50, run_once=_run_once)
+    assert (ws / "thermo.py").read_text() == "ORIGINAL with unit bug"
+    assert not (ws / "weights.py").exists()
+
+
+def test_workspace_guard_noop_without_dir(tmp_path, monkeypatch):
+    from delfin.agent import benchmark_runner as br
+    monkeypatch.chdir(tmp_path)
+    with br._PristineWorkspace():
+        pass                                      # no dir -> no-op, no error

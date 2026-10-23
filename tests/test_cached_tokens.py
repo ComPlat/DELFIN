@@ -4,6 +4,8 @@ the foundation for the caching/efficiency work."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from delfin.agent.api_client import _cached_tokens_of, StreamEvent
 
 
@@ -35,11 +37,35 @@ def test_stream_event_has_cached_field():
 
 
 def test_capture_is_wired_in_both_paths():
-    from pathlib import Path
+    """Both OpenAI/KIT paths must accumulate cached tokens.
+
+    This counted the source substring ``_total_cached +=
+    _cached_tokens_of(`` and required two of them — one per path. That
+    stopped being true when the non-streaming path's synthesis moved into
+    a shared helper, which reads the same field and hands the number back
+    for the caller to add: the capture was intact and the count was one.
+    A test that pins a spelling fails on a refactor and passes on a
+    deletion that keeps the words, so this asks the question directly —
+    does each path reach the extractor?
+    """
+    import inspect
+
+    from delfin.agent import api_client
+
+    streaming = inspect.getsource(api_client.OpenAIClient.stream_message)
+    assert "_total_cached += _cached_tokens_of(" in streaming, (
+        "the streaming path no longer reads cached_tokens")
+
+    absorber = inspect.getsource(api_client._absorb_non_streaming)
+    assert "_cached_tokens_of(" in absorber, (
+        "the non-streaming absorber no longer reads cached_tokens")
+    # ... and every caller of it adds what it returns.
+    assert streaming.count("_absorb_non_streaming(") == 2
+    assert streaming.count("_total_cached += _cch") == 1
+    assert streaming.count("_total_cached += _tc_cached") == 1
+
     src = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
            / "api_client.py").read_text(encoding="utf-8")
-    # OpenAI/KIT streaming + non-streaming capture
-    assert src.count("_total_cached += _cached_tokens_of(") >= 2
     # Anthropic path surfaces cache_read
     assert "cached_tokens=cache_read" in src
     # OpenAI path surfaces the accumulator on the final delta

@@ -1,0 +1,90 @@
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water) ESD(PHOSP) TightSCF
+%base "T1_S0_PHOSP_iroot1"
+%tddft
+  nroots 15
+  maxdim 10
+  tda true
+  maxiter 500
+  iroot 1
+  dosoc true
+end
+%ESD
+  GSHESSIAN       "S0.hess"
+  TSHESSIAN       "T1.hess"
+  DOHT            TRUE
+  LINES           LORENTZ
+  LINEW           50
+  INLINEW         250
+  TEMP            298.15
+  DELE            19753
+END
+* xyz 0 1
+C 0.000000 0.000000 -0.530000
+O 0.000000 0.000000 0.680000
+H 0.000000 0.940000 -1.120000
+H 0.000000 -0.940000 -1.120000
+*
+%pal nprocs 8 end
+%maxcore 2000
+
+$new_job
+
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water) ESD(PHOSP) TightSCF
+%base "T1_S0_PHOSP_iroot2"
+%tddft
+  nroots 15
+  maxdim 10
+  tda true
+  maxiter 500
+  iroot 2
+  dosoc true
+end
+%ESD
+  GSHESSIAN       "S0.hess"
+  TSHESSIAN       "T1.hess"
+  DOHT            TRUE
+  LINES           LORENTZ
+  LINEW           50
+  INLINEW         250
+  TEMP            298.15
+  DELE            19753
+END
+* xyz 0 1
+C 0.000000 0.000000 -0.530000
+O 0.000000 0.000000 0.680000
+H 0.000000 0.940000 -1.120000
+H 0.000000 -0.940000 -1.120000
+*
+%pal nprocs 8 end
+%maxcore 2000
+
+$new_job
+
+! PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(water) ESD(PHOSP) TightSCF
+%base "T1_S0_PHOSP_iroot3"
+%tddft
+  nroots 15
+  maxdim 10
+  tda true
+  maxiter 500
+  iroot 3
+  dosoc true
+end
+%ESD
+  GSHESSIAN       "S0.hess"
+  TSHESSIAN       "T1.hess"
+  DOHT            TRUE
+  LINES           LORENTZ
+  LINEW           50
+  INLINEW         250
+  TEMP            298.15
+  DELE            19753
+END
+* xyz 0 1
+C 0.000000 0.000000 -0.530000
+O 0.000000 0.000000 0.680000
+H 0.000000 0.940000 -1.120000
+H 0.000000 -0.940000 -1.120000
+*
+%pal nprocs 8 end
+%maxcore 2000

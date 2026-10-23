@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -412,6 +411,42 @@ class OrcaParseResult:
     functional: str = ""
     basis: str = ""
     error_summary: str = ""
+    # Whether there was an output to parse at all, and how the run ended.
+    # "file not found" in error_summary read as a calculation failure to
+    # an operator asked whether a run had failed; a missing output is a
+    # fact about the folder, not about the chemistry.
+    status: str = "ok"      # ok | no_output | missing | read_error
+    outcome: str = ""       # the folder's outcome phrase (see calculation_status)
+    # What the output actually contains, so a reader can tell a full
+    # run from a stub before trusting a number in it. An operator
+    # checking whether nine energies were reliable had to open every
+    # file to learn they were eight lines each (2026-09-11).
+    output_lines: int | None = None
+    blocks_present: list = field(default_factory=list)
+
+
+_ORCA_BLOCK_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("input", ("INPUT FILE",)),
+    ("scf_iterations", ("SCF ITERATIONS",)),
+    ("scf_converged", ("SCF CONVERGED",)),
+    ("final_energy", ("FINAL SINGLE POINT ENERGY",)),
+    ("geometry_optimization", ("GEOMETRY OPTIMIZATION CYCLE", "OPTIMIZATION RUN DONE",
+                               "THE OPTIMIZATION HAS CONVERGED", "Geometry Optimization Run",
+                               "OPTIMIZATION DID NOT CONVERGE",
+                               "FAILED TO CONVERGE THE GEOMETRY OPTIMIZATION")),
+    ("frequencies", ("VIBRATIONAL FREQUENCIES",)),
+    ("thermochemistry", ("THERMOCHEMISTRY AT", "Final Gibbs free energy")),
+    ("excited_states", ("ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS",)),
+    ("orbital_energies", ("ORBITAL ENERGIES",)),
+    ("termination", ("ORCA TERMINATED NORMALLY", "ORCA finished by error termination",
+                     "ABORTING THE RUN")),
+)
+
+
+def _orca_blocks_present(text: str) -> list:
+    """The named blocks an ORCA output contains, in the order above."""
+    return [name for name, markers in _ORCA_BLOCK_MARKERS
+            if any(m in text for m in markers)]
 
 
 def parse_orca_output(path: str) -> OrcaParseResult:
@@ -427,17 +462,41 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     """
     from pathlib import Path as _P
     from delfin import energies as _e
+    from delfin.doc_server.calc_indexer import _largest_output, outcome_of_folder
     p = _P(path)
+    if p.is_dir():
+        # A folder stands for its output. One without any is not an
+        # error in the parser; it is a run that has not written yet.
+        out_file = _largest_output(p)
+        if out_file is None:
+            return OrcaParseResult(path=str(p), status="no_output",
+                                   outcome=outcome_of_folder(p),
+                                   error_summary="no .out in folder")
+        p = out_file
     if not p.exists():
-        return OrcaParseResult(path=str(p), error_summary="file not found")
+        parent = p.parent
+        if parent.is_dir():
+            return OrcaParseResult(path=str(p), status="no_output",
+                                   outcome=outcome_of_folder(parent),
+                                   error_summary="file not found")
+        return OrcaParseResult(path=str(p), status="missing",
+                               outcome="unknown (folder missing)",
+                               error_summary="file not found")
     if not p.is_file():
-        return OrcaParseResult(path=str(p), error_summary="not a file")
+        return OrcaParseResult(path=str(p), status="missing", error_summary="not a file")
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
-        return OrcaParseResult(path=str(p), error_summary=f"read error: {exc}")
+        return OrcaParseResult(path=str(p), status="read_error",
+                               error_summary=f"read error: {exc}")
 
     out = OrcaParseResult(path=str(p))
+    try:
+        out.outcome = outcome_of_folder(p.parent)
+    except Exception:
+        out.outcome = ""
+    out.output_lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+    out.blocks_present = _orca_blocks_present(text)
     try:
         out.final_single_point = _e.find_electronic_energy(str(p))
     except Exception:
@@ -513,6 +572,30 @@ def parse_orca_output(path: str) -> OrcaParseResult:
             and "ABORTING THE RUN" in text):
         out.error_summary = "ORCA aborted the run"
 
+    # The output need not state its method -- a DELFIN run's does not --
+
+    # and a snapshot that says functional "" beside a folder whose
+
+    # CONTROL.txt names it is an answer nobody asked for. Read the
+
+    # folder the file lives in, the way the folder tools do.
+
+    if not out.functional or not out.basis:
+
+        try:
+
+            from delfin.doc_server.calc_indexer import method_of_folder
+
+            f2, b2 = method_of_folder(p.parent)
+
+            out.functional = out.functional or (f2 or '')
+
+            out.basis = out.basis or (b2 or '')
+
+        except Exception:
+
+            pass
+
     return out
 
 
@@ -548,6 +631,286 @@ _ORCA_ERROR_PATTERNS: list[tuple[str, str, str]] = [
      "other",
      "ORCA aborted — read the output around this line for the cause."),
 ]
+
+
+#: A run whose files have not changed for this long, with no exit code, is
+#: reported as stalled rather than running. Generous on purpose: a long
+#: SCF on a large system writes nothing for a while, and calling a live
+#: run dead is the worse mistake. The age itself is in the result, so a
+#: reader with better knowledge of the job can judge for themselves.
+STALLED_AFTER_S = 6 * 3600.0
+
+
+def _last_activity(folder) -> tuple[str | None, float | None]:
+    """(ISO time, seconds ago) of the newest regular file in the folder.
+
+    "running or crashed (run log present, no exit code)" answers the
+    question it can from the files' contents; whether anything is still
+    being written is a question about their timestamps, and an operator
+    asked for exactly that -- the log it was reading was 22 hours old.
+    """
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    from pathlib import Path as _P
+    newest = None
+    try:
+        for f in _P(folder).iterdir():
+            try:
+                if not f.is_file():
+                    continue
+                m = f.stat().st_mtime
+            except OSError:
+                continue
+            if newest is None or m > newest:
+                newest = m
+    except OSError:
+        return None, None
+    if newest is None:
+        return None, None
+    age = max(0.0, _time.time() - newest)
+    return _dt.fromtimestamp(newest, _tz.utc).isoformat(timespec="seconds"), round(age, 1)
+
+
+@dataclass
+class CalculationStatus:
+    """How one calculation folder stands, and what says so."""
+
+    folder: str
+    state: str                 # succeeded | failed | finished | running | stalled | pending | unknown | missing
+    outcome: str               # the phrase, with its source ("failed (exit code 1025)")
+    method: str | None = None  # "PBE0/def2-SVP" when the folder names it
+    evidence: list[dict] = field(default_factory=list)   # [{"source", "says"}]
+    last_activity: str | None = None      # ISO time the newest file was written
+    last_activity_age_s: float | None = None
+
+
+_STATE_PREFIXES = (
+    ("succeeded", "succeeded"),
+    ("failed", "failed"),
+    ("ended with an unreadable", "failed"),
+    ("finished per", "finished"),
+    ("running", "running"),
+    ("no output yet", "pending"),
+    ("unknown (folder missing)", "missing"),
+)
+
+
+def _state_of(outcome: str) -> str:
+    for prefix, state in _STATE_PREFIXES:
+        if outcome.startswith(prefix):
+            return state
+    return "unknown"
+
+
+def _scheduler_jobs_by_dir() -> dict:
+    """Live scheduler jobs keyed by their resolved directory. Empty when
+    no scheduler answers -- which says nothing about the folders."""
+    from pathlib import Path as _P
+    out: dict = {}
+    try:
+        for job in list_active_calculations():
+            d = str(job.get("directory") or "")
+            if d and not job.get("error"):
+                try:
+                    out[str(_P(d).resolve())] = job
+                except OSError:
+                    out[d] = job
+    except Exception:
+        pass
+    return out
+
+
+def _state_for(outcome: str, age_s, job=None) -> str:
+    """The one-word state the outcome phrase, the clock and the scheduler
+    agree on. A scheduler job on the folder settles "running"; without
+    one, a run with no exit code that has written nothing for
+    STALLED_AFTER_S is "stalled", not "running". The phrase keeps what
+    the files say; this is what the rest adds."""
+    if job is not None:
+        return "running"
+    state = _state_of(outcome)
+    if state == "running" and age_s is not None and age_s > STALLED_AFTER_S:
+        return "stalled"
+    # An input with no output, no job in the scheduler, and nothing
+    # written for as long as a stall takes: not started, as far as the
+    # files and the scheduler can tell. An operator asked for exactly
+    # this word (2026-09-11): "pending" made it look at the folder by
+    # hand to learn whether the run had ever been submitted.
+    if state == "pending" and age_s is not None and age_s > STALLED_AFTER_S:
+        return "not started"
+    return state
+
+
+def calculation_status(folder: str) -> CalculationStatus:
+    """Succeeded, failed, running or not started -- with the evidence.
+
+    Asked whether three runs had succeeded, failed or were still going,
+    an operator assembled the answer by hand from three kinds of file
+    (the exit-code marker, the run log's last line, the output's
+    termination line) and named the lack of one call that does this as
+    what would have helped most. This is that call. The verdict is the
+    same phrase extract_energy_table puts in its ``outcome`` column; the
+    evidence lists every file that had a say and what it said, so the
+    answer can be cited rather than trusted.
+    """
+    from pathlib import Path as _P
+    from delfin.doc_server.calc_indexer import (
+        _largest_output, _tail_text, exit_code_of_marker, outcome_of_folder)
+    import json as _json
+    d = _P(folder)
+    if not d.is_dir():
+        return CalculationStatus(folder=str(d), state="missing",
+                                 outcome="unknown (folder missing)")
+    evidence: list[dict] = []
+    for f in sorted(d.glob(".exit_code_*")):
+        evidence.append({"source": f.name,
+                         "says": f"exit code {exit_code_of_marker(f)}"})
+    log = d / "delfin_run.log"
+    if log.is_file():
+        lines = [ln.strip() for ln in _tail_text(log).splitlines() if ln.strip()]
+        evidence.append({"source": log.name,
+                         "says": (lines[-1][:200] if lines else "empty")})
+    for name in ("DELFIN_Data.json", "DELFIN_data.json"):
+        f = d / name
+        if not f.is_file():
+            continue
+        try:
+            rec = _json.loads(f.read_text(encoding="utf-8")) or {}
+            bits = []
+            if rec.get("status") is not None:
+                bits.append(f"status={rec.get('status')}")
+            if rec.get("completed") is not None:
+                bits.append(f"completed={rec.get('completed')}")
+            evidence.append({"source": name, "says": ", ".join(bits) or "no status field"})
+        except Exception:
+            evidence.append({"source": name, "says": "unreadable"})
+        break
+    out = _largest_output(d)
+    if out is not None:
+        tail = _tail_text(out)
+        if "ORCA TERMINATED NORMALLY" in tail:
+            says = "ORCA TERMINATED NORMALLY"
+        elif "ORCA finished by error termination" in tail or "ABORTING THE RUN" in tail:
+            says = "ORCA finished by error termination"
+        else:
+            says = "no termination line yet"
+        evidence.append({"source": out.name, "says": says})
+    else:
+        inps = sorted(d.glob("*.inp"))
+        if inps:
+            evidence.append({"source": inps[0].name, "says": "input present, no output"})
+    outcome = outcome_of_folder(d)
+    parts = _method_parts(None, d)
+    when, age = _last_activity(d)
+    if when is not None:
+        hours = (age or 0.0) / 3600.0
+        evidence.append({"source": "newest file",
+                         "says": f"last written {when} ({hours:.1f} h ago)"})
+    # The scheduler is the one witness that can say "running" outright.
+    # Its silence is not evidence -- a job started elsewhere is not in
+    # its list -- so an absent job changes nothing.
+    job = None
+    try:
+        job = _scheduler_jobs_by_dir().get(str(d.resolve()))
+    except OSError:
+        job = None
+    if job is not None:
+        evidence.append({"source": "scheduler",
+                         "says": f"job {job.get('job_id')} {job.get('status')}".strip()})
+    # The files say "no exit code yet"; the clock says whether anything
+    # is still being written; the scheduler says whether the job is
+    # alive. The outcome phrase keeps what the files say, the state
+    # says what the rest adds.
+    state = _state_for(outcome, age, job)
+    if state == "not started":
+        evidence.append({"source": "scheduler + clock",
+                         "says": (f"no job lists this folder and nothing was "
+                                  f"written for {(age or 0.0) / 3600.0:.1f} h")})
+    return CalculationStatus(folder=str(d), state=state,
+                             outcome=outcome,
+                             method=_method_label(**parts),
+                             evidence=evidence,
+                             last_activity=when, last_activity_age_s=age)
+
+
+def extract_spectra_table(folders: list[str] | str) -> list[dict]:
+    """One row per folder with what the spectroscopy tools each give.
+
+    Asked over three runs which has the smallest gap, which dye is bright
+    in the visible and which structure is no minimum, the operator made
+    three parallel extractions per folder and related them by hand, and
+    named a single overview call as the one change (2026-09-11). Each row
+    carries the folder's method and outcome, the HOMO-LUMO gap, the first
+    bright and the brightest visible transition, and the imaginary-mode
+    count with the minimum verdict -- null where the output has no such
+    block, with the reason in ``notes``.
+    """
+    from pathlib import Path as _P
+    if isinstance(folders, str):
+        folders = [folders]
+    rows: list[dict] = []
+    for folder in folders:
+        p = _P(folder)
+        parts = _method_parts(None, p)
+        row: dict = {
+            "folder": str(folder),
+            "method": _method_label(**parts),
+            "outcome": _outcome_of_folder(p) if p.is_dir() else "unknown (folder missing)",
+            "gap_ev": None, "homo_ev": None, "lumo_ev": None,
+            "homo_line": None, "lumo_line": None,
+            "first_bright_nm": None, "first_bright_fosc": None,
+            "first_bright_in_visible": None, "first_bright_line": None,
+            "brightest_visible_nm": None, "brightest_visible_fosc": None,
+            "brightest_visible_line": None,
+            "strongest_visible_nm": None, "strongest_visible_fosc": None,
+            "strongest_visible_line": None,
+            "n_imag": None, "is_minimum": None, "most_negative_cm": None,
+            "most_negative_line": None,
+            "notes": [],
+        }
+        if not p.is_dir():
+            row["notes"].append("folder missing")
+            rows.append(row)
+            continue
+        orb = extract_orbital_energies(str(p))
+        if orb.error:
+            row["notes"].append(f"orbitals: {orb.error}")
+        else:
+            row["gap_ev"], row["homo_ev"], row["lumo_ev"] = orb.gap_ev, orb.homo_ev, orb.lumo_ev
+            row["homo_line"], row["lumo_line"] = orb.homo_line, orb.lumo_line
+        exc = extract_excited_states(str(p))
+        if exc.error:
+            row["notes"].append(f"excited states: {exc.error}")
+        else:
+            if exc.first_bright:
+                row["first_bright_nm"] = exc.first_bright["wavelength_nm"]
+                row["first_bright_fosc"] = exc.first_bright["fosc"]
+                row["first_bright_in_visible"] = exc.first_bright["in_visible"]
+                row["first_bright_line"] = exc.first_bright["line"]
+            else:
+                row["notes"].append(f"no bright transition (fosc >= {exc.bright_threshold_fosc})")
+            if exc.brightest_visible:
+                row["brightest_visible_nm"] = exc.brightest_visible["wavelength_nm"]
+                row["brightest_visible_fosc"] = exc.brightest_visible["fosc"]
+                row["brightest_visible_line"] = exc.brightest_visible["line"]
+            else:
+                lo, hi = exc.visible_range_nm
+                row["notes"].append(
+                    f"no bright transition in the visible ({lo:.0f}-{hi:.0f} nm)"
+                    + (f": {exc.visible_note}" if exc.visible_note else ""))
+            if exc.strongest_visible:
+                row["strongest_visible_nm"] = exc.strongest_visible["wavelength_nm"]
+                row["strongest_visible_fosc"] = exc.strongest_visible["fosc"]
+                row["strongest_visible_line"] = exc.strongest_visible["line"]
+        imag = extract_imaginary_frequencies(str(p))
+        if imag.error:
+            row["notes"].append(f"frequencies: {imag.error}")
+        else:
+            row["n_imag"], row["is_minimum"] = imag.n_imag, imag.is_minimum
+            row["most_negative_cm"] = imag.most_negative
+            row["most_negative_line"] = imag.most_negative_line
+        rows.append(row)
+    return rows
 
 
 def find_orca_errors(folder: str) -> list[OrcaError]:
@@ -636,6 +999,87 @@ def extract_thermochem(folder: str) -> ThermochemResult:
     return ThermochemResult(path=str(p))
 
 
+def _method_label(functional, basis, solvent=None, dispersion=None) -> str | None:
+    """"PBE0-D3BJ/def2-SVP/DMF": what a total energy is only comparable within.
+
+    Sorting a mixed archive by energy sorts it by functional -- every
+    B3LYP run sits hundreds of kJ/mol below every PBE0 run, whatever the
+    structure -- so a row without its method is a number waiting to be
+    ranked against numbers it cannot be ranked against. Every row carries
+    it, and the tools below never order rows across it.
+
+    The solvent and the dispersion correction are part of it. An implicit
+    solvent shifts a total energy by the solvation free energy, tens of
+    kJ/mol, and a different solvent by a few more; a dispersion correction
+    adds its own term. Two PBE0/def2-SVP runs, one in DMF and one in the
+    gas phase, are no more comparable than PBE0 and B3LYP -- and the
+    archive fixture the tools were driven over had exactly that pair
+    filed under one method (2026-09-11). Gas phase is the absence of a
+    solvent, not a solvent name, so it adds nothing to the label.
+    """
+    if not functional and not basis:
+        return None
+    head = f"{functional or '?'}"
+    if dispersion:
+        head += f"-{dispersion}"
+    label = f"{head}/{basis or '?'}"
+    if solvent:
+        label += f"/{solvent}"
+    return label
+
+
+def _method_parts(parsed, folder) -> dict:
+    """functional, basis, solvent, dispersion: the output's own functional
+    and basis if it states them, everything else from the folder."""
+    parts = {"functional": getattr(parsed, "functional", None) or None,
+             "basis": getattr(parsed, "basis", None) or None,
+             "solvent": None, "dispersion": None}
+    try:
+        from delfin.doc_server.calc_indexer import method_parts_of_folder
+        found = method_parts_of_folder(folder)
+        parts["functional"] = parts["functional"] or found.get("functional")
+        parts["basis"] = parts["basis"] or found.get("basis")
+        parts["solvent"] = found.get("solvent")
+        parts["dispersion"] = found.get("dispersion")
+    except Exception:
+        pass
+    return parts
+
+
+def _method_of(parsed, folder) -> tuple:
+    """(functional, basis): the output's own if it states them, else the
+    folder's DELFIN_Data.json / CONTROL.txt / .inp -- a DELFIN run's ORCA
+    output does not name its method, and a row filed under None is a
+    number waiting to be ranked against the wrong ones."""
+    functional = getattr(parsed, "functional", None) or None
+    basis = getattr(parsed, "basis", None) or None
+    if not functional or not basis:
+        try:
+            from delfin.doc_server.calc_indexer import method_of_folder
+            f2, b2 = method_of_folder(folder)
+            functional = functional or f2
+            basis = basis or b2
+        except Exception:
+            pass
+    return functional, basis
+
+
+def _outcome_of_folder(folder) -> str:
+    try:
+        from delfin.doc_server.calc_indexer import outcome_of_folder
+        return outcome_of_folder(folder)
+    except Exception:
+        return ""
+
+
+#: What every grouped result says, so the rule travels with the data.
+METHOD_NOTE = (
+    "A total energy compares only within one method: the same functional, "
+    "basis, dispersion correction and solvent (gas phase is not a solvent). "
+    "Rows are grouped by method; groups are not ranked against each other."
+)
+
+
 def extract_energy_table(
     folders: list[str] | str,
     properties: list[str] | None = None,
@@ -663,25 +1107,49 @@ def extract_energy_table(
     for folder in folders:
         p = _P(folder)
         if not p.exists() or not p.is_dir():
-            row: dict = {"folder": str(folder), "status": "missing"}
+            row: dict = {"folder": str(folder), "status": "missing",
+                   "functional": None, "basis": None, "method": None,
+                   "outcome": "unknown (folder missing)"}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
-            row = {"folder": str(folder), "status": "no_output"}
+            parts = _method_parts(None, p)
+            row = {"folder": str(folder), "status": "no_output",
+                   "functional": parts["functional"], "basis": parts["basis"],
+                   "solvent": parts["solvent"], "dispersion": parts["dispersion"],
+                   "method": _method_label(**parts),
+                   "outcome": _outcome_of_folder(p)}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
         parsed = parse_orca_output(str(target))
+        parts = _method_parts(parsed, p)
+        functional, basis = parts["functional"], parts["basis"]
         row = {
             "folder": str(folder),
             "status": "ok",
             "output_file": target.name,
+            "functional": functional,
+            "basis": basis,
+            "solvent": parts["solvent"],
+            "dispersion": parts["dispersion"],
+            "method": _method_label(**parts),
+            "outcome": _outcome_of_folder(p),
         }
+        # A null with its reason. The default properties include gibbs
+        # and zpe, and a single-point output has neither; an operator
+        # read the nulls as "the run is not done" and called the table
+        # again with single_point to learn otherwise (2026-09-11). Kept
+        # short and only where it applies: nine archive rows must still
+        # fit the tool-result window.
+        if (parsed.gibbs_free_energy is None and parsed.zpe is None
+                and any(pr in ("gibbs", "zpe") for pr in properties)):
+            row["notes"] = ["no thermochemistry in output: use single_point"]
         for prop in properties:
             if prop == "gibbs":
                 row[prop] = parsed.gibbs_free_energy
@@ -700,6 +1168,27 @@ def extract_energy_table(
             else:
                 row[prop] = None
         rows.append(row)
+    # When the newest file in the folder was written. "running or crashed"
+    # is what the files' contents can say; whether anything is still being
+    # written is what their timestamps say, and a reader deciding between
+    # the two needs the second.
+    jobs = _scheduler_jobs_by_dir()
+    from pathlib import Path as _P
+    for row in rows:
+        if row.get("status") == "missing":
+            row["last_activity"], row["last_activity_age_s"] = None, None
+            row["state"] = "missing"
+            continue
+        row["last_activity"], row["last_activity_age_s"] = _last_activity(row["folder"])
+        try:
+            job = jobs.get(str(_P(row["folder"]).resolve()))
+        except OSError:
+            job = None
+        # One word beside the phrase, for the reader who asked "which of
+        # these is still running": succeeded / failed / finished /
+        # running / stalled / pending / unknown, by the same rule
+        # calc_status uses.
+        row["state"] = _state_for(str(row.get("outcome") or ""), row["last_activity_age_s"], job)
     return rows
 
 
@@ -713,6 +1202,7 @@ class ImagFreqMode:
     """One imaginary vibrational mode in an ORCA frequency output."""
     mode_index: int
     frequency_cm: float
+    line: int | None = None       # the line in the output, to cite file:line
 
 
 @dataclass
@@ -726,6 +1216,7 @@ class ImagFreqResult:
     is_minimum: bool | None
     is_ts: bool | None
     error: str | None = None
+    most_negative_line: int | None = None   # the line of the most negative mode, to cite file:line
 
 
 def extract_imaginary_frequencies(folder: str) -> ImagFreqResult:
@@ -773,21 +1264,24 @@ def extract_imaginary_frequencies(folder: str) -> ImagFreqResult:
         r"^\s*(\d+):\s+(-\d+\.\d+)\s+cm\*\*-1.*?\*\*\*imaginary mode\*\*\*",
         text, _re.MULTILINE,
     ):
-        modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2))))
+        modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2)),
+                                      line=text[:m.start()].count("\n") + 1))
     if not modes:
         for m in _re.finditer(
             r"^\s*(\d+):\s+(-\d+\.\d+)\s+cm\*\*-1", text, _re.MULTILINE,
         ):
-            modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2))))
+            modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2)),
+                                      line=text[:m.start()].count("\n") + 1))
 
     n_imag = len(modes)
     most_negative = min((m.frequency_cm for m in modes), default=None)
+    most_negative_line = next((m.line for m in modes if m.frequency_cm == most_negative), None)
     is_minimum = (n_imag == 0)
     is_ts = (n_imag == 1)
     return ImagFreqResult(
         folder=str(p), output_file=target.name,
         n_imag=n_imag, modes=modes,
-        most_negative=most_negative,
+        most_negative=most_negative, most_negative_line=most_negative_line,
         is_minimum=is_minimum, is_ts=is_ts,
     )
 
@@ -799,6 +1293,7 @@ class OrbitalEnergyEntry:
     occupation: float
     energy_eh: float
     energy_ev: float
+    line: int | None = None       # the line in the output, to cite file:line
 
 
 @dataclass
@@ -814,6 +1309,12 @@ class OrbitalEnergyResult:
     gap_ev: float | None
     orbitals: list[OrbitalEnergyEntry]
     error: str | None = None
+    # Where the block and the two frontier orbitals stand in the output.
+    # Every live run ended with the model re-reading the file to cite a
+    # line number the prompt asks for; the parser knows it.
+    block_line: int | None = None
+    homo_line: int | None = None
+    lumo_line: int | None = None
 
 
 def _read_largest_out(folder: str) -> tuple["Path | None", str, str | None]:
@@ -858,11 +1359,13 @@ def extract_orbital_energies(folder: str) -> OrbitalEnergyResult:
             orbitals=[], error="no ORBITAL ENERGIES section",
         )
     block = text[sections[-1].end():][:500_000]
+    base_line = text[:sections[-1].end()].count("\n") + 1
+    block_line = text[:sections[-1].start()].count("\n") + 1
     rows: list[OrbitalEnergyEntry] = []
     line_re = _re.compile(
         r"^\s*(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)",
     )
-    for line in block.split("\n"):
+    for offset, line in enumerate(block.split("\n")):
         if line.strip().startswith(("NO", "*")) or not line.strip():
             if rows:
                 break
@@ -877,6 +1380,7 @@ def extract_orbital_energies(folder: str) -> OrbitalEnergyResult:
             occupation=float(m.group(2)),
             energy_eh=float(m.group(3)),
             energy_ev=float(m.group(4)),
+            line=base_line + offset,
         ))
     homo_idx = lumo_idx = None
     for r in rows:
@@ -899,6 +1403,9 @@ def extract_orbital_energies(folder: str) -> OrbitalEnergyResult:
         homo_index=homo_idx, lumo_index=lumo_idx,
         homo_ev=homo_ev, lumo_ev=lumo_ev, gap_ev=gap_ev,
         orbitals=rows,
+        block_line=block_line,
+        homo_line=next((r.line for r in rows if r.index == homo_idx), None),
+        lumo_line=next((r.line for r in rows if r.index == lumo_idx), None),
     )
 
 
@@ -911,16 +1418,100 @@ class ExcitedStateEntry:
     energy_cm: float
     wavelength_nm: float
     fosc: float
+    line: int | None = None       # the line in the output, to cite file:line
+    #: fosc at or above the result's bright_threshold_fosc.
+    bright: bool = False
+    #: wavelength inside the result's visible_range_nm.
+    in_visible: bool = False
 
 
 @dataclass
 class ExcitedStatesResult:
-    """TDDFT excitation table (uses the LAST absorption block)."""
+    """TDDFT excitation table (uses the LAST absorption block).
+
+    The bare table answered "which transition is bright, and is it in
+    the visible" only after the reader chose a threshold and a range and
+    filtered by hand -- and said so in the report as an assumption. The
+    definitions are stated here and the answers derived from them, so a
+    number can be quoted with the rule that produced it.
+    """
     folder: str
     output_file: str | None
     n_states: int
     transitions: list[ExcitedStateEntry]
     error: str | None = None
+    #: A transition counts as bright at or above this oscillator strength.
+    bright_threshold_fosc: float = 0.01
+    #: The visible range used for ``in_visible``, in nm.
+    visible_range_nm: tuple = (380.0, 780.0)
+    #: The lowest-energy bright transition, {"index", "wavelength_nm", "energy_ev", "fosc"}.
+    first_bright: dict | None = None
+    #: The transition with the largest oscillator strength.
+    brightest: dict | None = None
+    #: The strongest transition inside the visible range.
+    brightest_visible: dict | None = None
+    #: The lowest-energy bright transition inside the visible range.
+    first_bright_visible: dict | None = None
+    #: The strongest transition inside the visible range at ANY strength --
+    #: the line a reader mistakes for "nothing in the visible" when the
+    #: bright ones all lie in the UV. Dark when fosc is below the threshold.
+    strongest_visible: dict | None = None
+    #: Why brightest_visible is null, when it is: the bright lines lie in
+    #: the UV (and where), or the strongest visible line is dark (and how
+    #: dark), or there is no bright line at all.
+    visible_note: str = ""
+
+
+def _pick_lines(rows: list, threshold: float, visible: tuple) -> dict:
+    """first_bright / brightest / brightest_visible from the transition rows."""
+    def entry(i, r):
+        return {"index": i, "state": f"{r.state_from} -> {r.state_to}",
+                "wavelength_nm": r.wavelength_nm, "energy_ev": r.energy_ev,
+                "fosc": r.fosc, "line": r.line,
+                "in_visible": visible[0] <= r.wavelength_nm <= visible[1]}
+    bright = [(i, r) for i, r in enumerate(rows) if r.fosc >= threshold]
+    in_vis = [(i, r) for i, r in enumerate(rows)
+              if visible[0] <= r.wavelength_nm <= visible[1]]
+    out = {"first_bright": None, "brightest": None, "brightest_visible": None,
+           "first_bright_visible": None, "strongest_visible": None,
+           "visible_note": ""}
+    lo, hi = visible
+    if in_vis:
+        i, r = max(in_vis, key=lambda t: t[1].fosc)
+        out["strongest_visible"] = entry(i, r)
+    if bright:
+        i, r = min(bright, key=lambda t: t[1].energy_ev)
+        out["first_bright"] = entry(i, r)
+        i, r = max(bright, key=lambda t: t[1].fosc)
+        out["brightest"] = entry(i, r)
+        vis = [(i, r) for i, r in bright if visible[0] <= r.wavelength_nm <= visible[1]]
+        if vis:
+            i, r = max(vis, key=lambda t: t[1].fosc)
+            out["brightest_visible"] = entry(i, r)
+            i, r = min(vis, key=lambda t: t[1].energy_ev)
+            out["first_bright_visible"] = entry(i, r)
+    # The reason for a null, stated where the null is. Asked for after an
+    # operator read first_bright at 317.9 nm beside brightest_visible null
+    # and had to work out for itself that 317.9 nm is the UV (2026-09-11).
+    if not rows:
+        out["visible_note"] = "no transitions"
+    elif out["brightest_visible"] is None:
+        parts = []
+        if bright:
+            longest = max(bright, key=lambda t: t[1].wavelength_nm)[1].wavelength_nm
+            side = "UV" if longest < lo else "IR" if longest > hi else "outside the visible"
+            parts.append(f"the bright lines (fosc >= {threshold:g}) all lie in the "
+                         f"{side}, the nearest at {longest:.1f} nm")
+        else:
+            parts.append(f"no line reaches fosc {threshold:g}")
+        sv = out["strongest_visible"]
+        if sv is not None:
+            parts.append(f"the strongest line in the visible ({lo:.0f}-{hi:.0f} nm) "
+                         f"is dark: {sv['wavelength_nm']:.1f} nm, fosc {sv['fosc']:g}")
+        else:
+            parts.append(f"no line at all in the visible ({lo:.0f}-{hi:.0f} nm)")
+        out["visible_note"] = "; ".join(parts)
+    return out
 
 
 def extract_excited_states(folder: str) -> ExcitedStatesResult:
@@ -943,7 +1534,7 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
         r"ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
         r".*?\n-+\n.*?\n-+\n(.*?)(?:\n\n|\Z)"
     )
-    matches = _re.findall(pattern, text, _re.DOTALL)
+    matches = list(_re.finditer(pattern, text, _re.DOTALL))
     if not matches:
         return ExcitedStatesResult(
             folder=str(folder), output_file=target.name,
@@ -954,8 +1545,10 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
         r"(\S+)\s+->\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+"
         r"([\d.]+)",
     )
+    last = matches[-1]
+    base_line = text[:last.start(1)].count("\n") + 1
     rows: list[ExcitedStateEntry] = []
-    for line in matches[-1].strip().split("\n"):
+    for offset, line in enumerate(last.group(1).split("\n")):
         m = line_re.search(line)
         if not m:
             continue
@@ -966,10 +1559,21 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
             energy_cm=float(m.group(4)),
             wavelength_nm=float(m.group(5)),
             fosc=float(m.group(6)),
+            line=base_line + offset,
         ))
+    threshold, visible = 0.01, (380.0, 780.0)
+    for r in rows:
+        r.bright = r.fosc >= threshold
+        r.in_visible = visible[0] <= r.wavelength_nm <= visible[1]
+    picked = _pick_lines(rows, threshold, visible)
     return ExcitedStatesResult(
         folder=str(folder), output_file=target.name,
         n_states=len(rows), transitions=rows,
+        first_bright=picked["first_bright"], brightest=picked["brightest"],
+        brightest_visible=picked["brightest_visible"],
+        first_bright_visible=picked["first_bright_visible"],
+        strongest_visible=picked["strongest_visible"],
+        visible_note=picked["visible_note"],
     )
 
 
@@ -1068,8 +1672,19 @@ def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
     Opt run) and the convergence-criteria block to populate gradient
     + step columns where present. ``converged`` follows ORCA's
     ``OPTIMIZATION RUN DONE`` / ``HAS CONVERGED`` markers.
+
+    Only the job the output is named after is read. A compound output
+    holds another calculation whose energies belong to its own
+    ``%base``, and counting those in inflates the trajectory: measured
+    on an archived ``T1.out`` -- a triplet optimisation followed by a
+    closed-shell TD-DFT check job -- this reported 10 cycles for 9 and
+    a final energy 1.18 eV above the triplet's, because the last
+    ``FINAL SINGLE POINT ENERGY`` in the file was the check job's
+    ground state. See :func:`delfin.energies.own_job_text`.
     """
     import re as _re
+
+    from delfin.energies import own_job_text
     target, text, err = _read_largest_out(folder)
     if err is not None:
         return OptTrajectoryResult(
@@ -1078,6 +1693,7 @@ def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
             cycles=[], n_cycles=0, converged=None,
             final_energy_eh=None, error=err,
         )
+    text = own_job_text(text, target.name)
     energies = [float(m.group(1)) for m in _re.finditer(
         r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", text,
     )]
@@ -1087,6 +1703,18 @@ def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
             cycles=[], n_cycles=0, converged=None,
             final_energy_eh=None,
             error="no FINAL SINGLE POINT ENERGY (single-point only?)",
+        )
+    # One energy and no optimization marker is a single point, not a
+    # one-cycle optimization. The tool used to report it as cycles=[1],
+    # error=null, and an operator checking whether a run was reliable
+    # read an optimization into an output that held none (2026-09-11).
+    if len(energies) == 1 and "geometry_optimization" not in _orca_blocks_present(text):
+        return OptTrajectoryResult(
+            folder=str(folder), output_file=target.name,
+            cycles=[], n_cycles=0, converged=None,
+            final_energy_eh=None,
+            error=("no geometry optimization in this output (a single "
+                   "point): parse_orca_output has its energy"),
         )
     cycles: list[OptCycleEntry] = []
     prev = None
@@ -1508,13 +2136,13 @@ def extract_vibrational_modes(folder: str) -> VibrationalModesResult:
 
 
 # ---------------------------------------------------------------------------
-# DELFIN_data.json reader
+# DELFIN_Data.json reader
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DelfinDataResult:
-    """Structured snapshot of a folder's DELFIN_data.json."""
+    """Structured snapshot of a folder's DELFIN_Data.json."""
     folder: str
     json_path: str | None
     workflow_stages: list[str]
@@ -1525,8 +2153,23 @@ class DelfinDataResult:
     error: str | None = None
 
 
+def _delfin_data_path(folder):
+    """The pipeline state file, whichever way its name is spelled.
+
+    DELFIN writes DELFIN_Data.json; this tool looked for DELFIN_Data.json
+    and never found it -- reported by a model asked where the tools
+    hurt, after it had watched "not found" beside the file in ls.
+    """
+    from pathlib import Path as _P
+    p = _P(folder)
+    for name in ("DELFIN_Data.json", "DELFIN_data.json"):
+        if (p / name).is_file():
+            return p / name
+    return None
+
+
 def extract_delfin_json(folder: str) -> DelfinDataResult:
-    """Read DELFIN_data.json (the pipeline state file).
+    """Read DELFIN_Data.json (the pipeline state file).
 
     DELFIN writes this file at the root of a calc folder while a
     workflow runs, capturing per-stage energies, timings, and the
@@ -1536,13 +2179,13 @@ def extract_delfin_json(folder: str) -> DelfinDataResult:
     from pathlib import Path as _P
     import json as _json
     p = _P(folder)
-    json_path = p / "DELFIN_data.json"
-    if not json_path.exists():
+    json_path = _delfin_data_path(p)
+    if json_path is None:
         return DelfinDataResult(
             folder=str(p), json_path=None,
             workflow_stages=[], energies={}, timings_s={},
             cost_usd=None, raw_keys=[],
-            error="DELFIN_data.json not found",
+            error="DELFIN_Data.json not found",
         )
     try:
         data = _json.loads(json_path.read_text(encoding="utf-8"))
@@ -1665,8 +2308,9 @@ def extract_calc_summary_table(
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
+            f0, b0 = _method_of(None, p)
             rows.append(ExtendedComparisonRow(
-                folder=str(folder), functional=None, basis=None,
+                folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 homo_ev=None, lumo_ev=None, gap_ev=None,
                 n_imag=None, dipole_debye=None, walltime_s=None,
@@ -1707,6 +2351,16 @@ class FunctionalComparisonRow:
     n_imag: int | None
     is_minimum: bool | None
     status: str  # "ok" / "no_output" / "missing" / parse-error
+    method: str | None = None   # "PBE0/def2-SVP/DMF": comparable only within
+    sorted_by: str | None = None  # the key the order actually used
+    solvent: str | None = None
+    dispersion: str | None = None
+    # How the run ended and when its folder was last written: the same
+    # phrase extract_energy_table and calc_status give. "status" alone
+    # ("ok" / "no_output") left an operator unable to say whether a run
+    # was queued, running or crashed from this table.
+    outcome: str | None = None
+    last_activity_age_s: float | None = None
 
 
 def compare_across_functionals(
@@ -1731,14 +2385,24 @@ def compare_across_functionals(
                 folder=str(folder), functional=None, basis=None,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="missing",
+                outcome="unknown (folder missing)",
             ))
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
+            # No output yet is not no method: a running run has its
+            # CONTROL.txt and .inp, and a comparison that drops it says
+            # nothing about the run somebody is waiting for.
+            parts0 = _method_parts(None, p)
+            f0, b0 = parts0["functional"], parts0["basis"]
             rows.append(FunctionalComparisonRow(
-                folder=str(folder), functional=None, basis=None,
+                folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="no_output",
+                method=_method_label(**parts0),
+                solvent=parts0["solvent"], dispersion=parts0["dispersion"],
+                outcome=_outcome_of_folder(p),
+                last_activity_age_s=_last_activity(p)[1],
             ))
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
@@ -1750,23 +2414,45 @@ def compare_across_functionals(
             if imag.error is None:
                 n_imag = imag.n_imag
                 is_min = imag.is_minimum
+        parts = _method_parts(parsed, p)
+        functional, basis = parts["functional"], parts["basis"]
         rows.append(FunctionalComparisonRow(
             folder=str(folder),
-            functional=parsed.functional,
-            basis=parsed.basis,
+            functional=functional,
+            basis=basis,
             gibbs=parsed.gibbs_free_energy,
             single_point=parsed.final_single_point,
             zpe=parsed.zpe,
             n_imag=n_imag,
             is_minimum=is_min,
             status="ok",
+            method=_method_label(**parts),
+            outcome=_outcome_of_folder(p),
+            last_activity_age_s=_last_activity(p)[1],
+            solvent=parts["solvent"], dispersion=parts["dispersion"],
         ))
 
     sort_field = sort_by.strip().lower()
     if sort_field in ("gibbs", "single_point", "zpe"):
+        # A sort key nobody has is not a sort. sort_by=gibbs is the
+        # default, and a single-point archive has no Gibbs energy at all
+        # -- the rows came back in a silent order that read as one. Fall
+        # back to the energy that IS there, and say so on every row.
+        if all(getattr(r, sort_field) is None for r in rows):
+            for alt in ("single_point", "gibbs", "zpe"):
+                if any(getattr(r, alt) is not None for r in rows):
+                    sort_field = alt
+                    break
+        for r in rows:
+            r.sorted_by = sort_field
+        # Within a method, by the energy; between methods, by name and
+        # never by energy. A flat sort by gibbs put the functional with
+        # the lowest absolute energies first and handed that order to
+        # the caller as if it were a ranking.
         def _key(r: FunctionalComparisonRow):
             v = getattr(r, sort_field)
-            return (v is None, v if v is not None else 0.0)
+            return (r.method is None, r.method or "",
+                    v is None, v if v is not None else 0.0)
         rows.sort(key=_key)
     elif sort_field == "functional":
         rows.sort(key=lambda r: (r.functional is None, r.functional or ""))
@@ -1795,14 +2481,158 @@ class CalcDiff:
     a_n_imag: int | None
     b_n_imag: int | None
     notes: list[str]
+    # Appended with defaults: the JSON keys above keep their order.
+    # dispersion_match is None when either side's correction could not
+    # be read; a_/b_dispersion is then None, and "none" means a keyword
+    # line was read and names no correction.
+    dispersion_match: bool | None = True
+    a_dispersion: str | None = None
+    b_dispersion: str | None = None
+    solvent_match: bool = True
+    a_solvent: str | None = None
+    b_solvent: str | None = None
+    a_solvation: str | None = None   # CPCM / SMD / ALPB ..., None = gas or unread
+    b_solvation: str | None = None
+
+
+#: An ORCA dispersion keyword -> the correction it selects. ORCA's D3 is
+#: zero damping, so D3 and D3ZERO are one correction.
+_DISPERSION_KEYWORDS = {
+    "D2": "D2", "D3": "D3", "D3ZERO": "D3", "D3BJ": "D3BJ", "D4": "D4",
+    "NL": "VV10", "SCNL": "VV10",
+}
+
+
+def _dispersion_keyword(token) -> str | None:
+    t = str(token or "").strip().upper().replace("(", "").replace(")", "")
+    return _DISPERSION_KEYWORDS.get(t)
+
+
+def _builtin_dispersion(name) -> str | None:
+    """The correction a method name carries, or None.
+
+    Input: a functional / method token (``wB97X-D3``, ``B3LYP-D3BJ``,
+    ``wB97M-V``, ``r2SCAN-3c``, ``GFN2-xTB``). Output: the correction
+    as a label comparable with a separate keyword -- ``B3LYP-D3`` and
+    ``B3LYP D3`` both give ``D3``; ``-V``/``-NL`` give ``VV10``; ``-D``
+    gives ``D2`` (wB97X-D: ``D2(CHG)``, Chai-Head-Gordon damping). A -3c
+    composite and GFN-xTB carry a correction fitted to that one method
+    (with gCP/SRB terms for the 3c), so they are labelled by their own
+    name and equal only to themselves. Rejected: one "built-in" key for
+    every such name, which made wB97X-V equal wB97X-D3BJ and r2SCAN-3c
+    equal B97-3c. Only the suffixes in ``_DISPERSION_KEYWORDS`` count, so
+    a solvent token such as ``CPCM(N,N-DIMETHYLFORMAMIDE)`` is not read
+    as one. ORCA's ``XTB``/``XTB2`` are GFN2-xTB and ``XTB1`` GFN1-xTB.
+    """
+    import re as _re
+    n = str(name or "").strip()
+    u = n.upper()
+    if not u:
+        return None
+    m = _re.fullmatch(r"(?:XTB|GFN)([0-2])?(?:-XTB)?", u)
+    if m and (m.group(1) or u == "XTB"):
+        return f"built into GFN{m.group(1) or '2'}-xTB"
+    if u.startswith(("GFN", "XTB")) or u.endswith("-3C"):
+        return f"built into {n}"
+    m = _re.search(r"-(D[0-9A-Z()]*|V|NL)$", u)
+    if not m:
+        return None
+    s = m.group(1)
+    if s in ("V", "NL"):
+        return "VV10"
+    if s == "D":
+        return "D2(CHG)" if u.startswith("WB97X") else "D2"
+    return _dispersion_keyword(s)
+
+
+def _keyword_lines_of(folder) -> tuple[list[str] | None, bool]:
+    """(the ``!`` keywords of the run, whether ``smd true`` is set).
+
+    Read from the input block the largest .out echoes (``|  N> ...``,
+    every ``!`` line), else from the .inp of the same stem, else the
+    first .inp. ``None`` keywords: no ``!`` line could be read, which is
+    not the same as a line without a dispersion keyword.
+    """
+    import re as _re
+    try:
+        d = Path(folder)
+        outs = sorted(d.glob("*.out"), key=lambda f: f.stat().st_size)
+        lines: list[str] = []
+        if outs:
+            text = outs[-1].read_text(encoding="utf-8", errors="replace")
+            lines = _re.findall(r"^\s*\|\s*\d+>\s*(.*)$", text, _re.MULTILINE)
+        if not any(ln.lstrip().startswith("!") for ln in lines):
+            inps = sorted(d.glob("*.inp"))
+            if outs and (d / (outs[-1].stem + ".inp")).is_file():
+                inps.insert(0, d / (outs[-1].stem + ".inp"))
+            lines = (inps[0].read_text(encoding="utf-8", errors="replace")
+                     .splitlines() if inps else [])
+        kws = [kw for ln in lines if ln.lstrip().startswith("!")
+               for kw in ln.lstrip()[1:].split()]
+        smd = any(_re.search(r"\bsmd\s+true\b", ln, _re.IGNORECASE)
+                  for ln in lines)
+        if not any(ln.lstrip().startswith("!") for ln in lines):
+            return None, smd
+        return kws, smd
+    except Exception:
+        return None, False
+
+
+def _dispersion_of(functional, recorded, keywords) -> str | None:
+    """The correction a run used: one the method name carries, else a
+    dispersion keyword on its ``!`` line, else the folder's record
+    (DELFIN_Data.json / CONTROL.txt), else ``"none"`` if a ``!`` line was
+    read, else ``None`` (unknown). A recorded default such as ``D4``
+    beside r2SCAN-3c is not a second correction."""
+    for name in [functional, *(keywords or [])]:
+        got = _builtin_dispersion(name)
+        if got:
+            return got
+    for kw in keywords or []:
+        got = _dispersion_keyword(kw)
+        if got:
+            return got
+    if recorded:
+        return _dispersion_keyword(recorded) or str(recorded).strip().upper()
+    return "none" if keywords is not None else None
+
+
+def _solvation_of(keywords, smd, recorded) -> str | None:
+    """CPCM / SMD / CPCMC / ALPB / DDCOSMO from the ``!`` line, SMD when
+    the echoed ``%cpcm`` block sets ``smd true``, else the folder's
+    record; None if neither names one."""
+    import re as _re
+    model = None
+    for kw in keywords or []:
+        m = _re.match(r"(cpcmc|cpcm|smd|alpb|ddcosmo)(?:\(.*\))?$", kw, _re.IGNORECASE)
+        if m:
+            model = m.group(1).upper()
+            break
+    model = model or (str(recorded).strip().upper() or None if recorded else None)
+    if smd and model in (None, "CPCM"):
+        model = "SMD"
+    return model
 
 
 def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
-    """Diff method/basis/results between two calculation folders.
+    """Diff method/basis/dispersion/solvent/results between two folders.
 
     ``delta_gibbs_kcal`` and ``delta_spe_kcal`` are :math:`(B - A)` in
     kcal/mol; ``None`` if either side lacks the value. ``method_match``
     is ``True`` only when both functionals are non-None and equal.
+    ``dispersion_match`` compares the correction each run used, as a
+    label: one the method name carries (``-D3`` -> D3, ``-V`` -> VV10,
+    a -3c composite or GFN-xTB -> its own name), else the ``!``
+    keywords echoed in the .out (or the .inp), else the folder's
+    record; it is ``None`` when either side has none of these, so an
+    unread run never claims a match. ``solvent_match`` compares the
+    implicit solvent (``None`` = gas phase) and, for one solvent, the
+    model (CPCM vs SMD, ``smd true`` in ``%cpcm`` counting as SMD). Neither is
+    folded into ``method_match``, which callers read as "same
+    functional". The deltas are still returned when a field differs; a
+    note names the field (D3BJ alone moves a butane conformer pair by
+    ~3.5 kcal/mol). Rejected: setting the deltas to None, which would
+    change the return shape for callers that read them as numbers.
     """
     HARTREE_TO_KCAL = 627.5094740631
     rows = compare_across_functionals(
@@ -1821,6 +2651,7 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
             a_spe=None, b_spe=None, delta_spe_kcal=None,
             a_n_imag=None, b_n_imag=None,
             notes=["could not parse one or both folders"],
+            dispersion_match=None, solvent_match=False,
         )
 
     notes: list[str] = []
@@ -1840,6 +2671,49 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         )
     if not basis_match and a.basis and b.basis:
         notes.append(f"different basis: {a.basis} vs {b.basis}")
+    a_kws, a_smd = _keyword_lines_of(folder_a)
+    b_kws, b_smd = _keyword_lines_of(folder_b)
+    a_disp = _dispersion_of(a.functional, a.dispersion, a_kws)
+    b_disp = _dispersion_of(b.functional, b.dispersion, b_kws)
+    dispersion_match: bool | None
+    if a_disp is None or b_disp is None:
+        dispersion_match = None
+        unread = " and ".join(s for s, v in (("A", a_disp), ("B", b_disp))
+                              if v is None)
+        notes.append(f"dispersion correction of {unread} could not be read: "
+                     "not known whether the energy delta spans one")
+    else:
+        dispersion_match = a_disp.upper() == b_disp.upper()
+        if not dispersion_match:
+            notes.append(f"different dispersion correction: {a_disp} vs {b_disp}")
+    a_solv = b_solv = None
+    if a.solvent or b.solvent:
+        try:
+            from delfin.doc_server.calc_indexer import method_parts_of_folder as _mp
+        except Exception:
+            _mp = None
+        def _rec(folder):
+            try:
+                return _mp(folder).get("solvation") if _mp else None
+            except Exception:
+                return None
+        a_solv = _solvation_of(a_kws, a_smd, _rec(folder_a)) if a.solvent else None
+        b_solv = _solvation_of(b_kws, b_smd, _rec(folder_b)) if b.solvent else None
+    solvent_match = (a.solvent or "").upper() == (b.solvent or "").upper()
+    if not solvent_match:
+        notes.append(f"different solvent: {a.solvent or 'gas phase'} "
+                     f"vs {b.solvent or 'gas phase'}")
+    elif a_solv and b_solv and a_solv != b_solv:
+        # Same solvent, different model: SMD adds non-electrostatic
+        # terms CPCM lacks, several kcal/mol on a solvation free energy.
+        solvent_match = False
+        notes.append(f"different solvation model: {a_solv}({a.solvent}) "
+                     f"vs {b_solv}({b.solvent})")
+    differing = [name for name, ok in (
+        ("functional", method_match or not (a.functional and b.functional)),
+        ("basis", basis_match or not (a.basis and b.basis)),
+        ("dispersion", dispersion_match is not False),
+        ("solvent", solvent_match)) if not ok]
     if a.n_imag and a.n_imag > 0:
         notes.append(f"A has {a.n_imag} imag freq(s) — not a minimum")
     if b.n_imag and b.n_imag > 0:
@@ -1854,6 +2728,9 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         if a.single_point is not None and b.single_point is not None
         else None
     )
+    if differing and (delta_g is not None or delta_e is not None):
+        notes.append(f"the energy delta spans different {', '.join(differing)}"
+                     " and is not a comparison of the two structures")
     return CalcDiff(
         folder_a=str(folder_a), folder_b=str(folder_b),
         method_match=method_match, basis_match=basis_match,
@@ -1863,6 +2740,11 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
         a_spe=a.single_point, b_spe=b.single_point, delta_spe_kcal=delta_e,
         a_n_imag=a.n_imag, b_n_imag=b.n_imag,
         notes=notes,
+        dispersion_match=dispersion_match,
+        a_dispersion=a_disp, b_dispersion=b_disp,
+        solvent_match=solvent_match,
+        a_solvent=a.solvent, b_solvent=b.solvent,
+        a_solvation=a_solv, b_solvation=b_solv,
     )
 
 
@@ -1907,6 +2789,10 @@ _TOOL_CATALOG: list[dict] = [
     # delfin-ops — output parsing
     {"name": "parse_orca_output", "category": "parsing",
      "summary": "Snapshot ONE ORCA .out: energies, conv, freq, walltime."},
+    {"name": "calc_status", "category": "parsing",
+     "summary": "One folder: succeeded / failed / running / stalled / not started, with the evidence."},
+    {"name": "extract_spectra_table", "category": "parsing",
+     "summary": "Per folder: HOMO-LUMO gap, first bright and brightest visible transition (and the strongest visible line even when dark), imaginary modes, minimum verdict."},
     {"name": "find_orca_errors", "category": "parsing",
      "summary": "Scan a folder's .out files for known error patterns."},
     {"name": "extract_thermochem", "category": "parsing",
@@ -1934,7 +2820,7 @@ _TOOL_CATALOG: list[dict] = [
     {"name": "extract_vibrational_modes", "category": "parsing",
      "summary": "All vibrational modes + IR intensities (real + imag)."},
     {"name": "extract_delfin_json", "category": "parsing",
-     "summary": "Read DELFIN_data.json: stages, energies, timings, cost."},
+     "summary": "Read DELFIN_Data.json: stages, energies, timings, cost."},
     {"name": "extract_calc_summary_table", "category": "parsing",
      "summary": "Multi-property table: G/SPE/HOMO/LUMO/gap/dipole/walltime."},
     {"name": "compare_calculations", "category": "parsing",
@@ -2410,10 +3296,33 @@ def _resolve_backend():
     """Pick the right backend (local vs slurm) for the running host."""
     import shutil as _sh
     if _sh.which("sbatch") and _sh.which("squeue"):
-        from delfin.dashboard.backend_slurm import SLURMBackend
-        return SLURMBackend(orca_base="")
-    from delfin.dashboard.backend_local import LocalBackend
-    return LocalBackend(orca_base="")
+        # Built the way the dashboard builds it: SLURMBackend never existed
+        # under that name (the class is SlurmJobBackend), so on a cluster
+        # every agent call that needed the queue -- list_active_calculations,
+        # submit, cancel, recalc -- died on the import.
+        from delfin.dashboard.backend_slurm import SlurmJobBackend
+        from delfin.runtime_setup import (
+            get_packaged_submit_templates_dir, resolve_submit_templates_dir)
+        try:
+            from delfin.user_settings import load_settings
+            runtime = (load_settings() or {}).get("runtime", {}) or {}
+        except Exception:
+            runtime = {}
+        slurm = runtime.get("slurm", {}) or {}
+        return SlurmJobBackend(
+            submit_templates_dir=resolve_submit_templates_dir(
+                runtime, get_packaged_submit_templates_dir()),
+            orca_base="",
+            tool_binaries=runtime.get("tool_binaries", {}) or {},
+            slurm_profile=slurm.get("profile", ""),
+            partitions=slurm.get("partitions", ""),
+            gpu_partitions=slurm.get("gpu_partitions", ""),
+        )
+    # The class was renamed under this import and nobody told this
+    # function: list_active_calculations answered every call with an
+    # ImportError until a model, asked where the tools hurt, said so.
+    from delfin.dashboard.backend_local import LocalJobBackend
+    return LocalJobBackend(orca_base="")
 
 
 def submit_calculation(
@@ -2606,7 +3515,6 @@ def rename_calc_folder(
 
     Returns a dict with ``ok``, ``src``, ``dst``, ``message``.
     """
-    from pathlib import Path as _P
     roots = allowed_roots or _default_calc_roots()
     if not roots:
         return {
@@ -2656,7 +3564,6 @@ def create_calc_folder(
     allow_mutate: bool = False,
 ) -> dict:
     """Create a new sub-folder inside ``parent`` (destructive)."""
-    from pathlib import Path as _P
     roots = allowed_roots or _default_calc_roots()
     if not roots:
         return {"ok": False, "error": "no allowed_roots inferred"}
@@ -2704,7 +3611,6 @@ def move_calc_folder(
     sending things to ``archive/`` use :func:`move_to_archive`, which
     enforces the calc → archive direction.
     """
-    from pathlib import Path as _P
     import shutil as _sh
     roots = allowed_roots or _default_calc_roots()
     if not roots:
@@ -2830,7 +3736,6 @@ def delete_calc_folder(
     roots (NOT archive/), and ``confirm_token`` must equal the folder's
     basename verbatim. Any one missing → refusal.
     """
-    from pathlib import Path as _P
     import shutil as _sh
     roots = allowed_roots or _default_calc_roots()
     if not roots:
@@ -3411,12 +4316,34 @@ _DELFIN_FEATURES: dict[str, dict] = {
     "co2": {
         "category": "workflow",
         "summary": (
-            "CO2 Coordinator workflow: enumerates and optimizes CO2 "
-            "binding modes on a metal complex, then ranks by binding "
-            "energy. Run via `delfin co2` or the `co2` MCP tool with "
-            "explicit charge/multiplicity/solvent."
+            "CO2 Coordinator: aligns the complex, places CO2 on the metal "
+            "(place_co2_general: axis, side-on/end-on, optional direction "
+            "search), scans the orientation at a fixed distance (single "
+            "points) and then relaxes the distance (OPT), keeping the "
+            "lowest-energy binding mode. Two CONTROL keys switch it: "
+            "`co2_coordination` (default off; on/yes/true/1) and "
+            "`co2_species_delta` (integer, which oxidation/reduction "
+            "species the CO2 is placed on). Two entry paths: a submit "
+            "with the key on runs the DELFIN pipeline, then chain_setup "
+            "builds CO2_coordination/ from its outputs, then `delfin co2` "
+            "runs there (mode delfin-co2-chain); a recalc with the key "
+            "on re-runs it via _run_co2_recalc_if_enabled. With the key "
+            "off every gate returns early: no CO2_coordination/ folder, "
+            "no scan, and an override cascade leaves an old folder alone. "
+            "The `co2` MCP tool only dispatches `delfin co2`; the "
+            "mechanics live in CO2_Coordinator6.main()."
         ),
-        "see_also": ["delfin/cli.py (co2 subcommand)"],
+        "see_also": [
+            "delfin/co2/CO2_Coordinator6.py (main: align_complex, "
+            "place_co2_general, orientation_scan_at_fixed_distance, "
+            "distance scan; write_default_files for its own CONTROL)",
+            "delfin/co2/chain_setup.py (setup_co2_from_delfin, "
+            "species_delta_to_name)",
+            "delfin/cli.py (_run_co2_recalc_if_enabled; the override "
+            "cascade guarded by co2_coordination)",
+            "delfin/dashboard/tab_submit.py (delfin-co2-chain submit mode)",
+            "delfin/define.py (co2_coordination=off, co2_species_delta=0)",
+        ],
     },
     "tadf_xtb": {
         "category": "workflow",
@@ -3434,7 +4361,7 @@ _DELFIN_FEATURES: dict[str, dict] = {
             "Hyperpolarizability (β, γ) workflow: ORCA-driven "
             "calculation of nonlinear-optical properties for "
             "chromophores. Reads orca.out for β-tensor components "
-            "(beta_zzz etc.) and aggregates into DELFIN_data.json."
+            "(beta_zzz etc.) and aggregates into DELFIN_Data.json."
         ),
         "see_also": ["delfin/cli.py (hyperpol subcommand)"],
     },
@@ -4028,6 +4955,12 @@ def plot_energy_distribution(
     - ``plot_type="bar"`` — bar chart per folder (sorted by the first
       property), useful for small N.
     - ``plot_type="boxplot"`` — distribution summary across folders.
+    - ``plot_type="bar_by_method"`` — one bar per folder, grouped and
+      coloured by method (functional/dispersion/basis/solvent), the
+      groups separated on the axis: the figure that answers "which run
+      is lowest" the only way a total energy can be compared, within a
+      method. Folders without a parsed value are named in the result's
+      ``statistics["excluded"]`` rather than dropped in silence.
 
     The PNG lands in ``agent_workspace/`` by default so the dashboard's
     inline-artifact hook picks it up automatically. ``PlotResult.path``
@@ -4040,7 +4973,7 @@ def plot_energy_distribution(
             Default ``["gibbs", "single_point"]``.
         output_path: explicit PNG location. Empty → auto-generated
             inside ``agent_workspace/``.
-        plot_type: ``histogram`` | ``bar`` | ``boxplot``.
+        plot_type: ``histogram`` | ``bar`` | ``boxplot`` | ``bar_by_method``.
         title: figure title (auto-generated if empty).
         bins: histogram bin count.
     """
@@ -4085,13 +5018,73 @@ def plot_energy_distribution(
         prop_label = " + ".join(properties)
         title = f"{prop_label} across {n_points} calculations ({plot_type})"
 
-    out_path = output_path or str(
+    out_path = str(_explicit_png(output_path)) if output_path else str(
         _new_workspace_png_path(prefix=f"energy_{plot_type}")
     )
 
     plot_type_norm = plot_type.lower().strip()
     statistics: dict = {}
-    if plot_type_norm == "bar":
+    if plot_type_norm == "bar_by_method":
+        # One property, the first requested; bars grouped by method with
+        # a gap between groups and one colour per method. A legend names
+        # the methods; the title says the groups do not compare.
+        prop = properties[0]
+        grouped: dict = {}
+        for r in valid_rows:
+            if r.get(prop) is None:
+                continue
+            grouped.setdefault(r.get("method") or "method unknown", []).append(r)
+        excluded = [_short_folder_label(r["folder"]) for r in rows
+                    if r.get(prop) is None]
+        methods = sorted(grouped, key=lambda m: (m == "method unknown", m))
+        xs: list[float] = []
+        vals: list[float] = []
+        ticks: list[str] = []
+        colours: list[str] = []
+        palette = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["#6366f1"])
+        pos = 0.0
+        legend_handles = []
+        for i, m in enumerate(methods):
+            block = sorted(grouped[m], key=lambda r: float(r[prop]))
+            colour = palette[i % len(palette)]
+            for r in block:
+                xs.append(pos)
+                vals.append(float(r[prop]))
+                ticks.append(_short_folder_label(r["folder"]))
+                colours.append(colour)
+                pos += 1.0
+            pos += 0.8                                  # the gap between groups
+            legend_handles.append(plt.Rectangle((0, 0), 1, 1, color=colour, label=m))
+            statistics.setdefault("groups", {})[m] = {
+                "n": len(block),
+                "lowest": _short_folder_label(block[0]["folder"]),
+                "lowest_value": float(block[0][prop]),
+            }
+            # Every bar, named: the figure's own table, so the reader can
+            # quote a value with its folder and method without going back
+            # to the energy table. Asked for after the first typed figure
+            # was drawn live (2026-09-11).
+            for r in block:
+                statistics.setdefault("rows", []).append({
+                    "folder": _short_folder_label(r["folder"]),
+                    "method": m,
+                    prop: float(r[prop]),
+                })
+        fig, ax = plt.subplots(figsize=(max(6, len(xs) * 0.5 + 2), 5))
+        ax.bar(xs, vals, color=colours, width=0.8)
+        ax.set_xticks(xs)
+        ax.set_xticklabels(ticks, rotation=70, ha="right", fontsize=8)
+        ax.set_ylabel(f"{prop} / Hartree")
+        if title == f"{' + '.join(properties)} across {n_points} calculations ({plot_type})":
+            title = f"{prop} per method -- groups are not comparable with each other"
+        ax.set_title(title)
+        ax.legend(handles=legend_handles, loc="best", fontsize=8)
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        statistics["excluded"] = excluded
+        statistics["note"] = METHOD_NOTE
+    elif plot_type_norm == "bar":
         # One row per folder; bars side-by-side per property.
         n_props = len(properties)
         x = np.arange(len(labels))
@@ -4238,7 +5231,7 @@ def plot_energy_correlation(
         ax.legend(loc="best", fontsize=9)
     plt.tight_layout()
 
-    out_path = output_path or str(
+    out_path = str(_explicit_png(output_path)) if output_path else str(
         _new_workspace_png_path(prefix=f"energy_corr_{x}_vs_{y}")
     )
     plt.savefig(out_path, dpi=120, bbox_inches="tight")
@@ -4264,6 +5257,7 @@ def plot_orbital_diagram(
     n_below: int = 5,
     n_above: int = 5,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render an orbital-energy level diagram around HOMO/LUMO.
 
@@ -4331,7 +5325,7 @@ def plot_orbital_diagram(
         ax.set_title(f"Orbital diagram ({_short_folder_label(folder)}){gap_str}")
     fig.tight_layout()
 
-    out = _new_workspace_png_path("orbitals")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("orbitals")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4352,6 +5346,7 @@ def plot_optimization_convergence(
     folder: str,
     *,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render an optimization-convergence plot (energy vs. cycle).
 
@@ -4403,7 +5398,7 @@ def plot_optimization_convergence(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("opt_conv")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("opt_conv")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4427,6 +5422,7 @@ def plot_uvvis_spectrum(
     wavelength_max: float = 800.0,
     n_points: int = 1000,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render a Gaussian-broadened UV/Vis spectrum from TDDFT output.
 
@@ -4476,7 +5472,7 @@ def plot_uvvis_spectrum(
            f"— FWHM = {fwhm_nm:.0f} nm",
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("uvvis")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("uvvis")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4498,6 +5494,7 @@ def plot_scf_convergence(
     *,
     cycle_index: int | None = None,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Plot SCF iteration energy curves for the convergence diagnostic.
 
@@ -4554,7 +5551,7 @@ def plot_scf_convergence(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("scf_conv")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("scf_conv")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4579,6 +5576,7 @@ def plot_population_charges(
     *,
     method: str = "mulliken",
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Bar chart of atomic charges (Mulliken or Loewdin).
 
@@ -4620,7 +5618,7 @@ def plot_population_charges(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path(f"charges_{method_clean}")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path(f"charges_{method_clean}")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4646,6 +5644,7 @@ def plot_vibrational_spectrum(
     freq_max: float = 4000.0,
     n_points: int = 1500,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render an IR vibrational spectrum from full mode list + IR intensity.
 
@@ -4704,7 +5703,7 @@ def plot_vibrational_spectrum(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("ir_spectrum")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("ir_spectrum")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4751,6 +5750,23 @@ def _short_folder_label(folder: str) -> str:
     return cand
 
 
+
+def _explicit_png(output_path: str) -> "Path":
+    """An output path the caller chose, with its directory in place.
+
+    The gate redirects a headless session's figure into an
+    agent_workspace/ under its own workspace, a directory that need not
+    exist yet; the first such call failed inside savefig with a bare
+    "Error executing tool" and the model drew the figure by hand again.
+    """
+    out = Path(output_path)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return out
+
+
 def _new_workspace_png_path(prefix: str = "plot") -> "Path":
     """Return a non-clobbering PNG path in agent_workspace/."""
     from pathlib import Path as _P
@@ -4761,6 +5777,90 @@ def _new_workspace_png_path(prefix: str = "plot") -> "Path":
     return base / f"{prefix}_{stamp}.png"
 
 
+def find_calculation_extreme_explained(
+    folders: list[str] | str,
+    *,
+    property: str = "gibbs",
+    extreme: str = "min",
+    n: int = 5,
+) -> dict:
+    """The N folders with the lowest/highest value of a property, per
+    method -- and, for every folder that is not among them, why.
+
+    Returns ``{"property_requested", "property_used", "rows", "skipped"}``.
+
+    ``rows`` are the ranked rows, ``rank_within_method`` set, grouped by
+    method in name order; one extreme per METHOD, because a total energy
+    compares only within one functional and basis.
+
+    ``property_used`` differs from ``property_requested`` in one case:
+    no folder carries the requested property but folders carry a single
+    point energy. An archive of single points has no Gibbs energy in it,
+    and the default property is gibbs; answering that with an empty list
+    reads as "nothing here", not as "no thermochemistry here". Observed
+    2026-09-10 driving the tool over nine single-point runs: it returned
+    empty groups, said nothing, and the operator went back to reading
+    the files by hand -- and misread one. The fallback is taken only
+    when the requested property is absent EVERYWHERE; a mixed set keeps
+    the requested property and lists the rest under ``skipped``.
+
+    ``skipped`` names every folder that is not in ``rows`` with a
+    reason: the folder is missing, it has no output (and the outcome
+    that says why -- still running, crashed, never started), or the
+    output does not carry the property.
+
+    Args:
+        folders: list of paths (or single path) to scan.
+        property: one of ``gibbs``, ``zpe``, ``single_point``,
+            ``imag_freqs``, ``walltime_s``.
+        extreme: ``"min"`` (lowest) or ``"max"`` (highest).
+        n: how many top rows per method to return.
+    """
+    wanted = [property] if property == "single_point" else [property, "single_point"]
+    rows = extract_energy_table(folders, properties=wanted)
+    ok = [r for r in rows if r.get("status") == "ok"]
+    used = property
+    valid = [r for r in ok if r.get(property) is not None]
+    if not valid and property != "single_point":
+        with_spe = [r for r in ok if r.get("single_point") is not None]
+        if with_spe:
+            used = "single_point"
+            valid = with_spe
+    ranked_ids = set()
+    reverse = (str(extreme).lower() == "max")
+    groups: dict = {}
+    for r in valid:
+        groups.setdefault(r.get("method"), []).append(r)
+    out: list[dict] = []
+    for method in sorted(groups, key=lambda m: (m is None, m or "")):
+        block = sorted(groups[method], key=lambda r: float(r[used]),
+                       reverse=reverse)[: max(1, int(n))]
+        for rank, r in enumerate(block, start=1):
+            r["rank_within_method"] = rank
+            r["property_used"] = used
+            ranked_ids.add(id(r))
+        out.extend(block)
+    skipped: list[dict] = []
+    for r in rows:
+        if id(r) in ranked_ids:
+            continue
+        status = r.get("status")
+        if id(r) in {id(v) for v in valid}:
+            reason = f"ranked below the top {max(1, int(n))} of its method"
+        elif status == "missing":
+            reason = "folder missing"
+        elif status == "no_output":
+            reason = str(r.get("outcome") or "no output")
+        elif status != "ok":
+            reason = str(status)
+        else:
+            reason = f"{used} not in the output"
+        skipped.append({"folder": r.get("folder"), "reason": reason,
+                        "outcome": r.get("outcome")})
+    return {"property_requested": property, "property_used": used,
+            "rows": out, "skipped": skipped}
+
+
 def find_calculation_extreme(
     folders: list[str] | str,
     *,
@@ -4768,30 +5868,14 @@ def find_calculation_extreme(
     extreme: str = "min",
     n: int = 5,
 ) -> list[dict]:
-    """Return the N folders with the lowest/highest value of a property.
+    """The ranked rows of :func:`find_calculation_extreme_explained`.
 
-    Direct answer to "open the .out with the lowest Gibbs energy"
-    type questions: pass the candidate folders, get back the top
-    ``n`` rows sorted ascending (``extreme="min"``) or descending
-    (``extreme="max"``).
-
-    Folders that fail to parse the property are excluded from the
-    ranking.
-
-    Args:
-        folders: list of paths (or single path) to scan.
-        property: one of ``gibbs``, ``zpe``, ``single_point``,
-            ``imag_freqs``, ``walltime_s``.
-        extreme: ``"min"`` (lowest) or ``"max"`` (highest).
-        n: how many top rows to return (clipped to len(rows)).
+    Kept for callers that want the rows alone; the reasons for what is
+    not among them, and which property the ranking used, are in the
+    explained variant.
     """
-    rows = extract_energy_table(folders, properties=[property])
-    valid = [r for r in rows if r.get(property) is not None]
-    if not valid:
-        return []
-    reverse = (str(extreme).lower() == "max")
-    valid.sort(key=lambda r: float(r[property]), reverse=reverse)
-    return valid[: max(1, int(n))]
+    return find_calculation_extreme_explained(
+        folders, property=property, extreme=extreme, n=n)["rows"]
 
 
 # ---------------------------------------------------------------------------

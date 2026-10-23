@@ -7,7 +7,17 @@ the 0600 audit log. This module keeps a small in-process ring buffer so the
 dashboard can show a prominent "🛡 Containment" panel — so an attempt to break
 out is immediately VISIBLE to the user, not buried.
 
-Pure data + rendering; no I/O on the hot path beyond a bounded deque append.
+The ring buffer holds 200 events and lives in memory only, which means a
+dashboard that is open sees everything and everyone else sees nothing: the
+scheduler daemon and the job monitor record containment events inside child
+processes no panel is attached to, and every one of them — including a
+refusal the agent tried to walk around, the loudest signal the system has —
+died with the process. A BLOCKED event therefore also goes to the durable
+attention inbox, deduped per (kind, tool) so a loop cannot flood it. Kinds
+that are the user's own decision or a routine grant stay panel-only.
+
+Pure data + rendering otherwise; no I/O on the hot path beyond a bounded
+deque append and (at most once per kind/tool) one inbox append.
 """
 
 from __future__ import annotations
@@ -20,17 +30,179 @@ from typing import Deque, Optional
 
 # Severity-ish category. "block" = the gate refused; "ask" = it routed to a
 # user confirmation; "info" = noteworthy but allowed.
+#
+# Every kind the gate records needs an entry here. An unknown kind renders
+# as an unlabelled bullet, and the kinds nobody had added were the loudest
+# ones: a refusal the agent tried to walk around, and every escape from a
+# locked scope, appeared blanker in the panel than an ordinary denied
+# command. ``tests/test_the_containment_panel_labels_what_it_records.py``
+# fails when a new kind is recorded without a label.
 _KINDS = {
     "deny_pattern":   ("⛔", "Denied command"),
+    "unsafe_install": ("⛔", "Install outside the session venv"),
+    "unknowable_patch_refused": ("⛔", "Patch from stdin refused (targets unknown)"),
     "secret_path":    ("🔑", "Secret-path access blocked"),
     "script_payload": ("📜", "Script payload blocked"),
+    # A script run after `cd $VAR` / `cd -`: its file is unknown, so unread.
+    "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
+    "memory_refused": ("🧠", "Instruction-shaped memory refused"),
+    "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
+    "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
+    # Descriptions pinned on first use (mcp_client.pin_check): a first
+    # sight, a change the user accepted, and a change withheld.
+    "mcp_pinned": ("🔌", "MCP tool descriptions pinned on first use"),
+    "mcp_description_accepted": ("🔌", "Changed MCP tool accepted by the user"),
+    "mcp_description_changed": ("🔌", "Changed MCP tool withheld"),
+    "calc_edit":      ("🧪", "Stored-calculation edit"),
+    "read_only_write": ("📕", "Write into a read-only location"),
+    "out_of_write_scope": ("📐", "Write outside the repo's write scope"),
     "outside_ws":     ("📁", "Outside-workspace access"),
     "denied_by_user": ("✋", "User denied"),
+    "denied_again":   ("🚫", "Refusal circumvented"),
+    "denied_path_via_bash": ("🚫", "Refused path reached via shell"),
+    # The user's typed message named a file whose shell write was refused.
+    "refusal_lifted": ("🔓", "Refused shell write lifted by the user"),
+    # find/du/tree/rg, grep -r or ls -R over a home or a mount point: one
+    # metadata request per file on a shared file system.
+    "tree_walk":      ("🌲", "Walk over a whole file system refused"),
+    # A recursive delete of scratch this session made: allowed, recorded.
+    "own_scratch_delete": ("🧹", "Session's own scratch deleted"),
+    "read_grant":     ("👁", "Directory opened for reading"),
+    # Bypass does not ask before a read outside the roots. Nobody clicked,
+    # so the panel is the only place it is ever visible — which is exactly
+    # why the rung records instead of asking, rather than doing neither.
+    "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
+    "worktree_merge_refused": ("⛔", "Worktree merge refused (a file it writes is not allowed)"),
+    "approval_timeout": ("⌛", "Approval window expired"),
+    # The posture switched to bypass by a person (shift+tab and its
+    # confirmation, in the terminal or the window).
+    "permission_mode": ("⏵", "Bypass entered by the user"),
+    # An agent's branch move in the checkout DELFIN runs from, refused.
+    "shared_checkout_switch": ("⛔", "Branch switch in the shared checkout refused"),
+    # A second approval of the same kind in a turn whose first one went
+    # unanswered: not asked again, refused, and the panel says so.
+    "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
     "isolation":      ("🔒", "Filesystem isolation active"),
+    "isolation_missing": ("⚠", "Filesystem isolation NOT active"),
+    # A client built without a permissions policy runs only the index tools.
+    "no_sandbox":     ("🚫", "Refused: no sandbox configured"),
+    "no_sandbox_mcp": ("🚫", "MCP tool refused: no sandbox configured"),
     "egress":         ("🌐", "Outbound data transfer"),
+    "egress_blocked": ("🌐", "Network destination blocked (sandbox)"),
+    # The network of programs a command starts: which layer holds it.
+    "network":        ("🌐", "Command network held by the egress proxy"),
+    "network_missing": ("⚠", "Command network NOT (fully) held"),
+    "egress_asked":   ("🌐", "Command network: destination asked"),
+    "egress_upload":  ("📤", "Command upload to an allowed host"),
+    # A write to a known host with nobody to ask, refused because the
+    # host is not named in agent.sandbox_network.upload_domains.
+    "egress_upload_refused": ("📤", "Command upload refused (nobody to ask)"),
+    # The audit log (audit_log.py): a write that failed, and a log that
+    # was changed outside DELFIN between two writes.
+    "audit_write_failed": ("📒", "Audit log could not be written"),
+    "audit_chain_broken": ("📒", "Audit log changed outside DELFIN"),
+    "key_exported":   ("🔑", "Provider key exported in the environment"),
+    # The account key store (trust_store.py) held a file that is not a
+    # private key of this account: nothing is signed with it.
+    "trust_store_refused": ("🔑", "Account key store refused"),
+    # A wrong token sent to the dashboard server (login form, URL or
+    # header), at most one record a minute (dashboard/login_session.py).
+    "dashboard_login_refused": ("🔑", "Dashboard login refused (wrong token)"),
+    # A commit message naming a home directory, an account or a machine.
+    # The repository is public, and a name in a public history is paid
+    # for once and permanently.
+    "identity_in_commit": ("🪪", "Identity in a commit message"),
+    # An approval given where nobody at the terminal saw it. The panel is
+    # the only place this is ever visible, which is why it is recorded
+    # rather than merely allowed.
+    "approval_from_outside": ("\U0001f441", "Approved from outside the terminal"),
+    # An agent session reaching for an approval: the answer command, an
+    # answer function, or a write where answers and the CLI gate state live.
+    "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
+    # An agent session running the operator's actions (ops send, escalate,
+    # pause; delfin-agent pause/resume).
+    "operator_action_refused": ("🚫", "Agent tried to act as the operator"),
+    # An answer from outside the waiting process without the one-time
+    # code it showed (file_confirm reads it; cli refuses to write it).
+    "approval_code_refused": ("🚫", "Approval answer without the session's code"),
+    "approval_code_missing": ("🚫", "Approval answer not written: no code"),
+    # A hand-over directory every session on the repository can write.
+    "handover_root":  ("📂", "Shared hand-over directory in use"),
+    "settings_updated": ("🛡", "Settings changed by a security update"),
+    "push_unrequested": ("📤", "Push nobody asked for"),
+    "pr_create_unrequested": ("📤", "Pull request nobody asked for"),
+    "pr_merge_contributor": ("🚫", "Merge attempted by a contributor"),
+    "pr_merge_unrequested": ("📤", "Merge nobody asked for"),
+    "push_default_branch": ("🔀", "Contributor push to the default branch"),
+    "pr_route":       ("🔀", "Direct push or merge refused (PR route requested)"),
+    "pr_merge_unpinned": ("🚫", "Merge not pinned to a green PR head"),
+    "gh_credential_print": ("🔑", "GitHub login printed by a command"),
+    "gh_api_write": ("🚫", "GitHub write through the raw API"),
+    # A gh alias or extension that would carry the login past those two.
+    "gh_alias_refused": ("🚫", "gh alias that hides a guarded command"),
+    "gh_extension_refused": ("🚫", "gh extension install refused"),
+    "git_config_program": ("⚙", "Git setting that runs a program"),
+    # The user's permission rules (permission_rules.py).
+    "permission_rule_deny": ("⛔", "Refused by a permission rule"),
+    "permission_rule_ask": ("❓", "Asked by a permission rule"),
+    "permission_rule_allow": ("✅", "Question answered by a permission rule"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
+    "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
+    "test_tamper":    ("🧪", "Failing test edited"),
+    "shell_write_unasked": ("🧪", "Write by a delegate that edits no file"),
+    # Locked scope: the folder IS the promise, so each way out is named.
+    "locked_scope_read":    ("🔒", "Locked scope: read outside the folder"),
+    "locked_scope_bash":    ("🔒", "Locked scope: command outside the folder"),
+    "locked_scope_symlink": ("🔒", "Locked scope: link out of the folder"),
+    "locked_scope_exec":    ("🔒", "Locked scope: execution outside the folder"),
+    "locked_scope_widen":   ("🔒", "Locked scope: attempt to widen it"),
+    "locked_scope_parse":   ("🔒", "Locked scope: command could not be checked"),
+    # A persisted auto-allow that matches every command is not a rule, it
+    # is the confirmation switched off for good. Refused whatever the
+    # dialog said, so it is recorded like the other floors that hold
+    # against an approving user.
+    "unbounded_allow_pattern": ("🔓", "Auto-allow rule that matched everything"),
+    # The administrator's managed policy (managed_policy.py).
+    "managed_policy_deny": ("🏛", "Refused by the managed policy"),
+    "managed_policy_ask":  ("🏛", "Asked by the managed policy"),
+    # MCP dispatch bypasses the native executor, so its refusals are their
+    # own kinds.
+    "plan_mode_mcp":     ("📝", "Plan mode: MCP tool refused"),
+    "role_denied_mcp":   ("🎭", "Role: MCP tool refused"),
+    "session_denied_mcp": ("🎭", "Session tool list: MCP tool refused"),
+    "mcp_bash_no_perms": ("🔌", "MCP shell without permissions"),
+    "mcp_write_no_perms": ("🔌", "MCP write without permissions"),
+    "mcp_side_effect":   ("🔌", "MCP tool that is not read-only"),
+    "mcp_side_effect_no_perms": ("🔌", "MCP side effect without permissions"),
+    "mcp_module_name":   ("🔌", "MCP module name outside the adapters dir"),
+    "mcp_budget":        ("🔌", "MCP tool surface over budget"),
+    # The action classifier: a model's second opinion on what the rules let
+    # through unseen. It only ever adds friction.
+    "read_only_shape":   ("✅", "Harmless command form approved by rule"),
+    "caged_unasked":     ("🧱", "Command run unasked inside the filesystem cage"),
+    "calculation_admitted": ("🧪", "Calculation started unasked: setup and resources checked"),
+    "classifier_ask":    ("❓", "Action classifier asked the user"),
+    "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
+    "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
+    "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
+    "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    # Off the auto-allow list, no isolation layer, nobody to ask.
+    "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
+    "classifier_down":   ("🔌", "Action watcher down"),
+    "classifier_up":     ("🔁", "Action watcher answers again"),
 }
+
+
+# Kinds that stay in the panel even when blocked: the user's own refusal,
+# an approval window that expired (the confirm broker already parks that
+# one in the inbox itself), and the informational grants. Everything else
+# is durable by default — a containment kind added later is loud until
+# someone decides otherwise, which is the safer direction for this list.
+_PANEL_ONLY_KINDS = frozenset({
+    "denied_by_user", "approval_timeout", "read_grant", "isolation",
+    "auto_verify", "auto_verify_exhausted",
+})
 
 
 @dataclass(frozen=True)
@@ -45,7 +217,13 @@ class SecurityEvent:
 _LOCK = threading.Lock()
 _EVENTS: Deque[SecurityEvent] = deque(maxlen=200)
 _SEQ = 0
+# Events pushed out of the full ring since the last clear(). Counted so a
+# flood of one kind cannot hide what came before it without the panel
+# saying how much is gone (the blocked ones also reached the inbox).
+_DROPPED = 0
 _ON_RECORD = None  # optional callback(SecurityEvent) for live UI refresh
+# (kind, tool) pairs already raised in this process — the dedup key.
+_ALERTED: set[tuple[str, str]] = set()
 
 
 def set_listener(callback) -> None:
@@ -54,13 +232,47 @@ def set_listener(callback) -> None:
     _ON_RECORD = callback
 
 
+def _should_alert(ev: SecurityEvent) -> bool:
+    """First BLOCKED event of its (kind, tool) that is not panel-only."""
+    if not ev.blocked or ev.kind in _PANEL_ONLY_KINDS:
+        return False
+    key = (ev.kind, ev.tool)
+    with _LOCK:
+        if key in _ALERTED:
+            return False
+        _ALERTED.add(key)
+    return True
+
+
+def _raise_alert(ev: SecurityEvent) -> None:
+    """Durable inbox event for a containment block. Never raises.
+
+    Outside the lock: this writes a file and may notify, and the gate
+    that called ``record`` is holding the tool call open.
+    """
+    try:
+        if not _should_alert(ev):
+            return
+        _, label = _KINDS.get(ev.kind, ("•", ev.kind))
+        from .attention import emit_attention
+        emit_attention(
+            "security_alert",
+            title=f"{label} ({ev.tool})" if ev.tool else label,
+            detail=f"{ev.kind}: {ev.detail}"[:400],
+        )
+    except Exception:
+        pass
+
+
 def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
     """Record one containment event. Never raises."""
-    global _SEQ
+    global _SEQ, _DROPPED
     try:
         with _LOCK:
             _SEQ += 1
             ev = SecurityEvent(_SEQ, kind, tool, str(detail)[:300], blocked)
+            if len(_EVENTS) == _EVENTS.maxlen:
+                _DROPPED += 1
             _EVENTS.append(ev)
         cb = _ON_RECORD
         if cb is not None:
@@ -68,6 +280,12 @@ def record(kind: str, tool: str, detail: str, *, blocked: bool = True) -> None:
                 cb(ev)
             except Exception:
                 pass
+        _raise_alert(ev)
+        if blocked:
+            # The same decision, for a turn that reports its refusals as
+            # data (turn_outcome: the headless result and stream-json).
+            from . import turn_outcome
+            turn_outcome.denied(tool, kind, str(detail))
     except Exception:
         pass
 
@@ -79,14 +297,26 @@ def recent(limit: int = 20) -> list[SecurityEvent]:
 
 
 def counts() -> dict:
+    """``total`` and ``blocked`` in the ring; ``dropped``: events the full
+    ring pushed out since the last ``clear``."""
     with _LOCK:
         evs = list(_EVENTS)
-    return {"total": len(evs), "blocked": sum(1 for e in evs if e.blocked)}
+        dropped = _DROPPED
+    return {"total": len(evs), "blocked": sum(1 for e in evs if e.blocked),
+            "dropped": dropped}
 
 
 def clear() -> None:
+    global _DROPPED
     with _LOCK:
         _EVENTS.clear()
+        _ALERTED.clear()
+        _DROPPED = 0
+
+
+def known_kinds() -> frozenset:
+    """Event kinds this panel can label. Recorded kinds must be a subset."""
+    return frozenset(_KINDS)
 
 
 def format_panel_html(limit: int = 12) -> str:
@@ -111,7 +341,9 @@ def format_panel_html(limit: int = 12) -> str:
     head = (
         f"<div style='font-size:11px;color:#aaa;margin-bottom:3px;'>"
         f"🛡 Containment &nbsp; {n['blocked']} blocked / {n['total']} flagged"
-        f"</div>"
+        + (f" &nbsp; ({n['dropped']} older events dropped; blocked ones "
+           "are in the attention inbox)" if n.get("dropped") else "")
+        + "</div>"
     )
     return (
         "<div style='border-left:3px solid #d32f2f;padding:6px 10px;"
@@ -125,5 +357,5 @@ def format_panel_html(limit: int = 12) -> str:
 
 __all__ = [
     "SecurityEvent", "record", "recent", "counts", "clear",
-    "set_listener", "format_panel_html",
+    "known_kinds", "set_listener", "format_panel_html",
 ]

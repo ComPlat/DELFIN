@@ -12,25 +12,11 @@ from __future__ import annotations
 
 import pytest
 
+import _package_ast
 from delfin.agent.api_client import KitToolPermissions
 
 
-def _bwrap_functional() -> bool:
-    """True only if bwrap is installed AND can actually sandbox. On unprivileged
-    CI containers bwrap is often present but cannot create user namespaces, so
-    it exits non-zero — `which("bwrap")` alone would wrongly let the test run."""
-    import shutil
-    import subprocess
-    if shutil.which("bwrap") is None:
-        return False
-    try:
-        r = subprocess.run(
-            ["bwrap", "--ro-bind", "/", "/", "true"],
-            capture_output=True, timeout=10,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+from conftest import requires_a_working_sandbox
 
 
 @pytest.fixture
@@ -107,15 +93,78 @@ def _solo_engine(tmp_path):
         return AgentEngine(repo_dir=str(tmp_path), mode="solo")
 
 
-def test_auto_verify_fires_after_python_edit(tmp_path):
-    eng = _solo_engine(tmp_path)
-    msg = eng.check_auto_verify("Edit", "edited /repo/foo.py")
-    assert msg and "pytest" in msg
+def test_verify_after_modify_is_stated_where_the_model_reads_it():
+    """These two tests used to call engine.check_auto_verify(), which
+    returned a "[System] run pytest" nudge after a code edit.
+
+    Nothing called that function, in any backend, ever — the tests were
+    its only references. It also matched the tool names {"Edit",
+    "Write"}, so on the OpenAI-compatible backends it could not have
+    fired, and the command it named is wrong for a project with no
+    tests/ directory.
+
+    The contract it was reaching for is real and lives in the prompt,
+    which is where the model actually reads it.
+    """
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    prompt = (root / "delfin" / "agent" / "pack" / "agents"
+              / "solo_agent.md").read_text(encoding="utf-8").lower()
+    assert "verify-after-modify" in prompt
+    assert "before reporting success" in prompt
 
 
-def test_auto_verify_silent_for_read(tmp_path):
-    eng = _solo_engine(tmp_path)
-    assert eng.check_auto_verify("Read", "read /repo/foo.py") is None
+def test_nothing_claims_a_caller_it_does_not_have():
+    """check_auto_verify's docstring said "Called by the dashboard worker
+    after each tool result" and nothing called it, in any backend, ever.
+
+    A mechanism that describes a caller nobody wrote is worse than no
+    mechanism: the next reader believes it runs, and its tests keep
+    passing because they call it themselves.
+
+    So the rule rather than the instance. Every function under
+    delfin/agent and delfin/dashboard whose docstring names a caller has
+    to be called somewhere. Scoped to those two trees because the
+    chemistry core is another agent's to answer for.
+    """
+    import ast
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    claim = re.compile(r"(?i)\bcalled (?:by|from)\b|\binvoked by\b")
+
+    called: set[str] = set()
+    for path in root.joinpath("delfin").rglob("*.py"):
+        try:
+            tree = _package_ast.parse(path, errors="replace")
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                called.add(node.func.id)
+            elif isinstance(node, ast.Attribute):
+                called.add(node.attr)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # Dispatch tables and getattr() reach a function by name.
+                called.add(node.value.strip())
+
+    unreachable = []
+    for sub in ("agent", "dashboard"):
+        for path in root.joinpath("delfin", sub).rglob("*.py"):
+            try:
+                tree = _package_ast.parse(path, errors="replace")
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef,
+                                         ast.AsyncFunctionDef)):
+                    continue
+                doc = ast.get_docstring(node) or ""
+                if claim.search(doc) and node.name not in called:
+                    unreachable.append(
+                        f"{path.relative_to(root)}:{node.lineno} {node.name}")
+    assert unreachable == [], unreachable
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +203,7 @@ def test_cost_soft_limit_default_present():
 
 # ---------------------------------------------------------------------------
 # Out-of-workspace access is refused with an actionable message
-# (the Jerome case: project in another user's home, outside the sandbox)
+# (the field-report case: project in another user's home, outside the sandbox)
 # ---------------------------------------------------------------------------
 
 def test_outside_workspace_path_rejected_with_grant_hint(tmp_path):
@@ -262,8 +311,17 @@ def test_greetings_classify_simple_for_fast_turns():
 def test_bash_isolation_off_is_plain_bash(tmp_path):
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
     perms = KitToolPermissions(workspace=str(tmp_path))
-    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="off") == [
-        "/bin/bash", "-c", "echo hi"]
+    _assert_no_filesystem_isolation(
+        _bash_isolation_argv("echo hi", tmp_path, perms, mode="off"))
+
+
+def _assert_no_filesystem_isolation(argv):
+    """The command as written, without the read-only filesystem wrap.
+
+    It may still run in the process cage, which holds in every filesystem
+    mode (test_nothing_an_agent_command_starts_outlives_it)."""
+    assert argv[-3:] == ["/bin/bash", "-c", "echo hi"]
+    assert "--ro-bind" not in argv
 
 
 def test_bash_isolation_default_setting_is_auto():
@@ -271,13 +329,22 @@ def test_bash_isolation_default_setting_is_auto():
     assert DEFAULT_SETTINGS["agent"]["bash_isolation"] == "auto"
 
 
-def test_auto_isolation_is_plain_in_interactive_mode(tmp_path):
-    # "auto" must NOT isolate interactive (ask-per-action) modes — HPC coding
-    # workflows stay on raw bash there.
-    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
-    perms = KitToolPermissions(workspace=str(tmp_path), mode="default")
-    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="auto") == [
-        "/bin/bash", "-c", "echo hi"]
+def test_auto_isolation_engages_in_interactive_mode_too(monkeypatch, tmp_path):
+    # "auto" isolates EVERY mode now, not only bypassPermissions — the
+    # change is deliberate (api_client.py, the "auto" branch): approval in
+    # an attended session is given on the command TEXT, and the text is
+    # not the act; an interpreter or symlink walks past any reading of it.
+    # The probe + presence are mocked so the test is deterministic — its
+    # predecessor read the real environment and passed on hosts without a
+    # functional bwrap while failing on SLURM nodes that have one.
+    import delfin.agent.api_client as A
+    A._BWRAP_FUNCTIONAL = None
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    monkeypatch.setattr(A.shutil, "which", lambda _x: "/usr/bin/bwrap")
+    perms = A.KitToolPermissions(workspace=str(tmp_path), mode="default")
+    argv = A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto")
+    assert argv[0] == "bwrap"
+    assert argv[-3:] == ["/bin/bash", "-c", "echo hi"]
 
 
 def test_auto_isolation_engages_in_bypass_mode(monkeypatch, tmp_path):
@@ -297,43 +364,83 @@ def test_auto_isolation_falls_back_when_bwrap_unavailable(monkeypatch, tmp_path)
     import delfin.agent.api_client as A
     A._BWRAP_FUNCTIONAL = None
     monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
+    # Neither isolation works here: the command runs, and says so.
+    monkeypatch.setattr(A, "_landlock_functional", lambda: False)
     perms = A.KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
-    assert A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto") == [
-        "/bin/bash", "-c", "echo hi"]
+    _assert_no_filesystem_isolation(
+        A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto"))
 
 
 def test_isolation_off_is_escape_hatch_even_in_bypass(tmp_path):
     # Explicit "off" must defeat auto-isolation everywhere (the HPC opt-out).
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
     perms = KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
-    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="off") == [
-        "/bin/bash", "-c", "echo hi"]
+    _assert_no_filesystem_isolation(
+        _bash_isolation_argv("echo hi", tmp_path, perms, mode="off"))
 
 
-@pytest.mark.skipif(not _bwrap_functional(),
-                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
+@requires_a_working_sandbox
 def test_bwrap_isolation_blocks_writes_outside_granted_roots(tmp_path):
+    """The probe target deliberately sits OUTSIDE the grant and outside
+    the user's home.
+
+    It used to be ``Path.home()/"delfin_isolation_probe.txt"``, which
+    conftest does not redirect. So the moment the sandbox regressed the
+    test both failed AND wrote into the developer's real home -- and left
+    it there. A sibling of the granted directory is outside the grant just
+    as surely, exists on the host so a lost sandbox really would create
+    the file, and is cleaned up with the rest of the tmp tree.
+    """
     import subprocess
-    from pathlib import Path
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
-    perms = KitToolPermissions(workspace=str(tmp_path))
+    ws = tmp_path / "granted"
+    ws.mkdir()
+    outside_dir = tmp_path / "not_granted"
+    outside_dir.mkdir()
+    probe = outside_dir / "escaped.txt"
+    perms = KitToolPermissions(workspace=str(ws))
     # Inside the granted workspace: writable.
     r1 = subprocess.run(
-        _bash_isolation_argv(f"touch {tmp_path}/inside.txt", tmp_path, perms,
+        _bash_isolation_argv(f"touch {ws}/inside.txt", ws, perms,
                              mode="bwrap"),
         capture_output=True, text=True, timeout=30)
-    assert r1.returncode == 0 and (tmp_path / "inside.txt").exists()
-    # Outside (the user's real home): read-only → blocked.
-    outside = Path.home().resolve() / "delfin_isolation_probe.txt"
+    assert r1.returncode == 0 and (ws / "inside.txt").exists()
+    # One directory over, never granted: not reachable from inside.
     r2 = subprocess.run(
-        _bash_isolation_argv(f"touch {outside}", tmp_path, perms,
+        _bash_isolation_argv(f"touch {probe}", ws, perms, mode="bwrap"),
+        capture_output=True, text=True, timeout=30)
+    assert r2.returncode != 0, (
+        "a write one directory outside the grant succeeded")
+    assert not probe.exists(), (
+        "the sandbox let a write through to a path it never granted")
+
+
+@requires_a_working_sandbox
+def test_bwrap_isolation_hides_the_users_secret_directories(tmp_path):
+    """Masking the credential folders is the other half of confinement:
+    a command that cannot write out can still read a key and print it."""
+    import subprocess
+    from pathlib import Path
+
+    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
+    from delfin.agent.sandbox import _HOME_SECRET_DIRS
+
+    home = Path.home()
+    existing = [home / rel for rel in _HOME_SECRET_DIRS
+                if (home / rel).exists()]
+    if not existing:
+        pytest.skip("this account has none of the masked directories")
+    target = existing[0]
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    r = subprocess.run(
+        _bash_isolation_argv(f"ls -A {target}", tmp_path, perms,
                              mode="bwrap"),
         capture_output=True, text=True, timeout=30)
-    assert r2.returncode != 0 and not outside.exists()
+    assert r.stdout.strip() == "", (
+        f"{target} was readable from inside the sandbox: {r.stdout[:200]}")
 
 
-@pytest.mark.skipif(not _bwrap_functional(),
-                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
+@requires_a_working_sandbox
 def test_bwrap_isolation_grants_extra_dirs(tmp_path):
     import subprocess
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
@@ -346,3 +453,65 @@ def test_bwrap_isolation_grants_extra_dirs(tmp_path):
                              mode="bwrap"),
         capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and (extra / "ok.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# The same act, a different spelling
+# ---------------------------------------------------------------------------
+
+_DESTRUCTIVE_FIND = [
+    "find ~ -delete",
+    "find $HOME -delete",
+    "find ${HOME} -delete",
+    "find / -delete",
+    "find /etc -delete",
+    "find ~/Documents -delete",
+    "find ~ -name '*.py' -delete",
+    r"find ~ -type f -exec rm {} \;",
+    r"find ~ -type f -execdir rm {} \;",
+    r"find / -type f -exec shred {} \;",
+    r"find ~ -ok rm {} \;",
+]
+
+_LEGITIMATE_FIND = [
+    "find . -name '*.pyc' -delete",          # workspace cleanup
+    "find ./build -delete",
+    "find . -type f -name '*.log' -delete",
+    "find ~ -name '*.py'",                   # a READ-ONLY search of home
+    "find / -name delfin -type d",
+    "find . -newer setup.py",
+]
+
+
+@pytest.mark.parametrize("cmd", _DESTRUCTIVE_FIND)
+def test_a_destructive_find_over_home_or_root_is_refused(cmd, tmp_path):
+    """`rm -rf ~` was denied and `find ~ -delete` was not, and they empty
+    the same directory.
+
+    Measured through the whole permission gate before this existed: under
+    bypassPermissions every form below came back ALLOWED, while the rm
+    spelling of the same act was refused by pattern. The rule existed as a
+    sentence and the mechanism permitted its opposite.
+
+    bypassPermissions is the mode asserted here on purpose — it is the one
+    with nothing else left to catch it."""
+    from delfin.agent import api_client as ac
+
+    perms = ac.KitToolPermissions(workspace=tmp_path, mode="bypassPermissions")
+    verdict = ac._DocToolExecutor()._run_permission_gate(
+        "bash", {"command": cmd}, perms)
+    assert verdict is not None and "deny-pattern" in verdict, cmd
+
+
+@pytest.mark.parametrize("cmd", _LEGITIMATE_FIND)
+def test_an_ordinary_find_is_left_alone(cmd, tmp_path):
+    """The other half, and the reason the rule is written against the
+    search ROOT rather than against `find -delete` as such: deleting build
+    artefacts under a relative path is honest cleanup, and blanket-denying
+    it would push the model towards spellings nobody has thought about."""
+    from delfin.agent import api_client as ac
+
+    perms = ac.KitToolPermissions(workspace=tmp_path, mode="bypassPermissions")
+    verdict = ac._DocToolExecutor()._run_permission_gate(
+        "bash", {"command": cmd}, perms)
+    assert not (verdict and "deny-pattern" in verdict), cmd

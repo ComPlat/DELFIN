@@ -1,0 +1,504 @@
+"""The chat window pulled itself to the newest output on every refresh.
+
+A reader who scrolled up to re-read an earlier turn was thrown back to the
+bottom within 150ms, so nothing above the last message could be read until
+the agent had finished writing.
+
+Following the newest output is now conditional on the reader being at the
+end of the transcript, and there is a control to go back to the end.  The
+behaviour lives in JavaScript inside a Python string, which no import can
+call, so it is checked two ways: the emitted source is read for the shape of
+the guard, and -- where node is installed -- the script itself is run against
+a stand-in element and driven through the cases that matter.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import pathlib
+import re
+import shutil
+import subprocess
+import tempfile
+
+import pytest
+
+_NODE = shutil.which("node")
+_TAB_AGENT = (pathlib.Path(__file__).resolve().parents[1]
+              / "delfin" / "dashboard" / "tab_agent.py")
+
+
+def _module_source() -> str:
+    return _TAB_AGENT.read_text(encoding="utf-8")
+
+
+def _chat_scroll_js() -> str:
+    """The startup script the agent tab hands the browser.
+
+    Taken from the parsed module rather than by string search, so the escapes
+    in it are the ones the browser will see.
+    """
+    blocks = [
+        node.value
+        for node in ast.walk(ast.parse(_module_source()))
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "__delfinChatScroll" in node.value
+    ]
+    assert len(blocks) == 1, (
+        f"expected exactly one script to own the chat scroll, found "
+        f"{len(blocks)}")
+    return blocks[0]
+
+
+def _poll_body() -> str:
+    """The repeating callback that runs while the agent is writing."""
+    js = _chat_scroll_js()
+    at = js.rindex("setInterval(")
+    return js[at:]
+
+
+# --- what the emitted source has to say -----------------------------------
+
+
+def test_the_poll_does_not_scroll_unconditionally():
+    """The repeating callback used to assign the end of the content to
+    scrollTop with nothing in front of it."""
+    js = _chat_scroll_js()
+    assert "chat.scrollTop = chat.scrollHeight" not in js, (
+        "the poll still writes the end of the content straight into "
+        "scrollTop, so a reader who scrolled up is pulled back")
+
+    body = _poll_body()
+    # The record is per session now, so the flag is read off whichever one
+    # the visible chat belongs to. What has to stay true is the ORDER: the
+    # flag is consulted before anything is scrolled.
+    guard = min((i for i in (body.find("st.follow"), body.find("S.follow"))
+                 if i != -1), default=-1)
+    assert guard != -1, (
+        "the poll does not consult the follow flag at all")
+    write = body.find("setTop(")
+    assert write != -1, "the poll no longer scrolls anything"
+    assert guard < write, (
+        "the poll scrolls before it checks whether the reader is at the "
+        "end, so the check cannot stop it")
+
+
+def test_no_render_path_forces_the_scroll():
+    """Each refresh rebuilds the chat element and used to end it with a tag
+    that drove the viewport to the bottom, whatever the reader was doing."""
+    src = _module_source()
+    assert "if(c)c.scrollTop=c.scrollHeight;" not in src, (
+        "a render path still ends with an unconditional scroll to the "
+        "bottom")
+    assert "__delfinChatSync" in src, (
+        "the render paths no longer hand the refresh to the follow-aware "
+        "sync")
+
+
+def test_the_jump_control_is_emitted():
+    src = _module_source()
+    assert 'class="delfin-chat-jump"' in src, (
+        "the chat is rendered without a way back to the newest output")
+    assert "window.__delfinChatToBottom(this)" in src, (
+        "the jump control is rendered but is not wired to anything")
+    assert ".delfin-chat-jump {" in src, (
+        "the jump control has no styling of its own")
+    # It floats over the transcript rather than sitting at its end, or a
+    # reader far up the history could never reach it.
+    style = src[src.index(".delfin-chat-jump {"):]
+    style = style[:style.index("}")]
+    assert "position: sticky" in style, (
+        "the jump control scrolls away with the content instead of staying "
+        "within reach")
+
+
+def test_the_tolerance_is_named_and_real():
+    """Reflow and late-loading images move the end of the content by a few
+    pixels.  A tolerance of zero would drop a reader out of follow mode
+    while they sat at the bottom, so the number is pinned here."""
+    js = _chat_scroll_js()
+    found = re.search(r"CHAT_BOTTOM_TOLERANCE_PX\s*=\s*(\d+)", js)
+    assert found, "the at-the-end test names no tolerance"
+    px = int(found.group(1))
+    assert 40 <= px <= 80, (
+        f"the tolerance is {px}px; below ~40 reflow alone ends follow mode, "
+        f"above ~80 the reader is followed from well up the transcript")
+
+
+def test_a_scroll_the_script_caused_is_told_apart_from_the_readers():
+    js = _chat_scroll_js()
+    assert ("st.auto" in js or "S.auto" in js), (
+        "nothing marks the script's own scrollTop writes, so each of them "
+        "looks like the reader scrolling away")
+    # And the mark belongs to the session whose element was written, not to
+    # the page: two sessions scrolling at once would otherwise cancel each
+    # other's flag and each read the other's write as the reader moving.
+    assert "stateFor(" in js, (
+        "the script's own-scroll mark is not scoped to a session")
+
+
+# --- what the script actually does ----------------------------------------
+
+
+#: A stand-in for the parts of the page the script touches.  scrollTop is an
+#: accessor because that is the whole difficulty: writing it queues a scroll
+#: event exactly as the browser would, and the script has to tell that event
+#: apart from one the reader caused.
+_DRIVER = r"""
+const docListeners = {};
+let intervalFn = null;
+let pendingScroll = [];
+let scrollWrites = 0;
+
+const jump = {closest: (s) => (s === '.delfin-agent-chat-host' ? chat : null)};
+// The control's state is read off the host (the element that survives a
+// refresh), never written to the button, so the stand-in records the marks.
+const chat = {
+  scrollHeight: 1000,
+  clientHeight: 400,
+  _top: 0,
+  attrs: {},
+  setAttribute(k, v) { chat.attrs[k] = String(v); },
+  classList: {contains: (c) => c === 'delfin-agent-chat-host'},
+  querySelector: (s) => (s === '.delfin-chat-jump' ? jump : null),
+  closest: (s) => (s === '.delfin-agent-chat-host' ? chat : null),
+};
+Object.defineProperty(chat, 'scrollTop', {
+  get() { return chat._top; },
+  set(v) {
+    scrollWrites++;
+    const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
+    const clamped = Math.max(0, Math.min(max, v));
+    if (clamped === chat._top) return;
+    chat._top = clamped;
+    pendingScroll.push(chat);
+  },
+});
+let working = null;
+const sendBtn = {closest: (s) => (s === 'button' ? sendBtn : null)};
+
+global.window = {};
+global.document = {
+  querySelector(s) {
+    if (s === '.delfin-agent-chat-host') return chat;
+    if (s === '.delfin-agent-working') return working;
+    if (s === '.delfin-agent-send-row button') return sendBtn;
+    return null;
+  },
+  addEventListener(type, fn) {
+    (docListeners[type] = docListeners[type] || []).push(fn);
+  },
+};
+global.setInterval = (fn) => { intervalFn = fn; return 1; };
+global.setTimeout = () => 1;
+global.clearTimeout = () => {};
+// The script tells the reader's scrolls from the browser's by the input
+// just before them; the clock is the driver's.
+let NOW = 1000000;
+Date.now = () => NOW;
+
+__SCRIPT__
+
+function flush() {
+  const queued = pendingScroll; pendingScroll = [];
+  for (const t of queued)
+    for (const fn of (docListeners.scroll || [])) fn({target: t});
+}
+function userScroll(top) {
+  // A person scrolls with a wheel, a touch, a key or the scrollbar: the
+  // input event comes first, then the scroll.
+  NOW += 1000;
+  for (const fn of (docListeners.wheel || [])) fn({target: chat});
+  const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
+  chat._top = Math.max(0, Math.min(max, top));
+  for (const fn of (docListeners.scroll || [])) fn({target: chat});
+}
+// A scroll nobody asked for: the browser moved the offset (measured
+// 2026-10-22: 12 px up every 1.5 s while the agent waited, with no
+// script writing scrollTop), and the script put it back 60-85 ms later.
+function browserScroll(top) {
+  NOW += 1000;
+  const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
+  chat._top = Math.max(0, Math.min(max, top));
+  for (const fn of (docListeners.scroll || [])) fn({target: chat});
+}
+function tick() { if (intervalFn) intervalFn(); flush(); }
+function clickSend() {
+  for (const fn of (docListeners.click || [])) fn({target: sendBtn});
+  flush();
+}
+function sync() { window.__delfinChatSync(chat); flush(); }
+const S = () => window.__delfinChatFollow;
+const end = () => chat.scrollHeight - chat.clientHeight;
+const seen = {};
+
+// A reader at the end is carried along by new output.
+sync();
+seen.followed_to_the_end = chat.scrollTop === end();
+const shown = () => chat.attrs['data-delfin-follow'] === '0';
+const unseen = () => chat.attrs['data-delfin-unseen'] === '1';
+seen.control_hidden_at_the_end = !shown();
+
+// The browser moves a following reader 12 px up: put back in the same
+// scroll event, before the next paint, and still following.
+browserScroll(end() - 12);
+seen.a_scroll_nobody_made_is_undone_at_once =
+  chat.scrollTop === end() && S().follow === true;
+flush();
+
+// The reader scrolls up to re-read something.
+working = {working: true};
+userScroll(100);
+seen.scrolling_up_stops_following = S().follow === false;
+seen.control_shown_when_away = shown();
+
+// The agent keeps writing: the poll must leave the viewport alone.
+chat.scrollHeight = 1600;
+tick();
+seen.poll_left_the_viewport = chat.scrollTop === 100;
+
+// And so must a full refresh of the transcript.
+chat.scrollHeight = 2200;
+sync();
+seen.refresh_left_the_viewport = chat.scrollTop === 100;
+seen.control_reports_new_output = unseen();
+
+// Reported 2026-10-07: "ich will das in ruhe lesen koennen, nicht wandern".
+// Leaving the offset at the right NUMBER is not enough -- writing scrollTop
+// at the streaming rate is itself what made the text wander under the
+// reader. While the reader is away from the end, an update must write
+// NOTHING. It can afford not to: the scrollport is the widget host now, and
+// the host survives a value reassignment, so the offset is already where it
+// was left and there is nothing to restore.
+const awayBefore = scrollWrites;
+for (let i = 0; i < 12; i++) {
+  chat.scrollHeight += 120;      // the agent keeps generating below
+  tick();
+  sync();
+}
+seen.reading_up_top_is_never_written_to = scrollWrites === awayBefore;
+seen.reading_up_top_stays_put = chat.scrollTop === 100;
+seen.output_below_is_still_announced = shown();
+
+// Back at the end, following resumes and IS written -- the half the user
+// wants kept.
+userScroll(end());
+const followBefore = scrollWrites;
+chat.scrollHeight += 300;
+tick();
+seen.at_the_end_it_follows_again = scrollWrites > followBefore
+  && chat.scrollTop === end();
+
+// Nearly at the end still counts as at the end; well above it does not.
+userScroll(end() - 50);
+seen.tolerance_holds_follow = S().follow === true;
+userScroll(end() - 200);
+seen.far_above_the_end_does_not = S().follow === false;
+
+// The control returns to the end and re-enters follow mode.
+window.__delfinChatToBottom(jump); flush();
+seen.jump_reached_the_end = chat.scrollTop === end();
+seen.jump_resumed_following = S().follow === true;
+seen.jump_hid_the_control = !shown() && !unseen();
+
+// The script's own scroll must not read as the reader leaving.
+chat.scrollHeight = 3000;
+tick();
+seen.own_scroll_kept_following = S().follow === true;
+seen.poll_reached_the_new_end = chat.scrollTop === end();
+const writesAtEnd = scrollWrites;
+tick();
+seen.idle_poll_does_not_write_scroll_again = scrollWrites === writesAtEnd;
+
+// An offset past the end of what is now shown belongs to another
+// conversation, so the reader is put at the end rather than mid-history.
+userScroll(400);
+chat.scrollHeight = 500;
+sync();
+seen.swapped_conversation_starts_at_the_end = S().follow === true;
+
+// A cleared conversation drops the carried offset.
+window.__delfinChatReset();
+seen.reset_resumes_following = S().follow === true && S().top === 0;
+
+// Sending is a deliberate move to the newest output, so it resumes
+// following even from well up the transcript.
+chat.scrollHeight = 2000;
+userScroll(200);
+clickSend();
+seen.sending_returns_to_the_end =
+  S().follow === true && chat.scrollTop === end();
+
+console.log(JSON.stringify(seen));
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_the_script_follows_only_from_the_end():
+    script = _DRIVER.replace("__SCRIPT__", _chat_scroll_js())
+    folder = pathlib.Path(tempfile.mkdtemp())
+    path = folder / "chat_scroll.js"
+    path.write_text(script, encoding="utf-8")
+    done = subprocess.run([_NODE, str(path)], capture_output=True, text=True,
+                          timeout=300)
+    assert done.returncode == 0, done.stderr[-2000:]
+    seen = json.loads(done.stdout.strip().splitlines()[-1])
+    wrong = sorted(name for name, ok in seen.items() if not ok)
+    assert not wrong, f"the chat scroll misbehaved: {', '.join(wrong)}"
+    assert len(seen) >= 22, f"the driver checked only {len(seen)} things"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_refresh_and_late_resize_follow_before_the_next_paint(tmp_path):
+    """Drive the gap between HTML replacement and the delayed onerror/poll.
+
+    A browser delivers mutation/resize observers before painting. Neither
+    the trailing image's onerror nor the polling timer has fired here.
+    """
+    observers = r"""
+let mutationCallback, resizeCallback;
+document.body = {};
+chat.nodeType = 1;
+global.MutationObserver = class {
+  constructor(callback) { mutationCallback = callback; }
+  observe() {}
+};
+global.ResizeObserver = class {
+  constructor(callback) { resizeCallback = callback; }
+  observe() {}
+};
+"""
+    checks = r"""
+const assert = require('node:assert/strict');
+window.__delfinChatToBottom(jump); flush();
+// Replacing the transcript may clamp the old offset before new content
+// is laid out. Repair it before paint, without a timer or image event.
+for (let i = 0; i < 12; i++) {
+  chat._top = 0;
+  chat.scrollHeight += 120;
+  if (mutationCallback) mutationCallback([{target: chat}]);
+  assert.equal(chat.scrollTop, end(), 'replacement painted off the end');
+  flush();
+}
+chat.scrollHeight += 300;
+resizeCallback([{target: chat}]);
+assert.equal(chat.scrollTop, end(), 'late content resize lost the end');
+flush();
+chat.clientHeight -= 40;
+resizeCallback([{target: chat}]);
+assert.equal(chat.scrollTop, end(), 'viewport resize lost the end');
+flush();
+// A fractional browser offset must not cause endless corrective writes.
+chat._top = end() - 0.25;
+const fractionalWrites = scrollWrites;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+tick();
+assert.equal(scrollWrites, fractionalWrites, 'fractional end was rewritten');
+// Neither observer may move someone reading further up the transcript.
+userScroll(100);
+const awayWrites = scrollWrites;
+chat.scrollHeight += 200;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+assert.equal(scrollWrites, awayWrites, 'observer moved a reader');
+assert.equal(chat.scrollTop, 100);
+// Background sessions have no viewport and must not be scrolled either.
+chat.clientHeight = 0;
+const hiddenWrites = scrollWrites;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+assert.equal(scrollWrites, hiddenWrites, 'hidden session was scrolled');
+"""
+    script = _DRIVER.replace("__SCRIPT__", observers + _chat_scroll_js()) + checks
+    path = tmp_path / "chat_before_paint.js"
+    path.write_text(script, encoding="utf-8")
+    done = subprocess.run([_NODE, str(path)], capture_output=True, text=True,
+                          timeout=30)
+    assert done.returncode == 0, done.stderr[-3000:]
+
+
+def test_the_chat_script_is_not_inside_the_keyboard_guard():
+    """The keyboard block begins with a guard that returns when the flag
+    is already set, and the page bundle sets that flag first on every
+    resumed page. Nested inside that block, the chat script never ran
+    there: the page came back with its library and without its chat.
+    Each block guards itself and stands on its own."""
+    import inspect
+
+    from delfin.dashboard import tab_agent
+
+    src = inspect.getsource(tab_agent)
+    start = src.index('_enter_js_output = widgets.Output()')
+    block = src[start:src.index('"""))', start)]
+    guard = block.index("if (window.__delfinAgentKeys) return;")
+    first_close = block.index("})();", guard)
+    keyboard_block = block[guard:first_close]
+    assert "__delfinChatScroll" not in keyboard_block, (
+        "the chat-scroll script is nested inside the keyboard guard again"
+    )
+    assert "__delfinInputGrow" not in keyboard_block
+    # And the chat script still has a guard of its own.
+    assert "if (window.__delfinChatScroll) return;" in block
+
+
+def test_the_scrollport_is_the_element_that_survives_an_update():
+    """The jitter's root cause, pinned where it is visible.
+
+    `chat_html.value` is reassigned about four times a second while the
+    agent streams, and ipywidgets replaces everything inside the widget
+    when it is. Until 2026-10-07 the scrolling box itself was inside that
+    replaced HTML (`_CHAT_OPEN` opens `.delfin-agent-chat`), so each
+    update destroyed it; a fresh box starts at scrollTop 0 and the script
+    put the reader back a frame later. Four times a second that is a
+    chat nobody can read while it generates.
+
+    The host (`.delfin-agent-chat-host`) is the widget's own element.
+    ipywidgets replaces the CONTENT inside it, never the host, so an
+    offset on the host is not touched by an update.
+
+    Asserted on the source and not through the node driver on purpose:
+    the driver models the scrollport as a persistent object, so it cannot
+    see a DOM node being destroyed -- which is exactly why the behavioural
+    assertions in this file passed both before and after the fix. The
+    distinguishing property is WHICH element scrolls, and that is here.
+    """
+    src = _module_source()
+
+    host = src[src.index(".delfin-agent-chat-host {"):]
+    host = host[:host.index("}")]
+    for prop in ("overflow-y: auto", "height:", "scrollbar-gutter"):
+        assert prop in host, f"the host is not the scrollport: {prop} missing"
+
+    content = src[src.index("\n.delfin-agent-chat {"):]
+    content = content[:content.index("}")]
+    for prop in ("overflow-y", "height:"):
+        assert prop not in content, (
+            f"{prop} is back on .delfin-agent-chat — the replaced element is "
+            "a scrollport again, and it dies on every streaming update")
+
+    assert "function chatEl() { return q('.delfin-agent-chat-host'); }" in src, (
+        "the scroll logic must resolve the element that survives an update")
+    assert "this.closest('.delfin-agent-chat-host')" in src, (
+        "the restore hook must find the host, not the replaced content")
+
+
+def test_nothing_is_written_back_while_the_reader_is_away():
+    """Reported as "ich will das in ruhe lesen können, nicht wandern".
+
+    With a surviving scrollport there is nothing to restore, so the
+    not-following branch must not write scrollTop at all. Writing it at
+    the streaming rate is what moved the text under the reader even when
+    the value was correct.
+    """
+    src = _module_source()
+    i = src.index("window.__delfinChatSync = function(c)")
+    block = src[i:src.index("window.__delfinChatReset", i)]
+    away = block[block.index("} else {"):]
+    assert "setTop(" not in away, (
+        "the not-following branch writes scrollTop again; with a surviving "
+        "scrollport that write is unnecessary and is what makes the text "
+        "wander")
+    assert "st.unseen = true" in away, "unseen output must still be announced"

@@ -132,9 +132,186 @@ def required_orca_outputs(inp_path=None, out_path=None) -> List[Path]:
     return []
 
 
+#: How far back from the end of an output the optimiser's verdict is looked
+#: for. ORCA prints it before the final energy evaluation, the property
+#: section and any frequency job that follows, so it can sit well before the
+#: end — measured at 1 MB in a real ESD run. Bounded because these outputs
+#: reach hundreds of MB and this is consulted for every job on every recalc.
+_OPT_VERDICT_TAIL_BYTES = 8 * 1024 * 1024
+
+#: ORCA's own words when an optimisation runs out of cycles. Testing for this
+#: rather than for the absence of "THE OPTIMIZATION HAS CONVERGED" keeps job
+#: types that never print a convergence banner — single points, frequency-only
+#: runs, compound inputs — out of it entirely.
+_OPT_GAVE_UP_MARKER = "The optimization did not converge"
+
+
+def optimization_gave_up(out_path) -> bool:
+    """True when ORCA reported an optimisation that ran out of cycles.
+
+    Such a run still ends with ``ORCA TERMINATED NORMALLY``, so on the marker
+    alone it is indistinguishable from a finished one. Left at that, recalc
+    skips it on every resubmission — the job can never finish — and dependent
+    jobs go on to use a geometry that is not a stationary point.
+    """
+    try:
+        p = Path(out_path)
+        size = p.stat().st_size
+        with p.open(encoding="utf-8", errors="replace") as f:
+            if size > _OPT_VERDICT_TAIL_BYTES:
+                f.seek(size - _OPT_VERDICT_TAIL_BYTES)
+            return _OPT_GAVE_UP_MARKER in f.read()
+    except Exception:
+        return False
+
+
+#: ORCA copies the input it was given into the head of its output, one line at
+#: a time behind a `|  12> ` marker. That echo is the only self-contained
+#: record of which input produced a given output.
+_ECHOED_INPUT_RE = re.compile(r"^\|\s*\d+>\s?(.*)$")
+
+#: The echo sits just after the banner. Reading the first megabyte finds it in
+#: any real output without pulling a hundreds-of-MB file into memory.
+_ECHO_SCAN_HEAD_BYTES = 1024 * 1024
+
+
+def _normalise_input_lines(lines: Iterable[str]) -> List[str]:
+    """Reduce input lines to what has to match for an output to be reusable.
+
+    Blank lines and comments go, whitespace collapses, and anything that looks
+    like a path keeps only its final component. That last part matters: ORCA is
+    run in an isolated directory, and the copy it actually sees has its
+    %moinp/xyzfile/hess references rewritten to absolute paths. Comparing those
+    verbatim would report a difference on every single job.
+    """
+    out: List[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = " ".join(line.split())
+        line = re.sub(r'(?<=[\s"])/\S+/([^/\s"]+)', r"\1", line)
+        out.append(line)
+    return out
+
+
+def echoed_input(out_path) -> Optional[List[str]]:
+    """The input ORCA recorded in *out_path*, or None when it recorded none."""
+    echoed: List[str] = []
+    try:
+        with Path(out_path).open(encoding="utf-8", errors="replace") as f:
+            # Line by line, and stopping at ORCA's own end marker: the echo is
+            # in the first pages, and nothing here should scale with the size
+            # of an output that can run to hundreds of megabytes.
+            budget = _ECHO_SCAN_HEAD_BYTES
+            for line in f:
+                budget -= len(line)
+                if budget <= 0:
+                    break
+                m = _ECHOED_INPUT_RE.match(line.rstrip("\n"))
+                if m is None:
+                    continue
+                body = m.group(1)
+                if "END OF INPUT" in body:
+                    break
+                echoed.append(body)
+    except OSError:
+        return None
+    return echoed or None
+
+
+def output_matches_input(inp_path, out_path) -> Optional[bool]:
+    """Whether *out_path* was produced by the input currently in *inp_path*.
+
+    Returns None when the output carries no echo — an xTB run driven through a
+    wrapper, a truncated file — because then there is nothing to compare and
+    the caller has to fall back on its own judgement.
+
+    This exists because a complete output is not evidence that it belongs to
+    the input sitting next to it. Recalc used to treat it as such whenever the
+    fingerprint sidecar was missing, and would then stamp the current input as
+    the one that produced it. Change a functional, resubmit after a walltime
+    kill, and the finished jobs are skipped and reported under settings they
+    were never computed with.
+    """
+    echoed = echoed_input(out_path)
+    if echoed is None:
+        return None
+    try:
+        current = Path(inp_path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    return _normalise_input_lines(echoed) == _normalise_input_lines(current)
+
+
+_ORCA_GEOMETRY_COMMENT = re.compile(r"^\s*Coordinates from ORCA-job\s+(?:\S*/)?(\S+?)\s+E\b")
+
+
+def geometry_written_by(xyz_path, job: str) -> bool:
+    """True when ORCA wrote *xyz_path* for the job named *job* (its comment line says so).
+
+    ORCA names the job on the second line, "Coordinates from ORCA-job input E
+    -56.43", the directory included when it ran isolated.
+    """
+    try:
+        with Path(xyz_path).open(encoding="utf-8", errors="replace") as fh:
+            fh.readline()
+            m = _ORCA_GEOMETRY_COMMENT.match(fh.readline())
+    except OSError:
+        return False
+    return m is not None and m.group(1) == job
+
+
+def first_configuration_finished(stage_dir) -> bool:
+    """Whether an OCCUPIER stage's first configuration ran to its end and left its own geometry.
+
+    Its products are ``input.xyz`` and ``input.gbw`` -- the names the stage's
+    setup also uses to hand the stage its starting point.  A later run that
+    sets the stage up again must not hand over on top of them.
+    """
+    stage = Path(stage_dir)
+    return has_ok_marker(stage / "output.out") and geometry_written_by(stage / "input.xyz", "input")
+
+
+_EDITED_ENV = "DELFIN_RECALC_CONTROL_EDITED"
+
+
+def mark_control_edited(edited: bool) -> None:
+    """Tell this run's recalc checks that CONTROL was edited since the last completed run."""
+    if edited:
+        os.environ[_EDITED_ENV] = "1"
+    else:
+        os.environ.pop(_EDITED_ENV, None)
+
+
+def control_edited() -> bool:
+    """Whether CONTROL was edited, in a way that reaches the calculations, since the last completed run."""
+    return os.environ.get(_EDITED_ENV) == "1"
+
+
+def output_belongs_to_job(inp_path, out_path) -> bool:
+    """Whether *out_path* can have come from the job whose input is *inp_path*.
+
+    Its echo matches the input, or one of the job's recovery retries (a
+    retry writes to the job's own output), or there is no echo to go by
+    (xTB driven through a wrapper).  A complete output alone is no evidence:
+    stamped with the input beside it, a finished job computed with another
+    functional is kept and reported under the new one.
+    """
+    inp = Path(inp_path)
+    verdict = output_matches_input(inp, out_path)
+    if verdict is not False:
+        return True
+    return any(output_matches_input(retry, out_path)
+               for retry in inp.parent.glob(f"{inp.stem}.retry*.inp"))
+
+
 def outputs_complete(inp_path, out_path, required_outputs: Optional[Iterable] = None) -> bool:
     """Return True when the main output and required generated files all exist."""
     if not has_ok_marker(out_path):
+        return False
+
+    if optimization_gave_up(out_path):
         return False
 
     if required_outputs is None:
@@ -234,38 +411,152 @@ def _normalize_extra_dependencies(inp_path: Path, extra_deps: Optional[Iterable]
     return deps
 
 
+#: Lines a job's result does not depend on: the cores the scheduler gave it
+#: and the memory per core.  A recalc gives a job whatever cores are free, and
+#: with these in the fingerprint a finished job ran again for having got 6
+#: cores instead of 4.
+_RESOURCE_LINE = re.compile(r"(?im)^\s*%(?:pal\b[^\n]*\bend|maxcore\s+\S+)\s*$\n?")
+_RESOURCE_BLOCK = re.compile(r"(?ims)^\s*%pal\s*$.*?^\s*end\s*$\n?")
+
+
+def _fingerprint_text(inp: Path) -> Optional[bytes]:
+    try:
+        text = inp.read_text(encoding="utf-8", errors="surrogateescape")
+    except Exception:
+        return None
+    text = _RESOURCE_BLOCK.sub("", _RESOURCE_LINE.sub("", text))
+    return text.encode("utf-8", errors="surrogateescape")
+
+
+def _dependency_id(dep: Path, inp: Path) -> str:
+    """A dependency named relative to the job's input, so a job folder that moved keeps its fingerprint."""
+    try:
+        return os.path.relpath(str(dep), str(inp.parent.resolve()))
+    except ValueError:  # another drive
+        return str(dep)
+
+
+def _dependencies(inp: Path, extra_deps: Optional[Iterable]) -> List[Path]:
+    deps: list[Path] = []
+    deps.extend(_collect_input_dependencies(inp))
+    deps.extend(_normalize_extra_dependencies(inp, extra_deps))
+    # Stable ordering independent of discovery order.
+    return sorted({str(dep): dep for dep in deps}.values(), key=lambda p: str(p))
+
+
+def _job_text(text: str) -> List[str]:
+    """What an input says, without the cores and memory the scheduler gave it."""
+    text = _RESOURCE_BLOCK.sub("", _RESOURCE_LINE.sub("", text))
+    return _normalise_input_lines(text.splitlines())
+
+
+def snapshot_input(inp_path) -> Optional[tuple]:
+    """The bytes and times of an input about to be written anew (None when there is none)."""
+    inp = Path(inp_path)
+    try:
+        st = inp.stat()
+        return inp.read_bytes(), (st.st_atime_ns, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def settle_rewritten_input(inp_path, previous: Optional[tuple], working_dir=None) -> Optional[bool]:
+    """After an input was written anew: True, with the old file put back, when it says the same.
+
+    False when it says something else; None when there was no old input to
+    compare with (some archived jobs kept only their outputs).
+
+    The CONTROL overrides are merged first, as ORCA's run merges them into the
+    input before it starts, so the comparison is between what the finished
+    job ran and what would run now.  Cores and memory do not count.  Putting
+    the old bytes back keeps every fingerprint written for them valid.
+    """
+    inp = Path(inp_path)
+    if previous is None:
+        return None
+    if not inp.exists():
+        return False
+    try:
+        from delfin.orca import _apply_control_overrides_to_input
+        _apply_control_overrides_to_input(inp, Path(working_dir) if working_dir else inp.parent)
+    except Exception as exc:  # noqa: BLE001 - the comparison then counts it as changed
+        logger.debug("[smart_recalc] Could not merge overrides into %s: %s", inp, exc)
+    old_bytes, times = previous
+    try:
+        new_text = inp.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if _job_text(old_bytes.decode("utf-8", errors="replace")) != _job_text(new_text):
+        return False
+    try:
+        inp.write_bytes(old_bytes)
+        os.utime(inp, ns=times)
+    except OSError as exc:
+        logger.debug("[smart_recalc] Could not put %s back: %s", inp, exc)
+    return True
+
+
+def forget_earlier_attempts(inp_path) -> None:
+    """An input that changed is a new calculation: its old retries and retry counts go."""
+    inp = Path(inp_path)
+    for old in list(inp.parent.glob(f"{inp.stem}.retry*.inp")):
+        for path in (old, old.with_suffix(old.suffix + ".fprint")):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    try:
+        from delfin.orca_recovery import RetryStateTracker
+        state = inp.parent / ".delfin_recovery_state.json"
+        if state.exists():
+            RetryStateTracker(state).reset_job(inp.stem)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[smart_recalc] Could not reset retry counts of %s: %s", inp, exc)
+
+
 def compute_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> str:
     """Return a hex-digest fingerprint for *inp_path* and its dependencies.
 
     The fingerprint covers:
-    - The full byte content of the input file.
-    - For each dependency: ``<resolved_path>:<size>:<mtime_ns>``.
+    - The input file, without its %pal and %maxcore lines (the cores and
+      memory a job gets do not change its result).
+    - For each dependency: ``<path relative to the input>:<size>:<mtime_ns>``
       (input-referenced dependencies + optional ``extra_deps``).
 
     Returns an empty string when the input file cannot be read.
     """
     inp = Path(inp_path)
-    h = hashlib.sha256()
-    try:
-        h.update(inp.read_bytes())
-    except Exception:
+    content = _fingerprint_text(inp)
+    if content is None:
         return ""
-
-    deps: list[Path] = []
-    deps.extend(_collect_input_dependencies(inp))
-    deps.extend(_normalize_extra_dependencies(inp, extra_deps))
-
-    # Stable ordering independent of discovery order.
-    unique_sorted = sorted({str(dep): dep for dep in deps}.values(), key=lambda p: str(p))
-
-    for dep in unique_sorted:
-        dep_id = str(dep)
+    h = hashlib.sha256(b"delfin-fprint-2\n")
+    h.update(content)
+    for dep in sorted(_dependencies(inp, extra_deps), key=lambda d: _dependency_id(d, inp)):
+        dep_id = _dependency_id(dep, inp)
         try:
             st = dep.stat()
             h.update(f"{dep_id}:{st.st_size}:{st.st_mtime_ns}".encode())
         except Exception:
             # Dependency missing — include a marker so the fingerprint differs
             # from a previous run where it existed.
+            h.update(f"{dep_id}:missing".encode())
+    return h.hexdigest()
+
+
+def _legacy_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> str:
+    """The fingerprint written before 2026-09-11: every input byte, absolute dependency paths."""
+    inp = Path(inp_path)
+    h = hashlib.sha256()
+    try:
+        h.update(inp.read_bytes())
+    except Exception:
+        return ""
+    for dep in _dependencies(inp, extra_deps):
+        dep_id = str(dep)
+        try:
+            st = dep.stat()
+            h.update(f"{dep_id}:{st.st_size}:{st.st_mtime_ns}".encode())
+        except Exception:
             h.update(f"{dep_id}:missing".encode())
     return h.hexdigest()
 
@@ -285,7 +576,12 @@ def fingerprint_unchanged(inp_path, extra_deps: Optional[Iterable] = None) -> bo
     except Exception:
         return False
     current = compute_fingerprint(inp, extra_deps=extra_deps)
-    return bool(current) and stored == current
+    if current and stored == current:
+        return True
+    # a fingerprint an earlier DELFIN wrote still counts, or the first recalc
+    # after an update would compute every finished job again
+    legacy = _legacy_fingerprint(inp, extra_deps=extra_deps)
+    return bool(legacy) and stored == legacy
 
 
 def store_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> None:
@@ -327,7 +623,24 @@ def should_skip(
         return True
     if not fingerprint_unchanged(inp_path, extra_deps=extra_deps):
         return False
+    _upgrade_legacy_fingerprint(Path(inp_path), extra_deps)
     return True
+
+
+def _upgrade_legacy_fingerprint(inp: Path, extra_deps: Optional[Iterable]) -> None:
+    """Rewrite a matching fingerprint an earlier DELFIN wrote in the current form.
+
+    A skipped job keeps its sidecar, and the old form holds absolute paths: a
+    job folder that moved after its first recalc would have computed every
+    job again.  Done here, in a running recalc, and not in
+    fingerprint_unchanged(), which the dashboard calls on folders it only shows.
+    """
+    current = compute_fingerprint(inp, extra_deps=extra_deps)
+    try:
+        if current and _fprint_path(inp).read_text(encoding="utf-8").strip() != current:
+            _fprint_path(inp).write_text(current + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.debug("[smart_recalc] Could not rewrite fingerprint for %s: %s", inp, exc)
 
 
 def can_precomplete(

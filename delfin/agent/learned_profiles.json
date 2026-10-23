@@ -62,13 +62,12 @@
   "claude": {
     "communication": {
       "rules": [
-        "No Co-Authored-By in commits",
+        "Commits carry no attribution of their own except the DELFIN-Agent co-author trailer; never a third-party assistant",
         "Dashboard actions: ACTION line + max 5 words explanation"
       ]
     },
     "tool_usage": {
       "rules": [
-        "pytest in background after every code change",
         "Agent subprocesses for research spanning >3 files"
       ]
     }
@@ -117,7 +116,6 @@
     "communication": {
       "rules": [
         "Local inference — expect slower token throughput; keep answers tight and avoid long monologues",
-        "German for user-facing conversation, exact, with numbers (Å, eV, s)",
         "No extended-thinking / reasoning_effort instructions — local models do not honour them; reason inline and briefly"
       ]
     },

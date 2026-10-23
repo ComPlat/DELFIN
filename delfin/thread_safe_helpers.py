@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any, List
 from delfin.common.logging import get_logger
 from delfin.config import OCCUPIER_parser
 from delfin.common.paths import ensure_relative_link
+from delfin.smart_recalc import first_configuration_finished
 from delfin.copy_helpers import read_occupier_file
 from delfin.occupier_sequences import (
     infer_species_delta,
@@ -115,12 +116,20 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
         target_input_xyz = folder / "input.xyz"
         target_input0_xyz = folder / "input0.xyz"
 
+        # input0.xyz is where the stage's first configuration starts; input.xyz
+        # (and input.gbw) where it ends -- set up again in a recalc, the stage
+        # keeps a finished first configuration's own geometry.
+        keep_first = first_configuration_finished(folder)
+        if keep_first:
+            print(f"{folder}/input.xyz is the finished first configuration's geometry; kept.")
         if preferred_parent_xyz.exists():
-            shutil.copy(preferred_parent_xyz, target_input_xyz)
+            if not keep_first:
+                shutil.copy(preferred_parent_xyz, target_input_xyz)
             shutil.copy(preferred_parent_xyz, target_input0_xyz)
 
             # Ensure correct XYZ header format
-            _ensure_xyz_header_threadsafe(target_input_xyz, preferred_parent_xyz)
+            if not keep_first:
+                _ensure_xyz_header_threadsafe(target_input_xyz, preferred_parent_xyz)
             _ensure_xyz_header_threadsafe(target_input0_xyz, preferred_parent_xyz)
 
             # Validate that the backup geometry actually contains atoms; if not,
@@ -153,7 +162,7 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
         preferred_parent_gbw = source_path / gbw_filename
         target_input_gbw = folder / "input.gbw"
 
-        if preferred_parent_gbw.exists():
+        if not keep_first and preferred_parent_gbw.exists():
             if ensure_relative_link(preferred_parent_gbw, target_input_gbw):
                 print(f"Linked preferred GBW to {folder}/input.gbw")
             else:
@@ -166,7 +175,7 @@ def prepare_occ_folder_2_only_setup(folder_name: str, source_occ_folder: str,
                         preferred_parent_gbw,
                         target_input_gbw,
                     )
-        else:
+        elif not keep_first:
             logger.info(f"Preferred GBW file not found: {preferred_parent_gbw} (will use standard guess)")
 
         if not target_input_xyz.exists():

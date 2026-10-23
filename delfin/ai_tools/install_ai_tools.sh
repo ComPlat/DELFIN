@@ -25,6 +25,8 @@ set -euo pipefail
 #   INSTALL_ADMETLAB             (default: 0)  ADMETlab
 #   INSTALL_MOLSIMPLIFY          (default: 0)  molSimplify
 #   INSTALL_ARCHITECTOR          (default: 0)  architector
+#   INSTALL_EPIC_MACE            (default: 0)  epic-MACE, in an environment of its own
+#                                              (Python 3.7 + RDKit 2020.09, micromamba)
 #   INSTALL_PLOTLY               (default: 0)  plotly
 #   INSTALL_ALL                  (default: 0)  Install everything
 #   FORCE_REINSTALL              (default: 0)  Force reinstall
@@ -50,6 +52,7 @@ INSTALL_DEEPCHEM="${INSTALL_DEEPCHEM:-${INSTALL_ALL}}"
 INSTALL_ADMETLAB="${INSTALL_ADMETLAB:-${INSTALL_ALL}}"
 INSTALL_MOLSIMPLIFY="${INSTALL_MOLSIMPLIFY:-${INSTALL_ALL}}"
 INSTALL_ARCHITECTOR="${INSTALL_ARCHITECTOR:-${INSTALL_ALL}}"
+INSTALL_EPIC_MACE="${INSTALL_EPIC_MACE:-${INSTALL_ALL}}"
 INSTALL_PLOTLY="${INSTALL_PLOTLY:-${INSTALL_ALL}}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
@@ -59,6 +62,18 @@ die()  { printf "[ai_tools] ERROR: %s\n" "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 detect_python() {
+  # The interpreter DELFIN is actually running in, when the caller says so.
+  #
+  # Taking the first `python` on the PATH was the default, and on a machine
+  # where that is a different environment from the dashboard's -- which it
+  # usually is -- every package installed here landed somewhere the dashboard
+  # cannot import from. Measured: the installer chose Python 3.13 while the
+  # dashboard ran 3.11, so cclib, nglview, censo, morfeus and torch were all
+  # installed and all missing at the same time.
+  if [[ -n "${DELFIN_PYTHON:-}" && -x "${DELFIN_PYTHON}" ]]; then
+    printf "%s\n" "${DELFIN_PYTHON}"
+    return 0
+  fi
   if have python; then command -v python; return 0; fi
   if have python3; then command -v python3; return 0; fi
   return 1
@@ -87,12 +102,110 @@ pip_install() {
   local log_name
   log_name="$(echo "${label}" | tr '[:upper:]' '[:lower:]')_install.log"
   log "installing ${label}..."
-  "${python_bin}" -m pip install "${packages[@]}" 2>&1 | tee -a "${LOG_DIR}/${log_name}"
+  # One tool that pip cannot install is that tool's failure, not the run's.
+  # Under pipefail it ended the whole script: REINVENT is not on PyPI, and
+  # every tool after it was never tried.
+  "${python_bin}" -m pip install "${packages[@]}" 2>&1 | tee -a "${LOG_DIR}/${log_name}" || true
 
   if python_has_module "${python_bin}" "${module}"; then
     log "${label} installed successfully"
   else
     warn "${label} installation failed — check ${LOG_DIR}/${log_name}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# micromamba wherever DELFIN or the user put it; fetched when there is none.
+# The shared micromamba fetcher (delfin/installers/fetch_micromamba.sh): one
+# pinned release per platform, held to its SHA-256. Beside this script when
+# the installer was staged into a tool directory, one level up in a checkout
+# or an installed package.
+micromamba_fetcher() {
+  local here candidate
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for candidate in "${here}/fetch_micromamba.sh" "${here}/../installers/fetch_micromamba.sh"; do
+    if [ -f "${candidate}" ]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_micromamba() {
+  local candidate
+  for candidate in "${MAMBA_EXE:-}" "$(command -v micromamba 2>/dev/null || true)" \
+      "${DELFIN_QM_TOOLS_ROOT:-${HOME}/.delfin/qm_tools}/bin/micromamba" \
+      "${ROOT}/bin/micromamba" "${HOME}/micromamba/bin/micromamba" "${HOME}/.local/bin/micromamba"; do
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
+  local fetcher
+  fetcher="$(micromamba_fetcher)" || return 1
+  bash "${fetcher}" "${ROOT}/bin/micromamba" >&2 || return 1
+  printf "%s\n" "${ROOT}/bin/micromamba"
+}
+
+# epic-MACE (Chernyshov & Pidko, JCTC 2024; GPL-3.0) in an environment of its own.
+#
+# It needs Python 3.7 and RDKit 2020.09, which DELFIN cannot run in, so it is
+# never installed beside DELFIN: DELFIN starts it as an external program
+# (delfin/common/external_builders.py) with the interpreter of this
+# environment, which it finds at ${ROOT}/.mamba_env/epic_mace/bin/python;
+# DELFIN_MACE_PYTHON overrides that. The package comes from a pinned GitHub
+# commit: the PyPI release 0.5.0 has only the octahedron and the square, the
+# commit adds the hapto ligands and TET/SPY/TBP/SAN.
+EPIC_MACE_REF="${EPIC_MACE_REF:-efb5778e715ea461f80cf3bbc752929101bd0bb3}"
+EPIC_MACE_URL="${EPIC_MACE_URL:-https://github.com/EPiCs-group/epic-mace/archive/${EPIC_MACE_REF}.tar.gz}"
+EPIC_MACE_CONDA_SPECS="${EPIC_MACE_CONDA_SPECS:-python=3.7 rdkit=2020.09.5 numpy pyyaml pip}"
+
+epic_mace_python() {
+  # The environment's own interpreter, untouched by DELFIN's PYTHONPATH or a
+  # user site of another Python version.
+  env -u PYTHONPATH PYTHONNOUSERSITE=1 "$@"
+}
+
+install_epic_mace() {
+  if [ "${INSTALL_EPIC_MACE}" != "1" ]; then
+    log "INSTALL_EPIC_MACE: skipped (INSTALL_EPIC_MACE=0)"
+    return 0
+  fi
+  local env_dir="${ROOT}/.mamba_env/epic_mace"
+  local py="${env_dir}/bin/python"
+  local log_file="${LOG_DIR}/epic_mace_install.log"
+
+  if [ -x "${py}" ] && epic_mace_python "${py}" -c "import mace" >/dev/null 2>&1 \
+      && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "epic-MACE: already installed (${py})"
+    return 0
+  fi
+
+  local mamba
+  if ! mamba="$(find_micromamba)"; then
+    warn "epic-MACE needs micromamba (or conda) for its Python 3.7 environment, and none was found or could be fetched."
+    return 0
+  fi
+  if [ ! -x "${py}" ] || [ "${FORCE_REINSTALL}" = "1" ]; then
+    log "creating the epic-MACE environment at ${env_dir} with ${mamba} (${EPIC_MACE_CONDA_SPECS})..."
+    # shellcheck disable=SC2086
+    "${mamba}" create -y -p "${env_dir}" -c conda-forge --override-channels ${EPIC_MACE_CONDA_SPECS} \
+      2>&1 | tee -a "${log_file}" || true
+  fi
+  if [ ! -x "${py}" ]; then
+    warn "epic-MACE: the environment could not be created; see ${log_file}"
+    return 0
+  fi
+  log "installing epic-MACE ${EPIC_MACE_REF:0:8} into ${env_dir}..."
+  # Its dependencies (numpy, pyyaml, rdkit) come from conda-forge above.
+  epic_mace_python "${py}" -m pip install --no-deps --no-cache-dir --force-reinstall "${EPIC_MACE_URL}" \
+    2>&1 | tee -a "${log_file}" || true
+  if epic_mace_python "${py}" -c "import mace" >/dev/null 2>&1; then
+    log "epic-MACE installed: ${py}"
+    log "  DELFIN finds it there; DELFIN_MACE_PYTHON=<python> points it elsewhere."
+  else
+    warn "epic-MACE installation failed; see ${log_file}"
   fi
 }
 
@@ -131,6 +244,7 @@ main() {
   # Metal Complex ML
   pip_install "${python_bin}" INSTALL_MOLSIMPLIFY "molSimplify" molSimplify
   pip_install "${python_bin}" INSTALL_ARCHITECTOR "architector"  architector
+  install_epic_mace
 
   # Visualization
   pip_install "${python_bin}" INSTALL_PLOTLY "plotly" plotly
@@ -164,6 +278,12 @@ main() {
       printf "  %-24s %s\n" "${label}" "not installed"
     fi
   done
+  if [ -x "${ROOT}/.mamba_env/epic_mace/bin/python" ] \
+      && epic_mace_python "${ROOT}/.mamba_env/epic_mace/bin/python" -c "import mace" >/dev/null 2>&1; then
+    printf "  %-24s %s\n" "epic-MACE" "installed (own environment)"
+  else
+    printf "  %-24s %s\n" "epic-MACE" "not installed"
+  fi
 }
 
 main "$@"

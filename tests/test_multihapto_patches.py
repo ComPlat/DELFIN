@@ -228,7 +228,7 @@ class TestWireInDefaults:
         ) is False
 
     def test_explicit_zero_mm_enforce_rolls_back_distance_to_baseline(self):
-        """``DELFIN_MULTIHAPTO_MM_ENFORCE=0`` restores pre-wire-in Sn-Ir = 3.4 A."""
+        """``DELFIN_MULTIHAPTO_MM_ENFORCE=0`` (patches off) must still leave Sn-Ir bonded."""
         # Also disable SIMPLE_PATH so this is a pure end-to-end "all patches off"
         # baseline (matches HEAD-pre-wire-in behaviour exactly).
         os.environ["DELFIN_MULTIHAPTO_SIMPLE_PATH"] = "0"
@@ -237,12 +237,16 @@ class TestWireInDefaults:
         assert err is None, f"converter failed: {err}"
         d = _sn_ir_distance(xyz)
         assert d is not None, "Sn or Ir missing from baseline XYZ"
-        # Pre-wire-in baseline must remain >3.25 A so the regression is
-        # observable; otherwise this test no longer guards the rollback.
-        assert d > 3.25, (
-            f"baseline Sn-Ir distance {d:.3f} A unexpectedly already inside "
-            f"detector cutoff with both patches explicitly disabled -- has "
-            f"the regression been fixed elsewhere?"
+        # Until 2026-09 this asserted d > 3.25 A: the pre-wire-in baseline kept the
+        # Sn-Ir regression observable, so the rollback had something to roll back to.
+        # Measured 2026-09-06 with both patches explicitly disabled: Sn-Ir = 2.194 A.
+        # The construction now places the metalloid donor at bond distance on its own
+        # (most likely the July metalloid landings METALLOID_MD_LEN/_CLAMP; not bisected), so
+        # the regression this test guarded no longer exists.  What the rollback must
+        # still guarantee: patches off does not crash and does not detach the donor.
+        assert d <= 3.25, (
+            f"Sn-Ir = {d:.3f} A with both patches disabled -- the donor is detached "
+            f"again; the July metalloid landing no longer holds on this SMILES"
         )
 
     def test_env_unset_pulls_sn_ir_below_detector_cutoff(self):

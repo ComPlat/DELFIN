@@ -32,6 +32,7 @@ from delfin.utils import (
     resolve_path,
     set_main_basisset,
 )
+from delfin.common.control_validator import resolve_occupier_compare
 
 logger = get_logger(__name__)
 
@@ -43,6 +44,34 @@ _cwd_lock = GLOBAL_CWD_LOCK
 
 # Global lock preventing concurrent geometry file writes (prevents race conditions)
 _geometry_lock = threading.Lock()
+
+
+def _finished_stage_geometry(dest_xyz: Path, stage: str) -> bool:
+    """Whether *dest_xyz* is the optimised geometry of the stage's own finished ORCA job.
+
+    OCCUPIER hands its chosen configuration to ``<stage>.xyz`` as the start of
+    the stage's frequency job, which then writes its own result over it.  A
+    recalc repeats the hand-over and keeps the finished job, so it put the
+    start geometry back over the result: in the archive, 293 OCCUPIER stage
+    geometries hold a FoB's geometry although the stage's job had finished,
+    291 of them in folders that were run more than once.
+
+    Only in a recalc: a full run computes the stage job again, from what
+    OCCUPIER chose this time.
+    """
+    if not smart_recalc.recalc_enabled():
+        return False
+    out = dest_xyz.with_suffix(".out")
+    if not smart_recalc.has_ok_marker(out) or smart_recalc.optimization_gave_up(out):
+        return False
+    try:
+        with dest_xyz.open(encoding="utf-8", errors="replace") as fh:
+            fh.readline()
+            comment = fh.readline()
+    except OSError:
+        return False
+    return re.match(rf"\s*Coordinates from ORCA-job\s+(?:\S*/)?{re.escape(stage)}\s+E\b", comment) is not None
+
 
 def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
     """Best-effort propagation when OCCUPIER.txt is missing.
@@ -56,10 +85,33 @@ def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
     with _geometry_lock:
         dest_xyz = folder_path.parent / f"{dest_label}.xyz"
         src_xyz = folder_path / "input.xyz"
-        if src_xyz.exists():
+        if _finished_stage_geometry(dest_xyz, dest_label):
+            logger.info("[%s] %s is the finished %s job's own geometry; kept", folder_name, dest_xyz.name, dest_label)
+        elif src_xyz.exists():
             try:
                 shutil.copyfile(src_xyz, dest_xyz)
-                logger.warning("[%s] Fallback propagated %s to %s (no OCCUPIER summary)", folder_name, src_xyz, dest_xyz)
+                # The run continues, but what it continues from has to be
+                # stated. This is the geometry OCCUPIER was handed, not one it
+                # chose: no configuration was selected, so nothing here is
+                # optimised and no electron configuration has been established.
+                # Downstream steps reading <stage>.xyz cannot tell that from
+                # the file, and a warning in a log nobody re-reads is not where
+                # that belongs — so it is written next to the geometry.
+                marker = folder_path.parent / f"{dest_label}.xyz.not-from-occupier"
+                marker.write_text(
+                    "This geometry did not come from OCCUPIER.\n\n"
+                    f"{folder_name} produced no summary, so no electron configuration\n"
+                    "was selected. What was propagated is the input geometry OCCUPIER\n"
+                    "started from: not optimised, and with the spin state unresolved.\n"
+                    "Everything computed from here carries that assumption.\n\n"
+                    f"Source: {src_xyz}\n",
+                    encoding="utf-8",
+                )
+                logger.warning(
+                    "[%s] No OCCUPIER result — propagating the unoptimised input geometry "
+                    "%s to %s and marking it in %s",
+                    folder_name, src_xyz.name, dest_xyz.name, marker.name,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.error("[%s] Failed to propagate fallback geometry %s → %s: %s", folder_name, src_xyz, dest_xyz, exc)
         else:
@@ -97,8 +149,30 @@ def _should_skip_recalc(inp_path: Path, out_path: Path, recalc_enabled: bool) ->
         return False
 
 
+def _usable_for_comparison(path: Path) -> bool:
+    """Whether an FoB output may take part in the energy comparison at all.
+
+    A configuration that will not converge is a chemical result — plenty of
+    spin states simply do not exist for a given system, and OCCUPIER is there
+    to find that out. What must not happen is for such a run to be compared as
+    though it had. Reading the last FINAL SINGLE POINT ENERGY out of an
+    optimisation that stopped partway takes the energy of a geometry that is
+    not a stationary point, and the comparison then ranks it against fully
+    converged states without anything saying so. Gibbs energies are protected
+    by accident — the line only exists after a completed frequency run — but
+    the FSPE default is not, and it is the default.
+    """
+    return smart_recalc.has_ok_marker(path) and not smart_recalc.optimization_gave_up(path)
+
+
 def _parse_energy(path: Path, use_gibbs: bool) -> Optional[float]:
     if not path.exists():
+        return None
+    if not _usable_for_comparison(path):
+        logger.info(
+            "Not comparing %s: the run did not finish, or its optimisation did not converge",
+            path.name,
+        )
         return None
 
     try:
@@ -259,7 +333,9 @@ def _update_runtime_cache(
                 src_candidate = fallback_src if fallback_src.exists() else src_candidate
 
             dest_name = folder_name.replace("_OCCUPIER", "")
-            if dest_name:
+            if dest_name and _finished_stage_geometry(folder_path.parent / f"{dest_name}.xyz", dest_name):
+                logger.info("[%s] %s.xyz is the finished %s job's own geometry; kept", folder_name, dest_name, dest_name)
+            elif dest_name:
                 dest_path = folder_path.parent / f"{dest_name}.xyz"
                 try:
                     shutil.copyfile(src_candidate, dest_path)
@@ -320,7 +396,7 @@ def _create_occupier_fob_jobs(
         for deps in local_dependencies.values():
             deps.add(source_best)
 
-    freq_enabled = str(global_config.get("frequency_calculation_OCCUPIER", "no")).lower() == "yes"
+    freq_enabled = resolve_occupier_compare(global_config) == "G"
     pass_wf_enabled = str(global_config.get("pass_wavefunction", "no")).strip().lower() in (
         "yes",
         "true",
@@ -342,6 +418,7 @@ def _create_occupier_fob_jobs(
         else None
     )
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+    regenerate_inputs = recalc_enabled and bool(global_config.get("_recalc_regenerate_fob_inputs"))
     geometry_wait_timeout = _parse_geometry_wait(
         global_config.get("occupier_geometry_wait_s"), default=None
     )
@@ -448,7 +525,8 @@ def _create_occupier_fob_jobs(
                 inp_path = target_folder / _inp_name
                 out_path = target_folder / _out_name
 
-                if _should_skip_recalc(inp_path, out_path, recalc_enabled):
+                # after a CONTROL edit the input is written anew first (below)
+                if not regenerate_inputs and _should_skip_recalc(inp_path, out_path, recalc_enabled):
                     energy = _parse_energy(out_path, use_gibbs)
                     logger.info("[%s] FoB %d: RECALC skip (energy=%s)", folder_name, _idx, energy)
                     with results_lock:
@@ -539,10 +617,85 @@ def _create_occupier_fob_jobs(
                 # No chdir needed - all file operations use absolute paths
                 logger.info("[%s] FoB %d starting with %d cores", folder_name, _idx, cores)
 
-                # In RECALC with auto-recovery enabled, prefer latest retry/modified input
+                def _write_input() -> Optional[Path]:
+                    """Write the FoB's input from CONTROL; the orbitals it starts from, when passed on."""
+                    moread_gbw: Optional[Path] = None
+                    broken_sym: List[str] = []
+                    if pass_wf_enabled:
+                        gbw_candidate = "input.gbw" if _src_idx == 1 else f"input{_src_idx}.gbw"
+                        gbw_path = target_folder / gbw_candidate
+                        if gbw_path.exists():
+                            # Use relative GBW path so isolation can copy the dependency.
+                            broken_sym.append(f'%moinp "{gbw_candidate}"')
+                            moread_gbw = gbw_path
+                        else:
+                            logger.info(
+                                "[%s] FoB %d: GBW %s not found, continuing with default guess",
+                                folder_name,
+                                _idx,
+                                gbw_candidate,
+                            )
+
+                    if _bs_token:
+                        scf_lines = [f"  BrokenSym {_bs_token}"]
+                        if not freq_enabled and ap_method:
+                            scf_lines.append(f"  APMethod {ap_method}")
+                        broken_sym.append("%scf\n" + "\n".join(scf_lines) + "\nend")
+
+                    broken_sym_str = "\n".join(broken_sym)
+
+                    # In the stage's folder by path, not by changing the process's
+                    # working directory, which the frequency jobs of the stages
+                    # running alongside change too.
+                    read_and_modify_file_OCCUPIER(
+                        _src_idx,
+                        _inp_name,
+                        stage_charge,
+                        _multiplicity,
+                        solvent,
+                        metals,
+                        metal_basisset,
+                        main_basisset,
+                        global_config,
+                        broken_sym_str,
+                        work_dir=target_folder,
+                    )
+
+                    if not inp_path.exists():
+                        raise RuntimeError(f"Failed to create OCCUPIER input '{_inp_name}' in {folder_name}")
+                    return moread_gbw
+
+                gbw_for_moread: Optional[Path] = None
                 reuse_existing_inp = False
                 source_inp = target_folder / _inp_name
-                if recalc_enabled and auto_recovery_enabled:
+
+                if regenerate_inputs:
+                    # CONTROL was edited since the last completed run
+                    # (recalc_control): the input is written as a fresh run
+                    # writes it.  Saying what the finished job's input said,
+                    # the old file stays and the job is decided as before;
+                    # otherwise it is a new calculation.
+                    previous_input = smart_recalc.snapshot_input(inp_path)
+                    gbw_for_moread = _write_input()
+                    same = smart_recalc.settle_rewritten_input(inp_path, previous_input, target_folder)
+                    if same:
+                        gbw_for_moread = None
+                        if _should_skip_recalc(inp_path, out_path, recalc_enabled):
+                            energy = _parse_energy(out_path, use_gibbs)
+                            logger.info("[%s] FoB %d: input unchanged by the CONTROL edit; kept (energy=%s)",
+                                        folder_name, _idx, energy)
+                            with results_lock:
+                                fspe_results[_idx] = energy
+                            return
+                    elif same is False:
+                        logger.info("[%s] FoB %d: input changed by the CONTROL edit; computed again",
+                                    folder_name, _idx)
+                        smart_recalc.forget_earlier_attempts(inp_path)
+                        reuse_existing_inp = True
+                    # None: no earlier input to compare with; the output's own record decides
+
+                # In RECALC with auto-recovery enabled, prefer latest retry/modified input
+                if recalc_enabled and auto_recovery_enabled and not reuse_existing_inp:
                     retry_candidates = sorted(
                         target_folder.glob(f"{source_inp.stem}.retry*.inp")
                     )
@@ -578,60 +731,12 @@ def _create_occupier_fob_jobs(
                             _inp_name,
                         )
 
-                gbw_for_moread: Optional[Path] = None
-
                 if not reuse_existing_inp:
-                    broken_sym: List[str] = []
-                    if pass_wf_enabled:
-                        gbw_candidate = "input.gbw" if _src_idx == 1 else f"input{_src_idx}.gbw"
-                        gbw_path = target_folder / gbw_candidate
-                        if gbw_path.exists():
-                            # Use relative GBW path so isolation can copy the dependency.
-                            broken_sym.append(f'%moinp "{gbw_candidate}"')
-                            gbw_for_moread = gbw_path
-                        else:
-                            logger.info(
-                                "[%s] FoB %d: GBW %s not found, continuing with default guess",
-                                folder_name,
-                                _idx,
-                                gbw_candidate,
-                            )
+                    gbw_for_moread = _write_input()
 
-                    if _bs_token:
-                        scf_lines = [f"  BrokenSym {_bs_token}"]
-                        if not freq_enabled and ap_method:
-                            scf_lines.append(f"  APMethod {ap_method}")
-                        broken_sym.append("%scf\n" + "\n".join(scf_lines) + "\nend")
-
-                    broken_sym_str = "\n".join(broken_sym)
-
-                    # Change to target directory only for read_and_modify_file_OCCUPIER
-                    # which expects to work in the target directory
-                    with _cwd_lock:
-                        prev_cwd = os.getcwd()
-                        os.chdir(target_folder)
-                        try:
-                            read_and_modify_file_OCCUPIER(
-                                _src_idx,
-                                _inp_name,
-                                stage_charge,
-                                _multiplicity,
-                                solvent,
-                                metals,
-                                metal_basisset,
-                                main_basisset,
-                                global_config,
-                                broken_sym_str,
-                            )
-                        finally:
-                            os.chdir(prev_cwd)
-
-                    if not inp_path.exists():
-                        raise RuntimeError(f"Failed to create OCCUPIER input '{_inp_name}' in {folder_name}")
-
-                # NOTE: prepare_input_for_continuation() is called internally by
-                # run_orca_with_intelligent_recovery() during retry attempts only.
-                # We do NOT call it here before the first ORCA run.
+                # The first run uses the input as written; only a recovery retry
+                # (run_orca_with_intelligent_recovery) restarts from the job's own
+                # orbitals and geometry.
 
                 # Always ensure PAL matches current core allocation
                 _update_pal_block(str(inp_path), cores)
@@ -688,6 +793,27 @@ def _create_occupier_fob_jobs(
 
             return _work
 
+        def make_precomplete(
+            _idx: int = idx,
+            _inp: Path = inp_path,
+            _out: Path = out_path,
+        ) -> Callable[[], bool]:
+            def _precomplete() -> bool:
+                if regenerate_inputs:
+                    return False  # the work writes the input anew and decides (see _work)
+                if not _should_skip_recalc(_inp, _out, recalc_enabled):
+                    return False
+                # A FoB marked complete here never runs its work, and its energy
+                # is what a FoB started from it waits for and what the comparison
+                # reads.  Without it a recalc that had to rerun one FoB waited on
+                # its finished source until the walltime (an archived CoHPP job, six
+                # submissions), and compared the rerun FoB against nothing.
+                energy = _parse_energy(_out, use_gibbs)
+                with results_lock:
+                    fspe_results[_idx] = energy
+                return True
+            return _precomplete
+
         # Calculate asymmetric core allocation based on multiplicity weight
         my_weight = multiplicity_weights.get(idx, 1.0)
         weight_fraction = my_weight / total_weight if total_weight > 0 else (1.0 / len(sequence))
@@ -714,7 +840,7 @@ def _create_occupier_fob_jobs(
             cores_max=cores_max,
             preserve_cores_optimal=True,  # Preserve weighted allocation
             working_dir=job_workdir,
-            precomplete_check=lambda _inp=inp_path, _out=out_path, _recalc=recalc_enabled: _should_skip_recalc(_inp, _out, _recalc),
+            precomplete_check=make_precomplete(),
         )
         jobs.append(job)
 
@@ -872,6 +998,22 @@ def _create_occupier_fob_jobs(
 
         return _select_best
 
+    stage_indices = {int(entry["index"]) for entry in sequence}
+
+    def make_best_precomplete() -> Callable[[], bool]:
+        def _precomplete() -> bool:
+            if not recalc_enabled or not (folder_path / "OCCUPIER.txt").exists():
+                return False
+            # The FoBs were registered first.  One that has to run again changes
+            # what is compared, so the comparison is made again after it.
+            with results_lock:
+                every_fob_kept = stage_indices <= set(fspe_results)
+            if not every_fob_kept:
+                return False
+            _update_runtime_cache(folder_name, folder_path, global_config, occ_results)
+            return True
+        return _precomplete
+
     best_job = WorkflowJob(
         job_id=f"{stage_prefix}_fob_best",
         work=make_best_selector(),
@@ -881,9 +1023,7 @@ def _create_occupier_fob_jobs(
         cores_optimal=0,
         cores_max=0,
         inline=True,
-        precomplete_check=lambda _folder=folder_name, _dir=folder_path: (
-            _update_runtime_cache(_folder, _dir, global_config, occ_results) or True
-        ) if recalc_enabled and (_dir / "OCCUPIER.txt").exists() else False,
+        precomplete_check=make_best_precomplete(),
     )
     jobs.append(best_job)
 

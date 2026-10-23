@@ -253,6 +253,112 @@ def test_parser_input_optional_now():
     assert args.input is None
 
 
+# ---------------------------------------------------------------------------
+# State resolution: charge/multiplicity come from CONTROL.txt
+# ---------------------------------------------------------------------------
+
+# Phenonium cation C17H17+ — the system that exposed the hard-wired charge:
+# 119 electrons when neutral, so charge=0 with mult=1 is impossible.
+_PHENONIUM_COORDS = "\n".join(
+    ["C 0 0 0"] * 17 + ["H 0 0 0"] * 17
+)
+
+
+def test_count_electrons_subtracts_charge():
+    assert cli_fukui._count_electrons(_PHENONIUM_COORDS, 0) == 119
+    assert cli_fukui._count_electrons(_PHENONIUM_COORDS, 1) == 118
+    assert cli_fukui._count_electrons(_PHENONIUM_COORDS, -1) == 120
+
+
+def test_resolve_states_neutral_closed_shell_unchanged():
+    """The uncharged closed-shell case must keep its historical 0 / -1 / +1."""
+    states = cli_fukui._resolve_fukui_states({}, "C 0 0 0\nO 1.2 0 0")
+    assert states == [("neutral", 0, 1), ("anion", -1, 2), ("cation", 1, 2)]
+
+
+def test_resolve_states_cation_reference_from_control():
+    states = cli_fukui._resolve_fukui_states({"charge": "+1"}, _PHENONIUM_COORDS)
+    assert states == [("neutral", 1, 1), ("anion", 0, 2), ("cation", 2, 2)]
+
+
+def test_resolve_states_anion_reference_from_control():
+    states = cli_fukui._resolve_fukui_states({"charge": "-1"}, _PHENONIUM_COORDS)
+    assert states == [("neutral", -1, 1), ("anion", -2, 2), ("cation", 0, 2)]
+
+
+def test_resolve_states_open_shell_reference_flips_parity():
+    """An odd-electron reference is a doublet; its ions become singlets."""
+    states = cli_fukui._resolve_fukui_states({}, _PHENONIUM_COORDS)
+    assert states == [("neutral", 0, 2), ("anion", -1, 1), ("cation", 1, 1)]
+
+
+def test_resolve_states_explicit_multiplicity_wins():
+    """A high-spin reference keeps the low-spin ion choice (5 → 4, not 2)."""
+    config = {"charge": "0", "multiplicity_global_opt": "5"}
+    states = cli_fukui._resolve_fukui_states(config, "Fe 0 0 0")
+    assert [m for _n, _c, m in states] == [5, 4, 4]
+    # multiplicity_0 takes precedence over multiplicity_global_opt
+    config["multiplicity_0"] = "3"
+    states = cli_fukui._resolve_fukui_states(config, "Fe 0 0 0")
+    assert [m for _n, _c, m in states] == [3, 2, 2]
+
+
+def test_validate_charge_mult_rejects_parity_mismatch():
+    with pytest.raises(SystemExit) as exc:
+        cli_fukui._validate_charge_mult("neutral", 0, 1, 119)
+    assert "parity" in str(exc.value).lower()
+    assert "CONTROL.txt" in str(exc.value)
+    # The combination the fixed resolver produces is accepted.
+    cli_fukui._validate_charge_mult("neutral", 1, 1, 118)
+
+
+def test_run_three_singlepoints_uses_control_charge(tmp_path):
+    """End-to-end regression for the pCp-phenonium failure (ORCA exit 55)."""
+    (tmp_path / "CONTROL.txt").write_text(
+        "functional=PBE0\nmain_basisset=def2-SVP\ndisp_corr=D4\n"
+        "PAL=4\nmaxcore=3000\ncharge=+1\n",
+        encoding="utf-8",
+    )
+    geom = tmp_path / "fukui_geom.xyz"
+    geom.write_text(f"34\nphenonium\n{_PHENONIUM_COORDS}\n", encoding="utf-8")
+
+    fake = _make_fake_run_orca({})
+    with mock.patch("delfin.orca.run_orca", side_effect=fake):
+        cli_fukui._run_three_singlepoints(
+            tmp_path, geom, settings=dict(_BASE_SETTINGS), request_cubes=False,
+        )
+
+    headers = {
+        name: [
+            ln for ln in (tmp_path / name / f"{name}.inp").read_text().splitlines()
+            if ln.startswith("* xyz")
+        ][0]
+        for name in ("neutral", "anion", "cation")
+    }
+    assert headers["neutral"] == "* xyz 1 1"
+    assert headers["anion"] == "* xyz 0 2"
+    assert headers["cation"] == "* xyz 2 2"
+
+
+def test_run_three_singlepoints_aborts_before_orca_on_bad_charge(tmp_path):
+    """A charge/multiplicity clash must fail fast, without launching ORCA."""
+    (tmp_path / "CONTROL.txt").write_text(
+        "functional=PBE0\nmain_basisset=def2-SVP\nPAL=4\nmaxcore=3000\n"
+        "charge=0\nmultiplicity_global_opt=1\n",
+        encoding="utf-8",
+    )
+    geom = tmp_path / "fukui_geom.xyz"
+    geom.write_text(f"34\nphenonium\n{_PHENONIUM_COORDS}\n", encoding="utf-8")
+
+    with mock.patch("delfin.orca.run_orca") as run_orca:
+        with pytest.raises(SystemExit) as exc:
+            cli_fukui._run_three_singlepoints(
+                tmp_path, geom, settings=dict(_BASE_SETTINGS), request_cubes=False,
+            )
+    assert "parity" in str(exc.value).lower()
+    run_orca.assert_not_called()
+
+
 def test_parser_accepts_smiles_input():
     parser = cli_fukui._build_parser()
     args = parser.parse_args(["--input", "C=O"])

@@ -1,0 +1,168 @@
+# Chemistry tasks at university-exercise level, with checkable solutions.
+#
+# Each task is graded on the PHYSICS: an acceptance script in accept/
+# runs xtb (GFN2) itself against the molecule's geometry and derives
+# the verdict -- zero imaginary frequencies, a HOMO-LUMO gap inside a
+# measured tolerance band, the right structural shape, the right
+# energy ordering.  The model's own reported numbers are additionally
+# judged as figures (``expected_values`` bands) so a wrong number it
+# states is caught even when the artifact is fine.
+#
+# Reference bands were measured ONCE with the same protocol
+# (xtb 6.7.1 GFN2, --alpb water, opt+hess) when this file was written,
+# from the seeded start geometries in setup/chem_start_geometries.py:
+#   acetaminophen      gap 3.68 eV (gas-phase hess band below is w/ alpb)
+#   chloronitrobenzene gap 2.42 eV
+#   au_cyanide         C-Au-C 179.9 deg, gap 4.39 eV
+#   cr_carbonyl        octahedral, Cr-C 1.881 A, gap 2.53 eV
+#   carbocations       hydride-exchange: C2H5+ -48.2, tC4H9+ -82.0 kcal/mol
+# Known method caveat, kept OUT of the tasks on purpose: GFN2 optimises
+# the isopropyl cation to protonated propene, so the carbocation task
+# grades methyl/ethyl/tert-butyl where the ordering is unambiguous.
+
+tasks:
+
+  # ── optimise a drug molecule to a real minimum ────────────────────────
+  - id: chem_acetaminophen_is_a_minimum
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In chem/acetaminophen/ there is a start.xyz of acetaminophen
+      (charge 0). Optimise the geometry with xtb (GFN2, water solvation
+      via --alpb water), run a Hessian, and confirm the structure is a
+      true minimum: report the number of imaginary frequencies and the
+      HOMO-LUMO gap in eV.
+    setup: chem_start_geometries.py
+    verify: chem_minimum_acetaminophen.py
+    expected_signals:
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(HOMO.?LUMO|gap)'
+        against: text
+      - pattern: '(?i)(xtb)'
+        against: any
+    expected_values:
+      - label: gap_ev
+        value: 3.68
+        tolerance: 0.25
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── same physics, an electron-poor aromatic ───────────────────────────
+  - id: chem_chloronitrobenzene_gap_band
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In chem/chloronitrobenzene/ there is a start.xyz of
+      2-chloronitrobenzene (charge 0). Optimise with xtb (GFN2, --alpb
+      water), verify with a Hessian that it is a minimum, and report
+      the HOMO-LUMO gap in eV.
+    setup: chem_start_geometries.py
+    verify: chem_minimum_chloronitrobenzene.py
+    expected_signals:
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(HOMO.?LUMO|gap)'
+        against: text
+    expected_values:
+      - label: gap_ev
+        value: 2.42
+        tolerance: 0.25
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── inorganic: the linear dicyanoaurate ───────────────────────────────
+  - id: chem_au_cyanide_is_linear
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In chem/au_cyanide/ there is a start.xyz of [Au(CN)2]- (charge
+      -1). Optimise with xtb (GFN2, --alpb water), confirm the minimum
+      with a Hessian, and report the C-Au-C angle in degrees.
+    setup: chem_start_geometries.py
+    verify: chem_shape_au_cyanide.py
+    expected_signals:
+      - pattern: '(?i)(linear|180)'
+        against: text
+      - pattern: '(?i)(angle|C.?Au.?C)'
+        against: text
+    expected_values:
+      - label: c_au_c_angle_deg
+        value: 180.0
+        tolerance: 0.04
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── inorganic: the octahedral carbonyl complex ────────────────────────
+  - id: chem_cr_carbonyl_is_octahedral
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In chem/cr_carbonyl/ there is a start.xyz of Cr(CO)6 (charge 0).
+      Optimise with xtb (GFN2, --alpb water), confirm the minimum with
+      a Hessian, and report the point group symmetry you determine from
+      the optimised geometry (it should be octahedral, six equivalent
+      Cr-C bonds).
+    setup: chem_start_geometries.py
+    verify: chem_shape_cr_carbonyl.py
+    expected_signals:
+      - pattern: '(?i)(octahedral|Oh)'
+        against: text
+      - pattern: '(?i)(Cr.?C)'
+        against: text
+    expected_values:
+      - label: cr_c_dist_a
+        value: 1.881
+        tolerance: 0.05
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── physical chemistry: relative carbocation stability ────────────────
+  - id: chem_carbocation_ordering_measured
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In chem/ are start geometries for the methyl, ethyl and
+      tert-butyl cations (cat_methyl, cat_ethyl, cat_tbutyl; all charge
+      +1) and their neutral parents (methane, ethane, isobutane; charge
+      0). Optimise each with xtb (GFN2, --alpb water) and write
+      chem/carbocation/energies.csv with columns
+      species,total_energy_eh -- one row per species (CH3+, C2H5+,
+      tC4H9+, CH4, C2H6, iC4H10). Then state the relative stability
+      ordering of the three cations in kcal/mol using the isodesmic
+      hydride exchange R+ + CH4 -> RH + CH3+.
+    setup: chem_start_geometries.py
+    verify: chem_energy_ordering.py
+    expected_signals:
+      - pattern: '(?i)(isodesmic|hydride)'
+        against: text
+      - pattern: '(?i)(t.?butyl|tC4H9|tert)'
+        against: text
+      - pattern: '(?i)(kcal)'
+        against: text
+    expected_values:
+      # The measured hydride-exchange stabilisation of tC4H9+ relative
+      # to CH3+ (isodesmic, xtb GFN2 alpb water): -82 kcal/mol.  The
+      # band is wide because GFN2 is a semi-empirical method; it is
+      # there so a wildly wrong stated number is caught.
+      - label: tbutyl_stabilisation_kcal
+        value: -82.0
+        tolerance: 0.3
+        against: text
+    forbidden_signals:
+      # Stating the ordering with no measurement behind it. The CSV is
+      # what the acceptance script grades; the prose must show the
+      # isodesmic reaction was actually used.
+      - pattern: '(?i)(off the top of my head|aus dem Gedächtnis)'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.20
+    max_tool_calls: 40

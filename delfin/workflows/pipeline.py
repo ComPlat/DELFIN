@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 import shutil
@@ -23,6 +24,7 @@ from delfin.cli_calculations import calculate_redox_potentials, select_final_pot
 from delfin.energies import find_gibbs_energy
 from delfin.esd_module import execute_esd_jobs as execute_esd_module, parse_esd_config
 from delfin.esd_results import collect_esd_results, ESDSummary
+from delfin.common.control_validator import resolve_occupier_compare
 
 logger = get_logger(__name__)
 
@@ -114,6 +116,51 @@ class PipelineContext:
 # OCCUPIER helpers
 # ---------------------------------------------------------------------------
 
+#: Sidecar file inside each ``*_OCCUPIER`` folder carrying the SHA-256 of
+#: the CONTROL.txt the results were produced against.
+_CONTROL_FINGERPRINT_FILE = ".control_fingerprint"
+
+
+def _stamp_occupier_control(control_path: Optional[Path], occ_dir: Path) -> None:
+    """Record which CONTROL.txt the OCCUPIER results in *occ_dir* were
+    produced against, so a later reuse can compare it freshly."""
+    if control_path is None:
+        return
+    try:
+        digest = hashlib.sha256(Path(control_path).read_bytes()).hexdigest()
+        (Path(occ_dir) / _CONTROL_FINGERPRINT_FILE).write_text(
+            digest + "\n", encoding="utf-8")
+    except OSError:
+        # Stamping must never break the workflow itself; an unstamped
+        # result simply will not be reused (see _occupier_results_fresh).
+        logger.warning("Could not stamp control fingerprint in %s", occ_dir)
+
+
+def _occupier_results_fresh(control_path: Optional[Path], occ_dir: Path) -> bool:
+    """Grounding check for reusing existing OCCUPIER results.
+
+    True only when the OCCUPIER.txt in *occ_dir* exists AND the control
+    file it was stamped with is byte-identical to the CURRENT control
+    file. Missing stamp (legacy results), a corrupted stamp, or any
+    control change since the results were produced is unconfirmed
+    state: fail closed, force a rerun.
+    """
+    occ_dir = Path(occ_dir)
+    if control_path is None or not Path(control_path).is_file():
+        return False
+    if not (occ_dir / "OCCUPIER.txt").is_file():
+        return False
+    stamp_file = occ_dir / _CONTROL_FINGERPRINT_FILE
+    if not stamp_file.is_file():
+        return False
+    try:
+        stamped = stamp_file.read_text(encoding="utf-8").strip()
+        current = hashlib.sha256(
+            Path(control_path).read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return False
+    return bool(stamped) and stamped == current
+
 
 # DEPRECATED FUNCTIONS REMOVED:
 # - _execute_oxidation_workflow (replaced by build_occupier_process_jobs)
@@ -131,16 +178,16 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     multiplicity = ctx.multiplicity
     charge = ctx.charge
 
-    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
+    _override_skip = _keep_built_structure(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_OPT: %s", _override_skip)
         else:
             XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_GOAT: %s", _override_skip)
         elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
@@ -266,7 +313,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             # Mark that we used combined execution
             config['_used_combined_occupier'] = True
 
-        if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == "yes":
+        if resolve_occupier_compare(config) == "G":
             multiplicity_0, broken_sym_0, _, gbw_initial = read_occupier_file(
                 "initial_OCCUPIER", "OCCUPIER.txt", None, None, None, config
             )
@@ -289,7 +336,15 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
         initial_rerun = False
         need_occ_workflows = False
 
-        if initial_requested or not initial_report.exists():
+        if initial_requested or not _occupier_results_fresh(
+                ctx.control_file_path, initial_folder):
+            if not initial_requested and initial_report.exists():
+                logger.warning(
+                    "Existing OCCUPIER results in %s are unconfirmed against "
+                    "the current CONTROL.txt (changed since they were "
+                    "produced, or produced without a stamp); rerunning.",
+                    initial_folder,
+                )
             print("\nOCCUPIER for the initial system:\n")
             initial_rerun = True
             need_occ_workflows = True
@@ -309,13 +364,17 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
             # Check if we need to run ox/red workflows
             if not need_occ_workflows:
                 for step in _extract_steps(config.get("oxidation_steps", "")):
-                    if not (Path(f"ox_step_{step}_OCCUPIER") / "OCCUPIER.txt").exists():
+                    if not _occupier_results_fresh(
+                            ctx.control_file_path,
+                            Path(f"ox_step_{step}_OCCUPIER")):
                         need_occ_workflows = True
                         break
 
             if not need_occ_workflows:
                 for step in _extract_steps(config.get("reduction_steps", "")):
-                    if not (Path(f"red_step_{step}_OCCUPIER") / "OCCUPIER.txt").exists():
+                    if not _occupier_results_fresh(
+                            ctx.control_file_path,
+                            Path(f"red_step_{step}_OCCUPIER")):
                         need_occ_workflows = True
                         break
 
@@ -354,6 +413,19 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
 
                 # Mark that we used combined execution
                 config['_used_combined_occupier'] = True
+
+                # Stamp the freshly produced results so the NEXT run can
+                # judge their freshness against its own control file.
+                _stamp_occupier_control(ctx.control_file_path,
+                                        Path("initial_OCCUPIER"))
+                for step in _extract_steps(config.get("oxidation_steps", "")):
+                    _stamp_occupier_control(
+                        ctx.control_file_path,
+                        Path(f"ox_step_{step}_OCCUPIER"))
+                for step in _extract_steps(config.get("reduction_steps", "")):
+                    _stamp_occupier_control(
+                        ctx.control_file_path,
+                        Path(f"red_step_{step}_OCCUPIER"))
             else:
                 logger.info("Reusing existing OCCUPIER oxidation/reduction workflows")
 
@@ -409,7 +481,7 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     # Check if we already ran post-processing in combined mode
     used_combined = config.get('_used_combined_occupier', False)
 
-    if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() != "yes" and not used_combined:
+    if resolve_occupier_compare(config) != "G" and not used_combined:
         # Only run separate post-processing if we didn't use combined execution
         logger.info("[pipeline] Running separate post-processing ORCA jobs")
 
@@ -464,16 +536,16 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     multiplicity = ctx.multiplicity
     charge = ctx.charge
 
-    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
+    _override_skip = _keep_built_structure(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_OPT: %s", _override_skip)
         else:
             XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_GOAT: %s", _override_skip)
         elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
@@ -617,16 +689,16 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
     config = ctx.config
     multiplicity = config.get('multiplicity_0') or ctx.multiplicity
 
-    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
+    _override_skip = _keep_built_structure(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_OPT: %s", _override_skip)
         else:
             XTB(multiplicity, ctx.charge, config)
 
     if config['XTB_GOAT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_GOAT: %s", _override_skip)
         elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
@@ -777,9 +849,15 @@ def run_hyperpol_xtb_phase(ctx: PipelineContext) -> bool:
     engine = str(config.get('hyperpol_xTB_engine', 'std2')).strip().lower()
     use_bfw = str(config.get('hyperpol_xTB_bfw', 'no')).strip().lower() == 'yes'
     import math
-    raw_wl = str(config.get('hyperpol_xTB_wavelengths', '')).strip()
-    if raw_wl and raw_wl.lower() not in ('', 'none', 'static'):
-        wavelengths = [float(w.strip()) for w in raw_wl.split(',') if w.strip()]
+    # A CONTROL value holding a comma is already a list when it arrives here
+    # (_parse_control_file splits it), so the documented two-wavelength form
+    # "1064,532" used to be stringified to "['1064', '532']" and die in float().
+    raw_wl = config.get('hyperpol_xTB_wavelengths', '')
+    parts = ([str(w) for w in raw_wl] if isinstance(raw_wl, (list, tuple))
+             else str(raw_wl).split(','))
+    parts = [w.strip() for w in parts if str(w).strip()]
+    if parts and ' '.join(parts).lower() not in ('none', 'static'):
+        wavelengths = [float(w) for w in parts]
     else:
         wavelengths = [math.inf]  # static only
     energy_window = float(config.get('hyperpol_xTB_energy_window', 15.0))
@@ -1317,6 +1395,60 @@ def _skip_preprocessing_for_override(config: Dict[str, Any], workdir: Path) -> b
     return True
 
 
+#: Where a built structure has been handed on: its presence means the jobs
+#: that follow were computed from the structure in start.txt.
+_HANDED_ON = ("initial.out", "initial_OCCUPIER", "ESD", "ox_step_1.out", "red_step_1.out",
+              "ox_step_1_OCCUPIER", "red_step_1_OCCUPIER")
+
+
+def _structure_kept_by_recalc(config: Dict[str, Any], workdir: Path, smiles: Optional[str]) -> str:
+    """Why a recalc keeps the structure in start.txt instead of building it again ('' when it does not).
+
+    The finished jobs were computed from that structure.  Built again, it
+    need not come out the same: MANTA's builder has changed since many
+    archived runs (its xTB inputs now carry ALPB and start from other
+    frames), and a smart recalc then rebuilt the structure, reran the
+    sampling and GOAT, and started everything after it from a different
+    geometry.  It is built again when the edit since the last completed run
+    reaches it (recalc_control), and, without such a record, when a MANTA
+    run's SMILES is not the one it was built from.
+    """
+    from delfin import smart_recalc
+
+    if _skip_preprocessing_for_override(config, workdir):
+        return "--occupier-override active, upstream geometry reused."
+    if not smart_recalc.recalc_enabled():
+        return ""
+    if not (workdir / "start.txt").exists() or not any((workdir / n).exists() for n in _HANDED_ON):
+        return ""
+    change = config.get("_recalc_change")
+    if change is not None:
+        # set by a smart recalc only: a classic one keeps what is finished,
+        # the structure the finished jobs were computed from included
+        if config.get("_recalc_rebuild_structure"):
+            return ""
+        return "the structure the finished jobs were computed from is kept (start.txt)."
+    if smiles and _resolve_smiles_converter(config) in ("MANTA", "GUPPY"):
+        built_from = workdir / "guppy_input.txt"
+        try:
+            same = built_from.read_text(encoding="utf-8", errors="replace").strip() == smiles.strip()
+        except OSError:
+            same = False
+        if same:
+            return "the structure MANTA built for this SMILES is kept (start.txt)."
+    return ""
+
+
+def _keep_built_structure(config: Dict[str, Any], workdir: Path) -> str:
+    """The reason normalize_input_file kept the structure, for the pre-optimisation steps after it."""
+    reason = config.get("_keep_built_structure")
+    if reason:
+        return str(reason)
+    if _skip_preprocessing_for_override(config, workdir):
+        return "--occupier-override active, upstream geometry reused."
+    return ""
+
+
 def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any]) -> None:
     """Run GUPPY sampling for a SMILES string and write best geometry to start_path.
 
@@ -1354,12 +1486,6 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     if runs <= 0:
         runs = 20
 
-    try:
-        parallel_jobs = int(str(config.get('GUPPY_PARALLEL_JOBS', 4)).strip())
-    except (ValueError, TypeError):
-        parallel_jobs = 4
-    if parallel_jobs <= 0:
-        parallel_jobs = 4
 
     try:
         seed = int(str(config.get('GUPPY_SEED', 31)).strip())
@@ -1367,13 +1493,81 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         seed = 31
 
     method = str(config.get('xTB_method') or 'XTB2').strip() or 'XTB2'
-    try:
-        goat_topk = int(str(config.get('GUPPY_GOAT', 0)).strip())
-    except (ValueError, TypeError):
-        goat_topk = 0
-    goat_topk = max(0, min(3, goat_topk))
+
+    # Everything CONTROL says about the builder, and about reducing its frames to
+    # the one geometry the pipeline takes, read once and in one place.  Deriving
+    # any of it a second time here is how MANTA_GOAT came to be validated by the
+    # control file and then ignored by the run.
+    from delfin.common.manta_settings import (
+        builder_options as _builder_options,
+        selection_options as _selection_options,
+        LAST_CONSTRUCTION as _LAST_CONSTRUCTION,
+    )
+    build_options = _builder_options(config)
+    selection = _selection_options(config)
+    goat_topk = selection['refine_topk']
+    parallel_jobs = selection['parallel_jobs']
     goat_parallel_jobs = parallel_jobs
+    # CREST wants a GBSA solvent name; GOAT does not use it.  Passing the
+    # CONTROL solvent through means a CREST refinement runs in the same medium
+    # as everything downstream instead of in the gas phase by omission.
+    manta_solvent = str(config.get('solvent') or '').strip()
+    # The solvation the rest of the run uses, not a switch of MANTA's own.
+    # Optimising the frames in the gas phase and then running everything
+    # downstream in CPCM would rank the coordination isomers under a different
+    # Hamiltonian than the one that decides anything afterwards -- and for a
+    # complex carrying a formal charge that is not a small difference.
+    from delfin.common.solvation import solvation_keyword_for_method
+    manta_solvation = solvation_keyword_for_method(
+        config.get('implicit_solvation_model'), manta_solvent, method)
+    # MANTA_OPT_METHOD lets the frame optimisations run at a different xtb
+    # level from the rest of the run -- GFN-FF to sift a large manifold, say,
+    # while xTB_method stays GFN2 for everything downstream.  Unset, it follows
+    # xTB_method, which is what it did before the key existed.
+    if selection['optimise_method']:
+        method = str(selection['optimise_method']).strip()
+        logger.info("MANTA frame optimisation uses %s (MANTA_OPT_METHOD), "
+                    "not xTB_method=%s",
+                    method, config.get('xTB_method'))
     config['_guppy_goat_completed'] = 'no'
+
+    # The four keys below are validated in control_validator (:1719-1722) and were
+    # never handed to run_sampling, so every run silently took the function's own
+    # defaults and four documented CONTROL knobs did nothing.  run_sampling has
+    # accepted all four since it was written; only the call site was missing them.
+    start_strategy = str(
+        config.get('MANTA_START_STRATEGY')
+        or config.get('GUPPY_START_STRATEGY')
+        or 'isomers').strip().lower() or 'isomers'
+
+    def _setting(name, legacy, fallback, cast):
+        """CONTROL value under the new name, the old name, or the default."""
+        raw = config.get(name)
+        if raw is None or str(raw).strip() == '':
+            raw = config.get(legacy)
+        if raw is None or str(raw).strip() == '':
+            return fallback
+        try:
+            return cast(str(raw).strip())
+        except (ValueError, TypeError):
+            return fallback
+
+    # 0 means "the complete manifold".  It is not a truncation: the builder uses
+    # max_isomers * cap_mult as its pre-UFF candidate budget, so a small number
+    # shrinks the search rather than just shortening the answer.
+    # An absent key is 0 too (it used to fall back to 100, a silent cap the CLI
+    # and the dashboard never had).
+    max_isomers = _setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 0, int)
+    if max_isomers <= 0:
+        max_isomers = 100000
+    rmsd_cutoff = _setting('MANTA_RMSD_CUTOFF', 'GUPPY_RMSD_CUTOFF', 0.3, float)
+    energy_window_kcal = _setting(
+        'MANTA_ENERGY_WINDOW', 'GUPPY_ENERGY_WINDOW_KCAL', 25.0, float)
+
+    # Everything the builder can be told.  Without this it runs on the library
+    # default profile -- 20 seeds against the 60 that `delfin-manta` uses by
+    # default -- so the pipeline was asking for a weaker search than the command
+    # line and had no way to say otherwise.
 
     guppy_settings = {
         'source': 'CONTROL.txt',
@@ -1387,6 +1581,20 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         'goat_parallel_jobs': goat_parallel_jobs,
         'seed': seed,
         'method': method,
+        'start_strategy': start_strategy,
+        'max_isomers': max_isomers,
+        'builder': dict(build_options),
+        # The construction set defines the builder's output more than the
+        # quality profile does -- 42 environment flags against five profile
+        # numbers -- and it was applied in cli.py and recorded nowhere.  This
+        # is the set that was actually applied, not the config read a second
+        # time, so the record cannot disagree with the run.
+        'construction': dict(_LAST_CONSTRUCTION),
+        'selection': dict(selection),
+        'solvent': manta_solvent,
+        'solvation': manta_solvation or 'gas phase',
+        'rmsd_cutoff': rmsd_cutoff,
+        'energy_window_kcal': energy_window_kcal,
         'input_file': guppy_input.name,
         'output_file': guppy_output.name,
         'winner_file': best_coord.name,
@@ -1401,7 +1609,7 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     }
     guppy_settings_path.write_text(json.dumps(guppy_settings, indent=2), encoding="utf-8")
 
-    logger.info("smiles_converter=GUPPY: starting GUPPY sampling for SMILES → %s", start_path.name)
+    logger.info("smiles_converter=MANTA: building and ranking structures for SMILES → %s", start_path.name)
     ret = run_sampling(
         input_file=guppy_input,
         runs=runs,
@@ -1416,6 +1624,21 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         allow_partial=True,
         goat_topk=goat_topk,
         goat_parallel_jobs=goat_parallel_jobs,
+        start_strategy=start_strategy,
+        max_isomers=max_isomers,
+        rmsd_cutoff=rmsd_cutoff,
+        energy_window_kcal=energy_window_kcal,
+        builder_options=build_options,
+        rank_multiplicity=selection['multiplicity'],
+        keep_frames=selection['screen_keep'],
+        screen_method=selection['screen'],
+        screen_explicit=selection['screen_explicit'],
+        screen_above=selection['screen_above'],
+        multiplicities=selection['multiplicities'],
+        optimise=selection['optimise'],
+        refine=selection['refine'],
+        solvent=manta_solvent,
+        solvation=manta_solvation,
     )
     if ret != 0:
         raise RuntimeError("GUPPY sampling returned non-zero status")
@@ -1446,7 +1669,10 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
 def _resolve_smiles_converter(config: Dict[str, Any]) -> str:
     """Return the effective SMILES converter with legacy fallback."""
     raw_value = str(config.get('smiles_converter', '') or '').strip().upper()
-    if raw_value in {'QUICK', 'NORMAL', 'GUPPY', 'ARCHITECTOR'}:
+    if raw_value == 'GUPPY':
+        # The old spelling of the same builder; see config._apply_guppy_legacy.
+        return 'MANTA'
+    if raw_value in {'QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'}:
         return raw_value
     if str(config.get('GUPPY', 'no')).strip().lower() == 'yes':
         return 'GUPPY'
@@ -1473,6 +1699,8 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
         is_smiles_string,
         smiles_to_xyz,
         smiles_to_xyz_architector,
+        smiles_to_xyz_mace,
+        smiles_to_xyz_molsimplify,
         smiles_to_xyz_quick,
     )
 
@@ -1494,33 +1722,33 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
 
     start_path = result_path.parent / 'start.txt'
 
-    # Handle SMILES conversion: write XYZ directly to start.txt, keep input.txt unchanged
+    smiles_line = None
     if is_smiles:
-        smiles_line = None
         for line in content.split('\n'):
             line = line.strip()
             if line and not line.startswith('#') and not line.startswith('*'):
                 smiles_line = line
                 break
 
+    kept = _structure_kept_by_recalc(config, start_path.parent, smiles_line)
+    config['_keep_built_structure'] = kept
+    if kept:
+        logger.info("[recalc] Structure not built again: %s", kept)
+        if smiles_line:
+            config['_guppy_goat_completed'] = 'yes'
+    # Handle SMILES conversion: write XYZ directly to start.txt, keep input.txt unchanged
+    elif is_smiles:
         if smiles_line:
             logger.info("Detected SMILES in %s: %s", input_path.name, smiles_line)
             converter = _resolve_smiles_converter(config)
             logger.info("Using smiles_converter=%s for %s", converter, input_path.name)
 
-            if converter == 'GUPPY':
-                if _skip_preprocessing_for_override(config, start_path.parent):
-                    logger.info(
-                        "[recalc] Skipping GUPPY sampling: --occupier-override active and "
-                        "start.txt + initial.out already exist (override is downstream-only)."
-                    )
-                    config['_guppy_goat_completed'] = 'yes'
-                else:
-                    try:
-                        _run_guppy_for_smiles(smiles_line, start_path, config)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error("GUPPY sampling failed: %s", exc)
-                        raise ValueError(f"GUPPY sampling failed: {exc}") from exc
+            if converter == 'MANTA':
+                try:
+                    _run_guppy_for_smiles(smiles_line, start_path, config)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("GUPPY sampling failed: %s", exc)
+                    raise ValueError(f"GUPPY sampling failed: {exc}") from exc
             elif converter == 'QUICK':
                 xyz_content, error = smiles_to_xyz_quick(smiles_line)
 
@@ -1533,18 +1761,23 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Could not write QUICK-converted coordinates to '%s': %s", start_path, exc)
                     raise ValueError(f"Could not write QUICK-converted coordinates: {exc}") from exc
-            elif converter == 'ARCHITECTOR':
-                xyz_content, error = smiles_to_xyz_architector(smiles_line)
+            elif converter in ('ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'):
+                # The shared external build (delfin.common.external_builders),
+                # the same one as the dashboard's buttons; its first frame.
+                build = {'ARCHITECTOR': smiles_to_xyz_architector,
+                         'MOLSIMPLIFY': smiles_to_xyz_molsimplify,
+                         'MACE': smiles_to_xyz_mace}[converter]
+                xyz_content, error = build(smiles_line)
 
                 if error:
-                    logger.error("ARCHITECTOR SMILES conversion failed: %s", error)
-                    raise ValueError(f"ARCHITECTOR SMILES conversion failed: {error}")
+                    logger.error("%s SMILES conversion failed: %s", converter, error)
+                    raise ValueError(f"{converter} SMILES conversion failed: {error}")
 
                 try:
                     _write_smiles_xyz_to_start(start_path, xyz_content)
                 except Exception as exc:  # noqa: BLE001
-                    logger.error("Could not write ARCHITECTOR coordinates to '%s': %s", start_path, exc)
-                    raise ValueError(f"Could not write ARCHITECTOR coordinates: {exc}") from exc
+                    logger.error("Could not write %s coordinates to '%s': %s", converter, start_path, exc)
+                    raise ValueError(f"Could not write {converter} coordinates: {exc}") from exc
             else:
                 # NORMAL: use the robust DELFIN converter first, then fall back
                 # to the quick single-conformer path if the full conversion fails.

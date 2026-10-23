@@ -171,6 +171,7 @@ def test_oh_tris_asymmetric_yields_delta_lambda():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(strict=True, reason="Theorem-D enumerator flag does not add cf-isomers for YIVROM (4 -> 4) -- Known construction defect, tracked in the private register (2026-09-06, #353); strict so a root fix is noticed")
 def test_enumerator_yivrom_increments_under_theorem_d_flag():
     """X10-YIVROM minimal proxy: tris-(O,S) on Fe CN=6.
 

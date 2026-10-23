@@ -11,7 +11,13 @@ from ..utils import (
     select_rel_and_aux,
     get_git_commit_info,
 )
-from ..esd_results import ESDSummary, ISCResult
+from ..esd_results import ESDSummary, ISCResult, isc_total_note, observed_isc_rate, sublevel_rates
+
+
+def _not_a_result(record) -> str:
+    """The line's end for a rate that is not a result (esd_results sets ``problem``)."""
+    problem = getattr(record, "problem", None)
+    return f"  [NOT A RESULT: {problem}]" if problem else ""
 
 
 def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, E_ox_3,
@@ -120,6 +126,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
 
     # ESD method block (shown if ESD module is enabled)
     from delfin.esd_module import parse_esd_config
+    from delfin.common.tddft_settings import read_settings as read_tddft_settings
     esd_enabled, _, _, _ = parse_esd_config(config)
     if esd_enabled:
         esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
@@ -133,14 +140,16 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 f"OPT FREQ deltaSCF PAL{config['PAL']} MAXCORE({config['maxcore']})"
             ).replace("  ", " ").strip()
         else:
-            # TDDFT mode: show TDDFT-specific keywords
+            # TDDFT mode: show TDDFT-specific keywords, read where the
+            # %tddft blocks read them, so the report names what ran.
+            tddft = read_tddft_settings(config)
             method_esd_block = (
                 f"Method ESD (TDDFT): {config['functional']} {rel_token} {main_basisset} "
                 f"{config.get('disp_corr','')} {config.get('ri_jkx','')} {aux_jk_token} {implicit_token()} "
                 f"{config.get('ri_soc','')} PAL{config['PAL']} "
-                f"NROOTS {config.get('ESD_nroots', config.get('NROOTS', 15))} "
-                f"DOSOC {config.get('DOSOC', 'FALSE')} "
-                f"TDA {config.get('ESD_TDA', config.get('TDA', 'FALSE'))} "
+                f"NROOTS {tddft.nroots} MAXDIM {tddft.maxdim} "
+                f"DOSOC {'TRUE' if tddft.soc else 'FALSE'} "
+                f"TDA {'TRUE' if tddft.tda else 'FALSE'} "
                 f"MAXCORE({config['maxcore']})"
             ).replace("  ", " ").strip()
 
@@ -217,7 +226,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
     sections = []
     sections.append(f"{calc_properties_header}\n{calculated_block}")
     if experimental_block:
-        sections.append(f"Experimental properties ({config.get('reference_CV', 'Unknown reference electrode')}):\n{experimental_block}")
+        sections.append(f"Experimental properties ({config.get('reference_CV') or 'V vs. Fc+/Fc'}):\n{experimental_block}")
     if literature_reference:
         sections.append(f"Literature References:\n(1): {literature_reference}")
     if smiles_info:
@@ -271,19 +280,22 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 if record.ht_percent is not None:
                     extras.append(f"HT={record.ht_percent:.2f}%")
                 detail = f" ({', '.join(extras)})" if extras else ""
-                return f"  {label} = {fmt_rate(record.rate)}{detail}"
+                return f"  {label} = {fmt_rate(record.rate)}{detail}{_not_a_result(record)}"
 
             for base_transition in sorted(isc_grouped):
                 records = sorted(isc_grouped[base_transition])
                 for transition, record in records:
                     esd_lines.append(_format_isc_line(transition, record))
 
-                # If multiple Ms components exist, append summed rate
+                # If multiple Ms components exist, append the observed rate:
+                # their sum from a singlet, their mean from a triplet
                 if len(records) > 1:
-                    rates = [rec.rate for _, rec in records if rec.rate is not None]
-                    total_rate = sum(rates) if rates else None
+                    initial_state = base_transition.split(">", 1)[0]
+                    total_rate = observed_isc_rate(initial_state, sublevel_rates(records))
+                    flawed = next((rec for _, rec in records if getattr(rec, "problem", None)), None)
                     esd_lines.append(
                         f"  {base_transition} (total) = {fmt_rate(total_rate)}"
+                        f"{isc_total_note(initial_state)}{_not_a_result(flawed)}"
                     )
         if esd_summary.ic:
             if esd_lines:  # Add empty line before IC section if there's already content
@@ -296,7 +308,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 if record.delta_cm1 is not None:
                     extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
                 detail = f" ({', '.join(extras)})" if extras else ""
-                esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+                esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}{_not_a_result(record)}")
         if getattr(esd_summary, "fluor", None):
             fluor_items = [(k, v) for k, v in sorted(esd_summary.fluor.items()) if v and v.rate is not None]
             if fluor_items:
@@ -310,7 +322,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                     if record.delta_cm1 is not None:
                         extras.append(f"Δ0-0={record.delta_cm1:.2f} cm^-1")
                     detail = f" ({', '.join(extras)})" if extras else ""
-                    esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}")
+                    esd_lines.append(f"  {transition} = {fmt_rate(record.rate)}{detail}{_not_a_result(record)}")
         if getattr(esd_summary, "phosp", None):
             phosp_items = [(k, v) for k, v in sorted(esd_summary.phosp.items()) if v and v.rate_mean is not None]
             if phosp_items:
@@ -328,7 +340,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                     sub = [r for r in record.sublevel_rates if r is not None]
                     for i, r in enumerate(sub, start=1):
                         esd_lines.append(f"  {transition} (k{i}) = {fmt_rate(r)}{detail}")
-                    esd_lines.append(f"  {transition} (mean) = {fmt_rate(record.rate_mean)}{detail}")
+                    esd_lines.append(f"  {transition} (mean) = {fmt_rate(record.rate_mean)}{detail}{_not_a_result(record)}")
         if esd_lines:
             sections.append("ESD:\n" + "\n".join(esd_lines))
     middle = "\n\n".join(sections)

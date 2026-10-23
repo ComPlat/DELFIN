@@ -8,15 +8,20 @@ Usage::
 """
 
 import argparse
+import atexit
 import importlib.util
 import importlib.resources
 import ipaddress
 import os
+import re
 import socket
 import shutil
+import stat
 import shlex
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -100,6 +105,51 @@ def _latest_vscode_ipc_socket() -> str | None:
     return None
 
 
+def _terminal_gone(signum, frame):
+    """SIGTERM or SIGHUP reach the launcher: stop exactly as Ctrl+C does."""
+    raise KeyboardInterrupt
+
+
+def _install_stop_signals() -> dict:
+    """A closed terminal (SIGHUP) or a plain kill (SIGTERM) used to end the
+    launcher without its cleanup, leaving the server and everything under
+    it running: one server stayed up five days. Both now take the Ctrl+C
+    path. Returns the handlers they replaced."""
+    import signal
+    previous: dict = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            previous[sig] = signal.signal(sig, _terminal_gone)
+        except (ValueError, OSError):
+            pass
+    return previous
+
+
+def _restore_signals(previous: dict) -> None:
+    import signal
+    for sig, handler in (previous or {}).items():
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError, TypeError):
+            pass
+
+
+def _end_agent_processes() -> None:
+    """End every detached process started under this launcher: background
+    shells, MCP servers, daemons (the lifeline ledger)."""
+    try:
+        from delfin.agent import lifeline
+        ended = lifeline.end_children()
+    except Exception:
+        return
+    if ended:
+        print(f"Stopped {len(ended)} background process(es) started from "
+              "this dashboard.")
+
+
 def _is_vscode_session(env: dict[str, str] | None = None) -> bool:
     """Return True when the launcher runs inside a VS Code terminal session."""
     env = env or os.environ
@@ -107,6 +157,40 @@ def _is_vscode_session(env: dict[str, str] | None = None) -> bool:
     browser = str(env.get("BROWSER") or "")
     ipc_hook = str(env.get("VSCODE_IPC_HOOK_CLI") or "").strip()
     return term_program == "vscode" or "browser.sh" in browser or bool(ipc_hook)
+
+
+def _launch_is_interactive() -> bool:
+    """True when a person typed the launch: stdin and stdout are terminals."""
+    try:
+        return bool(sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _decide_open_browser(args, env: dict[str, str] | None = None,
+                         interactive: bool | None = None) -> bool:
+    """Whether this launch opens the dashboard in a browser.
+
+    The explicit switches win. Otherwise a tab opens only for a launch a
+    person typed into a VS Code terminal. A launch from a script, a test,
+    an agent or a service inherits the same VS Code variables, and on
+    2026-09-16 every such launch -- browser drives, dashboard tests --
+    opened a tab on the developer's desktop. Those are never interactive
+    (no terminal on stdin/stdout), and ``DELFIN_NO_BROWSER`` switches the
+    automatic open off for a whole environment.
+    """
+    env = env if env is not None else os.environ
+    if getattr(args, "open_browser", None) is True:
+        return True
+    if getattr(args, "no_browser", None) is True:
+        return False
+    if str(env.get("DELFIN_NO_BROWSER") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    if interactive is None:
+        interactive = _launch_is_interactive()
+    if not interactive:
+        return False
+    return _is_vscode_session(env)
 
 
 def _prepare_voila_env(open_browser: bool) -> dict[str, str]:
@@ -281,6 +365,23 @@ def _refuse_insecure_no_token(ip: str) -> str:
     )
 
 
+#: Frontend extensions the browser is not asked to load.  See the comment at
+#: the ``--VoilaConfiguration.extension_denylist`` argument for the measurement.
+DEFAULT_EXTENSION_DENYLIST = ('nglview-js-widgets', 'jupyterlab-plotly')
+
+
+def _extension_denylist() -> list:
+    """Which frontend extensions to leave out, honouring an override.
+
+    ``DELFIN_VOILA_EXTENSION_DENYLIST`` is a comma-separated list; empty means
+    leave everything in.
+    """
+    raw = os.environ.get('DELFIN_VOILA_EXTENSION_DENYLIST')
+    if raw is None:
+        return list(DEFAULT_EXTENSION_DENYLIST)
+    return [name.strip() for name in raw.split(',') if name.strip()]
+
+
 def _validate_access_token(token: str) -> str:
     """Return a validated dashboard token or raise ValueError."""
     value = str(token or "").strip()
@@ -369,23 +470,212 @@ def _create_token_file(token: str) -> Path:
     raise RuntimeError(f"could not create secure token file: {last_error}")
 
 
+#: Set to 1 to accept a DELFIN_VOILA_ROOT_DIR of /, /home, /tmp or $HOME.
+BROAD_ROOT_ENV = "DELFIN_VOILA_ALLOW_BROAD_ROOT"
+
+
+def _broad_roots() -> set:
+    """Directories too wide to serve: every user's files, or all of one's own."""
+    return {
+        Path("/").resolve(),
+        Path("/home").resolve(),
+        Path("/tmp").resolve(),
+        Path.home().resolve(),
+    }
+
+
+def _checked_root_override(raw: str) -> Path | None:
+    """The DELFIN_VOILA_ROOT_DIR override, or None when it is not taken.
+
+    Taken only when it names an existing directory that is not one of
+    :func:`_broad_roots` (unless BROAD_ROOT_ENV=1). A refused override is
+    reported on stderr and the default root is used instead, so the
+    dashboard still starts.
+    """
+    try:
+        path = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError):
+        path = None
+    reason = ""
+    if path is None or not path.is_dir():
+        reason = "is not an existing directory"
+    elif (path in _broad_roots()
+          and os.environ.get(BROAD_ROOT_ENV, "").strip() != "1"):
+        reason = (f"would serve far more than the dashboard needs "
+                  f"(set {BROAD_ROOT_ENV}=1 to allow it)")
+    if reason:
+        print(f"  \u26a0  DELFIN_VOILA_ROOT_DIR={raw!r} {reason}; "
+              "using the default root instead.", file=sys.stderr)
+        return None
+    return path
+
+
 def _default_voila_root() -> Path:
     """Return a narrow default root_dir for files served by Voilà."""
     override = os.environ.get("DELFIN_VOILA_ROOT_DIR", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        checked = _checked_root_override(override)
+        if checked is not None:
+            return checked
 
     cwd = Path.cwd().resolve()
     home = Path.home().resolve()
-    forbidden = {
-        Path("/").resolve(),
-        Path("/home").resolve(),
-        Path("/tmp").resolve(),
-        home,
-    }
-    if cwd not in forbidden and home in cwd.parents:
+    if cwd not in _broad_roots() and home in cwd.parents:
         return cwd
     return _secure_cache_dir("voila-root").resolve()
+
+
+def _kernel_transport_args() -> list:
+    """The server's kernels talk over Unix sockets, not loopback TCP.
+
+    Over TCP every kernel channel is a port on 127.0.0.1, which any user
+    of the machine can connect to. The key in the connection file signs
+    messages, it does not encrypt them, and the IOPub channel publishes to
+    any subscriber: measured 2026-10-20, a client without the key read a
+    kernel's printed output over TCP (ipykernel 7.3, jupyter_client 8.10).
+    With ``ipc`` the sockets are files beside the connection file, in the
+    Jupyter runtime directory, which is the user's own (mode 0700), so no
+    other user can reach them. ipykernel 7 also stops warning about an
+    unencrypted TCP kernel. Windows has no ipc transport and keeps TCP.
+    ``DELFIN_KERNEL_TRANSPORT=tcp`` restores TCP (a kernel on another
+    machine, a remote debugger).
+
+    A socket path is at most 107 bytes on Linux and 103 on macOS
+    (sockaddr_un), and each one is ``<runtime>/kernel-<uuid>-ipc-<port>``;
+    under a deep runtime directory no kernel could start. Then the server
+    keeps TCP and says so, instead of a dashboard that never loads."""
+    if os.name == "nt":
+        return []
+    transport = os.environ.get("DELFIN_KERNEL_TRANSPORT", "ipc").strip().lower()
+    if transport != "ipc":
+        return []
+    try:
+        from jupyter_core.paths import jupyter_runtime_dir
+        runtime = os.path.realpath(jupyter_runtime_dir())
+    except Exception:
+        return []
+    try:
+        import zmq
+        limit = int(getattr(zmq, "IPC_PATH_MAX_LEN", 0) or 0)
+    except Exception:
+        limit = 0
+    limit = limit or (103 if sys.platform == "darwin" else 107)
+
+    def fits(path: str) -> bool:
+        longest = (len(os.fsencode(path)) + len("/kernel-") + 36
+                   + len("-ipc-") + 5)
+        return longest <= limit
+
+    if fits(runtime) and _is_private_dir(runtime):
+        return ["--KernelManager.transport=ipc"]
+    moved = _private_runtime_dir(fits)
+    if moved is None:
+        print(f"Note: kernels talk over loopback TCP, which other users of "
+              f"this machine can reach: {runtime} is too long for a Unix "
+              "socket or readable by others, and neither $XDG_RUNTIME_DIR "
+              "nor /tmp gave a private directory. Set JUPYTER_RUNTIME_DIR "
+              "to a short private directory (mode 0700) to keep them "
+              "private.", file=sys.stderr)
+        return []
+    # Read by the server, which is started with this process's
+    # environment (main() copies it into the server's env).
+    os.environ["JUPYTER_RUNTIME_DIR"] = moved
+    print(f"Kernels use private sockets under {moved} (the default "
+          f"runtime directory is too long for a socket or not private).",
+          file=sys.stderr)
+    return ["--KernelManager.transport=ipc"]
+
+
+def _is_private_dir(path: str) -> bool:
+    """A directory, not a symlink, owned by this user, no group or other
+    permissions: where connection files (the kernels' keys) and sockets
+    may live."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+            and not st.st_mode & 0o077)
+
+
+#: Where the fixed and the one-off runtime directories are made: short on
+#: every Unix, unlike $TMPDIR on macOS (/var/folders/...).
+#: ``DELFIN_PRIVATE_TMP`` replaces it (the test suite points it at a
+#: directory of its own, so no test server writes the user's real
+#: /tmp/delfin-k-<uid>); the same checks apply to it.
+_TMP_ROOT = "/tmp"
+PRIVATE_TMP_ENV = "DELFIN_PRIVATE_TMP"
+
+
+def _private_runtime_dir(fits) -> str | None:
+    """A short private directory for the kernels' connection files and
+    sockets, or None.
+
+    In order:
+    - ``$XDG_RUNTIME_DIR/delfin-jupyter`` when ``$XDG_RUNTIME_DIR`` is this
+      user's private directory (on Linux a tmpfs per login, mode 0700);
+    - ``/tmp/delfin-k-<uid>``, made 0700 by this user. It is the same
+      directory on every start, which the login store in it needs: a
+      restart keeps the logins (a fresh directory per start ended them);
+    - a new directory from ``mkdtemp`` under /tmp, made 0700 with a name
+      nobody can take first, removed when this process exits; only when
+      the fixed name exists and is not this user's private directory.
+    Every candidate is checked after it exists: a symlink, another owner
+    or open permissions is refused, not repaired.
+
+    The rules are the established ones for a per-user socket directory:
+    the XDG Base Directory Specification's runtime directory (owned by the
+    user, mode 0700), and in a shared /tmp the pattern tmux and ssh-agent
+    use (a fixed per-user name, accepted only when it is the user's own
+    0700 directory and not a symlink; CWE-377/CWE-379). /tmp itself must
+    carry the sticky bit or belong to the user: without it, any user
+    could rename or replace a directory in it, so neither the fixed name
+    nor a mkdtemp directory is used there.
+    """
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg and _is_private_dir(xdg):
+        candidate = os.path.join(xdg, "delfin-jupyter")
+        try:
+            os.mkdir(candidate, 0o700)
+        except FileExistsError:
+            pass
+        except OSError:
+            candidate = ""
+        if candidate and _is_private_dir(candidate) and fits(candidate):
+            return candidate
+    root = os.environ.get(PRIVATE_TMP_ENV, "").strip() or _TMP_ROOT
+    base = root if os.path.isdir(root) else tempfile.gettempdir()
+    try:
+        bst = os.lstat(base)
+    except OSError:
+        return None
+    if not (stat.S_ISDIR(bst.st_mode)
+            and (bst.st_mode & stat.S_ISVTX or bst.st_uid == os.getuid())):
+        return None
+    fixed = os.path.join(base, f"delfin-k-{os.getuid()}")
+    try:
+        os.mkdir(fixed, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        fixed = ""
+    if fixed and _is_private_dir(fixed) and fits(fixed):
+        return fixed
+    try:
+        made = tempfile.mkdtemp(prefix="delfin-k-", dir=base)
+    except OSError:
+        return None
+    if not (_is_private_dir(made) and fits(made)):
+        shutil.rmtree(made, ignore_errors=True)
+        return None
+    atexit.register(shutil.rmtree, made, True)
+    return made
+
+
+def _file_allowlist() -> str:
+    from delfin.dashboard.web_security import FILE_ALLOWLIST
+
+    return FILE_ALLOWLIST
 
 
 def _dashboard_default_url(notebook: str, root_dir: str) -> str:
@@ -403,10 +693,248 @@ def _dashboard_default_url(notebook: str, root_dir: str) -> str:
     return "/voila/render/" + quote(rel)
 
 
+def _login_logo_data_uri() -> str:
+    """Return the packaged DELFIN logo as a base64 ``data:`` URI, or ''.
+
+    Mirrors the dashboard logo loader (``dashboard.__init__._load_logo_data_uri``)
+    so the branded login page shows the same mark as the running dashboard.
+    """
+    import base64
+
+    try:
+        logo = importlib.resources.files("delfin").joinpath("logo", "DELFIN_logo.png")
+        if logo.is_file():
+            data = logo.read_bytes()
+            if data:
+                return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    except Exception:
+        pass
+    return ""
+
+
+def _render_login_template(template: str, logo_uri: str) -> str:
+    """``template`` with the DELFIN logo inlined as a ``data:`` URI, or
+    without its logo tile when there is no logo (no broken image)."""
+    if logo_uri:
+        return template.replace("__DELFIN_LOGO_URI__", logo_uri)
+    import re
+
+    return re.sub(
+        r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
+        "",
+        template,
+        flags=re.DOTALL,
+    ).replace("__DELFIN_LOGO_URI__", "")
+
+
+def _prepare_login_template_dir() -> str | None:
+    """Materialise the DELFIN-branded sign-in and sign-out pages for
+    jupyter_server.
+
+    Reads every shipped template in ``voila_assets/login_templates``
+    (``login.html``, ``logout.html`` and the card style they include),
+    inlines the DELFIN logo as a ``data:`` URI, and writes the results into
+    a private 0700 directory that is handed to jupyter_server via
+    ``extra_template_paths`` (searched before the packaged templates, so
+    ours win). Returns the directory path, or ``None`` if ``login.html`` is
+    unavailable (jupyter_server then falls back to its own pages — auth is
+    unaffected either way). ``logout.html`` used to be jupyter_server's own:
+    an unstyled "Successfully logged out. Proceed to the login page."
+    """
+    try:
+        folder = importlib.resources.files("delfin.voila_assets").joinpath(
+            "login_templates")
+        templates = {f.name: f.read_text(encoding="utf-8")
+                     for f in folder.iterdir()
+                     if f.name.endswith(".html") and f.is_file()}
+    except Exception:
+        return None
+    if "login.html" not in templates:
+        return None
+
+    logo_uri = _login_logo_data_uri()
+    try:
+        target_dir = _secure_cache_dir("voila-login")
+        for name, template in templates.items():
+            (target_dir / name).write_text(
+                _render_login_template(template, logo_uri), encoding="utf-8")
+        return str(target_dir)
+    except Exception:
+        return None
+
+
+def _prepare_published_dir() -> str | None:
+    """Create the one directory the server publishes, and return it.
+
+    The drawing editor is a browser application: it has to be fetched over
+    HTTP, so it has to sit somewhere the server will hand out. Until now the
+    only such place was Voilà's root directory — which is whatever directory
+    the dashboard was started in — so thirty megabytes of Ketcher were copied
+    into it, one copy per launch directory, and a user found them in their
+    archive folder next to the calculations.
+
+    A static route of its own fixes that: the editor is loaded from where it
+    is kept, in ``~/.delfin/served``, and nothing is written into the launch
+    directory at all. Returns the directory, or ``None`` if it cannot be made
+    (the editor then falls back to the copy under the root, as before).
+
+    ``/static/`` is served WITHOUT a token — jupyter_server needs it for the
+    login page — which is why what is published gets a directory of its own
+    rather than a route into ``~/.delfin``, where the credentials and the
+    agent's memory live. It holds the editor and nothing else, and the editor
+    is a public open-source bundle. ``/voila/files/``, which reaches the
+    launch directory, requires the token (``web_security``).
+    """
+    try:
+        from delfin.dashboard import ketcher
+
+        published = ketcher.published_root()
+        published.mkdir(parents=True, exist_ok=True)
+        return str(published)
+    except Exception:
+        return None
+
+
+# Benign lines jupyter_server emits that only confuse users without signalling
+# any real problem: an internal "ServerApp.token config is deprecated" warning
+# (jupyter_server reads its OWN deprecated trait during startup) and a routine
+# login-cookie clear. jupyter_server force-shows some of these past Python's
+# warning filters (it resets them at startup), so the only reliable way to keep
+# them out of the terminal is to filter the child's stderr.
+_BENIGN_STDERR_SUBSTRINGS = (
+    "ServerApp.token config is deprecated",
+    "Clearing invalid/expired login cookie",
+    "cannot be longer than the websocket_ping_interval",
+    "Setting websocket_ping_timeout",
+    # Routine shutdown chatter on Ctrl+C — we print our own "Stopping…/Stopped."
+    "Shutting down",
+    "received signal",
+)
+
+
+#: A server warning with no text: jupyter_server logs ``str(e)`` of the
+#: ``WebSocketClosedError`` raised for each kernel message that reaches a
+#: browser connection which has closed, and that exception has no text.
+_EMPTY_WARNING_RE = re.compile(rb"^(\[W [^\]]*\])\s*$")
+
+_CLOSED_CONNECTION_NOTE = (
+    b" kernel output reached a browser connection that had closed (page "
+    b"reloaded, tab closed or connection lost); repeats directly after "
+    b"it are not shown\n")
+
+
+def _forward_filtered_stderr(stream) -> None:
+    """Forward the child's stderr to ours, dropping only benign noise lines.
+
+    Matches an explicit allowlist of known-harmless messages and passes
+    EVERYTHING else through unchanged — genuine warnings and errors are never
+    hidden (fail-loud preserved). A ``warnings.warn`` header is printed with an
+    indented source snippet on the next line; that snippet is dropped too when
+    its header was dropped.
+
+    A run of warnings without text (``_EMPTY_WARNING_RE``) is printed once,
+    with what it means, instead of one empty header per kernel message.
+    """
+    drop_indented_continuation = False
+    in_empty_run = False
+    out = getattr(sys.stderr, "buffer", None)
+    try:
+        for raw in iter(stream.readline, b""):
+            empty = _EMPTY_WARNING_RE.match(raw)
+            if empty:
+                if in_empty_run:
+                    continue
+                in_empty_run = True
+                raw = empty.group(1) + _CLOSED_CONNECTION_NOTE
+            else:
+                in_empty_run = False
+            text = raw.decode("utf-8", "replace")
+            if drop_indented_continuation and text[:1].isspace():
+                drop_indented_continuation = False
+                continue
+            drop_indented_continuation = False
+            if any(sub in text for sub in _BENIGN_STDERR_SUBSTRINGS):
+                if "Warning:" in text:
+                    drop_indented_continuation = True
+                continue
+            if out is not None:
+                out.write(raw)
+                out.flush()
+            else:
+                sys.stderr.write(text)
+                sys.stderr.flush()
+    except Exception:
+        # A daemon log-pump must never crash the launcher; go silent on this
+        # stream rather than raise in a background thread.
+        pass
+
+
+#: Set on the child so the re-exec happens once, not for ever.
+_TMUX_MARKER = "DELFIN_VOILA_UNDER_TMUX"
+
+#: The tmux session a --keep dashboard lives in.
+TMUX_SESSION = "delfin"
+
+
+def _reexec_under_tmux(argv) -> "int | None":
+    """Start this command again inside tmux. Returns an exit code, or None.
+
+    None means "carry on here": already inside tmux, already re-executed,
+    or no tmux on this machine -- in which case it says so rather than
+    pretending the dashboard will survive a closed terminal.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    if os.environ.get("TMUX") or os.environ.get(_TMUX_MARKER):
+        return None
+    if not _shutil.which("tmux"):
+        print("--keep asked for a session that survives this terminal, and "
+              "tmux is not installed here. Running in the foreground "
+              "instead: closing this terminal ends the dashboard.",
+              file=sys.stderr)
+        return None
+    inner = [sys.argv[0]] + list(argv if argv is not None else sys.argv[1:])
+    env = dict(os.environ, **{_TMUX_MARKER: "1"})
+    # -A: attach to a session of this name if it exists, create otherwise.
+    # The dashboard keeps the terminal it is given; detaching is Ctrl-b d.
+    try:
+        proc = _subprocess.run(["tmux", "new", "-A", "-s", TMUX_SESSION, "--",
+                                *inner], env=env)
+    except OSError as exc:
+        print(f"--keep could not start tmux ({exc}); running here instead.",
+              file=sys.stderr)
+        return None
+    return int(proc.returncode or 0)
+
+
+def _announces_where(env) -> bool:
+    """False for a branch preview (branch_preview.preview_env sets the
+    markers): the note says where *the* dashboard runs, and a preview
+    closes with its branch."""
+    return not (env.get("DELFIN_PREVIEW_BRANCH") and env.get("DELFIN_PREVIEW_WORKTREE"))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
         description="Launch the DELFIN Dashboard with Voila.",
+    )
+    parser.add_argument(
+        "--strict-port",
+        action="store_true",
+        help="Fail if the requested port is occupied instead of choosing another (SSH launchers).",
+    )
+    parser.add_argument(
+        "--agent-terminal",
+        metavar="COMMAND",
+        default="",
+        help=(
+            "Offer COMMAND (a coding-agent CLI, by name on PATH or as a "
+            "path) in a terminal panel of the Agent tab. Loopback only; the "
+            "terminal runs that program and nothing else, and never a shell "
+            "or an interpreter."
+        ),
     )
     parser.add_argument(
         "--port",
@@ -485,7 +1013,52 @@ def main(argv=None):
             "Equivalent to setting the DELFIN_RESUME_SESSION env var."
         ),
     )
+    parser.add_argument(
+        "--keep",
+        action="store_true",
+        help=(
+            "Survive a closed terminal: start inside a tmux session named "
+            "'delfin' (reusing one if it is there) and arm 'Keep session' "
+            "for every session this dashboard opens, so a dropped "
+            "connection costs nothing. Prints how to come back."
+        ),
+    )
     args = parser.parse_args(argv)
+    if getattr(args, "keep", False):
+        _rc = _reexec_under_tmux(argv)
+        if _rc is not None:
+            return _rc
+        # Inside tmux now (or tmux was unavailable and we said so): the
+        # sessions this dashboard opens arm themselves.
+        os.environ["DELFIN_KEEP_SESSIONS"] = "1"
+    # This process carries the user's environment, which may hold an
+    # exported provider key; the commands the dashboard runs are processes
+    # of the same user. Unreadable to them, and said once if a key is there.
+    try:
+        from delfin.agent import process_guard as _process_guard
+        _process_guard.protect("dashboard launcher")
+        from delfin.user_settings import load_settings as _load_settings, take_security_notices
+        _load_settings()                    # applies a pending security update
+        for _notice in take_security_notices():
+            print(_notice, file=sys.stderr)
+        _exported = _process_guard.exported_provider_keys()
+        # Unconditional, because the environment is not where the worst
+        # case lives: an alias sets a key for one command and leaves the
+        # line in a shell file for good, so nothing ever exports it and
+        # the old `if _exported:` never looked.
+        #
+        # Do it rather than ask for it: an exported key goes into the
+        # 0600 store and the export is commented out, with a copy of the
+        # file kept. Only what could not be decided is left to say.
+        _done = _process_guard.put_exported_keys_away(_exported)
+        if _done:
+            print(_done, file=sys.stderr)
+        elif _exported:
+            print("Warning: "
+                  + _process_guard.exported_key_advice(_exported),
+                  file=sys.stderr)
+    except Exception:
+        pass
     # Record the REAL shell cwd the user launched from, BEFORE Voila resets the
     # kernel's cwd to the notebook's directory (inside the delfin checkout).
     # ONLY the agent tab reads this — to decide where to build (launch dir =
@@ -507,7 +1080,10 @@ def main(argv=None):
 
     # Find a free port, starting from the requested one.
     try:
-        args.port = _select_port(args.port)
+        selected_port = _select_port(args.port)
+        if args.strict_port and selected_port != args.port:
+            raise RuntimeError(f"Error: requested port {args.port} is occupied; refusing to change the SSH tunnel target.")
+        args.port = selected_port
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
@@ -523,6 +1099,32 @@ def main(argv=None):
             file=sys.stderr,
         )
         sys.exit(2)
+
+    # -- Agent terminal (opt-in) ----------------------------------------------
+    # A terminal is a process under the user's account, outside the agent's
+    # sandbox. Only on a loopback bind -- never with --allow-remote-bind --
+    # only when the program exists, and never a shell or an interpreter
+    # (agent_terminal.refusal): no command, no terminal.
+    _term_argv: list[str] = []
+    if args.agent_terminal:
+        from delfin.dashboard import agent_terminal as _at
+        if not _is_loopback_bind(args.ip):
+            print("Error: --agent-terminal is only offered on a loopback "
+                  f"bind, not on {args.ip}.", file=sys.stderr)
+            sys.exit(2)
+        _wanted = os.path.expanduser(args.agent_terminal)
+        _found = (_wanted if os.path.isfile(_wanted)
+                  and os.access(_wanted, os.X_OK) else shutil.which(_wanted))
+        if not _found:
+            print(f"Error: --agent-terminal: {args.agent_terminal!r} is not "
+                  "an executable on PATH or a path to one.", file=sys.stderr)
+            sys.exit(2)
+        _found = os.path.realpath(os.path.abspath(_found))
+        _why = _at.refusal(_found) or _at.refusal(args.agent_terminal)
+        if _why:
+            print(f"Error: --agent-terminal: {_why}.", file=sys.stderr)
+            sys.exit(2)
+        _term_argv = [_found]
 
     # -- Token-based authentication ----------------------------------------
     # Auto-generate a token by default. On shared multi-user hosts (HPC login
@@ -564,18 +1166,23 @@ def main(argv=None):
             f"     Read it with:  cat {_token_file}\n"
         )
 
-    if args.open_browser is True:
-        open_browser = True
-    elif args.no_browser is True:
-        open_browser = False
-    else:
-        open_browser = _is_vscode_session()
+    open_browser = _decide_open_browser(args)
     notebook = _find_notebook()
     root_dir = str(_default_voila_root())
     notebook = _stage_notebook_under_root(notebook, root_dir)
     env = _prepare_voila_env(open_browser=open_browser)
     env.setdefault("DELFIN_VOILA_ROOT_DIR", root_dir)
     env["DELFIN_VOILA_PORT"] = str(args.port)
+
+    # Quieter startup (cosmetic only — no endpoint/auth change). Suppress the
+    # third-party DeprecationWarning spam (traitlets) and the Node url.parse
+    # deprecation so the terminal shows the DELFIN banner, not a wall of noise.
+    # Scoped to the Voilà subprocess env; DELFIN's own runtime is untouched.
+    env.setdefault("PYTHONWARNINGS", "ignore::DeprecationWarning")
+    _node_opts = env.get("NODE_OPTIONS", "").strip()
+    env["NODE_OPTIONS"] = (
+        f"{_node_opts} --no-deprecation".strip() if _node_opts else "--no-deprecation"
+    )
 
     # Trust the notebook so Voilà doesn't warn about untrusted content.
     _trust_notebook(notebook)
@@ -591,27 +1198,205 @@ def main(argv=None):
     # `default_url` sends the browser straight to the rendered dashboard, so
     # `http://localhost:PORT/?token=…` behaves exactly as before for the user.
     dashboard_url = _dashboard_default_url(notebook, root_dir)
+
+    # Coming back to a kept session.
+    #
+    # A session the user chose to keep is reached through a SECOND,
+    # one-cell notebook rather than the dashboard's own address: that one
+    # renders and executes the whole thing, which against a live kernel
+    # would run all nineteen tabs a second time. The one-cell notebook
+    # re-displays what the kernel already holds.
+    #
+    # The path is handed to the kernels through the environment because
+    # only the launcher knows where the notebook was staged relative to
+    # the server root; and the kernel manager is swapped for one that
+    # recognises `?session=<name>` and hands back the running kernel
+    # instead of starting a fresh one. An ordinary request goes through
+    # it untouched.
+    try:
+        from delfin.dashboard import resume_server as _resume
+
+        _resume_nb = _resume.stage_resume_notebook(root_dir)
+        _trust_notebook(_resume_nb)
+        resume_url_path = _dashboard_default_url(_resume_nb, root_dir)
+        kernel_manager_class = (
+            "delfin.dashboard.resume_server.ResumeAwareMappingKernelManager")
+    except Exception:
+        # A dashboard that starts is worth more than one that can be
+        # resumed: without these two the default path is exactly what it
+        # was, and keeping a session simply is not offered.
+        resume_url_path = ""
+        kernel_manager_class = ""
+
+    # Kernels inherit the server's environment, and Voila copies it into
+    # every kernel it starts, so this is how a dashboard learns its own
+    # come-back address without the launcher and the kernel having to
+    # agree on paths twice.
+    if resume_url_path:
+        env[_resume.RESUME_PATH_ENV] = resume_url_path
+    # Voilà only needs the `voila` extension. Explicitly DISABLE the others that
+    # auto-load from entry points (jupyterlab/notebook/lsp/terminals): each adds
+    # HTTP endpoints = attack surface, boot time and log noise the dashboard
+    # never uses. notebook_shim is left alone (harmless redirect shim).
+    _extensions = (
+        "{'voila': True, 'jupyterlab': False, 'notebook': False, "
+        "'jupyter_lsp': False, 'jupyter_server_terminals': "
+        + ("True" if _term_argv else "False") + ", "
+        "'delfin.dashboard.server_guard': True}"
+    )
+    if _term_argv:
+        import json as _json
+        from delfin.dashboard import agent_terminal as _ct
+        env[_ct.ARGV_ENV] = _json.dumps(_term_argv)
+        env[_ct.CWD_ENV] = os.environ.get("DELFIN_LAUNCH_CWD") or os.getcwd()
+        env[_ct.ENABLED_ENV] = "1"
+    else:
+        env.pop("DELFIN_AGENT_TERMINAL", None)
+    import json
+
+    from delfin.dashboard.web_security import NO_TYPESETTING_ROUTE
+
+    # Server-side login sessions (logout, idle timeout) and refused logins
+    # as security events: delfin.dashboard.identity. If it does not import
+    # with this jupyter-server, the server starts with jupyter-server's own
+    # provider and the terminal says what is missing.
+    _identity_args = []
+    try:
+        from delfin.dashboard import identity as _identity
+        _identity_args = [
+            "--ServerApp.identity_provider_class=" + _identity.CLASS_PATH]
+    except Exception as _identity_exc:  # noqa: BLE001
+        print("Warning: dashboard logins have no logout or idle timeout on "
+              f"this server ({_identity_exc}); they end only after "
+              "DELFIN_DASHBOARD_LOGIN_DAYS.", file=sys.stderr)
+
     cmd = [
         sys.executable,
         "-m",
         "jupyter",
         "server",
-        "--ServerApp.jpserver_extensions={'voila': True}",
+        f"--ServerApp.jpserver_extensions={_extensions}",
+        *_identity_args,
+        *(["--ServerApp.kernel_manager_class="
+           + kernel_manager_class] if kernel_manager_class else []),
+        # A kernel whose last window closed is ended by the server after
+        # a grace, unless the session was kept. The flags switch the
+        # culler on; the rule itself lives in the kernel manager above.
+        *(_resume.cull_config_args() if kernel_manager_class else []),
+        *_kernel_transport_args(),
         f"--port={args.port}",
+        *(["--ServerApp.port_retries=0"] if args.strict_port else []),
         f"--ServerApp.ip={args.ip}",
         f"--ServerApp.root_dir={root_dir}",
         f"--ServerApp.default_url={dashboard_url}",
+        # Quieter startup: drop the [I …] link/load/serving/302 flood; WARN
+        # still surfaces genuine warnings and errors (fail-loud preserved).
+        "--ServerApp.log_level=WARN",
+        # The kernel-to-browser channel is rate limited for a notebook, where a
+        # runaway print loop can hang the page. The defaults are 1000 messages
+        # and 1 MB per three seconds, and over them the server *stops sending*
+        # -- so a widget silently keeps its old value and the tab looks stuck
+        # with nothing in the log but "IOPub message rate exceeded". A dashboard
+        # is the opposite case: a file browser showing a photograph, a PDF page
+        # or a five-thousand-row grid sends several MB in one message on
+        # purpose, and dropping it is worse than a busy browser. The window
+        # stays, so a genuine runaway is still bounded, an order of magnitude
+        # further out.
+        "--ZMQChannelsWebsocketConnection.iopub_msg_rate_limit=10000",
+        "--ZMQChannelsWebsocketConnection.iopub_data_rate_limit=200000000",
         # Info-disclosure: never surface Python tracebacks to the browser
         # (they leak paths, usernames, code). Off by default; set explicitly.
         "--VoilaConfiguration.show_tracebacks=False",
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)",
+        # What the UI loads from /voila/files/: images, PDFs and the drawing
+        # editor's launch copy (web_security.FILE_ALLOWLIST). The route itself
+        # is put behind authentication by the server_guard extension, which
+        # also serves anything active from user data as a download.
+        "--VoilaConfiguration.file_allowlist=" + _file_allowlist(),
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
-        # Shrink the RCE surface: the dashboard never needs server terminals.
-        "--ServerApp.terminals_enabled=False",
+        # Shrink the RCE surface: no server terminals, unless the agent
+        # terminal was asked for -- and then only through the manager that
+        # runs the one configured program and nothing else
+        # (agent_terminal.py).
+        *(["--ServerApp.terminals_enabled=True",
+            "--TerminalsExtensionApp.terminal_manager_class="
+            "delfin.dashboard.agent_terminal.OneCommandTerminalManager"]
+          if _term_argv else ["--ServerApp.terminals_enabled=False"]),
+        # Ctrl+C stops immediately instead of prompting "Shut down (y/[n])?".
+        "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
+        # MathJax's default entry point is a loader shim, and it never stops
+        # loading: it removes and re-appends its own script tag for as long as
+        # the page is open. Measured on the running dashboard, five idle
+        # seconds: 4.90 s of the main thread busy, against 0.06 s once the
+        # request is answered. That is 98% of one core held by a page doing
+        # nothing, which is what every later click had to queue behind.
+        #
+        # This asks for nothing at all rather than for a working MathJax,
+        # because nothing is what the dashboard has today: window.MathJax is
+        # undefined here and no output is typeset. Pointing at a real bundle
+        # would fix the spin and *start* typesetting where there is a network
+        # -- a $ in a job log becoming mathematics is a change in what the
+        # dashboard shows, and this is a speed fix. The rendered document is
+        # identical either way: 7626 elements, 15 script tags.
+        #
+        # The URL is an empty script on the dashboard's own origin
+        # (web_security.NO_TYPESETTING_ROUTE, installed by server_guard), so
+        # the page CSP's script-src needs no data:. Voila appends
+        # ?config=..., which the route ignores. It goes through
+        # tornado_settings because the dashboard runs Voila as a
+        # jupyter-server extension, where the Voila app's own mathjax_url
+        # trait is never read.
+        "--ServerApp.tornado_settings="
+        + json.dumps({"mathjax_url": NO_TYPESETTING_ROUTE}),
+        # Frontend extensions the browser fetches, parses and evaluates at
+        # every load, for widgets this dashboard never makes.
+        #
+        # nglview: 4.55 MB. The structure viewers are py3Dmol and there is no
+        # `import nglview` in the source; the four mentions of the name are
+        # Python-side package probes for the Settings tab, which this does not
+        # touch. Measured over four interleaved loads each way: blocking 1581
+        # -> 1227 ms, transfer 14.7 -> 10.2 MB.
+        #
+        # jupyterlab-plotly: 192.9 ms of self time in a CPU profile of the
+        # load, 186.4 of it in one function -- the extension evaluating
+        # itself. It is only reachable by a plotly figure rendered as a widget
+        # in this page, and nothing can make one: the agent runs its Python in
+        # subprocesses (sys.executable -c ...), whose output is a file or
+        # text, and Voila has no editable cells. `delfin/tools/` contains no
+        # plotly, FigureWidget or to_html. The Settings probe that reports
+        # whether the plotly *package* is installed is a different question
+        # and still answers it.
+        #
+        # DELFIN_VOILA_EXTENSION_DENYLIST overrides the list, so a machine
+        # that does want either of them back can have it without editing this
+        # file.
+        f"--VoilaConfiguration.extension_denylist={_extension_denylist()!r}",
     ]
+
+    import json
+
+    # DELFIN-branded login page: drop our own login.html (logo inlined) onto
+    # extra_template_paths so jupyter_server renders it instead of its generic
+    # "Password or token" page. Appearance only — the LoginHandler still
+    # validates the token/password server-side, so auth is unchanged.
+    _login_dir = _prepare_login_template_dir()
+    if _login_dir:
+        cmd.append(
+            "--ServerApp.extra_template_paths=" + json.dumps([_login_dir])
+        )
+
+    # The drawing editor, published from where it is kept instead of being
+    # copied into the directory the dashboard was started in. The dashboard
+    # only takes this route when the variable says the route is there, so a
+    # dashboard started any other way still finds its editor.
+    _published_dir = _prepare_published_dir()
+    if _published_dir:
+        cmd.append(
+            "--ServerApp.extra_static_paths=" + json.dumps([_published_dir])
+        )
+        env["DELFIN_KETCHER_URL"] = "/static/ketcher"
 
     # Token authentication — now actually ENFORCED by jupyter_server. Pass via
     # env var, not CLI: /proc/PID/cmdline is world-readable on shared hosts, so
@@ -638,26 +1423,47 @@ def main(argv=None):
             file=sys.stderr,
         )
 
-    if open_browser:
-        cmd.append("--ServerApp.open_browser=True")
-    else:
-        cmd.append("--no-browser")
+    # We ALWAYS open the browser ourselves (below), with the token embedded so
+    # the runner lands directly in the dashboard. Letting jupyter open it too
+    # would race us and could open a token-less URL (-> login page), so disable
+    # jupyter's own auto-open unconditionally.
+    cmd.append("--no-browser")
 
     if args.dark:
         cmd.append("--VoilaConfiguration.theme=dark")
 
     scheme = "https" if (args.certfile and args.keyfile) else "http"
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
-    # Never print the raw token. Terminals, notebooks, service logs, and job
-    # launchers may retain stdout on shared systems.
     print(f"Starting DELFIN Dashboard on {scheme}://{bind_display}:{args.port}")
-    if _token and _token_file is not None:
+
+    # The token is what keeps everyone else out: opening the port WITHOUT it
+    # lands on the login page, so no other local user on this shared host can
+    # get in. On an interactive terminal (YOUR own private session) show the
+    # ready-to-open URL with the token embedded, so you are logged in with a
+    # single click. When stdout is redirected/captured (service logs, job
+    # launchers) isatty() is False and we fall back to the token-file path — the
+    # raw token is never written to a shared log.
+    # Point straight at the dashboard render URL (not "/"). Going through "/"
+    # relies on a redirect to default_url that can DROP the token when the
+    # browser still holds a stale login cookie for a reused port (localhost:PORT
+    # accumulates cookies across sessions, each with a fresh cookie-secret) —
+    # the token then never reaches the target and you land on /login. Hitting
+    # the render URL directly consumes the token at the target handler, which
+    # sets a fresh cookie regardless of any stale one.
+    _show_url = bool(_token) and sys.stdout.isatty()
+    if _show_url and args.ip != "0.0.0.0":
+        print(
+            f"  🔗 Open (you are logged in directly): "
+            f"{scheme}://{bind_display}:{args.port}{dashboard_url}?token={_token}"
+        )
+    elif _token and _token_file is not None:
         print(f"  Append ?token=$(cat {_token_file}) to the URL.")
 
     # Show all reachable URLs so remote users know exactly what to type.
     if args.ip == "0.0.0.0":
         for ip in _get_local_ips():
-            print(f"  -> {scheme}://{ip}:{args.port}")
+            suffix = f"{dashboard_url}?token={_token}" if _show_url else ""
+            print(f"  -> {scheme}://{ip}:{args.port}{suffix}")
 
     print()
     if args.ip == "0.0.0.0":
@@ -676,24 +1482,88 @@ def main(argv=None):
             "\n"
             f"     Then open http://localhost:{args.port} in your browser."
         )
+    # Leave the note that says where this is running, so a later login
+    # on another node can find its way back instead of guessing which
+    # node it was. Best-effort: a dashboard that starts is worth more
+    # than one that can be found again.
+    try:
+        from delfin.agent import where as _where
+
+        if not _announces_where(os.environ):
+            raise RuntimeError("a branch preview leaves the note alone")
+        _where.announce_dashboard(
+            port=args.port, token=_token, url=dashboard_url,
+            resume_path=resume_url_path.split("?")[0] if resume_url_path else "")
+        atexit.register(_where.withdraw_dashboard)
+        _back = _where.reconnect_command(_where.dashboard())
+        if _back:
+            print(f"  ↩ Come back with:  {_back}")
+            print("     From anywhere:     delfin-agent where\n")
+    except Exception:
+        pass
     print("Press Ctrl+C to stop.\n")
 
-    proc = subprocess.Popen(cmd, env=env)
-    if open_browser and _is_vscode_session(env):
+    # Pipe stderr so we can drop the few benign jupyter noise lines that survive
+    # Python's warning filters; stdout stays inherited (banner is untouched).
+    # This process is the lifeline of everything the dashboard starts: the
+    # server dies with it however it dies (parent death signal), kernels and
+    # daemons watch it, and what runs detached is on its ledger.
+    from delfin.agent import lifeline as _lifeline
+    env.update(_lifeline.claim_root())
+    # The private runtime directory _kernel_transport_args chose, when the
+    # default one was too long for a socket or not private: env was copied
+    # from os.environ before the choice was made.
+    if os.environ.get("JUPYTER_RUNTIME_DIR"):
+        env["JUPYTER_RUNTIME_DIR"] = os.environ["JUPYTER_RUNTIME_DIR"]
+    proc = subprocess.Popen(
+        cmd, env=env, stderr=subprocess.PIPE,
+        preexec_fn=_lifeline.parent_death_signal if os.name == "posix" else None,
+    )
+    _previous_signals = _install_stop_signals()
+    stderr_stream = getattr(proc, "stderr", None)
+    stderr_thread = None
+    if stderr_stream is not None:
+        stderr_thread = threading.Thread(
+            target=_forward_filtered_stderr, args=(stderr_stream,), daemon=True
+        )
+        stderr_thread.start()
+    # Auto-open straight INTO the dashboard: open the render URL with the token
+    # embedded (not bare "/", which would land on the login page). Only the
+    # runner gets this URL; anyone else opening the port still hits the login.
+    if open_browser and _token:
         browser_host = "localhost" if args.ip in {"127.0.0.1", "0.0.0.0"} else args.ip
+        direct_url = (
+            f"{scheme}://{browser_host}:{args.port}{dashboard_url}?token={_token}"
+        )
         if _wait_for_port("127.0.0.1", args.port):
-            _open_browser_url(f"http://{browser_host}:{args.port}", env)
+            _open_browser_url(direct_url, env)
     try:
-        sys.exit(proc.wait())
+        rc = proc.wait()
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=2)
+        _end_agent_processes()
+        sys.exit(rc)
     except KeyboardInterrupt:
-        print("\nStopping...")
+        # Ctrl+C, SIGTERM or the terminal closing: the end of everything,
+        # kept sessions included. A second Ctrl+C must not cut it short.
+        try:
+            import signal as _signal
+            _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
+        except Exception:
+            pass
+        print("\nStopping the dashboard and everything it started...")
         proc.terminate()
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=2)
+        _end_agent_processes()
         print("Stopped.")
+    finally:
+        _restore_signals(_previous_signals)
 
 
 if __name__ == "__main__":

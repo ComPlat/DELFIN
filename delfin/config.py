@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from delfin.common.control_validator import validate_control_config
+from delfin.common.tddft_settings import maxdim_hint
 from delfin.occupier_sequences import remove_existing_sequence_blocks
 from delfin.define import TEMPLATE as CONTROL_TEMPLATE
 
@@ -14,14 +15,21 @@ logger = get_logger(__name__)
 
 
 _SEQUENCE_BLOCK_HEADER = re.compile(r"^\s*([+\-0-9,\s]+)=\[\s*$")
-_OVERRIDE_KEY_PREFIX = re.compile(r"^(keyword|additions?)\s*:", re.IGNORECASE)
-_OVERRIDE_KEY_PATTERN = re.compile(r"^(keyword|additions?)\s*:\s*([A-Za-z0-9_.-]+)$", re.IGNORECASE)
 _TEMPLATE_DEFAULTS_CACHE: Optional[Dict[str, Any]] = None
 _TEMPLATE_REQUIRED_KEYS: Set[str] = set()
 _OPTION_PLACEHOLDER_DEFAULTS: Dict[str, Any] = {
     "stability_constant_mode": "auto",
     "thdy_smiles_converter": "NORMAL",
     "thdy_preopt": "xtb",
+    # Left as the shipped "[GOAT|CREST]" this means no global optimiser at all,
+    # which is what the two keys it replaces (XTB_GOAT=no, CREST=no) used to say.
+    "global_optimizer": "",
+    # The ESD lists are opt-in: shipped bracketed so the template shows the
+    # shape, but an untouched template must not switch ESD on.
+    "states": "",
+    "ISCs": "",
+    "ICs": "",
+    "emission_rates": "",
 }
 _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "charge": 0,
@@ -32,42 +40,36 @@ _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "ESD_T1_opt": "uks",
 }
 _PLACEHOLDER_MESSAGES: Dict[str, str] = {
+    # Say what goes in, not only that something has to. A message that names
+    # the accepted values answers the question on the spot; one that says
+    # "replace this" sends the reader looking for a manual.
+    # One line each, and no semicolons: the errors are joined with "; " for
+    # display, so a semicolon inside a message splits it into two entries that
+    # each read as half a sentence.
+    "charge": (
+        "Placeholder [CHARGE] must be replaced with the total charge as a whole "
+        "number, e.g. 0, -1, 2 — the charge before any redox step"
+    ),
+    "solvent": (
+        "Placeholder [SOLVENT] must be replaced with a solvent name, e.g. water, "
+        "acetonitrile, DMF, DMSO, THF, toluene — any solvent ORCA knows for "
+        "CPCM/SMD"
+    ),
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
-    "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
+    "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE",
     "stability_constant_mode": "Placeholder [STABILITY_CONSTANT_MODE] must be set to one of: auto, reaction",
-    "thdy_smiles_converter": "Placeholder [THDY_SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
+    "thdy_smiles_converter": "Placeholder [THDY_SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE",
     "thdy_preopt": "Placeholder [THDY_PREOPT] must be set to one of: none, xtb, crest, goat",
     "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
     "ESD_T1_opt": "Placeholder [ESD_T1_OPT] must be set to one of: uks, tddft",
 }
-_KNOWN_ORCA_OVERRIDE_BASENAMES: Set[str] = {
-    "basename",
-    "xtb",
-    "xtb_goat",
-    "xtb_solvator",
-    "xtb2",
-    "xtb2_goat",
-    "initial",
-    "ox_step_1",
-    "ox_step_2",
-    "ox_step_3",
-    "red_step_1",
-    "red_step_2",
-    "red_step_3",
-    "initial_occupier",
-    "ox_step_1_occupier",
-    "ox_step_2_occupier",
-    "ox_step_3_occupier",
-    "red_step_1_occupier",
-    "red_step_2_occupier",
-    "red_step_3_occupier",
-    "s0",
-    "s0_tddft",
-    "s1",
-    "t1",
-    "s1_tddft",
-    "t1_tddft",
-    "genolate",
+_MISSING_KEY_MESSAGES: Dict[str, str] = {
+    # smiles_converter is only demanded when the run actually builds a
+    # structure from a SMILES, so say that rather than naming a bare key.
+    "smiles_converter": (
+        "This run builds its structure from a SMILES, so smiles_converter must "
+        "be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE"
+    ),
 }
 _CONTROL_KEY_ALIASES: Dict[str, str] = {
     "speciesdelta": "co2_species_delta",
@@ -89,6 +91,27 @@ _CONTROL_KEY_ALIASES: Dict[str, str] = {
     "thdypreopt": "thdy_preopt",
     "scsmilesconverter": "thdy_smiles_converter",
     "scpreopt": "thdy_preopt",
+    # XTB_preOPT is the name the CONTROL file shows; XTB_OPT is what the
+    # workflow code has always called it, so the new spelling maps onto the old.
+    "xtbpreopt": "XTB_OPT",
+    # TD-DFT has one spelling per setting.  TDDFT_TDDFT_maxiter is what the
+    # template shipped for years and no job ever read; the ESD_ names are
+    # older than the TDDFT section.  The canonical names are listed too, so
+    # that tddft_nroots and TDDFT_NROOTS mean TDDFT_nroots instead of nothing.
+    "tddftnroots": "TDDFT_nroots",
+    "tddftmaxdim": "TDDFT_maxdim",
+    "tddftmaxiter": "TDDFT_maxiter",
+    "tddfttda": "TDDFT_TDA",
+    "tddftfollowiroot": "TDDFT_followiroot",
+    "tddftsoc": "TDDFT_SOC",
+    "tddftadditions": "TDDFT_additions",
+    "tddfttddftmaxiter": "TDDFT_maxiter",
+    "esdtddftmaxiter": "TDDFT_maxiter",
+    "esdnroots": "TDDFT_nroots",
+    "esdmaxdim": "TDDFT_maxdim",
+    "esdtda": "TDDFT_TDA",
+    "esdfollowiroot": "TDDFT_followiroot",
+    "esdsoc": "TDDFT_SOC",
 }
 _COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta"}
 _STRING_ONLY_KEYS: Set[str] = {"smiles"}
@@ -99,21 +122,6 @@ def _is_placeholder_value(value: Any) -> bool:
         return False
     stripped = value.strip()
     return bool(stripped.startswith("[") and stripped.endswith("]") and len(stripped) > 2)
-
-
-def _is_override_value_supported(value: Any) -> bool:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return True
-    if isinstance(value, (list, tuple)):
-        return all(_is_override_value_supported(item) for item in value)
-    return False
-
-
-def _normalize_override_basename(value: str) -> str:
-    name = str(value or "").strip().strip('"').strip("'")
-    if name.lower().endswith(".inp"):
-        name = name[:-4]
-    return name.lower()
 
 
 def _normalize_control_key_for_alias_lookup(raw_key: str) -> str:
@@ -134,38 +142,21 @@ def _strip_wrapping_quotes(value: str) -> str:
     return value
 
 
-def _validate_orca_override_entries(config: Dict[str, Any]) -> List[str]:
-    """Validate free-form ORCA override entries like additions:<basename>=..."""
-    errors: List[str] = []
+def _validate_orca_override_entries(control_text: str) -> List[str]:
+    """Errors in the keyword:/additions: entries, read as the run reads them."""
+    from delfin.common.orca_overrides import findings
 
-    for raw_key, raw_value in config.items():
-        key = str(raw_key).strip()
-        if not key or not _OVERRIDE_KEY_PREFIX.match(key):
-            continue
+    return findings(control_text)[0]
 
-        match = _OVERRIDE_KEY_PATTERN.match(key)
-        if not match:
-            errors.append(
-                f"Invalid ORCA override key: {key!r} "
-                "(expected additions:<basename>=[] or addition:/keyword: legacy syntax)."
-            )
-            continue
 
-        basename = _normalize_override_basename(match.group(2))
-        if basename not in _KNOWN_ORCA_OVERRIDE_BASENAMES:
-            errors.append(
-                f"Unknown ORCA override basename: {match.group(2)!r}. "
-                "Use an existing DELFIN basename (e.g. initial, ox_step_1, red_step_1, S0, ...)."
-            )
-            continue
+def get_orca_override_hints(control_text: str) -> List[str]:
+    """Non-blocking notes on the keyword:/additions: entries of a CONTROL text."""
+    from delfin.common.orca_overrides import findings
 
-        if not _is_override_value_supported(raw_value):
-            errors.append(
-                f"Invalid ORCA override value for {key!r}: expected string/list syntax "
-                "(e.g. additions:basename=[...])."
-            )
-
-    return errors
+    try:
+        return findings(control_text)[1]
+    except Exception:
+        return []
 
 
 def _collect_literal_list(lines: List[str], start_idx: int, initial_value: str) -> Tuple[List[Any], int]:
@@ -311,24 +302,138 @@ def _load_template_defaults() -> Dict[str, Any]:
     return deepcopy(_TEMPLATE_DEFAULTS_CACHE)
 
 
-def _apply_guppy_legacy(config: Dict[str, Any]) -> None:
-    """Translate legacy ``GUPPY=yes`` to ``smiles_converter=GUPPY``.
+_GLOBAL_OPTIMIZER_CHOICES: Set[str] = {"GOAT", "CREST"}
+_GLOBAL_OPTIMIZER_OFF: Set[str] = {"NONE", "NO", "OFF", "FALSE", "0"}
 
-    Old CONTROL files use ``GUPPY=yes`` instead of the newer
-    ``smiles_converter=GUPPY`` key.  When ``GUPPY`` is *yes* and
-    ``smiles_converter`` is absent or still a template placeholder,
-    inject the correct value so that the required-key check passes.
+
+def _is_yes_token(value: Any) -> bool:
+    return str(value).strip().lower() in {"yes", "true", "1", "on"}
+
+
+def _normalize_global_optimizer(value: Any) -> str:
+    """Return ``GOAT``, ``CREST`` or ``""`` for a ``global_optimizer`` value.
+
+    Anything unrecognised comes back as ``""``: parsing stays lenient and the
+    validator is the one that tells the user what belongs there.
+    """
+    text = str(value or "").strip()
+    if not text or _is_placeholder_value(text):
+        return ""
+    upper = text.upper()
+    if upper in _GLOBAL_OPTIMIZER_OFF:
+        return ""
+    return upper if upper in _GLOBAL_OPTIMIZER_CHOICES else ""
+
+
+def _apply_global_optimizer_compat(config: Dict[str, Any]) -> None:
+    """Keep ``global_optimizer`` and the older ``XTB_GOAT``/``CREST`` pair in step.
+
+    A CONTROL file now names one global optimiser instead of carrying a yes/no
+    switch per program. The workflow code still reads ``XTB_GOAT`` and ``CREST``
+    — and reads them by bare index — so after a parse both spellings are always
+    present, whichever one the file was written with.
+    """
+    chosen = _normalize_global_optimizer(config.get("global_optimizer"))
+    legacy_goat = _is_yes_token(config.get("XTB_GOAT"))
+    legacy_crest = _is_yes_token(config.get("CREST"))
+
+    if chosen:
+        conflicting = "CREST" if chosen == "GOAT" else "XTB_GOAT"
+        if (chosen == "GOAT" and legacy_crest) or (chosen == "CREST" and legacy_goat):
+            logger.warning(
+                "CONTROL sets global_optimizer=%s while the older %s=yes is also "
+                "present; global_optimizer wins.", chosen, conflicting,
+            )
+        config["XTB_GOAT"] = "yes" if chosen == "GOAT" else "no"
+        config["CREST"] = "yes" if chosen == "CREST" else "no"
+    else:
+        # No choice made (absent, emptied, or the untouched "[GOAT|CREST]"):
+        # whatever the old keys say stands, and both are guaranteed to exist
+        # because the workflow indexes them without a default.
+        config.setdefault("XTB_GOAT", "no")
+        config.setdefault("CREST", "no")
+        if "global_optimizer" not in config:
+            config["global_optimizer"] = (
+                "GOAT" if legacy_goat else "CREST" if legacy_crest else ""
+            )
+
+    # XTB_preOPT is resolved to XTB_OPT by the alias table; guarantee it exists
+    # for the same bare-index reason.
+    config.setdefault("XTB_OPT", "no")
+
+
+def _apply_guppy_legacy(config: Dict[str, Any]) -> None:
+    """Translate legacy ``GUPPY=yes`` to ``smiles_converter=MANTA``.
+
+    Two generations of CONTROL file said the same thing three ways: the oldest
+    with a bare ``GUPPY=yes``, the next with ``smiles_converter=GUPPY``, and the
+    current one with ``smiles_converter=MANTA``.  They all select the same
+    builder -- since MANTA v1 the GUPPY path has called MANTA's own entry point
+    and added an energy ranking on top -- so all three are read as MANTA.
+
+    This bridge is load-bearing, not decoration: 62 of the 126 archived GUPPY
+    runs are configured through the bare ``GUPPY=yes`` and would stop parsing
+    without it.
     """
     guppy_val = str(config.get("GUPPY", "no")).strip().lower()
     if guppy_val != "yes":
         return
     sc = config.get("smiles_converter", "")
     if not sc or _is_placeholder_value(sc):
-        config["smiles_converter"] = "GUPPY"
+        config["smiles_converter"] = "MANTA"
+
+
+def _control_names_a_smiles(config: Dict[str, Any]) -> bool:
+    """The CONTROL file itself carries a SMILES that will have to be built."""
+    value = config.get("SMILES", "")
+    return bool(str(value or "").strip()) and not _is_placeholder_value(value)
+
+
+def _input_file_holds_a_smiles(config: Dict[str, Any], control_path: Optional[str]) -> bool:
+    """Whether the geometry source named by the CONTROL file is a SMILES.
+
+    The SMILES module is imported lazily: it pulls in openbabel and costs about
+    0.4 s, and the question only has to be answered when smiles_converter is
+    missing in the first place.
+    """
+    if not control_path:
+        return False
+    try:
+        entry = str(config.get("input_file") or "input.txt").strip() or "input.txt"
+        source = Path(control_path).parent / entry
+        if not source.is_file():
+            return False
+        content = source.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    if not content.strip():
+        return False
+    try:
+        from delfin.smiles_converter import is_smiles_string
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(is_smiles_string(content))
+
+
+def _run_converts_smiles(config: Dict[str, Any], control_path: Optional[str] = None) -> bool:
+    """True when this run turns a SMILES into coordinates.
+
+    Only then does the converter have to be chosen. A run whose geometry comes
+    from an XYZ block has nothing to convert, and demanding a converter for it
+    made every CONTROL file written for such a run unusable.
+    """
+    return _control_names_a_smiles(config) or _input_file_holds_a_smiles(config, control_path)
 
 
 def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[str],
-                                    esd_enabled: bool = True) -> List[str]:
+                                    esd_enabled: bool = True,
+                                    converts_smiles: Any = None) -> List[str]:
+    """Required keys the file does not answer.
+
+    `converts_smiles` may be a bool or a zero-argument callable, and is
+    consulted only when smiles_converter would otherwise be reported — the
+    answer can cost an expensive import.
+    """
     required_missing = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
     placeholder_required = _TEMPLATE_REQUIRED_KEYS & placeholder_keys
     missing = sorted(required_missing | placeholder_required)
@@ -336,12 +441,19 @@ def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[st
     missing = [k for k in missing if k != "ESD_T1_opt"]
     if not esd_enabled:
         missing = [k for k in missing if k != "ESD_modus"]
+    if "smiles_converter" in missing and converts_smiles is not None:
+        answer = converts_smiles() if callable(converts_smiles) else converts_smiles
+        if not answer:
+            missing = [k for k in missing if k != "smiles_converter"]
     return missing
 
 
 def _raise_if_missing_required(user_keys: Set[str], placeholder_keys: Set[str],
-                                esd_enabled: bool = True) -> None:
-    missing_all = _collect_missing_required_keys(user_keys, placeholder_keys, esd_enabled=esd_enabled)
+                                esd_enabled: bool = True,
+                                converts_smiles: Any = None) -> None:
+    missing_all = _collect_missing_required_keys(
+        user_keys, placeholder_keys, esd_enabled=esd_enabled, converts_smiles=converts_smiles,
+    )
     if missing_all:
         joined = ", ".join(missing_all)
         raise ValueError(
@@ -450,12 +562,27 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
 
     if sequence_blocks:
         config["_occupier_sequence_blocks"] = sequence_blocks
+    _apply_global_optimizer_compat(config)
     return config
 
 
 def parse_control_text(control_text: str, *, keep_steps_literal: bool = True) -> Dict[str, Any]:
     """Parse CONTROL.txt content from a string without full validation."""
     return _parse_control_file("<in-memory>", keep_steps_literal=keep_steps_literal, content=control_text)
+
+
+def set_control_value(control_text: str, key: str, value: Any) -> str:
+    """Return `control_text` with `key` set to `value`, appending it if absent.
+
+    The one place that rewrites a CONTROL line in text form, so the dashboard
+    editor and the derived templates cannot disagree about what counts as a
+    key line.
+    """
+    pattern = rf"(?m)^{re.escape(str(key))}\s*=.*$"
+    replacement = f"{key}={value}"
+    if re.search(pattern, control_text):
+        return re.sub(pattern, lambda _m: replacement, control_text)
+    return control_text.rstrip() + f"\n{replacement}\n"
 
 
 def read_control_file(file_path: str) -> Dict[str, Any]:
@@ -477,18 +604,22 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     text = sanitized or Path(file_path).read_text(encoding="utf-8")
     config = _parse_control_file(file_path, keep_steps_literal=True, content=text)
     _apply_guppy_legacy(config)
-    override_errors = _validate_orca_override_entries(config)
+    override_errors = _validate_orca_override_entries(text)
     if override_errors:
         raise ValueError("; ".join(override_errors))
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
     esd_enabled = str(config.get("ESD_modul", "no")).strip().lower() == "yes"
-    _raise_if_missing_required(user_keys, placeholder_keys, esd_enabled=esd_enabled)
+    _raise_if_missing_required(
+        user_keys, placeholder_keys, esd_enabled=esd_enabled,
+        converts_smiles=lambda: _run_converts_smiles(config, file_path),
+    )
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
         user_keys.add("_occupier_sequence_blocks")
+    _log_occupier_sequence_problems(config)
 
     merged = dict(validated)
     for key, value in defaults.items():
@@ -498,11 +629,17 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     return merged
 
 
-def validate_control_text(control_text: str) -> List[str]:
+def validate_control_text(control_text: str, *, converts_smiles: Optional[bool] = None) -> List[str]:
     """Validate CONTROL.txt content and return a list of errors (empty if valid).
 
     Collects ALL validation errors instead of stopping at the first one.
     This includes placeholder errors AND field validation errors.
+
+    `converts_smiles` says whether this run will build a structure from a
+    SMILES, which decides whether smiles_converter has to be chosen. There is
+    no file to look at here, so a caller that knows — the Submit tab knows what
+    is in its input box — should say; otherwise only the CONTROL file's own
+    SMILES key can answer.
     """
     all_errors: List[str] = []
 
@@ -517,14 +654,20 @@ def validate_control_text(control_text: str) -> List[str]:
         return [f"Failed to parse CONTROL content: {exc}"]
 
     _apply_guppy_legacy(config)
-    all_errors.extend(_validate_orca_override_entries(config))
+    all_errors.extend(_validate_orca_override_entries(control_text))
 
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
 
     # Collect placeholder errors (don't raise, just collect)
     esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
-    missing_required = _collect_missing_required_keys(user_keys, placeholder_keys)
+    missing_required = _collect_missing_required_keys(
+        user_keys, placeholder_keys,
+        converts_smiles=(
+            converts_smiles if converts_smiles is not None
+            else lambda: _run_converts_smiles(config)
+        ),
+    )
     for key in missing_required:
         # ESD settings only matter when ESD_modul=yes
         if key in {'ESD_modus', 'ESD_T1_opt'} and not esd_enabled:
@@ -535,7 +678,7 @@ def validate_control_text(control_text: str) -> List[str]:
             )
             all_errors.append(msg)
         else:
-            all_errors.append(f"Missing required key: {key}")
+            all_errors.append(_MISSING_KEY_MESSAGES.get(key, f"Missing required key: {key}"))
 
     # Replace placeholders with valid dummy values for further validation
     config_for_validation = dict(config)
@@ -557,17 +700,92 @@ def validate_control_text(control_text: str) -> List[str]:
 
 
 def _esd_parse_transitions(val: Any) -> List[str]:
-    """Extract individual transition strings from an ESD field value (ISCs/ICs)."""
-    if not val or val == [] or _is_placeholder_value(val):
+    """The entries of an ESD list, read as the ESD module reads them (brackets or not)."""
+    from delfin.common.control_validator import esd_list_items
+
+    return esd_list_items(val)
+
+
+def occupier_sequence_problems(config: Dict[str, Any]) -> List[str]:
+    """What in the OCCUPIER sequences ORCA cannot run or runs as another spin state.
+
+    ``BrokenSym NA,NB`` converges the high-spin state with NA+NB unpaired
+    electrons and flips it to the broken-symmetry state of multiplicity
+    |NA-NB|+1 (ORCA 6.1.1 manual, 5.27), so NA+NB must have the parity of the
+    electron count, and site A carries the larger number.  An older sequence
+    profile had BrokenSym 3,2 and 5,2 in the even sequence and 4,2 and 6,2 in
+    the odd one: 146 archived OCCUPIER runs stopped on "multiplicity (4) is
+    even and number of electrons (242) is even -> impossible".
+    """
+    sources = []
+    for block in config.get("_occupier_sequence_blocks") or []:
+        if isinstance(block, dict):
+            label = f"sequence for charges {','.join(str(d) for d in block.get('deltas') or [])}"
+            sources.append((label, "even", block.get("even_seq")))
+            sources.append((label, "odd", block.get("odd_seq")))
+    sources.append(("sequence", "even", config.get("even_seq")))
+    sources.append(("sequence", "odd", config.get("odd_seq")))
+
+    problems: List[str] = []
+    for label, parity, entries in sources:
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            where = f"{label}, {parity}_seq index {entry.get('index', '?')}"
+            try:
+                m = int(entry.get("m"))
+            except (TypeError, ValueError):
+                continue
+            if (m % 2 == 1) != (parity == "even"):
+                problems.append(f"{where}: multiplicity {m} is impossible with an {parity} number of electrons")
+                continue
+            bs = str(entry.get("BS") or "").strip()
+            if not bs:
+                continue
+            try:
+                na, nb = (int(x) for x in bs.split(","))
+            except ValueError:
+                problems.append(f"{where}: BS {bs!r} is not two numbers NA,NB")
+                continue
+            if ((na + nb) % 2 == 0) != (parity == "even"):
+                problems.append(
+                    f"{where}: BrokenSym {na},{nb} has {na + nb} unpaired electrons, impossible with an "
+                    f"{parity} number of electrons; ORCA stops this run ('multiplicity ... -> impossible')"
+                )
+            elif abs(na - nb) + 1 != m:
+                problems.append(
+                    f"{where}: BrokenSym {na},{nb} is a multiplicity-{abs(na - nb) + 1} state, "
+                    f"listed as m={m}"
+                )
+            if na < nb:
+                problems.append(f"{where}: BrokenSym {na},{nb} -- ORCA wants site A to carry the larger number")
+    return list(dict.fromkeys(problems))
+
+
+_SEQUENCE_NOTES_GIVEN: Set[str] = set()
+
+
+def _log_occupier_sequence_problems(config: Dict[str, Any]) -> None:
+    """Say once per run what get_occupier_hints says on the Submit tab (a CLI run has no Submit tab)."""
+    if str(config.get("method", "")).strip().lower() != "occupier":
+        return
+    for problem in occupier_sequence_problems(config):
+        if problem not in _SEQUENCE_NOTES_GIVEN:
+            _SEQUENCE_NOTES_GIVEN.add(problem)
+            logger.warning("OCCUPIER %s", problem)
+
+
+def get_occupier_hints(control_text: str) -> List[str]:
+    """Non-blocking notes on the OCCUPIER sequences of a CONTROL text (method=OCCUPIER only)."""
+    try:
+        config = parse_control_text(control_text)
+    except Exception:
         return []
-    if isinstance(val, list):
-        return [str(v).strip() for v in val if str(v).strip()]
-    if isinstance(val, str):
-        s = val.strip()
-        if s.startswith('[') and s.endswith(']'):
-            s = s[1:-1]
-        return [t.strip() for t in s.split(',') if t.strip()]
-    return []
+    if str(config.get("method", "")).strip().lower() != "occupier":
+        return []
+    return occupier_sequence_problems(config)
 
 
 def get_esd_hints(control_text: str) -> List[str]:
@@ -591,16 +809,28 @@ def get_esd_hints(control_text: str) -> List[str]:
     esd_fields = {
         'states': '[S1,T1,S2,T2]',
         'ISCs': '[S1>T1,T1>S1]',
-        'ICs': '[S2>S1]',
+        'ICs': '[S1>S0]',
         'emission_rates': '[f,p]',
     }
     for field, example in esd_fields.items():
         val = config.get(field)
-        if val is None or _is_placeholder_value(val):
+        if val is None:
             hints.append(
                 f"ESD_modul=yes: {field} not set — "
                 f"define if needed (e.g. {field}={example[1:-1]}), or clear with {field}= or {field}=[]"
             )
+
+    # Say what will be computed.  The template's example lists are read like
+    # any others -- brackets included -- so a file that only switched ESD on
+    # computes them.
+    planned = []
+    for field, label in (('states', 'states'), ('ISCs', 'ISC'), ('ICs', 'IC'), ('emission_rates', 'emission')):
+        items = _esd_parse_transitions(config.get(field))
+        if field == 'states':
+            items = ['S0'] + [i.upper() for i in items if i.upper() != 'S0']
+        if items:
+            planned.append(f"{label} {','.join(items)}")
+    hints.append("ESD_modul=yes computes: " + "; ".join(planned))
 
     states_upper = {s.upper() for s in _esd_parse_transitions(config.get('states'))}
     if "T1" in states_upper:
@@ -635,6 +865,22 @@ def get_esd_hints(control_text: str) -> List[str]:
                     f"did you mean ISCs={trans}? ICs connect same spin states (S→S, T→T)"
                 )
 
+    # An IC ORCA cannot compute is skipped at run time; say so before it is.
+    # Read the way the ESD module reads it: brackets or not.
+    from delfin.common.control_validator import unsupported_ic_reason
+    raw_ics = config.get('ICs')
+    ic_items = raw_ics if isinstance(raw_ics, list) else str(raw_ics or '').strip().strip('[]').split(',')
+    for trans in [str(t).strip() for t in ic_items if str(t).strip()]:
+        reason = unsupported_ic_reason(trans)
+        if reason and 'ISC' not in reason and 'not a transition' not in reason:
+            hints.append(f"ICs={trans!r}: {reason}; it will be skipped")
+
+    # An explicit MaxDim outside ORCA's range usually means the old reading
+    # of it as an absolute size (the template shipped 30).
+    maxdim_note = maxdim_hint(config)
+    if maxdim_note:
+        hints.append(maxdim_note)
+
     return hints
 
 
@@ -663,18 +909,22 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     text = sanitized or Path(path).read_text(encoding="utf-8")
     config = _parse_control_file(path, keep_steps_literal=False, content=text)
     _apply_guppy_legacy(config)
-    override_errors = _validate_orca_override_entries(config)
+    override_errors = _validate_orca_override_entries(text)
     if override_errors:
         raise ValueError("; ".join(override_errors))
     user_keys = set(config.keys())
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
     esd_enabled = str(config.get("ESD_modul", "no")).strip().lower() == "yes"
-    _raise_if_missing_required(user_keys, placeholder_keys, esd_enabled=esd_enabled)
+    _raise_if_missing_required(
+        user_keys, placeholder_keys, esd_enabled=esd_enabled,
+        converts_smiles=lambda: _run_converts_smiles(config, path),
+    )
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
         user_keys.add("_occupier_sequence_blocks")
+    _log_occupier_sequence_problems(config)
 
     merged = dict(validated)
     for key, value in defaults.items():

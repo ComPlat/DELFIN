@@ -26,11 +26,11 @@ candidates to read.
 
 from __future__ import annotations
 
+import json
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 _MAX_MATCHES = 50
 _MAX_FILES_GREP = 5000
@@ -72,10 +72,26 @@ def _read_line(path: Path, lineno: int) -> str:
     return ""
 
 
+def _stays_in(workspace: Path, path: Path) -> bool:
+    """Whether ``path``, with every symlink resolved, lies in ``workspace``
+    (already resolved). A link is a second path whose target the read gate
+    never saw; ``rglob`` yields a linked file (it only refuses to descend
+    into a linked folder), so a link to a file elsewhere would be read and
+    its matching line returned with no dialog. Fails closed."""
+    try:
+        path.resolve(strict=True).relative_to(workspace)
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _files_in(workspace: Path, *, ext: tuple[str, ...] | None = None) -> list[Path]:
     out: list[Path] = []
     for path in workspace.rglob("*"):
         if not path.is_file():
+            continue
+        # One lstat per file; only a link pays the resolve.
+        if path.is_symlink() and not _stays_in(workspace, path):
             continue
         if ext is not None and path.suffix not in ext:
             continue
@@ -102,7 +118,7 @@ def _jedi_call(
     targets: list[Path]
     if file_hint:
         target = (workspace / file_hint).resolve()
-        if target.is_file():
+        if target.is_file() and _stays_in(workspace, target):
             targets = [target]
         else:
             return []
@@ -146,6 +162,10 @@ def _jedi_call(
                 try:
                     rpath.relative_to(workspace)
                 except ValueError:
+                    continue
+                # jedi follows imports by name and may report a linked
+                # module under its link path; the preview below reads it.
+                if not _stays_in(workspace, rpath):
                     continue
                 key = (str(rpath), int(r.line))
                 if key in seen:
@@ -225,17 +245,46 @@ def _grep_references(
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for ln_no, line in enumerate(text.splitlines(), start=1):
+        for ln_no, line, where in _searchable_lines(f, text):
             if sym_re.search(line):
                 matches.append(NavMatch(
                     path=str(f.relative_to(workspace)),
                     line=ln_no, col=line.find(symbol),
                     kind="reference",
-                    preview=line.strip()[:200],
+                    preview=(where + line.strip())[:200],
                 ))
                 if len(matches) >= _MAX_MATCHES:
                     return matches
     return matches
+
+
+def _searchable_lines(f: Path, text: str):
+    """(line number, line, where-prefix) triples worth reporting.
+
+    A notebook on disk is one JSON line, so a plain grep answered
+    "run.ipynb line 1, col 67" with a preview of raw JSON -- true and
+    useless. Its cells' sources are what a person reads, so those are
+    what is searched: the line number is the line within the cell and
+    the preview says which cell.
+    """
+    if f.suffix.lower() == ".ipynb":
+        try:
+            nb = json.loads(text)
+            cells = nb.get("cells") or []
+        except (ValueError, AttributeError):
+            cells = None
+        if cells is not None:
+            for idx, cell in enumerate(cells):
+                src = cell.get("source") if isinstance(cell, dict) else None
+                if isinstance(src, list):
+                    src = "".join(str(part) for part in src)
+                if not isinstance(src, str):
+                    continue
+                for ln_no, line in enumerate(src.splitlines(), start=1):
+                    yield ln_no, line, f"cell {idx}: "
+            return
+    for ln_no, line in enumerate(text.splitlines(), start=1):
+        yield ln_no, line, ""
 
 
 def find_definition(

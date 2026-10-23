@@ -1,0 +1,33 @@
+! PBE0 UKS def2-SVP D4 RIJCOSX def2/J CPCM(water) OPT numFREQ MOREAD
+%base "T1"
+%moinp "S0.gbw"
+%pal nprocs 8 end
+%maxcore 2000
+
+* xyz 0 3
+C 0.000000 0.000000 -0.530000
+O 0.000000 0.000000 0.680000
+H 0.000000 0.940000 -1.120000
+H 0.000000 -0.940000 -1.120000
+*
+
+#==========================================
+# TDDFT Check: Transitions from T1
+#==========================================
+
+$new_job
+! PBE0 RKS def2-SVP D4 RIJCOSX def2/J CPCM(water)
+%base "T1_TDDFT"
+%pal nprocs 8 end
+%maxcore 2000
+
+%tddft
+  nroots 15
+  maxdim 10
+  tda true
+  maxiter 500
+  triplets true
+  dosoc false
+end
+
+* xyzfile 0 1 T1.xyz

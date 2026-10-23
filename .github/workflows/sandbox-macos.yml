@@ -1,0 +1,64 @@
+name: Sandbox (macOS)
+
+# The command isolation on macOS is Seatbelt, which no Linux runner can
+# execute. This drives it where it runs: on changes to the sandbox and on
+# demand. Informational beside CI; the tests it runs skip on Linux.
+on:
+  push:
+    branches: [main, "agent/**"]
+    paths:
+      - "delfin/agent/seatbelt.py"
+      - "delfin/agent/egress_proxy.py"
+      - "delfin/agent/process_guard.py"
+      - "delfin/agent/contained_run.py"
+      # The tests drive _bash_isolation_argv, _seatbelt_argv and
+      # _in_process_cage, and all three live here. Leaving it out meant
+      # this workflow watched a surface it could not see changes to: 81
+      # commits passed between two runs, one of them changing the posture
+      # an attended session gets, and the break surfaced only when an
+      # unrelated commit happened to touch a file on this list.
+      - "delfin/agent/api_client.py"
+      - "tests/test_the_sandbox_holds_on_macos.py"
+      - "tests/test_a_command_ends_with_everything_it_started.py"
+      - ".github/workflows/sandbox-macos.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sandbox-macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  seatbelt:
+    name: seatbelt (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the package without its chemistry stack
+        # The sandbox needs none of the chemistry stack: the agent modules
+        # these tests import are standard library only. (Until pymol became
+        # the optional [pymol] extra, the full set also did not resolve
+        # on macOS: pymol wanted numpy 2, DELFIN numpy 1.)
+        run: |
+          python -m pip install -c .github/ci/constraints-ci.txt --upgrade pip
+          pip install --no-deps -e .
+          pip install -c .github/ci/constraints-ci.txt pytest pytest-timeout
+
+      - name: Seatbelt and containment tests
+        run: >
+          pytest -q -p no:cacheprovider --timeout=300 --timeout-method=signal
+          tests/test_the_sandbox_holds_on_macos.py
+          tests/test_a_command_ends_with_everything_it_started.py

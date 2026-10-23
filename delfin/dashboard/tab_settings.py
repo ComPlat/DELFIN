@@ -5,6 +5,7 @@ import logging
 import os
 import shlex
 import shutil
+import threading
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -19,6 +20,8 @@ from delfin.runtime_setup import (
     discover_orca_installations,
     prepare_bwunicluster_user_setup,
     run_bwunicluster_installer,
+    get_packaged_bwunicluster_install_script,
+    get_repo_bwunicluster_install_script,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     get_user_csp_tools_dir,
@@ -51,7 +54,23 @@ from delfin.user_settings import (
 )
 
 
-def create_tab(ctx, calc_refs=None, archive_refs=None):
+def _subagent_caps_now() -> str:
+    """The subagent caps in force, from the code that enforces them.
+
+    The help text under these fields used to state figures, and read
+    "300 s" after the default had moved twice. The same drift is already
+    documented in api_client._subagent_caps_phrase, which generates the
+    sentence the model reads at decision time -- so this calls that
+    function rather than becoming a third copy of the numbers.
+    """
+    try:
+        from delfin.agent.api_client import _subagent_caps_phrase
+        return _subagent_caps_phrase()
+    except Exception:
+        return "see delfin/agent/subagents.py"
+
+
+def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     """Create the dashboard Settings tab."""
     settings_path = get_settings_path()
     status_html = widgets.HTML(value='')
@@ -97,6 +116,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     install_dftbplus_btn = widgets.Button(description='dftb+', button_style='warning', layout=_qm_tool_btn_layout)
     install_stda_btn = widgets.Button(description='xtb4stda', button_style='warning', layout=_qm_tool_btn_layout)
     install_std2_btn = widgets.Button(description='std2', button_style='warning', layout=_qm_tool_btn_layout)
+    # PM6, PM7 and PM6-D3H4 in the viewer are MOPAC. Two megabytes, and it was
+    # installable from everywhere except the page that lists the installs.
+    install_mopac_btn = widgets.Button(description='mopac', button_style='warning', layout=_qm_tool_btn_layout)
+    # g-xTB is its own xtb build. The structure editor offered to install it and
+    # this page, which lists the installs, did not.
+    install_gxtb_btn = widgets.Button(description='g-xtb', button_style='warning', layout=_qm_tool_btn_layout)
     install_micromamba_btn = widgets.Button(
         description='Install micromamba',
         button_style='',
@@ -161,6 +186,26 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         button_style='info',
         layout=widgets.Layout(width='155px', height='28px'),
     )
+    # Whether a tool is installed is not whether it works. Everything that has
+    # gone wrong for users here went wrong after a green banner, so this asks
+    # each tool a question whose answer is known and reports what came back.
+    check_tools_btn = widgets.Button(
+        description='Check tools',
+        icon='stethoscope',
+        button_style='primary',
+        tooltip=('Run each tool on a molecule whose answer is known, and say '
+                 'which ones answered correctly'),
+        layout=widgets.Layout(width='140px', height='28px'),
+    )
+    repair_tools_btn = widgets.Button(
+        description='Repair',
+        icon='wrench',
+        button_style='warning',
+        tooltip='Put right what the check found, one tool at a time',
+        layout=widgets.Layout(width='120px', height='28px'),
+        disabled=True,
+    )
+    tool_health_out = widgets.HTML(value='')
     csp_status_box = widgets.VBox(layout=widgets.Layout(width='100%'))
     refresh_csp_status_btn = widgets.Button(
         description='Refresh CSP status',
@@ -213,20 +258,42 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         layout=widgets.Layout(width='165px', height='28px'),
     )
     setup_bwunicluster_btn = widgets.Button(
-        description='Setup bwUniCluster',
+        description='Setup cluster',
         button_style='success',
         layout=widgets.Layout(width='150px', height='28px'),
     )
     verify_bwunicluster_btn = widgets.Button(
-        description='Verify bwUniCluster',
+        description='Verify install',
         button_style='info',
         layout=widgets.Layout(width='155px', height='28px'),
     )
     full_install_bwunicluster_btn = widgets.Button(
-        description='Full bwUni install',
+        description='Full install',
         button_style='warning',
         layout=widgets.Layout(width='145px', height='28px'),
     )
+    # Every installed tool at once, through delfin.installer -- the same update
+    # and repair that `install.sh --update` / `--repair` run from a shell.
+    update_all_tools_btn = widgets.Button(
+        description='Update all tools',
+        icon='refresh',
+        button_style='info',
+        tooltip='Fetch every installed tool again: QM programs, analysis, ML and AI packages, Ketcher',
+        layout=widgets.Layout(width='150px', height='28px'),
+    )
+    repair_all_tools_btn = widgets.Button(
+        description='Repair all tools',
+        icon='wrench',
+        button_style='warning',
+        tooltip='Check every installed tool and put right what does not work',
+        layout=widgets.Layout(width='150px', height='28px'),
+    )
+    global_tools_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='180px'),
+    )
+    _global_tools_state = {'running': False}
     save_btn = widgets.Button(
         description='Save Settings',
         button_style='primary',
@@ -243,18 +310,70 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     viewer_enabled_toggle = widgets.Checkbox(
         value=True,
-        description='3D-Viewer aktivieren',
+        description='Enable 3D viewer',
         indent=False,
         layout=widgets.Layout(width='220px', height='28px'),
     )
     viewer_quality_dropdown = widgets.Dropdown(
-        options=[('Niedrig (für langsame PCs)', 'low'),
-                 ('Mittel', 'medium'),
-                 ('Hoch (Standard)', 'high')],
+        options=[('Low (older PCs, softer image)', 'low'),
+                 ('Medium (antialiasing)', 'medium'),
+                 ('High (maximum detail)', 'high')],
         value='high',
-        description='Qualität:',
+        description='Quality:',
         style={'description_width': '70px'},
-        layout=widgets.Layout(width='320px', height='28px'),
+        layout=widgets.Layout(width='350px', height='28px'),
+    )
+    viewer_representation_dropdown = widgets.Dropdown(
+        options=[
+            ('Ball-and-stick', 'ball_and_stick'),
+            ('Stick', 'stick'),
+            ('Space-filling spheres', 'sphere'),
+            ('Wireframe', 'line'),
+        ],
+        value='ball_and_stick',
+        description='Model:',
+        style={'description_width': '70px'},
+        layout=widgets.Layout(width='350px', height='28px'),
+    )
+    viewer_atom_scale_slider = widgets.FloatSlider(
+        value=0.28,
+        min=0.05,
+        max=1.50,
+        step=0.01,
+        readout_format='.2f',
+        description='Atom size (× vdW)',
+        style={'description_width': '145px'},
+        continuous_update=False,
+        layout=widgets.Layout(width='480px', height='28px'),
+    )
+    viewer_bond_radius_slider = widgets.FloatSlider(
+        value=0.11,
+        min=0.02,
+        max=0.50,
+        step=0.01,
+        readout_format='.2f',
+        description='Bond radius (Å)',
+        style={'description_width': '145px'},
+        continuous_update=False,
+        layout=widgets.Layout(width='480px', height='28px'),
+    )
+    viewer_multiple_bonds_toggle = widgets.Checkbox(
+        value=True,
+        description='Show multiple bonds (MOL/SDF with bond order only)',
+        indent=False,
+        layout=widgets.Layout(width='520px', height='28px'),
+    )
+    viewer_depth_fog_toggle = widgets.Checkbox(
+        value=True,
+        description='Fade background atoms (depth fog)',
+        indent=False,
+        layout=widgets.Layout(width='440px', height='28px'),
+    )
+    viewer_ambient_occlusion_toggle = widgets.Checkbox(
+        value=False,
+        description='Additional depth shading (ambient occlusion)',
+        indent=False,
+        layout=widgets.Layout(width='440px', height='28px'),
     )
     slurm_mem_headroom_input = widgets.FloatSlider(
         value=0.90,
@@ -276,12 +395,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         placeholder=str(ctx.default_archive_dir),
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+    office_path_input = widgets.Text(
+        placeholder=str(getattr(ctx, 'default_office_dir', '')),
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
     # Bug-report archive: where the 🐞 Bug Report button drops reproducible
     # reports. Empty = per-user fallback (~/.delfin/agent_bugs). Env
     # DELFIN_BUG_ARCHIVE overrides this. Teams point it at a shared dir.
     bug_archive_input = widgets.Text(
         placeholder='local path (empty = ~/.delfin/agent_bugs)',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    # Whether a written report is also copied to <Remote Path>/AGENT_BUGS
+    # (agent.bug_upload, delfin/agent/bug_report.py). A dropdown, not a
+    # text field: three answers, and a typed fourth would be read as ask.
+    bug_upload_input = widgets.Dropdown(
+        options=[
+            ('ask for each report (default)', 'ask'),
+            ('never upload', 'never'),
+            ('always upload, also unattended', 'always'),
+        ],
+        value='ask',
+        description='Bug upload',
+        layout=widgets.Layout(width='340px', height='28px'),
+        style={'description_width': '90px'},
     )
     # Proactive job monitoring (headless daemon). OPT-IN: costs tokens when
     # auto-diagnosis is on, so it must be explicitly enabled here.
@@ -312,9 +449,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     # Combobox still allows free typing for anything newer).
     _JOBMON_MODEL_SUGGESTIONS = {
         '': [],
-        'kit': ['azure.gpt-5-nano', 'azure.gpt-5-mini', 'azure.gpt-5.1',
-                'azure.gpt-5.4', 'azure.gpt-4.1-mini', 'azure.o4-mini',
-                'kit.qwen3.5-397b-A17b', 'kit.gpt-oss-120b'],
+        # As listed by the endpoint on 2026-09-07. The KIT-hosted roster
+        # changed that day; a suggestion for a model that is gone reads as
+        # a recommendation and answers with a 404.
+        'kit': ['kit.glm-5.3-flash', 'kit.glm-5.3', 'kit.deepseek-v4-flash',
+                'kit.mistral-small-4-119b-a8b', 'azure.gpt-5.6-luna',
+                'azure.gpt-5.4', 'azure.gpt-5.1', 'azure.gpt-5-mini',
+                'azure.gpt-5-nano'],
         'claude': ['haiku', 'sonnet', 'opus'],
         'openai': ['gpt-5.4-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
         'ollama': ['qwen2.5-coder:7b', 'qwen2.5-coder:32b',
@@ -393,31 +534,149 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Window',
         layout=widgets.Layout(width='170px', height='28px'),
     )
-    # Subagent per-run limits (agent.subagents.*). Defaults mirror
-    # subagents._MAX_* so the UI shows the real fallbacks.
+    # Action classifier (agent.classifier.*): a model's second opinion on
+    # what the rules allow unseen. Rules decide first; the classifier can only
+    # add friction (never allow what a rule refuses). Default on, scope
+    # "unattended"; the second checkbox writes scope "all".
+    classifier_enabled_toggle = widgets.Checkbox(
+        description='Action classifier enabled (model-based second opinion)',
+        value=True, indent=False,
+    )
+    classifier_broad_toggle = widgets.Checkbox(
+        description=('Also judge auto-allowed commands and auto-accepted '
+                     'edits in every mode (one model round trip per action)'),
+        value=False, indent=False,
+    )
+    classifier_model_input = widgets.Combobox(
+        placeholder='Model (default kit.deepseek-v4-flash)',
+        options=sorted({m for opts in _JOBMON_MODEL_SUGGESTIONS.values()
+                        for m in opts}),
+        value='',
+        ensure_option=False,   # free typing stays allowed
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    classifier_rules_input = widgets.Textarea(
+        placeholder="One per line, e.g.:\nnever allow: git push origin main\nalways allow: git push origin my-topic-branch",
+        layout=widgets.Layout(width='100%', min_width='280px', height='64px'),
+    )
+    # Subagent per-run limits (agent.subagents.*). The fallbacks are READ
+    # from the backend instead of repeated here — a copied number silently
+    # drifts the moment the backend budget changes.
+    try:
+        from delfin.agent.subagents import (
+            _MAX_OUTPUT_TOKENS as _SA_TOKENS,
+            _MAX_TOOL_CALLS as _SA_CALLS,
+            _MAX_WALL_S as _SA_WALL,
+        )
+        _SA_WALL = int(_SA_WALL)
+    except Exception:
+        _SA_WALL, _SA_CALLS, _SA_TOKENS = 900, 40, 16000
     subagent_wall_input = widgets.BoundedIntText(
-        value=300, min=30, max=3600, step=30,
+        value=_SA_WALL, min=30, max=7200, step=30,
         description='Wall s',
         layout=widgets.Layout(width='170px', height='28px'),
     )
     subagent_calls_input = widgets.BoundedIntText(
-        value=40, min=5, max=200, step=5,
+        value=_SA_CALLS, min=5, max=200, step=5,
         description='Tool calls',
         layout=widgets.Layout(width='180px', height='28px'),
     )
     subagent_tokens_input = widgets.BoundedIntText(
-        value=16000, min=2000, max=64000, step=1000,
+        value=_SA_TOKENS, min=2000, max=64000, step=1000,
         description='Out tokens',
         layout=widgets.Layout(width='200px', height='28px'),
     )
-    # Per-turn tool-round budget (agent.max_tool_rounds). High default so
-    # long multi-file tasks finish in one turn; 0 → uncapped (cost cap +
-    # consecutive-fail abort remain the real stops).
+    # Per-turn tool-round budget (agent.max_tool_rounds). THREE states, and
+    # the field has to be able to say all three:
+    #   -1  unset -> the per-model profile decides (10-50 rounds by model)
+    #    0  uncapped -> cost cap and consecutive-fail abort remain the stops
+    #   >0  a fixed number, which wins over the profile
+    #
+    # -1 exists because a plain number field cannot say "unset", and the
+    # setting default is None for a documented reason: without it the
+    # profile branch of _resolve_max_tool_rounds is unreachable and every
+    # model gets the fallback, including the small ones whose profiles ask
+    # for 10 or 20 so a degenerate loop dies early. This control used to
+    # show 500 for an unset setting and write it back on save, so opening
+    # the tab for any other reason and pressing save disabled the profiles
+    # for good -- measured on two installations, neither of which had ever
+    # chosen 500.
     max_tool_rounds_input = widgets.BoundedIntText(
-        value=500, min=0, max=5000, step=50,
+        value=-1, min=-1, max=5000, step=10,
         description='Tool rounds',
         layout=widgets.Layout(width='190px', height='28px'),
     )
+    max_tool_rounds_hint = widgets.HTML(
+        value='<span style="color:#6b7280; font-size:11px;">'
+              '−1 = per-model default · 0 = uncapped</span>')
+    # The OTHER per-turn limit, and the one that actually ends a dashboard
+    # turn first. Two numbers bound a turn: tool rounds (above) and ACTION
+    # rounds, the continuation loop that executes the commands the agent
+    # proposes. Only the first had a field, so a user who raised it and
+    # still saw the turn stop after a dozen steps had no way to reach the
+    # number that stopped it -- and reasonably read that as the setting not
+    # being saved. The stop note already names `agent.max_action_rounds`;
+    # now the name leads somewhere.
+    max_action_rounds_input = widgets.BoundedIntText(
+        value=40, min=0, max=1000, step=5,
+        description='Action rounds',
+        layout=widgets.Layout(width='190px', height='28px'),
+    )
+    max_action_rounds_hint = widgets.HTML(
+        value='<span style="color:#6b7280; font-size:11px;">'
+              '0 = no ceiling (the repeat guard still stops loops)</span>')
+    # Which identity names the memory store (agent.memory_key). A dropdown
+    # and not a text field: there are two answers, and a typed third would
+    # point the agent at an empty store without saying so.
+    #
+    # Switching does not move anything. The notes under the old key stay on
+    # disk and stop being read, which is recoverable; a migration that
+    # merged two projects' notes would not be.
+    memory_key_input = widgets.Dropdown(
+        options=[
+            ('this checkout (default)', 'path'),
+            ('this repository (all clones)', 'repo'),
+        ],
+        value='path',
+        description='Memory key',
+        layout=widgets.Layout(width='340px', height='28px'),
+        style={'description_width': '90px'},
+    )
+    memory_key_hint = widgets.HTML(value='')
+
+    def _describe_memory_key(mode):
+        """Name the store the choice resolves to, here, now.
+
+        The slug is the one thing a user can compare between two checkouts
+        to see whether they share a store, so it is shown rather than
+        described. Any failure shows nothing instead of a wrong answer --
+        the settings tab must render on a machine without git.
+        """
+        try:
+            from pathlib import Path as _P
+
+            from delfin.agent import memory_store as _ms
+            root = _ms._repository_root(_P.cwd())
+            if str(mode) == 'repo':
+                first = _ms._first_commit(root)
+                if not first:
+                    return ('<span style="color:#b26500; font-size:11px;">'
+                            'no commit here yet — falls back to the '
+                            'checkout path</span>')
+                slug = f'-repo-{first[:12]}'
+            else:
+                slug = '-' + str(root).replace('/', '-').lstrip('-')
+            return ('<span style="color:#6b7280; font-size:11px;">store: '
+                    f'<code>{html.escape(slug)}</code></span>')
+        except Exception:
+            return ''
+
+    def _on_memory_key_change(change):
+        if change.get('name') == 'value':
+            memory_key_hint.value = _describe_memory_key(change.get('new'))
+
+    memory_key_input.observe(_on_memory_key_change, names='value')
+    memory_key_hint.value = _describe_memory_key(memory_key_input.value)
     agentopt_save_btn = widgets.Button(
         description='Save agent extras', button_style='primary',
         layout=widgets.Layout(width='160px', height='28px'),
@@ -443,15 +702,37 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'window': int(evalloop_window_input.value or 200),
             })
             payload['agent']['eval_loop'] = evalloop
+            classifier = dict(payload['agent'].get('classifier') or {})
+            classifier.update({
+                'enabled': bool(classifier_enabled_toggle.value),
+                'scope': ('all' if classifier_broad_toggle.value
+                          else 'unattended'),
+                'model': str(classifier_model_input.value or '').strip(),
+                # Free-text user rules: the classifier can only ADD friction
+                # (an "always allow" rule never lifts a rule refusal). One
+                # statement per line; blank lines ignored.
+                'user_rules': [
+                    ln.strip() for ln in
+                    str(classifier_rules_input.value or '').splitlines()
+                    if ln.strip()],
+            })
+            payload['agent']['classifier'] = classifier
             subs = dict(payload['agent'].get('subagents') or {})
             subs.update({
-                'max_wall_s': int(subagent_wall_input.value or 300),
-                'max_tool_calls': int(subagent_calls_input.value or 40),
-                'max_output_tokens': int(subagent_tokens_input.value or 16000),
+                'max_wall_s': int(subagent_wall_input.value or _SA_WALL),
+                'max_tool_calls': int(subagent_calls_input.value or _SA_CALLS),
+                'max_output_tokens': int(subagent_tokens_input.value or _SA_TOKENS),
             })
             payload['agent']['subagents'] = subs
-            payload['agent']['max_tool_rounds'] = int(
-                max_tool_rounds_input.value)
+            # -1 writes None, so a save made for one of the other fields on
+            # this button cannot silently pin a number the user never chose.
+            _rounds_val = int(max_tool_rounds_input.value)
+            payload['agent']['max_tool_rounds'] = (
+                None if _rounds_val < 0 else _rounds_val)
+            payload['agent']['max_action_rounds'] = int(
+                max_action_rounds_input.value)
+            payload['agent']['memory_key'] = str(
+                memory_key_input.value or 'path')
             save_settings(payload, settings_path)
             agentopt_save_status.value = (
                 '<span style="color:#2e7d32; font-size:11px;">saved ✓</span>')
@@ -591,6 +872,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         'remote_archive_enabled': False,
         'calculations_dir': str(ctx.calc_dir),
         'archive_dir': str(ctx.archive_dir),
+        'office_dir': str(getattr(ctx, 'office_dir', '')),
         'tab_prefs': {
             'order': [],
             'hidden': [],
@@ -996,8 +1278,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         paths_payload = ((settings_payload or {}).get('paths') or {})
         calc_path_input.value = str(paths_payload.get('calculations_dir') or '')
         archive_path_input.value = str(paths_payload.get('archive_dir') or '')
+        office_path_input.value = str(paths_payload.get('office_dir') or '')
         agent_payload = ((settings_payload or {}).get('agent') or {})
         bug_archive_input.value = str(agent_payload.get('bug_archive_dir') or '')
+        from delfin.agent.bug_report import upload_policy
+        bug_upload_input.value = upload_policy(settings_payload or {})
         jobmon_payload = agent_payload.get('job_monitor') or {}
         jobmon_enabled_toggle.value = bool(jobmon_payload.get('enabled', False))
         jobmon_diag_toggle.value = bool(jobmon_payload.get('auto_diagnose', True))
@@ -1024,23 +1309,48 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             evalloop_window_input.value = int(evalloop_payload.get('window', 200) or 200)
         except Exception:
             evalloop_window_input.value = 200
+        classifier_payload = agent_payload.get('classifier') or {}
+        classifier_enabled_toggle.value = bool(
+            classifier_payload.get('enabled', True))
+        classifier_broad_toggle.value = (
+            str(classifier_payload.get('scope') or '').strip().lower() == 'all')
+        classifier_model_input.value = str(
+            classifier_payload.get('model') or '').strip()
+        classifier_rules_input.value = '\n'.join(
+            classifier_payload.get('user_rules') or [])
         subagents_payload = agent_payload.get('subagents') or {}
         try:
-            subagent_wall_input.value = int(subagents_payload.get('max_wall_s', 300) or 300)
+            subagent_wall_input.value = int(subagents_payload.get('max_wall_s', _SA_WALL) or _SA_WALL)
         except Exception:
-            subagent_wall_input.value = 300
+            subagent_wall_input.value = _SA_WALL
         try:
-            subagent_calls_input.value = int(subagents_payload.get('max_tool_calls', 40) or 40)
+            subagent_calls_input.value = int(subagents_payload.get('max_tool_calls', _SA_CALLS) or _SA_CALLS)
         except Exception:
             subagent_calls_input.value = 40
         try:
             subagent_tokens_input.value = int(subagents_payload.get('max_output_tokens', 16000) or 16000)
         except Exception:
             subagent_tokens_input.value = 16000
+        # An absent key and an explicit null both mean "unset", and both
+        # have to come back as -1. Reading them as a number here is what
+        # turned "let the profile decide" into a written-out 500.
         try:
-            max_tool_rounds_input.value = int(agent_payload.get('max_tool_rounds', 500))
+            _rounds = agent_payload.get('max_tool_rounds', None)
+            max_tool_rounds_input.value = (
+                -1 if _rounds is None else int(_rounds))
         except Exception:
-            max_tool_rounds_input.value = 500
+            max_tool_rounds_input.value = -1
+        try:
+            max_action_rounds_input.value = int(
+                agent_payload.get('max_action_rounds', 40) or 0)
+        except Exception:
+            max_action_rounds_input.value = 40
+        # An unknown value reads as the default here for the same reason it
+        # does in the store: a typo must not point the agent at an empty
+        # store, and it must not crash the tab either.
+        _key = str(agent_payload.get('memory_key') or 'path').strip().lower()
+        memory_key_input.value = 'repo' if _key == 'repo' else 'path'
+        memory_key_hint.value = _describe_memory_key(memory_key_input.value)
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -1081,7 +1391,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     current_tool,
                 ))
             dropdown.options = options
-            dropdown.value = current_tool if current_tool else ''
+            # Only if it is still on offer. Writing the text box above runs the
+            # dropdown's own refresh, and replacing the options here resets the
+            # selection, which writes the box again -- by the time this line is
+            # reached the configured entry can have been taken back out. It
+            # then raised, and a raise here means the whole Settings tab does
+            # not build: a saved path to a tool that has since been removed
+            # left the user with no page on which to correct it.
+            allowed = {value for _label, value in (dropdown.options or ())}
+            dropdown.value = current_tool if current_tool in allowed else ''
+            # The box is the setting; the dropdown only shows it. Whatever the
+            # refresh did to it on the way, it says what was saved.
+            tool_binary_inputs[tool_name].value = current_tool
             dropdown.disabled = True
 
     def _effective_paths_from_widgets():
@@ -1098,6 +1419,17 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             Path(archive_override) if archive_override else Path(ctx.default_archive_dir)
         )
         return calc_override, archive_override, effective_calc_dir, effective_archive_dir
+
+    def _effective_office_from_widgets():
+        office_override = normalize_local_directory_setting(
+            office_path_input.value,
+            'Office path',
+        )
+        default_office = getattr(ctx, 'default_office_dir', None)
+        effective = Path(office_override) if office_override else (
+            Path(default_office) if default_office else None
+        )
+        return office_override, effective
 
     def _runtime_payload_from_widgets():
         tool_binaries = {}
@@ -1181,13 +1513,25 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             },
         }
 
-    def _apply_workspace_paths(effective_calc_dir, effective_archive_dir):
+    def _apply_workspace_paths(effective_calc_dir, effective_archive_dir,
+                               effective_office_dir=None):
         effective_calc_dir.mkdir(parents=True, exist_ok=True)
         effective_archive_dir.mkdir(parents=True, exist_ok=True)
         ctx.calc_dir = effective_calc_dir
         ctx.archive_dir = effective_archive_dir
         state['calculations_dir'] = str(effective_calc_dir)
         state['archive_dir'] = str(effective_archive_dir)
+
+        if effective_office_dir is None:
+            _unused, effective_office_dir = _effective_office_from_widgets()
+        if effective_office_dir is not None:
+            effective_office_dir.mkdir(parents=True, exist_ok=True)
+            ctx.office_dir = effective_office_dir
+            state['office_dir'] = str(effective_office_dir)
+            if office_refs and callable(office_refs.get('calc_set_root')):
+                office_refs['calc_set_root'](effective_office_dir)
+            if office_refs and callable(office_refs.get('calc_set_primary_root')):
+                office_refs['calc_set_primary_root'](effective_calc_dir)
 
         if calc_refs and callable(calc_refs.get('calc_set_root')):
             calc_refs['calc_set_root'](effective_calc_dir)
@@ -1207,6 +1551,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             qm_tools_root=runtime_payload.get('qm_tools_root', ''),
             orca_base=effective_orca_base,
             csp_tools_root=runtime_payload.get('csp_tools_root', ''),
+            mlp_tools_root=runtime_payload.get('mlp_tools_root', ''),
             tool_binaries=runtime_payload.get('tool_binaries', {}) or {},
         )
 
@@ -1309,15 +1654,59 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         quality = str(viewer.get('quality', 'high'))
         if quality not in {'low', 'medium', 'high'}:
             quality = 'high'
+        representation = str(viewer.get('representation', 'ball_and_stick'))
+        if representation not in {'line', 'stick', 'ball_and_stick', 'sphere'}:
+            representation = 'ball_and_stick'
+        try:
+            atom_scale = float(viewer.get('atom_scale', 0.28))
+        except (TypeError, ValueError):
+            atom_scale = 0.28
+        try:
+            bond_radius = float(viewer.get('bond_radius', 0.11))
+        except (TypeError, ValueError):
+            bond_radius = 0.11
         viewer_enabled_toggle.value = enabled
         viewer_quality_dropdown.value = quality
+        viewer_representation_dropdown.value = representation
+        viewer_atom_scale_slider.value = max(0.05, min(1.50, atom_scale))
+        viewer_bond_radius_slider.value = max(0.02, min(0.50, bond_radius))
+        viewer_multiple_bonds_toggle.value = bool(viewer.get('multiple_bonds', True))
+        viewer_depth_fog_toggle.value = bool(viewer.get('depth_fog', True))
+        viewer_ambient_occlusion_toggle.value = bool(
+            viewer.get('ambient_occlusion', False)
+        )
+        _sync_viewer_control_state()
+
+    def _sync_viewer_control_state():
+        enabled = bool(viewer_enabled_toggle.value)
+        representation = str(viewer_representation_dropdown.value)
         viewer_quality_dropdown.disabled = not enabled
+        viewer_representation_dropdown.disabled = not enabled
+        viewer_atom_scale_slider.disabled = (
+            not enabled or representation not in {'ball_and_stick', 'sphere'}
+        )
+        viewer_bond_radius_slider.disabled = (
+            not enabled or representation == 'sphere'
+        )
+        viewer_multiple_bonds_toggle.disabled = (
+            not enabled or representation == 'sphere'
+        )
+        viewer_depth_fog_toggle.disabled = not enabled
+        viewer_ambient_occlusion_toggle.disabled = not enabled
 
     def _on_viewer_enabled_change(change):
         if change.get('name') == 'value':
-            viewer_quality_dropdown.disabled = not bool(change.get('new'))
+            _sync_viewer_control_state()
+
+    def _on_viewer_representation_change(change):
+        if change.get('name') == 'value':
+            _sync_viewer_control_state()
 
     viewer_enabled_toggle.observe(_on_viewer_enabled_change, names='value')
+    viewer_representation_dropdown.observe(
+        _on_viewer_representation_change,
+        names='value',
+    )
 
     def _set_scheduling_widgets(settings_payload):
         scheduling = ((settings_payload or {}).get('scheduling') or {})
@@ -1416,93 +1805,88 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _rebuild_tab_rows()
         _mark_dirty()
 
-    def _rebuild_tab_rows():
-        specs = _available_tab_specs()
-        if not specs:
-            tabs_rows_box.children = (
-                widgets.HTML('<span style="color:#616161;">No dashboard tabs registered.</span>'),
-            )
-            tabs_status_html.value = ''
-            return
+    # The rows are built once per tab count and then refilled in place. Setting
+    # tabs_rows_box.children on every click took all rows off the page before
+    # the new ones had rendered; with this section the only one open, the page
+    # was briefly shorter than the window and the browser scrolled to the top.
+    tab_row_slots = []
+    tab_row_state = {'filling': False, 'shape': None}
 
-        prefs = _normalized_tab_prefs()
-        state['tab_prefs'] = prefs
-        spec_map = {spec['id']: spec for spec in specs}
+    def _tab_row_layout():
+        return widgets.Layout(
+            width='100%',
+            gap='8px',
+            align_items='center',
+            border='1px solid #e0e0e0',
+            padding='8px 10px',
+        )
+
+    def _tab_row_label_html(tab_id, spec, is_hidden):
+        badge_parts = []
+        if spec.get('fixed'):
+            badge_parts.append('<span style="color:#1565c0;">fixed</span>')
+        elif is_hidden:
+            badge_parts.append('<span style="color:#ef6c00;">hidden</span>')
+        else:
+            badge_parts.append('<span style="color:#2e7d32;">visible</span>')
+        if not spec.get('available'):
+            badge_parts.append('<span style="color:#9e9e9e;">unavailable</span>')
+        detail = spec.get('reason', '')
+        label_html = (
+            f'<b>{html.escape(str(spec.get("title", tab_id)))}</b> '
+            + ' | '.join(badge_parts)
+        )
+        if detail:
+            label_html += (
+                f'<br><span style="color:#616161; font-size:0.92em;">'
+                f'{html.escape(str(detail))}</span>'
+            )
+        return label_html
+
+    def _on_tab_row_visible(slot, change):
+        # Refilling a row after Up/Down sets its checkbox too; only a click
+        # by the user may change what is hidden.
+        if tab_row_state['filling'] or slot['tab_id'] is None:
+            return
+        _toggle_tab_hidden(slot['tab_id'], bool(change.get('new')))
+
+    def _build_tab_row_slots(count, fixed_specs):
+        tab_row_slots.clear()
         rows = []
-        for idx, tab_id in enumerate(prefs['order']):
-            spec = spec_map.get(tab_id)
-            if not spec:
-                continue
-            is_hidden = tab_id in set(prefs['hidden'])
-            available = bool(spec.get('available'))
-            fixed = bool(spec.get('fixed'))
-            visible_checkbox = widgets.Checkbox(
-                value=(not is_hidden) if not fixed else True,
-                description='Visible',
-                indent=False,
-                disabled=fixed or False,
-                layout=widgets.Layout(width='85px'),
-            )
-            up_btn = widgets.Button(
-                description='Up',
-                layout=widgets.Layout(width='56px', height='26px'),
-                disabled=fixed or idx == 0,
-            )
-            down_btn = widgets.Button(
-                description='Down',
-                layout=widgets.Layout(width='64px', height='26px'),
-                disabled=fixed or idx == len(prefs['order']) - 1,
-            )
-            badge_parts = []
-            if fixed:
-                badge_parts.append('<span style="color:#1565c0;">fixed</span>')
-            elif is_hidden:
-                badge_parts.append('<span style="color:#ef6c00;">hidden</span>')
-            else:
-                badge_parts.append('<span style="color:#2e7d32;">visible</span>')
-            if not available:
-                badge_parts.append('<span style="color:#9e9e9e;">unavailable</span>')
-            detail = spec.get('reason', '')
-            label_html = (
-                f'<b>{html.escape(str(spec.get("title", tab_id)))}</b> '
-                + ' | '.join(badge_parts)
-            )
-            if detail:
-                label_html += (
-                    f'<br><span style="color:#616161; font-size:0.92em;">'
-                    f'{html.escape(str(detail))}</span>'
-                )
-            label = widgets.HTML(label_html, layout=widgets.Layout(flex='1 1 auto'))
-            visible_checkbox.observe(
-                lambda change, _tab_id=tab_id: (
-                    _toggle_tab_hidden(_tab_id, bool(change.get('new')))
-                    if change.get('name') == 'value'
-                    else None
+        for _ in range(count):
+            slot = {
+                'tab_id': None,
+                'label': widgets.HTML('', layout=widgets.Layout(flex='1 1 auto')),
+                'visible': widgets.Checkbox(
+                    value=True,
+                    description='Visible',
+                    indent=False,
+                    layout=widgets.Layout(width='85px'),
                 ),
+                'up': widgets.Button(
+                    description='Up',
+                    layout=widgets.Layout(width='56px', height='26px'),
+                ),
+                'down': widgets.Button(
+                    description='Down',
+                    layout=widgets.Layout(width='64px', height='26px'),
+                ),
+            }
+            slot['visible'].observe(
+                lambda change, _slot=slot: _on_tab_row_visible(_slot, change),
                 names='value',
             )
-            up_btn.on_click(lambda _button, _tab_id=tab_id: _move_tab(_tab_id, -1))
-            down_btn.on_click(lambda _button, _tab_id=tab_id: _move_tab(_tab_id, 1))
+            slot['up'].on_click(lambda _button, _slot=slot: _move_tab(_slot['tab_id'], -1))
+            slot['down'].on_click(lambda _button, _slot=slot: _move_tab(_slot['tab_id'], 1))
+            tab_row_slots.append(slot)
             rows.append(
                 widgets.HBox(
-                    [label, visible_checkbox, up_btn, down_btn],
-                    layout=widgets.Layout(
-                        width='100%',
-                        gap='8px',
-                        align_items='center',
-                        border='1px solid #e0e0e0',
-                        padding='8px 10px',
-                    ),
+                    [slot['label'], slot['visible'], slot['up'], slot['down']],
+                    layout=_tab_row_layout(),
                 )
             )
 
-        fixed_specs = [
-            spec for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000))
-            if spec.get('fixed')
-        ]
         for spec in fixed_specs:
-            if spec['id'] in prefs['order']:
-                continue
             label = widgets.HTML(
                 f'<b>{html.escape(str(spec.get("title", spec["id"])))}</b> '
                 '<span style="color:#1565c0;">fixed</span><br>'
@@ -1531,15 +1915,50 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                             layout=widgets.Layout(width='64px', height='26px'),
                         ),
                     ],
-                    layout=widgets.Layout(
-                        width='100%',
-                        gap='8px',
-                        align_items='center',
-                        border='1px solid #e0e0e0',
-                        padding='8px 10px',
-                    ),
+                    layout=_tab_row_layout(),
                 )
             )
+        tabs_rows_box.children = tuple(rows)
+
+    def _rebuild_tab_rows():
+        specs = _available_tab_specs()
+        if not specs:
+            tab_row_slots.clear()
+            tab_row_state['shape'] = None
+            tabs_rows_box.children = (
+                widgets.HTML('<span style="color:#616161;">No dashboard tabs registered.</span>'),
+            )
+            tabs_status_html.value = ''
+            return
+
+        prefs = _normalized_tab_prefs()
+        state['tab_prefs'] = prefs
+        spec_map = {spec['id']: spec for spec in specs}
+        order = [tab_id for tab_id in prefs['order'] if tab_id in spec_map]
+        fixed_specs = [
+            spec for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000))
+            if spec.get('fixed') and spec['id'] not in prefs['order']
+        ]
+        shape = (len(order), tuple(spec['id'] for spec in fixed_specs))
+        if tab_row_state['shape'] != shape:
+            _build_tab_row_slots(len(order), fixed_specs)
+            tab_row_state['shape'] = shape
+
+        hidden = set(prefs['hidden'])
+        for idx, (slot, tab_id) in enumerate(zip(tab_row_slots, order)):
+            spec = spec_map[tab_id]
+            is_hidden = tab_id in hidden
+            fixed = bool(spec.get('fixed'))
+            slot['tab_id'] = tab_id
+            tab_row_state['filling'] = True
+            try:
+                slot['visible'].value = (not is_hidden) if not fixed else True
+            finally:
+                tab_row_state['filling'] = False
+            slot['visible'].disabled = fixed
+            slot['up'].disabled = fixed or idx == 0
+            slot['down'].disabled = fixed or idx == len(order) - 1
+            slot['label'].value = _tab_row_label_html(tab_id, spec, is_hidden)
 
         hidden_count = len(prefs['hidden'])
         tabs_status_html.value = (
@@ -1549,7 +1968,6 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             'Settings stays visible and pinned at the end.'
             '</span>'
         )
-        tabs_rows_box.children = tuple(rows)
 
     def _load_settings_to_widgets(set_status=True):
         try:
@@ -1879,14 +2297,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             if shutil.which('micromamba') or shutil.which('conda'):
                 _set_status('micromamba/conda is already available.', color='#2e7d32')
                 return
+            from delfin.runtime_setup import get_packaged_micromamba_fetcher
             local_bin = Path.home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
+            # The installers' shared fetcher: one pinned release per
+            # platform, installed only when its SHA-256 matches. The
+            # retry with TLS verification switched off is gone.
             result = subprocess.run(
-                ['bash', '-c',
-                 'URL=https://micro.mamba.pm/api/micromamba/linux-64/latest; '
-                 'DST="$HOME/.local/bin/"; '
-                 '{ curl -fsSL "$URL" || curl -fsSL --insecure "$URL"; } '
-                 '| tar -xvj -C "$DST" --strip-components=1 bin/micromamba'],
+                ['bash', str(get_packaged_micromamba_fetcher()),
+                 str(local_bin / 'micromamba')],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -2121,7 +2540,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 submit_templates_dir=submit_templates_dir if effective_backend == 'slurm' else None,
             )
 
-            _QM_TOOL_NAMES = {'xtb', 'crest', 'censo', 'anmr', 'c2anmr', 'nmrplot', 'std2', 'stda', 'xtb4stda', 'dftb+'}
+            _QM_TOOL_NAMES = {'xtb', 'crest', 'censo', 'anmr', 'c2anmr', 'nmrplot', 'std2', 'stda', 'xtb4stda', 'dftb+', 'mopac'}
             _QM_DESCRIPTIONS = {
                 'xtb': 'Extended tight-binding semi-empirical method (GFN-xTB)',
                 'crest': 'Conformer-Rotamer Ensemble Sampling Tool',
@@ -2142,6 +2561,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'stda': 'xtb4stda',
                 'xtb4stda': 'xtb4stda',
                 'std2': 'std2',
+                'mopac': 'mopac',
             }
 
             rows = []
@@ -2192,6 +2612,145 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             qm_status_box.children = [widgets.HTML(
                 f'<span style="color:#d32f2f;">Could not load QM tools status: {html.escape(str(exc))}</span>'
             )]
+
+    # ------------------------------------------------------------------
+    # does it work, and if not, what would fix it
+    # ------------------------------------------------------------------
+    _health_state = {'rows': [], 'running': False}
+
+    def _health_html(rows, conditions, note=''):
+        """The check, said plainly enough to act on."""
+        marks = {'ok': ('#2e7d32', '&#10003;'), 'warn': ('#ef6c00', '!'),
+                 'fail': ('#c62828', '&#10007;'), 'absent': ('#757575', '&ndash;')}
+        lines = []
+        for row in rows:
+            colour, mark = marks.get(row.level, ('#757575', '?'))
+            said = html.escape(row.version or '')
+            where = html.escape(row.path or '')
+            lines.append(
+                f'<div style="margin:2px 0;"><span style="color:{colour};'
+                f'font-weight:600;">{mark} {html.escape(row.label or row.name)}'
+                f'</span> <span style="color:#546e7a;">{said}</span> '
+                f'<span style="color:#90a4ae;font-size:11px;">{where}</span>')
+            if row.why:
+                lines.append(
+                    f'<div style="margin-left:18px;color:#546e7a;">'
+                    f'{html.escape(row.why)}</div>')
+            if row.fix:
+                lines.append(
+                    f'<div style="margin-left:18px;color:#455a64;">&rarr; '
+                    f'{html.escape(row.fix)}</div>')
+            lines.append('</div>')
+        for warning in (conditions or {}).get('warnings', []):
+            lines.append(
+                f'<div style="margin:2px 0;color:#ef6c00;">! '
+                f'{html.escape(warning)}</div>')
+        if note:
+            lines.append(f'<div style="margin-top:6px;color:#455a64;">'
+                         f'{html.escape(note)}</div>')
+        return ('<div style="font-family:monospace;font-size:12px;'
+                'line-height:1.45;">' + '\n'.join(lines) + '</div>')
+
+    def _check_tools(button=None):
+        """Ask every tool a question whose answer is known.
+
+        On a thread, and the answer is put up when it arrives: the handlers in
+        this tab run on the kernel thread, so a check done inline would freeze
+        every tab of the dashboard while it ran.
+        """
+        if _health_state['running']:
+            return
+        _health_state['running'] = True
+        check_tools_btn.disabled = True
+        repair_tools_btn.disabled = True
+        tool_health_out.value = (
+            '<span style="color:#546e7a;">Asking each tool to answer '
+            'something &mdash; a second or two.</span>')
+
+        def work():
+            try:
+                from delfin import qm_health
+
+                conditions = qm_health.probe_environment()
+                rows = qm_health.check_tools(
+                    ['xtb', 'gxtb', 'crest', 'orca', 'dftb+', 'stda',
+                     'xtb4stda', 'std2', 'censo', 'anmr', 'packmol'],
+                    depth='answer', timeout=90.0)
+                broken = [r for r in rows if r.repair]
+                note = ('Everything that was asked, answered.' if not broken
+                        else f'{len(broken)} can be attempted with Repair.')
+                _health_state['rows'] = rows
+                tool_health_out.value = _health_html(rows, conditions, note)
+                repair_tools_btn.disabled = not broken
+            except Exception as problem:
+                logging.exception('tool health check failed')
+                tool_health_out.value = (
+                    f'<span style="color:#d32f2f;">The check itself failed: '
+                    f'{html.escape(str(problem))}</span>')
+            finally:
+                _health_state['running'] = False
+                check_tools_btn.disabled = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _repair_tools(button=None):
+        """Put right what the check found, and prove it afterwards.
+
+        Only what the check actually named: a repair is not a reinstall of
+        everything, and a tool that answered correctly is left alone.
+        """
+        if _health_state['running']:
+            return
+        rows = [r for r in _health_state.get('rows') or [] if r.repair]
+        if not rows:
+            return
+        _health_state['running'] = True
+        repair_tools_btn.disabled = True
+        check_tools_btn.disabled = True
+
+        def work():
+            from delfin import qm_health
+
+            told = []
+            try:
+                for row in rows:
+                    command = qm_health.repair_command(row.name, row.repair)
+                    told.append(f'{row.label}: {qm_health.REPAIRS.get(row.repair, row.repair)}')
+                    if command:
+                        told.append('  ' + ' '.join(str(part) for part in command))
+                    tool_health_out.value = (
+                        '<pre style="font-size:12px;">' +
+                        html.escape('\n'.join(told)) + '</pre>')
+                    answer = qm_health.repair_tool(row.name, row.repair)
+                    # What the installer itself said. Without it a repair that
+                    # achieved nothing reads as "std2 still does not: not
+                    # found" and the reason -- a missing compiler, no network,
+                    # a prerequisite it refused over -- stays in a buffer
+                    # nobody sees.
+                    for line in (answer.get('lines') or [])[-40:]:
+                        told.append('    ' + str(line))
+                    told.append('  ' + str(answer.get('status') or ''))
+                conditions = qm_health.probe_environment()
+                after = qm_health.check_tools(
+                    [r.name for r in rows], depth='answer', timeout=90.0)
+                _health_state['rows'] = after
+                tool_health_out.value = (
+                    _health_html(after, conditions,
+                                 'After the repair. Check tools again for the '
+                                 'whole list.')
+                    + '<pre style="font-size:11px;color:#607d8b;">'
+                    + html.escape('\n'.join(told)) + '</pre>')
+            except Exception as problem:
+                logging.exception('tool repair failed')
+                tool_health_out.value = (
+                    f'<span style="color:#d32f2f;">The repair failed: '
+                    f'{html.escape(str(problem))}</span>')
+            finally:
+                _health_state['running'] = False
+                check_tools_btn.disabled = False
+                repair_tools_btn.disabled = False
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _refresh_csp_status(button=None):
         """Refresh the CSP tools status box with checkmarks/crosses."""
@@ -2351,10 +2910,42 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 _set_status(f'{label} installation failed (exit {result.returncode}).', color='#d32f2f')
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+            _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
         # Invalidate cache so next refresh re-checks
         _outdated_cache.clear()
         refresh_fn()
+
+    #: An install hint that names DELFIN's installer instead of pip: the tool
+    #: cannot be pip-installed beside DELFIN (epic-MACE builds a Python 3.7
+    #: environment of its own), so its button runs delfin.installer.
+    _INSTALLER_HINT = 'python -m delfin.installer --install '
+
+    def _installer_install_tool(tool_name, label, refresh_fn):
+        """Install *tool_name* through delfin.installer, in the background."""
+        tool_install_log.value = f'Installing {label}...\n'
+        _set_status(f'Installing {label}; the log below follows it.', color='#ef6c00')
+
+        def work():
+            from delfin import installer
+
+            lines = []
+
+            def on_line(text):
+                lines.append(str(text))
+                tool_install_log.value = '\n'.join(lines[-400:])
+
+            try:
+                outcome = installer.install([tool_name], on_line=on_line)
+                if outcome['ok']:
+                    _set_status(f'{label} installed successfully.', color='#2e7d32')
+                else:
+                    _set_status(f'{label} installation failed; the log says why.', color='#d32f2f')
+            except Exception as exc:
+                tool_install_log.value += f'\nError: {exc}'
+                _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
+            refresh_fn()
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _pip_update_tool(pip_pkg, label, refresh_fn):
         """Run pip install --upgrade for a specific package."""
@@ -2376,7 +2967,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 _set_status(f'{label} update failed (exit {result.returncode}).', color='#d32f2f')
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+            _set_status(f'{label} update error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -2418,7 +3009,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 )
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} installation error: {exc}', color='#d32f2f')
+            _set_status(f'{label} installation error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -2460,7 +3051,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 )
         except Exception as exc:
             tool_install_log.value += f'\nError: {exc}'
-            _set_status(f'{label} update error: {exc}', color='#d32f2f')
+            _set_status(f'{label} update error: {html.escape(str(exc))}', color='#d32f2f')
         _outdated_cache.clear()
         refresh_fn()
 
@@ -2535,6 +3126,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 layout=widgets.Layout(min_width='300px'),
             )
             has_cmd = conda_cmd if use_conda else install_cmd
+            if has_cmd and install_cmd.startswith(_INSTALLER_HINT):
+                btn = widgets.Button(
+                    description='Install',
+                    button_style='warning',
+                    layout=widgets.Layout(width='80px', height='24px'),
+                    tooltip=install_cmd,
+                )
+                btn.on_click(lambda b, cmd=install_cmd, lbl=name, fn=refresh_fn:
+                             _installer_install_tool(cmd[len(_INSTALLER_HINT):].split()[0], lbl, fn))
+                return widgets.HBox(
+                    [label, btn],
+                    layout=widgets.Layout(width='100%', margin='1px 0', align_items='center'),
+                )
             if has_cmd:
                 if use_conda:
                     conda_exe_name = (_detect_conda()[0] or 'conda').rsplit('/', 1)[-1]
@@ -2789,16 +3393,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
 
             log_lines = [
-                f"Prepared bwUniCluster runtime profile.",
+                f"Prepared cluster runtime settings (profile: {prepared['runtime']['slurm']['profile'] or 'generic'}).",
                 f"Submit templates: {prepared['submit_templates_dir']}",
                 f"qm_tools root: {prepared['qm_tools_root']}",
                 f"ORCA: {prepared['orca_base'] or 'not detected'}",
                 f"Environment file: {prepared['env_file']}",
             ]
-            if prepared.get("venv_tarball"):
-                log_lines.append(f"Venv tarball: {prepared['venv_tarball']}")
-            if prepared.get("runtime_cache_dir"):
-                log_lines.append(f"Runtime cache: {prepared['runtime_cache_dir']}")
             if prepared.get("shell_files"):
                 log_lines.append("Shell rc updated: " + ", ".join(prepared["shell_files"]))
             installer_output = str(prepared.get("qm_tools_installer_output") or "").strip()
@@ -2815,8 +3415,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
             _set_status(
                 (
-                    'bwUniCluster setup completed. '
-                    f'Runtime now uses <code>slurm</code> with profile <code>bwunicluster3</code>, '
+                    'Cluster setup completed. '
+                    f'Runtime now uses <code>slurm</code> with profile <code>{html.escape(prepared["runtime"]["slurm"]["profile"] or "generic")}</code>, '
                     f'ORCA <code>{html.escape(effective_orca_base or "not detected")}</code>, '
                     f'qm_tools <code>{html.escape(str(prepared["qm_tools_root"]))}</code>, and '
                     f'submit templates <code>{html.escape(str(prepared["submit_templates_dir"]))}</code>. '
@@ -2827,7 +3427,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
         except Exception as exc:
             _set_status(
-                f'bwUniCluster setup failed: {html.escape(str(exc))}',
+                f'Cluster setup failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
@@ -2862,7 +3462,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     "</tr>"
                 )
             qm_tools_log.value = (
-                "=== bwUniCluster verification ===\n"
+                "=== Installation verification ===\n"
                 + "\n".join(
                     f"{item['name']}: {item['status']} - {item['detail']}"
                     for item in checks
@@ -2870,24 +3470,24 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
             if missing:
                 _set_status(
-                    f'Verify bwUniCluster found {missing} missing item(s). Review the log below. This check does not modify your system.',
+                    f'Verify install found {missing} missing item(s). Review the log below. This check does not modify your system.',
                     color='#ef6c00',
                 )
             else:
                 _set_status(
-                    'Verify bwUniCluster passed. No missing items were detected. This check did not modify your system.',
+                    'Verify install passed. No missing items were detected. This check did not modify your system.',
                     color='#2e7d32',
                 )
         except Exception as exc:
             _set_status(
-                f'Verify bwUniCluster failed: {html.escape(str(exc))}',
+                f'Verify install failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
     def _on_full_install_bwunicluster(button):
         try:
             _set_status(
-                'Running the full bwUniCluster installer script. This can take a while because OpenMPI may be built and the repo venv may be recreated.',
+                'Running the DELFIN installer (core profile). This can take a while: OpenMPI may be built and the venv may be recreated.',
                 color='#ef6c00',
             )
             _on_detect_local_resources(button)
@@ -2905,9 +3505,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             if result.returncode != 0:
                 _set_status(
                     (
-                        f'Full bwUniCluster install failed with exit code {result.returncode}. '
+                        f'Full install failed with exit code {result.returncode}. '
                         'Inspect the log below. The installer script is '
-                        f'<code>{html.escape(str(Path(ctx.repo_dir or ".") / "scripts" / "install_delfin_bwu.sh"))}</code>.'
+                        f'<code>{html.escape(str(get_repo_bwunicluster_install_script(ctx.repo_dir) or get_packaged_bwunicluster_install_script()))}</code>.'
                     ),
                     color='#d32f2f',
                 )
@@ -2933,8 +3533,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
             _set_status(
                 (
-                    'Full bwUniCluster install completed via '
-                    f'<code>{html.escape(str(Path(ctx.repo_dir or ".") / "scripts" / "install_delfin_bwu.sh"))}</code>. '
+                    'Full install completed via '
+                    f'<code>{html.escape(str(get_repo_bwunicluster_install_script(ctx.repo_dir) or get_packaged_bwunicluster_install_script()))}</code>. '
                     f'Runtime resolves to <code>{html.escape(effective_backend)}</code> with ORCA '
                     f'<code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
                     f'{backend_hint}'
@@ -2943,7 +3543,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
         except Exception as exc:
             _set_status(
-                f'Full bwUniCluster install failed: {html.escape(str(exc))}',
+                f'Full install failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
@@ -2976,6 +3576,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 paths_payload['calculations_dir'] = calc_override
             if archive_override:
                 paths_payload['archive_dir'] = archive_override
+            office_override, _effective_office = _effective_office_from_widgets()
+            if office_override:
+                paths_payload['office_dir'] = office_override
             settings_payload['paths'] = paths_payload
             settings_payload['runtime'] = runtime_payload
             # Bug-report archive dir (agent section — preserve other agent
@@ -2985,6 +3588,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
             settings_payload.setdefault('agent', {})
             settings_payload['agent']['bug_archive_dir'] = _bug_archive or ''
+            settings_payload['agent']['bug_upload'] = (
+                bug_upload_input.value or 'ask')
             # Job monitoring (opt-in; costs tokens only when auto_diagnose).
             settings_payload['agent']['job_monitor'] = {
                 'enabled': bool(jobmon_enabled_toggle.value),
@@ -3012,11 +3617,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             settings_payload['agent']['eval_loop'] = _evalloop
             _subs = dict(settings_payload['agent'].get('subagents') or {})
             _subs.update({
-                'max_wall_s': int(subagent_wall_input.value or 300),
-                'max_tool_calls': int(subagent_calls_input.value or 40),
-                'max_output_tokens': int(subagent_tokens_input.value or 16000),
+                'max_wall_s': int(subagent_wall_input.value or _SA_WALL),
+                'max_tool_calls': int(subagent_calls_input.value or _SA_CALLS),
+                'max_output_tokens': int(subagent_tokens_input.value or _SA_TOKENS),
             })
             settings_payload['agent']['subagents'] = _subs
+            settings_payload['agent']['memory_key'] = str(
+                memory_key_input.value or 'path')
+            settings_payload['agent']['max_action_rounds'] = int(
+                max_action_rounds_input.value)
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -3028,6 +3637,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             settings_payload['ui']['viewer'] = {
                 'enabled': bool(viewer_enabled_toggle.value),
                 'quality': str(viewer_quality_dropdown.value),
+                'representation': str(viewer_representation_dropdown.value),
+                'atom_scale': float(viewer_atom_scale_slider.value),
+                'bond_radius': float(viewer_bond_radius_slider.value),
+                'multiple_bonds': bool(viewer_multiple_bonds_toggle.value),
+                'depth_fog': bool(viewer_depth_fog_toggle.value),
+                'ambient_occlusion': bool(viewer_ambient_occlusion_toggle.value),
             }
             settings_payload = save_settings(settings_payload, settings_path)
             _apply_workspace_paths(effective_calc_dir, effective_archive_dir)
@@ -3095,7 +3710,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     # ── dirty-tracking: enable Save button when any setting widget changes ──
     _settings_widgets_to_watch = [
-        calc_path_input, archive_path_input,
+        calc_path_input, archive_path_input, office_path_input,
         backend_dropdown, global_orca_input, qm_tools_root_input,
         csp_tools_root_input, mlp_tools_root_input,
         *[tool_binary_inputs[name] for name in _selectable_tool_names],
@@ -3105,9 +3720,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         path_hidden, path_visible, port_input,
         remote_archive_toggle,
         viewer_enabled_toggle, viewer_quality_dropdown,
+        viewer_representation_dropdown, viewer_atom_scale_slider,
+        viewer_bond_radius_slider, viewer_multiple_bonds_toggle,
+        viewer_depth_fog_toggle,
+        viewer_ambient_occlusion_toggle,
         # Agent blocks — without these the GLOBAL Save Settings button
         # stays disabled when only these change ("settings disappeared").
-        bug_archive_input,
+        bug_archive_input, bug_upload_input,
         jobmon_enabled_toggle, jobmon_diag_toggle, jobmon_interval_input,
         jobmon_webhook_input, jobmon_provider_input, jobmon_model_input,
         automem_enabled_toggle, automem_model_input, automem_maxfacts_input,
@@ -3129,6 +3748,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     install_dftbplus_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('dftb+')))
     install_stda_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('xtb4stda')))
     install_std2_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('std2')))
+    install_mopac_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('mopac')))
+    install_gxtb_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('gxtb')))
     install_micromamba_btn.on_click(_with_buttons_disabled(_on_install_micromamba))
     install_csp_tools_btn.on_click(_with_buttons_disabled(_on_install_csp_tools))
     update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
@@ -3137,6 +3758,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     install_analysis_tools_btn.on_click(_with_buttons_disabled(_on_install_analysis_tools))
     update_analysis_tools_btn.on_click(_with_buttons_disabled(_on_update_analysis_tools))
     refresh_qm_status_btn.on_click(_refresh_qm_status)
+    check_tools_btn.on_click(_check_tools)
+    repair_tools_btn.on_click(_repair_tools)
     refresh_csp_status_btn.on_click(_refresh_csp_status)
     refresh_analysis_status_btn.on_click(_refresh_analysis_status)
     pip_install_btn.on_click(_with_buttons_disabled(_on_pip_install_editable))
@@ -3146,6 +3769,65 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
     verify_bwunicluster_btn.on_click(_with_buttons_disabled(_on_verify_bwunicluster))
     full_install_bwunicluster_btn.on_click(_with_buttons_disabled(_on_full_install_bwunicluster))
+
+    def _run_global_tools_action(action):
+        """Update or repair every installed tool, the log following it.
+
+        On a thread: an update runs for minutes, and a handler on the kernel
+        thread would freeze every tab of the dashboard while it did.
+        """
+        if _global_tools_state['running']:
+            return
+        _global_tools_state['running'] = True
+        update_all_tools_btn.disabled = True
+        repair_all_tools_btn.disabled = True
+        global_tools_log.value = ''
+        _set_status(
+            ('Updating every installed tool.' if action == 'update'
+             else 'Checking every installed tool and repairing what does not work.')
+            + ' The log below follows it.',
+            color='#ef6c00',
+        )
+
+        def work():
+            from delfin import installer
+
+            lines = []
+
+            def on_line(text):
+                lines.append(str(text))
+                global_tools_log.value = '\n'.join(lines[-400:])
+
+            try:
+                outcome = (installer.update(on_line=on_line) if action == 'update'
+                           else installer.repair(on_line=on_line))
+                failed = [' '.join(result['tools']) for result in outcome['results'] if not result['ok']]
+                if not outcome['results']:
+                    _set_status('Nothing is installed that could be updated or repaired.', color='#546e7a')
+                elif failed:
+                    _set_status(
+                        f'{action.capitalize()} finished, and not everything worked: '
+                        f'<code>{html.escape(", ".join(failed))}</code>. The log below says why.',
+                        color='#d32f2f',
+                    )
+                else:
+                    _set_status(
+                        'Update finished.' if action == 'update'
+                        else 'Repair finished: every installed tool that was checked works.',
+                        color='#2e7d32',
+                    )
+            except Exception as problem:
+                logging.exception('%s of all tools failed', action)
+                _set_status(f'{action.capitalize()} failed: {html.escape(str(problem))}', color='#d32f2f')
+            finally:
+                _global_tools_state['running'] = False
+                update_all_tools_btn.disabled = False
+                repair_all_tools_btn.disabled = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    update_all_tools_btn.on_click(lambda _button: _run_global_tools_action('update'))
+    repair_all_tools_btn.on_click(lambda _button: _run_global_tools_action('repair'))
     save_btn.on_click(_on_save)
     detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
     global_orca_input.observe(_on_change_global_orca, names='value')
@@ -3215,9 +3897,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 layout=_row_layout,
             ),
             widgets.HBox(
+                [widgets.HTML('<b>Office</b>'), office_path_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
                 [widgets.HTML('<b>Bug-report archive</b>'), bug_archive_input],
                 layout=_row_layout,
             ),
+            bug_upload_input,
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 '<b>Local</b> staging dir for the 🐞 bug-report button '
@@ -3225,7 +3912,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 '<code>DELFIN_BUG_ARCHIVE</code> takes precedence). When a '
                 '<b>Remote Path</b> + host is configured above, the report is '
                 'also uploaded via SSH (rsync) to <code>&lt;Remote Path&gt;/AGENT_BUGS</code> '
-                '— the local copy is kept.'
+                'when you press Send under that host — the local copy is kept. '
+                '<b>Bug upload</b> (<code>agent.bug_upload</code>) decides the '
+                'rest: <i>ask</i> (default; the terminal and CLI ask per '
+                'report, <code>--yes</code> keeps it local), <i>never</i>, '
+                '<i>always</i> (also unattended).'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
@@ -3268,6 +3959,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 layout=_row_layout,
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🛡 Action classifier (second opinion)</b>'),
+            widgets.HBox(
+                [classifier_enabled_toggle], layout=_row_layout,
+            ),
+            widgets.HBox(
+                [classifier_broad_toggle], layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Model</b>'), classifier_model_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [classifier_rules_input], layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'Rules decide first; the classifier only adds friction, never '
+                'allows what a rule refuses. By default it judges what runs '
+                'under Bypass, messages to other agents and network calls. '
+                'User rules, one per line, start with "never allow" or '
+                '"always allow".'
+                '</div>'
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
                          '🤖 Subagent limits (per delegated run)</b>'),
             widgets.HBox(
                 [subagent_wall_input, subagent_calls_input,
@@ -3277,21 +3992,58 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'Caps for each delegated subagent. Higher = subagents can '
-                'investigate/research longer before reporting back (more '
-                'tokens/time). Defaults: 300&nbsp;s wall · 40 tool calls · '
-                '16k output tokens. Empty/0 → default.'
+                'investigate longer before reporting back (more '
+                'tokens/time). Empty/0 → default. In force now: '
+                + html.escape(_subagent_caps_now()) + '.'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
                          '🔁 Agent run limit (per turn)</b>'),
-            widgets.HBox([max_tool_rounds_input], layout=_row_layout),
+            widgets.HBox([max_tool_rounds_input, max_tool_rounds_hint],
+                         layout=_row_layout),
+            widgets.HBox([max_action_rounds_input, max_action_rounds_hint],
+                         layout=_row_layout),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'How many <b>continuation rounds</b> the agent gets to carry '
+                'out the commands it proposes, in one turn. This is the limit '
+                'that ends a dashboard turn <b>first</b> &mdash; the note you '
+                'see then names it (<code>agent.max_action_rounds</code>). '
+                'Raise it when the agent stops with work still to do; a round '
+                'only counts against it when it brings a <b>new</b> command, '
+                'and a round that repeats one already run this turn ends the '
+                'turn regardless, so a high number here cannot produce a '
+                'loop. The field shows the value in force.'
+                '</div>'
+            ),
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'How many tool-call rounds the agent runs in a single turn '
-                'before pausing with a "send continue" notice. Default '
-                '500 — high enough that long multi-file tasks finish in one '
-                'turn. The cost circuit-breaker and the repeated-error abort '
-                'stay the real safety nets. 0 → uncapped.'
+                'before pausing with a "send continue" notice. '
+                '<b>−1 leaves it to the model profile</b> — that is the '
+                'default, and a KIT or otherwise smaller model may get far '
+                'fewer rounds than a frontier one, so this is where to look '
+                'when a turn stops earlier than you expect. A number here '
+                'overrides every profile; 0 → uncapped, leaving the cost '
+                'circuit-breaker and the repeated-error abort as the only '
+                'stops.'
+                '</div>'
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🗃️ Memory store key</b>'),
+            widgets.HBox([memory_key_input, memory_key_hint],
+                         layout=_row_layout),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'Which notes the agent recalls here. <b>this checkout</b> '
+                'gives every clone and every worktree-parent its own store. '
+                '<b>this repository</b> keys on the first commit of the '
+                'history, so all clones of one project share one store — the '
+                'first commit never changes as work goes on, is the same in '
+                'every clone, and survives the remote being moved. '
+                'Switching does not move or delete anything: the notes under '
+                'the other key stay on disk and are read again when you '
+                'switch back.'
                 '</div>'
             ),
             widgets.HBox(
@@ -3334,12 +4086,41 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         [
             widgets.HTML(
                 '<div style="color:#455a64;">'
-                'Globale Einstellungen für den 3D-Molekülviewer (py3Dmol). '
-                'Auf langsamen PCs Qualität reduzieren oder Viewer ganz deaktivieren. '
-                'Wirkt auf alle Tabs mit 3D-Vorschau.'
+                'Global display settings for every 3D molecule viewer (py3Dmol). '
+                'Model type and rendering quality can be selected independently; '
+                'sizes also apply to trajectories and comparison views. Use '
+                '<b>Save Settings</b> to apply changes to the current session.'
                 '</div>'
             ),
             widgets.HBox([viewer_enabled_toggle, viewer_quality_dropdown], layout=_row_layout),
+            widgets.HBox([viewer_representation_dropdown], layout=_row_layout),
+            viewer_atom_scale_slider,
+            viewer_bond_radius_slider,
+            viewer_multiple_bonds_toggle,
+            viewer_depth_fog_toggle,
+            viewer_ambient_occlusion_toggle,
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin-top:2px;">'
+                '<b>Atom size:</b> factor applied to van der Waals radii; '
+                '<code>0.28</code> gives a classic ball-and-stick model and '
+                '<code>1.00</code> gives a space-filling model. '
+                '<b>Bond radius:</b> cylinder radius in Å; wireframe line width '
+                'depends on browser support. Low quality disables antialiasing. '
+                'Only <b>Low</b> also skips high-resolution canvas upscaling and '
+                'ambient occlusion — the per-frame shading pass that costs the most '
+                'on an older machine — making interaction faster but the image '
+                'slightly softer and flatter. Medium and '
+                'High remain sharp. Mouse movement is limited to one render per '
+                'display frame at every quality level. Depth shading is controlled '
+                'separately. <b>Multiple bonds:</b> XYZ/ORCA coordinates do not '
+                'contain bond orders and therefore always appear as single bonds; '
+                'this option only affects MOL/SDF and other formats that include '
+                'bond orders. <b>Depth fog:</b> blends atoms farther from the camera '
+                'into the white background, producing the familiar fading effect. '
+                '<b>Ambient occlusion:</b> strengthens contact and cavity shadows; '
+                'it is off by default to preserve the classic viewer appearance.'
+                '</div>'
+            ),
         ],
         layout=_section_layout,
     )
@@ -3462,7 +4243,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     full_install_bwunicluster_btn,
                     widgets.HTML(
                         '<span style="color:#616161;">'
-                        '<b>Setup</b> prepares an existing DELFIN install for bwUniCluster. '
+                        '<b>Setup</b> prepares an existing DELFIN install for this cluster. '
                         '<b>Verify</b> is read-only. '
                         '<b>Full install</b> runs the packaged installer.'
                         '</span>'
@@ -3470,6 +4251,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 ],
                 layout=_row_layout,
             ),
+            widgets.HBox(
+                [
+                    update_all_tools_btn,
+                    repair_all_tools_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        '<b>Update</b> fetches every installed tool again. '
+                        '<b>Repair</b> checks each one and fixes what does not work. '
+                        'DELFIN itself: <code>install.sh --update</code>.'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
+            ),
+            global_tools_log,
             widgets.HBox(
                 [widgets.HTML('<b>SLURM ORCA</b>'), slurm_orca_input],
                 layout=_row_layout,
@@ -3515,12 +4311,31 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             widgets.HBox(
                 [
+                    check_tools_btn,
+                    repair_tools_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        'Runs each tool on a molecule whose answer is known. '
+                        'Installed is not the same as working: a binary can be '
+                        'there and unable to start, and an xtb reading the '
+                        'wrong parameter file fails every GFN2 run while '
+                        'GFN-FF still works.'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
+            ),
+            tool_health_out,
+            widgets.HBox(
+                [
                     widgets.HTML('<b>Install individual:</b> '),
                     install_xtb_btn,
                     install_crest_btn,
                     install_dftbplus_btn,
                     install_stda_btn,
                     install_std2_btn,
+                    install_gxtb_btn,
+                    install_mopac_btn,
                     install_micromamba_btn,
                 ],
                 layout=_row_layout,
@@ -3642,7 +4457,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ai_tools_section,
         ],
     )
-    tools_accordion.set_title(0, 'QM Tools (xtb, crest, dftb+, stda, std2)')
+    tools_accordion.set_title(0, 'QM Tools (xtb, g-xTB, crest, MOPAC, dftb+, stda, std2)')
     tools_accordion.set_title(1, 'CSP Tools (Crystal Structure Prediction)')
     tools_accordion.set_title(2, 'MLP Tools (Machine Learning Potentials)')
     tools_accordion.set_title(3, 'Analysis Tools (Multiwfn, CENSO, ANMR, morfeus, cclib, nglview, Packmol)')
@@ -3665,8 +4480,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                     widgets.HTML(
                         '<span style="color:#616161;">'
                         'Deletes <code>.venv</code>, recreates it, runs '
-                        '<code>pip install -e .</code>, and packages '
-                        '<code>delfin_venv.tar</code> for job staging. '
+                        '<code>pip install -e .</code>. Jobs pack their own '
+                        'venv cache from it when they start. '
                         'Use after upgrading Python or when the venv is broken.'
                         '</span>'
                     ),
@@ -3832,7 +4647,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     agent_backend_input = widgets.Dropdown(
         options=[
-            ('CLI - Claude Code (uses your subscription, no key needed)', 'cli'),
+            ('CLI - Anthropic CLI (uses your subscription, no key needed)', 'cli'),
             ('API - Anthropic API (pay-per-token, needs key)', 'api'),
         ],
         value='cli' if _claude_cli_found else 'api',
@@ -3854,9 +4669,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     agent_status_html = widgets.HTML(value='')
     agent_cli_status = widgets.HTML(
         value=(
-            '<span style="color:#2e7d32;">&#x2705; Claude Code CLI found</span>'
+            '<span style="color:#2e7d32;">&#x2705; Anthropic CLI found</span>'
             if _claude_cli_found
-            else '<span style="color:#ef6c00;">&#x26a0; Claude Code CLI not found in PATH</span>'
+            else '<span style="color:#ef6c00;">&#x26a0; Anthropic CLI (\'claude\') not found in PATH</span>'
         ),
     )
 
@@ -3904,7 +4719,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     agent_env_hint = widgets.HTML(
         value=(
             '<span style="color:#757575;font-size:12px;">'
-            '<b>CLI backend</b> uses your Claude Pro/Max subscription via OAuth (no API key needed).<br>'
+            '<b>CLI backend</b> uses your Anthropic subscription via OAuth (no API key needed).<br>'
             '<b>API backend</b> requires the <code>ANTHROPIC_API_KEY</code> environment variable '
             '(set it in your shell before launching the dashboard). '
             'Keys are never stored on disk.'
@@ -4005,6 +4820,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             payload['agent']['backend'] = agent_backend_input.value
             payload['agent']['model'] = agent_model_input.value
             payload['agent']['role_models'] = _save_role_model_settings()
+            if _ros is not None:
+                _ros.read_only_shapes_into_payload(
+                    payload, _save_ros_settings()
+                )
             save_settings(payload, settings_path)
             agent_status_html.value = (
                 '<span style="color:#2e7d32;">&#x2714; Agent settings saved. '
@@ -4017,19 +4836,103 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
 
     agent_save_btn.on_click(_save_agent_settings_with_roles)
 
+    # -- Read-only command shapes (approval by rule) -----------------------
+    # Rendered and persisted through the helpers in delfin.agent.
+    # read_only_shapes so the gate (api_client.py, protected) and this tab
+    # share one stored contract: agent.read_only_shapes = {enabled,
+    # enabled_shapes}. Lazy import like _subagent_caps_now: the helper module
+    # imports only the stdlib and stays importable anywhere.
+    try:
+        from delfin.agent import read_only_shapes as _ros
+    except Exception:
+        _ros = None
+
+    _ros_enabled = widgets.Checkbox(
+        value=True,
+        description='Approve these command forms by rule',
+        layout=widgets.Layout(width='340px'),
+    )
+    _ros_shape_checks: dict[str, widgets.Checkbox] = {}
+    _ros_shape_rows = []
+    for _name in (_ros.SHAPE_NAMES if _ros else []):
+        _cb = widgets.Checkbox(
+            value=True,
+            description=_ros.SHAPE_SPELLINGS.get(_name, _name),
+            layout=widgets.Layout(width='380px'),
+        )
+        _ros_shape_checks[_name] = _cb
+        _ros_shape_rows.append(
+            widgets.HBox([_cb], layout=widgets.Layout(gap='8px'))
+        )
+
+    _ros_header = widgets.HTML(
+        value=(
+            '<b style="font-size:13px;">Command shapes approved by rule</b><br>'
+            '<span style="color:#757575;font-size:12px;">'
+            'A command that is exactly one of these forms runs without an '
+            'approval dialog: '
+            + html.escape(', '.join(
+                (_ros.SHAPE_SPELLINGS if _ros else {}).values()))
+            + '. No options; &lt;path&gt; must resolve inside the '
+            'workspace. The switch creates a local branch. git still runs '
+            'the filters and hooks the repository configures, inside the '
+            'shell sandbox.</span>'
+        ),
+    )
+    _ros_box = widgets.VBox(
+        [_ros_header, _ros_enabled] + _ros_shape_rows,
+        layout=widgets.Layout(
+            padding='8px',
+            gap='4px',
+            border='1px solid #e0e0e0',
+            border_radius='4px',
+        ),
+    )
+
+    def _load_ros_settings():
+        if _ros is None:
+            return
+        try:
+            block = _ros.read_only_shapes_from_payload(load_settings())
+            _ros_enabled.value = bool(block.get('enabled', True))
+            active = set(block.get('enabled_shapes', []))
+            for _name, _cb in _ros_shape_checks.items():
+                _cb.value = _name in active
+        except Exception:
+            pass
+
+    def _save_ros_settings():
+        """Return the dict to store under agent.read_only_shapes."""
+        # Every box unticked means no shape, not all of them.
+        shapes = [
+            n for n, cb in _ros_shape_checks.items() if cb.value
+        ]
+        return {'enabled': bool(_ros_enabled.value), 'enabled_shapes': shapes}
+
     agent_section = widgets.VBox(
         [
             agent_backend_input,
             agent_cli_status,
             agent_model_input,
             role_models_box,
+            _ros_box,
             widgets.HBox([agent_save_btn, agent_status_html]),
             agent_env_hint,
         ],
         layout=widgets.Layout(padding='8px', gap='6px'),
     )
+    # The user model: visible, editable, forgettable. A tree or a kernel
+    # that cannot build the panel keeps the rest of the section.
+    try:
+        from delfin.dashboard.user_model_panel import (
+            build_widget as _build_user_model_panel)
+        agent_section.children = tuple(agent_section.children) + (
+            _build_user_model_panel(),)
+    except Exception:
+        pass
     _load_agent_settings()
     _load_role_model_settings()
+    _load_ros_settings()
 
     # ══════════════════════════════════════════════════════════════════════
     # Section: Scheduling (SLURM memory headroom)
@@ -4114,7 +5017,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     main_accordion.set_title(6, 'DELFIN Agent')
     main_accordion.set_title(7, 'Developer')
     main_accordion.set_title(8, 'SSH Transfer & Remote Archive')
-    main_accordion.selected_index = 0  # Workspace open by default
+    main_accordion.selected_index = None  # all settings sections collapsed by default
 
     tab = widgets.VBox(
         [

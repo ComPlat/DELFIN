@@ -1,0 +1,146 @@
+"""A setup script must not touch a fixture it does not own.
+
+`Task.setup` prepares a workspace before an attempt, and for a
+science_analysis task that workspace is
+`tests/fixtures/science_workspace/` — shared by every other science
+task, and already holding `run_a.out`..`run_d.out`, `pipeline.py`,
+`ensemble.csv` and a `README.md` describing them.
+
+The first version of `two_timings_that_overlap.py` wrote its own
+`README.md` there. The guard around an attempt snapshots and restores
+the fixture directories, so nothing would have survived to the next
+task — which is not a licence to write over somebody else's fixture. A
+guard that has to undo a write is one failure away from not undoing it,
+and the `_PristineWorkspace.failed` flag exists because a snapshot that
+did not happen used to be swallowed.
+
+This is asserted for EVERY setup script the suite declares, not just
+that one, so the next script added inherits the rule.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from delfin.agent.benchmark import load_tasks
+from delfin.agent.benchmark_runner import setup_path
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _env() -> dict:
+    """This checkout first on the child's import path. The scripts import
+    delfin, and a bare interpreter resolves that through whatever is
+    installed -- on a machine with several checkouts, a different tree,
+    whose indexer once returned records without an outcome and failed a
+    self-check that passes here."""
+    import os
+    env = dict(os.environ)
+    prior = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join([str(_ROOT)] + [x for x in prior.split(os.pathsep) if x])
+    return env
+_WS_FOR_CLASS = {
+    "science_analysis": "science_workspace",
+    "generic_project": "user_project_workspace",
+    "generalist": "generalist_workspace",
+}
+
+
+def _toolchain_not_run(proc) -> bool:
+    """A generalist setup on a host without node/cargo/go exits 3 with
+    ``toolchain unavailable``: the attempt is unmeasured. That is the
+    honest answer for such a host, and the test then checks that it
+    built nothing."""
+    return proc.returncode == 3 and "toolchain unavailable" in proc.stderr
+
+
+#: name -> the fixture-copy workspace a passing
+#: test_a_setup_adds_files_and_changes_none left its output in. The
+#: refuse-twice test runs its second run there instead of building a
+#: first one of its own: one interpreter start per script saved (four
+#: -> three), and the second run meets its output in the workspace the
+#: benchmark runner gives it (the fixture copy), not in an empty one.
+_BUILT: dict[str, Path] = {}
+
+
+def _setups():
+    seen = {}
+    for t in load_tasks():
+        if t.setup:
+            seen.setdefault(t.setup, t.task_class)
+    return sorted(seen.items())
+
+
+def test_the_suite_still_has_setup_scripts():
+    """The premise: a parametrised test over an empty list passes."""
+    assert _setups(), "no task declares a setup script any more"
+
+
+@pytest.mark.parametrize("name,task_class", _setups())
+def test_a_setup_adds_files_and_changes_none(name, task_class, tmp_path):
+    rel = _WS_FOR_CLASS.get(task_class)
+    if rel is None:
+        pytest.skip(f"no fixture workspace mapped for {task_class}")
+    source = _ROOT / "tests" / "fixtures" / rel
+    if not source.is_dir():
+        pytest.skip(f"{source} is not in this checkout")
+
+    ws = tmp_path / rel
+    shutil.copytree(source, ws)
+    before = {p.relative_to(ws): p.read_bytes()
+              for p in ws.rglob("*") if p.is_file()}
+
+    proc = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
+                          capture_output=True, text=True, timeout=300, env=_env())
+    after = {p.relative_to(ws): p.read_bytes()
+             for p in ws.rglob("*") if p.is_file()}
+    if _toolchain_not_run(proc):
+        assert after == before, f"{name} built something before refusing"
+        return
+    assert proc.returncode == 0, proc.stderr[:400]
+
+    changed = sorted(str(k) for k, v in before.items() if after.get(k) != v)
+    assert not changed, f"{name} rewrote fixture files it does not own: {changed}"
+    assert set(after) - set(before), f"{name} created nothing"
+    _BUILT[name] = ws
+
+
+@pytest.mark.parametrize("name,task_class", _setups())
+def test_a_setup_refuses_to_run_twice(name, task_class, tmp_path):
+    """Non-zero on a second run, so a workspace that was not cleaned is
+    reported as unmeasured rather than silently half-rebuilt."""
+    rel = _WS_FOR_CLASS.get(task_class)
+    if rel is None:
+        pytest.skip(f"no fixture workspace mapped for {task_class}")
+    ws = _BUILT.pop(name, None)
+    if ws is None or not ws.is_dir():
+        # The adds-files test did not pass for this script in this run
+        # (deselected, skipped, failed, or its directory removed): build
+        # the first run here, into an empty workspace.
+        ws = tmp_path / rel
+        ws.mkdir(parents=True)
+        first = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
+                               capture_output=True, text=True, timeout=300,
+                               env=_env())
+        if _toolchain_not_run(first):
+            assert not any(ws.iterdir()), f"{name} built something before refusing"
+            return
+        assert first.returncode == 0, first.stderr[:400]
+    second = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
+                            capture_output=True, text=True, timeout=300, env=_env())
+    assert second.returncode != 0, (
+        f"{name} rebuilt over its own output instead of refusing")
+    assert "refusing to overwrite" in second.stderr
+
+
+@pytest.mark.parametrize("name,task_class", _setups())
+def test_a_setup_says_what_it_wants_when_given_nothing(name, task_class):
+    proc = subprocess.run([sys.executable, str(setup_path(name))],
+                          capture_output=True, text=True, timeout=60, env=_env())
+    assert proc.returncode != 0
+    assert "usage" in (proc.stdout + proc.stderr).lower()

@@ -60,3 +60,7 @@ The pipeline will pause for the user's response.
 **confidence:** high / medium / low
 **status:** approve / approve_with_risks / reject
 ```
+
+End your review by calling the `report_verdict` tool with your final `status`
+(and per-criterion PASS/FAIL/UNTESTED states) — the pipeline gate reads that
+structured verdict directly; the prose status line is only a fallback.

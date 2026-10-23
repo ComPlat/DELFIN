@@ -25,6 +25,27 @@ logger = get_logger(__name__)
 BOHR_TO_ANGSTROM = 0.529177210903
 DEFAULT_ESP_VLIM_ABS = 0.025  # a.u.; strong contrast in reports
 
+PYMOL_MISSING_NOTICE = (
+    "PyMOL is not installed; the picture is skipped. It is an optional "
+    "extra: pip install \"delfin-complat[pymol]\" (the PyPI wheels need "
+    "glibc >= 2.35, so on RHEL 9 and other glibc 2.34 systems the reports "
+    "come without these pictures)."
+)
+
+
+def pymol_available() -> bool:
+    """Whether the ``pymol`` package can be imported in this interpreter.
+
+    Only the import is tried, in this process; the renders themselves run in
+    a subprocess because PyMOL can take the hosting interpreter down.
+    """
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("pymol") is not None
+    except Exception:  # noqa: BLE001 -- a broken package counts as absent
+        return False
+
 
 @dataclass(frozen=True)
 class CubeHeader:
@@ -96,8 +117,14 @@ def _orca_plot_run(gbw_path: Path, stdin: str) -> bool:
         )
         elapsed = time.time() - start
         if proc.returncode != 0:
-            logger.error(
-                "orca_plot failed (rc=%s, %.1fs).\nstdout:\n%s\nstderr:\n%s",
+            # A missing plot costs a picture in the report, not the result the
+            # job was submitted for — the caller carries on without it. Logging
+            # it at ERROR made it by far the most frequent ERROR line in the
+            # run archive, all of it inside jobs that completed successfully,
+            # which taught the eye to skim past ERROR lines that do matter.
+            logger.warning(
+                "orca_plot failed (rc=%s, %.1fs); report continues without this "
+                "plot.\nstdout:\n%s\nstderr:\n%s",
                 proc.returncode,
                 elapsed,
                 (proc.stdout or "").strip(),
@@ -430,6 +457,10 @@ def create_esp_isosurface_png(
 
     import os
 
+    if not pymol_available():
+        logger.warning("ESP isosurface: %s", PYMOL_MISSING_NOTICE)
+        return None
+
     try:
         _, esp_data = _read_cube(esp_cube_path)
         vlim_abs_env = os.getenv("DELFIN_ESP_VLIM_ABS")
@@ -560,6 +591,10 @@ def create_esp_molecular_surface_png(
     This yields the typical "MEP mapped on molecular surface" style visualization, while staying
     robust even when ORCA does not provide a usable electron-density cube.
     """
+    if not pymol_available():
+        logger.warning("ESP surface: %s", PYMOL_MISSING_NOTICE)
+        return None
+
     try:
         _, esp_data = _read_cube(esp_cube_path)
         import os

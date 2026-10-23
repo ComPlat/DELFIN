@@ -1,0 +1,30 @@
+# Review ownership for main.
+#
+# The "protect-main" ruleset requires a Code Owner's approval on every pull
+# request, so nothing reaches main without the maintainer having read it.
+#
+# In CODEOWNERS the last matching line wins. The catch-all comes first; the
+# paths below it name the same owner and stay listed for the reason they are
+# the riskiest, so they keep their owner if the catch-all is ever shared with
+# further maintainers.
+
+*                                  @hmaximilian
+
+# The workflows are the merge gate, and they run with repository permissions.
+/.github/                @hmaximilian
+
+# How jobs are scheduled, restarted and recovered. A change here can silently
+# discard hours of computation or let an unfinished calculation pass as done.
+/delfin/orca.py                    @hmaximilian
+/delfin/orca_recovery.py           @hmaximilian
+/delfin/smart_recalc.py            @hmaximilian
+/delfin/workflows/scheduling/      @hmaximilian
+/delfin/submit_templates/          @hmaximilian
+
+# The agent's permission boundaries.
+/delfin/agent/                     @hmaximilian
+
+# The global knowledge every DELFIN user loads after git pull. Entries
+# arrive through the knowledge admin's review queue; the admin owns the
+# folder, so no entry is merged without the admin's review.
+/delfin/agent/pack/knowledge/      @hmaximilian

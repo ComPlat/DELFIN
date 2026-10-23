@@ -28,14 +28,18 @@ def agent_tree(tmp_path):
     lite_dir = tmp_path / "pack_lite"
     modes = lite_dir / "modes"
     modes.mkdir(parents=True)
-    (modes / "quick.md").write_text("# quick mode")
+    (modes / "solo.md").write_text("# solo mode")
 
+        # The fixture's mode is named `solo` because that is where every
+        # retired name now migrates to. It keeps a THREE-role route on
+        # purpose: the engine's role-advancement machinery is what these
+        # tests exercise, and a single-role route would stop testing it.
     manifest = textwrap.dedent("""\
         pack_name: DELFIN_AGENT_LITE
         version: 1
         modes:
-          - id: quick
-            file: modes/quick.md
+          - id: solo
+            file: modes/solo.md
             route:
               - session_manager
               - builder_agent
@@ -56,7 +60,7 @@ def mock_client():
         yield StreamEvent(type="message_start", input_tokens=100)
         yield StreamEvent(type="text_delta", text="Hello ")
         yield StreamEvent(type="text_delta", text="from ")
-        yield StreamEvent(type="text_delta", text="Claude!")
+        yield StreamEvent(type="text_delta", text="DELFIN!")
         yield StreamEvent(type="message_delta", output_tokens=50, cost_usd=0.01)
 
     client = MagicMock()
@@ -74,7 +78,7 @@ def test_engine_init(agent_tree, mock_client):
             mode="quick",
             pack_dir=agent_tree,
         )
-    assert engine.mode == "quick"
+    assert engine.mode == "solo"
     assert engine.route == ["session_manager", "builder_agent", "test_agent"]
     assert engine.current_role == "session_manager"
     assert engine.current_role_index == 0
@@ -96,8 +100,8 @@ def test_engine_stream_response(agent_tree, mock_client):
         on_token=lambda t: chunks.append(t),
     )
 
-    assert response == "Hello from Claude!"
-    assert chunks == ["Hello ", "from ", "Claude!"]
+    assert response == "Hello from DELFIN!"
+    assert chunks == ["Hello ", "from ", "DELFIN!"]
     assert len(engine.messages) == 2
     assert engine.messages[0]["role"] == "user"
     assert engine.messages[1]["role"] == "assistant"
@@ -110,7 +114,6 @@ def test_engine_stream_response(agent_tree, mock_client):
 def test_engine_records_turn_metrics(agent_tree, mock_client, monkeypatch, tmp_path):
     """Each turn records timing (total + time-to-first-token + tool count) so a
     slow turn is diagnosable after the fact."""
-    from pathlib import Path
     from delfin.agent import turn_metrics as tm
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(tm, "_DIR", tmp_path / ".delfin" / "turn_metrics")
@@ -125,7 +128,7 @@ def test_engine_records_turn_metrics(agent_tree, mock_client, monkeypatch, tmp_p
     entries = tm.read(engine.trace_session())
     assert entries, "a turn metric should be recorded"
     last = entries[-1]
-    assert last["output_chars"] == len("Hello from Claude!")
+    assert last["output_chars"] == len("Hello from DELFIN!")
     assert last["ttft_ms"] is not None        # text was emitted → ttft captured
     assert last["tool_calls"] == 0
     assert last["total_ms"] >= 0
@@ -232,7 +235,7 @@ def test_engine_get_status(agent_tree, mock_client):
         )
 
     status = engine.get_status()
-    assert status["mode"] == "quick"
+    assert status["mode"] == "solo"
     assert status["backend"] == "cli"
     assert status["role"] == "session_manager"
     assert status["role_index"] == 0
@@ -273,7 +276,7 @@ def test_engine_available_modes(agent_tree, mock_client):
         )
 
     modes = engine.available_modes()
-    assert "quick" in modes
+    assert "solo" in modes
 
 
 def test_cli_client_init():
@@ -375,8 +378,20 @@ def test_engine_allows_mcp_ops_tool_through_whitelist(agent_tree):
     )
 
 
-def test_engine_blocks_unknown_tool_outside_mcp(agent_tree):
-    """A non-whitelisted, non-MCP tool must still be blocked."""
+def test_a_tool_call_that_happened_is_reported(agent_tree):
+    """This used to assert that the engine "blocks" an unknown tool by
+    not calling on_tool_use.
+
+    The event is a report: the client yields it and then executes the
+    tool in the same generator, so nothing here could stop the call. What
+    the filter did was hide one that RAN — from the UI, from the turn's
+    tool counter, from the execution ledger the functional-claim guard
+    reads for evidence, and from the stray-write check. Refusal lives in
+    api_client._tool_denied_for_role, before execution;
+    tests/test_a_reviewer_does_not_edit_what_it_reviews.py holds it.
+
+    So the property here is the opposite one: whatever ran is shown.
+    """
     from delfin.agent.api_client import StreamEvent
     from delfin.agent.engine import AgentEngine
 
@@ -399,8 +414,8 @@ def test_engine_blocks_unknown_tool_outside_mcp(agent_tree):
         on_tool_use=lambda name, inp: seen.append((name, inp)),
     )
 
-    # EvilTool is neither in session_manager whitelist nor MCP-prefixed → blocked.
-    assert not any(name == "EvilTool" for name, _ in seen)
+    assert any(name == "EvilTool" for name, _ in seen), (
+        "a tool call the client already made was hidden from the user")
 
 
 def test_engine_session_persistence(agent_tree):
@@ -420,6 +435,11 @@ def test_engine_session_persistence(agent_tree):
     client = MagicMock()
     client.stream_message = MagicMock(side_effect=stream_fn)
 
+    # This stub announces its id on the stream, which is the only reason
+    # an empty starting id is correct. The engine asks the client, not the
+    # backend string — the string was reachable by clients that announce
+    # nothing, and their id then stayed empty for the whole session.
+    client.supplies_session_id = True
     with patch("delfin.agent.engine.create_client", return_value=client):
         engine = AgentEngine(repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree)
 
@@ -446,6 +466,10 @@ def test_api_backend_mints_fresh_session_id(agent_tree):
     client = MagicMock()
     perms = MagicMock()
     client._permissions = perms
+    # Declared on the stub, because the engine asks the CLIENT and not the
+    # backend string: create_client routes on the provider, so `backend`
+    # alone never told it which object it was about to get.
+    client.supplies_session_id = False
     with patch("delfin.agent.engine.create_client", return_value=client):
         eng = AgentEngine(repo_dir=agent_tree, backend="api",
                           mode="quick", pack_dir=agent_tree)
@@ -458,8 +482,16 @@ def test_api_backend_mints_fresh_session_id(agent_tree):
 
 
 def test_cli_backend_session_id_stays_empty_until_stream(agent_tree, mock_client):
-    """CLI gets its id from the stream, so the engine must NOT mint one."""
+    """A client that announces its id gets no minted one.
+
+    The stub says so itself. Keying this on ``backend == "cli"`` was the
+    defect: with provider kit/ollama/openai, create_client returns an
+    OpenAIClient whatever the backend string says, and that client
+    announces nothing — so the id stayed empty for the whole session and
+    every task listing fell back to the whole workspace.
+    """
     from delfin.agent.engine import AgentEngine
+    mock_client.supplies_session_id = True
     with patch("delfin.agent.engine.create_client", return_value=mock_client):
         eng = AgentEngine(repo_dir=agent_tree, backend="cli",
                           mode="quick", pack_dir=agent_tree)
@@ -477,7 +509,7 @@ def test_engine_export_state(agent_tree, mock_client):
     engine.advance_role()
 
     exported = engine.export_state()
-    assert exported["mode"] == "quick"
+    assert exported["mode"] == "solo"
     assert exported["role_index"] == 1
     assert exported["route"] == ["session_manager", "builder_agent", "test_agent"]
     assert "session_manager" in exported["role_outputs"]
@@ -517,7 +549,7 @@ def test_engine_restore_state(agent_tree, mock_client):
 
     # Verify streaming still works after restore
     response = engine.stream_response("Continue")
-    assert response == "Hello from Claude!"
+    assert response == "Hello from DELFIN!"
 
 
 def test_retry_from_builder(agent_tree, mock_client):
@@ -920,54 +952,63 @@ def test_reviewer_handoff_is_role_specific(agent_tree, mock_client):
     assert "Primary goal: catch goal drift in review" in handoff
 
 
-def test_suggest_mode_detects_cluster():
-    """Test that cluster files trigger cluster mode suggestion."""
+# The two `suggest_mode` tests that stood here pinned a defect as a
+# requirement: they asserted the agent proposes `cluster` and `reviewed`,
+# modes retired from the picker. The signal they were really about -- that
+# a SLURM file or the CLI parser marks a task as risky -- is still
+# detected, and is now asserted where it survives, in risk_flags.
+
+
+def test_a_slurm_file_is_still_recognised_as_risky():
     from delfin.agent.engine import AgentEngine
 
-    result = AgentEngine.suggest_mode(
-        "Fix the bug in delfin/dashboard/backend_slurm.py", "quick"
-    )
-    assert result == "cluster"
+    flags = AgentEngine.recommend_task_route(
+        "Fix the bug in delfin/dashboard/backend_slurm.py", "solo"
+    )["risk_flags"]
+    assert flags["cluster"]
 
 
-def test_suggest_mode_detects_reviewed():
-    """Test that cli.py triggers reviewed mode suggestion."""
+def test_the_cli_parser_is_still_recognised_as_risky():
     from delfin.agent.engine import AgentEngine
 
-    result = AgentEngine.suggest_mode(
-        "Refactor delfin/cli.py argument parsing", "quick"
-    )
-    assert result == "reviewed"
+    flags = AgentEngine.recommend_task_route(
+        "Refactor delfin/cli.py argument parsing", "solo"
+    )["risk_flags"]
+    assert flags["reviewed"]
 
 
-def test_suggest_mode_no_escalation_needed():
-    """Test that unrelated files don't trigger escalation."""
+def test_suggest_mode_no_escalation_needed(monkeypatch):
+    """Test that unrelated files don't trigger escalation.
+
+    The provider profile is neutralised because the router also escalates
+    ADAPTIVELY, from a recorded task-success rate under ~/.delfin. That
+    made this test a function of how much the agent had been run on this
+    machine: it passed on a fresh checkout and failed once real cycles had
+    been recorded, which is a property of the box rather than of the code
+    it claims to test.
+    """
     from delfin.agent.engine import AgentEngine
 
-    result = AgentEngine.suggest_mode(
-        "Fix a typo in the README", "quick"
-    )
-    assert result is None
+    monkeypatch.setattr(
+        "delfin.agent.provider_profile.load_provider_profile",
+        lambda *a, **kw: {})
+
+    flags = AgentEngine.recommend_task_route(
+        "Fix a typo in the README", "solo"
+    )["risk_flags"]
+    assert not any(flags.values())
 
 
-def test_suggest_mode_already_high_enough():
-    """Test that no suggestion if current mode is already sufficient."""
+def test_both_risks_are_reported_not_ranked():
+    """There is no ladder to climb any more, so naming both is the answer
+    -- the old test asserted cluster BEAT reviewed, which only meant
+    something while modes were ordered."""
     from delfin.agent.engine import AgentEngine
 
-    result = AgentEngine.suggest_mode(
-        "Fix delfin/cli.py", "cluster"
-    )
-    assert result is None  # cluster > reviewed, no escalation
-
-
-def test_suggest_mode_cluster_over_reviewed():
-    """Test that cluster wins when both cluster and reviewed files mentioned."""
-    from delfin.agent.engine import AgentEngine
-
-    result = AgentEngine.suggest_mode(
-        "Change delfin/cli.py and backend_slurm.py together", "quick"
-    )
-    assert result == "cluster"
+    flags = AgentEngine.recommend_task_route(
+        "Change delfin/cli.py and backend_slurm.py together", "solo"
+    )["risk_flags"]
+    assert flags["cluster"] and flags["reviewed"]
 
 
 def test_recommend_task_route_prefers_dashboard_for_dashboard_ops():
@@ -1013,7 +1054,8 @@ def test_recommend_task_route_escalates_cluster_for_runtime_changes():
         "Fix restart handling in delfin/dashboard/backend_slurm.py and scratch recovery logic.",
         "quick",
     )
-    assert decision["mode"] == "cluster"
+    assert decision["mode"] == "solo"
+    assert decision["risk_flags"]["cluster"]
     assert decision["risk_flags"]["cluster"] is True
 
 
@@ -1024,7 +1066,8 @@ def test_recommend_task_route_escalates_reviewed_for_api_semantics():
         "Change CONTROL validation and public API semantics for result parsing.",
         "quick",
     )
-    assert decision["mode"] == "reviewed"
+    assert decision["mode"] == "solo"
+    assert decision["risk_flags"]["reviewed"]
     assert decision["intent"] == "change"
 
 
@@ -1036,7 +1079,10 @@ def test_recommend_task_route_chemistry_code_change_goes_reviewed():
         "Fix the CREST conformer search implementation for metal complexes.",
         "quick",
     )
-    assert decision["mode"] == "reviewed"
+    # It is the chemistry-plus-change combination that used to escalate,
+    # not a risk keyword, so there is no risk flag to assert here -- the
+    # classification itself is the content of this test.
+    assert decision["mode"] == "solo"
     assert decision["task_class"] == "chemistry"
     assert decision["intent"] == "change"
 
@@ -1061,16 +1107,19 @@ def test_recommend_task_route_occupier_code_change():
         "Refactor the OCCUPIER auto tree logic in delfin/occupier_auto.py.",
         "quick",
     )
-    assert decision["mode"] == "reviewed"
+    assert decision["mode"] == "solo"
+    assert decision["risk_flags"]["reviewed"]
 
 
-def test_suggest_mode_escalates_for_chemistry_files():
-    """Chemistry workflow files should trigger reviewed mode suggestion."""
+def test_chemistry_files_are_still_recognised_as_risky():
+    """The signal survives the retirement of the mode it used to name."""
     from delfin.agent.engine import AgentEngine
 
-    assert AgentEngine.suggest_mode("Fix delfin/esd_module.py", "quick") == "reviewed"
-    assert AgentEngine.suggest_mode("Fix delfin/xtb_crest.py", "quick") == "reviewed"
-    assert AgentEngine.suggest_mode("Fix delfin/calculators.py", "quick") == "reviewed"
+    for path in ("delfin/esd_module.py", "delfin/xtb_crest.py",
+                 "delfin/calculators.py"):
+        flags = AgentEngine.recommend_task_route(
+            f"Fix {path}", "solo")["risk_flags"]
+        assert flags["reviewed"], path
 
 
 def test_research_agent_uses_sonnet():
@@ -1114,8 +1163,21 @@ def test_thinking_budget_for_role_uses_task_profile_multiplier():
 
 
 def test_recommend_task_route_escalates_low_success_coding_tasks():
-    """Low task-class success should escalate coding changes from quick."""
+    """Low task-class success escalates coding changes -- when asked for.
+
+    This used to run unconditionally, and the number it reads is not
+    trustworthy: outcome_history.jsonl on this machine holds 55 records,
+    all PASS, with no `quick` record at all, while the provider profile
+    holds kit coding 0.007. Two accumulators for one fact, never
+    reconciled. It also read the wrong provider, defaulting to claude for
+    a KIT session. Off unless the user turns it on; the recorded numbers
+    are still shown by /profile.
+    """
     from delfin.agent.engine import AgentEngine
+
+    def _route():
+        return AgentEngine.recommend_task_route(
+            "Fix the regression in delfin/agent/engine.py", "quick")
 
     with patch(
         "delfin.agent.provider_profile.load_provider_profile",
@@ -1123,14 +1185,17 @@ def test_recommend_task_route_escalates_low_success_coding_tasks():
             "task_performance": {"coding": {"success_rate": 0.6}},
         },
     ):
-        decision = AgentEngine.recommend_task_route(
-            "Fix the regression in delfin/agent/engine.py",
-            "quick",
-        )
+        with patch("delfin.user_settings.load_settings", return_value={}):
+            off = _route()
+        with patch("delfin.user_settings.load_settings", return_value={
+                "agent": {"routing": {"adaptive_escalation": True}}}):
+            on = _route()
 
-    assert decision["task_class"] == "coding"
-    assert decision["mode"] == "reviewed"
-    assert any("task success" in reason for reason in decision["reasons"])
+    assert off["task_class"] == "coding"
+    assert off["mode"] == "solo", "a recorded rate still rewrites the route"
+    assert any("adaptive" in r for r in on["reasons"]), (
+        "the escalation is no longer visible anywhere")
+    assert any("recorded" in reason for reason in on["reasons"])
 
 
 def test_build_handoff_message(agent_tree, mock_client):
@@ -1261,8 +1326,8 @@ def test_compact_for_next_role_preserves_current_role_output_before_advance(agen
     engine.compact_for_next_role()
 
     assert engine.messages == []
-    assert engine.role_outputs["session_manager"] == "Hello from Claude!"
-    assert "Hello from Claude!" in engine.compaction_summaries["session_manager"]
+    assert engine.role_outputs["session_manager"] == "Hello from DELFIN!"
+    assert "Hello from DELFIN!" in engine.compaction_summaries["session_manager"]
 
 
 def test_create_client_api():
@@ -1333,18 +1398,11 @@ def test_auto_verify_on_python_edit(agent_tree, mock_client):
     engine.route = ["solo_agent"]
     engine.current_role_index = 0
 
-    # Python edit → should trigger verification
-    result = engine.check_auto_verify("Edit", "File updated: engine.py")
-    assert result is not None
-    assert "pytest" in result
-
-    # Non-Python edit → no trigger
-    result = engine.check_auto_verify("Edit", "File updated: readme.md")
-    assert result is None
-
-    # Non-edit tool → no trigger
-    result = engine.check_auto_verify("Read", "content of file.py")
-    assert result is None
+    # check_auto_verify() is gone: nothing ever called it, it matched
+    # only the CLI backend's tool names, and the pytest command it named
+    # is wrong for a project without a tests/ directory. See
+    # test_solo_agent_safety_invariants.py for where the contract lives.
+    assert not hasattr(engine, "check_auto_verify")
 
 
 def test_session_error_learning(agent_tree, mock_client):
@@ -1467,3 +1525,67 @@ def test_reset_cycle_resets_outcome_cost_baseline(agent_tree, tmp_path, monkeypa
     engine.record_cycle_outcome(verdict="PASS", user_task="new task")
     outcomes = ot.load_outcomes(path=history, max_entries=10)
     assert outcomes[-1].cost_usd_delta == 1.5
+
+
+def test_project_dir_pin_first_write_wins_and_resets():
+    """Framework anti-drift: the engine pins the FIRST project-write directory
+    and re-injects it every turn; later writes don't move it; reset clears it."""
+    from delfin.agent.engine import AgentEngine
+    e = AgentEngine.__new__(AgentEngine)
+    e._project_dir = ""
+    e._maybe_pin_project_dir("mcp__kit-coding__write_file",
+                             '{"file_path": "greencalc/atoms.py"}')
+    assert e._project_dir == "greencalc"                 # pinned on first write
+    e._maybe_pin_project_dir("write_file", '{"file_path": "other/x.py"}')
+    assert e._project_dir == "greencalc"                 # first write wins
+    assert "greencalc/" in e._build_project_dir_block()
+    e._maybe_pin_project_dir("read_file", '{"file_path": "z/y.py"}')  # non-mutate
+    assert e._project_dir == "greencalc"                 # reads never pin
+    # root write pins "."
+    e2 = AgentEngine.__new__(AgentEngine); e2._project_dir = ""
+    e2._maybe_pin_project_dir("write_file", '{"file_path": "main.py"}')
+    assert e2._project_dir == "." and "ROOT" in e2._build_project_dir_block()
+    # no pin → no block
+    e3 = AgentEngine.__new__(AgentEngine); e3._project_dir = ""
+    assert e3._build_project_dir_block() == ""
+
+
+def test_a_retired_mode_never_reaches_the_engines_own_attribute():
+    """Until _load_mode runs, self.mode was whatever was passed in.
+
+    The constructor's own default was `quick`, a pipeline mode retired long
+    ago, and anything reading engine.mode before the first turn -- a status
+    line, a bug report -- named a mode the user cannot select.
+    """
+    import inspect
+
+    from delfin.agent.engine import AgentEngine, _migrate_mode
+
+    source = inspect.getsource(AgentEngine.__init__)
+    assert "self.mode = _migrate_mode(mode)" in source, (
+        "the constructor stores the mode it was given, unmigrated"
+    )
+
+    default = inspect.signature(AgentEngine.__init__).parameters["mode"].default
+    assert _migrate_mode(default) == default, (
+        f"the constructor default {default!r} is a mode that gets migrated away"
+    )
+    for retired in ("quick", "reviewed", "tdd", "cluster", "full", "pipeline"):
+        assert _migrate_mode(retired) == "solo", retired
+
+
+def test_the_router_never_recommends_a_mode_that_was_retired():
+    """The scoring still reasons in retired terms; the answer must not."""
+    from delfin.agent.engine import AgentEngine, _migrate_mode
+
+    live = {"dashboard", "solo", "office", "research"}
+    for message in ("release this and tag it",
+                    "run the whole thing on the cluster",
+                    "review this change carefully before merging",
+                    "refactor the parser",
+                    "what does occupier do?",
+                    "set BP86 in the submit tab"):
+        decision = AgentEngine.recommend_task_route(message, "dashboard", is_delfin_workspace=True)
+        mode = decision["mode"]
+        assert mode in live, f"{message!r} recommended {mode!r}"
+        assert _migrate_mode(mode) == mode

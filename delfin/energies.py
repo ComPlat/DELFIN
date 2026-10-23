@@ -102,6 +102,15 @@ def collect_gibbs_energies_from_dir(
 
 FLOAT_RE = r'([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)'
 
+#: How far after its keyword a value may stand.  ``.*?`` under DOTALL let
+#: every keyword occurrence scan to the end of the text, which made a
+#: reader quadratic in the number of keywords without a value after them
+#: (16000 'Gibbs free energy' lines: 181 s) and took any number further down
+#: the file as the energy.  ORCA prints the value on the keyword's own line,
+#: 20-60 characters after it; 200 keeps every output in the tests, including
+#: a value on the following line, and bounds the scan per keyword.
+_GAP = r'.{0,200}?'
+
 def _read_text(path: str) -> Optional[str]:
     """Read text content from file with error handling.
 
@@ -118,6 +127,87 @@ def _read_text(path: str) -> Optional[str]:
         logger.info(f"File {path} not found; skipping energy extraction.")
         return None
 
+_JOB_MARKER = re.compile(r'^\s*\$+\s+JOB\s+NUMBER\s+(\d+)\s+\$+', re.IGNORECASE | re.MULTILINE)
+_ECHOED_LINE = re.compile(r'^\s*\|\s*\d+>\s?(.*)$', re.MULTILINE)
+_ECHOED_NEW_JOB = re.compile(r'^\s*\$new_job\b', re.IGNORECASE)
+_ECHOED_BASE = re.compile(r'^\s*%base\s+"?([^"\s]+)"?', re.IGNORECASE)
+
+
+def _bases_of_echoed_jobs(text: str, default: str) -> list:
+    """The BaseName of each job in the echoed input, in order.
+
+    A job that names no ``%base`` keeps the one before it -- the manual calls
+    the labels "necessary to distinguish each job from each other", so without
+    one the jobs are not distinguished and write the same files.  The first
+    job falls back to *default*, which is the input's own name.
+    """
+    bases: list = [default]
+    for line in (m.group(1) for m in _ECHOED_LINE.finditer(text)):
+        if _ECHOED_NEW_JOB.match(line):
+            bases.append(bases[-1])
+            continue
+        named = _ECHOED_BASE.match(line)
+        if named:
+            bases[-1] = named.group(1)
+    return bases
+
+
+def own_job_text(text: str, path: str) -> str:
+    """The part of a multi-job ORCA output that belongs to *path* itself.
+
+    ORCA's ``$new_job`` -- deprecated in 6.1, and the manual warns it "might
+    result in erratic results and strange behavior of succeeding
+    calculations" -- puts several calculations into one output file, and
+    requires each of them to name its own ``%base``.  That BaseName decides
+    which ``.gbw`` and which ``.property.txt`` the job writes, so a job whose
+    base differs from the file's own name is a calculation this file merely
+    happens to contain.
+
+    DELFIN writes exactly such an output: ``T1.inp`` optimises the triplet
+    under ``%base "T1"`` and then appends a closed-shell TD-DFT check job
+    under ``%base "T1_TDDFT"``.  The last ``FINAL SINGLE POINT ENERGY`` in
+    ``T1.out`` is therefore the ground state at the triplet geometry, not the
+    triplet.  Measured on an archived phosphorescence run, taking it made the
+    adiabatic difference 23162 cm-1 where it is 13667 cm-1 -- 1.18 eV out,
+    fed straight into the ESD input as ``DELE``.  ``T1.property.txt`` had the
+    right number all along, because the check job wrote its own property file.
+
+    Returns the whole text when the file holds a single job, or when no job
+    claims the file's name -- then nothing can be attributed and the previous
+    reading stands.
+    """
+    markers = list(_JOB_MARKER.finditer(text))
+    if len(markers) < 2:
+        return text
+    stem = Path(path).name.split('.')[0]
+    if not stem:
+        return text
+    bases = _bases_of_echoed_jobs(text, stem)
+    mine = [n for n, base in enumerate(bases) if base == stem and n < len(markers)]
+    if not mine or len(mine) == len(markers):
+        return text
+    sections = []
+    for n in mine:
+        end = markers[n + 1].start() if n + 1 < len(markers) else len(text)
+        sections.append(text[markers[n].start():end])
+    logger.debug(f"{path}: reading job(s) {[n + 1 for n in mine]} of "
+                 f"{len(markers)} -- the ones writing \"{stem}\"")
+    return '\n'.join(sections)
+
+
+def _last_float_in_text(text: str, patterns: Sequence[str], path: str) -> Optional[float]:
+    """Last float matching any of *patterns* in *text*; *path* is for logging."""
+    for pat in patterns:
+        matches = re.findall(pat, text, flags=re.IGNORECASE | re.DOTALL)
+        if matches:
+            try:
+                return float(matches[-1])
+            except ValueError:
+                logger.error(f"Could not convert '{matches[-1]}' to float from {path}.")
+                return None
+    return None
+
+
 def _search_last_float(path: str, patterns: Sequence[str]) -> Optional[float]:
     """Search for the last occurrence of a float matching any pattern in file.
 
@@ -131,15 +221,8 @@ def _search_last_float(path: str, patterns: Sequence[str]) -> Optional[float]:
     text = _read_text(path)
     if text is None:
         return None
-    for pat in patterns:
-        matches = re.findall(pat, text, flags=re.IGNORECASE | re.DOTALL)
-        if matches:
-            try:
-                return float(matches[-1])
-            except ValueError:
-                logger.error(f"Could not convert '{matches[-1]}' to float from {path}.")
-                return None
-    return None
+    return _last_float_in_text(text, patterns, path)
+
 
 def find_gibbs_energy(filename: str) -> Optional[float]:
     """Extract Gibbs free energy from ORCA output file.
@@ -153,11 +236,22 @@ def find_gibbs_energy(filename: str) -> Optional[float]:
         Gibbs free energy in Hartree, or None if not found
     """
 
-    patterns = [
-        rf"Final\s+Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-        rf"Gibbs\s+free\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-    ]
-    return _search_last_float(filename, patterns)
+    text = _read_text(filename)
+    if text is None:
+        return None
+    return gibbs_energy_in_text(text, filename)
+
+
+_GIBBS_PATTERNS = (
+    rf"Final\s+Gibbs\s+free\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+    rf"Gibbs\s+free\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+)
+
+
+def gibbs_energy_in_text(text: str, path: str = "") -> Optional[float]:
+    """:func:`find_gibbs_energy` on an output already read (*path* names it
+    in the log) -- for a caller whose read went through its own gate."""
+    return _last_float_in_text(text, _GIBBS_PATTERNS, path)
 
 def find_ZPE(filename: str) -> Optional[float]:
     """Extract zero-point energy from ORCA output file.
@@ -171,8 +265,8 @@ def find_ZPE(filename: str) -> Optional[float]:
         Zero-point energy in Hartree, or None if not found
     """
     patterns = [
-        rf"Zero[\s-]?point\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-        rf"Zero[\s-]?point\s+correction.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+        rf"Zero[\s-]?point\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+        rf"Zero[\s-]?point\s+correction{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
     ]
     return _search_last_float(filename, patterns)
 
@@ -180,7 +274,10 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     """Extract final single point electronic energy from ORCA output file.
 
     Searches for 'FINAL SINGLE POINT ENERGY' or equivalent patterns.
-    For S0.out files with multiple jobs, extracts the last energy from Job 1.
+
+    An output holding several ``$new_job`` calculations is read only where it
+    speaks about itself: the job whose ``%base`` is the file's own name. See
+    :func:`own_job_text` for what that costs when it is skipped.
 
     Args:
         filename: Path to ORCA output file
@@ -191,31 +288,21 @@ def find_electronic_energy(filename: str) -> Optional[float]:
     text = _read_text(filename)
     if text is None:
         return None
+    return electronic_energy_in_text(text, filename)
 
-    # Check if this is S0.out with multiple jobs
-    if "S0.out" in filename and "JOB NUMBER  2" in text:
-        # Find position of Job 2 marker
-        job2_match = re.search(r'\$+\s+JOB\s+NUMBER\s+2\s+\$+', text, flags=re.IGNORECASE)
-        if job2_match:
-            # Search only in text before Job 2
-            text_job1 = text[:job2_match.start()]
-            # Find last FINAL SINGLE POINT ENERGY in Job 1
-            pattern = rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}"
-            matches = re.findall(pattern, text_job1, flags=re.IGNORECASE)
-            if matches:
-                try:
-                    return float(matches[-1])
-                except ValueError:
-                    logger.error(f"Could not convert '{matches[-1]}' to float from {filename}.")
-                    return None
 
-    # Default behavior for other files or S0.out without Job 2
-    patterns = [
-        rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
-        rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
-        rf"Electronic\s+energy.*?{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
-    ]
-    return _search_last_float(filename, patterns)
+_ELECTRONIC_PATTERNS = (
+    rf"FINAL\s+SINGLE\s+POINT\s+ENERGY\s+{FLOAT_RE}",
+    rf"Total\s+Energy\s*:\s*{FLOAT_RE}",
+    rf"Electronic\s+energy{_GAP}{FLOAT_RE}\s*(?:E[hH]|a\.u\.)?",
+)
+
+
+def electronic_energy_in_text(text: str, path: str = "") -> Optional[float]:
+    """:func:`find_electronic_energy` on an output already read; *path* is
+    the output's name, which picks its own job out of a ``$new_job`` file."""
+    return _last_float_in_text(own_job_text(text, path or "x"),
+                               _ELECTRONIC_PATTERNS, path)
 
 
 def _extract_excited_state_energy(filename: str, state_number: int = 1, use_soc: bool = False) -> Optional[float]:

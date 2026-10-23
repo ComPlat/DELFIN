@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # CASSCF setup
 > Set up a CASSCF/NEVPT2 calculation with a justified active space — every keyword grounded in the manual.
 

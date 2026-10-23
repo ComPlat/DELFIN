@@ -1,4 +1,4 @@
-"""Session-relative task numbering (bug 20260619-172400, ka_xn0397).
+"""Session-relative task numbering (bug 20260619-172400).
 
 The global task `id` keeps climbing across sessions in a long-lived workspace
 ("bin bei task 90"). `list(with_seq=True)` adds a small 1-based, session-local
@@ -43,6 +43,7 @@ def test_seq_stable_when_a_task_completes(tmp_path):
     s.create("one", session_id="x")
     s.create("two", session_id="x")
     s.create("three", session_id="x")
+    s.update(1, status="in_progress")
     s.update(1, status="completed")
     # Completed task keeps its slot; the others don't renumber.
     seqs = {t["id"]: t["seq"] for t in s.list(session_id="x", with_seq=True)}

@@ -8,9 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
-from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS
-from delfin.deep3_auto_tree import DEEP3_AUTO_SETTINGS
-from delfin.deep_auto_tree import DEEP_AUTO_SETTINGS
 
 logger = get_logger(__name__)
 
@@ -70,258 +67,6 @@ def _seq(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 #                |- -2 : [6]
 #                |- +3 : [3]
 #                `- -3 : [6]
-
-
-AUTO_SETTINGS_FLAT: Dict[int, Dict[str, Any]] = {
-    0: {
-        "baseline": {
-            "even": _seq([
-                {"index": 1, "m": 1, "BS": "", "from": 0},
-                {"index": 2, "m": 3, "BS": "", "from": 0},
-                {"index": 3, "m": 5, "BS": "", "from": 0},
-            ]),
-            "odd": _seq([
-                {"index": 1, "m": 2, "BS": "", "from": 0},
-                {"index": 2, "m": 4, "BS": "", "from": 0},
-                {"index": 3, "m": 6, "BS": "", "from": 0},
-            ]),
-        },
-        "branches": {
-            "even": {
-                1: {
-                    +1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 3, "BS": "", "from": 0},
-                        {"index": 4, "m": 5, "BS": "", "from": 3},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 4, "BS": "", "from": 0},
-                        {"index": 4, "m": 6, "BS": "", "from": 0},
-                    ]),
-                },
-                2: {
-                    +1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 4, "BS": "", "from": 0},
-                        {"index": 4, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 1, "BS": "2,2", "from": 1},
-                        {"index": 4, "m": 3, "BS": "", "from": 0},
-                        {"index": 5, "m": 3, "BS": "3,1", "from": 4},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 2, "BS": "3,2", "from": 1},
-                        {"index": 4, "m": 4, "BS": "", "from": 0},
-                        {"index": 5, "m": 4, "BS": "4,1", "from": 4},
-                        {"index": 6, "m": 6, "BS": "", "from": 0},
-                    ]),
-                },
-                3: {
-                    +1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 4, "BS": "4,1", "from": 3},
-                        {"index": 4, "m": 6, "BS": "", "from": 3},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 3, "BS": "", "from": 0},
-                        {"index": 4, "m": 3, "BS": "3,1", "from": 3},
-                        {"index": 5, "m": 3, "BS": "4,2", "from": 3},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 2, "BS": "3,2", "from": 1},
-                        {"index": 4, "m": 2, "BS": "4,3", "from": 4},
-                        {"index": 5, "m": 4, "BS": "", "from": 0},
-                        {"index": 6, "m": 6, "BS": "", "from": 0},
-                    ]),
-                },
-            },
-            "odd": {
-                1: {
-                    +1: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 3, "BS": "", "from": 0},
-                        {"index": 4, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 4, "BS": "", "from": 0},
-                        {"index": 4, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "1,1", "from": 1},
-                        {"index": 3, "m": 1, "BS": "2,2", "from": 1},
-                        {"index": 4, "m": 3, "BS": "", "from": 0},
-                        {"index": 5, "m": 3, "BS": "3,1", "from": 1},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                },
-                2: {
-                    +1: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 3, "BS": "3,1", "from": 1},
-                        {"index": 4, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 2, "BS": "3,2", "from": 1},
-                        {"index": 3, "m": 2, "BS": "2,1", "from": 1},
-                        {"index": 4, "m": 4, "BS": "", "from": 0},
-                        {"index": 5, "m": 4, "BS": "4,1", "from": 4},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 1, "BS": "2,1", "from": 1},
-                        {"index": 3, "m": 1, "BS": "3,2", "from": 1},
-                        {"index": 4, "m": 3, "BS": "", "from": 0},
-                        {"index": 5, "m": 3, "BS": "4,1", "from": 4},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                },
-                3: {
-                    +1: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -1: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 1},
-                        {"index": 3, "m": 5, "BS": "5,1", "from": 1},
-                    ]),
-                    +2: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 6, "BS": "", "from": 0},
-                    ]),
-                    -2: _seq([
-                        {"index": 1, "m": 2, "BS": "", "from": 0},
-                        {"index": 2, "m": 4, "BS": "", "from": 0},
-                        {"index": 3, "m": 4, "BS": "4,1", "from": 4},
-                        {"index": 4, "m": 4, "BS": "5,2", "from": 4},
-                        {"index": 5, "m": 6, "BS": "", "from": 0},
-
-                    ]),
-                    +3: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 5, "BS": "", "from": 0},
-                    ]),
-                    -3: _seq([
-                        {"index": 1, "m": 1, "BS": "", "from": 0},
-                        {"index": 2, "m": 3, "BS": "", "from": 0},
-                        {"index": 3, "m": 3, "BS": "3,1", "from": 2},
-                        {"index": 4, "m": 3, "BS": "4,2", "from": 2},
-                        {"index": 5, "m": 3, "BS": "5,3", "from": 2},
-                        {"index": 6, "m": 5, "BS": "", "from": 0},
-                    ]),
-                },
-            },
-        },
-    },
-}
-
-AUTO_SETTINGS: Dict[int, Dict[str, Any]] = DEEP_AUTO_SETTINGS
 
 
 def _resolve_root(base_dir: Optional[Path] = None) -> Path:
@@ -385,11 +130,16 @@ def infer_parity_from_m(value: Any, fallback: Optional[str] = None) -> Optional[
 
 def record_auto_preference(parity: str, preferred_index: Optional[int], delta: int,
                            *, m_value: Optional[int] = None, bs_value: Optional[str] = None,
+                           populated: Optional[List[Dict[str, Any]]] = None,
                            root: Optional[Path] = None) -> None:
-    """Remember which FoB index won for a given delta, including m and BS values.
+    """Remember which configuration won for a given delta, and which coexist.
 
-    This stores preferences for all delta values with full winner info (index, m, BS)
-    to enable rule-based sequence generation for own mode.
+    The winner drives the next redox step. `populated` carries every
+    configuration whose Boltzmann weight cleared BOLTZMANN_PARENT_THRESHOLD,
+    including the winner: where a molecule is a thermal mixture rather than a
+    single state, each partner is a starting point the next step has to be
+    derived from. Older state files carry no such list and fall back to the
+    winner alone.
     """
     if preferred_index is None:
         return
@@ -398,11 +148,26 @@ def record_auto_preference(parity: str, preferred_index: Optional[int], delta: i
     entry = state.setdefault(str(delta), {})
 
     # Store full winner info for own mode rule-based generation
-    winner_info = {"index": int(preferred_index)}
+    winner_info: Dict[str, Any] = {"index": int(preferred_index)}
     if m_value is not None:
         winner_info["m"] = int(m_value)
     if bs_value is not None:
         winner_info["BS"] = str(bs_value).strip()
+
+    if populated:
+        kept = [p for p in populated if isinstance(p, dict) and p.get("m") is not None]
+        if len(kept) > 1:
+            winner_info["populated"] = kept
+            logger.info(
+                "[occupier_auto] delta=%s is a thermal mixture; deriving the next step "
+                "from %d configurations: %s",
+                delta, len(kept),
+                ", ".join(
+                    f"m={p.get('m')}{' BS ' + str(p['BS']) if p.get('BS') else ''}"
+                    f" ({100 * float(p.get('weight', 0.0)):.0f}%)"
+                    for p in kept
+                ),
+            )
 
     entry[_parity_token(parity)] = winner_info
     _save_state(state, root_path)
@@ -438,6 +203,94 @@ def _preferred_index_from_state(state: Dict[str, Any], delta: int,
     return None
 
 
+#: Minimum Boltzmann population for a configuration to seed the next redox
+#: step. At 298.15 K, kT is 0.593 kcal/mol; 5 % against the majority is a free
+#: energy gap of about 1.7 kcal/mol, roughly 3 kT. Below that a state is not
+#: meaningfully present in the equilibrium and following it would only cost
+#: calculations; at or above it the substance genuinely is a mixture, and the
+#: oxidised or reduced species can form from either partner.
+BOLTZMANN_PARENT_THRESHOLD = 0.05
+
+
+def _entry_key(entry: Dict[str, Any]) -> Tuple[Any, str]:
+    """Identity of a configuration: its multiplicity and broken-symmetry label."""
+    return entry.get("m"), str(entry.get("BS") or "").strip()
+
+
+def _remap_from(value: Any, local: Dict[int, int]) -> Any:
+    """Rewrite a `from` reference onto merged indices.
+
+    `from` names the configuration whose converged orbitals this one starts
+    from, which is what makes a broken-symmetry solution findable at all
+    instead of collapsing back to the pure state. Merging sequences renumbers
+    everything, so these have to follow. 0 means "start from the input
+    geometry" and stays 0.
+    """
+    if isinstance(value, (list, tuple)):
+        return [local.get(int(v), 0) for v in value if str(v).lstrip("-").isdigit()]
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return local.get(index, 0) if index else 0
+
+
+def merge_sequences(sequences: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Combine per-parent sequences into one, without computing anything twice.
+
+    Two thermally populated parents usually propose overlapping daughters —
+    both may want the same pure multiplicity — and running that twice would
+    cost an optimisation for nothing. Configurations are therefore identified
+    by (multiplicity, BS label): the first occurrence is kept, later ones fold
+    into it, and any `from` pointing at a folded entry is redirected to the
+    survivor.
+    """
+    merged: List[Dict[str, Any]] = []
+    by_key: Dict[Tuple[Any, str], int] = {}
+
+    for sequence in sequences:
+        local: Dict[int, int] = {}
+        added: List[Tuple[Dict[str, Any], Any]] = []
+        for entry in sequence:
+            try:
+                old_index = int(entry["index"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            key = _entry_key(entry)
+            if key in by_key:
+                local[old_index] = by_key[key]
+                continue
+            new_entry = dict(entry)
+            new_entry["index"] = len(merged) + 1
+            merged.append(new_entry)
+            by_key[key] = new_entry["index"]
+            local[old_index] = new_entry["index"]
+            added.append((new_entry, entry.get("from", 0)))
+        for new_entry, original_from in added:
+            new_entry["from"] = _remap_from(original_from, local)
+
+    return merged
+
+
+def populated_parents(winner_info: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The configurations the next redox step should be derived from.
+
+    Normally one: the state that won. When several were populated enough to
+    coexist, all of them — a substance sitting as a 50:50 mixture of two spin
+    states can be oxidised out of either, and the daughter states reachable
+    from one are not the daughter states reachable from the other. Taking only
+    the lower parent quietly assumes a purity the molecule does not have.
+    """
+    if not winner_info:
+        return []
+    populated = winner_info.get("populated")
+    if isinstance(populated, list) and populated:
+        usable = [p for p in populated if isinstance(p, dict) and p.get("m") is not None]
+        if usable:
+            return usable
+    return [winner_info] if winner_info.get("m") is not None else []
+
+
 def _get_winner_info_from_state(state: Dict[str, Any], delta: int,
                                  parity: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Get full winner info (index, m, BS) from state.
@@ -470,123 +323,6 @@ def _get_winner_info_from_state(state: Dict[str, Any], delta: int,
             return {"index": int(value), "m": None, "BS": None}
         except Exception:  # noqa: BLE001
             return None
-    return None
-
-
-def _collect_preference_chain(anchor: int, target: int, parity: str,
-                              state: Dict[str, Any]) -> List[int]:
-    """Collect recorded FoB preferences along the path from anchor to target."""
-    if anchor == target:
-        return []
-    direction = 1 if target > anchor else -1
-    steps = abs(target - anchor)
-    chain: List[int] = []
-    for step in range(1, steps + 1):
-        delta_value = anchor + direction * step
-        remaining = steps - step
-        parity_token = _parity_with_distance(parity, remaining)
-        pref = _preferred_index_from_state(state, delta_value, parity_token)
-        if pref is not None:
-            chain.append(pref)
-    return chain
-
-
-def _ordered_candidates(source: Dict[int, Any], preferred: Optional[int]) -> List[int]:
-    """Return sorted candidate keys, honoring a preferred index (int/str tolerant)."""
-    if not source:
-        return []
-
-    def _normalize(key: Any) -> Any:
-        try:
-            return int(key)
-        except Exception:  # noqa: BLE001
-            return key
-
-    ordered: List[Any] = []
-    if preferred is not None:
-        for token in (preferred, str(preferred)):
-            if token in source and token not in ordered:
-                ordered.append(token)
-
-    numeric: List[tuple[int, Any]] = []
-    non_numeric: List[tuple[str, Any]] = []
-    for key in source.keys():
-        norm = _normalize(key)
-        if isinstance(norm, int):
-            numeric.append((norm, key))
-        else:
-            non_numeric.append((str(norm), key))
-
-    for _, key in sorted(numeric, key=lambda pair: pair[0]):
-        if key not in ordered:
-            ordered.append(key)
-    for _, key in sorted(non_numeric, key=lambda pair: pair[0]):
-        if key not in ordered:
-            ordered.append(key)
-
-    return ordered
-
-
-def _extract_sequence_from_tree_node(tree_node: Dict[str, Any], preferred_sub_index: int = 1) -> Optional[List[Dict[str, Any]]]:
-    """Extract sequence from tree node structure.
-
-    Tree nodes have structure: {sub_index: {"seq": [...], "branches": {...}}}
-    We prefer the given sub_index, or take the first available.
-    """
-    if not isinstance(tree_node, dict):
-        return None
-
-    # Try preferred sub-index first
-    if preferred_sub_index in tree_node:
-        node_data = tree_node[preferred_sub_index]
-        if isinstance(node_data, dict) and "seq" in node_data:
-            return node_data["seq"]
-
-    # Fallback: take first available sub-index
-    for sub_idx in sorted(tree_node.keys()):
-        node_data = tree_node.get(sub_idx)
-        if isinstance(node_data, dict) and "seq" in node_data:
-            return node_data["seq"]
-
-    return None
-
-
-def _navigate_recursive_tree(node: Dict[str, Any], remaining_steps: int, direction: int,
-                             preferred_chain: Optional[List[int]] = None) -> Optional[List[Dict[str, Any]]]:
-    """Navigate recursive tree structure to find sequence at target depth.
-
-    For deep, structure is: node['branches'][direction][sub]['branches'][direction][sub]...
-    remaining_steps=0 means we're at the target node
-    """
-    if remaining_steps == 0:
-        # We're at the target node, extract its sequence
-        if "seq" in node:
-            return node.get("seq")
-        return None
-
-    # Navigate one level deeper
-    inner_branches = node.get("branches", {})
-    if not inner_branches:
-        return None
-
-    # Branch keys may be stored as ints (in-memory) or strings (JSON)
-    next_level = inner_branches.get(direction)
-    if next_level is None:
-        next_level = inner_branches.get(str(direction))
-    if next_level is None:
-        return None
-
-    # Get the next level (dict of sub-indices)
-    preferred_sub = None
-    tail: List[int] = []
-    if preferred_chain:
-        preferred_sub = preferred_chain[0]
-        tail = preferred_chain[1:]
-
-    for sub_idx in _ordered_candidates(next_level, preferred_sub):
-        result = _navigate_recursive_tree(next_level[sub_idx], remaining_steps - 1, direction, tail)
-        if result:
-            return result
     return None
 
 
@@ -980,14 +716,6 @@ def generate_sequence_from_winner_rules(
 # Own mode now uses rule-based generation instead of pre-built trees
 
 
-_TREE_DATASETS = {
-    "flat": AUTO_SETTINGS_FLAT,
-    "deep2": DEEP2_AUTO_SETTINGS,
-    "deep3": DEEP3_AUTO_SETTINGS,
-    "deep": DEEP_AUTO_SETTINGS,
-}
-
-
 def _resolve_own_mode_sequences(
     delta: int,
     custom_dataset: Dict[int, Dict[str, Any]],
@@ -1100,25 +828,44 @@ def _resolve_own_mode_sequences(
 
     # Generate only the opposite parity of the winner
     target_parity = "odd" if source_parity == "even" else "even"
-    prev_m = winner_info["m"]
-    prev_bs = winner_info.get("BS", "")
 
-    logger.debug(
-        "[own_mode] Winner from delta=%s was parity=%s (m=%s, BS=%s), generating parity=%s",
-        prev_delta, source_parity, prev_m, prev_bs, target_parity
-    )
+    # One parent normally, several when the previous step left a thermal
+    # mixture. Each is carried through the same rules and the results are
+    # merged, so a daughter both parents reach is still computed once.
+    parents = populated_parents(winner_info)
+    sequences: List[List[Dict[str, Any]]] = []
+    for parent in parents:
+        parent_seq = generate_sequence_from_winner_rules(
+            even_baseline,
+            odd_baseline,
+            parent["m"],
+            parent.get("BS", "") or "",
+            target_parity,
+            pure_window=pure_window,
+            progressive_from=progressive_from,
+            include_bs=include_bs,
+        )
+        if parent_seq:
+            sequences.append(parent_seq)
 
-    # Generate sequence using rules
-    seq = generate_sequence_from_winner_rules(
-        even_baseline,
-        odd_baseline,
-        prev_m,
-        prev_bs,
-        target_parity,
-        pure_window=pure_window,
-        progressive_from=progressive_from,
-        include_bs=include_bs,
-    )
+    seq = merge_sequences(sequences)
+
+    if len(parents) > 1:
+        logger.info(
+            "[own_mode] delta=%s derived from %d populated configurations (%s) → "
+            "%d candidates for parity=%s",
+            delta, len(parents),
+            ", ".join(
+                f"m={p['m']}{' BS ' + str(p['BS']) if p.get('BS') else ''}" for p in parents
+            ),
+            len(seq), target_parity,
+        )
+    else:
+        logger.debug(
+            "[own_mode] Winner from delta=%s was parity=%s (m=%s, BS=%s), generating parity=%s",
+            prev_delta, source_parity, winner_info.get("m"), winner_info.get("BS", ""),
+            target_parity,
+        )
 
     if seq:
         key = _storage_key(seq, target_parity)
@@ -1132,179 +879,17 @@ def _resolve_own_mode_sequences(
 
 
 def resolve_auto_sequence_bundle(delta: int, *, root: Optional[Path] = None,
-                                 tree_mode: str = "deep",
                                  parity_hint: Optional[str] = None,
                                  custom_dataset: Optional[Dict[int, Dict[str, Any]]] = None,
                                  config: Optional[Dict[str, Any]] = None) -> Dict[str, List[Dict[str, Any]]]:
-    """Return auto-managed sequences for the requested delta (if available)."""
-    normalized_mode = str(tree_mode or "deep").strip().lower()
+    """Return auto-managed sequences for the requested delta (if available).
 
-    # Special handling for own mode: rule-based generation (no tree navigation)
-    if normalized_mode == "own":
-        if not custom_dataset:
-            return {}
-        return _resolve_own_mode_sequences(
-            delta, custom_dataset, root=root, config=config
-        )
-
-    settings_source = _TREE_DATASETS.get(normalized_mode, AUTO_SETTINGS)
-    root_path = _resolve_root(root)
-    state_cache = _load_state(root_path)
-    bundle: Dict[str, List[Dict[str, Any]]] = {}
-    requested_parities: tuple[str, ...]
-    # For AUTO trees, always provide both parities (ORCA chooses at runtime)
-    # parity_hint is only used for manual/legacy modes
-    requested_parities = ("even", "odd")
-
-    def _storage_key(seq: List[Dict[str, Any]], fallback_parity: str) -> str:
-        m_candidate = None
-        for entry in seq:
-            if isinstance(entry, dict) and entry.get("m") is not None:
-                m_candidate = entry.get("m")
-                break
-        parity = infer_parity_from_m(m_candidate, fallback_parity)
-        parity = parity if parity in ("even", "odd") else fallback_parity
-        return f"{parity}_seq"
-
-    def _copy_sequence(seq: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return copy.deepcopy(seq)
-
-    # Check if this is a recursive tree (deep has recursive structure)
-    is_recursive_tree = normalized_mode == "deep"
-
-    oxidation_baseline = None
-    if normalized_mode == "deep":
-        base_settings = settings_source.get(0)
-        if base_settings:
-            oxidation_baseline = base_settings.get("baseline", {})
-
-    for anchor_key, settings in settings_source.items():
-        try:
-            anchor = int(anchor_key)
-        except Exception:  # noqa: BLE001
-            logger.debug("[occupier_auto] Skipping non-numeric anchor key: %s", anchor_key)
-            continue
-        offset = delta - anchor
-        baseline = settings.get("baseline", {})
-        branches = settings.get("branches", {})
-
-        if offset == 0:
-            for parity in requested_parities:
-                seq = baseline.get(parity)
-                if seq:
-                    key = _storage_key(seq, parity)
-                    bundle[key] = _copy_sequence(seq)
-            if bundle:
-                return bundle
-            continue
-
-        use_simplified_oxidation = normalized_mode in {"deep", "own"} and offset > 0 and oxidation_baseline
-
-        for target_parity in requested_parities:
-            # For recursive trees: the tree structure encodes parity flips at each depth
-            # Navigate from the baseline branch that leads to the target parity after N flips
-            if normalized_mode in {"deep", "own"}:
-                # The tree alternates parity at each depth level
-                # To reach target parity at depth N, start from the branch that flips correctly
-                # depth 0 (baseline) → depth 1 (flip once) → depth 2 (flip twice)
-                # For even depth: same as baseline parity
-                # For odd depth: opposite of baseline parity
-                depth = abs(offset)
-                if depth % 2 == 0:
-                    # Even depth: same parity as target
-                    source_parity = target_parity
-                else:
-                    # Odd depth: opposite parity from target
-                    source_parity = "odd" if target_parity == "even" else "even"
-            else:
-                source_parity = target_parity
-
-            parity_branches = branches.get(source_parity, {})
-            if not parity_branches:
-                if use_simplified_oxidation:
-                    seq = oxidation_baseline.get(target_parity)
-                    if seq:
-                        key = _storage_key(seq, target_parity)
-                        bundle[key] = _copy_sequence(seq)
-                        return bundle
-                continue
-
-            # Collect preference chain for ALL tree modes
-            # Use source_parity to find which FoB won at the previous step
-            # Follow recorded preferences from anchor to target delta
-            preference_chain = _collect_preference_chain(anchor, delta, source_parity, state_cache)
-            anchor_preference = _preferred_index_from_state(state_cache, anchor, source_parity)
-            preferred_branch = anchor_preference
-            ordered_indices = _ordered_candidates(parity_branches, preferred_branch)
-
-            for branch_index in ordered_indices:
-                if is_recursive_tree:
-                    # For recursive trees (deep), navigate through the tree
-                    # offset can be ±1, ±2, ±3
-                    # direction is +1 or -1, depth is abs(offset)
-                    direction = +1 if offset > 0 else -1
-                    depth = abs(offset)
-
-                    branch_info = parity_branches.get(branch_index, {})
-                    # Branch dictionaries can have int keys in-memory and string keys when loaded from JSON
-                    first_level = branch_info.get(direction)
-                    if not first_level:
-                        first_level = branch_info.get(str(direction))
-                    if not first_level:
-                        continue
-
-                    sub_chain: List[int] = []
-                    if preference_chain and (preferred_branch is None or branch_index == preferred_branch):
-                        sub_chain = preference_chain
-
-                    if depth == 1:
-                        pref_sub = sub_chain[0] if sub_chain else 1
-                        seq = _extract_sequence_from_tree_node(first_level, preferred_sub_index=pref_sub)
-                    else:
-                        ordered_first = _ordered_candidates(first_level, sub_chain[0] if sub_chain else None)
-                        seq = None
-                        for sub_idx in ordered_first:
-                            next_node = first_level.get(sub_idx)
-                            if not next_node:
-                                continue
-                            # If there are no deeper preferences, keep following the same sub_idx path
-                            chain_tail = sub_chain[1:] if sub_chain else [sub_idx]
-                            seq = _navigate_recursive_tree(next_node, depth - 1, direction, chain_tail)
-                            if seq:
-                                break
-                elif use_simplified_oxidation:
-                    seq = oxidation_baseline.get(target_parity)
-                    if not seq:
-                        continue
-                else:
-                    # Non-recursive trees (flat, deep, deep2)
-                    delta_node = parity_branches.get(branch_index, {}).get(offset)
-                    if not delta_node:
-                        continue
-
-                    # Extract sequence from tree node structure
-                    if isinstance(delta_node, list):
-                        seq = delta_node
-                    else:
-                        seq = _extract_sequence_from_tree_node(delta_node, preferred_sub_index=1)
-
-                if not seq:
-                    continue
-
-                key = _storage_key(seq, target_parity)
-                bundle[key] = _copy_sequence(seq)
-                if preferred_branch is None:
-                    logger.debug(
-                        "[occupier_auto] Using fallback branch %s for target_parity=%s (source=%s), anchor=%s, offset=%s",
-                        branch_index,
-                        target_parity,
-                        source_parity,
-                        anchor,
-                        offset,
-                    )
-                break
-
-        if bundle:
-            return bundle
-
-    return {}
+    Sequences are derived from rules: the configurations the previous step left
+    populated, put through the pure-window and broken-symmetry rules, merged.
+    The pre-built decision trees this used to be able to navigate instead are
+    gone — they were the same decision enumerated ahead of time, and no
+    calculation in the run archive ever selected one.
+    """
+    if not custom_dataset:
+        return {}
+    return _resolve_own_mode_sequences(delta, custom_dataset, root=root, config=config)

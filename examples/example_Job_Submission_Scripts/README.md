@@ -137,7 +137,6 @@ input_file=input.txt        # Geometrie-Datei
 # Workflow
 method=OCCUPIER
 OCCUPIER_method=auto
-OCCUPIER_tree=deep
 oxidation_steps=1,2,3
 reduction_steps=1,2,3
 

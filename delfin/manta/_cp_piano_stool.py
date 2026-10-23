@@ -135,7 +135,7 @@ _ETA5_TARGET_MC_FALLBACK: float = 1.85
 
 # Ring-detection thresholds.
 #
-# Real Cp piano-stool M-C distances in CCDC averages are ~2.0–2.4 Å, with
+# Typical Cp piano-stool M-C distances are ~2.0–2.4 Å, with
 # all 5 carbons within ±0.2 Å of each other when the binding is intact.
 # UFF can distort this — one or two carbons may drift to ~2.7–3.0 Å — but
 # if more than one carbon is past 3 Å (or the mean is past 2.7 Å) the
@@ -168,6 +168,12 @@ _XYZ_LINE_RE = re.compile(
 
 def _is_metal_sym(sym: str) -> bool:
     """Return True if ``sym`` is a transition-metal / main-group-metal symbol."""
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # ⚠ Self-contradiction: _METAL_Z_RANGES covers Ce..Lu, _Z_BY_SYMBOL jumps from
+    # La 57 to Hf 72 -> every lanthanide except La is not a metal here.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     z = _Z_BY_SYMBOL.get(sym)
     return z is not None and z in _METAL_Z_RANGES
 

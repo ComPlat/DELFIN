@@ -29,7 +29,17 @@ def workspace(tmp_path) -> Path:
 
 
 def _gate(perms: KitToolPermissions, name: str, args: dict) -> str | None:
-    """Invoke the gate directly on the shared executor."""
+    """Invoke the gate directly on the shared executor.
+
+    An edit is given its read baseline first, as a session that read the
+    file has it: the gate answers an edit that could not apply before it
+    asks anyone, and these tests are about the question itself.
+    """
+    target = args.get("path")
+    if name in ("edit_file", "multi_edit") and target:
+        f = Path(perms.workspace) / target
+        if f.is_file():
+            perms.read_tracker[str(f.resolve())] = f.stat().st_mtime
     return _doc_executor._run_permission_gate(name, args, perms)
 
 
@@ -288,15 +298,21 @@ def test_bash_deny_wins_even_in_bypass(workspace):
 # Git: commit/read auto-allowed, push needs confirm, deletion blocked everywhere
 # ---------------------------------------------------------------------------
 
+# `git stash` and `git add -A` used to be in this list. Both act on the
+# WHOLE working tree, which in a shared checkout also holds work this
+# session did not do: the stash carries it away and leaves a tree that
+# looks clean, the bulk stage sweeps it into the agent's commit. They now
+# go through the confirm gate; the scoped forms still run unattended.
+# See test_the_git_gate_matches_the_git_rules.py.
 @pytest.mark.parametrize("cmd", [
     "git commit -m 'msg'",      # local + reversible → auto
     "git commit --message=msg",
     "git status",
     "git diff --stat",
     "git log -5",
-    "git stash",
+    "git stash list",
     "git init",
-    "git add -A",
+    "git add delfin/agent/office.py",
 ])
 def test_git_normal_ops_auto_allowed_default_mode(workspace, cmd):
     perms = KitToolPermissions(workspace=workspace, mode="default")
@@ -305,10 +321,14 @@ def test_git_normal_ops_auto_allowed_default_mode(workspace, cmd):
 
 
 @pytest.mark.parametrize("cmd", ["git push", "git push origin main"])
-def test_git_push_needs_confirm_not_auto(workspace, cmd):
+def test_git_push_needs_confirm_not_auto(workspace, cmd, monkeypatch):
     """Pushing publishes to a remote (can hit a shared/protected branch) — it
     must NEVER auto-run. Head-less (no confirm callback) → blocked with a
-    guidance message; with a callback → routed through the confirm dialog."""
+    guidance message; with a callback → routed through the confirm dialog.
+
+    As the maintainer: a contributor's push to main is refused outright
+    (test_a_contributor_goes_through_a_pull_request)."""
+    monkeypatch.setattr("delfin.agent.api_client._git_role", lambda: "maintainer")
     perms = KitToolPermissions(workspace=workspace, mode="default")
     err = _gate(perms, "bash", {"command": cmd, "description": cmd})
     assert err is not None and "auto-allow" in err

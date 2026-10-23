@@ -68,9 +68,66 @@ def test_merge_conflict_leaves_target_untouched(tmp_path):
     assert (r / "a.txt").read_text() == "MAIN-ONLY\n"
 
 
-def test_merge_tool_registered():
-    src = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
-           / "api_client.py").read_text(encoding="utf-8")
-    assert '"name": "worktree_merge"' in src
-    assert 'name == "worktree_merge"' in src
-    assert "_execute_worktree_merge" in src
+def test_merge_tool_registered(tmp_path):
+    """Advertised in the catalogue AND reachable through dispatch.
+
+    This asked the second half by searching the source for the literal
+    `name == "worktree_merge"`, which broke the day the dispatch folded
+    exit_worktree and worktree_merge into one branch so both could give
+    the worktree's writable root back. The tool was registered the whole
+    time; the spelling had moved.
+
+    Asked as the property now: a call must not come back "Unknown tool".
+    That is what registration MEANS, it survives any shape the dispatch
+    takes, and it is stronger than a text match -- a name present in the
+    file but unreachable would pass the old check and fail this one.
+    """
+    import json
+
+    from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
+
+    from delfin.agent.api_client import _DOC_TOOLS_OPENAI
+
+    catalogue = {t["function"]["name"] for t in _DOC_TOOLS_OPENAI}
+    assert "worktree_merge" in catalogue, "not advertised to any model"
+
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    perms.mode = "acceptEdits"
+    perms.task_session_id = "worktree-merge-registration"
+    out = json.loads(_DocToolExecutor().execute(
+        "worktree_merge", {"path": str(tmp_path / "not-a-worktree")}, perms))
+
+    assert "error" in out, out
+    assert "Unknown tool" not in out["error"], (
+        "worktree_merge is advertised and does not dispatch")
+
+
+
+def test_merge_cleans_up_worktree_and_branch(tmp_path):
+    """A successful merge must remove the isolated worktree AND delete its
+    throwaway agent/* branch — otherwise parallel-writer fan-outs leak /tmp
+    worktrees + orphan branches. (Regression 2026-07-14.)"""
+    repo = _repo(tmp_path)
+    info = wt.enter_worktree(repo)
+    wtdir = info.final_path or info.path
+    (wtdir / "new.py").write_text("x = 1\n")
+    res = wt.merge_worktree(info)
+    assert res.ok and res.applied
+    assert (repo / "new.py").exists()                 # change merged into target
+    assert not wtdir.exists()                         # worktree removed
+    branches = subprocess.run(["git", "branch"], cwd=str(repo),
+                              capture_output=True, text=True).stdout
+    assert "agent/" not in branches                   # throwaway branch gone
+    wl = subprocess.run(["git", "worktree", "list"], cwd=str(repo),
+                        capture_output=True, text=True).stdout.strip().splitlines()
+    assert len(wl) == 1                               # only main worktree left
+
+
+def test_merge_cleanup_can_be_disabled(tmp_path):
+    """cleanup=False keeps the worktree (callers that want to inspect it)."""
+    repo = _repo(tmp_path)
+    info = wt.enter_worktree(repo)
+    wtdir = info.final_path or info.path
+    (wtdir / "new.py").write_text("x = 1\n")
+    res = wt.merge_worktree(info, cleanup=False)
+    assert res.ok and res.applied and wtdir.exists()

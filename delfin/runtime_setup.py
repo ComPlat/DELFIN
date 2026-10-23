@@ -9,7 +9,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tarfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -411,6 +410,29 @@ def get_packaged_submit_templates_dir() -> Path:
     return (Path(__file__).resolve().parent / "submit_templates").resolve()
 
 
+def get_packaged_micromamba_fetcher() -> Path:
+    """delfin/installers/fetch_micromamba.sh: the one pinned micromamba
+    release and its SHA-256 per platform, shared by every installer."""
+    return (Path(__file__).resolve().parent / "installers" / "fetch_micromamba.sh").resolve()
+
+
+def _stage_micromamba_fetcher(target: Path) -> None:
+    """Put the shared fetcher beside a staged installer.
+
+    A staged installer runs from the tool directory, where the package's
+    ``installers/`` is not one level up, so it finds the fetcher beside
+    itself instead. Nothing is copied when the target IS the packaged
+    directory (an install into the checkout): there ``../installers``
+    already holds it.
+    """
+    source = get_packaged_micromamba_fetcher()
+    if not source.is_file():
+        raise FileNotFoundError(f"Packaged micromamba fetcher not found: {source}")
+    if (target.parent / "installers" / source.name).resolve() == source:
+        return
+    shutil.copy2(source, target / source.name)
+
+
 def get_packaged_qm_tools_dir() -> Path:
     return (Path(__file__).resolve().parent / "qm_tools").resolve()
 
@@ -482,16 +504,32 @@ def get_repo_qm_tools_dir(repo_dir: str | Path | None) -> Path | None:
 
 
 def get_repo_bwunicluster_install_script(repo_dir: str | Path | None) -> Path | None:
+    """The installer in a checkout. The name is kept; the script is universal."""
     if not repo_dir:
         return None
     repo_path = Path(repo_dir).expanduser()
-    candidate = repo_path / "scripts" / "install_delfin_bwu.sh"
-    return candidate if candidate.is_file() else None
+    for candidate in (
+        repo_path / "delfin" / "installers" / "install_delfin.sh",
+        repo_path / "scripts" / "install_delfin_bwu.sh",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def get_packaged_bwunicluster_install_script() -> Path | None:
-    candidate = get_packaged_installers_dir() / "install_delfin_bwu.sh"
-    return candidate if candidate.is_file() else None
+    for name in ("install_delfin.sh", "install_delfin_bwu.sh"):
+        candidate = get_packaged_installers_dir() / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def detect_slurm_profile() -> str:
+    """The site profile for this machine, or "" where DELFIN knows no site."""
+    from delfin.dashboard.backend_slurm import SlurmJobBackend
+
+    return SlurmJobBackend._detect_profile()
 
 
 def write_delfin_env_file(
@@ -501,8 +539,10 @@ def write_delfin_env_file(
     qm_tools_root: str = "",
     tool_binaries: dict[str, str] | None = None,
     env_path: str | Path | None = None,
+    openmpi_prefix: str = "",
 ) -> Path:
     target = Path(env_path).expanduser() if env_path else (Path.home() / ".delfin_env.sh")
+    ompi_root = normalize_runtime_path(openmpi_prefix)
     repo_path = Path(repo_dir).expanduser() if repo_dir else None
     orca_root = normalize_orca_base(orca_base)
     qm_root = normalize_runtime_path(qm_tools_root)
@@ -543,7 +583,12 @@ def write_delfin_env_file(
     for env_key, env_value in tool_env_updates.items():
         lines.append(f'export {env_key}={_sq(env_value)}')
 
+    if ompi_root:
+        lines.append(f'export OPENMPI_PREFIX={_sq(ompi_root)}')
+
     path_entries = []
+    if ompi_root and (Path(ompi_root) / "bin").is_dir():
+        path_entries.append(str(Path(ompi_root) / "bin"))
     for path_entry in selected_tool_path_entries:
         if path_entry and path_entry not in path_entries:
             path_entries.append(path_entry)
@@ -554,6 +599,17 @@ def write_delfin_env_file(
     if path_entries:
         joined = ":".join(path_entries)
         lines.append(f'export PATH={_sq(joined)}":$PATH"')
+    # ORCA's shared build loads its own libraries and OpenMPI's from here.
+    library_entries = []
+    if ompi_root and (Path(ompi_root) / "lib").is_dir():
+        library_entries.append(str(Path(ompi_root) / "lib"))
+    if orca_root:
+        library_entries.append(orca_root)
+    if library_entries:
+        joined_libs = ":".join(library_entries)
+        lines.append(
+            f'export LD_LIBRARY_PATH={_sq(joined_libs)}"${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"'
+        )
 
     if repo_path and (repo_path / ".venv").is_dir():
         venv_dir = _sq(repo_path / ".venv")
@@ -590,7 +646,14 @@ def ensure_shell_sources_delfin_env(
     for candidate in shell_rc_paths or [Path.home() / ".bashrc", Path.home() / ".profile"]:
         path = Path(candidate).expanduser()
         existing = path.read_text(encoding="utf-8") if path.exists() else ""
-        if source_line not in existing:
+        # Written by hand as `source $HOME/.delfin_env.sh` it is the same line,
+        # and a second one would source the file twice on every login.
+        already = re.search(
+            r'^\s*(?:source|\.)\s+["\']?\S*' + re.escape(target_env.name) + r'["\']?\s*$',
+            existing,
+            re.MULTILINE,
+        )
+        if source_line not in existing and not already:
             if existing and not existing.endswith("\n"):
                 existing += "\n"
             existing += f"\n# DELFIN environment\n{source_line}\n"
@@ -599,25 +662,6 @@ def ensure_shell_sources_delfin_env(
         elif path.exists():
             updated.append(path)
     return updated
-
-
-def package_repo_venv(repo_dir: str | Path | None) -> tuple[Path | None, Path | None]:
-    if not repo_dir:
-        return None, None
-    repo_path = Path(repo_dir).expanduser()
-    venv_dir = repo_path / ".venv"
-    if not venv_dir.is_dir():
-        return None, None
-
-    tar_path = repo_path / "delfin_venv.tar"
-    if tar_path.exists():
-        tar_path.unlink()
-    with tarfile.open(tar_path, "w") as tar_handle:
-        tar_handle.add(venv_dir, arcname=".venv")
-
-    cache_dir = repo_path / ".runtime_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return tar_path, cache_dir
 
 
 def _python_version_ok(python_bin: str, min_ver: tuple[int, ...] = (3, 10),
@@ -731,39 +775,56 @@ echo "Python: {python_bin}"
 echo "Repo:   {repo_root}"
 
 # --- Consolidate to single venv in the repo directory ---
+#
+# Two things this used to do to a machine that were not its to do.
+#
+# It rewrote the user's .bashrc with sed, deleting whatever lay between two
+# patterns -- and a login file is not ours to edit blind. The activation lives
+# in a file DELFIN owns now, and .bashrc gets at most one line, appended once,
+# after a copy of it has been put aside.
+#
+# And it deleted $HOME/.venv outright. That may be somebody's environment,
+# built for something else and sharing a name. It is moved aside now, with the
+# date on it, so a wrong guess costs a rename rather than a rebuild.
 BASHRC="{bashrc}"
 DELFIN_VENV="{repo_venv}"
-if [ -f "$BASHRC" ]; then
-    # Replace any old venv activation block with a robust one
-    if grep -q '.venv/bin/activate' "$BASHRC"; then
-        echo "Patching .bashrc venv activation block ..."
-        # Remove old block (between marker comments or the simple if-fi block)
-        sed -i '/# Auto-activate.*venv/,/^unset _DELFIN_VENV$/d' "$BASHRC"
-        sed -i '/# Auto-activate.*venv/,/^fi$/d' "$BASHRC"
-        # Append robust activation block
-        cat >> "$BASHRC" << 'BASHRC_BLOCK'
+ACTIVATE_FILE="$HOME/.delfin_venv.sh"
+STAMP="$(date +%Y%m%d-%H%M%S)"
 
-# Auto-activate DELFIN venv (skip if already the correct one)
+cat > "$ACTIVATE_FILE" << 'ACTIVATE_BLOCK'
+# Written by DELFIN. Activates the environment DELFIN was installed into.
 _DELFIN_VENV="{repo_venv}"
 if [ "$VIRTUAL_ENV" != "$_DELFIN_VENV" ] && [ -f "$_DELFIN_VENV/bin/activate" ]; then
     type deactivate &>/dev/null && deactivate
     source "$_DELFIN_VENV/bin/activate"
 fi
 unset _DELFIN_VENV
-BASHRC_BLOCK
-        echo ".bashrc updated."
+ACTIVATE_BLOCK
+echo "Wrote $ACTIVATE_FILE"
+
+if [ -f "$BASHRC" ]; then
+    if grep -q 'delfin_venv.sh' "$BASHRC"; then
+        echo ".bashrc already sources it; leaving it alone."
+    else
+        cp -p "$BASHRC" "$BASHRC.delfin-$STAMP"
+        echo "Kept a copy of .bashrc as $BASHRC.delfin-$STAMP"
+        printf '\\n# Added by DELFIN\\n[ -f "%s" ] && . "%s"\\n' \\
+            "$ACTIVATE_FILE" "$ACTIVATE_FILE" >> "$BASHRC"
+        echo "Added one line to .bashrc."
     fi
 fi
 
-# Remove old HOME-level venv if it exists (replaced by repo venv)
+# An environment of the same name that may not be ours: put aside, not removed.
 if [ -d "$HOME/.venv" ]; then
-    echo "Removing old \\$HOME/.venv (consolidated into repo) ..."
-    rm -rf "$HOME/.venv"
-    echo "Old \\$HOME/.venv removed."
+    echo "Moving \\$HOME/.venv aside to \\$HOME/.venv.before-delfin-$STAMP ..."
+    mv "$HOME/.venv" "$HOME/.venv.before-delfin-$STAMP"
 fi
 
-echo "Removing old repo .venv ..."
-rm -rf "{repo_root / '.venv'}"
+if [ -d "{repo_root}/.venv" ]; then
+    echo "Moving the previous repo .venv aside ..."
+    rm -rf "{repo_root}/.venv.before-$STAMP"
+    mv "{repo_root}/.venv" "{repo_root}/.venv.before-$STAMP"
+fi
 
 echo "Creating fresh venv ..."
 "{python_bin}" -m venv "{repo_root / '.venv'}"
@@ -774,10 +835,17 @@ echo "Upgrading pip + wheel ..."
 echo "Installing DELFIN (pip install -e .[agent,docs]) ..."
 "{repo_root / '.venv' / 'bin' / 'python'}" -m pip install -e "{repo_root}[agent,docs]"
 
-echo "Packaging delfin_venv.tar ..."
-rm -f "{repo_root / 'delfin_venv.tar'}"
-tar -cf "{repo_root / 'delfin_venv.tar'}" -C "{repo_root}" .venv
 mkdir -p "{repo_root / '.runtime_cache'}"
+
+# It worked, so the copy that was put aside is not needed. Only ours: the
+# $HOME one keeps its new name, because it was never established that it was
+# DELFIN's to begin with.
+if [ -x "{repo_root}/.venv/bin/python" ]; then
+    rm -rf "{repo_root}/.venv.before-$STAMP"
+else
+    echo "The new venv did not come out usable; the previous one is still at"
+    echo "  {repo_root}/.venv.before-$STAMP"
+fi
 
 echo "=== venv rebuild finished at $(date) ==="
 touch "{done_marker}"
@@ -816,6 +884,13 @@ def run_bwunicluster_installer(
         raise FileNotFoundError("BwUniCluster installer script not found in repo or packaged resources.")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     if repo_path is not None:
         env["DELFIN_REPO"] = str(repo_path)
     if calc_dir:
@@ -834,7 +909,7 @@ def run_bwunicluster_installer(
         '[ -f "$init" ] && source "$init" && break; '
         'done; '
         'fi; '
-        f'bash {shlex.quote(str(installer))}'
+        f'bash {shlex.quote(str(installer))} --profile core --yes'
     )
     return subprocess.run(
         ["bash", "-lc", shell_command],
@@ -977,11 +1052,15 @@ def prepare_bwunicluster_user_setup(
         else:
             qm_root = str(stage_packaged_qm_tools())
 
-    tar_path, cache_dir = package_repo_venv(repo_path)
+    # No venv tar here any more. A job packs one from the venv as it is when it
+    # starts, keyed by its contents; one packed here went stale with the next
+    # pip install and went on being unpacked regardless.
+    mpirun = _find_openmpi_mpirun()
     env_file = write_delfin_env_file(
         repo_dir=repo_path,
         orca_base=effective_orca,
         qm_tools_root=qm_root,
+        openmpi_prefix=str(mpirun.parent.parent) if mpirun.is_file() else "",
     )
     shell_files = ensure_shell_sources_delfin_env(env_path=env_file)
 
@@ -997,7 +1076,7 @@ def prepare_bwunicluster_user_setup(
         "slurm": {
             "orca_base": effective_orca,
             "submit_templates_dir": str(submit_templates_dir),
-            "profile": "bwunicluster3",
+            "profile": detect_slurm_profile(),
         },
     }
 
@@ -1012,11 +1091,58 @@ def prepare_bwunicluster_user_setup(
         "submit_templates_dir": str(submit_templates_dir),
         "orca_base": effective_orca,
         "qm_tools_root": qm_root,
-        "venv_tarball": str(tar_path) if tar_path else "",
-        "runtime_cache_dir": str(cache_dir) if cache_dir else "",
         "qm_tools_installer_output": (installer_result.stdout if installer_result else ""),
         "qm_tools_installer_returncode": (installer_result.returncode if installer_result else 0),
     }
+
+
+def _stage_tree(source: Path, target: Path, ignore=None) -> None:
+    """Copy a tool directory over another, links kept as links.
+
+    ``shutil.copytree`` cannot do this.  Following the links is wrong: the
+    ``bin/xtb`` in this tree points into the conda environment xtb was
+    installed in, and copied out of it the binary is 6.4 MB standing on its
+    own, outside the libraries it is linked against -- "libmctc-lib.so.0:
+    cannot open shared object file".  A resolved tool is looked for in this
+    directory before anywhere else, so that copy then beat the working xtb on
+    the PATH and the user had a tool chain that could not start.
+
+    But ``symlinks=True`` creates each link with ``os.symlink``, which refuses
+    a name that is already taken -- and on the second install every one of
+    them is, so the whole staging ended as
+
+        [Errno 17] File exists: '.../.mamba_env/bin/xtb' -> '.../bin/xtb'
+
+    for every tool at once.  ``dirs_exist_ok`` does not help: it overwrites
+    files and says nothing about links.
+
+    So the walk is done here, where a link that is in the way is replaced
+    rather than complained about, and a link whose target has been moved away
+    is carried across as the broken link it is -- for the installer to fix,
+    not for the staging to fall over.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    entries = sorted(source.iterdir(), key=lambda item: item.name)
+    skip = set(ignore(str(source), [item.name for item in entries])) if ignore else set()
+    for item in entries:
+        if item.name in skip:
+            continue
+        destination = target / item.name
+        if item.is_symlink():
+            # Whatever stands there now -- a link from the last install, a
+            # file, a directory of the same name -- makes way.
+            if destination.is_symlink() or destination.exists():
+                if destination.is_dir() and not destination.is_symlink():
+                    shutil.rmtree(destination, ignore_errors=True)
+                else:
+                    destination.unlink(missing_ok=True)
+            os.symlink(os.readlink(item), destination)
+        elif item.is_dir():
+            _stage_tree(item, destination, ignore)
+        else:
+            if destination.is_symlink():
+                destination.unlink(missing_ok=True)
+            shutil.copy2(item, destination)
 
 
 def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
@@ -1026,12 +1152,12 @@ def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
 
     target = get_user_qm_tools_dir(target_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
+    _stage_tree(
         source,
         target,
-        dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
+        shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
     )
+    _stage_micromamba_fetcher(target)
     return target
 
 
@@ -1047,6 +1173,13 @@ def run_qm_tools_installer(
         raise FileNotFoundError(f"qm_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_QM_ROOT"] = str(target)
     env["DELFIN_QM_TOOLS_ROOT"] = str(target)
     if extra_env:
@@ -1096,6 +1229,13 @@ def run_csp_tools_installer(
         raise FileNotFoundError(f"csp_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_CSP_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1140,6 +1280,13 @@ def run_mlp_tools_installer(
         raise FileNotFoundError(f"mlp_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_MLP_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1170,6 +1317,7 @@ def stage_packaged_analysis_tools(target_dir: str | Path | None = None) -> Path:
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
+    _stage_micromamba_fetcher(target)
     return target
 
 
@@ -1184,6 +1332,13 @@ def run_analysis_tools_installer(
         raise FileNotFoundError(f"analysis_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_ANALYSIS_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1214,6 +1369,7 @@ def stage_packaged_ai_tools(target_dir: str | Path | None = None) -> Path:
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
+    _stage_micromamba_fetcher(target)
     return target
 
 
@@ -1228,6 +1384,13 @@ def run_ai_tools_installer(
         raise FileNotFoundError(f"ai_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_AI_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1288,7 +1451,7 @@ def _prepend_path_env_once(path_entry: str) -> None:
     )
 
 
-def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
+def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", mlp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
     qm_root = normalize_runtime_path(qm_tools_root)
     if qm_root:
         os.environ["DELFIN_QM_ROOT"] = qm_root
@@ -1307,6 +1470,15 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
         csp_bin = Path(csp_root) / "bin"
         if csp_bin.exists():
             _prepend_path_env_once(str(csp_bin))
+
+    # It was a setting that could be saved, had a field in the Settings tab,
+    # and was never exported anywhere -- so choosing it did nothing at all.
+    mlp_root = normalize_runtime_path(mlp_tools_root)
+    if mlp_root:
+        os.environ["DELFIN_MLP_TOOLS_ROOT"] = mlp_root
+        mlp_bin = Path(mlp_root) / "bin"
+        if mlp_bin.exists():
+            _prepend_path_env_once(str(mlp_bin))
 
     orca_root = normalize_runtime_path(orca_base)
     if orca_root:
@@ -1340,6 +1512,11 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
 
     # Suppress noisy but harmless third-party warnings in the dashboard
     os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
+
+    # The environment the resolver walks just changed: a cached "not
+    # found" from before this call would hide a freshly installed tool.
+    from delfin.qm_runtime import clear_resolver_cache
+    clear_resolver_cache()
 
 
 @contextmanager
@@ -1444,7 +1621,7 @@ def collect_runtime_diagnostics(
 
     with temporary_environment(env_updates):
         qm_results = check_tools(
-            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+"]
+            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+", "mopac"]
         )
     for name, resolved in qm_results:
         status, detail = _resolved_tool_status(resolved)

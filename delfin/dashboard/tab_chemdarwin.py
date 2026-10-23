@@ -6,6 +6,7 @@ This module is version-controlled and wired into the dashboard tab bar via
 """
 
 import io
+import html as _html
 import json
 import re
 import base64
@@ -27,6 +28,14 @@ from rdkit.Chem.Draw import MolsToGridImage, MolToImage
 from .molecule_viewer import apply_molecule_view_style
 
 RDLogger.DisableLog('rdApp.*')
+
+# Drawing the rules rather than typing them.  Optional on purpose: a tab that
+# cannot build its editor is a tab without a DRAW button, not a tab that takes
+# the dashboard down on the way up.
+try:
+    from . import chemdarwin_draw as _draw
+except Exception:                                       # noqa: BLE001
+    _draw = None
 
 try:
     from PIL import Image
@@ -967,7 +976,7 @@ def _space_views_gallery_html(output_dir):
             description = 'Pairwise property relationship plot to spot trends and outliers.'
         blocks.append(
             '<div style="margin:0 0 18px 0;">'
-            f'<div style="font-weight:600; margin:0 0 6px 0;">{label}</div>'
+            f'<div style="font-weight:600; margin:0 0 6px 0;">{_html.escape(str(label))}</div>'
             f'<div style="color:#555; margin:0 0 8px 0;">{description}</div>'
             f'<img src="data:image/png;base64,{payload}" '
             'style="max-width:100%; border:1px solid #ddd; display:block;">'
@@ -1310,6 +1319,32 @@ def create_tab(ctx):
     page_jump_input.add_class('chemdarwin-iter')
     btn_jump = widgets.Button(description='Go', button_style='info', layout=widgets.Layout(width='40px'))
 
+    # -- drawing the rules -----------------------------------------------
+    # One editor for all four boxes; the buttons only say which one it is
+    # pointed at.  If it cannot be built there are simply no DRAW buttons and
+    # every box is still typed into, which is how the tab worked before.
+    drawing = None
+    if _draw is not None:
+        try:
+            drawing = _draw.build_section(ctx, {
+                'seed': seed_input,
+                'rxn': custom_smarts,
+                'forbidden': custom_forbidden,
+                'protected': custom_protected,
+            })
+        except Exception:                               # noqa: BLE001
+            drawing = None
+
+    def _titled(text, which):
+        """A box's title, with the button that draws into it beside it."""
+        label = widgets.HTML(text)
+        if drawing is None:
+            return label
+        return widgets.HBox(
+            [label, drawing['buttons'][which]],
+            layout=widgets.Layout(gap='10px', align_items='center',
+                                  flex_wrap='wrap', max_width='100%'))
+
     def _safe_job_name(name_raw):
         return ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))
 
@@ -1450,7 +1485,7 @@ def create_tab(ctx):
     )
 
     seed_section = widgets.VBox([
-        widgets.HTML('<b>Seed SMILES</b>'),
+        _titled('<b>Seed SMILES</b>', 'seed'),
         seed_input,
         complex_info_label,
         seed_viz_row,
@@ -1695,7 +1730,7 @@ def create_tab(ctx):
                         output_widget.value = _space_views_gallery_html(out_dir)
                     except Exception as e:
                         output_widget.value = (
-                            f'<div style="color:#d32f2f;">Space plot error: {e}</div>'
+                            f'<div style="color:#d32f2f;">Space plot error: {_html.escape(str(e))}</div>'
                         )
 
                 t = threading.Thread(
@@ -1709,12 +1744,12 @@ def create_tab(ctx):
 
     # -- layout ----------------------------------------------------------
     param_box = widgets.VBox([
-        widgets.HTML('<b>Reaction SMARTS</b>'),
+        _titled('<b>Reaction SMARTS</b>', 'rxn'),
         custom_smarts,
-        widgets.HTML('<b>Forbidden patterns (block newly formed)</b>'),
+        _titled('<b>Forbidden patterns (block newly formed)</b>', 'forbidden'),
         custom_forbidden,
         custom_forbidden_label,
-        widgets.HTML('<b>Protected patterns (keep unchanged)</b>'),
+        _titled('<b>Protected patterns (keep unchanged)</b>', 'protected'),
         custom_protected,
         custom_protected_label,
         custom_keep_rings,
@@ -1736,6 +1771,17 @@ def create_tab(ctx):
         'max-width: 100% !important; min-width: 0 !important; }'
         '.chemdarwin-tab .widget-hbox { flex-wrap: wrap !important; }'
         '.chemdarwin-tab .jupyter-widgets-output-area { max-width: 100% !important; min-width: 0 !important; }'
+        # The drawing section and the panel inside it overflowed by exactly
+        # 4px -- a child at width:100% inside a box that gives it a 2px margin
+        # a side -- and both sit on overflow-x:auto, so those 4px were a
+        # scrollbar under each of them.  Scoped to the section: the tab's own
+        # boxes are handled by the rules above.
+        '.chemdarwin-tab .chemdarwin-draw,'
+        ' .chemdarwin-tab .chemdarwin-draw .widget-box,'
+        ' .chemdarwin-tab .chemdarwin-draw .widget-vbox,'
+        ' .chemdarwin-tab .chemdarwin-draw .widget-hbox {'
+        ' overflow-x: hidden !important; min-width: 0 !important; }'
+        '.chemdarwin-tab .chemdarwin-draw-switch { width: auto !important; }'
         '.chemdarwin-tab .chemdarwin-seed-wrapper { margin:0 !important; padding:0 !important; }'
         '.chemdarwin-tab .chemdarwin-seed-out { width:100% !important; height:100% !important;'
         ' margin:0 !important; padding:0 !important; overflow:hidden !important; }'
@@ -1748,6 +1794,42 @@ def create_tab(ctx):
         ' width:100% !important; height:100% !important; overflow:hidden !important; }'
         '</style>'
     )
+
+    # -- where the editor sits --------------------------------------------
+    # Under the box being drawn into, rather than at the foot of the tab: the
+    # answer belongs beside the question.  The two containers keep the
+    # children they were built with and the section is spliced into one of
+    # them, so nothing else moves.
+    if drawing is not None:
+        _seed_kids = list(seed_section.children)
+        _param_kids = list(param_box.children)
+        _anchors = {
+            'seed': (seed_section, _seed_kids, seed_input),
+            'rxn': (param_box, _param_kids, custom_smarts),
+            'forbidden': (param_box, _param_kids, custom_forbidden_label),
+            'protected': (param_box, _param_kids, custom_protected_label),
+        }
+
+        def _place(which):
+            """Put the editor directly under the box it is pointed at.
+
+            Moving it between the two containers rebuilds its view, and a
+            rebuilt view is a reloaded iframe -- an emptied canvas.  Within
+            param_box, which is where the three SMARTS boxes are and so where
+            the switching mostly happens, the children are only reordered and
+            the drawing survives.
+            """
+            node = drawing['widget']
+            holder, kids, anchor = _anchors[which]
+            fresh = list(kids)
+            fresh.insert(fresh.index(anchor) + 1, node)
+            other = param_box if holder is seed_section else seed_section
+            other_kids = _param_kids if other is param_box else _seed_kids
+            if node in other.children:
+                other.children = tuple(other_kids)
+            holder.children = tuple(fresh)
+
+        drawing['set_place'](_place)
 
     pagination_bar = widgets.HBox([
         btn_prev_page, btn_next_page,
@@ -1773,7 +1855,10 @@ def create_tab(ctx):
     refs = {
         'seed_input': seed_input,
         'custom_smarts': custom_smarts,
+        'custom_forbidden': custom_forbidden,
+        'custom_protected': custom_protected,
         'run_btn': run_btn,
+        'drawing': drawing,
     }
 
     return tab_body, refs

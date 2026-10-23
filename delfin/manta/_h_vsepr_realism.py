@@ -102,6 +102,15 @@ _Z_BY_SYMBOL: Dict[str, int] = {
 
 
 def _is_metal_sym(sym: str) -> bool:
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # ⚠ THIS PREDICATE CONTRADICTS ITSELF: `_METAL_Z_RANGES` contains
+    # range(57, 81), i.e. it covers Ce (58) through Lu (71) -- but `_Z_BY_SYMBOL` jumps from
+    # "La": 57 straight to "Hf": 72.  The lookup returns None, and every lanthanide
+    # except lanthanum is not a metal here, even though the module's own number range
+    # includes them.  Eight sibling modules carry the same bug.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     z = _Z_BY_SYMBOL.get(sym)
     return z is not None and z in _METAL_Z_RANGES
 
@@ -1201,7 +1210,7 @@ def correct_results_rotamers_only(mol, results):
 
 # Per-(metal,C) contraction factor on the covalent-radius sum that gives
 # an empirically reasonable M-C(sp3) sigma-bond length.  Calibrated
-# against CSD-typical ranges: Zr-C ~2.20 A (cov sum 2.51 -> 0.877),
+# against typical textbook ranges: Zr-C ~2.20 A (cov sum 2.51 -> 0.877),
 # Ti-C ~2.10 (sum 2.36 -> 0.890), Hf-C ~2.22 (sum 2.51 -> 0.885),
 # Mo-C ~2.20 (sum 2.30 -> 0.957), Fe-C ~2.05 (sum 2.08 -> 0.986).
 # A single factor of 0.88 gives <0.05 A error for early-TM cases that

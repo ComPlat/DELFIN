@@ -98,7 +98,7 @@ def test_dof_coverage_keeps_only_backbone_movers():
 def test_dof_coverage_drops_methyl_on_real_frame():
     """On a real assembled complex, coverage must drop the terminal methyl
     rotors that the default picker keeps (bug-2: 0 backbone diversity)."""
-    pool = ("/home/qmchem_max/agent_workspace/MANTA/POOLS/"
+    pool = ("/home/localuser/agent_workspace/MANTA/POOLS/"
             "FULLSTACK-6835621-BEST50K-2026-06-16/archive/best_ON")
     p = os.path.join(pool, "CIYROT.xyz")
     if not os.path.exists(p):
@@ -183,7 +183,7 @@ def test_coverage_core_frozen_on_real_frame(monkeypatch):
     metal+donor within +-0.05 A of native."""
     import glob, numpy as np
     monkeypatch.setenv("DELFIN_FFFREE_CONFORMER_COVERAGE", "1")
-    pool = ("/home/qmchem_max/agent_workspace/MANTA/POOLS/"
+    pool = ("/home/localuser/agent_workspace/MANTA/POOLS/"
             "FULLSTACK-6835621-BEST50K-2026-06-16/archive/best_ON")
     cand = [os.path.join(pool, f"{rc}.xyz") for rc in ("NUHPUD", "HEXSAI", "REPWEO")]
     cand = [p for p in cand if os.path.exists(p)]

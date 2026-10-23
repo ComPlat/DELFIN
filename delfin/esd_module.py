@@ -14,6 +14,13 @@ import threading
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import ensure_relative_link
+from delfin.common.control_validator import (
+    esd_list_items,
+    isc_problem,
+    normalized_transition,
+    unsupported_ic_reason,
+)
+from delfin.common.tddft_settings import tddft_block
 from delfin import smart_recalc
 from delfin.esd_input_generator import (
     create_fluor_input,
@@ -22,7 +29,10 @@ from delfin.esd_input_generator import (
     create_phosp_input,
     create_state_input,
     _format_ms_suffix,
+    _resolve_state_filename,
+    written_by_s0,
 )
+from delfin.imag import eliminate_imaginary_modes, saddle_reason
 from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.parallel_classic_manually import (
     WorkflowJob,
@@ -99,6 +109,55 @@ def _run_orca_esd(
     )
 
 
+def _leave_saddle(
+    state: str,
+    input_path: Path,
+    output_path: Path,
+    config: Dict[str, Any],
+    copy_files: Optional[List[str]] = None,
+) -> None:
+    """After a state job: a state that came back as a saddle goes through IMAG.
+
+    Every excited state is optimised from the S0 geometry, and a symmetric S0
+    can hand back a symmetric saddle (formaldehyde's planar S1, -527 cm-1).
+    IMAG_scope does not apply: a rate needs both of its states at minima,
+    whatever is done for the redox steps.  IMAG=no leaves the state as it is;
+    the guard below still refuses its rates.
+    """
+    if str(config.get("IMAG", "yes")).strip().lower() in ("no", "false", "0", "off"):
+        return
+
+    def run(inp, out, *, working_dir, copy_files=None):
+        return _run_orca_esd(inp, out, working_dir=working_dir, copy_files=copy_files, config=config)
+
+    result = eliminate_imaginary_modes(
+        label=state, input_path=input_path, output_path=output_path, config=config, run_orca=run,
+        fingerprint_deps=copy_files,
+    )
+    if not result.resolved:
+        logger.warning("%s: %s; rates that need its Hessian will not be computed", state, result.reason)
+
+
+def _refuse_rates_on_a_saddle(job: str, states: List[str], esd_dir: Path, config: Dict[str, Any]) -> None:
+    """Stop a rate job before ORCA if either state's Hessian is not a minimum's.
+
+    ORCA's ESD module turns imaginary frequencies into real ones by default
+    and reports a rate; a rate from a saddle is not one, so it is not asked for.
+    """
+    mode = str(config.get("ESD_modus", "tddft")).strip().lower().split("|")[0].strip()
+    reasons = []
+    for state in states:
+        state = state.strip().upper()
+        reason = saddle_reason(state, esd_dir / _resolve_state_filename(state, "hess", mode), config)
+        if reason:
+            reasons.append(reason)
+    if reasons:
+        raise RuntimeError(
+            f"{job} not computed: " + "; ".join(reasons)
+            + ". ORCA would turn the imaginary frequency into a real one and report a rate for the saddle."
+        )
+
+
 def _convert_start_to_xyz(start_txt: Path, output_xyz: Path) -> None:
     """Convert start.txt (DELFIN format) to XYZ format with header.
 
@@ -165,24 +224,20 @@ def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str]
     """
     esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
 
-    # Handle both list and string formats
-    states_raw = config.get('states', [])
-    if isinstance(states_raw, list):
-        states = [s.strip().upper() for s in states_raw if s.strip()]
-    else:
-        states = [s.strip().upper() for s in str(states_raw).split(',') if s.strip()]
+    # One reader for the four lists: brackets, quotes or a parsed list alike
+    # (control_validator.esd_list_items).
+    states = [s.upper() for s in esd_list_items(config.get('states'))]
 
-    iscs_raw = config.get('ISCs', [])
-    if isinstance(iscs_raw, list):
-        iscs = [isc.strip() for isc in iscs_raw if isc.strip()]
-    else:
-        iscs = [isc.strip() for isc in str(iscs_raw).split(',') if isc.strip()]
+    iscs = []
+    for item in esd_list_items(config.get('ISCs')):
+        reason = isc_problem(item)
+        if reason:
+            if esd_enabled:
+                _warn_once(f"ISCs: {reason}; it is skipped")
+            continue
+        iscs.append(normalized_transition(item))
 
-    ics_raw = config.get('ICs', [])
-    if isinstance(ics_raw, list):
-        ics = [ic.strip() for ic in ics_raw if ic.strip()]
-    else:
-        ics = [ic.strip() for ic in str(ics_raw).split(',') if ic.strip()]
+    ics = [normalized_transition(item) for item in esd_list_items(config.get('ICs'))]
 
     # Ensure ground-state S0 is present when ESD module is enabled
     # S0 is always calculated as minimum when ESD_modul=yes
@@ -201,15 +256,21 @@ def parse_emission_rates(config: Dict[str, Any]) -> Set[str]:
 
     Accepted separators: comma, semicolon, whitespace. Case-insensitive.
     """
-    raw = config.get("emission_rates", "")
-    if raw is None:
-        return set()
-    if isinstance(raw, list):
-        tokens = [str(x) for x in raw]
-    else:
-        tokens = str(raw).replace(";", ",").replace(" ", ",").split(",")
-    rates = {t.strip().lower() for t in tokens if str(t).strip()}
-    return {r for r in rates if r in {"f", "p"}}
+    tokens = [t.lower() for item in esd_list_items(config.get("emission_rates")) for t in item.split()]
+    for token in tokens:
+        if token not in ("f", "p"):
+            _warn_once(f"emission_rates: {token!r} is neither f (fluorescence) nor p (phosphorescence); it is skipped")
+    return {t for t in tokens if t in {"f", "p"}}
+
+
+_WARNED: Set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    """The lists are read by several phases; say what is skipped once per run."""
+    if message not in _WARNED:
+        _WARNED.add(message)
+        logger.warning(message)
 
 
 def setup_esd_directory(esd_dir: Path, states: List[str]) -> None:
@@ -331,7 +392,7 @@ def _populate_state_jobs(
                     s0_xyz = esd_dir / "S0.xyz"
 
                     if not s0_xyz.exists():
-                        if initial_xyz.exists():
+                        if initial_xyz.exists() and not written_by_s0(initial_xyz):
                             # Prefer optimized initial.xyz if available
                             import shutil
                             shutil.copy2(initial_xyz, s0_xyz)
@@ -371,6 +432,15 @@ def _populate_state_jobs(
                                             f"Failed to link/copy {initial_gbw} → {s0_gbw} for deltaSCF reuse: {exc}"
                                         ) from exc
                                 shutil.copy2(initial_hess, s0_hess)
+                                # IMAG replaces initial.out and initial.xyz but not
+                                # initial.hess; a saddle Hessian here would become
+                                # the ground state of every rate.
+                                reused_saddle = saddle_reason("S0", s0_hess, config)
+                                if reused_saddle:
+                                    for stale in (s0_out, s0_hess, s0_gbw):
+                                        if stale.is_symlink() or stale.exists():
+                                            stale.unlink()
+                                    raise RuntimeError(f"not reusing initial.hess: {reused_saddle}")
                                 logger.info(f"[deltaSCF optimization] Reused initial.{{out,gbw,hess}} → S0.* (skipping redundant Opt+Freq)")
 
                                 # Still need to run TDDFT check job for state identification
@@ -475,6 +545,7 @@ def _populate_state_jobs(
                         )
 
                     logger.info(f"Hybrid1 step 2 (deltaSCF) completed for {st_upper}")
+                    _leave_saddle(st_upper, abs_input, abs_output, config, step2_deps)
                 else:
                     # Standard single-step calculation (TDDFT or deltaSCF)
                     # Convert to absolute path before any chdir operations
@@ -508,6 +579,7 @@ def _populate_state_jobs(
                         raise RuntimeError(
                             f"ORCA terminated abnormally for {st_upper} state"
                         )
+                    _leave_saddle(st_upper, abs_input, abs_output, config, state_deps_files)
 
                 logger.info(f"State {st_upper} calculation completed")
 
@@ -662,6 +734,7 @@ def _populate_isc_jobs(
             def make_isc_work(isc_pair: str, trootssl_val: int) -> Callable[[int], None]:
                 """Create work function for ISC calculation."""
                 def work(cores: int) -> None:
+                    _refuse_rates_on_a_saddle(f"ISC {isc_pair}", isc_pair.split(">"), esd_dir, config)
                     # Generate input file
                     input_file = create_isc_input(
                         isc_pair,
@@ -749,7 +822,7 @@ def _populate_ic_jobs(
 
     Args:
         manager: Workflow manager
-        ics: List of IC transitions (e.g., ["S1>S0", "T1>T2"])
+        ics: List of IC transitions (e.g., ["S1>S0", "T2>T1"])
         esd_dir: ESD working directory
         charge: Molecular charge
         solvent: Solvent name
@@ -765,23 +838,12 @@ def _populate_ic_jobs(
         initial_state = initial_state.strip().upper()
         final_state = final_state.strip().upper()
 
-        # ORCA IC support: Transitions to S1, T1, or S0 (fluorescence only)
-        # Examples: S2→S1, S3→S1, S1→S0 (fluorescence), T2→T1, T3→T1
-        # NOT allowed: S2→S0, S3→S0 (only S1→S0 for fluorescence)
-
-        # Allow Sn→S1 (IC to S1) or S1→S0 (fluorescence)
-        allowed_sn_to_s1 = initial_state.startswith("S") and final_state == "S1"
-        allowed_fluorescence = initial_state == "S1" and final_state == "S0"
-
-        # Allow Tn→T1 (IC to T1, excluding T1→T1)
-        allowed_tn_to_t1 = initial_state.startswith("T") and initial_state != "T1" and final_state == "T1"
-
-        if not (allowed_sn_to_s1 or allowed_fluorescence or allowed_tn_to_t1):
+        # ORCA's ESD(IC) ends in the reference state: Sn>S0, Tn>T1.  The
+        # validator refuses the rest; this catches configs built by hand.
+        reason = unsupported_ic_reason(f"{initial_state}>{final_state}")
+        if reason:
             unsupported_ics.append(ic)
-            logger.warning(
-                "Skipping IC %s: ORCA IC support is limited to Sn→S1, S1→S0 (fluorescence), or Tn→T1; calculation not scheduled.",
-                ic,
-            )
+            logger.warning("Skipping IC %s: %s; calculation not scheduled.", ic, reason)
             continue
 
         # IC depends on both initial and final states
@@ -795,6 +857,7 @@ def _populate_ic_jobs(
         def make_ic_work(ic_pair: str) -> Callable[[int], None]:
             """Create work function for IC calculation."""
             def work(cores: int) -> None:
+                _refuse_rates_on_a_saddle(f"IC {ic_pair}", ic_pair.split(">"), esd_dir, config)
                 # Generate input file
                 input_file = create_ic_input(
                     ic_pair,
@@ -887,6 +950,7 @@ def _populate_fluor_jobs(
         return
 
     def work(cores: int) -> None:
+        _refuse_rates_on_a_saddle("Fluorescence S1>S0", ["S1", "S0"], esd_dir, config)
         input_file = create_fluor_input(
             esd_dir=esd_dir,
             charge=charge,
@@ -961,6 +1025,7 @@ def _populate_phosp_jobs(
         return
 
     def work(cores: int) -> None:
+        _refuse_rates_on_a_saddle("Phosphorescence T1>S0", ["T1", "S0"], esd_dir, config)
         input_file = create_phosp_input(
             esd_dir=esd_dir,
             charge=charge,
@@ -1037,10 +1102,6 @@ def _create_s0_tddft_check_input(
     implicit_solvation = config.get('implicit_solvation_model', '')
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
-    nroots = config.get('ESD_nroots', 15)
-    tda_flag = str(config.get('TDA', 'FALSE')).upper()
-    esd_maxdim = config.get('ESD_maxdim', None)
-    maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
 
     main_basis, _metal_basis, rel_token, aux_jk = resolve_level_of_theory(
         metals, config, main_basisset, metal_basisset
@@ -1068,15 +1129,7 @@ def _create_s0_tddft_check_input(
         f.write('%base "S0_TDDFT"\n')
         f.write(f"%pal nprocs {pal} end\n")
         f.write(f"%maxcore {maxcore}\n")
-        f.write("\n%tddft\n")
-        f.write(f"  nroots {nroots}\n")
-        f.write(f"  maxdim {maxdim}\n")
-        f.write(f"  tda {tda_flag}\n")
-        tddft_maxiter = config.get('ESD_TDDFT_maxiter')
-        if tddft_maxiter is not None:
-            f.write(f"  maxiter {tddft_maxiter}\n")
-        f.write("  triplets true\n")
-        f.write("end\n")
+        f.write("\n" + tddft_block(config, triplets=True) + "\n")
         f.write("\n")
         f.write(f"* xyzfile {charge} 1 S0.xyz\n")
 

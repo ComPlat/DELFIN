@@ -45,9 +45,9 @@ Do not add Critic, Runtime, Research, or Chief unless there is a concrete reason
 ## File map
 
 - `manifest.yaml`: overview
-- `modes/quick.md`
-- `modes/reviewed.md`
-- `modes/cluster.md`
-- `modes/full.md`
+- `modes/dashboard.md`
+- `modes/solo.md`
+- `modes/office.md`
+- `modes/research.md`
 - `shared/escalation_rules.md`
 - `shared/selection_guide.md`

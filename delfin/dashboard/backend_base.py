@@ -63,8 +63,13 @@ class JobBackend(ABC):
         return SubmitResult(1, stderr='TURBOMOLE not supported on this backend')
 
     @abstractmethod
-    def list_jobs(self) -> List[JobInfo]:
-        """Return list of active jobs."""
+    def list_jobs(self, force: bool = False) -> List[JobInfo]:
+        """Return list of active jobs.
+
+        Backends that query a shared cluster service may rate-limit this and
+        serve a cached answer; ``force=True`` requests fresh data and is
+        reserved for explicit user actions, never for periodic refreshes.
+        """
 
     @abstractmethod
     def cancel_job(self, job_id) -> Tuple[bool, str]:
@@ -73,6 +78,10 @@ class JobBackend(ABC):
     def get_pending_start_times(self) -> list:
         """Return estimated start times for pending jobs (SLURM only)."""
         return []
+
+    def account_standing(self) -> Optional[dict]:
+        """Fairshare and account limits (SLURM only); None when there are none."""
+        return None
 
     @property
     def supports_turbomole(self) -> bool:

@@ -15,6 +15,7 @@ import importlib
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -38,13 +39,20 @@ def _which_any(*names: str) -> Optional[str]:
 
 def _probe_cli_version(command: list[str], *, timeout: int = 10) -> Optional[str]:
     """Best-effort version probe for a CLI tool."""
+    # Some analysis CLIs litter their working directory on a mere
+    # --version (censo writes censo.log, c2anmr creates an anmr/ folder --
+    # seen after tests/test_equatorial_square_kappa4.py in SLURM 7199892).
+    # Probe them in a private scratch directory that is removed afterwards,
+    # so the litter lands neither in the caller's checkout nor in /tmp.
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        with tempfile.TemporaryDirectory(prefix="delfin-probe-") as scratch:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=scratch,
+            )
     except Exception:
         return None
 

@@ -8,7 +8,9 @@ no Skill-runtime, just text substitution.
 Search order (later wins on collision):
   1. ``~/.delfin/commands/`` — user-global, survives projects
   2. ``<workspace>/.delfin/commands/`` — project-scoped
-  3. ``~/.claude/commands/`` — canonical CLI compatibility layer
+
+DELFIN reads its own namespace only; other agent frameworks' command
+directories are not searched (see _search_dirs).
 
 Frontmatter (optional, all keys optional)::
 
@@ -54,13 +56,13 @@ class SlashTemplate:
 
 
 def _search_dirs(workspace: Path | str | None) -> list[Path]:
-    """Order: user-delfin → project-delfin → user-canonical-compat."""
+    """Order: user-delfin → project-delfin. DELFIN only reads its own
+    namespace — other agent frameworks' command dirs are not loaded."""
     out: list[Path] = [
         Path.home() / ".delfin" / "commands",
     ]
     if workspace is not None:
         out.append(Path(workspace) / ".delfin" / "commands")
-    out.append(Path.home() / ".claude" / "commands")
     return out
 
 

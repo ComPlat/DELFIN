@@ -29,11 +29,14 @@ set -euo pipefail
 # guppy_batch expects GUPPY_BATCH_CSV pointing to a CSV/txt of SMILES; under
 # `sbatch --array=...` each task runs one row via SLURM_ARRAY_TASK_ID.
 #
-# SITE-SPECIFIC FEATURES (all off by default):
+# SITE-SPECIFIC FEATURES:
 #   DELFIN_AUTO_RESOURCES=1  Parse CONTROL.txt to derive sbatch args
 #   DELFIN_MODULES="mod1 mod2"  Modules to load (module purge + load)
 #   DELFIN_STAGE_ORCA=1      Stage ORCA + OpenMPI to node-local SSD
-#   DELFIN_STAGE_VENV=1      Unpack venv tarball to SSD
+#   DELFIN_STAGE_VENV=1      Run the venv from node-local disk (cached tar;
+#                            DEFAULT on: falls back to the venv where it is
+#                            when the local disk has no room or no tar can be
+#                            packed. DELFIN_STAGE_VENV=0 runs from HOME)
 #   DELFIN_RUNTIME_CACHE=1   Build/use runtime wheel cache
 #
 # RESOURCE PARAMETERS (via sbatch command-line overrides):
@@ -55,6 +58,14 @@ set -euo pipefail
 #   DELFIN_MODE, DELFIN_JOB_NAME, DELFIN_INP_FILE, DELFIN_XYZ_FILE,
 #   DELFIN_WORKFLOW_LABEL, DELFIN_PAL, DELFIN_MAXCORE, DELFIN_ORCA_BASE,
 #   BUILD_MULTIPLICITY, GUPPY_*, DELFIN_CO2_SPECIES_DELTA, etc.
+#
+# WHERE DELFIN RUNS FROM (set by the submitting dashboard):
+#   DELFIN_VENV              The venv/conda prefix the dashboard runs in
+#   DELFIN_REPO              Its git checkout, for editable installs
+#   DELFIN_OMPI_HOME         The OpenMPI that ORCA is linked against
+#   DELFIN_VENV_CACHE_DIR    Where venv tars are cached
+#                            (default: $HOME/.cache/delfin/venv)
+#   DELFIN_VENV_TAR          Use this tar instead of the cache
 #
 # ========================================================================
 
@@ -196,6 +207,12 @@ if [ -n "$SOFTWARE_BASE" ]; then
     DELFIN_DIR="$SOFTWARE_BASE/delfin"
 fi
 
+# The submitting dashboard says where its checkout is. The upward search above
+# only ever finds one laid out as <somewhere>/software/delfin.
+if [ -n "${DELFIN_REPO:-}" ] && [ -f "${DELFIN_REPO}/pyproject.toml" ] && [ -d "${DELFIN_REPO}/delfin" ]; then
+    DELFIN_DIR="$DELFIN_REPO"
+fi
+
 # Normalise SLURM scratch hints early
 if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
     export TMPDIR="$SLURM_TMPDIR"
@@ -272,28 +289,129 @@ export OMPI_MCA_rmaps_base_mapping_policy=core
 export OMPI_MCA_rmaps_base_oversubscribe=true
 
 # ======================================================================
-# Section 7: Venv tarball staging (optional)
+# Section 7: Venv staging (optional)
 # ======================================================================
-VENV_LOCAL=""
-if [ "${DELFIN_STAGE_VENV:-0}" = "1" ] && [ -n "$DELFIN_DIR" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
-    VENV_TAR="${DELFIN_VENV_TAR:-$DELFIN_DIR/delfin_venv.tar}"
-    if [ -f "$VENV_TAR" ] || [ -d "$DELFIN_DIR/.venv" ]; then
-        VENV_LOCAL="$STAGE_BASE/delfin_venv_${SLURM_JOB_ID}"
-        if [ ! -f "$VENV_TAR" ]; then
-            echo "WARNING: $VENV_TAR not found, creating it now (one-time)..."
-            tar -cf "$VENV_TAR" -C "$DELFIN_DIR" .venv/
-            echo "Created $VENV_TAR"
-        fi
-        echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
-        mkdir -p "$VENV_LOCAL"
-        tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"
-        sed -i "s|$DELFIN_DIR/.venv|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
-        source "$VENV_LOCAL/bin/activate"
-        echo "venv loaded from local SSD."
+# Python started from a venv on a network HOME makes tens of thousands of
+# metadata calls per job (measured: ~150,000 getxattr). A tar is read as one
+# file instead, and the venv then runs from the node-local disk.
+#
+# The tar is a cache, not an artifact: its name is a hash of what the venv
+# holds, so it is rebuilt exactly when the venv changes. A hand-made
+# delfin_venv.tar went on being unpacked for months after pip had put
+# fifty-five new packages into the venv it was taken from, and nothing said so.
+
+# What a venv holds, as a short hash. Only directory listings are read -- no
+# stat, no file contents -- so asking costs next to nothing on HOME.
+venv_cache_key() {
+    local venv="$1" site
+    {
+        readlink -f "$venv" 2>/dev/null || printf '%s\n' "$venv"
+        cat "$venv/pyvenv.cfg" 2>/dev/null || true
+        for site in "$venv"/lib/python3*/site-packages; do
+            [ -d "$site" ] || continue
+            printf '== %s\n' "${site#"$venv"/}"
+            { ls -1 -f "$site" 2>/dev/null | grep -v -x -e '.' -e '..' -e '__pycache__' | LC_ALL=C sort; } || true
+        done
+    } | sha256sum | cut -c1-16
+}
+
+# The tar for the venv as it is now, packed once under a lock when there is
+# none yet. Prints its path; every word of progress goes to stderr.
+ensure_venv_tar() {
+    local venv="$1" cache_dir key tar_path partial lock_opened=0
+    cache_dir="${DELFIN_VENV_CACHE_DIR:-$HOME/.cache/delfin/venv}"
+    key="$(venv_cache_key "$venv")"
+    tar_path="$cache_dir/venv-$key.tar"
+    mkdir -p "$cache_dir" || return 1
+    if [ -f "$tar_path" ]; then
+        printf '%s\n' "$tar_path"
+        return 0
     fi
-elif [ -n "$DELFIN_DIR" ] && [ -d "$DELFIN_DIR/.venv" ]; then
-    echo "Using repository venv directly."
-    source "$DELFIN_DIR/.venv/bin/activate"
+    if command -v flock >/dev/null 2>&1; then
+        exec 8>"$cache_dir/.lock"
+        flock 8
+        lock_opened=1
+    fi
+    if [ ! -f "$tar_path" ]; then
+        echo "Packing $venv into $tar_path (once per change of the venv)..." >&2
+        partial="$tar_path.partial.${SLURM_JOB_ID:-$$}"
+        # Exit 1 is GNU tar saying a file changed while it was read -- a byte
+        # code cache written by some other python using this venv -- and the
+        # archive is complete. Taking it as a failure left the job without a
+        # staged venv. Only 2 and above are failures.
+        local tar_rc=0
+        tar -cf "$partial" --warning=no-file-changed -C "$(dirname "$venv")" "$(basename "$venv")" || tar_rc=$?
+        if [ "$tar_rc" -le 1 ] && [ -s "$partial" ]; then
+            mv -f "$partial" "$tar_path"
+            # This one and the one before it stay: a job that started a moment
+            # ago may still be unpacking that. Only the cache's own tars go.
+            { ls -1t "$cache_dir"/venv-*.tar 2>/dev/null | tail -n +3 | while IFS= read -r old_tar; do
+                rm -f "$old_tar"
+            done; } || true
+        else
+            rm -f "$partial"
+        fi
+    fi
+    if [ "$lock_opened" -eq 1 ]; then
+        flock -u 8
+        exec 8>&-
+    fi
+    [ -f "$tar_path" ] || return 1
+    printf '%s\n' "$tar_path"
+}
+
+use_venv() {
+    local venv="$1"
+    if [ -f "$venv/bin/activate" ]; then
+        source "$venv/bin/activate"
+    fi
+    # Set outright as well: an activate script names the path the venv was
+    # created at, which is not where an unpacked copy lives.
+    export VIRTUAL_ENV="$venv"
+    export PATH="$venv/bin:$PATH"
+    unset PYTHONHOME 2>/dev/null || true
+}
+
+VENV_LOCAL=""
+VENV_SRC=""
+if [ -n "${DELFIN_VENV:-}" ] && [ -x "${DELFIN_VENV}/bin/python" ]; then
+    VENV_SRC="$DELFIN_VENV"
+elif [ -n "$DELFIN_DIR" ] && [ -x "$DELFIN_DIR/.venv/bin/python" ]; then
+    VENV_SRC="$DELFIN_DIR/.venv"
+fi
+
+if [ "${DELFIN_STAGE_VENV:-1}" = "1" ] && [ -n "$VENV_SRC" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
+    VENV_TAR="${DELFIN_VENV_TAR:-}"
+    if [ -z "$VENV_TAR" ]; then
+        VENV_TAR="$(ensure_venv_tar "$VENV_SRC")" || VENV_TAR=""
+    fi
+    if [ -n "$VENV_TAR" ] && [ -f "$VENV_TAR" ]; then
+        _venv_tar_kb=$(( $(stat -c %s "$VENV_TAR" 2>/dev/null || echo 0) / 1024 ))
+        _stage_free_kb="$(df -Pk "$STAGE_BASE" 2>/dev/null | awk 'NR==2 {print $4}')"
+        if [ -n "$_stage_free_kb" ] && [ "$_stage_free_kb" -lt $(( _venv_tar_kb * 2 )) ]; then
+            echo "WARNING: $STAGE_BASE has ${_stage_free_kb} KB free and the venv needs about $(( _venv_tar_kb * 2 )) KB; running it from $VENV_SRC."
+        else
+            VENV_LOCAL="$STAGE_BASE/delfin_venv_${SLURM_JOB_ID:-$$}"
+            echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
+            mkdir -p "$VENV_LOCAL"
+            if tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"; then
+                sed -i "s|$VENV_SRC|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
+                use_venv "$VENV_LOCAL"
+                echo "venv loaded from local SSD."
+            else
+                echo "WARNING: unpacking $VENV_TAR failed; running the venv from $VENV_SRC."
+                rm -rf "$VENV_LOCAL"
+                VENV_LOCAL=""
+            fi
+        fi
+        unset _venv_tar_kb _stage_free_kb
+    else
+        echo "WARNING: no venv tar could be packed; running the venv from $VENV_SRC."
+    fi
+fi
+if [ -z "$VENV_LOCAL" ] && [ -n "$VENV_SRC" ]; then
+    echo "Using venv directly: $VENV_SRC"
+    use_venv "$VENV_SRC"
 fi
 
 # ======================================================================
@@ -305,6 +423,20 @@ RUNTIME_BUILD_MODE=""
 RUNTIME_WHEEL=""
 
 if [ "${DELFIN_RUNTIME_CACHE:-0}" = "1" ] && [ -n "$DELFIN_DIR" ]; then
+
+compute_runtime_tree_hash() {
+    # What the wheel would be built from, by name, size and modification time.
+    # Reading every file would be surer and costs a walk of the whole package
+    # on a network HOME at the start of every job; this notices an edit, a new
+    # file and a removed one, which is what a changed checkout looks like.
+    local listing=""
+    listing="$( {
+        find "$DELFIN_DIR/delfin" -type f -name '*.py' -printf '%P %s %T@\n' 2>/dev/null
+        find "$DELFIN_DIR" -maxdepth 1 -name 'pyproject.toml' -printf '%P %s %T@\n' 2>/dev/null
+    } | LC_ALL=C sort )"
+    [ -n "$listing" ] || return 0
+    printf '%s' "$listing" | sha256sum | awk '{print $1}'
+}
 
 compute_runtime_dirty_hash() {
     {
@@ -322,6 +454,7 @@ detect_runtime_key() {
     local head=""
     local tree_state=""
     local dirty_hash=""
+    local tree_hash=""
 
     if [ -d "$DELFIN_DIR/.git" ] && command -v git >/dev/null 2>&1; then
         head="$(git -C "$DELFIN_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
@@ -341,7 +474,16 @@ detect_runtime_key() {
         fi
     fi
 
-    RUNTIME_KEY="tree-default"
+    # No git here -- not installed, or not on the compute node.  The key still
+    # has to follow the code: it names the cached wheel, and a key that stays
+    # the same while DELFIN changes means every job keeps starting the version
+    # that happened to be built first.
+    tree_hash="$(compute_runtime_tree_hash)"
+    if [ -n "$tree_hash" ]; then
+        RUNTIME_KEY="tree-${tree_hash}"
+    else
+        RUNTIME_KEY="tree-default"
+    fi
     RUNTIME_BUILD_MODE="live-repo"
 }
 
@@ -358,6 +500,45 @@ build_runtime_context() {
     cp -a "$DELFIN_DIR/delfin/." "$build_dir/delfin/"
     cp -a "$DELFIN_DIR/pyproject.toml" "$build_dir/"
     [ -f "$DELFIN_DIR/README.md" ] && cp -a "$DELFIN_DIR/README.md" "$build_dir/"
+}
+
+venv_can_build_a_wheel() {
+    # The wheel is built with the job's own venv and without build isolation:
+    # a compute node has no dependable way to a package index, so pip cannot
+    # fetch what pyproject.toml asks for and uses what the venv has.  A venv
+    # made with "python -m venv" has setuptools 65 and no "wheel" -- and
+    # setuptools runs bdist_wheel by itself only from 70.1 on.  Without either,
+    # the build ends in "error: invalid command 'bdist_wheel'".
+    python - >/dev/null 2>&1 <<'PY'
+import sys
+from importlib.util import find_spec
+try:
+    from importlib.metadata import version
+    have = tuple(int(part) for part in version("setuptools").split(".")[:2])
+except Exception:
+    have = (0, 0)
+sys.exit(0 if find_spec("wheel") or have >= (70, 1) else 1)
+PY
+}
+
+build_runtime_wheel_into() {
+    local wheel_dir="$1"
+    local build_dir="$2"
+
+    if ! venv_can_build_a_wheel; then
+        echo "This venv cannot build a wheel yet; adding the build tools..."
+        python -m pip install --quiet --disable-pip-version-check \
+            "setuptools>=77" wheel || true
+    fi
+    venv_can_build_a_wheel || return 1
+
+    build_runtime_context "$build_dir"
+    python -m pip wheel \
+        --quiet \
+        --no-build-isolation \
+        --no-deps \
+        --wheel-dir "$wheel_dir" \
+        "$build_dir"
 }
 
 ensure_runtime_wheel() {
@@ -395,20 +576,18 @@ ensure_runtime_wheel() {
     rm -rf "$tmp_build_dir" "$tmp_wheel_dir"
     mkdir -p "$tmp_build_dir" "$tmp_wheel_dir"
 
-    build_runtime_context "$tmp_build_dir"
-    python -m pip wheel \
-        --quiet \
-        --no-build-isolation \
-        --no-deps \
-        --wheel-dir "$tmp_wheel_dir" \
-        "$tmp_build_dir"
-
-    built_wheel="$(find "$tmp_wheel_dir" -maxdepth 1 -type f -name 'delfin_complat-*.whl' | sort | tail -n 1)"
+    built_wheel=""
+    if build_runtime_wheel_into "$tmp_wheel_dir" "$tmp_build_dir"; then
+        built_wheel="$(find "$tmp_wheel_dir" -maxdepth 1 -type f -name 'delfin_complat-*.whl' | sort | tail -n 1)"
+    fi
     if [ -z "$built_wheel" ] || [ ! -f "$built_wheel" ]; then
-        echo "ERROR: Failed to build runtime wheel for $RUNTIME_KEY"
+        # The cache only saves start-up time.  A calculation must not be lost
+        # over it, so the job runs from $DELFIN_DIR as it did before the cache.
+        echo "WARNING: no runtime wheel could be built for $RUNTIME_KEY; running from $DELFIN_DIR instead."
         rm -rf "$tmp_build_dir" "$tmp_wheel_dir"
         [ "$lock_fd_opened" -eq 1 ] && { flock -u 9; exec 9>&-; }
-        exit 1
+        RUNTIME_WHEEL=""
+        return 1
     fi
 
     mv "$built_wheel" "$runtime_root/"
@@ -427,7 +606,10 @@ install_cached_runtime_wheel() {
         return 0
     fi
 
-    ensure_runtime_wheel
+    if ! ensure_runtime_wheel; then
+        export DELFIN_RUNTIME_KEY="editable-home-fallback"
+        return 0
+    fi
     echo "Installing cached runtime wheel into local venv ($RUNTIME_KEY)..."
     "$VENV_LOCAL/bin/python" -m pip install \
         --quiet \
@@ -482,6 +664,11 @@ fi
 # Section 10: Python binary detection
 # ======================================================================
 PYTHON_BIN="${DELFIN_PYTHON_BIN:-}"
+# The staged copy first. An entry-point shebang still names the venv on HOME
+# unless the runtime wheel overlay happened to rewrite it.
+if [ -z "$PYTHON_BIN" ] && [ -n "${VENV_LOCAL:-}" ] && [ -x "$VENV_LOCAL/bin/python" ]; then
+    PYTHON_BIN="$VENV_LOCAL/bin/python"
+fi
 if [ -z "$PYTHON_BIN" ]; then
     # Try the delfin entry-point shebang first
     _delfin_bin="$(command -v delfin 2>/dev/null || true)"
@@ -702,17 +889,28 @@ collect_sync_results() {
     case "$profile" in
         minimal)
             stamp_path="$SYNC_STAMP_MINIMAL"
+            # .hess/.opt/.engrad are small but are what lets a killed job be
+            # resumed instead of restarted: ORCA reads them back for numerical
+            # Hessian and geometry-optimisation restarts. They therefore belong
+            # in the periodic profile, not only in the final backup.
+            #
+            # GOAT's per-worker intermediates (XTB_GOAT.goat.<iter>.<worker>.*)
+            # are created and deleted continuously while GOAT runs, so listing
+            # them here means rsync is regularly handed files that no longer
+            # exist by the time it reaches them. They stay in the full profile,
+            # so the finished run still contains them.
             local find_filter=(
                 \( -type f -o -type l \)
                 ! -path '*/.orca_iso*/*'
                 ! -path '*/__pycache__/*'
                 ! -path '*/.ipynb_checkpoints/*'
                 ! -name '*.tmp' ! -name '*.pyc' ! -name '*.pyo'
-                ! -name 'XTB_GOAT.goat.*.out'
+                ! -name 'XTB_GOAT.goat.*'
                 \( -name '*.out' -o -name '*.err' -o -name '*.log' -o -name '*.json'
                    -o -name '*.txt' -o -name '*.xyz' -o -name '*.inp' -o -name '*.png'
                    -o -name '*.svg' -o -name '*.pdf' -o -name '*.docx' -o -name '*.csv'
-                   -o -name '*.dat' \)
+                   -o -name '*.dat' -o -name '*.hess' -o -name '*.opt'
+                   -o -name '*.engrad' \)
             )
             if [ -f "$stamp_path" ]; then
                 find "$RUN_DIR" "${find_filter[@]}" -newer "$stamp_path" -printf '%P\n' 2>/dev/null | sort -u > "$list_file" || true
@@ -735,6 +933,31 @@ collect_sync_results() {
     set -o pipefail 2>/dev/null || true
 }
 
+# A 60 h run syncs every 15 min, so an unconditional line per sync buries the
+# job log under hundreds of identical "Copied N result files" entries and any
+# real message with it. Collapse consecutive identical lines into a count and
+# flush that count as soon as something different needs saying.
+_SAY_LAST=""
+_SAY_REPEATS=0
+
+flush_repeats() {
+    if [ "$_SAY_REPEATS" -gt 0 ]; then
+        echo "  (previous line repeated ${_SAY_REPEATS}x)"
+        _SAY_REPEATS=0
+    fi
+}
+
+say_once() {
+    local msg="$1"
+    if [ "$msg" = "$_SAY_LAST" ]; then
+        _SAY_REPEATS=$((_SAY_REPEATS + 1))
+        return 0
+    fi
+    flush_repeats
+    echo "$msg"
+    _SAY_LAST="$msg"
+}
+
 sync_results_back() {
     local sync_label="${1:-sync}"
     local sync_profile="${2:-full}"
@@ -752,7 +975,7 @@ sync_results_back() {
     collect_sync_results "$list_file" "$sync_profile"
 
     if [ ! -s "$list_file" ]; then
-        echo "No updated result files to copy (${sync_label})."
+        say_once "No updated result files to copy (${sync_label})."
         [ "$sync_profile" = "minimal" ] && touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
         return 0
     fi
@@ -770,9 +993,20 @@ sync_results_back() {
 
     [ "$sync_profile" = "minimal" ] && touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
 
+    # Exit code 24 means "some source files vanished before they could be
+    # transferred". Running ORCA/GOAT/xTB workers delete their own scratch
+    # files constantly, so a file listed a moment earlier being gone by the
+    # time rsync reaches it is expected, not a failure — the next sync picks
+    # up whatever replaced it. Reporting it as a warning trained the eye to
+    # ignore sync warnings, which is exactly the wrong reflex for code 23.
+    if [ "$rsync_rc" -eq 24 ]; then
+        rsync_rc=0
+    fi
+
     if [ "$rsync_rc" -eq 0 ]; then
-        echo "Copied ${file_count} result files (${sync_label}, profile=${sync_profile})."
+        say_once "Copied ${file_count} result files (${sync_label}, profile=${sync_profile})."
     else
+        flush_repeats
         echo "WARNING: rsync exited with code ${rsync_rc} during ${sync_label} sync."
         echo "WARNING: ${file_count} files were scheduled; some may be missing in ${ORIGIN_DIR}."
         if [ -s "$rsync_err" ]; then
@@ -795,6 +1029,157 @@ _DELFIN_PID=""
 PERIODIC_COPY_PID=""
 FINAL_BACKUP_PID=""
 
+_slurm_field() {
+    scontrol show job "${SLURM_JOB_ID:-0}" 2>/dev/null \
+        | grep -oP "\\b$1=\\K\\S+" | head -1 || echo ""
+}
+
+_hms_to_seconds() {
+    awk -F'[-:]' '{
+        if (NF==4) print $1*86400 + $2*3600 + $3*60 + $4
+        else if (NF==3) print $1*3600 + $2*60 + $3
+        else if (NF==2) print $1*60 + $2
+        else print 0
+    }' <<< "$1"
+}
+
+# Seconds left before SLURM kills us, or empty when that cannot be determined
+# (no scontrol, unlimited walltime, local run).
+get_remaining_seconds() {
+    local limit runtime
+    limit="$(_slurm_field TimeLimit)"
+    runtime="$(_slurm_field RunTime)"
+    if [ -z "$limit" ] || [ "$limit" = "UNLIMITED" ] || [ -z "$runtime" ]; then
+        echo ""
+        return
+    fi
+    local limit_s runtime_s
+    limit_s="$(_hms_to_seconds "$limit")"
+    runtime_s="$(_hms_to_seconds "$runtime")"
+    if [ "$limit_s" -le 0 ]; then echo ""; return; fi
+    echo $(( limit_s - runtime_s ))
+}
+
+# Hand the deadline to DELFIN as an absolute epoch. The scheduler needs to know
+# how much time is left before it commits to a job that cannot finish in it, and
+# an absolute stamp stays correct however long the process has been running. It
+# is a fallback only: DELFIN asks SLURM directly first, and this covers the case
+# where scontrol/squeue are not reachable from the compute node.
+_DELFIN_REMAINING_AT_START="$(get_remaining_seconds)"
+if [ -n "$_DELFIN_REMAINING_AT_START" ]; then
+    export DELFIN_JOB_END_EPOCH=$(( $(date +%s) + _DELFIN_REMAINING_AT_START ))
+fi
+
+# One compact line per ORCA output that moved since the last heartbeat, so the
+# job log shows what the run is actually doing. Without this the only evidence
+# of 60 h of work was a repeated "Copied N result files", which cannot
+# distinguish a converging optimisation from one that has been stuck on the
+# same gradient for a hundred cycles.
+progress_heartbeat() {
+    [ -d "$RUN_DIR" ] || return 0
+    local remaining_s remaining_txt="unknown"
+    remaining_s="$(get_remaining_seconds)"
+    if [ -n "$remaining_s" ]; then
+        remaining_txt="$((remaining_s / 3600))h $((remaining_s % 3600 / 60))m"
+    fi
+
+    local state_file="${DELFIN_SCRATCH:-/tmp}/.delfin_progress_state"
+    local new_state="${state_file}.new"
+    : > "$new_state"
+
+    local reported=0 out rel line kind counter grad total
+    while IFS= read -r out; do
+        rel="${out#$RUN_DIR/}"
+        line="$(tail -c 200000 "$out" 2>/dev/null | awk '
+            match($0, /GEOMETRY OPTIMIZATION CYCLE +[0-9]+/) {
+                s = substr($0, RSTART, RLENGTH); sub(/.* /, "", s); cycle = s
+            }
+            match($0, /MAX gradient +[0-9.eE+-]+/) {
+                s = substr($0, RSTART, RLENGTH); sub(/.* /, "", s); grad = s
+            }
+            match($0, /displaced geometry +[0-9]+ +\(of +[0-9]+\)/) {
+                s = substr($0, RSTART, RLENGTH)
+                gsub(/[^0-9 ]/, " ", s); n = split(s, p, " ")
+                disp = p[1]; tot = p[n]
+            }
+            match($0, /SCF CONVERGED AFTER +[0-9]+ +CYCLES/) {
+                s = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", s); scf = s
+            }
+            END {
+                # kind|counter|gradient|total — parsed by the caller below.
+                if (disp != "")       printf "hessian|%s|-|%s", disp, tot
+                else if (cycle != "") printf "opt|%s|%s|-", cycle, (grad == "" ? "-" : grad)
+                else if (scf != "")   printf "scf|%s|-|-", scf
+            }')"
+        [ -z "$line" ] && continue
+
+        IFS='|' read -r kind counter grad total <<< "$line"
+
+        local prev prev_counter="" prev_grad="" prev_stall=0 prev_time=""
+        prev="$(grep -F -m1 "$(printf '%s\t' "$rel")" "$state_file" 2>/dev/null)"
+        if [ -n "$prev" ]; then
+            IFS=$'\t' read -r _ _ prev_counter prev_grad prev_stall prev_time <<< "$prev"
+        fi
+        [ -z "$prev_stall" ] && prev_stall=0
+
+        local human note="" stall="$prev_stall"
+        case "$kind" in
+            hessian) human="Hessian ${counter}/${total}" ;;
+            opt)     human="opt cycle ${counter}, MAX grad ${grad}" ;;
+            scf)     human="SCF converged (${counter} cycles)" ;;
+        esac
+
+        # An optimisation whose gradient no longer moves while the cycle count
+        # keeps climbing is not converging slowly, it is stuck: one archived
+        # job spent ~100 cycles on an unchanged MAX gradient of 0.0250 against
+        # a 0.0003 tolerance and would never have finished at any walltime.
+        if [ "$kind" = "opt" ] && [ -n "$prev_counter" ] \
+           && [ "$counter" -gt "$prev_counter" ] 2>/dev/null \
+           && [ "$grad" = "$prev_grad" ] && [ "$grad" != "-" ]; then
+            stall=$((prev_stall + 1))
+            if [ "$stall" -ge 2 ]; then
+                note="  <-- STALLED: gradient unchanged over $((counter - prev_counter)) more cycles"
+            fi
+        elif [ "$kind" = "opt" ]; then
+            stall=0
+        fi
+
+        # For a numerical Hessian the total is known from the first line, so
+        # once two heartbeats are in the rate is measurable and the finish can
+        # be projected against the walltime that is actually left.
+        if [ "$kind" = "hessian" ] && [ -n "$prev_counter" ] && [ -n "$remaining_s" ] \
+           && [ "$counter" -gt "$prev_counter" ] 2>/dev/null && [ -n "$prev_time" ]; then
+            local now elapsed done_now eta
+            now="$(date +%s)"
+            elapsed=$((now - prev_time))
+            done_now=$((counter - prev_counter))
+            if [ "$elapsed" -gt 0 ] && [ "$done_now" -gt 0 ]; then
+                eta=$(( (total - counter) * elapsed / done_now ))
+                human="${human}, ~$((eta / 3600))h left at current rate"
+                if [ "$eta" -gt "$remaining_s" ]; then
+                    note="  <-- WILL NOT FINISH: needs ~$((eta / 3600))h, walltime has ${remaining_txt}"
+                fi
+            fi
+        fi
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$rel" "$kind" "$counter" "$grad" "$stall" "$(date +%s)" >> "$new_state"
+
+        if [ "$reported" -eq 0 ]; then
+            flush_repeats
+            echo "[progress] $(date '+%F %T')  walltime left: ${remaining_txt}"
+            reported=1
+        fi
+        echo "[progress]   ${rel}: ${human}${note}"
+    done < <(find "$RUN_DIR" -type f -name '*.out' \
+                 ! -name 'delfin_*.out' ! -name 'XTB_GOAT.goat.*' \
+                 -newermt "-$((SYNC_INTERVAL + 60)) seconds" 2>/dev/null | sort)
+
+    mv -f "$new_state" "$state_file" 2>/dev/null || true
+    [ "$reported" -eq 1 ] && _SAY_LAST=""
+    return 0
+}
+
 periodic_copy() {
     sleep 60
     # Rescue ORCA isolated-dir files first so the .out header (and any
@@ -807,6 +1192,7 @@ periodic_copy() {
         sleep "${SYNC_INTERVAL}"
         [ -d "$RUN_DIR" ] && rescue_iso_files
         [ -d "$RUN_DIR" ] && sync_results_back "periodic" "minimal"
+        progress_heartbeat
     done
 }
 

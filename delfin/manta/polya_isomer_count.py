@@ -274,6 +274,14 @@ CHELATE_CIS_MAX_DEG_TET = 111.0
 
 _GEOM_KEY_TO_SHAPE = {
     "linear": "L-2 linear",
+    # CN3 + TPR-6 were MISSING here (2026-07-28 backport; the eye's copy has carried the fix since
+    # 2026-07-07).  Both consumers resolve a geometry key to a reference polyhedron via .get():
+    # _chelate_cis_edges falls back when it is None, but _mer_triples does `if shape is None: return []`
+    # -- so for a trigonal prism or ANY CN3 field the MERIDIONAL triples came back EMPTY, no chelate
+    # config could be built, and converter_backend's `if not configs: return None` dropped the whole
+    # complex to the legacy path.  Silently: the KeyError/None is swallowed by a bare except.
+    # Population 723 TPR-6 + 1238 CN3 = 1961 systems degraded without a single log line.  All four
+    # shape names already exist in polyhedra.py (:30/:34/:52/:71) -- only the mapping was absent.
     "octahedron": "OC-6 octahedron",
     "square_planar": "SP-4 square planar",
     "tetrahedron": "T-4 tetrahedron",
@@ -283,6 +291,30 @@ _GEOM_KEY_TO_SHAPE = {
     "square_antiprism": "SQAP-8 square antiprism",
     "tricapped_trigonal_prism": "TTP-9 tricapped trigonal prism",
 }
+
+# The CN3 fields and the trigonal prism were ABSENT from the map above (backport 2026-07-28; the eye's
+# copy, weddell/detectors/_polya_isomer_count.py, has carried them since 2026-07-07).  Both consumers
+# resolve a geometry key through _geom_shape(); _chelate_cis_edges falls back when it is None, but
+# _mer_triples does `if shape is None: return []` -- so on a trigonal prism or ANY CN3 field the
+# MERIDIONAL triples came back EMPTY, no chelate config could be built, and converter_backend's
+# `if not configs: return None` dropped the whole complex to the LEGACY path.  Silently: the None is
+# swallowed by a bare except, so nothing was ever logged.  Population 723 TPR-6 + 1238 CN3 = 1961
+# systems degraded without a trace (SOLZOL: 12 frames, all trigonal-prismatic, all broken).
+# Env-gated so the restoration gets a clean A/B; add to _CHAMPION_FLAGS once it proves never-worse.
+_GEOM_KEY_TO_SHAPE_CN3_TPR6 = {
+    "trigonal_planar": "SP-3 trigonal planar",
+    "tshape": "T-3 T-shape",
+    "trigonal_pyramidal": "TPY-3 trigonal pyramidal",
+    "trigonal_prism": "TPR-6 trigonal prism",
+}
+
+
+def _geom_shape(geometry):
+    """Reference-polyhedron name for a geometry key, or None when we have none."""
+    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    if shape is None and os.environ.get("DELFIN_FFFREE_POLYA_CN3_TPR6", "0") == "1":
+        shape = _GEOM_KEY_TO_SHAPE_CN3_TPR6.get(geometry)
+    return shape
 
 
 def _chelate_cis_edges(geometry: str, n: int):
@@ -299,7 +331,7 @@ def _chelate_cis_edges(geometry: str, n: int):
     ceiling = (CHELATE_CIS_MAX_DEG_TET
                if _delfin_env_int("DELFIN_FFFREE_TET_CHELATE", 0)
                else CHELATE_CIS_MAX_DEG)
-    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    shape = _geom_shape(geometry)
     if shape is not None:
         try:
             import math
@@ -331,7 +363,7 @@ def _meridional_triples(geometry: str, n: int):
     import math
     import itertools
     import numpy as np
-    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    shape = _geom_shape(geometry)
     if shape is None:
         return []
     try:
@@ -386,7 +418,7 @@ def _equatorial_squares(geometry: str, n: int):
     import math
     import itertools
     import numpy as np
-    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    shape = _geom_shape(geometry)
     if shape is None:
         return []
     try:
@@ -489,6 +521,39 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
                 a = dict(assign); a[v1] = (k, 0); a[v2] = (k, 1); place(a)
                 if spec.get("asym"):
                     b = dict(assign); b[v1] = (k, 1); b[v2] = (k, 0); place(b)
+        elif dent == 3 and not spec.get("rigid_planar") \
+                and os.environ.get("DELFIN_FFFREE_KAPPA3_FLEX", "0") == "1":
+            # FLEXIBLE TRIDENTATE -- the branch that was never written.
+            #
+            # place() knew dent 1, dent 2, dent 3 ONLY IF rigid_planar, dent 4 ONLY IF
+            # rigid_planar.  A flexible kappa3 (dien, tacn, a non-conjugated pincer) matched
+            # nothing and there was no else, so the recursion returned without placing, no
+            # config ever completed, and the caller saw an empty list.  Measured 2026-08-02:
+            # 299 of 299 CHELATE_EMPTY declines carry nchel=0 -- not one exception, and
+            # _coord_filter is innocent.  cn=6 OC-6 223 - cn=4 T-4 76 - cn=4 SP-4 54 -
+            # cn=5 TBP-5 33.  215 systems, one cause.
+            #
+            # The rule is the same doctrine as everywhere else: the RESTRICTION is a property
+            # of the ligand, not the absence of a rule.  A rigid planar tridentate may only
+            # be meridional; a flexible one may take ANY vertex triple (fac and mer both --
+            # dien is facial on OC-6, and that isomer is simply missing today).  Geometrically
+            # impossible triples are removed by canon_key's symmetry collapse and by the
+            # build's own self-gate, so this states what is ALLOWED and lets the later stages
+            # say what is REACHABLE.
+            #
+            # NOT additive, and that is stated up front: these systems currently fall to
+            # legacy (nchel=0 -> CHELATE_EMPTY -> handover).  Building them TAKES them from
+            # legacy, which is the trade trilatresc measured today.  The bar is therefore
+            # legacy's own baseline on this pool: 215 attempted -> 215 built.
+            import itertools as _it
+            _free = [v for v in range(n) if v not in assign]
+            for tri in _it.combinations(_free, 3):
+                for arms in ((0, 1, 2),) if not spec.get("asym") \
+                        else tuple(_it.permutations((0, 1, 2))):
+                    a = dict(assign)
+                    for v, arm in zip(tri, arms):
+                        a[v] = (k, arm)
+                    place(a)
         elif dent == 3 and spec.get("rigid_planar") and _mer_triples is not None:
             # RIGID PLANAR tridentate (terpy / pincer): occupy ONLY meridional vertex
             # triples (a flat conjugated tridentate cannot fold to a facial cap).  Seat
@@ -561,12 +626,64 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
             # ligand on the matching mer/fac arrangement (metallacycle embed + best-
             # permutation Kabsch) and the self-gate prunes geometrically infeasible
             # subsets, so the combinatorial enumeration need not know mer-vs-fac.
+            #
+            # ARM PERMUTATION (DELFIN_FFFREE_KAPPA3_ARM_PERM, default OFF -> byte-identical).
+            #
+            # THE HOLE.  itertools.combinations yields each vertex subset ONCE, in sorted
+            # order, and enumerate() then glues arm 0,1,2,... onto it in that same fixed
+            # order.  For a SYMMETRIC kappa>=3 ligand that is right and complete.  For an
+            # ASYMMETRIC one it is neither: which arm sits on which vertex is exactly what
+            # distinguishes the isomers (a tridentate N,N,O has three inequivalent ways to
+            # meet the same vertex triple), and dent!-1 of them were never generated.  The
+            # enumerator is the completeness reference -- the docstring above calls it "the
+            # denominator for Layer-2 coverage" -- so an isomer it never proposes cannot be
+            # built, cannot be missed by the eye, and silently lowers the ceiling.
+            #
+            # WHY THIS IS ADDITIVE, NOT A REPLACEMENT.  itertools.permutations yields the
+            # IDENTITY first, so the very first assignment built for each combo is the one
+            # this branch builds today; every config the flag-off path emits is still
+            # emitted, in the same order, and the flag can only APPEND.  place() dedups via
+            # canon_key/seen, and out.append keeps the FIRST config per key -- so the frames
+            # that exist today keep their identity and the additions land beside them.  That
+            # is the shape that has landed here (RING_PUCKER/LP_SIBLING/SIGMA_ENSEMBLE/TPR6)
+            # and the shape that replacing anything has not.
+            #
+            # SCOPED TO asym, AND THAT IS A PROOF, NOT A GUESS.  For a non-asym spec
+            # canon_key reads tuple(sorted(v for v, a in vs)) -- it drops the arm index
+            # entirely, so all dent! permutations of one vertex subset collapse to ONE key
+            # and only the identity (generated first) survives.  Permuting them would cost
+            # dent! times the work to reproduce the same list.  So the permutation runs
+            # exactly where it can change the answer.
+            #
+            # ⚠ IT INHERITS THE asym BOOL, AND THAT BOOL IS KNOWN TOO COARSE.
+            # asym is set in converter_backend.py:1485 as len(set(donor_elems)) > 1 -- a
+            # single bit over donor ELEMENTS, blind to the ligand's automorphism orbits.
+            # Where it is over-inclusive (two donors of different elements that are
+            # nonetheless symmetry-equivalent through the backbone) canon_key trusts it,
+            # the permutations do NOT collapse, and this branch will emit chemically
+            # identical frames as if they were isomers -- manifolds get BIGGER without
+            # getting truer.  The fix is the arm partition over automorphism orbits
+            # (the constrained arm_adj enumerator already exists on the eye side,
+            # weddell/detectors/_polya_isomer_count.py:565 + find_isomer_coverage.py:567),
+            # and it is a SEPARATE, subtractive change that must be measured on its own.
+            # Until it lands, read a rise in frame count from this flag as unproven.
             free = [v for v in range(n) if v not in assign]
+            # The arm->vertex orders to try.  OFF (and for every symmetric spec) this is the
+            # single identity order, and zip() below then reproduces enumerate(combo) exactly
+            # -- byte-identical, no extra dict, no extra place() call.  The env read is hoisted
+            # out of the combo loop on purpose, so the line below is a BLOCK THAT ONLY RUNS
+            # WHEN THE SWITCH IS ON: that is the line a fire census must trace (tracing the
+            # read itself would report "fires everywhere", since the read runs when OFF too).
+            _orders = [tuple(range(dent))]
+            if (spec.get("asym")
+                    and os.environ.get("DELFIN_FFFREE_KAPPA3_ARM_PERM", "0") == "1"):
+                _orders = list(itertools.permutations(range(dent)))   # identity is FIRST
             for combo in itertools.combinations(free, dent):
-                a = dict(assign)
-                for arm, v in enumerate(combo):
-                    a[v] = (k, arm)
-                place(a)
+                for _order in _orders:
+                    a = dict(assign)
+                    for _arm, v in zip(_order, combo):
+                        a[v] = (k, _arm)
+                    place(a)
 
     place({})
     return out

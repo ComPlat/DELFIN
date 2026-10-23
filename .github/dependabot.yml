@@ -1,0 +1,163 @@
+# Dependency updates.
+#
+# Four ecosystems, deliberately treated differently:
+#
+#   github-actions — the workflows are the merge gate, and a compromised or
+#     abandoned action runs with whatever the workflow grants it. Every
+#     `uses:` is pinned to a commit SHA with its version as a comment
+#     (tests/test_every_action_is_pinned_to_a_commit.py); Dependabot moves
+#     the SHA and the comment together. These updates are small, readable and
+#     safe to take, so they arrive individually -- after a week's cooldown, so
+#     a release that is retracted or found compromised within days of
+#     publication never reaches the gate.
+#
+#   docker (.github/ci/agent-container/) — the default image of the agent's
+#     container backend, python:3.11-slim by digest. Dependabot reads the
+#     digest from that Dockerfile (nothing builds it); the pull request it
+#     opens stays red until delfin/agent/container_exec.py carries the same
+#     digest (tests/test_what_the_agent_runs_on_is_named_exactly.py), so a
+#     person moves the image the agent runs commands in. Same cooldown.
+#
+#   bun (tui/) — the terminal window's dependencies, read from tui/bun.lock.
+#     Grouped weekly like pip, majors left out. @opentui/* is excluded: the
+#     window runs a patched @opentui/core (tui/patches/, keyed to 0.6.4 in
+#     package.json) and a native library built from the pinned source by
+#     tui/scripts/build-opentui-native.sh, so moving that version is a
+#     migration of three files, not a lockfile bump.
+#
+#   pip — DELFIN's results depend on the numerics underneath it (rdkit, numpy,
+#     ase, scipy). A version bump there can change a computed number without
+#     changing a line of DELFIN, so these are grouped into one weekly pull
+#     request that a person reads, rather than a stream of separate ones that
+#     invite rubber-stamping. Major versions are left out entirely: they need
+#     a deliberate migration with the suite run against real calculations, not
+#     a bot's pull request.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+
+  - package-ecosystem: docker
+    directory: "/.github/ci/agent-container"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "deps(container)"
+    labels:
+      - dependencies
+
+  - package-ecosystem: bun
+    directory: "/tui"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(tui)"
+    labels:
+      - dependencies
+    groups:
+      tui-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+      # Patched and natively rebuilt at a pinned version; see the header.
+      - dependency-name: "@opentui/*"
+      # Moves with @opentui/core, never on its own. @opentui/core 0.6.4 peers
+      # web-tree-sitter 0.25.10 exactly: its parser.worker.js carries that
+      # release's JavaScript inline and loads only the runtime wasm from the
+      # installed package, as web-tree-sitter/tree-sitter.wasm. 0.27 renamed
+      # that file to web-tree-sitter.wasm, so the worker fails to start and
+      # markdown is shown unhighlighted (#289: 11 window tests failed). Any
+      # other version pairs the inlined JavaScript with a different build's
+      # wasm, so patch updates are excluded as well as minor ones.
+      - dependency-name: "web-tree-sitter"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
+      # Same for solid-js: @opentui/solid 0.6.4 peers solid-js 1.9.12 exactly
+      # and compiles its components with babel-preset-solid 1.9.12, so the
+      # runtime moves with @opentui/solid, not on its own.
+      - dependency-name: "solid-js"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
+
+  - package-ecosystem: pip
+    directory: "/"
+    # env/ holds the record of the exact environment the published MANTA
+    # constructions were built in (env/reference-environment.lock). It is not a
+    # dependency specification; Dependabot detected it by content even after a
+    # rename (#39, #40, #42), so the directory is excluded outright.
+    exclude-paths:
+      - "env/**"
+    schedule:
+      interval: weekly
+    # Every dependency in pyproject.toml carries a deliberate upper bound, and
+    # the default strategy for a project without a lockfile is to widen those
+    # ranges — which is how the very first run came to propose lifting numpy
+    # from <2 to <3. Raising the minimum when a release actually requires it is
+    # useful; pushing the ceilings out is a decision for a person who has run
+    # the suite against real calculations.
+    versioning-strategy: increase-if-necessary
+    # Two weeks, the age the pinned dev tools must have (pyproject [dev]):
+    # a release that is withdrawn or found compromised in its first days
+    # never becomes a pull request here.
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Majors are migrations, not updates.
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+
+      # DELFIN declares ranges rather than pinned versions, so Dependabot also
+      # proposes widening the ranges themselves — and the first thing it did
+      # was open a pull request lifting exactly the two ceilings that are there
+      # on purpose. A range-widening is not classified as a major update, so
+      # the rule above does not stop it; these have to be named.
+      #
+      # numpy <2.3: the highest minor anything has been measured on (2.2.2 is
+      # the reference build environment, 1.26 the other end CI holds), and
+      # DELFIN's results run through it. Until 2026-09 this read <2.
+      # mendeleev <1.0: element data feeding basis-set and radius selection.
+      #
+      # Raising either is a deliberate migration, verified against real
+      # calculations — not something to accept from a bot.
+      - dependency-name: "numpy"
+      - dependency-name: "mendeleev"
+
+    # env/reference-environment.lock is deliberately NOT named requirements*.txt:
+    # it records the exact environment the published MANTA constructions were
+    # built in (byte-reproducibility), not a dependency specification. Moving
+    # any version in it would silently detach it from the data it describes;
+    # updating it means rebuilding and re-verifying, a decision for a person.

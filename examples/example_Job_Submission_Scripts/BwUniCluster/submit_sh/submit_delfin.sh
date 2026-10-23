@@ -25,7 +25,9 @@
 export DELFIN_MODULES="${DELFIN_MODULES:-devel/python/3.11.7-gnu-14.2}"
 export DELFIN_STAGE_ORCA="${DELFIN_STAGE_ORCA:-1}"
 export DELFIN_STAGE_VENV="${DELFIN_STAGE_VENV:-1}"
-export DELFIN_RUNTIME_CACHE="${DELFIN_RUNTIME_CACHE:-1}"
+# Off, like the dashboard: building a wheel on the compute node only saves
+# start-up time, and it depends on what the venv holds. Set it to 1 to use it.
+export DELFIN_RUNTIME_CACHE="${DELFIN_RUNTIME_CACHE:-0}"
 export DELFIN_AUTO_RESOURCES="${DELFIN_AUTO_RESOURCES:-1}"
 export DELFIN_NODE_CORES="${DELFIN_NODE_CORES:-96}"
 export DELFIN_NODE_MEM_MB="${DELFIN_NODE_MEM_MB:-$((384 * 1024))}"

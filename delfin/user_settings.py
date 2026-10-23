@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy as _copy
 import json
 import os
 from datetime import datetime, timezone
@@ -54,6 +55,13 @@ DEFAULT_SETTINGS = {
             "orca_base": "",
             "submit_templates_dir": "",
             "profile": "",
+            # Comma-separated partitions a CPU job may start in; SLURM takes
+            # whichever can run it first. Empty: the site profile's list, or
+            # the submit template's own partition.
+            "partitions": "",
+            # The same for jobs that ask for a GPU. Empty: the site profile's
+            # list, or every GPU partition scontrol reports.
+            "gpu_partitions": "",
         },
     },
     "features": {
@@ -64,12 +72,12 @@ DEFAULT_SETTINGS = {
         # Above 0.99 risks OOM-SIGKILL (Linux cgroup is unforgiving), below
         # 0.50 wastes resources. Set lower (0.85) for correlation methods
         # (DLPNO-CC, MP2) where ORCA's real RSS may exceed %maxcore. Set
-        # higher (0.95) for pure DFT-OPT setups where Fritz' archive shows
+        # higher (0.95) for pure DFT-OPT setups where a user archive shows
         # real RSS = 80-82 % of promised.
         # Historical context: 5edfb89 (2026-05-05) introduced the cap at
         # 0.85 after JEW-R465 OOM (312 GB / 351 GB SLURM, two parallel
         # OCCUPIER jobs SIGKILL after 48 h). Default raised to 0.90 on
-        # 2026-05-12 after Fritz-archive analysis.
+        # 2026-05-12 after a user-archive analysis.
         "slurm_mem_headroom": 0.90,
     },
     "ui": {
@@ -80,6 +88,12 @@ DEFAULT_SETTINGS = {
         "viewer": {
             "enabled": True,
             "quality": "high",
+            "representation": "ball_and_stick",
+            "atom_scale": 0.28,
+            "bond_radius": 0.11,
+            "multiple_bonds": True,
+            "depth_fog": True,
+            "ambient_occlusion": False,
         },
     },
     "docs": {
@@ -101,6 +115,18 @@ DEFAULT_SETTINGS = {
         # Soft warning when cumulative session cost crosses this USD
         # mark. The agent shows a banner; nothing is blocked.
         "cost_soft_limit_usd": 5.0,
+        # How long the agent's own state under ~/.delfin is kept, in days.
+        # Nothing expired before, so a state tree only ever grew: tool
+        # traces, turn metrics, sub-agent records, archived transcripts,
+        # handoffs, bundles and filed bug reports going back months.
+        #
+        # Two numbers because the two kinds of file are not comparable.
+        # Derived state is telemetry ABOUT work that is already finished.
+        # A saved session is work the user can still resume, so deleting
+        # one costs them something; it keeps the longer default and its
+        # own setting. Either at 0 disables that half of the prune.
+        "state_retention_days": 30,
+        "session_retention_days": 90,
         # Per-turn tool-round budget for the OpenAI/KIT/Ollama agent loop.
         # The agent runs up to this many tool-call rounds in ONE user turn
         # before stopping with a "send continue" notice. 500 is high enough
@@ -108,7 +134,52 @@ DEFAULT_SETTINGS = {
         # forcing manual nudges; the per-turn cost circuit-breaker
         # (cost_hard_limit_usd) and the consecutive-failure abort remain
         # the actual safety nets. 0 → uncapped (cost/fail-abort only).
-        "max_tool_rounds": 500,
+        #
+        # None means "unset", which is what lets the per-model profile
+        # decide. Shipping a number here instead made "unset" impossible
+        # to express, so the profile branch in _resolve_max_tool_rounds
+        # was unreachable and every model got 500 rounds -- including the
+        # small ones whose profiles ask for 10 or 20 precisely so that a
+        # degenerate loop dies early. A user who wants a fixed number
+        # still sets one and it still wins.
+        "max_tool_rounds": None,
+        # Per-run limits for a delegated sub-agent. Wall-clock is the one
+        # that actually binds on a slow endpoint (a build task spends ~30 s
+        # per tool call there); call count and output size have not been
+        # the limit in measured runs. 0 → fall back to the module default.
+        # Caps per delegated subagent. Raised 2026-10-08 from 40 calls and
+        # 900 s, because the presets became specialists and two of them
+        # cannot finish inside the old numbers: `verifier` runs the
+        # covering tests and then the same tests on the base as a control,
+        # and the full suite takes 2520 s on this installation -- a cap
+        # below the thing a preset exists to do makes the preset useless,
+        # and the run is billed for a report nobody can use. 40 calls was
+        # sized for `explore`, which uses about ten.
+        #
+        # Caps, not targets: the cost circuit-breaker and the
+        # consecutive-failure abort are unchanged, and a delegate that
+        # finishes in four calls still costs four.
+        "subagents": {
+            "max_tool_calls": 120,
+            "max_wall_s": 3600,
+            "max_output_tokens": 16000,
+        },
+        # Dashboard ACTION rounds: a round that issues at least one NEW
+        # command is progress and only draws on the ceiling; a round that
+        # re-issues what already ran this turn is charged against
+        # action_repeat_limit, so a loop ends after the first repeat while
+        # honest multi-step work runs on. 0 → ceiling disabled.
+        #
+        # 40, raised from 12. The ceiling is not what stops a degenerate
+        # loop -- action_repeat_limit is, and it ends the turn on the first
+        # repeated command. The ceiling only ever binds work where every
+        # round brings NEW commands, which is honest multi-step work, and
+        # 12 of those is few. A field report describes agents stopping
+        # short of the task with steps left to take; the number it names is
+        # this one, reached while agent.max_tool_rounds was set to 500 and
+        # therefore never the limit that bit.
+        "max_action_rounds": 40,
+        "action_repeat_limit": 2,
         # Auto-verification: don't let the agent finish a turn with broken code.
         # When the model stops after editing .py files, the harness verifies
         # them and — on a problem — forces a bounded fix round (the model can't
@@ -123,11 +194,42 @@ DEFAULT_SETTINGS = {
         #   "off"             — disable.
         "auto_verify": "smart",
         "auto_verify_command": "",
+        # Who may push to the default branch. "contributor" (default): the
+        # agent pushes a branch and hands over the pull-request link; a push
+        # to main/master is refused. "maintainer": pushes to the default
+        # branch are allowed, one per user request.
+        "git_role": "contributor",
+        # The role per repository, which wins over git_role in both
+        # directions: {"github.com/<owner>/<repo>": "maintainer"}, keyed by
+        # the normalised remote URL (a repository without a remote: its
+        # absolute top-level path). Set with `/git role maintainer` in the
+        # terminal, inside the repository. delfin/agent/git_role.py.
+        "git_roles": {},
+        # The address the agent's Co-Authored-By trailer carries. GitHub
+        # attaches a co-author to an account by its email, so an address
+        # nobody owns renders a line with no avatar that counts for
+        # nobody; this is the DELFIN agent's own machine account, in its
+        # noreply form so no personal address appears in the history.
+        # The commits stay the user's: the agent is the co-author.
+        "commit_coauthor_email":
+            "330454853+delfin-agent@users.noreply.github.com",
         # Directory the "Bug Report" button writes reproducible bug
         # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
         # overrides this at runtime). NEVER hard-code a site path here.
         "bug_archive_dir": "",
+        # Whether a written bug report is also copied to the shared remote
+        # archive (<transfer.remote_path>/AGENT_BUGS), where its maintainers
+        # read it. The report holds the session's transcript, so this is a
+        # consent of its own, separate from configuring the transfer:
+        #   "ask"    (default) -- only after a yes for that report (the
+        #            dashboard's Send under the named host, the [y/N] of
+        #            /bug and `delfin-agent bug report`); with nobody to ask
+        #            (--yes, unattended) the report stays local.
+        #   "never"  -- every report stays local.
+        #   "always" -- standing opt-in: copied without asking, also in
+        #            unattended runs. delfin/agent/bug_report.py.
+        "bug_upload": "ask",
         # Complexity-based model routing (provider-agnostic, opt-in).
         # enabled=False → exactly today's behaviour (user's model for all).
         # strong_model/cheap_model override the built-in per-provider tier
@@ -159,21 +261,56 @@ DEFAULT_SETTINGS = {
         #   "off"            — explicit escape hatch: never isolate (e.g. an HPC
         #                      node whose MPI/module workflow needs raw bash).
         "bash_isolation": "auto",
+        # The network of an ISOLATED command (a locked session, an
+        # unattended run, a forced isolation) -- modelled on the sandboxes
+        # of coding agents: the command reaches the network only through
+        # DELFIN's egress proxy, which lets through the allowed domains.
+        #   mode "proxy" (default) -- allowed domains only, plus the SLURM
+        #                          controller from slurm.conf;
+        #        "none"          -- no network;
+        #        "open"          -- unrestricted.
+        # Cloud metadata addresses are refused in every mode, attended
+        # commands included. allowed_domains ADDS to the built-in list
+        # (PyPI, conda, GitHub); "*.example.org" covers subdomains.
+        # upload_domains: hosts that may receive an upload (a write
+        # request, or more than upload_ask_bytes) when nobody can be
+        # asked; every other known host gets reads only in that case.
+        "sandbox_network": {
+            "mode": "proxy",
+            "allowed_domains": [],
+            "allowed_ports": [80, 443],
+            "upload_domains": [],
+        },
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The
         # default pass is LLM-free (0 tokens); a live benchmark run stays
         # a deliberate manual command. Opt-in.
         # Auto-memory (Roadmap B1): one cheap LLM turn when a session
         # ends distills durable facts into the memory store (BM25 recall
-        # already injects them into future turns). Opt-in — costs one
-        # small call per session; /memorize triggers it manually anytime.
+        # already injects them into future turns). On by default — one
+        # small cheap-tier call per session whose saved memories compound;
+        # /memorize triggers it manually anytime, enabled: false opts out.
+        # Which identity names the per-project memory store. "path" keys
+        # on the checkout, so two clones learn separately; "repo" keys on
+        # the first commit of the history, so every clone shares one.
+        # Narrow by default: too wide puts one project's notes into
+        # another's prompt.
+        "memory_key": "path",
+        # `delfin-agent tui` on a host with neither the window's binary nor
+        # Bun installs a pinned Bun (SHA-256 checked) and the window's
+        # packages (bun.lock) into ~/.delfin/tools on its first start.
+        # false: it prints the manual commands instead
+        # (DELFIN_TUI_AUTO_INSTALL=0 does the same for one shell).
+        "tui_auto_install": True,
         "auto_memory": {
-            "enabled": False,
+            "enabled": True,
             "model": "",
             "max_facts": 5,
         },
+        # LLM-free daily health pass (outcome mining + telemetry report);
+        # on by default, enabled: false opts out.
         "eval_loop": {
-            "enabled": False,
+            "enabled": True,
             "window": 200,
             "threshold": 3,
         },
@@ -277,8 +414,8 @@ def normalize_positive_float_setting(value, label, default, minimum=1.0):
     return float(normalized)
 
 
-def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
-    """Validate a float setting that must lie within a closed [min, max] range."""
+def normalize_bounded_float_setting(value, label, default, *, minimum, maximum):
+    """Validate a float setting that must lie within a closed range."""
     if value in ("", None):
         return float(default)
     try:
@@ -288,6 +425,17 @@ def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.
     if normalized < minimum or normalized > maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return float(normalized)
+
+
+def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
+    """Validate a float setting that must lie within a closed [min, max] range."""
+    return normalize_bounded_float_setting(
+        value,
+        label,
+        default,
+        minimum=minimum,
+        maximum=maximum,
+    )
 
 
 def normalize_bool_setting(value, default=False):
@@ -363,6 +511,7 @@ def _normalized_settings_dict(payload):
     for key, label in (
         ("calculations_dir", "Calculations path"),
         ("archive_dir", "Archive path"),
+        ("office_dir", "Office path"),
     ):
         normalized_paths[key] = normalize_local_directory_setting(
             paths.get(key, ""),
@@ -489,6 +638,16 @@ def _normalized_settings_dict(payload):
                 "SLURM submit templates path",
             ),
             "profile": str(slurm_runtime.get("profile", "") or "").strip(),
+            "partitions": ",".join(
+                part.strip()
+                for part in str(slurm_runtime.get("partitions", "") or "").split(",")
+                if part.strip()
+            ),
+            "gpu_partitions": ",".join(
+                part.strip()
+                for part in str(slurm_runtime.get("gpu_partitions", "") or "").split(",")
+                if part.strip()
+            ),
         },
     }
     features = normalized.get("features", {})
@@ -568,16 +727,63 @@ def _normalized_settings_dict(payload):
     if not isinstance(viewer, dict):
         raise ValueError("Settings key 'ui.viewer' must be a JSON object.")
     default_viewer = default_ui.get("viewer", {}) or {}
+    quality = normalize_choice_setting(
+        viewer.get("quality", default_viewer.get("quality", "high")),
+        "3D viewer quality",
+        {"low", "medium", "high"},
+        default_viewer.get("quality", "high"),
+    )
+    # Before representation was configurable, the quality dropdown also
+    # selected line/stick/ball-and-stick. Preserve that visual choice when an
+    # existing settings file is migrated to the independent controls.
+    legacy_representation = {
+        "low": "line",
+        "medium": "stick",
+        "high": "ball_and_stick",
+    }[quality]
     normalized_ui["viewer"] = {
         "enabled": normalize_bool_setting(
             viewer.get("enabled", default_viewer.get("enabled", True)),
             default_viewer.get("enabled", True),
         ),
-        "quality": normalize_choice_setting(
-            viewer.get("quality", default_viewer.get("quality", "high")),
-            "3D viewer quality",
-            {"low", "medium", "high"},
-            default_viewer.get("quality", "high"),
+        "quality": quality,
+        "representation": normalize_choice_setting(
+            viewer.get("representation", legacy_representation),
+            "3D viewer representation",
+            {"line", "stick", "ball_and_stick", "sphere"},
+            default_viewer.get("representation", "ball_and_stick"),
+        ),
+        "atom_scale": normalize_bounded_float_setting(
+            viewer.get("atom_scale", default_viewer.get("atom_scale", 0.28)),
+            "3D viewer atom scale",
+            default_viewer.get("atom_scale", 0.28),
+            minimum=0.05,
+            maximum=1.50,
+        ),
+        "bond_radius": normalize_bounded_float_setting(
+            viewer.get("bond_radius", default_viewer.get("bond_radius", 0.11)),
+            "3D viewer bond radius",
+            default_viewer.get("bond_radius", 0.11),
+            minimum=0.02,
+            maximum=0.50,
+        ),
+        "multiple_bonds": normalize_bool_setting(
+            viewer.get(
+                "multiple_bonds",
+                default_viewer.get("multiple_bonds", True),
+            ),
+            default_viewer.get("multiple_bonds", True),
+        ),
+        "depth_fog": normalize_bool_setting(
+            viewer.get("depth_fog", default_viewer.get("depth_fog", True)),
+            default_viewer.get("depth_fog", True),
+        ),
+        "ambient_occlusion": normalize_bool_setting(
+            viewer.get(
+                "ambient_occlusion",
+                default_viewer.get("ambient_occlusion", False),
+            ),
+            default_viewer.get("ambient_occlusion", False),
         ),
     }
     normalized["ui"] = normalized_ui
@@ -588,7 +794,20 @@ def _merge_missing_defaults(payload, defaults):
     merged = dict(payload)
     for key, default_value in dict(defaults or {}).items():
         if key not in merged:
-            merged[key] = default_value if not isinstance(default_value, dict) else dict(default_value)
+            # A DEEP copy. `dict(default_value)` copies one level, so a
+            # section two levels down — agent.job_monitor, and every other
+            # nested block — was handed out as the very object that lives
+            # inside DEFAULT_SETTINGS. Anything that then wrote a setting
+            # the ordinary way,
+            #     cfg = settings.setdefault("agent", {}).setdefault(…)
+            #     cfg["enabled"] = True
+            # changed the DEFAULT for the rest of the process. Found on
+            # 2026-09-18 through a suite failure nobody had written a test
+            # for: one module enabled the job monitor, and a test in
+            # another file then read the shipped default as True.
+            merged[key] = (_copy.deepcopy(default_value)
+                           if isinstance(default_value, dict)
+                           else default_value)
             continue
         if isinstance(default_value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _merge_missing_defaults(merged.get(key) or {}, default_value)
@@ -599,11 +818,132 @@ def _legacy_transfer_path(settings_path):
     return Path(settings_path).with_name(LEGACY_TRANSFER_CONFIG_NAME)
 
 
+#: One-time security updates applied to an existing settings file. Each runs
+#: once per file and is recorded under "security_updates_applied", so a
+#: choice the user makes afterwards is kept.
+_ISOLATION_ON = "2026-09-shell-isolation-auto"
+
+
+def _apply_security_updates(settings):
+    """Apply the security updates this settings file has not had yet.
+
+    2026-09: the shell isolation (bubblewrap, Landlock, Seatbelt, the socket
+    guard and the network proxy) is what confines an unattended or locked
+    session. A file that had ``agent.bash_isolation = "off"`` ran those
+    sessions with none of it, usually because "off" was set once for an old
+    reason. It is switched to "auto" once, with a notice the next front end
+    shows; setting "off" again afterwards is respected.
+    """
+    applied = list(settings.get("security_updates_applied") or [])
+    if _ISOLATION_ON in applied:
+        return settings
+    updated = dict(settings)
+    agent = dict(updated.get("agent") or {})
+    if str(agent.get("bash_isolation", "auto")).strip().lower() == "off":
+        agent["bash_isolation"] = "auto"
+        updated["agent"] = agent
+        notices = list(updated.get("security_notices") or [])
+        notices.append(
+            "Security update: agent.bash_isolation was \"off\" and is now "
+            "\"auto\". Locked and unattended sessions run isolated again "
+            "(filesystem, the user's sessions, network through the proxy). If "
+            "a workflow really needs raw bash, set it back to \"off\" in "
+            "~/.delfin_settings.json; it will not be changed again.")
+        updated["security_notices"] = notices
+    updated["security_updates_applied"] = applied + [_ISOLATION_ON]
+    return updated
+
+
+#: One-time DEFAULT updates: a shipped default moved, and a file still
+#: carrying the OLD default should follow it. Recorded the same way the
+#: security updates are, so each runs once and a later choice is kept.
+#:
+#: Named apart from the security updates on purpose. Raising a cap is not
+#: a security fix, and putting it under that name would make the record
+#: say something untrue about why it happened.
+_SUBAGENT_CAPS_RAISED = "2026-10-subagent-caps"
+
+#: The values that are FINGERPRINTS of an old shipped default rather than
+#: of a decision. 300 and 900 were the wall-clock defaults at different
+#: times; 40 was the tool-call default. Anything else in the file is a
+#: number somebody chose, and is left alone.
+_OLD_SUBAGENT_DEFAULTS = {"max_wall_s": (300, 900), "max_tool_calls": (40,)}
+
+
+def _apply_default_updates(settings):
+    """Move a file that still carries an old shipped default onto the new one.
+
+    2026-10: the subagent presets became specialists, and two of them
+    cannot finish inside the old caps -- ``verifier`` runs the covering
+    tests and then the same tests on the base as a control. A file holding
+    the old default would have kept the new presets useless while the
+    shipped default said otherwise, which is the drift this codebase has
+    already paid for twice in these same numbers.
+
+    Only the exact old defaults move. A file saying 1800 chose 1800, and
+    the point of a setting is that it is respected; a migration that
+    overwrote it would be the dashboard lying about what is in force.
+    """
+    applied = list(settings.get("default_updates_applied") or [])
+    if _SUBAGENT_CAPS_RAISED in applied:
+        return settings
+    updated = dict(settings)
+    agent = dict(updated.get("agent") or {})
+    subs = dict(agent.get("subagents") or {})
+    shipped = ((DEFAULT_SETTINGS.get("agent") or {}).get("subagents") or {})
+    moved = []
+    for key, fingerprints in _OLD_SUBAGENT_DEFAULTS.items():
+        if key not in subs:
+            continue                      # absent: the default already wins
+        try:
+            current = int(subs[key])
+        except (TypeError, ValueError):
+            continue
+        target = int(shipped.get(key, current) or current)
+        if current in fingerprints and target > current:
+            subs[key] = target
+            moved.append(f"{key} {current} -> {target}")
+    if moved:
+        agent["subagents"] = subs
+        updated["agent"] = agent
+        notices = list(updated.get("security_notices") or [])
+        notices.append(
+            "Settings update: the subagent caps in this file were the old "
+            "shipped defaults and now follow the new ones ("
+            + ", ".join(moved) + "). The specialist presets need the room; "
+            "set your own numbers in ~/.delfin_settings.json and they will "
+            "not be changed again.")
+        updated["security_notices"] = notices
+    updated["default_updates_applied"] = applied + [_SUBAGENT_CAPS_RAISED]
+    return updated
+
+
+def take_security_notices(settings_path=None):
+    """The security notices not shown yet, removed from the settings file."""
+    path = get_settings_path(settings_path)
+    try:
+        if not path.exists():
+            return []
+        data = _normalized_settings_dict(_read_json(path))
+    except Exception:
+        return []
+    notices = [str(n) for n in (data.get("security_notices") or []) if n]
+    if notices:
+        data["security_notices"] = []
+        try:
+            _write_json_atomic(path, data)
+        except Exception:
+            pass
+    return notices
+
+
 def load_settings(settings_path=None):
     path = get_settings_path(settings_path)
     if path.exists():
         normalized = _normalized_settings_dict(_read_json(path))
-        merged = _merge_missing_defaults(normalized, DEFAULT_SETTINGS)
+        merged = _merge_missing_defaults(
+            _apply_default_updates(_apply_security_updates(normalized)),
+            DEFAULT_SETTINGS)
         if merged != normalized:
             _write_json_atomic(path, merged)
         return merged
@@ -708,7 +1048,7 @@ def save_remote_archive_enabled(enabled, settings_path=None):
 
 
 def load_viewer_settings(settings_path=None):
-    """Return the ``ui.viewer`` dict ({enabled: bool, quality: str})."""
+    """Return the normalized global 3D-viewer settings."""
     default_viewer = DEFAULT_SETTINGS["ui"]["viewer"]
     try:
         settings = load_settings(settings_path)
@@ -718,10 +1058,34 @@ def load_viewer_settings(settings_path=None):
     return {
         "enabled": bool(viewer.get("enabled", default_viewer["enabled"])),
         "quality": str(viewer.get("quality", default_viewer["quality"])),
+        "representation": str(
+            viewer.get("representation", default_viewer["representation"])
+        ),
+        "atom_scale": float(viewer.get("atom_scale", default_viewer["atom_scale"])),
+        "bond_radius": float(viewer.get("bond_radius", default_viewer["bond_radius"])),
+        "multiple_bonds": bool(
+            viewer.get("multiple_bonds", default_viewer["multiple_bonds"])
+        ),
+        "depth_fog": bool(viewer.get("depth_fog", default_viewer["depth_fog"])),
+        "ambient_occlusion": bool(
+            viewer.get("ambient_occlusion", default_viewer["ambient_occlusion"])
+        ),
     }
 
 
-def save_viewer_settings(enabled, quality, settings_path=None):
+def save_viewer_settings(
+    enabled,
+    quality,
+    settings_path=None,
+    *,
+    representation=None,
+    atom_scale=None,
+    bond_radius=None,
+    multiple_bonds=None,
+    depth_fog=None,
+    ambient_occlusion=None,
+):
+    """Persist global viewer settings while keeping the legacy call valid."""
     path = get_settings_path(settings_path)
     settings = load_settings(path)
     ui = settings.get("ui", {}) or {}
@@ -730,10 +1094,42 @@ def save_viewer_settings(enabled, quality, settings_path=None):
     viewer["quality"] = normalize_choice_setting(
         quality, "3D viewer quality", {"low", "medium", "high"}, "high"
     )
+    if representation is not None:
+        viewer["representation"] = normalize_choice_setting(
+            representation,
+            "3D viewer representation",
+            {"line", "stick", "ball_and_stick", "sphere"},
+            DEFAULT_SETTINGS["ui"]["viewer"]["representation"],
+        )
+    if atom_scale is not None:
+        viewer["atom_scale"] = normalize_bounded_float_setting(
+            atom_scale,
+            "3D viewer atom scale",
+            DEFAULT_SETTINGS["ui"]["viewer"]["atom_scale"],
+            minimum=0.05,
+            maximum=1.50,
+        )
+    if bond_radius is not None:
+        viewer["bond_radius"] = normalize_bounded_float_setting(
+            bond_radius,
+            "3D viewer bond radius",
+            DEFAULT_SETTINGS["ui"]["viewer"]["bond_radius"],
+            minimum=0.02,
+            maximum=0.50,
+        )
+    if multiple_bonds is not None:
+        viewer["multiple_bonds"] = normalize_bool_setting(multiple_bonds, True)
+    if depth_fog is not None:
+        viewer["depth_fog"] = normalize_bool_setting(depth_fog, True)
+    if ambient_occlusion is not None:
+        viewer["ambient_occlusion"] = normalize_bool_setting(
+            ambient_occlusion,
+            False,
+        )
     ui["viewer"] = viewer
     settings["ui"] = ui
     save_settings(settings, path)
-    return {"enabled": viewer["enabled"], "quality": viewer["quality"]}
+    return load_viewer_settings(path)
 
 
 READ_MARKERS_DIR_NAME = ".delfin_meta"
@@ -837,3 +1233,60 @@ def mark_calc_as_read(folder_path, markers_path=None):
         save_read_markers(markers, markers_path)
 
 
+# --- ORCA Builder config templates ------------------------------------------
+# Named, reusable ORCA Builder configurations (level of theory, keys, extra
+# input, resources) so a user can save a setup once and re-apply it to new
+# coordinates. Stored as a single JSON registry keyed by template name.
+ORCA_TEMPLATES_FILE_NAME = ".delfin_orca_templates.json"
+ORCA_TEMPLATES_KIND = "delfin_orca_builder_templates"
+
+
+def get_orca_templates_path(base_path=None):
+    """Return the path to the ORCA Builder templates registry file."""
+    if base_path:
+        return Path(base_path).expanduser()
+    return Path.home() / ORCA_TEMPLATES_FILE_NAME
+
+
+def load_orca_templates(path=None):
+    """Return ``{name: payload_dict}``.
+
+    A missing or unreadable/malformed file yields ``{}`` (never raises), so the
+    dashboard can always build its template dropdown.
+    """
+    p = get_orca_templates_path(path)
+    if not p.exists():
+        return {}
+    try:
+        data = _read_json(p)
+    except Exception:
+        return {}
+    templates = data.get("templates") if isinstance(data, dict) else None
+    if not isinstance(templates, dict):
+        return {}
+    return {str(k): v for k, v in templates.items() if isinstance(v, dict)}
+
+
+def save_orca_template(name, payload, path=None):
+    """Add/overwrite the template ``name`` with ``payload`` and persist atomically."""
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("Template name must not be empty.")
+    templates = load_orca_templates(path)
+    templates[name] = dict(payload)
+    _write_json_atomic(
+        get_orca_templates_path(path),
+        {"kind": ORCA_TEMPLATES_KIND, "version": 1, "templates": templates},
+    )
+
+
+def delete_orca_template(name, path=None):
+    """Remove the template ``name`` if present and persist atomically."""
+    name = str(name or "").strip()
+    templates = load_orca_templates(path)
+    if name in templates:
+        del templates[name]
+        _write_json_atomic(
+            get_orca_templates_path(path),
+            {"kind": ORCA_TEMPLATES_KIND, "version": 1, "templates": templates},
+        )

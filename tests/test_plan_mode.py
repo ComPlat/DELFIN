@@ -1,7 +1,7 @@
 """Tests for plan-mode wiring: addendum injection + dropdown surfacing.
 
 Plan-mode is solo_agent role + permission_profile="plan" (read-only)
-+ a markdown addendum that tells the model to use ExitPlanMode for
++ a markdown addendum that tells the model to use exit_plan_mode for
 approval. The addendum file lives at
 ``delfin/agent/pack/shared/plan_mode_addendum.md`` and the prompt
 loader picks it up when ``mode_id == "plan"`` OR the active
@@ -23,7 +23,7 @@ def test_plan_mode_addendum_file_exists():
     assert p.is_file(), f"missing addendum: {p}"
     body = p.read_text(encoding="utf-8")
     assert "Plan Mode" in body
-    assert "ExitPlanMode" in body
+    assert "exit_plan_mode" in body
 
 
 def test_solo_prompt_includes_plan_addendum_when_mode_is_plan():
@@ -35,12 +35,12 @@ def test_solo_prompt_includes_plan_addendum_when_mode_is_plan():
         task_text="figure out how to add feature X",
     )
     assert "Plan Mode" in prompt
-    assert "ExitPlanMode" in prompt
+    assert "exit_plan_mode" in prompt
 
 
 def test_solo_prompt_includes_plan_addendum_when_permission_is_plan():
     # Plan is a permission profile now: Code mode + Perms=plan must still get
-    # the full plan addendum (read-only-first → ExitPlanMode), like Claude Code.
+    # the full plan addendum (read-only-first → exit_plan_mode).
     loader = PromptLoader()
     prompt = loader.build_system_prompt(
         role_id="solo_agent",
@@ -49,7 +49,7 @@ def test_solo_prompt_includes_plan_addendum_when_permission_is_plan():
         task_text="figure out how to add feature X",
     )
     assert "Plan Mode" in prompt
-    assert "ExitPlanMode" in prompt
+    assert "exit_plan_mode" in prompt
 
 
 def test_solo_prompt_skips_plan_addendum_in_other_modes():
@@ -69,7 +69,7 @@ def test_plan_mode_addendum_documents_exit_plan_mode_handoff():
     p = Path(__file__).resolve().parent.parent / "delfin" / "agent" / "pack" / "shared" / "plan_mode_addendum.md"
     body = p.read_text(encoding="utf-8")
     # Key contract elements must be present
-    assert "ExitPlanMode" in body
+    assert "exit_plan_mode" in body
     assert "approve" in body.lower()
     assert "acceptEdits" in body
 
@@ -165,3 +165,73 @@ def test_empty_plan_body_skips_save():
     assert saved == []                             # nothing to persist
     assert st["_plan_approval_result"]["approved"] is True
     assert msgs == []
+
+
+# ---------------------------------------------------------------------------
+# Plan -> durable state bridge (approval persists the plan + scaffolds tasks)
+# ---------------------------------------------------------------------------
+
+import json
+
+
+def _approving_perms(tmp_path):
+    from delfin.agent.api_client import KitToolPermissions
+    perms = KitToolPermissions(workspace=tmp_path, mode="plan")
+    perms.plan_approval_callback = lambda plan: {
+        "approved": True, "new_mode": "acceptEdits"}
+    perms.task_session_id = "plan-bridge-test"
+    return perms
+
+
+_PLAN = """# Build the spectrum exporter
+
+## Steps
+1. Create exporter module with CSV writer
+2. Wire exporter into the dashboard download button
+3. Add regression tests for the exporter
+"""
+
+
+def test_approved_plan_is_persisted_and_scaffolds_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    from delfin.agent import api_client as A
+    ws = tmp_path / "ws"; ws.mkdir()
+    perms = _approving_perms(ws)
+    out = json.loads(A._doc_executor._execute_exit_plan_mode(
+        {"plan": _PLAN}, perms))
+    assert out["status"] == "approved"
+    assert out["tasks_created"] == 3
+    assert "ALREADY in your task list" in out["instruction"]
+    # Plan persisted to the workspace plans store.
+    from delfin.agent.memory_store import list_plans
+    plans = list_plans(ws)
+    assert plans and "spectrum exporter" in str(plans).lower()
+    # Tasks scaffolded from the numbered steps.
+    from delfin.agent.agent_tasks import get_store
+    tasks = get_store(ws).list(session_id="plan-bridge-test")
+    subjects = [t["subject"] for t in tasks]
+    assert any("exporter module" in s for s in subjects)
+    assert len(tasks) == 3
+
+
+def test_plan_without_steps_creates_no_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    from delfin.agent import api_client as A
+    ws = tmp_path / "ws"; ws.mkdir()
+    perms = _approving_perms(ws)
+    out = json.loads(A._doc_executor._execute_exit_plan_mode(
+        {"plan": "Just prose, no numbered steps in this plan at all."},
+        perms))
+    assert out["status"] == "approved"
+    assert out["tasks_created"] == 0
+    from delfin.agent.agent_tasks import get_store
+    assert get_store(ws).list(session_id="plan-bridge-test") == []
+
+
+def test_plan_steps_parser_handles_checkboxes_and_cap():
+    from delfin.agent.api_client import _DocToolExecutor
+    plan = "\n".join([f"- [ ] step number {i} does a thing"
+                      for i in range(20)])
+    steps = _DocToolExecutor._plan_steps(plan)
+    assert len(steps) == 12                      # capped
+    assert steps[0].startswith("step number 0")

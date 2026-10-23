@@ -13,11 +13,23 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 _DIR = Path.home() / ".delfin" / "tool_traces"
 _OUT_CAP = 2000             # chars kept per input/output
+# A delegate's report is kept whole: cut at 2000 chars, a bug report showed
+# the start of the sub-agent's narration and none of its answer (report
+# 20260915-110358).
+_REPORT_OUT_CAP = 32_000
+#: Tools whose OUTPUT is the thing a later reader needs whole. A test
+#: run's result is a verdict with a failure list, and at the ordinary cap
+#: about half of the recorded ones were cut mid-JSON and unreadable --
+#: measured by the session that built the flake report on them
+#: (2026-09-17), which had to count them as unusable rather than guess.
+_REPORT_TOOLS = frozenset({"subagent", "subagent_result", "orchestrate",
+                           "run_tests"})
 _MAX_BYTES = 4 * 1024 * 1024   # trim the file when it grows past this
 _KEEP_TAIL = 1500          # lines kept when trimming
 
@@ -28,8 +40,25 @@ def _safe(session: str) -> str:
     return s[:80] or "default"
 
 
-def trace_path(session: str) -> Path:
-    return _DIR / f"{_safe(session)}.jsonl"
+def trace_path(session: str, *, root: "Path | str" = "") -> Path:
+    return Path(root or _DIR) / f"{_safe(session)}.jsonl"
+
+
+def sessions(*, root: "Path | str" = "") -> list[str]:
+    """Every session id with a trace here, newest first.
+
+    Without this a reader has to know the file layout to find the
+    sessions, which is how three diagnostic tools ended up walking the
+    directory and parsing the JSONL themselves (2026-09-17).
+    """
+    directory = Path(root or _DIR)
+    try:
+        files = [f for f in directory.iterdir() if f.suffix == ".jsonl"]
+    except OSError:
+        return []
+    files.sort(key=lambda f: f.stat().st_mtime if f.exists() else 0.0,
+               reverse=True)
+    return [f.stem for f in files]
 
 
 def _to_text(v: Any) -> str:
@@ -54,34 +83,52 @@ def record(
 ) -> None:
     """Append one tool-call entry to the session trace. Never raises."""
     try:
-        _DIR.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import write_text as _write_secure
+        ensure_dir(_DIR)
         p = trace_path(session)
         # Bound the file: when it gets big, keep only the recent tail.
         try:
             if p.exists() and p.stat().st_size > _MAX_BYTES:
                 lines = p.read_text(encoding="utf-8").splitlines()[-_KEEP_TAIL:]
-                p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                _write_secure(p, "\n".join(lines) + "\n")
         except Exception:
             pass
         entry = {
             "ts": time.time(),
             "tool": str(tool),
             "input": _to_text(tool_input)[:_OUT_CAP],
-            "output": _to_text(output)[:_OUT_CAP],
+            "output": _to_text(output)[:(
+                _REPORT_OUT_CAP if str(tool).rsplit("__", 1)[-1] in _REPORT_TOOLS
+                else _OUT_CAP)],
             "duration_ms": int(duration_ms),
             "ok": bool(ok),
             "error": str(error or "")[:300],
         }
-        with p.open("a", encoding="utf-8") as f:
+        # Created 0600 by ``open_append`` rather than chmod'ed afterwards:
+        # a chmod after the first write leaves the file group-readable for
+        # the length of that write. These files carry raw tool output,
+        # commands and paths, and a bug report bundles them, adding
+        # group-read on the way out.
+        with open_append(p) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        secure_file(p)          # tighten a file that already existed
     except Exception:
         pass
 
 
-def read(session: str, *, last_n: int | None = None) -> list[dict]:
-    """Return the trace entries for ``session`` (optionally the last N)."""
+def read(session: str, *, last_n: int | None = None,
+         root: "Path | str" = "") -> list[dict]:
+    """Return the trace entries for ``session`` (optionally the last N).
+
+    ``root`` reads a directory other than this machine's own store --
+    another node's traces, a copy taken from an archive. Without it the
+    only way to read a trace from anywhere else was to parse the JSONL
+    by hand, which three diagnostic tools duly did.
+    """
     try:
-        lines = trace_path(session).read_text(encoding="utf-8").splitlines()
+        lines = trace_path(session, root=root).read_text(
+            encoding="utf-8").splitlines()
     except Exception:
         return []
     if last_n:
@@ -93,6 +140,41 @@ def read(session: str, *, last_n: int | None = None) -> list[dict]:
         except Exception:
             continue
     return out
+
+
+def call_args(entry: dict) -> dict:
+    """The arguments a recorded call was made with, as a mapping.
+
+    An entry stores the call's input as the JSON it was invoked with, so
+    every reader that wanted the command, the path or the target had to
+    parse it again -- three diagnostic tools did exactly that within one
+    afternoon, each in its own way (2026-09-17). The format is left
+    alone; this is the reading of it.
+
+    Always a dict: an input that is not a JSON object (a bare string
+    from an older recorder) yields {}, and so does anything unreadable.
+    """
+    if not isinstance(entry, dict):
+        return {}
+    raw = entry.get("input")
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def command_of(entry: dict) -> str:
+    """The shell command of a recorded bash-like call, or ""."""
+    if not isinstance(entry, dict):
+        return ""
+    if "bash" not in str(entry.get("tool", "")).lower():
+        return ""
+    return str(call_args(entry).get("command") or "")
 
 
 def clear(session: str) -> None:
@@ -181,6 +263,84 @@ def aggregate_tools(*, dir_path: Path | None = None) -> list[dict]:
     return out
 
 
+def aggregate_tool_stats(
+    window_days: float = 7,
+    *,
+    dir_path: Path | None = None,
+    now: float | None = None,
+    top_n_errors: int = 3,
+) -> dict[str, dict]:
+    """Windowed per-tool health stats across ALL session traces.
+
+    The telemetry consumer the traces have been missing: answers "which
+    tool fails most often, and how?" without hand-grepping JSONL. Returns
+    ``{tool: {calls, errors, error_rate, avg_duration_ms,
+    top_error_snippets}}`` where ``top_error_snippets`` lists the most
+    frequent error texts (truncated) for that tool.
+
+    Only entries whose ``ts`` falls inside the last ``window_days`` count
+    (``window_days <= 0`` disables the window); entries without a
+    parseable ``ts`` stay visible.  Best-effort: never raises — a corrupt
+    line, non-object line, or unreadable file is skipped.
+    """
+    try:
+        base = Path(dir_path) if dir_path else _DIR
+        cutoff: float | None = None
+        if window_days and float(window_days) > 0:
+            cutoff = ((now if now is not None else time.time())
+                      - float(window_days) * 86400.0)
+        acc: dict[str, dict] = {}
+        for fp in sorted(base.glob("*.jsonl")):
+            try:
+                lines = fp.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for ln in lines:
+                try:
+                    e = json.loads(ln)
+                except Exception:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                if cutoff is not None:
+                    try:
+                        if float(e["ts"]) < cutoff:
+                            continue
+                    except (KeyError, TypeError, ValueError):
+                        pass                    # no/bad ts → keep visible
+                tool = str(e.get("tool") or "?")
+                d = acc.setdefault(tool, {
+                    "calls": 0, "errors": 0,
+                    "dur_sum": 0, "dur_n": 0, "errs": Counter(),
+                })
+                d["calls"] += 1
+                try:
+                    d["dur_sum"] += int(e.get("duration_ms") or 0)
+                    d["dur_n"] += 1
+                except (TypeError, ValueError):
+                    pass
+                if not e.get("ok", True):
+                    d["errors"] += 1
+                    snip = str(e.get("error") or "").strip()[:120]
+                    if snip:
+                        d["errs"][snip] += 1
+        out: dict[str, dict] = {}
+        for tool, d in acc.items():
+            calls = d["calls"]
+            out[tool] = {
+                "calls": calls,
+                "errors": d["errors"],
+                "error_rate": (d["errors"] / calls) if calls else 0.0,
+                "avg_duration_ms": (int(round(d["dur_sum"] / d["dur_n"]))
+                                    if d["dur_n"] else 0),
+                "top_error_snippets": [s for s, _ in
+                                       d["errs"].most_common(top_n_errors)],
+            }
+        return out
+    except Exception:
+        return {}
+
+
 def format_tool_stats(rows: list[dict], *, limit: int = 40) -> str:
     """Human table for ``/agents tools``: tool | calls | err% | p50 | p95 | max."""
     if not rows:
@@ -239,4 +399,5 @@ def format_panel_html(entries: list[dict], *, limit: int = 12) -> str:
 
 
 __all__ = ["record", "read", "clear", "trace_path", "format_summary",
-           "format_panel_html"]
+           "format_panel_html", "aggregate_tools", "aggregate_tool_stats",
+           "format_tool_stats"]

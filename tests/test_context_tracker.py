@@ -58,10 +58,13 @@ class TestContextUsageTracker:
         assert rates["playbook"] == 1.0
         assert rates["repo_map"] == 0.0
 
-    def test_should_skip_low_hit_rate(self, tmp_path: Path):
+    def test_a_low_hit_rate_no_longer_deletes_the_section(self, tmp_path: Path):
+        """This asserted the deletion as a requirement. The hit rate does
+        not measure use: the honesty addendum scored 0 over 500 injections
+        while the agent demonstrably followed it. Counting the samples is
+        kept; acting on them is off (SKIP_UNUSED_SECTIONS)."""
         tracker = ContextUsageTracker(path=tmp_path / "usage.jsonl")
 
-        # Record 10 interactions where briefing is never referenced
         for _ in range(10):
             tracker.record_usage(
                 sections_injected=["briefing"],
@@ -69,7 +72,8 @@ class TestContextUsageTracker:
                 role_id="solo_agent",
             )
 
-        assert tracker.should_skip("briefing", role_id="solo_agent") is True
+        assert tracker.should_skip("briefing", role_id="solo_agent") is False
+        assert tracker.get_hit_rates(role_id="solo_agent")["briefing"] == 0.0
 
     def test_should_not_skip_insufficient_data(self, tmp_path: Path):
         tracker = ContextUsageTracker(path=tmp_path / "usage.jsonl")

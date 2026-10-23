@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/ComPlat/DELFIN/security/advisories/new
+    about: Report privately through a draft advisory, not as a public issue.
+  - name: Question about a calculation
+    url: https://github.com/ComPlat/DELFIN/discussions
+    about: For "how do I set this up" rather than "this is broken".

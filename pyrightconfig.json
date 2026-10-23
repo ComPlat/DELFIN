@@ -1,0 +1,15 @@
+{
+  "exclude": [
+    "delfin/qm_tools",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    ".venv",
+    ".venv_rebuild",
+    "build",
+    "dist",
+    "**/*.egg-info",
+    "MagicMock"
+  ]
+}

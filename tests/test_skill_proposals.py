@@ -1,0 +1,114 @@
+"""Skill proposals: a self-written skill is only a PROPOSAL.
+
+Invisible to discover_skills until a human accepts it; nothing without
+evidence; nothing unsafe becomes a rule; never overwritten, never deleted.
+"""
+import sys
+import types
+
+import pytest
+
+from delfin.agent import skill_proposals as sp
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Clean safety checker AND a verifying evidence stand-in: accept() is
+    # fail-closed on both, so tests that are about something else must
+    # supply clean ones. (Package 3 = skill_safety, package 8 = evidence.)
+    safe = types.ModuleType("delfin.agent.skill_safety")
+    safe.check = lambda text: []
+    monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", safe)
+    # ``from . import skill_safety`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_safety",
+                        safe, raising=False)
+    ev = types.ModuleType("delfin.agent.evidence")
+    ev.verify_evidence = lambda e, **kw: (True, "verified")
+    monkeypatch.setitem(sys.modules, "delfin.agent.evidence", ev)
+    # ``from . import evidence`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "evidence",
+                        ev, raising=False)
+    return tmp_path
+
+
+def _fake_safety(monkeypatch, findings):
+    mod = types.ModuleType("delfin.agent.skill_safety")
+    calls = []
+    def check(text):
+        calls.append(text)
+        return list(findings)
+    mod.check = check
+    mod.calls = calls
+    monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", mod)
+    # ``from . import skill_safety`` reads the package attribute
+    # first; once the real module was imported by another test, a
+    # sys.modules entry alone would be bypassed.
+    monkeypatch.setattr(__import__("delfin.agent").agent, "skill_safety",
+                        mod, raising=False)
+    return mod
+
+
+def _ev(**kw):
+    defaults = {"kind": "test", "ref": "tests/test_x.py::test_y"}
+    defaults.update(kw)
+    return sp.Evidence(**defaults)
+
+
+def test_without_evidence_there_is_no_proposal(home):
+    with pytest.raises(ValueError):
+        sp.propose("noop", "body", evidence=[], source="test")
+
+
+def test_propose_creates_pending_proposal(home):
+    p = sp.propose("draft-csv", "how to draft", evidence=[_ev()], source="test")
+    assert p.status == "pending"
+    assert p.findings == []
+    got = sp.get_proposal("draft-csv")
+    assert got is not None and got.text == "how to draft"
+    assert sp.list_proposals(status="pending")[0].name == "draft-csv"
+
+
+def test_safety_findings_block_a_proposal(home, monkeypatch):
+    _fake_safety(monkeypatch, ["asks for a permission bypass"])
+    p = sp.propose("bad", "bypass", evidence=[_ev()], source="test")
+    assert p.status == "blocked"
+    assert "permission bypass" in p.findings[0]
+    assert sp.get_proposal("bad").status == "blocked"
+    with pytest.raises(ValueError):
+        sp.accept("bad", by="tester")
+
+
+def test_absent_safety_module_blocks_the_proposal(home, monkeypatch):
+    # The old Phase-1 decision pinned "absent module -> pending", a silent
+    # pass. Rejected by the coordinator (27 Sep): the default is "not
+    # verified", never "verified by absence of a checker".
+    monkeypatch.setitem(sys.modules, "delfin.agent.skill_safety", None)
+    # ``from . import skill_safety`` reads the package attribute first;
+    # once the real module was imported by another test it is there, so
+    # it has to go too -- then the import really fails, as when absent.
+    monkeypatch.delattr(__import__("delfin.agent").agent, "skill_safety",
+                        raising=False)
+    p = sp.propose("plain", "body", evidence=[_ev()], source="test")
+    assert p.status == "blocked"
+    assert p.findings and "unavailable" in p.findings[0]
+
+
+def test_name_conflict_gets_a_new_name_never_overwritten(home):
+    a = sp.propose("dup", "first", evidence=[_ev()], source="t")
+    b = sp.propose("dup", "second", evidence=[_ev()], source="t")
+    assert b.name != a.name
+    assert sp.get_proposal(a.name).text == "first"
+
+
+def test_proposals_dir_is_private_and_files_owner_only(home):
+    sp.propose("perms", "body", evidence=[_ev()], source="t")
+    d = sp.PROPOSALS_DIR
+    assert (d.stat().st_mode & 0o777) == 0o700
+    assert (d / "perms" / "SKILL.md").stat().st_mode & 0o777 == 0o600
+    assert (d / "perms" / "proposal.json").stat().st_mode & 0o777 == 0o600
+    assert d.parent.name == "skills"

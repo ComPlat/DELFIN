@@ -1,10 +1,23 @@
 import os
+import re
 import sys
 from pathlib import Path
 
 import pytest
 
 from delfin import cli_voila
+
+
+@pytest.fixture(autouse=True)
+def isolate_launcher_credentials(monkeypatch, tmp_path):
+    # CLI launch tests must not migrate real provider keys or cage the pytest process.
+    # Credential maintenance has its own tests; skip that unrelated preflight here.
+    from delfin.agent import process_guard
+    def skip_preflight(*args):
+        raise RuntimeError("credential maintenance isolated in CLI tests")
+    monkeypatch.setattr(process_guard, "protect", skip_preflight)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
 
 
 def test_stage_notebook_keeps_paths_inside_root(tmp_path):
@@ -35,7 +48,8 @@ def test_stage_notebook_copies_packaged_notebook_under_root(tmp_path):
     assert staged.read_text(encoding="utf-8") == '{"cells":[]}'
 
 
-def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("strict_port", [False, True])
+def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, capsys, strict_port):
     root_dir = tmp_path / "home"
     package_dir = tmp_path / "package"
     root_dir.mkdir()
@@ -67,7 +81,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -76,10 +90,11 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
     try:
-        cli_voila.main(["--no-browser", "--port", "9001"])
+        cli_voila.main(["--no-browser", "--port", "9001"] + (["--strict-port"] if strict_port else []))
     except SystemExit as exc:
         assert exc.code == 0
 
+    assert ("--ServerApp.port_retries=0" in captured["cmd"]) is strict_port
     staged_path = root_dir / "delfin_voila_runtime" / notebook.name
     assert staged_path.exists()
     # SECURITY: launch under jupyter-server + the voila extension so the token
@@ -92,16 +107,30 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
         "jupyter",
         "server",
     ]
-    assert "--ServerApp.jpserver_extensions={'voila': True}" in captured["cmd"]
+    # voila MUST be enabled under jupyter-server; the other auto-loading
+    # extensions (jupyterlab/notebook/lsp/terminals) are explicitly DISABLED to
+    # shrink the exposed HTTP surface. A refactor that drops voila or re-enables
+    # the extras must fail here.
+    _ext_arg = next(
+        a for a in captured["cmd"] if a.startswith("--ServerApp.jpserver_extensions=")
+    )
+    assert "'voila': True" in _ext_arg
+    for _disabled in ("jupyterlab", "notebook", "jupyter_lsp", "jupyter_server_terminals"):
+        assert f"'{_disabled}': False" in _ext_arg
     staged_rel = staged_path.resolve().relative_to(root_dir.resolve()).as_posix()
     assert f"--ServerApp.default_url=/voila/render/{staged_rel}" in captured["cmd"]
     assert "--no-browser" in captured["cmd"]
     assert "--port=9001" in captured["cmd"]
     assert f"--ServerApp.root_dir={root_dir.resolve()}" in captured["cmd"]
-    assert (
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)"
-        in captured["cmd"]
-    )
+    # The file route serves images, PDFs and the editor's launch copy --
+    # never HTML/SVG/JS from user data.
+    _allow = next(a for a in captured["cmd"]
+                  if a.startswith("--VoilaConfiguration.file_allowlist="))
+    _pattern = _allow.split("=", 1)[1]
+    for _ok in ("a/b.png", "doc.pdf", "x.gif", ".delfin/ketcher/index.html"):
+        assert re.fullmatch(_pattern, _ok, re.IGNORECASE), _ok
+    for _no in ("page.html", "a/pic.svg", "run.js", "style.css"):
+        assert not re.fullmatch(_pattern, _no, re.IGNORECASE), _no
     assert "--ServerApp.disable_check_xsrf=True" not in captured["cmd"]
     # Tracebacks OFF (info disclosure) and server terminals disabled (RCE surface).
     assert "--VoilaConfiguration.show_tracebacks=False" in captured["cmd"]
@@ -175,7 +204,7 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -227,6 +256,8 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
     monkeypatch.delenv("BROWSER", raising=False)
     monkeypatch.delenv("VSCODE_IPC_HOOK_CLI", raising=False)
+    monkeypatch.delenv("DELFIN_NO_BROWSER", raising=False)
+    monkeypatch.setattr(cli_voila, "_launch_is_interactive", lambda: True)
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
     monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")
@@ -244,7 +275,7 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli_voila, "_open_browser_url", lambda url, env: browser_urls.append(url))
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         return FakeProc()
 
@@ -257,9 +288,15 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
         assert exc.code == 0
 
     assert observed["open_browser"] is True
-    assert browser_urls == ["http://localhost:8866"]
-    assert "--ServerApp.open_browser=True" in captured["cmd"]
-    assert "--no-browser" not in captured["cmd"]
+    # Auto-open must land DIRECTLY in the dashboard: the render URL WITH the
+    # token embedded, never the bare "/" (which would show the login page).
+    assert len(browser_urls) == 1
+    opened = browser_urls[0]
+    assert opened.startswith("http://localhost:8866/voila/render/")
+    assert "?token=" in opened
+    # jupyter must NOT open its own (token-less) tab; the launcher controls it.
+    assert "--no-browser" in captured["cmd"]
+    assert "--ServerApp.open_browser=True" not in captured["cmd"]
     assert "--ServerApp.ip=127.0.0.1" in captured["cmd"]
 
     stdout = capsys.readouterr().out
@@ -294,8 +331,11 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
     monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: True)
+    browser_urls = []
+    monkeypatch.setattr(cli_voila, "_open_browser_url", lambda url, env: browser_urls.append(url))
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -308,14 +348,18 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
     except SystemExit as exc:
         assert exc.code == 0
 
-    assert "--ServerApp.open_browser=True" in captured["cmd"]
+    # jupyter is told NOT to open (the launcher opens the token URL itself).
+    assert "--no-browser" in captured["cmd"]
+    assert "--ServerApp.open_browser=True" not in captured["cmd"]
+    # The opened URL is the dashboard render URL WITH the token (direct login).
+    assert browser_urls and "/voila/render/" in browser_urls[0]
+    assert "?token=" in browser_urls[0]
     assert "--ServerApp.disable_check_xsrf=True" not in captured["cmd"]
     # Token via env var, not CLI
     assert "--ServerApp.token=" not in captured["cmd"]
     assert "JUPYTER_TOKEN" in captured["env"]
     assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
     assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
-    assert "--no-browser" not in captured["cmd"]
 
 
 def test_no_token_is_refused(monkeypatch, tmp_path, capsys):
@@ -385,7 +429,7 @@ def test_generated_token_is_never_printed(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -447,7 +491,7 @@ def test_remote_bind_requires_explicit_override(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -518,3 +562,34 @@ def test_find_notebook_ignores_unsafe_cwd_notebook(monkeypatch, tmp_path):
     monkeypatch.chdir(work)
     found = cli_voila._find_notebook()
     assert Path(found).resolve() != planted.resolve()
+
+
+def test_the_kernel_channel_is_not_throttled_into_silence():
+    """A dashboard sends several MB in one message on purpose.
+
+    Jupyter rate limits the kernel-to-browser channel at 1000 messages and
+    1 MB per three seconds, and past that it stops sending rather than
+    slowing down: a widget keeps its old value, the tab looks stuck, and the
+    only trace is "IOPub message rate exceeded" in the terminal. A MANTA build
+    reporting per frame, a photograph, a PDF page and a five-thousand-row grid
+    all cross it in normal use.
+
+    This is a browser-protection heuristic from the notebook era, not a
+    security boundary: the kernel is the user's own, and the limit guards
+    nothing but the page's own responsiveness. The window stays in place, so a
+    runaway is still bounded -- an order of magnitude further out.
+    """
+    import inspect
+
+    from delfin import cli_voila
+
+    source = inspect.getsource(cli_voila)
+    msg = re.search(r'iopub_msg_rate_limit=(\d+)', source)
+    data = re.search(r'iopub_data_rate_limit=(\d+)', source)
+    assert msg and data, 'the launcher no longer raises the IOPub limits'
+    assert int(msg.group(1)) >= 10000
+    assert int(data.group(1)) >= 100_000_000
+    assert 'ZMQChannelsWebsocketConnection' in source, (
+        'in jupyter_server 2.x the limits live on the websocket connection, '
+        'not on ServerApp -- setting them there does nothing'
+    )

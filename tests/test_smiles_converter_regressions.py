@@ -51,6 +51,16 @@ def test_smiles_to_xyz_isomers_uses_weighted_ob_search_when_non_deterministic(mo
 def test_dashboard_isomer_wrapper_passes_deterministic_flag(monkeypatch):
     recorded = []
 
+    # Pin the in-process path: with the subprocess UI isolation active
+    # (default unless DELFIN_UI_INLINE=1) the monkeypatch below cannot
+    # intercept the converter and the REAL pipeline runs — the test's
+    # subject is the wrapper's flag forwarding, which is identical in
+    # both paths.
+    # DELFIN_UI_INLINE is the documented switch and is now read at call time,
+    # so setting it is what forces the inline path; the module constant it used
+    # to stand in for is only a fallback.
+    monkeypatch.setenv("DELFIN_UI_INLINE", "1")
+
     def _fake_converter(*_args, **kwargs):
         recorded.append(kwargs.get("deterministic"))
         return [("C 0.0 0.0 0.0\n", "isomer")], None

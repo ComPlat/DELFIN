@@ -20,10 +20,12 @@ class DashboardContext:
     # Paths
     calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
     archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
+    office_dir: Path = field(default_factory=lambda: Path.home() / 'office')
     agent_dir: Path = field(default_factory=lambda: Path.home() / 'agent_workspace')
     primary_calc_dir: Optional[Path] = None
     default_calc_dir: Path = field(default_factory=lambda: Path.home() / 'calc')
     default_archive_dir: Path = field(default_factory=lambda: Path.home() / 'archive')
+    default_office_dir: Path = field(default_factory=lambda: Path.home() / 'office')
     runtime_settings: dict = field(default_factory=dict)
     runtime_backend: str = 'auto'
     notebook_dir: Path = field(default_factory=Path.cwd)
@@ -46,6 +48,19 @@ class DashboardContext:
     js_output: widgets.Output = field(default_factory=widgets.Output)
     busy_indicator: widgets.HTML = field(default_factory=lambda: widgets.HTML(value=''))
     busy_css: Optional[widgets.HTML] = None
+
+    # Startup JavaScript, collected from the tabs that need it. A tab appends
+    # its own script here; create_dashboard sends them as ONE run_js call,
+    # because run_js clears the output first and a second call would wipe the
+    # first script before the browser ran it. Collected rather than listed by
+    # the caller: when the caller kept the list, a tab that was added later was
+    # left out of it and its script silently never ran.
+    init_js_parts: list = field(default_factory=list)
+    # Scripts the PAGE needs, kept so a resumed page can be given them
+    # again: run_js(keep=True) appends here. The library bundle and the
+    # startup scripts at build time, the editor's two lazy bootstraps
+    # when they are first sent.
+    page_scripts: list = field(default_factory=list)
 
     # Cross-tab widget references (set by ORCA Builder, read by Calc Browser)
     orca_pal_widget: Any = None
@@ -78,20 +93,86 @@ class DashboardContext:
     job_status_refs: dict = field(default_factory=dict)
     recalc_refs: dict = field(default_factory=dict)
     calc_browser_refs: dict = field(default_factory=dict)
+    # The Ketcher tab publishes itself here: the tab registry keeps a
+    # factory's widget and throws its refs away, and the Calculations
+    # browser needs a way to hand a drawing over to be edited.
+    ketcher_refs: dict = field(default_factory=dict)
     remote_archive_refs: dict = field(default_factory=dict)
 
     # Templates
     default_control: str = ''
     only_goat_template: str = ''
 
-    def run_js(self, script):
-        """Execute JavaScript in a way that works in both Jupyter and Voila."""
+    def add_init_js(self, script):
+        """Register startup JavaScript for a tab.
+
+        Call this from the tab that owns the script. ``create_dashboard``
+        sends everything registered here in one go, so a tab cannot be
+        forgotten by whoever assembles the dashboard.
+        """
+        if script and str(script).strip():
+            self.init_js_parts.append(str(script))
+
+    def run_js(self, script, *, keep=False):
+        """Execute JavaScript in a way that works in both Jupyter and Voila.
+
+        ``keep=True`` marks a script the page cannot do without -- a
+        library, a bootstrap -- so that a session resumed into a new
+        window gets it again. Everything else is a one-off for the page
+        that is there now.
+        """
         if not script:
             return
+        if keep:
+            self.page_scripts.append(str(script))
         with self.js_output:
             clear_output(wait=True)
             from IPython.display import display
             display(Javascript(script))
+
+    def keep_js(self, script):
+        """Run *script* now and again on every resumed page.
+
+        A separate entry point rather than a flag on run_js because tests
+        and tabs replace run_js with a recorder that takes one argument;
+        a keyword they do not expect would be swallowed by the try/except
+        around a bootstrap and the script would silently never be sent.
+        """
+        if not script:
+            return
+        self.page_scripts.append(str(script))
+        self.run_js(script)
+
+    def resume_bootstrap_js(self):
+        """What a resumed page runs before its widgets are shown.
+
+        Also clears the shared script output: it holds whatever was sent
+        LAST, and replaying that into a new window is at best pointless
+        and at worst a `window.location.reload()` left there by a branch
+        switch, which would reload the page as soon as it came back.
+        """
+        # Assigned rather than cleared through the display machinery:
+        # that route needs a running kernel, and assignment is the one
+        # way an Output widget is emptied everywhere.
+        try:
+            self.js_output.outputs = ()
+        except Exception:
+            pass
+        # Each script in its own guard. They go out as ONE script, and a
+        # throw in the third would skip the fourth through the last --
+        # which is how a resumed page came back with its library and
+        # without its chat.
+        return "\n".join(
+            "try {\n" + script + "\n} catch (e) { "
+            "console.error('[delfin] a page script failed on resume:', e); }"
+            for script in self.page_scripts
+        )
+
+    def on_resume(self, hook):
+        """Register something to push back into a resumed page."""
+        from delfin.dashboard import session as _session
+
+        _session.on_resume(hook)
 
     def set_busy(self, is_busy):
         """Show or hide the busy spinner."""

@@ -261,7 +261,15 @@ def create_afp_plot(
                 logger.warning("No S0 → T1 transition found in T1.out")
 
     if not transitions_data:
-        logger.error("No transitions found in S0.out, S1.out, or T1.out")
+        # Nothing to draw is the normal outcome whenever the run did not
+        # request the excited states this plot needs. The calculation itself is
+        # unaffected, so this is not an error — it was the second most frequent
+        # ERROR line in the run archive, and every sampled occurrence sat in a
+        # job that finished successfully.
+        logger.warning(
+            "No transitions found in S0.out, S1.out, or T1.out; "
+            "skipping the absorption/emission plot."
+        )
         return None
 
     # Determine wavelength range

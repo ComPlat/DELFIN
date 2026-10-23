@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in · DELFIN Dashboard</title>
+  {% include "_delfin_card_style.html" %}
+</head>
+<body>
+  <main class="card">
+    <!--LOGO_TILE_START-->
+    <div class="logo-tile">
+      <img src="__DELFIN_LOGO_URI__" alt="DELFIN logo">
+    </div>
+    <!--LOGO_TILE_END-->
+    <div class="wordmark">DELFIN</div>
+    <div class="subtitle">Dashboard Sign-in</div>
+
+    {% if message %}
+      {% for key in message %}
+        <div class="message {{ key }}">{{ message[key] }}</div>
+      {% endfor %}
+    {% endif %}
+
+    {% if login_available %}
+    <form action="{{ base_url }}login?next={{ next }}" method="post">
+      {{ xsrf_form_html() | safe }}
+      <label class="field-label" for="password_input">
+        {% if token_available %}Access token{% else %}Password{% endif %}
+      </label>
+      <input type="password" name="password" id="password_input"
+             autocomplete="off" autofocus
+             placeholder="Paste your access token">
+      <button type="submit" class="submit" id="login_submit">Sign in</button>
+    </form>
+
+    {% if token_available %}
+    <div class="hint">
+      Your one-time access token was printed in the terminal that started
+      <strong>delfin-voila</strong>. Read it with
+      <code>cat &lt;token-file&gt;</code> and paste it above — or open the
+      dashboard URL with <code>?token=…</code> appended.
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="message">Sign-in is not available on this server.</div>
+    {% endif %}
+
+    <div class="foot">Secured on this host — only you can sign in</div>
+  </main>
+</body>
+</html>

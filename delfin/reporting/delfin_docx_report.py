@@ -819,7 +819,16 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         pass
 
     if control_flags.get("imag"):
-        parts.append("IMAG was used to eliminate imaginary frequencies.")
+        # Say what the final structure shows, not what IMAG was asked to do.
+        if modes and negative_freqs:
+            parts.append(
+                f"IMAG was enabled, but {negative_freqs} imaginary "
+                f"{'frequency remains' if negative_freqs == 1 else 'frequencies remain'} in the final structure."
+            )
+        elif modes:
+            parts.append("IMAG was enabled; the final structure has no imaginary frequencies.")
+        else:
+            parts.append("IMAG was enabled.")
 
     # Add redox potentials (prefer computed values, fallback to DELFIN.txt)
     computed_values = [computed_final.get(k) for k in ["E_red", "E_red_2", "E_red_3", "E_ox", "E_ox_2", "E_ox_3"]]
@@ -1242,11 +1251,17 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
             return _fmt_sci(re_part)
         return f"i{_fmt_sci(im_part)}"
 
+    not_results: list[tuple[str, str]] = []
+
     def _add_row(label: str, rec: Dict[str, Any]) -> None:
         row = table.add_row().cells
         row[0].text = label
         rate_val = rec.get("rate_s1") or rec.get("total_rate_s1") or rec.get("rate")
         row[1].text = _fmt_sci(rate_val) if rate_val is not None else ""
+        if rec.get("problem"):
+            # the number stays visible, but not as a result
+            row[1].text = (row[1].text + " (not a result*)").strip()
+            not_results.append((label, str(rec["problem"])))
         row[2].text = str(rec.get("temperature_K", ""))
 
         # Δ0-0 column
@@ -1308,6 +1323,9 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
             total_rate = record.get("total_rate_s1") or record.get("rate_s1")
             if total_rate is not None:
                 total_rec = {"total_rate_s1": total_rate}
+                if record.get("problem") or any(r.get("problem") for r in ms_rec_list):
+                    total_rec["problem"] = record.get("problem") or next(
+                        r["problem"] for r in ms_rec_list if r.get("problem"))
                 if ms_rec_list:
                     sample = ms_rec_list[0]
                     for key in ["temperature_K", "delta_E_cm1"]:
@@ -1318,6 +1336,10 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
             _add_row(name, record)
 
     _prevent_row_splits(table)
+    for label, problem in dict(not_results).items():
+        note = doc.add_paragraph()
+        note.add_run(f"* {label}: ").bold = True
+        note.add_run(problem)
 
 
 def _extract_frontier_orbitals(orbital_data: Optional[Dict[str, Any]]) -> list[tuple[str, str, str, str]]:
@@ -2272,7 +2294,9 @@ def _create_dipole_moment_plot(project_dir: Path, data: Dict[str, Any], output_p
         import numpy as np
         from ase.io import read, write
     except ImportError as e:
-        logger.warning(f"PyMOL or required dependencies not available; skipping dipole moment plot: {e}")
+        from delfin.reporting.esp_report import PYMOL_MISSING_NOTICE
+
+        logger.warning("Dipole moment plot: %s (%s)", PYMOL_MISSING_NOTICE, e)
         return None
 
     # Get dipole moment from data
@@ -2487,7 +2511,9 @@ def _create_mo_visualizations(project_dir: Path, mo_entries: list[Dict[str, Any]
         import pymol
         from pymol import cmd
     except ImportError:
-        logger.warning("PyMOL not available; skipping MO visualizations")
+        from delfin.reporting.esp_report import PYMOL_MISSING_NOTICE
+
+        logger.warning("MO pictures: %s", PYMOL_MISSING_NOTICE)
         return {}
 
     # Try S0.gbw first, fallback to initial.gbw in parent directory

@@ -43,7 +43,7 @@ def test_hard_clear_stubs_large_nonuser_messages_only():
         {"role": "tool", "content": "B" * 4000},
         {"role": "assistant", "content": "short reply"},   # < 800 → untouched
     ]
-    n = eng._hard_clear_old_tool_results(eng.messages)
+    n = eng._stub_oldest_non_goal_messages(eng.messages)
     assert n == 2
     assert eng.messages[0]["content"] == "GOAL keep me verbatim"   # user goal safe
     assert eng.messages[1]["content"].startswith("[cleared:")
@@ -56,10 +56,10 @@ def test_hard_clear_is_idempotent():
     eng = _bare_engine()
     eng.context_window_tokens = 100
     eng.messages = [{"role": "assistant", "content": "A" * 4000}]
-    eng._hard_clear_old_tool_results(eng.messages)
+    eng._stub_oldest_non_goal_messages(eng.messages)
     stub = eng.messages[0]["content"]
     # Second pass must not re-clear an already-cleared stub.
-    assert eng._hard_clear_old_tool_results(eng.messages) == 0
+    assert eng._stub_oldest_non_goal_messages(eng.messages) == 0
     assert eng.messages[0]["content"] == stub
 
 

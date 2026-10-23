@@ -53,7 +53,7 @@ rotation that
     * flips an amine-H (or P-H / As-H) onto the metal side
       (∠(M-D-H) < 60° or H · · · M < 2.30 Å).
 This catches the X10-ALEQEO Fe(CO)2(NH2-CH2-CH2-S)2 amine-H umbrella
-inversion (User-Direktive 2026-05-18).
+inversion (user directive 2026-05-18).
 """
 
 from __future__ import annotations
@@ -110,8 +110,8 @@ def _topo_hardgate_enabled() -> bool:
     """Welle-5p-A master flag — read here so the wire-in cost is one
     `os.environ.get` per candidate when the gate is disabled.
 
-    Default reverted 1 -> 0 on 2026-05-18 (Iter-17) — voll-pool b5defcd
-    showed pool-wide sigma -2783 isomere over-rejection.  Per-class
+    Default reverted 1 -> 0 on 2026-05-18 (Iter-17) — full-pool b5defcd
+    showed pool-wide sigma -2783 isomers over-rejection.  Per-class
     adaptive thresholds deferred to Iter-18.  Env-flag opt-in preserved.
     """
     return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
@@ -136,6 +136,10 @@ _METAL_ATOMIC_NUMBERS = frozenset(
 
 
 def _is_metal(atomic_num: int) -> bool:
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal_z(atomic_num)
     return int(atomic_num) in _METAL_ATOMIC_NUMBERS
 
 
@@ -343,7 +347,7 @@ def identify_rotamer_dofs(
     * Trivial rotors (``backbone_heavy_moved == 0`` AND ``is_methyl``) are
       DROPPED — they only spin terminal H/CH3 and never move the backbone.
     * DOFs are ranked by ``backbone_heavy_moved`` descending so the genuine
-      biaryl / ring-attachment / gerüst torsions occupy the (capped) grid
+      biaryl / ring-attachment / scaffold torsions occupy the (capped) grid
       instead of being crowded out by methyls.
 
     Returns a list of dicts with keys:

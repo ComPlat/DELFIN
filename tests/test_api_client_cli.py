@@ -1,6 +1,6 @@
 """Tests for CLIClient empty-text guard.
 
-The Claude CLI tags each user content block with cache_control. An
+The CLI backend tags each user content block with cache_control. An
 empty text block triggers an Anthropic API 400:
     "cache_control cannot be set for empty text blocks"
 CLIClient.stream_message must skip the send entirely in that case.
