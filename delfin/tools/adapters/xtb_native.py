@@ -56,6 +56,22 @@ _COMMON_PARAMS = (
 )
 
 
+def _validated_uhf(uhf: int) -> int:
+    """Reject unphysical ``--uhf`` values before they reach the binary."""
+    try:
+        n = int(uhf)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"uhf must be an integer, got {uhf!r}") from exc
+    if n < 0:
+        raise ValueError(f"uhf must be >= 0 unpaired electrons, got {n}")
+    # Every real system has fewer unpaired electrons than electrons; the
+    # practical ceiling is far below any element's electron count. A flag
+    # like --uhf 999 is a typo, not physics, and xtb would run it.
+    if n > 50:
+        raise ValueError(f"uhf {n} is not a plausible unpaired-electron count (>50)")
+    return n
+
+
 def build_xtb_cmd(
     input_name: str,
     *,
@@ -75,10 +91,54 @@ def build_xtb_cmd(
 
     ``run`` selects the job: ``None`` single point, ``"opt"``, ``"ohess"``
     (opt + Hessian + thermo), ``"hess"``, ``"md"`` (``--omd``), ``"fukui"``.
+
+    Validation: an unknown ``method``, a non-integer charge or an
+    implausible ``uhf`` raise ValueError instead of silently producing a
+    wrong command; ``solvent_model`` is restricted to the implicit models
+    xtb knows (ALPB, GBSA); ``extra_args`` must be a sequence of tokens
+    and may not override the flags this builder derives from the validated
+    charge/spin/method.
     """
+    method_str = str(method).lower() if method is not None else None
+    if method_str not in _METHOD_FLAGS:
+        raise ValueError(
+            f"unknown xtb method {method!r}: expected one of "
+            f"{', '.join(_METHOD_FLAGS)}")
+    charge_int = int(charge)  # raises on non-numeric
+    uhf_int = _validated_uhf(uhf)
+    model = str(solvent_model or "alpb").lower()
+    if model not in ("alpb", "gbsa"):
+        raise ValueError(
+            f"unknown solvent_model {solvent_model!r}: xtb implicit "
+            "solvation is ALPB or GBSA (CPCM is ORCA-only)")
+
+    # Protected flags: derived from the validated parameters, extra_args
+    # must not shadow them (xtb takes the last occurrence of a flag).
+    protected = {"--chrg", "--uhf", "--gfn", "--gfnff", "--alpb", "--gbsa"}
+    if isinstance(extra_args, str):
+        # list() would split "--gfn 1" into characters; a bare string is
+        # never the intended token list, so refuse it instead.
+        raise ValueError(
+            "extra_args must be a sequence of CLI tokens, not a single "
+            f"string ({extra_args!r} would be split into characters)")
+    extras = list(extra_args)
+    if any(isinstance(a, str) and a.lstrip().startswith("-") and len(a.lstrip().split()) > 1
+           for a in extras):
+        raise ValueError(
+            f"extra_args must be a sequence of single CLI tokens, got {extra_args!r}")
+    for a in extras:
+        if not isinstance(a, str):
+            raise TypeError(f"extra_args entries must be strings, got {a!r}")
+        # xtb accepts "--chrg=-2" as an assignment, identical to
+        # "--chrg -2", so the "=" form must be blocked like the bare flag.
+        head = a.split("=", 1)[0].strip()
+        if a in protected or head in protected:
+            raise ValueError(
+                f"extra_args may not override the validated flag {head}")
+
     cmd: List[str] = ["xtb", input_name]
-    cmd += _METHOD_FLAGS.get(str(method).lower(), ["--gfn", "2"])
-    cmd += ["--chrg", str(int(charge)), "--uhf", str(int(uhf))]
+    cmd += _METHOD_FLAGS[method_str]
+    cmd += ["--chrg", str(charge_int), "--uhf", str(uhf_int)]
     if run == "opt":
         cmd += ["--opt", opt_level or "normal"]
     elif run == "ohess":
