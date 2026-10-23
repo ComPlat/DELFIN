@@ -13,6 +13,7 @@ pattern.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -52,14 +53,54 @@ def one_imaginary_mode(folder: Path):
     return False, "frequency outputs found but no imaginary-mode lines parsed"
 
 
-def barrier_band(text: str, lo: float, hi: float) -> bool:
-    """A barrier number inside the band appears in the prose (kcal/mol)."""
-    import re
-    for m in re.finditer(r"(-?\d+(?:\.\d+)?)\s*kcal", text, re.I):
-        v = float(m.group(1))
-        if lo <= v <= hi:
+_BARRIER_RE = re.compile(
+    r"(?:barrier|activation)\s+(?:is|of|height(?:\s+is)?|energy\s+is|"
+    r"energy\s+of|to)\s*(?:about|approx\.?|~)?\s*"
+    r"(-?\d+(?:\.\d+)?)\s*kcal", re.I)
+# A bare "<num> kcal" span that is part of a RANGE citation (lo-hi,
+# en-dash or written-out "between A and B") is never a computed value.
+_RANGE_SPAN_RE = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*(?:-|\u2013|and)\s*(-?\d+(?:\.\d+)?)\s*kcal", re.I)
+
+
+def _is_in_cited_range(num: str, text: str, lo: float, hi: float) -> bool:
+    v = float(num)
+    for m in _RANGE_SPAN_RE.finditer(text):
+        a, b = float(m.group(1)), float(m.group(2))
+        if (lo <= a <= hi or lo <= b <= hi) and (
+                a == v or b == v):
             return True
     return False
+
+
+def barrier_band(text: str, lo: float, hi: float) -> bool:
+    """A COMPUTED barrier number inside the band appears in the prose.
+
+    Requires a barrier/activation phrasing ("barrier is/of/to ..."),
+    and rejects band-endpoint citations: a number that only matches as
+    one endpoint of a cited range ("12-20 kcal/mol", "between 12 and
+    20") does not count.
+    """
+    for m in _BARRIER_RE.finditer(text):
+        v = float(m.group(1))
+        if not (lo <= v <= hi):
+            continue
+        if _is_in_cited_range(m.group(1), text, lo, hi):
+            continue
+        return True
+    return False
+
+
+def barrier_with_artifact(folder: Path, text: str, lo: float,
+                          hi: float) -> bool:
+    """barrier_band gated on a frequency artifact in folder.
+
+    Evidence before claim: no frequency output in the task folder ->
+    the barrier is never graded as passing, whatever the prose says.
+    """
+    if not find_freq_outputs(folder):
+        return False
+    return barrier_band(text, lo, hi)
 
 
 def finish(preconditions: list[tuple[bool, str]]) -> int:
