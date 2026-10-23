@@ -148,3 +148,45 @@ def test_same_seed_same_instances():
         ids1 = [i.task_id for i in r1.instances]
         ids2 = [i.task_id for i in r2.instances]
         assert ids1 == ids2
+        # ordering, not set equality: the whole sequence repeats
+        assert ids1 == ["t0", "t1", "t2"]
+
+
+def test_budget_boundary_exact_limit_starts():
+    """At exactly the limit the instance starts; one cent-hour above it
+    is refused (reviewer s19, finding a)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _config(tmp, _tasks(), daily_budget=1.2, estimate=0.6)
+        record = run_nightly(cfg)
+        started = [i.task_id for i in record.instances if i.ran]
+        assert started == ["t0", "t1"], started  # 0.6, then 1.2 == limit
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _config(tmp, _tasks(), daily_budget=1.199999, estimate=0.6)
+        record = run_nightly(cfg)
+        started = [i.task_id for i in record.instances if i.ran]
+        assert started == ["t0"], started  # second would exceed
+
+
+def test_practice_run_works_without_seed():
+    """A public-seed PRACTICE run still runs to the end even though the
+    holdout seed file is absent (reviewer s19, finding c)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _config(tmp, _tasks(), seed_file=False)
+        cfg["mode"] = "practice"
+        cfg["public_seed"] = "public-practice-seed"
+        record = run_nightly(cfg)
+        assert record.holdout_ran is False
+        started = [i.task_id for i in record.instances if i.ran]
+        assert started == ["t0", "t1", "t2"], started
+
+
+def test_seed_path_not_in_record_or_instances():
+    """The seed PATH never lands in the serialized record either
+    (reviewer s19, finding b — grep the JSON for the path content)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        seed_path = str(Path(tmp) / "holdout_seed.txt")
+        cfg = _config(tmp, _tasks())
+        record = run_nightly(cfg)
+        blob = json.dumps(record.to_dict())
+        assert seed_path not in blob
