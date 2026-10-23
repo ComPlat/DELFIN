@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Acceptance: or1_sn2_identity_barrier.
+
+Hard precondition, from the artifact: a frequency output under
+chem/sn2 with EXACTLY one imaginary mode (the symmetric TS); the
+barrier band (15 +/- 4 kcal, literature 12-20) is graded on the prose
+by the runner's expected_values machinery.
+
+usage: w20_or1_ts_sn2_verify.py <workspace>
+"""
+from __future__ import annotations
+
+import sys
+
+import w20_or1_common as C
+
+
+def main(argv) -> int:
+    ws = C.workspace(argv)
+    folder = ws / "chem" / "sn2"
+    if not folder.is_dir():
+        print(f"FAIL: no task folder {folder}")
+        print("QUALITY: 0.00")
+        return 1
+    ok_mode, ev = C.one_imaginary_mode(folder)
+    return C.finish([
+        (ok_mode, f"SN2 TS carries exactly one imaginary mode ({ev})"),
+    ])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
