@@ -85,7 +85,10 @@ install)
     restart_dashboard
     if [[ "$run_tests" == "--test" ]]; then
         echo "==> pytest (not slow)"
-        cd src && "$VENV_PY" -m pytest -q -m "not slow" -p no:cacheprovider
+        # Activate: code under test shells out to a bare `python`.
+        # shellcheck disable=SC1091
+        source "$ROOT/.venv/bin/activate"
+        cd src && python -m pytest -q -m "not slow" -p no:cacheprovider
     fi
     ;;
 rollback)
