@@ -23,6 +23,21 @@ it sits next to the session it belongs to and moves when the tests redirect
 that directory. The file is created 0600 and appended through
 ``state_paths.open_append``, the same primitive the tool trace uses.
 
+Bound: an append that finds the file at ``_ROTATE_BYTES`` first renames it
+to ``<session>.steps.jsonl.1`` (replacing the previous one), so a session
+keeps at most two files of that size. A read takes the last
+``_TAIL_BYTES`` across both, so a rotation hides nothing a read would have
+seen. Rejected: rewriting the file in place with its tail. A crash between
+the truncate and the write loses the journal, and a writer holding the old
+descriptor appends past the new end; after a rename that writer's line
+lands in the rotated file, where the next read still finds it.
+
+Turns: ``auto_start(turn_key=...)`` opens the next turn number when the key
+differs from the one of the newest start. The engine renews the key at
+every turn start (``KitToolPermissions.step_turn_key``). The resume note
+names the open steps of the newest turn only: an open step of an earlier
+turn was reported by the recovery of the crash that left it.
+
 Nothing secret is ever written: arguments and results go in as digests
 built by :mod:`delfin.agent.tool_digest` (secret-scrubbed, bounded), and a
 short redacted head of the arguments for the resume line. Every write is
@@ -33,6 +48,8 @@ call it is recording.
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -67,6 +84,13 @@ _MAX_NOTE_LINES = 40   # a read looks at the last lines only
 #: it (auto_start), so a read must not grow with the session: 40 lines of
 #: at most ~1 KB each fit with room to spare.
 _TAIL_BYTES = 256 * 1024
+#: Size at which an append rotates the journal (see the module docstring).
+#: Four tails: a rotation happens about every 4000 tool calls.
+_ROTATE_BYTES = 1024 * 1024
+#: Appends of one process are serialised, so two threads cannot both find
+#: the file at its bound and rotate twice (the second rename would replace
+#: the freshly rotated file with a one-line one).
+_APPEND_LOCK = threading.Lock()
 
 
 def _args_head(arguments: Any) -> str:
@@ -122,6 +146,18 @@ def journal_path(session: str, *, root: "str | Path | None" = None) -> Path:
     return base / f"{safe}.steps.jsonl"
 
 
+def _rotated(path: Path) -> Path:
+    return path.with_name(path.name + ".1")
+
+
+def journal_files(session: str, *, root: "str | Path | None" = None,
+                  ) -> tuple[Path, Path]:
+    """The live journal and its rotated predecessor (either may be absent);
+    what a deleted session removes."""
+    p = journal_path(session, root=root)
+    return p, _rotated(p)
+
+
 def _append(path: Path, entry: dict[str, Any]) -> bool:
     """Append one JSON line, 0600, best-effort. True when written.
 
@@ -136,33 +172,38 @@ def _append(path: Path, entry: dict[str, Any]) -> bool:
     try:
         ensure_dir(path.parent)
         line = json.dumps(entry, ensure_ascii=False, sort_keys=True)
-        torn = False
-        try:
-            size = path.stat().st_size
-            if size:
-                with path.open("rb") as fh:
-                    fh.seek(size - 1)
-                    torn = fh.read(1) != b"\n"
-        except OSError:
+        with _APPEND_LOCK:
             torn = False
-        with open_append(path) as fh:
-            if torn:
-                fh.write("\n")
-            fh.write(line + "\n")
+            try:
+                size = path.stat().st_size
+                if size >= _ROTATE_BYTES:
+                    os.replace(path, _rotated(path))
+                    size = 0
+                if size:
+                    with path.open("rb") as fh:
+                        fh.seek(size - 1)
+                        torn = fh.read(1) != b"\n"
+            except OSError:
+                torn = False
+            with open_append(path) as fh:
+                if torn:
+                    fh.write("\n")
+                fh.write(line + "\n")
         return True
     except Exception:
         return False
 
 
 def start_step(session: str, *, turn: int, step: int, tool: str,
-               arguments: Any = None) -> bool:
+               arguments: Any = None, turn_key: str | None = None) -> bool:
     """Record that a tool call is about to run. Returns True when written.
 
     Called BEFORE the call executes (the api_client hook, phase 3): the
     write landing is what makes "it started" true on disk, and the call's
-    own crash cannot take the record with it.
+    own crash cannot take the record with it. ``turn_key`` is stored when
+    given, so the next auto_start can tell whether it is the same turn.
     """
-    return _append(journal_path(session), {
+    entry = {
         "kind": "start",
         "ts": time.time(),
         "turn": int(turn),
@@ -170,7 +211,10 @@ def start_step(session: str, *, turn: int, step: int, tool: str,
         "tool": str(tool),
         "side_effect": side_effecting(tool),
         "args_digest": _args_head(arguments),
-    })
+    }
+    if turn_key:
+        entry["turn_key"] = str(turn_key)[:64]
+    return _append(journal_path(session), entry)
 
 
 def finish_step(session: str, *, turn: int, step: int, tool: str,
@@ -201,25 +245,27 @@ def finish_step(session: str, *, turn: int, step: int, tool: str,
 # ---------------------------------------------------------------------------
 
 def auto_start(session: str, *, tool: str, arguments: Any = None,
-               turn: int | None = None,
+               turn: int | None = None, turn_key: str | None = None,
                ) -> dict[str, Any]:
     """Derive (turn, step) from the journal and record the call start.
 
-    The protected api_client hook (phase 3) has no turn/step counter of
-    its own — this one is derived from the tail: step = last recorded
-    step + 1 within the current turn, turn rolling over when the caller
-    announces a new turn (``turn`` given) or when the previous open
-    bracket ended a turn. Returns the record dict with its derived
-    turn/step, which auto_finish consumes; on a write failure returns a
-    record marked ``recorded: False`` so the finish is skipped rather
-    than paired to a line that never landed.
+    The api_client hook has no step counter of its own; both numbers are
+    derived from the tail. The turn is ``turn`` when given; otherwise the
+    newest start's turn while ``turn_key`` matches that start's key, and
+    the next turn number when it does not. Without a key the current turn
+    continues. step = 1 + the highest step recorded in that turn. Returns
+    the record dict with its derived turn/step, which auto_finish
+    consumes; on a write failure returns a record marked
+    ``recorded: False`` so the finish is skipped rather than paired to a
+    line that never landed.
     """
     record = {"recorded": False, "turn": 0, "step": 0}
+    steps, _ = read_steps(session)
     if turn is None:
-        turn = _current_turn(session)
-    step = _next_step(session, turn)
+        turn = _turn_for(steps, turn_key)
+    step = _next_step_in(steps, turn)
     ok = start_step(session, turn=turn, step=step, tool=tool,
-                    arguments=arguments)
+                    arguments=arguments, turn_key=turn_key)
     record.update({"recorded": ok, "turn": turn, "step": step,
                    "tool": tool})
     return record
@@ -242,18 +288,32 @@ def auto_finish(session: str, record: dict[str, Any] | None, *,
         return False
 
 
-def _current_turn(session: str) -> int:
-    """The turn the journal is currently in; 1 for an empty journal.
-
-    Consecutive calls continue the same turn — steps must increment, not
-    restart — so the fallback keeps the highest turn already recorded. A
-    NEW turn is announced explicitly by the caller (auto_start(turn=...)),
-    which also restarts the step numbering via _next_step.
-    """
-    steps, _ = read_steps(session)
+def _newest_turn(steps: list[dict[str, Any]]) -> int | None:
+    """The highest turn number among the records, None when there is none."""
     turns = [int(e["turn"]) for e in steps
              if isinstance(e.get("turn"), int) or _intable(e.get("turn"))]
-    return max(turns) if turns else 1
+    return max(turns) if turns else None
+
+
+def _turn_for(steps: list[dict[str, Any]], turn_key: str | None) -> int:
+    """The turn a new call belongs to; 1 for an empty journal.
+
+    Without a key, consecutive calls continue the highest turn recorded.
+    With a key, they continue it only while the newest start carries the
+    same key; a different key (a new engine turn, or a restarted process)
+    opens the next number, which restarts the step numbering.
+    """
+    newest = _newest_turn(steps)
+    if newest is None:
+        return 1
+    if not turn_key:
+        return newest
+    for e in reversed(steps):
+        if e.get("kind") == "start":
+            if e.get("turn_key") == str(turn_key)[:64]:
+                return newest
+            break
+    return newest + 1
 
 
 def _intable(v: Any) -> bool:
@@ -264,16 +324,15 @@ def _intable(v: Any) -> bool:
         return False
 
 
-def _next_step(session: str, turn: int) -> int:
+def _next_step_in(steps: list[dict[str, Any]], turn: int) -> int:
     """1 + the highest step recorded in ``turn`` (steps restart per turn).
 
-    A non-int turn (a corrupt tail line) is simply not in ``turn`` —
-    the helper's no-raise contract (leaned on by the api_client hook,
-    api_client.py:16660-16662) holds even against a broken journal.
+    A non-int turn (a corrupt tail line) is simply not in ``turn``, and a
+    non-int step is skipped: auto_start promises the api_client hook never
+    to raise, also against a broken journal.
     """
-    steps, _ = read_steps(session)
     in_turn = [int(e["step"]) for e in steps
-               if e.get("turn") == turn]
+               if e.get("turn") == turn and _intable(e.get("step"))]
     return max(in_turn, default=0) + 1
 
 
@@ -300,30 +359,25 @@ def read_steps(session: str, *, root: "str | Path | None" = None,
     if max_lines is None:
         max_lines = _MAX_NOTE_LINES
     p = journal_path(session, root=root)
-    if not p.is_file():
-        if p.exists():
-            # A failed close can leave a directory (or anything else
-            # that is not a regular file) behind: the reader must say
-            # so, not read it as silently "no journal" — a step whose
-            # finish_step returned False would otherwise vanish from
-            # every resume surface.
-            return [], [f"step journal unreadable: {p.name} "
-                        "(exists, not a regular file)"]
-        return [], []
+    if p.exists() and not p.is_file():
+        # A failed close can leave a directory (or anything else that is
+        # not a regular file) behind: the reader must say so, not read it
+        # as silently "no journal" — a step whose finish_step returned
+        # False would otherwise vanish from every resume surface.
+        return [], [f"step journal unreadable: {p.name} "
+                    "(exists, not a regular file)"]
     notes: list[str] = []
     steps: list[dict[str, Any]] = []
     try:
-        with p.open("rb") as fh:
-            size = fh.seek(0, 2)
-            start = max(0, size - _TAIL_BYTES)
-            fh.seek(start)
-            data = fh.read()
+        data, cut, older = _read_tail(p)
     except OSError:
         return [], ["step journal unreadable: " + p.name]
+    if data is None:
+        return [], []
     lines = data.decode("utf-8", errors="replace").splitlines()
-    if start and lines:
+    if cut and lines:
         lines = lines[1:]          # the first line is cut at the seek point
-    if len(lines) > max_lines or start:
+    if len(lines) > max_lines or older:
         lines = lines[-max_lines:]
         notes.append(
             f"step journal trimmed to the last {max_lines} lines")
@@ -341,6 +395,44 @@ def read_steps(session: str, *, root: "str | Path | None" = None,
             continue
         steps.append(entry)
     return steps, notes
+
+
+def _read_tail(p: Path) -> "tuple[bytes | None, bool, bool]":
+    """The last ``_TAIL_BYTES`` of the live journal and, when that is
+    shorter, of the rotated one before it. Returns ``(data, cut, older)``:
+    ``data`` is None when neither file exists, ``cut`` says the read began
+    inside a line, ``older`` that earlier records were left unread. A
+    file boundary is a line boundary, so a read that stops at one is not
+    cut. A rotated file whose last line is torn gets a newline at the
+    seam, so its fragment cannot swallow the first live record.
+    """
+    chunks: list[bytes] = []
+    need = _TAIL_BYTES
+    cut = False
+    found = False
+    for f in (p, _rotated(p)):
+        if need <= 0:
+            return b"".join(chunks), False, f.is_file()
+        try:
+            fh = f.open("rb")
+        except FileNotFoundError:
+            continue
+        found = True
+        with fh:
+            size = fh.seek(0, 2)
+            start = max(0, size - need)
+            fh.seek(start)
+            data = fh.read()
+        if data and not data.endswith(b"\n") and chunks:
+            data += b"\n"
+        chunks.insert(0, data)
+        need -= len(data)
+        if start:
+            cut = True
+            break
+    if not found:
+        return None, False, False
+    return b"".join(chunks), cut, cut
 
 
 def open_steps(session: str, *, root: "str | Path | None" = None,
@@ -441,6 +533,16 @@ def render_resume_note(session: str, *, root: "str | Path | None" = None,
     it is read, never swallowed.
     """
     open_out, notes = open_steps(session, root=root)
+    # Only the newest turn died with the process. An open step of an
+    # earlier turn was named by the recovery of the crash that left it;
+    # naming it again would send the model to re-check a step the session
+    # has long since dealt with.
+    if open_out:
+        steps, _ = read_steps(session, root=root)
+        newest = _newest_turn(steps)
+        open_out = [e for e in open_out
+                    if newest is None or _turn_step_key(e) is None
+                    or _turn_step_key(e)[0] == newest]
     # That a read looked at the tail only is how every long journal is
     # read, not something the resumed session has to know.
     notes = [n for n in notes if not n.startswith("step journal trimmed")]
