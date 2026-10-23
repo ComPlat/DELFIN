@@ -58,6 +58,19 @@ EOF
     fi
 }
 
+# molsimplify and mace-torch wheels ship their own top-level `tests` package.
+# A regular package beats the repo's namespace `tests/` whatever sys.path
+# says, so every `from tests.conftest import ...` in the suite fails to
+# collect. Nothing imports it at runtime; it goes after every deploy.
+drop_foreign_tests_pkg() {
+    local purelib
+    purelib="$("$VENV_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+    if [[ -f "$purelib/tests/__init__.py" ]]; then
+        rm -rf "$purelib/tests"
+        echo "==> removed third-party tests package from site-packages"
+    fi
+}
+
 # Digest of what tui/node_modules is built from (packages + DELFIN patches).
 tui_inputs_hash() {
     [[ -f "$1/tui/package.json" ]] || return 0
@@ -132,6 +145,7 @@ install)
     else
         echo "==> pyproject unchanged: code swapped, no reinstall needed"
     fi
+    drop_foreign_tests_pkg
     smoke
     set_up_extras
     restart_dashboard
@@ -148,6 +162,7 @@ rollback)
     mv src src.bad && mv src.prev src && mv src.bad src.prev
     carry_tui_modules src.prev src
     if ! cmp -s src/pyproject.toml src.prev/pyproject.toml; then install_deps; fi
+    drop_foreign_tests_pkg
     smoke
     set_up_extras
     restart_dashboard
