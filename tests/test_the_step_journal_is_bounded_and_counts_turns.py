@@ -70,6 +70,22 @@ def test_a_rotation_keeps_what_a_read_sees(sessions, monkeypatch):
     assert rec["step"] == 12
 
 
+def test_a_read_that_ends_at_the_file_boundary_keeps_the_first_line(
+        sessions, monkeypatch):
+    """The live file exactly as long as the read window: its first line
+    is whole, and is not dropped as a cut one."""
+    for i in range(3):
+        rec = step_journal.auto_start("s1", tool="bash",
+                                      arguments={"command": f"c{i}"})
+        step_journal.auto_finish("s1", rec, ok=True)
+    live = step_journal.journal_path("s1")
+    live.with_name(live.name + ".1").write_text('{"kind": "start"}\n')
+    monkeypatch.setattr(step_journal, "_TAIL_BYTES", live.stat().st_size)
+    steps, _ = step_journal.read_steps("s1")
+    assert [(e["kind"], e["step"]) for e in steps][:2] == [
+        ("start", 1), ("finish", 1)]
+
+
 def test_the_step_numbers_continue_across_a_rotation(sessions, monkeypatch):
     monkeypatch.setattr(step_journal, "_ROTATE_BYTES", 4 * 1024)
     seen = []
