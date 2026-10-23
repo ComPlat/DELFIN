@@ -36,6 +36,9 @@ Known limits, not Pi-specific: `schnetpack` does not import with torch 2.13
 `uv pip check` reports pymol's numpy>=2 metadata and the `pymol` vs
 `pymol-open-source` name; both are expected. The deployed tree has no `.git`,
 so `test_pre_refactor_api_preserved` (needs `git show`) fails under `--test`.
+The molsimplify and mace-torch wheels install a top-level `tests` package that
+would hide the repo's `tests/` (`from tests.conftest import ...`);
+`pi_install.sh` removes it after every deploy.
 
 First boot takes ~20 min on a Pi 5 with a fast connection (about 9 of them for
 the patched OpenTUI build). A deploy keeps `tui/node_modules` (and with it the
