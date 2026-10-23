@@ -39,7 +39,12 @@ left each one. "The ensemble was refined" alone is not a result.
 - Degeneracy enters explicitly: p_i ~ g_i exp(-dE_i/RT) with g_i the
   degeneracy of conformer i (mirror-image pairs g=2). `crest_ensemble.collapse_degeneracies`
   groups frames degenerate within a tolerance (default 0.01 kcal/mol)
-  and keeps each group's degeneracy; `boltzmann_weights` multiplies by it.
+  and sets each group's degeneracy to the GROUP SIZE (the number of
+  frames in it — it does NOT preserve a per-frame g a search tool may
+  have reported); `boltzmann_weights` multiplies by it. With bare
+  Boltzmann factors over the un-collapsed frames the two entries of a
+  degenerate pair give the same 2x weight, which is why g = group size
+  is consistent.
 - Sum of all weights is exactly 1; an ensemble whose frames carry
   energies tagged from two levels, or only PARTIALLY tagged, is refused
   by `boltzmann_weights` (ValueError) — that refusal is the correct
