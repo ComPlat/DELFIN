@@ -23,6 +23,9 @@ from delfin.manta.conformer_io import (
 from delfin.manta.conformer_pools import (
     _cp_basin_6ring,
     _frag_xyz_collapsed,
+    _frag_xyz_compressed,
+    _isolated_fragment_xyz,
+    template_compressed_reseat_enabled,
     _rank_template_conformers,
     _ring_canonical_snap_z,
 )
@@ -1404,6 +1407,17 @@ def _build_topology_xyz_from_template(
             try:
                 _reseat_collapse = (os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") == "1"
                                     and _frag_xyz_collapsed(mol, frag_list, frag_xyz))
+                # DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT (conformer_pools): a compressed template
+                # bond is the same metal-context degeneracy -> the same isolated re-seat.
+                _tpl_compressed = (template_compressed_reseat_enabled()
+                                   and _frag_xyz_compressed(mol, frag_list, frag_xyz))
+                if _tpl_compressed:
+                    _reseat_collapse = True
+                    if len(frag_donors) == 1:
+                        _iso = _isolated_fragment_xyz(mol, frag_list)
+                        if _iso is not None:
+                            frag_xyz = _iso
+                            src = frag_xyz[donor_local, :]
 
                 # Chelate (bidentate or polydentate): if the template's
                 # native donor-donor distance pattern is far from the
@@ -1451,9 +1465,11 @@ def _build_topology_xyz_from_template(
                                     / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
                                 )
                             )
-                            if (new_mismatch < mismatch
-                                    or (_reseat_collapse
-                                        and not _frag_xyz_collapsed(mol, frag_list, new_frag_xyz))):
+                            _new_ok = (_reseat_collapse
+                                       and not _frag_xyz_collapsed(mol, frag_list, new_frag_xyz))
+                            if _tpl_compressed:
+                                _new_ok = _new_ok and not _frag_xyz_compressed(mol, frag_list, new_frag_xyz)
+                            if new_mismatch < mismatch or _new_ok:
                                 frag_xyz = new_frag_xyz
                                 src = new_src
                                 if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1" and _reseat_collapse:

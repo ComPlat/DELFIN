@@ -217,6 +217,96 @@ def _frag_xyz_collapsed(mol, frag_list, frag_xyz, vol_min: float = 0.40) -> bool
     return False
 
 
+# ===== THE COMPRESSED TEMPLATE IS RE-SEATED TOO (DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT, default OFF) =====
+#
+# THE DEFECT.  The legacy topology builder takes every ligand's internal geometry from a conformer of
+# the WHOLE complex (ETKDG with the metal in the graph).  Around the metal that embedding does not
+# satisfy its own 1-2 bounds: COPMEC's bounds say aromatic C-N 1.335-1.355 A, the built template has
+# 1.169 A (tpl_bond_bounds.py, 23.10.2026); in the trace (DELFIN_LEGCONF_TRACE) every template conformer
+# of COPMEC, GENYAC, NAMFUE, WATJEJ, TAKSIH and BAGZUH carries a ligand bond below 0.85 x rcov.  The
+# rigid-fragment placement keeps that geometry, UFF runs with the donors frozen and cannot restore it --
+# GENYAC and UYAHIM leave the topology enumerator with 22/49 and 16/36 frames below 0.88 x the
+# bond-order reference.  The ERDBEBEN re-seat (champion ISOLATED_SEAT) already re-embeds a fragment ALONE
+# when the template COLLAPSED it (flat sp3 centre); a compressed bond is the same metal-context
+# degeneracy and was not looked at.
+# THE FIX.  Under the switch a template fragment with a covalent bond below 0.88 x its bond-order-aware
+# reference (rcov sum x 1 / 0.87 / 0.78 / 0.91 for single / double / triple / aromatic) counts as
+# collapsed: a chelate fragment goes through the same isolated re-embed (accepted only when the new
+# geometry is neither collapsed nor compressed), a monodentate fragment is re-embedded alone with ETKDG.
+_COMPRESSED_FACTOR = 0.88
+
+
+def template_compressed_reseat_enabled() -> bool:
+    """THE one read site of DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT (default 0)."""
+    return os.environ.get("DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT", "0") == "1"
+
+
+def _frag_xyz_compressed(mol, frag_list, frag_xyz, factor: float = _COMPRESSED_FACTOR) -> bool:
+    """True if one covalent bond inside the fragment (``frag_xyz`` rows in ``frag_list`` order) is
+    shorter than ``factor`` x its bond-order-aware covalent reference."""
+    try:
+        import numpy as np
+        pt = Chem.GetPeriodicTable()
+        scale = {Chem.BondType.SINGLE: 1.0, Chem.BondType.DOUBLE: 0.87,
+                 Chem.BondType.TRIPLE: 0.78, Chem.BondType.AROMATIC: 0.91}
+        row = {a: k for k, a in enumerate(frag_list)}
+        for b in mol.GetBonds():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if i not in row or j not in row:
+                continue
+            a1, a2 = b.GetBeginAtom(), b.GetEndAtom()
+            if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
+                continue
+            if a1.GetSymbol() in _METAL_SET or a2.GetSymbol() in _METAL_SET:
+                continue
+            ref = (pt.GetRcovalent(a1.GetAtomicNum()) + pt.GetRcovalent(a2.GetAtomicNum())) \
+                * scale.get(b.GetBondType(), 1.0)
+            if float(np.linalg.norm(frag_xyz[row[i]] - frag_xyz[row[j]])) < factor * ref:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _isolated_fragment_xyz(mol, frag_list, seeds=(42, 7, 1234)):
+    """The fragment (``frag_list`` atoms of ``mol``, metal-free, hydrogens included) embedded ALONE with
+    ETKDG; the first seed whose conformer is not compressed wins.  Rows in ``frag_list`` order, or None."""
+    try:
+        import numpy as np
+        from rdkit.Chem import AllChem
+        old_to_new = {old: new for new, old in enumerate(frag_list)}
+        rw = Chem.RWMol(Chem.Mol())
+        for aidx in frag_list:
+            a = mol.GetAtomWithIdx(aidx)
+            k = rw.AddAtom(Chem.Atom(a.GetAtomicNum()))
+            rw.GetAtomWithIdx(k).SetFormalCharge(a.GetFormalCharge())
+            rw.GetAtomWithIdx(k).SetNoImplicit(True)
+        for b in mol.GetBonds():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if i in old_to_new and j in old_to_new:
+                rw.AddBond(old_to_new[i], old_to_new[j], b.GetBondType())
+        fm = rw.GetMol()
+        try:
+            Chem.SanitizeMol(fm)
+        except Exception:
+            fm.UpdatePropertyCache(strict=False)
+            Chem.FastFindRings(fm)
+        for s in seeds:
+            p = AllChem.ETKDGv3()
+            p.randomSeed = int(s)
+            p.useRandomCoords = True
+            p.enforceChirality = False
+            m = Chem.Mol(fm)
+            if AllChem.EmbedMolecule(m, p) < 0:
+                continue
+            X = np.array(m.GetConformer().GetPositions(), dtype=float)
+            if not _frag_xyz_compressed(mol, frag_list, X):
+                return X
+        return None
+    except Exception:
+        return None
+
+
 def _heavy_atom_rmsd_xyz(xyz_a: str, xyz_b: str) -> float:
     """Symmetry-free heavy-atom RMSD (no alignment) between two XYZ blocks.
 
