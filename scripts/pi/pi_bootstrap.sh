@@ -79,7 +79,28 @@ sudo -iu "$AGENT_USER" bash -s -- "$PY_VERSION" <<'EOS'
 set -euo pipefail
 PY_VERSION="$1"
 export PATH="$HOME/.local/bin:$PATH"
-command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+# One pinned uv release, kept only when its SHA-256 matches (never curl | sh).
+UV_VERSION=0.13.5
+UV_SHA256_aarch64=4bb69cf95ed13f23713bb7bc09f241896ea0c75b7c557e615a20604b82f9c403
+UV_SHA256_x86_64=f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
+if ! command -v uv >/dev/null; then
+    arch="$(uname -m)"
+    want_var="UV_SHA256_$arch"
+    want="${!want_var:-}"
+    [[ -n "$want" ]] || { echo "error: no pinned uv digest for $arch" >&2; exit 1; }
+    tmp="$(mktemp -d)"
+    curl -fsSL -o "$tmp/uv.tar.gz" \
+        "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$arch-unknown-linux-gnu.tar.gz"
+    got="$(sha256sum "$tmp/uv.tar.gz" | cut -d' ' -f1)"
+    if [[ "$got" != "$want" ]]; then
+        echo "error: uv digest mismatch: got $got, want $want" >&2
+        rm -rf "$tmp"; exit 1
+    fi
+    tar -xzf "$tmp/uv.tar.gz" -C "$tmp"
+    mkdir -p "$HOME/.local/bin"
+    install -m 755 "$tmp/uv-$arch-unknown-linux-gnu/uv" "$tmp/uv-$arch-unknown-linux-gnu/uvx" "$HOME/.local/bin/"
+    rm -rf "$tmp"
+fi
 uv python install "$PY_VERSION"
 mkdir -p "$HOME/delfin" "$HOME/delfin/work"
 [[ -x "$HOME/delfin/.venv/bin/python" ]] || uv venv --python "$PY_VERSION" "$HOME/delfin/.venv"
