@@ -92,7 +92,14 @@ class TestExtraArgsSurface:
             build_xtb_cmd("mol.xyz", charge=0, extra_args="--gfn 1")
 
     def test_extra_args_cannot_override_chrg(self):
-        cmd = build_xtb_cmd("mol.xyz", charge=1, extra_args=("--chrg", "-2"))
-        values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--chrg"]
-        assert values == ["1"] or len(values) == 1, \
-            f"extra_args overrode or duplicated --chrg: {cmd}"
+        # Rewritten along its intent for the builder's fix (37235359): the
+        # old behaviour appended the duplicate "--chrg -2" verbatim (xtb
+        # takes the last value), so the test asserted the override never
+        # happened. The fix now refuses the protected flag outright; the
+        # intent — extra_args cannot override the validated charge — is
+        # measured by the refusal, which is strictly stronger.
+        with pytest.raises((ValueError, TypeError)):
+            build_xtb_cmd("mol.xyz", charge=1, extra_args=("--chrg", "-2"))
+        # And a near-miss alias must not slip past either.
+        with pytest.raises((ValueError, TypeError)):
+            build_xtb_cmd("mol.xyz", charge=1, extra_args=("--chrg=-2",))
