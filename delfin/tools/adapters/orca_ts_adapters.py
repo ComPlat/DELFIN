@@ -126,15 +126,22 @@ class OrcaTsOptAdapter(StepAdapter):
         success = _run_orca_job(inp_path, out_path, work_dir, timeout=kwargs.get("timeout"))
 
         geom_out = work_dir / f"{base_name}.xyz"
+        # A run that reports success but leaves no geometry produced no
+        # TS — SUCCESS with geometry=None would hide that (F-REV-3).
+        ok = bool(success) and geom_out.is_file()
         return self._make_result(
             self.name,
-            StepStatus.SUCCESS if success else StepStatus.FAILED,
+            StepStatus.SUCCESS if ok else StepStatus.FAILED,
             work_dir, start,
-            geometry=geom_out if (success and geom_out.is_file()) else None,
+            geometry=geom_out if ok else None,
             output_file=out_path if out_path.is_file() else None,
             data={},
             artifacts=_collect_artifacts(work_dir, base_name),
-            error=None if success else "ORCA OptTS calculation failed",
+            error=None if ok else (
+                "ORCA OptTS calculation failed"
+                if not success else
+                f"no geometry written: {geom_out.name} missing after the run"
+            ),
         )
 
 
@@ -283,6 +290,14 @@ class OrcaTsIrcAdapter(StepAdapter):
             end_xyz = work_dir / f"irc_{direction}.xyz"
             if end_xyz.is_file():
                 endpoints.append(str(end_xyz))
+        # Neither direction left an end geometry: the IRC traced no path
+        # — SUCCESS with irc_endpoints=None would hide that (F-REV-2).
+        if not endpoints:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                data={"irc_endpoints": None},
+                error="IRC produced no end geometries in either direction",
+            )
         return self._make_result(
             self.name,
             StepStatus.SUCCESS,
