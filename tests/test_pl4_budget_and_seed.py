@@ -190,3 +190,23 @@ def test_seed_path_not_in_record_or_instances():
         record = run_nightly(cfg)
         blob = json.dumps(record.to_dict())
         assert seed_path not in blob
+
+
+def test_seed_log_practice_vs_holdout():
+    """Practice runs log the public seed; holdout runs log only that the
+    seed file was present — never its value (QS s30 ruling 2)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = _config(tmp, _tasks())
+        record = run_nightly(cfg)
+        assert record.seed_log == "holdout seed file present"
+        assert "nightly-seed-123" not in record.seed_log
+
+        cfg = _config(tmp, _tasks(), seed_file=False)
+        record = run_nightly(cfg)
+        assert record.seed_log == "holdout seed file absent"
+
+        cfg = _config(tmp, _tasks(), seed_file=False)
+        cfg["mode"] = "practice"
+        cfg["public_seed"] = "public-practice-seed"
+        record = run_nightly(cfg)
+        assert record.seed_log == "public-practice-seed"

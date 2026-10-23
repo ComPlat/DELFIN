@@ -87,6 +87,9 @@ class RunRecord:
     # Holdout gate
     holdout_ran: bool = False
     holdout_refusal_reason: str = ""
+    # What may be said about the seed: practice logs the public seed,
+    # holdout only whether the seed file was present (QS ruling).
+    seed_log: str = ""
     # Flat-round bookkeeping for the stop verdict
     previous_rounds_gain: list = field(default_factory=list)
 
@@ -149,10 +152,13 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
     seed_path = config.get("holdout_seed_path")
     if mode == "practice":
         seed = config.get("public_seed", "practice")
+        record.seed_log = seed
     elif seed_path and Path(seed_path).is_file():
         seed = _read_seed(seed_path)
         record.holdout_ran = True
+        record.seed_log = "holdout seed file present"
     else:
+        record.seed_log = "holdout seed file absent"
         record.holdout_refusal_reason = (
             "holdout seed file not found at the configured setting path; "
             "refusing to grade the holdout (use mode='practice' with a "
