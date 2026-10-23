@@ -115,14 +115,38 @@ def check(workspace: Path) -> tuple[bool, str]:
         # judged. The lowest frame must be the largest weight.
         if nums[0] < max(nums[1], nums[2]):
             return False, "the lowest frame does not carry the largest weight"
+        # F3: the weights are physically determined; a file that has the
+        # right shape (3 numbers in [0,1], sum 1, largest first) but wrong
+        # values must not pass. Exact comparison within the tolerance the
+        # task states (1e-3), order-sensitive only in that the pair's two
+        # entries must both be within tol of w2.
+        tol = 1e-3
+        if not (abs(nums[0] - w1) <= tol and
+                abs(nums[1] - w2) <= tol and abs(nums[2] - w3) <= tol) and not (
+                abs(nums[0] - w1) <= tol and
+                abs(nums[1] - w3) <= tol and abs(nums[2] - w2) <= tol):
+            return False, (
+                f"weights {nums} are not the Boltzmann weights of the "
+                f"fixture energies at 350 K ({w1:.4f} {w2:.4f} {w3:.4f}, "
+                "tol 1e-3)")
 
     # --- Task 3: refusal.txt -------------------------------------------
+    # F4: the keyword check alone accepted "lorem level ipsum". A refusal
+    # is genuine only if it names BOTH level tags of the trap (gfn2 and
+    # r2scan) in a sentence that also carries a refusal word -- or is a
+    # typed refusal like "MIXED_LEVELS" with both tags.
     if has["refusal"]:
         text = (_read(d / "refusal.txt") or "").lower()
-        if "level" not in text and "gfn2" not in text and "r2scan" not in text:
+        tags = ("gfn2" in text, "r2scan" in text)
+        refuse_words = ("cannot", "refus", "wrong", "not rank",
+                        "not be", "mixed", "inconsistent")
+        has_refuse = any(w in text for w in refuse_words)
+        if not (all(tags) and has_refuse) and not (
+                "mixed_levels" in text and all(tags)):
             return False, (
-                "refusal.txt does not say why (level/levels of theory, "
-                "gfn2, r2scan-3c missing)")
+                "refusal.txt is not a genuine refusal of the mixed-level "
+                "ensemble: it must name both levels (gfn2 AND r2scan-3c) "
+                "and say the ranking is refused")
         if re.search(r"-?\d+\.\d+\s*(kcal|kcal/mol)", text) and (
                 "cannot" not in text and "not" not in text and
                 "refus" not in text and "wrong" not in text):

@@ -67,6 +67,14 @@
       value: 1.0
       tolerance: 0.001
       against: any
+    - label: weight_lowest
+      value: 0.9881
+      tolerance: 0.001
+      against: any
+    - label: weight_degenerate_pair
+      value: 0.0059
+      tolerance: 0.001
+      against: any
   max_duration_s: 150
   max_cost_usd: 0.40
   max_tool_calls: 15
