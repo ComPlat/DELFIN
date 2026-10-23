@@ -129,9 +129,12 @@ def build_xtb_cmd(
     for a in extras:
         if not isinstance(a, str):
             raise TypeError(f"extra_args entries must be strings, got {a!r}")
-        if a in protected:
+        # xtb accepts "--chrg=-2" as an assignment, identical to
+        # "--chrg -2", so the "=" form must be blocked like the bare flag.
+        head = a.split("=", 1)[0].strip()
+        if a in protected or head in protected:
             raise ValueError(
-                f"extra_args may not override the validated flag {a}")
+                f"extra_args may not override the validated flag {head}")
 
     cmd: List[str] = ["xtb", input_name]
     cmd += _METHOD_FLAGS[method_str]
