@@ -3740,6 +3740,35 @@ _TIER3_PREFIX = ("/recalc ", "/cancel ")
 _TIER3_SAFE_PREFIX = ("/recalc check",)  # these stay tier 0 (read-only)
 
 
+def _orca_builder_verdict(refs):
+    """calc_policy's verdict for the ORCA Builder's current input, or None.
+
+    Reads what the builder's submit button sends: the input preview, PAL,
+    MaxCore and the Slurm time. None when the builder or its preview is
+    not there, which keeps the dialog.
+    """
+    try:
+        text = str(refs["orca_preview"].value or "")
+    except Exception:
+        return None
+    if not text.strip():
+        return None
+    try:
+        from pathlib import Path as _P
+        from delfin.agent import calc_policy as _cp
+
+        def _v(key, default):
+            w = refs.get(key)
+            return getattr(w, "value", default) if w is not None else default
+        return _cp.judge_orca_job(
+            text, int(_v("orca_pal", 1) or 1), int(_v("orca_maxcore", 1000)
+                                                    or 1000),
+            str(_v("orca_slurm_time", "") or ""), base_dir=_P.cwd(),
+            name="the ORCA Builder input")
+    except Exception:
+        return None
+
+
 def _command_tier(cmd: str) -> int:
     """Classify a slash command: 0=read, 1=navigate, 2=configure, 3=mutate."""
     cl = cmd.lower().strip()
@@ -17197,8 +17226,27 @@ def create_tab(ctx):
                 def _do_orca_submit():
                     btn.click()
                     _append_system_message("ORCA job submitted. Check Job Status tab.")
+                # The same check as the agent's other routes (calc_policy):
+                # a checked input within the host's or partition's limits
+                # goes without the dialog; otherwise the dialog says why.
+                _verdict = _orca_builder_verdict(ctx.orca_builder_refs)
+                if _verdict is not None and _verdict.admit:
+                    try:
+                        from delfin.agent import security_events as _se
+                        _se.record("calculation_admitted", "/orca submit",
+                                   _verdict.summary[:200], blocked=False)
+                    except Exception:
+                        pass
+                    _append_system_message(
+                        f"🧪 Started without asking (setup and resources "
+                        f"checked): {_verdict.summary}")
+                    _do_orca_submit()
+                    return True
+                _ask = "Submit ORCA job?"
+                if _verdict is not None and _verdict.reason:
+                    _ask += f" Not started unasked: {_verdict.reason}"
                 _confirm_or_exec(
-                    "orca_submit", "Submit ORCA job?", _do_orca_submit,
+                    "orca_submit", _ask, _do_orca_submit,
                     cmd_for_zone="/orca submit",
                 )
             else:
