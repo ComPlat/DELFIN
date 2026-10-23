@@ -8307,6 +8307,7 @@ def create_tab(ctx):
         _calc_show_xyz_batch_panel(False)
         _calc_show_print_mode_panel(False)
         _calc_show_mo_plot_panel(False)
+        _calc_show_spin_density_panel(False)
         _calc_hide_chunk_controls()
         _calc_pdf_close()
         _calc_ketcher_close()
@@ -9698,6 +9699,7 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
         if change['new'] != 'MO Plot':
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
         if change['new'] != 'Calc NMR':
             _calc_show_nmr_panel(False)
         if change['new'] != 'Calc CENSO/ANMR':
@@ -9849,6 +9851,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             _calc_render_traj_plot()
             calc_content_area.layout.display = 'block'
             _calc_reset_options_dropdown()
@@ -9863,6 +9866,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             calc_content_area.layout.display = 'block'
             _calc_run_print_nmr()
             _calc_reset_options_dropdown()
@@ -9877,6 +9881,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             _calc_show_spin_density_panel(True)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'Calc NMR':
@@ -9890,6 +9895,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             _calc_show_nmr_panel(True)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'Calc CENSO/ANMR':
@@ -9903,6 +9909,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             _calc_show_censo_nmr_panel(True)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'RMSD':
@@ -12850,6 +12857,7 @@ def create_tab(ctx):
         _calc_show_xyz_batch_panel(False)
         _calc_show_print_mode_panel(False)
         _calc_show_mo_plot_panel(False)
+        _calc_show_spin_density_panel(False)
 
         # Reset xyz trajectory controls
         state['xyz_frames'].clear()
@@ -15327,6 +15335,7 @@ def create_tab(ctx):
         calc_xyz_batch_panel,
         calc_print_mode_panel,
         calc_mo_plot_panel,
+        calc_spin_density_panel,
         calc_delete_confirm,
         calc_delete_status,
         calc_mol_container,
