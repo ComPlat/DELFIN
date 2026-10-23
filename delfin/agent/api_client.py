@@ -16637,6 +16637,49 @@ def _syntax_regression_note(path: Path, before: str, after: str) -> str:
             "it parsed before this edit.")
 
 
+def _diagnostics_note(path: Path, workspace, old_text: "Optional[str]") -> str:
+    """LSP1: language diagnostics for the file AS IT NOW STANDS, minus
+    the findings its PRE-EDIT text already had. Appended to a successful
+    edit/write result the way _syntax_regression_note is — reported,
+    never refused. Computed from ``old_text`` already in hand at the
+    call site (the write path journals it right after via
+    _capture_change); the undo journal is NOT read back.
+
+    No try/except here on purpose: check_detailed is contractually
+    never-raises, and a broad catch would only hide a wiring bug
+    (wave-17 lesson 5). A missing tool surfaces as the one-line
+    "diagnostics unavailable" note ONCE per session (the flag lives in
+    diagnostics.py), then the block stays silent."""
+    result = _diag_check_detailed(path, workspace, old_text)
+    lines = []
+    for d in result.diagnostics:
+        sev = d.severity
+        if d.line > 0:
+            loc = f"{d.line}:{d.column}" if d.column else str(d.line)
+        else:
+            # A tool without location info (degenerate shapes, s15 note):
+            # no invented "0:" prefix.
+            loc = "-"
+        lines.append(f"  {loc} {d.code} [{sev}] {d.message}")
+    if not lines:
+        if result.note:
+            # The once-per-session "diagnostics unavailable: <why>" line:
+            # without this the first edit would consume the note and
+            # nobody would ever see it (operator ruling v2, 2026-10-18).
+            return f"\n\nDiagnostics after this edit: {result.note}"
+        return ""
+    body = "\n".join(lines)
+    return f"\n\nDiagnostics after this edit:\n{body}"
+
+
+def _diag_check_detailed(path: Path, workspace, old_text: "Optional[str]"):
+    """Import + call check_detailed once, so the wiring has exactly one
+    place that names diagnostics.py. ImportError here is a wiring bug a
+    test must see, not something to swallow."""
+    from . import diagnostics as _diag
+    return _diag.check_detailed(path, workspace, old_text=old_text)
+
+
 def _language_hint_for_write(path: Path, text: str,
                              inserted: Optional[list] = None) -> str:
     """Advisory note for a successful write/edit whose new code carries
@@ -23343,7 +23386,8 @@ class _DocToolExecutor:
         lang_hint = _language_hint_for_write(resolved, content)
         shape_note = ("\n\nNOTE: " + " ".join(write_notes)) if write_notes else ""
         return (f"File {action}: {disp}\n\n{diff}"
-                f"{test_hint}{lang_hint}{shape_note}")
+                f"{test_hint}{lang_hint}{shape_note}"
+                f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text if existed else None)}")
 
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -23426,6 +23470,7 @@ class _DocToolExecutor:
                         f"{fm.strategy}{indent_note} — old_string did not "
                         f"match exactly; whitespace-tolerant fallback found "
                         f"a unique match):\n\n{diff}{lang_hint}"
+                        f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
                         f"{_syntax_regression_note(resolved, old_text, new_text)}"
                     )
         if count == 0 or (count > 1 and not replace_all):
@@ -23470,6 +23515,7 @@ class _DocToolExecutor:
         return (
             f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n"
             f"{diff}{test_hint}{lang_hint}"
+            f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
             f"{_syntax_regression_note(resolved, old_text, new_text)}"
         )
 
@@ -23584,6 +23630,7 @@ class _DocToolExecutor:
             f"Multi-edited {disp} "
             f"({len(edits)} edit(s), {total} replacement(s) total"
             f"{fuzzy_note}):\n\n{diff}{test_hint}{lang_hint}"
+            f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
             f"{_syntax_regression_note(resolved, old_text, text)}"
         )
 
