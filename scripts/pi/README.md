@@ -11,8 +11,15 @@ ai-screening ai-complex csp`, the Claude Code and Codex CLIs (agent
 
 Not included: `ai-retro` (aizynthfinder pins `rdkit<2023`, which conflicts with
 DELFIN's `rdkit>=2023.3` on every platform). PyMOL has no aarch64 distribution
-on PyPI and is built from source; if that build fails only the PyMOL images in
-DOCX/ESP reports are missing.
+on PyPI and is built from source (`--no-deps`, it runs on DELFIN's numpy<2);
+if that build fails only the PyMOL images in DOCX/ESP reports are missing.
+torch is installed as the CPU build (`--torch-backend cpu`).
+
+Known limits, not Pi-specific: `schnetpack` does not import with torch 2.13
+(`T_co` was removed from torch), `architector` needs `xtb` (QM, out of scope).
+`uv pip check` reports pymol's numpy>=2 metadata and the `pymol` vs
+`pymol-open-source` name; both are expected. First boot takes ~10 min on a
+Pi 5 with a fast connection.
 
 ## Files
 
@@ -70,7 +77,8 @@ scripts/pi/deploy_pi.sh --rollback delfin@delfin-pi.local
 scripts/pi/deploy_pi.sh --status delfin@delfin-pi.local
 ```
 
-Only files git tracks or would track are deployed, so `.gitignore`d secrets,
+Under Git Bash, `*.local` names are resolved through Windows (Git's ssh has no
+mDNS). Only files git tracks or would track are deployed, so `.gitignore`d secrets,
 venvs and caches stay on your PC. Files are sent with LF line endings even
 from a `core.autocrlf=true` checkout.
 
