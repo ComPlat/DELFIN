@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from delfin.tools import run_step
+import delfin.tools.adapters.orca_ts_adapters  # noqa: F401  (registers the adapters)
 
 
 # ---------------------------------------------------------------------------
@@ -35,13 +36,13 @@ def hcn_xyz(tmp_path):
 
 
 def _write_orca_outputs(work_dir: Path, base: str, *, energy=None, imag_freqs=()):
-    """Write a fake ORCA output the way a real Freq job does."""
+    """Write a fake ORCA output in the format a real Freq job prints."""
     out = work_dir / f"{base}.out"
     lines = ["ORCA fake output"]
     if energy is not None:
         lines.append(f"FINAL SINGLE POINT ENERGY        {energy:.8f}")
-    for f in imag_freqs:
-        lines.append(f"     0:        -{f:.2f}    I    I    I")
+    for i, f in enumerate(imag_freqs):
+        lines.append(f"{i}:       -{f:.2f} cm**-1 ***imaginary mode***")
     out.write_text("\n".join(lines) + "\n")
     return out
 
@@ -122,7 +123,9 @@ def test_orca_ts_freq_verification_accepts_exactly_one_imaginary(hcn_xyz, tmp_pa
     )
     assert result.status.name == "SUCCESS", result.error
     assert result.data["n_imag"] == 1
-    assert result.data["imag_mode"] == pytest.approx(2100.0, abs=0.5)
+    # ORCA prints imaginary modes negative (the .hess convention,
+    # delfin/imag.py:136) — the adapter reports it as printed.
+    assert result.data["imag_mode"] == pytest.approx(-2100.0, abs=0.5)
 
 
 def test_orca_ts_freq_verification_rejects_zero_and_two_imaginary(hcn_xyz, tmp_path, monkeypatch):
@@ -162,16 +165,14 @@ def test_orca_ts_irc_runs_both_directions(hcn_xyz, tmp_path, monkeypatch):
         inp_path = Path(inp)
         run_calls.append(inp_path.read_text())
         wd = Path(working_dir)
-        text = inp_path.read_text()
-        # the direction the IRC was asked for, echoed by the adapter
-        direction = "forward" if "IrcForward" in text else "backward" if "IrcBackward" in text else None
-        for suffix in ("", "_f", "_b"):
-            pass
         # write the end geometry the run would produce
         end = wd / f"{inp_path.stem}.xyz"
         end.write_text(HCN_XYZ)
         _write_orca_outputs(wd, inp_path.stem, energy=-92.5)
         return True
+
+    # the TS orbitals the IRC continues from (real file, real path)
+    (tmp_path / "ts.gbw").write_bytes(b"fake-gbw")
 
     monkeypatch.setattr("delfin.orca.run_orca", fake_run_orca)
     result = run_step(
@@ -192,14 +193,15 @@ def test_orca_ts_irc_runs_both_directions(hcn_xyz, tmp_path, monkeypatch):
 
 def test_orca_ts_irc_requires_ts_gbw(hcn_xyz, tmp_path, monkeypatch):
     """IRC continues from the TS orbitals; without the gbw it must fail
-    loudly, not silently restart from scratch (the MOREAD hole)."""
+    loudly at pre-flight, not silently restart from scratch (the MOREAD
+    hole)."""
     monkeypatch.setattr("delfin.orca.run_orca", lambda *a, **k: True)
-    result = run_step(
-        "orca_ts_irc",
-        geometry=hcn_xyz,
-        charge=0,
-        method="B3LYP",
-        basis="def2-SVP",
-        work_dir=tmp_path / "irc2",
-    )
-    assert result.status.name == "FAILED", result.error
+    with pytest.raises(ValueError, match="moread is required"):
+        run_step(
+            "orca_ts_irc",
+            geometry=hcn_xyz,
+            charge=0,
+            method="B3LYP",
+            basis="def2-SVP",
+            work_dir=tmp_path / "irc2",
+        )
