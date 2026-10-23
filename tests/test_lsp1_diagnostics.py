@@ -281,22 +281,21 @@ def test_banner_before_json_still_parses(tmp_path, monkeypatch):
     assert [d.code for d in found] == ["F821"]
 
 
-def test_old_findings_write_failure_degrades_to_full_report(
+def test_old_findings_failure_degrades_to_full_report(
         tmp_path, fake_ruff, monkeypatch):
-    # If the throwaway pre-image copy cannot be written (read-only dir,
-    # unencodable text), the check degrades to "nothing pre-existing"
-    # instead of crashing: findings for the CURRENT text are reported.
+    # If the pre-image pass fails (ruff refuses stdin, times out), the check
+    # degrades to "nothing pre-existing" instead of crashing: findings for
+    # the CURRENT text are reported.
     p = _make_file(tmp_path, "def go():\n    alpha()\n    beta()\n")
-    real_write = __import__("pathlib").Path.write_text
+    real_run = diag._run
 
-    def broken(self, *a, **k):
-        if self.name.endswith(".lsp1-old.py"):
-            raise OSError("read-only directory")
-        return real_write(self, *a, **k)
+    def broken(cmd, cwd, stdin_text=None):
+        if stdin_text is not None:
+            return None, "diagnostics unavailable: ruff timed out after 5s"
+        return real_run(cmd, cwd)
 
-    monkeypatch.setattr(
-        __import__("pathlib").Path, "write_text", broken)
+    monkeypatch.setattr(diag, "_run", broken)
     found = diag.check(p, tmp_path, old_text="def go():\n    alpha()\n")
-    # The pre-image pass failed, so beta's NEW finding still surfaces
-    # (alpha's is filtered only if the pre-image could be checked).
-    assert any(d.code == "F821" for d in found)
+    # The pre-image pass failed, so alpha's finding is reported with beta's.
+    assert sorted(d.message for d in found) == [
+        "Undefined name `alpha`", "Undefined name `beta`"]

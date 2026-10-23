@@ -98,13 +98,14 @@ def test_working_state_carries_last_finished_step(journal_dir):
 
     from delfin.agent import working_state
     block = working_state.build_working_state_block([], session_id="s1")
-    assert block, "a finished step must produce a non-empty block"
+    assert block, "a finished side effect must produce a non-empty block"
+    # The last finished step that changed something is the one compaction
+    # keeps; a read after it is not a step anyone could repeat by mistake.
     step_line = [l for l in block.splitlines()
-                 if "step" in l and "read_file" in l]
+                 if "step" in l and "bash" in l]
     assert step_line, f"no step line in block:\n{block}"
-    assert "5" in step_line[0]
-    assert "read_file" in step_line[0]
-    assert "must not be repeated" in step_line[0]
+    assert "step 1" in step_line[0]
+    assert "read_file" not in block
 
 
 def test_working_state_without_journal_has_no_step_section(journal_dir):
