@@ -19,7 +19,7 @@ set -euo pipefail
 #   6. sudo asks for the login user's password, once that user has one
 #
 # Over SSH the firewall is armed with a 120 s rollback; confirm from a NEW
-# SSH session with:  sudo bash pi_harden_host.sh --confirm
+# SSH session with:  bash pi_harden_host.sh --confirm   (no sudo needed)
 #
 # Environment: LOGIN_USER (pi), AGENT_USER (delfin),
 #   SSH_V6="2001:db8::/32 ..." extra IPv6 prefixes allowed to reach SSH.
@@ -29,14 +29,17 @@ LOGIN_USER="${LOGIN_USER:-pi}"
 AGENT_USER="${AGENT_USER:-delfin}"
 SSH_V6="${SSH_V6:-}"
 ROLLBACK_UNIT=delfin-fw-rollback
-
-[[ $EUID -eq 0 ]] || { echo "error: run with sudo" >&2; exit 1; }
+# Confirming needs no root (sudo may already ask for a password by then):
+# the marker can only keep the firewall, never remove it.
+KEEP_MARKER=/tmp/delfin-firewall-keep
 
 if [[ "${1:-}" == "--confirm" ]]; then
-    systemctl stop "$ROLLBACK_UNIT.timer" 2>/dev/null && echo "firewall rollback cancelled" \
-        || echo "no rollback pending"
+    touch "$KEEP_MARKER"
+    echo "firewall kept (the pending rollback will leave it in place)"
     exit 0
 fi
+
+[[ $EUID -eq 0 ]] || { echo "error: run with sudo" >&2; exit 1; }
 
 echo "==> [1/6] unused network services"
 for unit in rpcbind.socket rpcbind.service nfs-blkmap.service; do
@@ -97,9 +100,11 @@ EOF
 nft -c -f "$rules"
 if [[ -n "${SSH_CONNECTION:-}" ]]; then
     systemctl stop "$ROLLBACK_UNIT.timer" 2>/dev/null || true
-    systemd-run --unit "$ROLLBACK_UNIT" --on-active=120 /usr/sbin/nft flush ruleset >/dev/null
+    rm -f "$KEEP_MARKER"
+    systemd-run --unit "$ROLLBACK_UNIT" --on-active=120 /bin/sh -c \
+        "test -e $KEEP_MARKER || /usr/sbin/nft flush ruleset" >/dev/null
     echo "    rollback armed: the firewall is removed again in 120 s unless you run"
-    echo "    'sudo bash $0 --confirm' from a NEW SSH session"
+    echo "    'bash $0 --confirm' from a NEW SSH session (no sudo needed)"
 fi
 nft -f "$rules"
 install -m 755 "$rules" /etc/nftables.conf
