@@ -99,3 +99,32 @@ def test_a_charged_open_shell_instance_carries_charge_and_multiplicity():
 @pytest.mark.parametrize("n", [0, 1, 30])
 def test_sample_handles_any_n(n):
     assert len(bh.sample(TEST_SEED, n)) == n
+
+
+# ── reviewer findings F1/F2 (nacht-s15, phase-1 review of 3fb331c5) ──
+
+def test_screening_is_never_asked_about_the_gas_phase():
+    """A solvation free-energy difference is undefined without a
+    medium: the screening family must not offer the gas phase, and
+    sample() must draw solvents from the FAMILY's list."""
+    scr = next(f for f in bh.FAMILIES if f.id == "screening")
+    assert "gas phase" not in scr.solvents
+    for inst in bh.sample(TEST_SEED, 70):
+        if inst.family_id == "screening":
+            assert inst.solvent != "gas phase", inst.instance_id
+
+
+def test_declared_traps_must_be_presentable_from_the_pool():
+    """A grading level that no pool molecule can present grades
+    nothing: every family carrying 'trap' must be reachable with a
+    molecule whose electron count makes the trap real."""
+    for fam in bh.FAMILIES:
+        if "trap" not in fam.grading_levels:
+            continue
+        presentable = [
+            m for m in fam.molecules
+            if bh._electron_count_is_consistent(m) is False
+            or bh.trap_note(fam.id, m)
+        ]
+        assert presentable, f"{fam.id} declares a trap nobody can hit"
+

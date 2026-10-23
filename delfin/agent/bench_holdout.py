@@ -98,6 +98,12 @@ def real_seed() -> int:
 # ── the molecule pool ─────────────────────────────────────────────────
 # Every entry <= 20 atoms. Charges/multiplicities are electron-counted
 # by hand; the red tests pin coverage of both shells and both charges.
+# nitrite_radical is the deliberate trap carrier for F2 (reviewer
+# nacht-s15): 23 electrons (odd) DECLARED with multiplicity 1 — the
+# multiplicity the task requests, not the physical truth. A closed-shell
+# request over an odd-electron radical is impossible; the agent must
+# notice and report the mismatch instead of running it.
+_POOL_NR = Molecule("nitrite_radical", "NO2", 0, 1, smiles="O=[N][O]")
 _POOL_M = Molecule("methanol", "CH4O", 0, 1, smiles="CO")
 _POOL_C = Molecule("cyclopropane", "C3H6", 0, 1, smiles="C1CC1")
 _POOL_N = Molecule("nitrite_anion", "NO2", -1, 1, smiles="[O-][N]=O")
@@ -106,10 +112,12 @@ _POOL_F = Molecule("formaldehyde_cation", "CH2O", +1, 2, smiles="[CH2+]O")
 _POOL_S = Molecule("phosphine", "H3P", 0, 1, smiles="P")
 _POOL_CL = Molecule("chlorine", "Cl2", 0, 1, smiles="ClCl")
 _POOL_NO = Molecule("nitric_oxide", "NO", 0, 2, smiles="[N]=O")
+_POOL_NR = Molecule("nitrite_radical", "NO2", 0, 1, smiles="O=[N][O]")
 
 _POOL: tuple[Molecule, ...] = (
     _POOL_M, _POOL_C, _POOL_N, _POOL_O,
     _POOL_F, _POOL_S, _POOL_CL, _POOL_NO,
+    _POOL_NR,
 )
 
 # Electron-count sanity for the pool: charge and multiplicity must be
@@ -127,12 +135,11 @@ def _electrons(mol: Molecule) -> int:
 
 
 def _electron_count_is_consistent(mol: Molecule) -> bool:
-    # A shell with multiplicity 2k+1 needs an odd electron count of at
-    # least 2k+1; a closed shell (mult 1) needs an even count.
+    # multiplicity m = unpaired + 1, so n - (m - 1) must be even and
+    # non-negative; a closed shell (m = 1) needs an even count.
     n = _electrons(mol)
-    if mol.multiplicity == 1:
-        return n % 2 == 0
-    return n >= mol.multiplicity and (n - mol.multiplicity) % 2 == 0
+    unpaired = mol.multiplicity - 1
+    return unpaired >= 0 and (n - unpaired) % 2 == 0
 
 
 # ── the seven workflow families ──────────────────────────────────────
@@ -185,9 +192,13 @@ def _build_families() -> tuple[Family, ...]:
     open_shell = [m for m in _POOL if m.multiplicity > 1]
     charged = [m for m in _POOL if m.charge != 0]
     any_of = list(_POOL)
+    # F1 (nacht-s15): a solvation free-energy difference is undefined
+    # without a medium — the screening family never offers the gas phase.
+    solvated = ("water", "acetonitrile")
 
-    def fam(fid, mols, props, levels, desc):
-        return Family(fid, tuple(mols), tuple(props), _SOLVENTS, levels, desc)
+    def fam(fid, mols, props, levels, desc, solvents=_SOLVENTS):
+        return Family(fid, tuple(mols), tuple(props), tuple(solvents),
+                      levels, desc)
 
     return (
         fam("classic_opt_freq", any_of,
@@ -217,7 +228,7 @@ def _build_families() -> tuple[Family, ...]:
         fam("screening", charged + any_of,
             ("solvation free-energy difference",),
             ("consistency", "reproduction", "reference"),
-            "Solvent screening across a couple."),
+            "Solvent screening across a couple.", solvents=solvated),
     )
 
 
@@ -231,7 +242,25 @@ _TRAP_BY_FAMILY = {
     "spin_states": "spin contamination",
     "screening": "anion without diffuse functions",
     "redox": "odd electron count with wrong multiplicity",
+    "classic_opt_freq": "start geometry relaxes to a saddle point",
+    "excited_states": "bright line lies outside the visible",
+    "conformer_prestep": "lowest conformer is not the one sought",
 }
+
+
+def trap_note(family_id: str, mol: Molecule) -> str:
+    """The trap an instance of ``family_id`` presents with ``mol`` — the
+    reason the 'trap' grading level has something to grade. Empty string
+    when this molecule cannot present the family's trap."""
+    if family_id == "redox":
+        # F2 (nacht-s15): the trap is presentable when the electron
+        # count contradicts a naive multiplicity request — the agent
+        # must catch the mismatch before running anything.
+        if not _electron_count_is_consistent(mol):
+            return "odd electron count with wrong multiplicity"
+        return ""
+    return _TRAP_BY_FAMILY.get(family_id, "")
+
 
 
 def sample(seed: int, n: int) -> list[Instance]:
@@ -246,7 +275,7 @@ def sample(seed: int, n: int) -> list[Instance]:
     for i in range(n):
         fam = FAMILIES[i % len(FAMILIES)]
         mol = rng.choice(list(fam.molecules))
-        solvent = rng.choice(list(_SOLVENTS))
+        solvent = rng.choice(list(fam.solvents))
         prop = rng.choice(list(fam.properties))
         levels = fam.grading_levels
         if mol.charge != 0 or mol.multiplicity > 1:
