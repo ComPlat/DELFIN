@@ -158,9 +158,12 @@ def _mol3d_js() -> str:
 
 def test_the_wheel_over_a_molecule_scrolls_the_chat():
     """3Dmol takes every wheel event over its canvas for zoom and cancels
-    it. Measured in the real page at 1920x1080: a 25-frame trajectory card
-    fills the chat, and forty wheel steps down from inside it moved the
-    chat by 0 px -- the reader could not get past the molecule. A wheel
+    it. Measured in the real page at 1920x1080 once the chat kept its cards
+    (9d8f5cca): a 25-frame trajectory card fills the chat, and forty wheel
+    steps down from inside it left the reader ~1000 px short of the end.
+    Before that, every update rebuilt the card, so the canvas under the
+    pointer was missing part of the time and the wheel fell through to the
+    chat at random. A wheel
     over a molecule in the chat now scrolls the chat; it zooms with Ctrl
     (a trackpad pinch arrives as one) or after the molecule was clicked,
     until the pointer leaves it."""

@@ -8333,9 +8333,13 @@ def create_tab(ctx):
 
         // The wheel over a molecule in the chat scrolls the chat. 3Dmol
         // takes every wheel event over its canvas for zoom and cancels it,
-        // so a card as tall as the chat stopped the reader dead: measured,
-        // forty wheel steps from inside a trajectory card moved the chat
-        // by 0 px. Stopped here, in the capture phase at the document,
+        // so a card as tall as the chat stopped the reader dead: measured
+        // once the chat stopped rebuilding its cards, forty wheel steps
+        // down from inside a trajectory card left the reader ~1000 px short
+        // of the end. (While every update rebuilt the cards, the canvas
+        // under the pointer was missing part of the time and wheel steps
+        // fell through to the chat at random.) Stopped here, in the
+        // capture phase at the document,
         // the event never reaches 3Dmol and nothing cancels it, so the
         // browser scrolls. It zooms with Ctrl (a trackpad pinch arrives as
         // a wheel with ctrlKey) or once the molecule has been clicked,
