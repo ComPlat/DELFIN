@@ -218,3 +218,64 @@ def account(job_ids, *, run_fn=None, client=None) -> Optional[dict]:
     return {"jobs": jobs,
             "total": {"core_hours_used": round(used_total, 3),
                       "core_hours_wasted": round(wasted_total, 3)}}
+
+
+# --------------------------------------------------------------------------
+# Resource advice (phase 2)
+# --------------------------------------------------------------------------
+
+#: Workflow steps DELFIN's CONTROL/templates speak about. The advice is
+#: sized once through DELFIN's own logic regardless of step; the step
+#: name is checked against this vocabulary so an unknown workflow is
+#: flagged instead of silently sized.
+KNOWN_STEPS = ("opt", "gopt", "sp", "freq", "ts", "tddft", "scan",
+               "saddle", "relaxed_scan", "ir", "uvvis", "nmr")
+
+
+def _auto_configure(config):
+    """DELFIN's own PAL/maxcore sizing (delfin.cluster_utils)."""
+    from delfin.cluster_utils import auto_configure_resources
+    return auto_configure_resources(config)
+
+
+def _configured_partitions(explicit=None, *, profile=None):
+    """DELFIN's own partition candidates (delfin.slurm_submit)."""
+    from delfin.slurm_submit import configured_partitions
+    return configured_partitions(explicit, profile=profile)
+
+
+def advise(step: str, system_size: int, *,
+           explicit_partitions=None) -> dict:
+    """A resource suggestion for a workflow step, from DELFIN's logic only.
+
+    PAL/maxcore come from :func:`delfin.cluster_utils.auto_configure_resources`
+    — the exact code DELFIN itself uses, never a re-implementation; it
+    detects the machine it runs on (or the current SLURM job's
+    allocation) itself.
+    Partitions come from :func:`delfin.slurm_submit.configured_partitions`;
+    the rule DELFIN follows is earliest start over all matching
+    partitions (sbatch takes a comma-separated list and SLURM starts in
+    whichever fits first), and PAL/maxcore/time are NEVER changed just
+    to start earlier.
+    """
+    config = _auto_configure({})
+    suggestion: dict = {
+        "step": step,
+        "system_size_atoms": int(system_size),
+        "PAL": config.get("PAL"),
+        "maxcore_mb": config.get("maxcore"),
+        "partitions": None,
+        "partition_rule": (
+            "earliest start: pass every matching partition as one "
+            "--partition list; PAL/maxcore/time are never changed just "
+            "to start earlier"),
+        "notes": [],
+    }
+    candidates = _configured_partitions(explicit_partitions)
+    if candidates:
+        suggestion["partitions"] = ",".join(candidates)
+    if step not in KNOWN_STEPS:
+        suggestion["notes"].append(
+            f"unknown step '{step}': not part of DELFIN's known workflow "
+            f"vocabulary ({', '.join(KNOWN_STEPS)}); size with care")
+    return suggestion
