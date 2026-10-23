@@ -106,8 +106,16 @@ def test_a_smiles_is_counted_like_a_geometry(tmp_path, cluster):
 
 # -- the shell and sbatch ------------------------------------------------------
 
+def _workstation(monkeypatch, cpus=8, memory_mb=32000):
+    # The host's cores and memory are pinned: the template's maxcore of
+    # 4500 MB at PAL 2 is 9000 MB, more than half of a 16 GB machine.
+    monkeypatch.setattr(C, "host_kind", lambda env=None: "workstation")
+    monkeypatch.setattr(C, "_available_cpus", lambda: cpus)
+    monkeypatch.setattr(C, "_memory_mb", lambda: memory_mb)
+
+
 def test_a_local_run_keeps_to_the_host(tmp_path, monkeypatch):
-    monkeypatch.setattr(C, "_available_cpus", lambda: 8)
+    _workstation(monkeypatch)
     _folder(tmp_path, pal=48)
     v = C.judge_command(["delfin"], tmp_path, lambda s: False,
                         tool_wall_s=600, kind="workstation")
@@ -116,6 +124,15 @@ def test_a_local_run_keeps_to_the_host(tmp_path, monkeypatch):
     v = C.judge_command(["delfin"], tmp_path, lambda s: False,
                         tool_wall_s=600, kind="workstation")
     assert v.admit, v.reason
+
+
+def test_a_local_run_keeps_to_half_the_memory(tmp_path, monkeypatch):
+    _workstation(monkeypatch, memory_mb=16000)
+    _folder(tmp_path, pal=2)
+    v = C.judge_command(["delfin"], tmp_path, lambda s: False,
+                        tool_wall_s=600, kind="workstation")
+    assert not v.admit and v.reason.startswith(
+        "delfin (CONTROL.txt) asks for 9000 MB"), v.reason
 
 
 def test_only_a_run_is_a_calculation(tmp_path):
@@ -174,8 +191,7 @@ def test_the_shell_gate_starts_a_checked_run(tmp_path, monkeypatch):
     command, asked every time; checked, it starts, and other forms keep
     their own decision."""
     from delfin.agent import api_client as A
-    monkeypatch.setattr(C, "host_kind", lambda env=None: "workstation")
-    monkeypatch.setattr(C, "_available_cpus", lambda: 8)
+    _workstation(monkeypatch)
     _folder(tmp_path, pal=2)
 
     def gate(cmd):
