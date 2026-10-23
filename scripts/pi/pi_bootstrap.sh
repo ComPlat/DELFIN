@@ -82,6 +82,27 @@ if [[ -f "$SUDOERS.tmp" ]]; then
 fi
 AGENT_HOME="$(getent passwd "$AGENT_USER" | cut -d: -f6)"
 
+# The administrator's floor (managed_policy), root-owned so neither the agent
+# nor its user can loosen it: shell commands only ever in the cage (bwrap),
+# and no session on a CLI backend, whose own shell runs outside the cage
+# with the agent user's files. CLI_BACKENDS=allowed leaves those to the user.
+install -d -m 755 /etc/delfin
+if [[ "${CLI_BACKENDS:-refused}" == "allowed" ]]; then
+    backends='[]'
+else
+    backends='["cli", "codex_cli"]'
+fi
+cat > /etc/delfin/managed_policy.json.tmp <<EOF
+{
+  "comment": "DELFIN agent box (pi_bootstrap.sh): isolation required; no CLI backend (its shell runs outside the cage).",
+  "require_isolation": true,
+  "container_backend": "bwrap",
+  "disallowed_backends": $backends
+}
+EOF
+chmod 644 /etc/delfin/managed_policy.json.tmp
+mv /etc/delfin/managed_policy.json.tmp /etc/delfin/managed_policy.json
+
 echo "==> [3/5] ssh keys"
 install -d -m 700 -o "$AGENT_USER" -g "$AGENT_USER" "$AGENT_HOME/.ssh"
 if [[ -n "$LOGIN_USER" ]]; then
@@ -153,6 +174,9 @@ if [[ ! -f "$ENV_FILE" ]]; then
 # Landlock); off would run it with the account's full rights.
 export DELFIN_AGENT_SANDBOX=auto
 export DELFIN_AGENT_SANDBOX_TIMEOUT=600
+# DELFIN's own MCP servers (delfin-tools, delfin-ops) run in bwrap, seeing
+# only the folders they work in -- not ~/.ssh, not the credentials.
+export DELFIN_MCP_ISOLATION=builtin
 EOF
 fi
 mkdir -p "$HOME/.local/bin"

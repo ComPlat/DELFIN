@@ -122,6 +122,25 @@ set_up_extras() {
         sed -i 's/^export DELFIN_AGENT_SANDBOX=off$/export DELFIN_AGENT_SANDBOX=auto/' "$ROOT/agent.env"
         echo "==> agent.env: DELFIN_AGENT_SANDBOX off -> auto"
     fi
+    if [[ -f "$ROOT/agent.env" ]] && ! grep -q '^export DELFIN_MCP_ISOLATION=' "$ROOT/agent.env"; then
+        printf '%s\n' "# DELFIN's own MCP servers run in bwrap, seeing only their folders." \
+            "export DELFIN_MCP_ISOLATION=builtin" >> "$ROOT/agent.env"
+        echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
+    fi
+    # Sessions start on the KIT toolbox (DELFIN's own, caged tool loop) unless
+    # a provider was chosen: the CLI default would be refused by the policy.
+    "$VENV_PY" - <<'EOF' || echo "warning: could not set the default provider" >&2
+import json
+from delfin.user_settings import get_settings_path, load_settings, save_settings
+path = get_settings_path()
+raw = json.loads(path.read_text()) if path.exists() else {}
+if not str((raw.get("agent") or {}).get("provider") or "").strip():
+    settings = load_settings()
+    settings.setdefault("agent", {}).update(
+        {"provider": "kit", "model": "kit.deepseek-v4-flash"})
+    save_settings(settings)
+    print("==> default provider: kit (kit.deepseek-v4-flash)")
+EOF
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
 }

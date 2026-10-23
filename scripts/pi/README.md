@@ -50,9 +50,19 @@ Free inside the frame, and nothing widens the frame but a person:
   full rights; `pi_install.sh` changes an old `off`).
 - A request of the agent for more rights (an auto-allow rule, a folder, a
   mode) is flagged as such, asked twice, and never right after a refusal.
-- Push access: with a deploy key the agent can push any branch. Protect
-  `main` in the repository settings (pull requests only), so what the agent
-  pushes reaches `main` through review.
+- `/etc/delfin/managed_policy.json` (root, written by `pi_bootstrap.sh`):
+  isolation required (bwrap), and no session on a CLI backend (`claude`,
+  `codex`), whose own shell runs outside the cage with the agent user's
+  files. Sessions start on the KIT toolbox (`pi_install.sh` sets it when no
+  provider is chosen). `CLI_BACKENDS=allowed` at bootstrap lifts the backend
+  rule; the user cannot.
+- DELFIN's own MCP servers run in bwrap (`DELFIN_MCP_ISOLATION=builtin` in
+  `agent.env`): they see the calculation, office and workspace folders, not
+  `~/.ssh` or the credentials.
+- Push access reaches `main` only through review: a deploy key, `main`
+  protected by a ruleset, and no `gh` login on the Pi (a token that may write
+  pull requests may also approve them). The agent pushes branches and hands
+  you the compare URL; a person opens and approves the pull request.
 
 The host around it (`pi_harden_host.sh`, run by the first boot; run it again
 as root any time, it is idempotent):
@@ -152,6 +162,24 @@ everything (20-40 min, needs internet):
 ssh pi@delfin-pi.local tail -f /var/log/delfin-firstboot.log
 ```
 
+## After the first boot
+
+What only a person can do, in this order:
+
+1. `pi`: set a password (`sudo passwd pi`), then
+   `sudo bash ~delfin/delfin/src/scripts/pi/pi_harden_host.sh` again, so sudo
+   asks for it.
+2. `delfin`: the API key, `delfin-agent credentials set KIT_TOOLBOX_API_KEY`,
+   and `git config --global user.name/user.email`.
+3. GitHub (a repository admin): a ruleset on `main` -- *Settings -> Rules ->
+   Rulesets*, target the default branch, active, empty bypass list; require a
+   pull request with 1 approval and approval of the most recent push, block
+   force pushes, restrict deletions.
+4. `delfin`: the deploy key (`pi_github_deploy_key.sh`, then `--check`), and
+   check that a push to `main` is refused.
+5. `delfin-agent doctor`: expected warnings are xtb, orca, the `gh` login and
+   benchmark ground truth.
+
 ## Accounts and access
 
 - `pi`: desktop autologin, SSH by key only, password locked. Set one with
@@ -166,19 +194,16 @@ ssh pi@delfin-pi.local tail -f /var/log/delfin-firstboot.log
   `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`). With the KIT toolbox pass a model it serves, e.g.
   `delfin-agent run --provider kit --model kit.deepseek-v4-flash "..."`.
-  For `backend=cli` log in once with `claude` / `codex` as `delfin`.
+  The CLI backends (`claude`, `codex`) are refused by the managed policy on
+  the Pi (see Security); they stay installed for a box bootstrapped with
+  `CLI_BACKENDS=allowed`.
 - Once, as `delfin`: `git config --global user.name/user.email`, so the agent
   can commit.
-- Push access, scoped to one repository: prefer a fine-grained token
-  (Resource owner = the organisation, only that repository, Contents +
-  Pull requests read/write) via `gh auth login --with-token`. Avoid the
-  browser `gh auth login`: its `repo` scope covers every repository you can
-  write to. If the organisation does not offer fine-grained tokens, use a
-  deploy key (any repository admin can add one):
-  `bash ~/delfin/src/scripts/pi/pi_github_deploy_key.sh`, add the printed key
-  with "Allow write access", then `... pi_github_deploy_key.sh --check`.
-  With a deploy key the agent pushes branches and hands you the compare URL
-  for the pull request.
+- Push access, scoped to one repository and stopping at the pull request: a
+  deploy key (any repository admin can add one), after `main` is protected
+  (see the checklist below): `bash ~/delfin/src/scripts/pi/pi_github_deploy_key.sh`,
+  add the printed key with "Allow write access", then
+  `... pi_github_deploy_key.sh --check`. Do not log `gh` in on the Pi.
 - VS Code: Remote-SSH to `delfin@delfin-pi.local`.
 - Dashboard: service `delfin-dashboard` on `127.0.0.1:8866` only. On the Pi use
   the "DELFIN Dashboard" menu entry; from your PC use a tunnel
@@ -200,4 +225,7 @@ venvs and caches stay on your PC. Files are sent with LF line endings even
 from a `core.autocrlf=true` checkout.
 
 An existing Pi without a prepared card: `deploy_pi.sh --bootstrap pi@<host>`
-once, then deploy as above.
+once, then deploy as above; then, as `pi`,
+`sudo bash ~delfin/delfin/src/scripts/pi/pi_harden_host.sh` and
+`deploy_pi.sh --landlock pi@<host>`, and the checklist "After the first
+boot".
