@@ -1,27 +1,46 @@
 # DELFIN agent box on a Raspberry Pi 5
 
 Turns a Raspberry Pi 5 (aarch64) into a dedicated machine for developing and
-testing the DELFIN agent. The Pi itself is the sandbox: the agent runs as its
-own user with passwordless `sudo` and `DELFIN_AGENT_SANDBOX=off`.
+testing the DELFIN agent. The agent runs as its own user `delfin` with
+passwordless `sudo`.
 
 QM binaries (ORCA, xtb, CREST, ...) are **not** installed. Everything else is:
-DELFIN with the extras `agent docs dev analysis mlp-full ai-foundation
-ai-screening ai-complex csp`, the Claude Code and Codex CLIs (agent
-`backend=cli`), and the dashboard as a loopback-only service.
 
-Not included: `ai-retro` (aizynthfinder pins `rdkit<2023`, which conflicts with
-DELFIN's `rdkit>=2023.3` on every platform). PyMOL has no aarch64 distribution
-on PyPI and is built from source (`--no-deps`, it runs on DELFIN's numpy<2);
-if that build fails only the PyMOL images in DOCX/ESP reports are missing.
-torch is installed as the CPU build (`--torch-backend cpu`).
+- DELFIN with **every extra in `pyproject.toml`** except `ai-retro`, `orca`
+  and `pymol` (new extras reach the Pi with the next deploy by themselves;
+  override with `DELFIN_PI_SKIP_EXTRAS`), torch as the CPU build;
+- the terminal UI (`delfin-agent tui`) with the patched OpenTUI library, so
+  rows stay in the scrollback of xterm.js terminals (VS Code, JupyterLab);
+- the Claude Code and Codex CLIs (agent `backend=cli`), the GitHub CLI `gh`;
+- Playwright's Chromium (browser extra), tesseract + pytesseract (OCR),
+  the manual search index (`delfin-docs-index`);
+- a git checkout `~/delfin/work/DELFIN` for the agent to work on;
+- the dashboard as a loopback-only service.
+
+Check the result with `delfin-agent doctor` (expected warnings: xtb, orca,
+git identity / `gh` login until you set them, benchmark ground truth).
+
+Excluded extras: `ai-retro` (aizynthfinder pins `rdkit<2023`, which conflicts
+with DELFIN's `rdkit>=2023.3` on every platform), `orca` (QM). PyMOL has no
+aarch64 distribution on PyPI and is built from a pinned source commit
+(`--no-deps`, it runs on DELFIN's numpy<2); if that build fails only the PyMOL
+images in DOCX/ESP reports are missing.
+
+Shell commands of the agent run under `agent.bash_isolation` (default `auto`:
+bubblewrap on the Pi, network only through the egress proxy).
+`DELFIN_AGENT_SANDBOX` in `~/delfin/agent.env` only affects the older
+`sandbox.run_agent_command` path.
 
 Known limits, not Pi-specific: `schnetpack` does not import with torch 2.13
 (`T_co` was removed from torch), `architector` needs `xtb` (QM, out of scope).
 `uv pip check` reports pymol's numpy>=2 metadata and the `pymol` vs
 `pymol-open-source` name; both are expected. The deployed tree has no `.git`,
-so `test_pre_refactor_api_preserved` (needs `git show`) fails under `--test`;
-clone the repo into `~/delfin/work` when the agent should work on git history. First boot takes ~10 min on a
-Pi 5 with a fast connection.
+so `test_pre_refactor_api_preserved` (needs `git show`) fails under `--test`.
+
+First boot takes ~20 min on a Pi 5 with a fast connection (about 9 of them for
+the patched OpenTUI build). A deploy keeps `tui/node_modules` (and with it the
+patched library) while `tui/package.json`, `bun.lock` and `tui/patches` are
+unchanged; then it takes seconds.
 
 ## Files
 
@@ -62,9 +81,13 @@ ssh pi@delfin-pi.local tail -f /var/log/delfin-firstboot.log
   logins with `sudo passwd pi`.
 - `delfin`: agent user, passwordless `sudo`, SSH by the same key.
 - API keys are entered on the Pi, never on the card:
-  `delfin-agent credentials set ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`,
-  `KIT_TOOLBOX_API_KEY`). For `backend=cli` log in once with `claude` / `codex`
-  as `delfin`.
+  `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`). With the KIT toolbox pass a model it serves, e.g.
+  `delfin-agent run --provider kit --model kit.deepseek-v4-flash "..."`.
+  For `backend=cli` log in once with `claude` / `codex` as `delfin`.
+- Once, as `delfin`: `git config --global user.name/user.email` and
+  `gh auth login`, so the agent can commit and open pull requests.
+- VS Code: Remote-SSH to `delfin@delfin-pi.local`.
 - Dashboard: service `delfin-dashboard` on `127.0.0.1:8866` only. On the Pi use
   the "DELFIN Dashboard" menu entry; from your PC use a tunnel
   `ssh -L 8866:127.0.0.1:8866 delfin@delfin-pi.local` and open the URL printed
