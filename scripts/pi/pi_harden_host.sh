@@ -18,8 +18,8 @@ set -euo pipefail
 #      kernel/firmware stay manual, so a custom kernel is never replaced
 #   6. sudo asks for the login user's password, once that user has one
 #
-# Over SSH the firewall is armed with a 120 s rollback; confirm from a NEW
-# SSH session with:  bash pi_harden_host.sh --confirm   (no sudo needed)
+# Over SSH the firewall is armed with a 120 s rollback: a successful NEW
+# SSH login within that time keeps it (no marker file, no root needed).
 #
 # Environment: LOGIN_USER (pi), AGENT_USER (delfin),
 #   SSH_V6="2001:db8::/32 ..." extra IPv6 prefixes allowed to reach SSH.
@@ -29,15 +29,6 @@ LOGIN_USER="${LOGIN_USER:-pi}"
 AGENT_USER="${AGENT_USER:-delfin}"
 SSH_V6="${SSH_V6:-}"
 ROLLBACK_UNIT=delfin-fw-rollback
-# Confirming needs no root (sudo may already ask for a password by then):
-# the marker can only keep the firewall, never remove it.
-KEEP_MARKER=/tmp/delfin-firewall-keep
-
-if [[ "${1:-}" == "--confirm" ]]; then
-    touch "$KEEP_MARKER"
-    echo "firewall kept (the pending rollback will leave it in place)"
-    exit 0
-fi
 
 [[ $EUID -eq 0 ]] || { echo "error: run with sudo" >&2; exit 1; }
 
@@ -99,12 +90,16 @@ table inet filter {
 EOF
 nft -c -f "$rules"
 if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    # The proof that SSH still gets through is a login that succeeds after
+    # the rules are in place; without one in 120 s the firewall goes again.
+    # No marker file and no root needed to confirm: just log in anew.
+    armed="$(date +%s)"
     systemctl stop "$ROLLBACK_UNIT.timer" 2>/dev/null || true
-    rm -f "$KEEP_MARKER"
     systemd-run --unit "$ROLLBACK_UNIT" --on-active=120 /bin/sh -c \
-        "test -e $KEEP_MARKER || /usr/sbin/nft flush ruleset" >/dev/null
-    echo "    rollback armed: the firewall is removed again in 120 s unless you run"
-    echo "    'bash $0 --confirm' from a NEW SSH session (no sudo needed)"
+        "journalctl -q --since @$armed -t sshd -t sshd-session --grep '^Accepted ' -n 1 | grep -q . \
+         || /usr/sbin/nft flush ruleset" >/dev/null
+    echo "    rollback armed: open a NEW SSH session within 120 s to keep the firewall;"
+    echo "    without a successful new login it is removed again"
 fi
 nft -f "$rules"
 install -m 755 "$rules" /etc/nftables.conf

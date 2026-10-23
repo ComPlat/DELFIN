@@ -74,7 +74,7 @@ as root any time, it is idempotent):
   on a routed IPv6 network is otherwise reachable from far beyond the LAN).
   mDNS, DHCP and ICMP are allowed, outbound is open (agent egress is
   DELFIN's proxy's job). Over SSH the firewall is armed with a 120 s
-  rollback: confirm from a new SSH session with `--confirm` (no sudo).
+  rollback: log in again over SSH within that time to keep it.
 - rpcbind / NFS off.
 - Debian security updates install themselves (unattended-upgrades).
   Raspberry Pi kernel and firmware stay manual, so the Landlock kernel is
