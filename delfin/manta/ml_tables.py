@@ -1,7 +1,9 @@
 """Element sets, covalent radii, metal-ligand / metal-metal / metal-centroid bond-length tables, preferred coordination polyhedra per metal and the polyhedron catalogue of the MANTA constructor.
 
 Moved verbatim from delfin/smiles_converter.py (MANTA split, 2026-10); every
-statement is the original text, only the imports below are new.
+statement was the original text, only the imports below were new.  Since then the
+per-metal M-C crystal medians have moved out of the code into a table that is not
+shipped (see _mc_len_crystal_median).
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ import threading
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
+from delfin.manta._unshipped_tables import scalar_table
 
 logger = get_logger("delfin.smiles_converter")
 
@@ -104,7 +107,8 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Covalent radii (Pyykkö 2009, single-bond values in Å)
+# Covalent radii (Cordero et al. 2008, Dalton Trans. 2832; single-bond values in Å,
+# low-spin values for Mn, Fe and Co)
 # Used as fallback for M-L bond length estimation when no specific value
 # is available in _METAL_LIGAND_BOND_LENGTHS.
 # ---------------------------------------------------------------------------
@@ -162,22 +166,25 @@ for _m in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba',
 
 
 # ---------------------------------------------------------------------------
-# Typical M-L bond lengths (Å) from crystallographic databases.
+# Typical M-L bond lengths (Å), HAND-SET: chosen by hand from textbook ranges and
+# Cordero 2008 radii sums, partly adjusted to individual literature structures.  No
+# value in this table or in the M-H, T33, M-M and centroid tables below was computed
+# from a structure database.  See delfin/manta/PROVENANCE.md.
 # Keyed as (metal_symbol, donor_element) → distance.
 # ---------------------------------------------------------------------------
 _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
-    # Iridium — CSD averages for Ir(III) octahedral coordination.
+    # Iridium — hand-set typical distances for Ir(III) octahedral coordination.
     # Ir-C and Ir-N are tuned to the cyclometallated regime (Ir(ppy)2
     # type, 2.01/2.04 Å) because pure σ-amine Ir-N is very rare in
     # output targets; Ir-O is the acac / β-diketonate range.
     ('Ir', 'C'): 2.02, ('Ir', 'N'): 2.05, ('Ir', 'O'): 2.05,
     ('Ir', 'P'): 2.30, ('Ir', 'Cl'): 2.38, ('Ir', 'S'): 2.38,
-    # Ruthenium — CSD averages for Ru(II) polypyridyl / cyclometallated
+    # Ruthenium — hand-set typical distances for Ru(II) polypyridyl / cyclometallated
     # complexes: Ru-C(Ph-pyridyl) ~2.02, Ru-N(bpy/ppy) ~2.05, Ru-O(acac) ~2.05.
     ('Ru', 'C'): 2.02, ('Ru', 'N'): 2.06, ('Ru', 'O'): 2.06,
     ('Ru', 'P'): 2.30, ('Ru', 'Cl'): 2.40, ('Ru', 'S'): 2.35,
     # Rhodium
-    # Rhodium — CSD averages (cyclometallated Rh(ppy)2 type: Rh-C 1.99,
+    # Rhodium — hand-set typical distances (cyclometallated Rh(ppy)2 type: Rh-C 1.99,
     # Rh-N(ppy trans) 2.04; reference [Rh(ppy)2Cl(CH3CN)]).
     ('Rh', 'C'): 2.00, ('Rh', 'N'): 2.05, ('Rh', 'O'): 2.05,
     ('Rh', 'P'): 2.28, ('Rh', 'Cl'): 2.38,
@@ -192,7 +199,7 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     # Gold
     ('Au', 'C'): 2.00, ('Au', 'N'): 2.05, ('Au', 'P'): 2.28,
     ('Au', 'Cl'): 2.28, ('Au', 'S'): 2.30,
-    # Iron — Fe-N(py/imine) 2.15 HS / 1.97 LS; 2.05 is the CSD average
+    # Iron — Fe-N(py/imine) 2.15 HS / 1.97 LS; 2.05 is a hand-set compromise
     # across coordination environments (low-spin carbene / high-spin py).
     ('Fe', 'C'): 1.95, ('Fe', 'N'): 2.05, ('Fe', 'O'): 2.00,
     ('Fe', 'P'): 2.20, ('Fe', 'Cl'): 2.28, ('Fe', 'S'): 2.30,
@@ -307,8 +314,8 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Li', 'N'): 2.10, ('Li', 'O'): 1.95, ('Li', 'Cl'): 2.35,
     ('Na', 'N'): 2.45, ('Na', 'O'): 2.35, ('Na', 'Cl'): 2.70,
     ('K', 'N'): 2.85, ('K', 'O'): 2.75, ('K', 'Cl'): 3.10,
-    # Metal-Iodide — CSD averages.  The covalent-radius fallback
-    # systematically overshoots M-I because the Pyykkö 2009 radii
+    # Metal-Iodide — hand-set typical distances.  The covalent-radius fallback
+    # systematically overshoots M-I because the covalent radii
     # under-estimate the iodide contraction in ionic bonds, leaving
     # real terminal M-I pairs at the fallback's 3.1-3.4 Å instead of
     # the experimental 2.6-2.9 Å.  Explicit entries below fix that.
@@ -330,7 +337,7 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('U',  'I'): 3.05, ('Th', 'I'): 3.05,
     ('Li', 'I'): 2.55, ('Na', 'I'): 2.85, ('K',  'I'): 3.20,
     # Metal–Silyl bonds.  The covalent-radius fallback gives ~2.75-3.02 Å
-    # which is 0.4-0.6 Å too long versus CSD averages for σ-silyl ligands
+    # which is 0.4-0.6 Å too long versus typical σ-silyl distances
     # (M-SiR3 is shorter than the additive-radii estimate because Si
     # acts as a soft σ-donor with significant π-backbonding).  Without
     # these entries, σ-Si donors on hapto metals end up far outside the
@@ -348,8 +355,8 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Pt', 'Si'): 2.35, ('Au', 'Si'): 2.40, ('Hg', 'Si'): 2.50,
     # -------------------------------------------------------------------
     # Comprehensive fill-in for all remaining (M, L) pairs of practical
-    # interest (L ∈ {C, N, O, P, S, F, Cl, Br, Se}).  Values are CSD /
-    # Cordero 2008 averages with minor adjustments for common
+    # interest (L ∈ {C, N, O, P, S, F, Cl, Br, Se}).  Values are hand-set from
+    # Cordero 2008 radii sums with minor adjustments for common
     # coordination environments; a missing entry here means the
     # covalent-radius fallback is already acceptable (< 5 % deviation).
     # -------------------------------------------------------------------
@@ -465,7 +472,7 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     # so the env-flag is read after init, not on import.
     # Values: 3d TM ~1.55-1.70, 4d TM ~1.60-1.75, 5d TM ~1.60-1.80
     # (relativistic contraction), main-group ~1.45-1.85, lanthanide
-    # ~2.05-2.20.  Sources: CSD averages, Cordero 2008.
+    # ~2.05-2.20.  Hand-set typical values, Cordero 2008 radii.
 }
 
 
@@ -531,7 +538,7 @@ _apply_mh_table_fallback()
 # (hapto -767 full-pool).  Default-OFF restores 9b1f541-equivalent behaviour.
 # ---------------------------------------------------------------------------
 _METAL_LIGAND_BOND_LENGTHS_T33: Dict[Tuple[str, str], float] = {
-    # M-As donors (arsine, CSD 2.30-2.65 A)
+    # M-As donors (arsine, hand-set 2.30-2.65 A)
     ('Sc','As'): 2.65, ('Ti','As'): 2.55, ('V','As'): 2.50,
     ('Cr','As'): 2.45, ('Mn','As'): 2.45, ('Fe','As'): 2.40,
     ('Co','As'): 2.35, ('Ni','As'): 2.30, ('Cu','As'): 2.35,
@@ -542,13 +549,13 @@ _METAL_LIGAND_BOND_LENGTHS_T33: Dict[Tuple[str, str], float] = {
     ('Ta','As'): 2.60, ('W','As'): 2.55, ('Re','As'): 2.50,
     ('Os','As'): 2.45, ('Ir','As'): 2.42, ('Pt','As'): 2.40,
     ('Au','As'): 2.45,
-    # M-Sb donors (stibine, CSD 2.50-2.70 A)
+    # M-Sb donors (stibine, hand-set 2.50-2.70 A)
     ('Cr','Sb'): 2.65, ('Mn','Sb'): 2.65, ('Co','Sb'): 2.55,
     ('Ni','Sb'): 2.50, ('Cu','Sb'): 2.55, ('Mo','Sb'): 2.65,
     ('Ru','Sb'): 2.60, ('Rh','Sb'): 2.55, ('Pd','Sb'): 2.55,
     ('Ag','Sb'): 2.65, ('W','Sb'): 2.65, ('Re','Sb'): 2.60,
     ('Os','Sb'): 2.55, ('Pt','Sb'): 2.55, ('Au','Sb'): 2.55,
-    # M-Te donors (CSD 2.50-2.85 A)
+    # M-Te donors (hand-set 2.50-2.85 A)
     ('Sc','Te'): 2.85, ('V','Te'): 2.65, ('Cr','Te'): 2.70,
     ('Mn','Te'): 2.65, ('Co','Te'): 2.55, ('Ni','Te'): 2.50,
     ('Cu','Te'): 2.55, ('Zn','Te'): 2.65, ('Nb','Te'): 2.70,
@@ -589,7 +596,7 @@ _apply_new_ml_pairs_t33()
 
 
 # ---------------------------------------------------------------------------
-# Metal-Metal bond lengths (Å) from CSD averages.
+# Metal-Metal bond lengths (Å), hand-set typical values.
 # Keyed as frozenset({sym1, sym2}) → distance to handle both orderings.
 # ---------------------------------------------------------------------------
 _METAL_METAL_BOND_LENGTHS: Dict[frozenset, float] = {
@@ -622,9 +629,9 @@ _METAL_METAL_BOND_LENGTHS: Dict[frozenset, float] = {
 
 
 # ---------------------------------------------------------------------------
-# Crystallographic Metal-Centroid distances (Å) for hapto coordination.
+# Metal-Centroid distances (Å) for hapto coordination.
 # Keyed as (metal_symbol, eta) → centroid distance.
-# Values from CSD averages / literature data.
+# Hand-set typical values, partly adjusted to individual literature structures.
 # ---------------------------------------------------------------------------
 _HAPTO_CENTROID_DISTANCES: Dict[Tuple[str, int], float] = {
     # Iron
@@ -748,28 +755,22 @@ _ML_ME_CACHE = {}          # path -> {(metal, donor): mu}
 def _ml_me_band(metal_symbol: str, donor_symbol: str):
     """Terminal M=E MULTIPLE-BOND length, if a calibrated table is supplied.
 
-    WHAT FOR (measured 16.08.2026).  `ml_len_realized` misses 192 of 953 systems, and the
-    breakdown by element pair is extremely sharp:
-        O-Re  8.86x | N-Re 7.88x | C-Ir 6.89x | O-V, O-W, O-Rh: ONLY failures
-        Fe-N  0.25x | Mn-N 0.27x  (protected -- there is no multiple bond there)
-    They are, throughout, terminal OXO and NITRIDO bonds on high-valent metals.  Cause:
+    WHAT FOR (16.08.2026).  The systems whose M-L lengths miss their reference most often
+    carry, throughout, terminal OXO and NITRIDO bonds on high-valent metals.  Cause:
     DELFIN writes them as a SINGLE BOND with a charged end atom (`[O-][Re]`), the bond
     order is NOT in the RDKit graph -- and `_get_ml_bond_length` looks up solely by
     (metal, donor element).  A terminal Re=O thereby gets exactly the length of a
     bridging Re-O.
 
-    ⚠ WHY NO UNIFORM FACTOR.  From five textbook cases ~0.80 looked plausible.
-    Measured on the crystals (76 pairs with n >= 50) the shortening is PAIR-SPECIFIC:
-        U=O 0.743 (n=1100) | Re=O 0.813 | W=O 0.850 | V=O 0.890 | Mo=O 0.895 (n=4014)
-        the MAJORITY 0.98-1.02 -- NO shortening
-        Os=C 1.102, W=C 1.055 -- LENGTHENING
-    Only 10 of 76 pairs shorten at all.  A blanket 0.80 factor produced 0.4-0.5 A errors at
-    S/Se/C where today there is none.  Hence: the VALUE is looked up, not computed.
+    ⚠ WHY NO UNIFORM FACTOR.  From five textbook cases ~0.80 looked plausible, but the
+    shortening is PAIR-SPECIFIC: some pairs shorten strongly, most not at all, a few even
+    lengthen.  A blanket 0.80 factor produced 0.4-0.5 A errors at S/Se/C where today there
+    is none.  Hence: the VALUE is looked up, not computed.
 
-    ⚠ LICENSE.  The values are CCDC-derived and remain PRIVATE -- this file contains NO
-    number from them.  The path comes via `DELFIN_ML_ME_BANDS`; if it is missing or the
-    file is missing, this function returns None and the behaviour is unchanged.  The same
-    pattern as for the torsion bands.
+    ⚠ LICENSE.  The table is not part of MANTA and this file contains no value from it.  The
+    path comes via `DELFIN_ML_ME_BANDS`; if it is missing or the file is missing, this
+    function returns None and the behaviour is unchanged.  The same pattern as for the
+    torsion bands.
     """
     path = os.environ.get("DELFIN_ML_ME_BANDS", "")
     if not path:
@@ -826,28 +827,14 @@ def _ml_bond_kind(mol, metal_idx: int, donor_idx: int) -> str:
         return "sigma"
 
 
-# M-C median from 40 000 CCDC crystals, per metal -- the TARGET VALUE, not estimated.
-# Included only where |builder - crystal| >= 0.10 A AND n >= 30 measured bonds.
-# Collected with `MANTA2/harness/mc_laenge_kristallmedian.py` (donor set of the EYE on the
-# CRYSTAL = the coordination sphere; no second bond perception).
-# Format: metal -> (median in A, n, previous value)  -- n and the old value stand next to
-# it deliberately, so that every row can be checked without looking anything up.
-_MC_LEN_CRYSTAL_SOURCE = {
-    # carbonyl metals: all sat on the smooth placeholder 2.10 (Cr 2.05)
-    "Mn": (1.809, 2137, 2.10), "Os": (1.908, 2834, 2.10), "Re": (1.925, 2453, 2.10),
-    "Cr": (1.886, 2078, 2.05), "Tc": (1.918,   31, 2.10),
-    # early transition metals: were too SHORT
-    "Ti": (2.403,  875, 2.25), "Zr": (2.548,  751, 2.40), "Nb": (2.408,   97, 2.20),
-    "Hf": (2.552,   99, 2.35), "Ta": (2.439,   94, 2.15), "Sc": (2.537,   55, 2.30),
-    "V":  (2.281,  199, 2.15), "Y":  (2.670,  223, 2.55),
-    # lanthanoids: were too LONG
-    "La": (2.850,   33, 3.13), "Ce": (2.815,   59, 3.25), "Lu": (2.642,   86, 3.08),
-    # isolated case
-    "Ge": (1.964,  308, 2.46),
-}
-
-
-_MC_LEN_CRYSTAL_MEDIAN = {_m: _v[0] for _m, _v in _MC_LEN_CRYSTAL_SOURCE.items()}
+# M-C TARGET PER METAL, ONLY FROM A TABLE THAT IS NOT SHIPPED (DELFIN_FFFREE_MC_LEN_TABLE).
+# The per-metal medians this path was built for come from a statistic on structures that
+# are not redistributed here, so the repository carries no value of it.  The file named
+# by DELFIN_FFFREE_MC_LEN_TABLE holds one ``metal<TAB>median_A`` row per metal (see
+# _unshipped_tables).  Without it this returns None and _get_ml_bond_length keeps its
+# hand-set / covalent-radii value even with the switch on.
+def _mc_len_crystal_median(metal_symbol: str) -> Optional[float]:
+    return scalar_table("DELFIN_FFFREE_MC_LEN_TABLE").get(metal_symbol)
 
 
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
@@ -870,44 +857,32 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
         _me = _ml_me_band(metal_symbol, donor_symbol)
         if _me is not None:
             return float(_me)
-    # ===== M-C FROM THE CRYSTALS INSTEAD OF FROM PLACEHOLDERS (24.08.2026) ============
-    # Measured on 40 000 CCDC crystals (14 566 with M-C), median per metal against the
-    # value assumed here -- `harness/mc_laenge_kristallmedian.py`.  Over 32 metals the
-    # median of the deviation is +0.033 A, so at its core the table is right.
-    # It is wrong for THREE COHERENT FAMILIES, each in one direction:
-    #   * the carbonyl metals all sit on the smooth placeholder 2.10 and are thereby
-    #     0.16-0.29 A TOO LONG        (Mn n=2137, Os 2834, Re 2453, Cr 2078, Tc 31)
-    #   * the early transition metals are 0.12-0.29 A TOO SHORT, where M-C really is
-    #     long                         (Ti 875, Zr 751, Nb 97, Hf 99, Ta 94, Sc, V, Y)
-    #   * the lanthanoids are 0.28-0.44 A TOO LONG              (La 33, Ce 59, Lu 86)
-    #   * Ge is the isolated case with +0.496
-    # Correctly calibrated are, of all things, the most frequent: Fe (n=11 428) -0.024,
-    # Pt -0.000, Cu -0.001, Rh -0.003, Ir +0.007, Pd/Au -0.014.
+    # ===== M-C FROM A MEASURED TABLE INSTEAD OF FROM PLACEHOLDERS (24.08.2026) =========
+    # A per-metal comparison of this table's M-C values against crystal structures found
+    # it right at its core but wrong for three coherent families, each in one direction:
+    # the carbonyl metals sit on the smooth placeholder 2.10 and come out too long, the
+    # early transition metals too short, the lanthanoids too long, plus Ge as an isolated
+    # case.  The most frequent metals are calibrated correctly.
     #
     # WHY THIS MATTERS: the eye's donor model accepts C as a donor only up to 1.25 x the
-    # ideal bond.  An Os-C that is 0.19 A too long slips above that, no longer counts as
-    # a donor, the metal CN drops -- and because the CN gate is EXACT, NO frame passes
-    # the topology check any more.  Measured on `ACAHUH`: crystal CN 4, build CN 0 in
-    # all twelve frames, `topo_correct_frame = false`, although the frames are clean.
+    # ideal bond.  An M-C that is too long slips above that, no longer counts as a donor,
+    # the metal CN drops -- and because the CN gate is EXACT, NO frame passes the
+    # topology check any more, although the frames are clean.
     #
-    # ⚠ ONLY WHERE THE EVIDENCE HOLDS: included are metals with |delta| >= 0.10 A AND
-    # n >= 30 measured bonds.  The value is the MEDIAN, not the covalent sum and not a
-    # blanket-deleted offset -- a blanket intervention would be the same error as the
-    # one it fixes.
+    # The values themselves are not shipped (see _mc_len_crystal_median): without
+    # DELFIN_FFFREE_MC_LEN_TABLE this block never returns.
     # Default OFF -> byte-identical.  ONE read site.
     # ── THE TABLE CAN BE RESTRICTED TO A LIST OF METALS ──────────────────────────
-    # OCCASION (27.08.2026, evening).  `mclen6k` has been recovered and answers its
-    # pre-registration SPLIT: `topo_correct_frame` NET **+40** (46 won against 6
-    # lost) -- the chain M-C length -> donor cut -> CN -> topology gate is thereby
-    # PROVEN, H0 refuted.  But the run does not land: 2 hard `ccdc_isomer_lost`
-    # (ECOZUV, WIKBOJ, fingerprint IDENTICAL in both arms, hence REAL losses),
-    # 5 polyhedra, 7 isomers_lost.
+    # OCCASION (27.08.2026, evening).  The A/B `mclen6k` answered its pre-registration
+    # SPLIT: `topo_correct_frame` NET **+40** (46 won against 6 lost) -- the chain M-C
+    # length -> donor cut -> CN -> topology gate is thereby PROVEN, H0 refuted.  But the
+    # run does not land: 2 hard `ccdc_isomer_lost` (ECOZUV, WIKBOJ, fingerprint IDENTICAL
+    # in both arms, hence REAL losses), 5 polyhedra, 7 isomers_lost.
     #
     # 🔑 AND THE LOSSES ARE NOT EVERYWHERE.  Counted per metal:
     #        WINNERS 46    Re 22 · Mn 14 · Os 6 · Tc 3 · Ti 1
     #        LOSERS  6     Os  3 · Cr  1 · Mn 1 · Zr 1
-    #    Re stands at 22 : 0, Mn 14 : 1 -- Os on the other hand 6 : 3, and Os has the
-    #    STRONGEST crystal evidence (n=2834).  Prior knowledge and A/B contradict there.
+    #    Re stands at 22 : 0, Mn 14 : 1 -- Os on the other hand 6 : 3.
     #
     # ⚠️ THIS SELECTION IS POST HOC.  It comes from the result of the very run it is
     #    supposed to improve -- that is selection on the test set and would be
@@ -918,7 +893,7 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
     # Default: empty -> ALL metals of the table -> byte-identical to before.
     if (donor_symbol in ("C", "Si")
             and os.environ.get("DELFIN_FFFREE_MC_LEN_CRYSTAL", "0") == "1"):
-        _mc = _MC_LEN_CRYSTAL_MEDIAN.get(metal_symbol)
+        _mc = _mc_len_crystal_median(metal_symbol)
         _only = os.environ.get("DELFIN_FFFREE_MC_LEN_METALS", "").strip()
         if _mc is not None and _only:
             _erlaubt = {_s.strip() for _s in _only.split(",") if _s.strip()}

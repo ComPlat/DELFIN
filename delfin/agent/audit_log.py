@@ -23,6 +23,49 @@ independently — corrupt lines (e.g. from a kill -9 mid-write) are
 rare but possible; tooling should ``json.loads`` line-by-line and
 skip what doesn't parse.
 
+The log is a HASH CHAIN. Every record carries ``prev``: the SHA-256 of
+the previous line's bytes as written (``GENESIS`` for the first line of
+a new log; after a rotation, the hash of the rotated log's last line).
+A head file beside the log (``audit.log.head``, 0600) holds the hash and
+the byte size of the last line written, so a tail cut off the log shows
+too. ``verify`` (``delfin-agent audit verify``) reports an edited,
+removed or inserted line, a cut tail and a line that does not parse;
+lines written before the chain existed are counted as legacy. Appends
+are serialised across processes by ``flock`` on ``audit.log.lock``.
+Where the head file did not match the log at the time of a write (the
+log was changed outside DELFIN), that record carries ``chain_break`` and
+a blocked ``audit_chain_broken`` event is recorded.
+
+The chain is KEYED. A record written by a process that holds the account
+key carries ``mac`` as its last field: HMAC-SHA256, under
+``trust_store.derived_key("audit_log")``, of the line's bytes without
+that field (the line up to its final ``}``). And the trust store keeps an
+anchor per log (``audit-anchor-<hash of the path>.json``: the last line's
+hash and the log's size, signed), written under the same lock as the
+line. The anchor pins the active log's bytes; through ``prev`` it pins
+every line before the last, and through the first record's ``prev`` the
+rotated log it continues. So a same-account process without the key
+that rewrites the whole chain and the head file consistently is found
+(``mac`` problems, or the log not ending where the anchor says), and so
+is one that cuts the tail and puts an earlier head file back.
+
+Migration: records of a log written before the key existed carry
+``prev`` and no ``mac``; ``verify`` counts them as unkeyed. From the
+first keyed record on, a record without ``mac`` is a problem (written by
+a process without the key: one started inside an agent session, or with
+the trust store refused). Where verify runs without the key (inside an
+agent session) the hash chain is checked and the report says the
+signatures were not. A process with the key on the same account that
+reads the trust store directly is outside this boundary
+(docs/SECURITY_MODEL.md); the administrator's copy
+(``managed_policy.append_audit_line``) receives the same lines.
+
+The log is created 0600 in a 0700 directory and opened with
+``O_APPEND | O_NOFOLLOW``; a link, a non-regular file, a file with more
+than one link or one owned by another account in its place is not
+written. A write that fails records one blocked ``audit_write_failed``
+event per process (it reaches the attention inbox) instead of vanishing.
+
 The log is ROTATED weekly: when the first line of a calendar week is
 appended and the existing log is older than the week boundary, the
 old log is renamed to ``audit-YYYY-Www.log`` and a fresh log starts.
@@ -36,15 +79,31 @@ first day of a new week the active log is empty, and reporting that as
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import re
+import stat
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    import fcntl as _fcntl
+except ImportError:          # pragma: no cover - non-POSIX
+    _fcntl = None
+
 
 _LOG_LOCK = threading.Lock()
+
+#: ``prev`` of the first line of a log that continues nothing.
+GENESIS = "0" * 64
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+# Set after the first failed write of this process: one event, not one
+# per record (a full disk would otherwise flood the panel).
+_WRITE_FAILURE_NOTED = False
 
 
 def _default_log_path() -> Path:
@@ -65,31 +124,257 @@ def _isocalendar_key(ts: datetime) -> str:
     return f"{iso.year}-W{iso.week:02d}"
 
 
-def _rotate_if_needed(path: Path, now: datetime) -> None:
+def head_path(path: Path) -> Path:
+    """The head file of ``path``: hash and size of its last line."""
+    path = Path(path)
+    return path.with_name(path.name + ".head")
+
+
+def _line_hash(line: bytes) -> str:
+    """SHA-256 hex of one line's bytes, without its newline."""
+    return hashlib.sha256(line).hexdigest()
+
+
+def _open_private(path: Path, flags: int) -> int:
+    """``os.open`` that never follows a link at the last component, and
+    accepts only a regular file of this account with one link."""
+    fd = os.open(str(path), flags | _NOFOLLOW, 0o600)
+    try:
+        st = os.fstat(fd)
+        if (not stat.S_ISREG(st.st_mode) or st.st_nlink > 1
+                or (hasattr(os, "getuid") and st.st_uid != os.getuid())):
+            raise OSError(f"{path} is not a private regular file")
+        if stat.S_IMODE(st.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read_private(path: Path) -> bytes:
+    fd = _open_private(path, os.O_RDONLY)
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
+def _last_line(fd: int, size: int) -> Optional[bytes]:
+    """The last line of the open file (without its newline), or None for
+    an empty file. Reads backwards from the end, doubling the window."""
+    if size <= 0:
+        return None
+    window = 64 * 1024
+    while True:
+        start = max(0, size - window)
+        data = os.pread(fd, size - start, start)
+        body = data[:-1] if data.endswith(b"\n") else data
+        cut = body.rfind(b"\n")
+        if cut >= 0 or start == 0:
+            return body[cut + 1:]
+        window *= 2
+
+
+def _read_head(path: Path) -> Optional[dict]:
+    try:
+        head = json.loads(_read_private(head_path(path)).decode("utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return {"last": None, "size": None, "unreadable": True}
+    return head if isinstance(head, dict) else {"last": None, "size": None}
+
+
+def _write_head(path: Path, last: str, size: int) -> None:
+    from .state_paths import write_text_atomic
+    write_text_atomic(head_path(path),
+                      json.dumps({"last": last, "size": int(size)}) + "\n")
+
+
+#: The trust_store purpose of the record and anchor signatures.
+_PURPOSE = "audit_log"
+_MAC_TAIL = re.compile(rb', "mac": "([0-9a-f]{64})"\}$')
+
+
+def _anchor_name(path: Path) -> str:
+    try:
+        real = os.path.realpath(str(path))
+    except Exception:
+        real = str(path)
+    digest = hashlib.sha256(real.encode("utf-8", "surrogateescape"))
+    return f"audit-anchor-{digest.hexdigest()[:24]}.json"
+
+
+def _anchor_bytes(path: Path, last: str, size: int) -> bytes:
+    return "\0".join((os.path.realpath(str(path)), str(last),
+                       str(int(size)))).encode("utf-8", "surrogateescape")
+
+
+def _write_anchor(path: Path, last: str, size: int) -> bool:
+    """Record in the trust store where ``path`` ends now. Needs the key."""
+    from . import trust_store
+    tag = trust_store.mac(_PURPOSE, _anchor_bytes(path, last, size))
+    if not tag:
+        return False
+    return trust_store.write_record(_anchor_name(path), {
+        "path": os.path.realpath(str(path)), "last": last,
+        "size": int(size), "mac": tag})
+
+
+def _read_anchor(path: Path) -> Optional[dict]:
+    try:
+        from . import trust_store
+        return trust_store.read_record(_anchor_name(path))
+    except Exception:
+        return None
+
+
+def _sign_line(line: str, key: Optional[bytes]) -> str:
+    """``line`` (one JSON object) with ``mac`` appended as its last field,
+    or unchanged without a key."""
+    if key is None or not line.endswith("}"):
+        return line
+    tag = hmac.new(key, line.encode("utf-8"), hashlib.sha256).hexdigest()
+    return line[:-1] + f', "mac": "{tag}"}}'
+
+
+def _audit_key() -> Optional[bytes]:
+    try:
+        from . import trust_store
+        return trust_store.derived_key(_PURPOSE)
+    except Exception:
+        return None
+
+
+def _rotate_if_needed(path: Path, now: datetime) -> Optional[str]:
     """Move ``path`` aside when the active log spans across an ISO week.
 
     Called inside the lock just before each append. If the existing
     log's first-line timestamp belongs to an earlier ISO week than
-    ``now``, we rename it to ``audit-YYYY-Www.log`` and start fresh.
-    Cheap: read only the first line.
+    ``now``, we rename it to ``audit-YYYY-Www.log`` (with its head file;
+    ``-2``, ``-3`` … when that name is taken, so no earlier history is
+    replaced) and start fresh. Returns the hash of the rotated log's
+    last line, which the new log's first record carries as ``prev``;
+    None when nothing was rotated. Cheap: the first line and the tail.
     """
-    if not path.exists() or path.stat().st_size == 0:
-        return
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            first_line = fh.readline()
-        first = json.loads(first_line)
+        fd = _open_private(path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        size = os.fstat(fd).st_size
+        if size == 0:
+            return None
+        first_line = os.pread(fd, min(size, 64 * 1024), 0).split(b"\n", 1)[0]
+        first = json.loads(first_line.decode("utf-8", "replace"))
         first_ts = datetime.fromisoformat(first["ts"].rstrip("Z"))
         first_ts = first_ts.replace(tzinfo=timezone.utc)
+        last = _last_line(fd, size)
     except Exception:
-        return  # Corrupt header — leave it alone, append still works.
+        return None  # Corrupt header — leave it alone, append still works.
+    finally:
+        os.close(fd)
     if _isocalendar_key(first_ts) == _isocalendar_key(now):
-        return
-    rotated = path.with_name(f"audit-{_isocalendar_key(first_ts)}.log")
+        return None
+    base = f"audit-{_isocalendar_key(first_ts)}"
+    rotated = path.with_name(f"{base}.log")
+    n = 2
+    while rotated.exists() or os.path.islink(rotated):
+        rotated = path.with_name(f"{base}-{n}.log")
+        n += 1
     try:
         path.rename(rotated)
     except OSError:
+        return None
+    try:
+        if head_path(path).exists():
+            head_path(path).rename(head_path(rotated))
+    except OSError:
         pass
+    return _line_hash(last) if last is not None else None
+
+
+def _append_chained(path: Path, enriched: dict, now: datetime) -> str:
+    """Write ``enriched`` as the next link of the chain; return the line.
+
+    Under ``flock`` on the lock file beside the log, so two processes
+    that append to one log extend one chain."""
+    lock_fd = _open_private(path.with_name(path.name + ".lock"),
+                            os.O_RDWR | os.O_CREAT)
+    try:
+        if _fcntl is not None:
+            try:
+                _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+            except OSError:
+                pass        # a file system without locks: still written
+        link = _rotate_if_needed(path, now)
+        fd = _open_private(path, os.O_RDWR | os.O_APPEND | os.O_CREAT)
+        try:
+            size = os.fstat(fd).st_size
+            last = _last_line(fd, size)
+            prev = _line_hash(last) if last is not None else (link or GENESIS)
+            head = _read_head(path)
+            rec = dict(enriched)
+            rec.pop("prev", None)
+            rec.pop("chain_break", None)
+            rec.pop("mac", None)
+            if head is not None:
+                expected = prev if last is not None else None
+                if head.get("last") != expected or head.get("size") != size:
+                    rec["chain_break"] = {
+                        "head_last": head.get("last"),
+                        "head_size": head.get("size"), "found_size": size}
+            rec["prev"] = prev
+            line = _sign_line(json.dumps(rec, ensure_ascii=False),
+                              _audit_key())
+            data = line.encode("utf-8") + b"\n"
+            if size and os.pread(fd, 1, size - 1) != b"\n":
+                data = b"\n" + data     # a torn line stays on its own line
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            _write_head(path, _line_hash(line.encode("utf-8")),
+                        size + len(data))
+            try:
+                _write_anchor(path, _line_hash(line.encode("utf-8")),
+                              size + len(data))
+            except Exception:
+                pass
+        finally:
+            os.close(fd)
+    finally:
+        os.close(lock_fd)
+    if "chain_break" in rec:
+        _note_event("audit_chain_broken",
+                    f"{path}: the log was changed outside DELFIN "
+                    f"(head {rec['chain_break']['head_size']} bytes, "
+                    f"log {size} bytes)")
+    return line + "\n"
+
+
+def _note_event(kind: str, detail: str) -> None:
+    """A blocked security event (panel + attention inbox). Never raises."""
+    try:
+        from . import security_events
+        security_events.record(kind, "audit", detail[:300], blocked=True)
+    except Exception:
+        pass
+
+
+def _note_write_failure(path: Path, exc: BaseException) -> None:
+    global _WRITE_FAILURE_NOTED
+    if _WRITE_FAILURE_NOTED:
+        return
+    _WRITE_FAILURE_NOTED = True
+    _note_event("audit_write_failed",
+                f"{path}: {type(exc).__name__}: {exc}. Records of this "
+                "process are not in the audit log until it can be written.")
 
 
 def append(
@@ -104,32 +389,233 @@ def append(
     caller owns the rest of the schema. ``session_id`` (optional) stamps
     the record with the engine session when the record itself carries
     none — callers that already put ``session_id`` into the record keep
-    their value. Failures are silent — the audit log must never block
-    or break the tool path it observes.
+    their value. The record becomes the next link of the hash chain
+    (``prev``; see the module docstring). A failure never blocks or
+    breaks the tool path it observes, and is not silent either: the
+    first one of a process records a blocked ``audit_write_failed``
+    security event.
     """
-    path = log_path or _default_log_path()
+    path = Path(log_path or _default_log_path())
     now = _now()
     enriched = {"ts": _iso(now), **record}
     if session_id and not enriched.get("session_id"):
         enriched["session_id"] = session_id
     line = json.dumps(enriched, ensure_ascii=False) + "\n"
     try:
-        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import ensure_dir
         with _LOG_LOCK:
             ensure_dir(path.parent)
-            _rotate_if_needed(path, now)
-            # Created 0600 by ``open_append``: a chmod after the first
+            # Created 0600 (``_open_private``): a chmod after the first
             # write leaves the file group-readable for the length of that
             # write. A rotated log keeps the mode it had when it was
-            # renamed, which is why the eight already on disk stayed 0664
-            # — the start-up repair sweep is what fixes those.
-            with open_append(path) as fh:
-                fh.write(line)
-            secure_file(path)   # tighten a file that already existed
+            # renamed -- the start-up repair sweep is what fixes those.
+            line = _append_chained(path, enriched, now)
+    except Exception as exc:
+        # The action proceeds without logging (a removed home, a full
+        # disk, a link in place of the log) -- and the panel says so.
+        _note_write_failure(path, exc)
+    # The administrator's destination (managed_policy ``audit_log``), in
+    # addition to the user's own log; never rotated here.
+    try:
+        from .managed_policy import append_audit_line
+        append_audit_line(line)
     except Exception:
-        # Audit must not crash the agent. If the user removed the home
-        # dir or ran out of disk, the action proceeds without logging.
         pass
+
+
+def _predecessor(path: Path) -> Optional[Path]:
+    """The log ``path`` continues: for the active log the newest rotated
+    one, for a rotated log the one rotated before it."""
+    try:
+        rotated = sorted(p for p in path.parent.glob("audit-*.log")
+                         if not p.is_symlink())
+    except OSError:
+        return None
+    if path not in rotated:
+        return rotated[-1] if rotated else None
+    i = rotated.index(path)
+    return rotated[i - 1] if i > 0 else None
+
+
+def verify(log_path: Optional[Path] = None) -> dict:
+    """Check one log's hash chain and head. Never raises.
+
+    Output: ``{"path", "ok", "records", "chained", "legacy", "problems",
+    "notes"}``; each problem is ``{"line", "kind", "detail"}`` (1-based
+    line). Kinds: ``unparseable`` (a torn or edited line), ``chain`` (a
+    line's ``prev`` does not match the line before it: that line was
+    edited, or lines were removed or inserted), ``unchained`` (a line
+    without ``prev`` after the chain started), ``link`` (the first line
+    does not continue the log it names), ``head`` (the log does not end
+    where the last write left it: lines were cut off or appended outside
+    DELFIN), ``head_at_write`` (a write found the head out of step and
+    said so in ``chain_break``). ``ok`` is True when there is no
+    problem; notes say what could not be checked.
+    """
+    path = Path(log_path or _default_log_path())
+    rep: dict = {"path": str(path), "ok": True, "records": 0, "chained": 0,
+                 "legacy": 0, "keyed": 0, "unkeyed": 0, "problems": [],
+                 "notes": []}
+    try:
+        from . import trust_store
+        key = trust_store.derived_key(_PURPOSE, create=False)
+    except Exception:
+        key = None
+
+    def problem(line: int, kind: str, detail: str) -> None:
+        rep["problems"].append({"line": line, "kind": kind, "detail": detail})
+
+    try:
+        data = _read_private(path)
+    except FileNotFoundError:
+        if head_path(path).exists():
+            problem(0, "head", "the log is missing but its head file exists")
+        else:
+            rep["notes"].append("no log at this path")
+        rep["ok"] = not rep["problems"]
+        return rep
+    except OSError as exc:
+        problem(0, "unreadable", f"{type(exc).__name__}: {exc}")
+        rep["ok"] = False
+        return rep
+    lines = data.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    prev_hash: Optional[str] = None
+    started = False
+    keyed_seen = False
+    for i, raw in enumerate(lines, 1):
+        try:
+            rec = json.loads(raw.decode("utf-8"))
+            if not isinstance(rec, dict):
+                raise ValueError("not an object")
+        except Exception:
+            problem(i, "unparseable", "the line is not a JSON record")
+            prev_hash = _line_hash(raw)
+            continue
+        rep["records"] += 1
+        if "prev" not in rec:
+            if started:
+                problem(i, "unchained", "a record without prev after the "
+                                        "chain started")
+            else:
+                rep["legacy"] += 1
+            prev_hash = _line_hash(raw)
+            continue
+        started = True
+        rep["chained"] += 1
+        if "mac" in rec:
+            keyed_seen = True
+            rep["keyed"] += 1
+            m = _MAC_TAIL.search(raw)
+            if m is None:
+                problem(i, "mac", "the signature is not the record's last "
+                        "field: the line was rewritten")
+            elif key is not None and not hmac.compare_digest(
+                    hmac.new(key, raw[:m.start()] + b"}",
+                             hashlib.sha256).hexdigest(),
+                    m.group(1).decode()):
+                problem(i, "mac", "the signature does not match: the record "
+                        "was changed by a process without the account key")
+        elif keyed_seen:
+            rep["unkeyed"] += 1
+            problem(i, "unkeyed", "a record without a signature after the "
+                    "signed chain started: written by a process without the "
+                    "account key (one started inside an agent session) or "
+                    "outside DELFIN")
+        else:
+            rep["unkeyed"] += 1
+        got = str(rec.get("prev") or "")
+        if prev_hash is not None:
+            if got != prev_hash:
+                problem(i, "chain", f"prev does not match line {i - 1}: that "
+                        "line was edited, or lines were removed or inserted")
+        elif got != GENESIS:
+            pred = _predecessor(path)
+            if pred is None:
+                rep["notes"].append("the first record continues a log that "
+                                    "is not beside this one")
+            else:
+                try:
+                    pdata = _read_private(pred).rstrip(b"\n")
+                    plast = pdata.rsplit(b"\n", 1)[-1]
+                except OSError:
+                    plast = None
+                if plast is None or _line_hash(plast) != got:
+                    problem(i, "link", f"the first record does not continue "
+                            f"{pred.name}")
+        if isinstance(rec.get("chain_break"), dict):
+            problem(i, "head_at_write", "when this record was written the "
+                    "log did not end where the last write left it: "
+                    + json.dumps(rec["chain_break"]))
+        prev_hash = _line_hash(raw)
+    head = _read_head(path)
+    if head is None:
+        if started:
+            rep["notes"].append("no head file: a cut tail cannot be shown")
+    elif head.get("last") != prev_hash or head.get("size") != len(data):
+        problem(len(lines), "head", "the log does not end where the last "
+                f"write left it ({head.get('size')} bytes then, {len(data)} "
+                "now): lines were cut off, or written outside DELFIN")
+    anchor = _read_anchor(path)
+    if anchor is not None:
+        a_last, a_size = anchor.get("last"), anchor.get("size")
+        signed = (key is None or hmac.compare_digest(
+            hmac.new(key, _anchor_bytes(path, a_last, a_size or 0),
+                     hashlib.sha256).hexdigest(), str(anchor.get("mac") or "")))
+        if not signed:
+            problem(len(lines), "anchor", "the trust store's anchor for this "
+                    "log does not carry a valid signature")
+        elif a_last != prev_hash or a_size != len(data):
+            problem(len(lines), "anchor", "the log does not end where the "
+                    f"trust store's anchor says ({a_size} bytes then, "
+                    f"{len(data)} now): it was rewritten, cut or extended "
+                    "by a process without the account key")
+    elif rep["keyed"] and _is_active_log(path):
+        rep["notes"].append("the trust store holds no anchor for this log: "
+                            "a cut tail with an earlier head file put back "
+                            "is not shown")
+    if key is None and rep["keyed"]:
+        rep["notes"].append("the account key is not available here (inside "
+                            "an agent session, or the trust store is "
+                            "refused): the signatures were not checked")
+    rep["ok"] = not rep["problems"]
+    return rep
+
+
+def _is_active_log(path: Path) -> bool:
+    """Whether ``path`` is an active log (not a rotated week), the kind
+    that has an anchor."""
+    return not Path(path).name.startswith("audit-")
+
+
+def verify_all(directory: Optional[Path] = None) -> list[dict]:
+    """``verify`` for the active log and every rotated one beside it."""
+    base = Path(directory) if directory else _default_log_path().parent
+    paths = sorted(p for p in base.glob("audit-*.log") if not p.is_symlink())
+    active = base / "audit.log"
+    if active.exists() or head_path(active).exists():
+        paths.append(active)
+    return [verify(p) for p in paths]
+
+
+def format_verify(reports: list[dict]) -> str:
+    """Plain text for ``delfin-agent audit verify``."""
+    if not reports:
+        return "no audit log found"
+    out = []
+    for rep in reports:
+        state = "intact" if rep["ok"] else "NOT intact"
+        out.append(f"{rep['path']}: {state} -- {rep['records']} records "
+                   f"({rep['chained']} chained, {rep.get('keyed', 0)} signed, "
+                   f"{rep['legacy']} legacy)")
+        for p in rep["problems"][:20]:
+            out.append(f"  line {p['line']}: {p['kind']}: {p['detail']}")
+        if len(rep["problems"]) > 20:
+            out.append(f"  ... {len(rep['problems']) - 20} more")
+        for n in rep["notes"]:
+            out.append(f"  note: {n}")
+    return "\n".join(out)
 
 
 def read_last_n(n: int = 100, *, log_path: Optional[Path] = None) -> list[dict]:
@@ -264,14 +750,17 @@ _WRITE_TOOLS = frozenset({
 # on, so the targets are known, and the foreground executor now reads
 # each one before running and journals the ones whose bytes moved.
 #
-# It is honest about its limits rather than declared complete: what the
-# target scanner cannot see, the journal does not get. A program the
-# shell RUNS that writes files of its own (``python3 build.py``) leaves
-# no pre-image, and that file then simply has no journal entry — the
-# per-file lookup below is what reports it as unrecoverable, which is
-# the right granularity for a tool that is only partly capturable.
+# What the target scanner cannot see -- a program the shell RUNS that
+# writes files of its own (``python3 build.py``) -- is journalled from a
+# snapshot of the writable roots taken around the command
+# (``shell_changes``), for ``bash`` and, when the job ends, for
+# ``bash_background``, which came off this list for that reason. Its
+# limits are per file, not per tool: a file whose pre-image was not held
+# is a record without undo, and a root over the file cap is not tracked
+# (the command's result says so); the per-file lookup below reports
+# both as unrecoverable.
 _UNJOURNALLED_WRITE_TOOLS = frozenset({
-    "bash_background", "fill_series", "publish_report",
+    "fill_series", "publish_report",
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})

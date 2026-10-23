@@ -86,10 +86,11 @@ def test_collect_runtime_diagnostics_reports_missing_orca_but_existing_templates
 
 
 def _qm_tools_bundle_present() -> bool:
-    """The xtb4stda / stda binaries are a large optional bundle added at
-    packaging time — they are NOT in a plain source checkout (or CI). Detect
-    them so this test runs in a packaged/release env but skips elsewhere
-    instead of being a permanent expected-failure."""
+    """The xtb4stda / stda binaries exist only where install_qm_tools.sh has
+    downloaded them into the packaged qm_tools directory; no checkout, CI
+    runner or wheel carries them (scripts/check_distribution.py refuses a
+    wheel that does). Detect them so this test runs where the installer has
+    run but skips elsewhere instead of being a permanent expected-failure."""
     try:
         return (runtime_setup.get_packaged_qm_tools_dir()
                 / "bin" / "xtb4stda").is_file()

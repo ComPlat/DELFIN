@@ -439,3 +439,30 @@ def test_cli_scheduler_status_lists_entries(
     assert "not running" in out
     assert ent.id in out
     assert "hello world" in out
+
+
+def test_an_entry_budget_is_the_run_ceiling_not_the_unattended_default(
+        cron_path, workspace, sessions_dir, monkeypatch):
+    """A scheduled entry that declares budget_usd is bounded by it: the
+    unattended USD default (run_limits) does not cut it earlier. One that
+    declares none gets the defaults (wall clock, turns)."""
+    for var in ("SLURM_JOB_ID", "PBS_JOBID", "LSB_JOBID"):
+        monkeypatch.delenv(var, raising=False)
+
+    class PricedEngine(FakeEngine):
+        provider = "openai"
+        client = type("C", (), {"model": "gpt-5.4"})()
+
+    sch = S.Scheduler(path=cron_path)
+    big = PricedEngine()
+    ent = sch.schedule_once(delay_seconds=60, prompt="long",
+                            workspace=str(workspace), budget_usd=80.0)
+    D.run_entry(ent, engine_factory=lambda *_a, **_k: big)
+    assert big.run_budget_usd == 80.0
+    plain = PricedEngine()
+    ent2 = sch.schedule_once(delay_seconds=60, prompt="plain",
+                             workspace=str(workspace))
+    D.run_entry(ent2, engine_factory=lambda *_a, **_k: plain)
+    from delfin.agent import run_limits as RL
+    assert plain.run_budget_s == RL.UNATTENDED_DEFAULTS["seconds"]
+    assert plain.run_budget_usd == RL.UNATTENDED_DEFAULTS["usd"]

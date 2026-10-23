@@ -72,8 +72,8 @@ def test_whatever_the_command_started_ends_with_it(tmp_path):
     behind is the containment hole this runner exists to close."""
     marker = tmp_path / "child-was-here"
     script = (f"sh -c 'sleep 30; touch {marker}' & sleep 30")
-    result = contained_run.run(script, shell=True, timeout=30,
-                               should_stop=_stop_after(0.3))
+    result = contained_run.run_shell(script, timeout=30,
+                                     should_stop=_stop_after(0.3))
     assert result.returncode == contained_run.STOPPED_RETURNCODE
     time.sleep(0.5)
     assert not marker.exists()

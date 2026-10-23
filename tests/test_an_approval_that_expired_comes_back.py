@@ -120,8 +120,6 @@ def test_another_sessions_request_is_not_mine(engine, monkeypatch):
 
 
 def test_an_old_unattributed_request_is_not_mine(engine, monkeypatch):
-    """Entries from before requests carried a session say nothing about
-    whose they are, so they count only while they are recent."""
     import time
     _pending(monkeypatch, [{"id": "e1", "title": "edit x.py",
                             "created_at": time.time() - 4 * 3600}])
@@ -129,9 +127,19 @@ def test_an_old_unattributed_request_is_not_mine(engine, monkeypatch):
     assert engine.client.notes == []
 
 
-def test_a_recent_unattributed_request_still_counts(engine, monkeypatch):
+def test_a_recent_unattributed_request_is_not_mine_either(engine, monkeypatch):
+    """Every broker stamps its session; an entry without one cannot be
+    shown to be this session's. It stays in the user's inbox."""
     import time
     _pending(monkeypatch, [{"id": "e1", "title": "edit x.py",
                             "created_at": time.time() - 60}])
     engine._remind_of_waiting_approvals()
-    assert engine.client.notes, "a request from minutes ago is plausibly mine"
+    assert engine.client.notes == []
+
+
+def test_a_session_without_an_id_owns_nothing(engine, monkeypatch):
+    engine.session_id = ""
+    _pending(monkeypatch, [{"id": "e1", "title": "edit x.py",
+                            "session_id": ""}])
+    engine._remind_of_waiting_approvals()
+    assert engine.client.notes == []

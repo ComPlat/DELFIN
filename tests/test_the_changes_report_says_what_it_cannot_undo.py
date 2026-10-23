@@ -162,7 +162,8 @@ def test_every_write_tool_either_journals_or_is_declared_unjournalled():
     src = (Path(__file__).resolve().parents[1] / "delfin" / "agent"
            / "api_client.py").read_text(encoding="utf-8")
     captured = set(re.findall(
-        r'_capture(?:_binary|_raw)?_change\(\s*"([a-z_]+)"', src))
+        r'_(?:capture(?:_binary|_raw)?_change|journal_shell_changes)'
+        r'\(\s*"([a-z_]+)"', src))
     # undo_changes journals through change_journal.revert itself.
     captured.add("undo_changes")
 

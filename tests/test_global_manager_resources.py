@@ -209,7 +209,7 @@ def test_resolve_headroom_default_is_90_percent(monkeypatch):
     """Default headroom raised from 0.85 → 0.90 on 2026-05-12. Pin it.
 
     Anyone who needs the older conservative 0.85 should set the env var or
-    Dashboard Settings; the in-code default reflects the validated Fritz-
+    Dashboard Settings; the in-code default reflects the validated user-
     archive measurement that DFT-OPT real RSS is ~80 % of promised.
     """
     from delfin.workflows.scheduling.manager import (

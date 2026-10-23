@@ -73,10 +73,10 @@ def test_empty_text():
     assert res.changed is False
 
 
-# Jerome's exact production failure: ONE search_docs + THREE read_section
+# The exact production failure from a field report: ONE search_docs + THREE read_section
 # calls leaked into the text channel, interleaved with CJK/Armenian/Korean
 # glitch tokens, followed by the start of the real answer.
-_JEROME = (
+_LEAKED = (
     'to=search_docs  手机天天中彩票{"query":"CASSCF ORCA manual setup active '
     'space input syntax CASSCF section", "top_k": 5}\n'
     'to=read_section ացինjson_schema{"doc_id":"orca_manual_6_1_1_DELFIN",'
@@ -89,8 +89,8 @@ _JEROME = (
 )
 
 
-def test_jerome_all_four_tool_calls_recovered():
-    calls = parse_leaked_tool_calls(_JEROME)
+def test_all_four_tool_calls_recovered():
+    calls = parse_leaked_tool_calls(_LEAKED)
     names = [c["name"] for c in calls]
     assert names == ["search_docs", "read_section", "read_section", "read_section"]
     # Args parsed cleanly for every recovered call.
@@ -99,8 +99,8 @@ def test_jerome_all_four_tool_calls_recovered():
     assert calls[3]["arguments"]["section_id"] == "6.15.3 Choosing the Active Space"
 
 
-def test_jerome_text_is_clean_and_answer_survives():
-    res = sanitize_agent_text(_JEROME)
+def test_leaked_text_is_clean_and_answer_survives():
+    res = sanitize_agent_text(_LEAKED)
     # No glitch scripts of any kind remain.
     for ch in ("手", "机", "彩", "출", "장", "ա", "ց", "ы", "ക"):
         assert ch not in res.text

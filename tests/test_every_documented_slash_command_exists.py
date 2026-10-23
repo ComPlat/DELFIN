@@ -70,6 +70,14 @@ def all_commands() -> set[str]:
     return set(BUILTINS) | dashboard_commands()
 
 
+def window_commands() -> set[str]:
+    """The terminal window's own commands (``tui/src/commands.ts``, the
+    ``name: "/..."`` entries): real for the docs that describe the window,
+    not for messages the REPL or the dashboard print."""
+    text = (repo_root() / "tui" / "src" / "commands.ts").read_text(encoding="utf-8")
+    return set(re.findall(r'name:\s*"(/[a-z][a-z0-9_-]{1,20})"', text))
+
+
 # ---------------------------------------------------------------------------
 # 1. The registers themselves are sane
 # ---------------------------------------------------------------------------
@@ -139,11 +147,12 @@ DOC_FILES = [
     "docs/SETTINGS_AND_SETUP.md",
     "docs/RETRY_LOGIC.md",
     "docs/methodology.md",
+    "docs/SECURITY_MODEL.md",
 ]
 
 
 def test_every_backticked_command_in_the_docs_exists():
-    known = all_commands() | dashboard_routed()
+    known = all_commands() | dashboard_routed() | window_commands()
     missing = []
     for rel in DOC_FILES:
         path = repo_root() / rel

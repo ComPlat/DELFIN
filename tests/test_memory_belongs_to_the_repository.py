@@ -105,31 +105,29 @@ def test_it_falls_back_instead_of_raising(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise OSError("no git here")
 
-    monkeypatch.setattr(M.subprocess, "run", _boom)
+    # git runs through safe_git; no process of it can start.
+    monkeypatch.setattr(M.safe_git.subprocess, "run", _boom)
     plain = tmp_path / "anything"
     plain.mkdir()
     assert _project_slug(plain) == "-" + str(plain.resolve()).replace(
         "/", "-").lstrip("-")
 
 
-def test_the_answer_is_cached_per_path(tmp_path):
-    """It is asked on every memory read and write; one subprocess per
-    path, not per call."""
+def test_the_answer_is_cached_per_path(tmp_path, monkeypatch):
+    """It is asked on every memory read and write; one git call per
+    path, not per call (a safe_git call, which is two processes)."""
     repo = _repo(tmp_path / "repo")
     calls = {"n": 0}
     import delfin.agent.memory_store as M
 
-    real = M.subprocess.run
+    real = M.safe_git.run
 
     def _count(*a, **k):
         calls["n"] += 1
         return real(*a, **k)
 
     M._repo_root_cache.clear()
-    M.subprocess.run = _count
-    try:
-        for _ in range(5):
-            _project_slug(repo)
-    finally:
-        M.subprocess.run = real
+    monkeypatch.setattr(M.safe_git, "run", _count)
+    for _ in range(5):
+        _project_slug(repo)
     assert calls["n"] <= 1, f"{calls['n']} git calls for five lookups"

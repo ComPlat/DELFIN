@@ -470,3 +470,8 @@ def test_the_help_text_and_the_startup_line_come_from_one_source():
     for name in agent_cli._BARE_SKIPS:
         assert name in text
     assert agent_cli._BARE_NOT_SKIPPED in text
+
+# Workspace skills are read as trusted here: these tests are about what a
+# loaded skill does; the trust gate itself is pinned in
+# test_a_repository_skill_needs_trust.py.
+pytestmark = pytest.mark.usefixtures("workspace_skills_trusted")

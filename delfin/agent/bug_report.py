@@ -23,12 +23,28 @@ dashboard already uses.  Each report is its own sub-directory named
 ``<UTC-timestamp>_<user>_<session>_<rand>`` so many users sharing one
 archive never collide and the directory stays chronologically sortable.
 
+The copy to the remote archive is a second disclosure and has its own
+consent, ``settings["agent"]["bug_upload"]`` (:func:`upload_policy`):
+
+* ``"ask"`` (default; also any unknown value) -- copied only when the
+  caller passes ``consent=True`` because the person said yes for THIS
+  report (the dashboard's Send under a line naming the host, the
+  ``[y/N]`` of ``bug_filing.upload``). With nobody to ask (``--yes``, an
+  unattended caller) the report stays local and the caller says so.
+* ``"never"`` -- every report stays local, whatever a caller passes.
+* ``"always"`` -- the standing opt-in for unattended runs: copied
+  without a question whenever a transfer target is configured.
+
+The gate is inside :func:`push_report_to_remote`, the one function that
+runs rsync, so a caller that does not ask uploads nothing.
+
 The path is **never hard-coded** — it always comes from env / settings.
 """
 
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -45,6 +61,9 @@ _FALLBACK_DIR = Path.home() / ".delfin" / "agent_bugs"
 # Conventional sub-folder appended to the configured transfer remote_path
 # when no explicit bug archive is set.
 _BUG_SUBDIR = "AGENT_BUGS"
+#: The entry points a report can be filed through, recorded per report so
+#: triage can tell a terminal session from a dashboard one.
+SURFACES = ("dashboard", "terminal", "cli")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Caps for bundling referenced workspace files into a report — keep
@@ -100,10 +119,9 @@ def _git_head(repo_dir: str | None) -> str:
     if not repo_dir:
         return ""
     try:
-        out = subprocess.run(
-            ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-        )
+        from . import safe_git
+        out = safe_git.run(["rev-parse", "--short", "HEAD"], repo_dir,
+                           timeout=5)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""
@@ -126,6 +144,7 @@ def _delfin_version() -> str:
 _AGENT_SETTINGS_ALLOWED = frozenset({
     "action_repeat_limit", "auto_memory", "auto_verify",
     "auto_verify_command", "backend", "bash_isolation", "bug_archive_dir",
+    "bug_upload",
     "compact_resets_cli", "cost_soft_limit_usd", "effort", "eval_loop",
     "job_monitor", "max_action_rounds", "max_background_jobs", "max_tokens",
     "max_tool_rounds", "output_guard", "permission_mode",
@@ -312,6 +331,7 @@ def _secret_reason(src: Path, workspace: Path | None) -> str:
 def _bundle_files(
     referenced: list, report_dir: Path,
     *, workspace: str | Path | None = None,
+    failures: list | None = None,
 ) -> list[dict]:
     """Copy the files the agent touched into ``report_dir/workspace`` so a
     maintainer has the real inputs for replay, not just the path names.
@@ -323,10 +343,9 @@ def _bundle_files(
     Size-capped (per-file, count, total) and never raises.  Returns one
     record per referenced path with its bundling ``status``.  A unique
     flattened name avoids basename collisions; ``workspace/MANIFEST.txt``
-    maps bundled name → original absolute path.
+    maps bundled name → original absolute path. A binary file is not
+    copied (status ``excluded-binary``, with ``sha256``).
     """
-    import shutil
-
     ws_base = Path(workspace).expanduser() if workspace else None
 
     records: list[dict] = []
@@ -379,15 +398,25 @@ def _bundle_files(
                 name = f"{base}__{n}"
                 n += 1
             used_names.add(name)
-            ws.mkdir(parents=True, exist_ok=True)
             # Text goes through the same redactor as the report itself: a
             # config or log the agent read can hold a token that no file
-            # name gives away. Binary files are copied as they are.
+            # name gives away. A binary file cannot be redacted, so it is
+            # not copied: the record names it with its size and sha256,
+            # enough to ask the reporter for it and to check that a copy
+            # received later is the same file. Rejected: copying it
+            # unredacted (a keyring blob, an sqlite store, a pickle or a
+            # core file can hold a credential the redactor never reads);
+            # a per-report consent to include binaries (nobody can judge
+            # an unreadable blob, so the yes would not be informed).
             _data = src.read_bytes()
-            if b"\0" not in _data[:8192]:
-                _guarded_write(ws / name, _data.decode("utf-8", errors="replace"))
-            else:
-                shutil.copy2(src, ws / name)
+            if b"\0" in _data[:8192]:
+                rec["status"] = "excluded-binary"
+                rec["sha256"] = hashlib.sha256(_data).hexdigest()
+                records.append(rec)
+                continue
+            ws.mkdir(parents=True, exist_ok=True)
+            _guarded_write(ws / name, _data.decode("utf-8", errors="replace"),
+                           failures)
             manifest.append(f"{name}\t{src}")
             rec["status"] = "bundled"
             rec["bundled"] = f"workspace/{name}"
@@ -408,32 +437,111 @@ def _bundle_files(
     return records
 
 
-def _guarded_write(path: Path, text: str) -> int:
+class RedactionFailed(RuntimeError):
+    """The redactor could not check a text; the text must not be written."""
+
+
+def redact_for_report(text: str) -> tuple[str, int]:
+    """``text`` with every credential DELFIN holds and every credential
+    shape removed, and the number of removals. Raises on any failure.
+
+    Exact values first (file store, keyring, well-known env variables:
+    ``web_tools._known_secret_values``): a KIT key has no prefix, so the
+    shape checks alone pass it unchanged. Then every shape check of the
+    output guard (``output_guard._SECRET_CHECKS`` through
+    ``output_guard._redact``), each one required to run.
+
+    Rejected: ``run_output_guards`` (it honours ``agent.output_guard``,
+    a setting about the final answer on the person's own screen, and it
+    returns the input when redaction raises) and ``scrub_secrets`` (it
+    also returns the input on failure). Both are right for an answer the
+    person reads and wrong for a file that leaves the account.
+    """
+    try:
+        from . import output_guard as og
+        from .web_tools import _known_secret_values
+        guarded = str(text or "")
+        exact = 0
+        for secret in sorted(set(_known_secret_values()), key=len,
+                             reverse=True):
+            n = guarded.count(secret)
+            if n:
+                guarded = guarded.replace(secret, "[redacted:credential]")
+                exact += n
+        findings: list = []
+        for pattern, kind, group, validate in og._SECRET_CHECKS:
+            guarded = og._redact(guarded, pattern, kind, findings,
+                                 group=group, validate=validate)
+    except Exception as exc:
+        raise RedactionFailed(f"{type(exc).__name__}: {exc}") from exc
+    return guarded, exact + len(findings)
+
+
+#: Name of the note a report carries when a file was replaced by a
+#: placeholder because its redaction failed.
+REDACTION_FAILED_NOTE = "REDACTION_FAILED.txt"
+
+
+def _placeholder(path: Path, reason: str) -> str:
+    """What is written instead of a text whose redaction failed: no part
+    of the text, only that it is missing and why; JSON for .json and
+    .jsonl so readers of the report keep working."""
+    if path.suffix in (".json", ".jsonl"):
+        body = json.dumps({"schema": "delfin-bug-report/1",
+                           "redaction_failed": True, "file": path.name,
+                           "reason": reason[:200]}, ensure_ascii=False)
+        return body + "\n"
+    return (f"[{path.name} was not written: its secret redaction failed "
+            f"({reason[:200]}). The original stays with the reporter.]\n")
+
+
+def write_redaction_failed_note(report_dir: Path, failures: list) -> None:
+    """``REDACTION_FAILED.txt`` naming each file :func:`_guarded_write`
+    replaced by a placeholder; nothing when ``failures`` is empty. Shared
+    by the agent's and the viewer's report writers. Never raises."""
+    if not failures:
+        return
+    try:
+        (Path(report_dir) / REDACTION_FAILED_NOTE).write_text(
+            "The secret redaction failed for the files below, so each "
+            "was replaced by a placeholder and its content was not "
+            "written:\n" + "".join(f"  {f}\n" for f in failures)
+            + "The reporter still has the session; ask them directly.\n",
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _guarded_write(path: Path, text: str,
+                   failures: list | None = None) -> int:
     """Write a rendered report file with the secret redactor applied.
 
     Everything that reaches this function is about to be chgrp'ed to the
     archive's maintainer group, given group-read, and rsynced into a shared
     archive: the system prompt, the raw traceback, every chat and engine
-    message, and the tool trace with its raw tool outputs.  The output
-    guard existed and ran on the final ANSWER only — nothing inspected any
-    of this.
+    message, and the tool trace with its raw tool outputs.
 
-    Returns the number of redactions.  A failing guard must not cost the
-    report, so on any error the unguarded text is still written: losing the
-    bug report is the worse outcome, and the caller reports the count.
+    Returns the number of redactions. Fail-closed: when
+    :func:`redact_for_report` raises, a placeholder (:func:`_placeholder`)
+    is written instead of the text and ``"<file>: <reason>"`` is appended
+    to ``failures``; :func:`write_bug_report` turns that list into
+    ``REDACTION_FAILED.txt``. The report still exists and says what is
+    missing, and nothing unchecked reaches the archive.
+
+    Rejected: writing the unguarded text on a failure (the earlier
+    contract: a broken pattern or an import error then shipped the
+    credential it was meant to remove); failing the whole report (the
+    files that did redact are still worth having).
     """
-    guarded = text
-    findings: list = []
     try:
-        from .output_guard import run_output_guards
-        result = run_output_guards(text)
-        guarded = result.text
-        findings = [f for f in result.findings
-                    if f.get("check") == "secret_redaction"]
-    except Exception:
-        guarded = text
+        guarded, count = redact_for_report(text)
+    except RedactionFailed as exc:
+        if failures is not None:
+            failures.append(f"{path.name}: {exc}")
+        path.write_text(_placeholder(path, str(exc)), encoding="utf-8")
+        return 0
     path.write_text(guarded, encoding="utf-8")
-    return len(findings)
+    return count
 
 
 def _report_dirname(user: str, session_id: str) -> str:
@@ -462,7 +570,8 @@ def _render_markdown(
     # Human report shows the USER-FACING mode name ("Code"), not the internal id
     # ("solo") — the raw value stays in report.json for maintainer tooling.
     _mode_display = {"solo": "Code", "dashboard": "Dashboard", "office": "Office", "research": "Research"}
-    for key in ("created_at", "user", "host", "mode", "provider", "model",
+    for key in ("created_at", "surface", "user", "host", "mode",
+                "provider", "model",
                 "effort", "perms", "backend", "role", "session_id",
                 "workspace", "input_tokens", "output_tokens", "cost_usd",
                 "delfin_version", "git_head", "python"):
@@ -481,10 +590,13 @@ def _render_markdown(
                    "| File | Status | Via | Size | bundled |",
                    "|---|---|---|---|---|"]
         for r in referenced_files:
+            where = r.get('bundled', '') or (
+                f"not copied, sha256 {r['sha256']}" if r.get('sha256')
+                else '—')
             lines.append(
                 f"| `{r.get('original','')}` | {r.get('status','')} | "
                 f"{r.get('resolved_via','') or '—'} | "
-                f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
+                f"{r.get('bytes',0)} | {where} |"
             )
     if tool_trace:
         lines += ["", "## Tool trace", "",
@@ -571,6 +683,7 @@ def write_bug_report(
     extra: dict | None = None,
     settings: dict | None = None,
     archive_dir: str | Path | None = None,
+    surface: str = "",
 ) -> Path:
     """Write a self-contained bug report and return its directory.
 
@@ -582,6 +695,10 @@ def write_bug_report(
     ``referenced_files`` entries (raw tool-input strings) resolve against
     it before falling back to the report-writer's CWD (legacy).  When
     omitted, behaviour is unchanged (cwd-relative only).
+
+    ``surface`` names the entry point that filed it (one of
+    :data:`SURFACES`); empty is recorded as ``dashboard``, the only
+    writer before the field existed.
     """
     user = _current_user()
     root = Path(archive_dir).expanduser() if archive_dir else resolve_archive_dir(settings)
@@ -612,8 +729,8 @@ def write_bug_report(
     # from the setgid archive dir). This makes a report readable by the
     # maintainer group WITHOUT the writer needing membership in it — the
     # explicit chgrp in _make_group_readable only succeeds when the writer is a
-    # member, which it may not be (observed 2026-06-25: writer 'qmchem_all' was
-    # not in 'qmchem_shared', so its chgrp failed and the report stayed
+    # member, which it may not be (observed 2026-06-25: the writer was not
+    # in the maintainer group, so its chgrp failed and the report stayed
     # unreadable to the maintainer). chmod on an owned dir always works; ZFS
     # honours setgid for new-file group inheritance. Best-effort.
     try:
@@ -625,6 +742,7 @@ def write_bug_report(
 
     meta: dict[str, Any] = {
         "schema": "delfin-bug-report/1",
+        "surface": surface if surface in SURFACES else "dashboard",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user": user,
         "host": socket.gethostname(),
@@ -651,8 +769,9 @@ def write_bug_report(
     # Bundle the actual files the agent touched (copied under workspace/).
     # Relative entries resolve against the SESSION workspace first — the
     # report-writer's CWD is not where the agent created them.
+    failures: list = []
     bundled_files = _bundle_files(referenced_files or [], report_dir,
-                                  workspace=workspace)
+                                  workspace=workspace, failures=failures)
 
     # Tool-call trace: the exact sequence of tools the agent ran this session
     # (name / input / output / duration / ok). Shipped so a failed session can
@@ -665,7 +784,7 @@ def write_bug_report(
             _guarded_write(
                 report_dir / "tool_trace.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False) for e in tool_trace)
-                + "\n")
+                + "\n", failures)
     except Exception:
         tool_trace = []
 
@@ -680,7 +799,7 @@ def write_bug_report(
             _guarded_write(
                 report_dir / "turn_metrics.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False)
-                          for e in turn_metrics) + "\n")
+                          for e in turn_metrics) + "\n", failures)
     except Exception:
         turn_metrics = []
 
@@ -695,7 +814,7 @@ def write_bug_report(
             _guarded_write(
                 report_dir / "request_metrics.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False)
-                          for e in request_metrics) + "\n")
+                          for e in request_metrics) + "\n", failures)
     except Exception:
         request_metrics = []
 
@@ -722,7 +841,7 @@ def write_bug_report(
     # report stops being private.
     n_redacted = _guarded_write(
         report_dir / "report.json",
-        json.dumps(payload, ensure_ascii=False, indent=2))
+        json.dumps(payload, ensure_ascii=False, indent=2), failures)
     n_redacted += _guarded_write(
         report_dir / "report.md",
         _render_markdown(
@@ -735,7 +854,9 @@ def write_bug_report(
             turn_metrics=turn_metrics,
             request_metrics=request_metrics,
         ),
+        failures,
     )
+    write_redaction_failed_note(report_dir, failures)
     if n_redacted:
         try:
             (report_dir / "REDACTIONS.txt").write_text(
@@ -763,7 +884,7 @@ def _make_group_readable(report_dir: Path) -> None:
        lost ``g+s``) leaves files in the writer's PRIMARY group, which the
        maintainer is not in — so ``chmod g+r`` then grants read to the wrong
        group and the report is silently unreadable (observed 2026-06-25:
-       files came out ``qmchem_all`` instead of ``qmchem_shared``). Setting
+       files came out in the writer's group, not the maintainer's). Setting
        the group explicitly makes readability deterministic.
     2. MODE — add group read (+ traverse on dirs). The "others" bits are left
        untouched, so the report stays as private as the archive home already
@@ -793,6 +914,40 @@ def _make_group_readable(report_dir: Path) -> None:
             pass
 
 
+#: Values of ``agent.bug_upload``; the first is the default.
+UPLOAD_POLICIES = ("ask", "never", "always")
+
+
+def upload_policy(settings: dict | None = None) -> str:
+    """``agent.bug_upload`` from ``settings`` (default: the settings
+    file): ``ask``, ``never`` or ``always``. Missing, unreadable or
+    unknown is ``ask`` -- the value that uploads only after a yes; an
+    unknown value is never read as ``always``."""
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        except Exception:
+            settings = {}
+    agent = (settings or {}).get("agent") or {}
+    value = str(agent.get("bug_upload") or "").strip().lower() \
+        if isinstance(agent, dict) else ""
+    return value if value in UPLOAD_POLICIES else UPLOAD_POLICIES[0]
+
+
+def upload_refusal(*, consent: bool, settings: dict | None = None) -> str:
+    """Why a report must not be copied to the remote archive now, or ""
+    when it may be. ``consent``: the person said yes for this report."""
+    policy = upload_policy(settings)
+    if policy == "never":
+        return "not uploaded: agent.bug_upload is 'never'"
+    if policy == "ask" and not consent:
+        return ("not uploaded: nobody confirmed copying this report "
+                "(agent.bug_upload is 'ask'; confirm it when filing, or "
+                "set it to 'always' to upload without asking)")
+    return ""
+
+
 def push_report_to_remote(
     report_dir: str | Path,
     *,
@@ -802,6 +957,8 @@ def push_report_to_remote(
     port: int = 22,
     subdir: str = _BUG_SUBDIR,
     timeout: int = 120,
+    consent: bool = False,
+    settings: dict | None = None,
 ) -> tuple[bool, str]:
     """rsync a locally-written report directory into the shared remote
     archive over SSH — the same mechanism the dashboard uses for transfers.
@@ -811,6 +968,12 @@ def push_report_to_remote(
     error string.  Never raises — the caller keeps the local copy either
     way.  No-op (returns ok=False with a reason) when the transfer config
     is incomplete.
+
+    ``consent`` is True only when the person agreed to copy THIS report;
+    ``settings`` (default: the settings file) supplies
+    ``agent.bug_upload``. :func:`upload_refusal` decides, before any
+    command runs; a refusal returns ``(False, reason)`` and the local copy
+    stays where it is.
     """
     report_dir = Path(report_dir)
     host = (host or "").strip()
@@ -820,6 +983,9 @@ def push_report_to_remote(
         return False, "no remote configured (host/user/remote path missing)"
     if not report_dir.is_dir():
         return False, f"local report missing: {report_dir}"
+    refused = upload_refusal(consent=consent, settings=settings)
+    if refused:
+        return False, f"{refused}; the report stays local in {report_dir}"
 
     from delfin.ssh_transfer_jobs import (
         build_ssh_mkdir_command,
@@ -869,6 +1035,15 @@ def push_report_to_remote(
 _TASK_DRAFTS_DIR = Path.home() / ".delfin" / "bug_tasks"
 
 
+def report_surface(report: dict) -> str:
+    """Which entry point filed *report*: ``dashboard``, ``terminal`` (the
+    REPL's /bug) or ``cli`` (``delfin-agent bug report``). A report
+    without the field predates it and came from the dashboard button, the
+    only writer at the time."""
+    value = str((report or {}).get("surface") or "").strip()
+    return value if value in SURFACES else "dashboard"
+
+
 def load_report(report_dir: str | Path) -> dict:
     """Load a report.json from a report directory (or the file itself)."""
     p = Path(report_dir).expanduser()
@@ -902,6 +1077,7 @@ def list_reports(archive_dir: str | Path | None = None) -> list[dict]:
             "name": d.name,
             "path": str(d),
             "created_at": meta.get("created_at", ""),
+            "surface": report_surface(meta),
             "user": meta.get("user", ""),
             "mode": meta.get("mode", ""),
             "model": meta.get("model", ""),

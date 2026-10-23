@@ -54,6 +54,9 @@ class _ConfirmRequest:
     #: with the reason a refusal carried.
     answered_from_outside: bool = False
     outside_reason: str = ""
+    #: Expired by three answers without the code, not by absence: the
+    #: window does not go "away" for it.
+    code_spent: bool = False
 
 
 class KitConfirmBroker:
@@ -85,7 +88,10 @@ class KitConfirmBroker:
         #: The session this broker belongs to, stamped on every request
         #: it parks in the inbox. Set by whoever builds the broker; "" is
         #: honest about not knowing rather than claiming someone else's.
-        self.session_id = ""
+        #: ``follow_session`` replaces the fixed value with a source read
+        #: at request time.
+        self._session_id = ""
+        self._session_source: Optional[Any] = None
         # When a window expired with nobody answering, the moment it did.
         # Until it is cleared (a real decision) or a window has passed,
         # further requests are not made to wait again: the answer would be
@@ -110,6 +116,45 @@ class KitConfirmBroker:
         self._toast: Any = None
 
     # -- public API --------------------------------------------------------
+
+    @property
+    def session_id(self) -> str:
+        """The id stamped on a request raised now.
+
+        Input: none. Output: the source's current value when
+        ``follow_session`` bound one, else the value last assigned.
+        A source that raises or returns nothing yields "" (unattributed),
+        never the previous session's id.
+        """
+        source = getattr(self, "_session_source", None)
+        if source is None:
+            return str(getattr(self, "_session_id", "") or "")
+        try:
+            return str(source() or "")
+        except Exception:
+            return ""
+
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        self._session_id = str(value or "")
+
+    def follow_session(self, source: Optional[Any]) -> None:
+        """Read the session id from *source* at each request.
+
+        Input: a zero-argument callable returning the current session
+        id, or None to return to the assigned value. Semantics: the
+        dashboard builds one broker per tab and keeps it across engine
+        rebuilds, session switches, restores and the engine minting a
+        new id; a value copied once at construction is wrong after the
+        first of these. Reading at request time costs one attribute
+        lookup per approval.
+
+        Rejected: stamping inside ``set_kit_confirm_callback`` (the tab
+        also passes the callback to the engine constructor, and a copied
+        id goes stale the same way); wrapping ``callback`` per engine
+        (the gate reads ``last_timed_out`` off ``callback.__self__``).
+        """
+        self._session_source = source
 
     @property
     def last_timed_out(self) -> bool:
@@ -174,6 +219,11 @@ class KitConfirmBroker:
                 return True             # a click; it set req.decision
             outside = self._answer_in_the_room(req)
             if outside is None:
+                if req.published is not None:
+                    from . import terminal_confirm as _tc
+                    if _tc.code_spent(req.published):
+                        req.code_spent = True
+                        return False    # three unsigned answers: expired
                 continue
             decision, reason = outside
             # The click path sets decision under the lock and then sets
@@ -189,6 +239,16 @@ class KitConfirmBroker:
             req.event.set()
             return True
 
+    def outside_answer_hint(self, req: "_ConfirmRequest") -> str:
+        """The command and one-time code for answering *req* from another
+        terminal, or "". Shown in this window's row only: the window is
+        the human channel, and the code is in no file."""
+        try:
+            from . import terminal_confirm as _tc
+            return _tc.outside_answer_line(getattr(req, "published", None))
+        except Exception:
+            return ""
+
     def _answer_in_the_room(self, req: "_ConfirmRequest"):
         """The answer left for *req*, or None. Never raises."""
         if req.published is None:
@@ -199,8 +259,41 @@ class KitConfirmBroker:
         except Exception:
             return None
 
+    def _session_perms(self):
+        """The followed engine's KitToolPermissions, or None (the tab
+        follows the engine through ``follow_activity``)."""
+        source = getattr(self, "_activity_source", None)
+        try:
+            followed = source() if callable(source) else source
+        except Exception:
+            return None
+        return getattr(followed, "kit_permissions", None)
+
+    def follow_activity(self, source: Optional[Any]) -> None:
+        """Mark each wait for a decision on *source*'s activity state.
+
+        Input: a zero-argument callable returning the current engine's
+        ``activity.Activity`` (or the engine), or None. Read per request
+        for the reason ``follow_session`` is: the tab keeps one broker
+        across engine rebuilds. Output: while ``callback`` blocks, the
+        activity reads "waiting for your approval".
+        """
+        self._activity_source = source
+
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Called from the agent worker thread. Blocks until decided.
+
+        The method the gate holds (it reads ``last_timed_out`` off its
+        ``__self__``); the wait itself is ``_ask``, marked on the
+        followed activity for its whole length.
+        """
+        from .activity import APPROVAL, awaiting_person
+        with awaiting_person(getattr(self, "_activity_source", None),
+                             APPROVAL):
+            return self._ask(tool_name, args, preview)
+
+    def _ask(self, tool_name: str, args: dict, preview: str) -> bool:
+        """Queue one request and block until decided or expired.
 
         With the per-action confirm dialog retired, this is now invoked
         only by the Self-Modification Guard (and ``remember_permission``,
@@ -259,6 +352,9 @@ class KitConfirmBroker:
         # and by file_confirm's checked reader, so one publish here puts
         # every dashboard approval on those surfaces too.
         req.published = self._publish_for_supervisors(req, preview)
+        # Again, now that the row can show the code for an answer from
+        # another terminal (outside_answer_hint).
+        self._refresh_panel()
 
         # Block worker thread until decided or timeout -- unless a window
         # has just expired unanswered. Nobody is there to answer this one
@@ -285,7 +381,7 @@ class KitConfirmBroker:
                 # denied — never retry", which previously poisoned the rest
                 # of the session after every unattended 300s window.
                 self.last_timed_out = True
-                if self._away_since is None:
+                if self._away_since is None and not req.code_spent:
                     self._away_since = time.monotonic()
             else:
                 self.last_timed_out = False
@@ -579,7 +675,7 @@ class KitConfirmBroker:
         persist_kind = ""        # 'allow_pattern' / 'extra_dir' / ''
         persist_disabled_reason = ""
         if tool == "bash":
-            persist_pat = _suggest_persist_pattern(cmd)
+            persist_pat = _suggest_persist_pattern(cmd, self._session_perms())
             persist_kind = "allow_pattern"
             if not persist_pat:
                 persist_disabled_reason = (
@@ -660,12 +756,17 @@ class KitConfirmBroker:
             f'</pre>'
         )
 
+        hint = self.outside_answer_hint(req)
+        hint_html = (
+            f'<div style="font-size:11px; color:#9aa5b1; margin:2px 0;">'
+            f'<code>{_html_escape(hint)}</code></div>' if hint else "")
         header = widgets.HTML(
             value=(
                 f'<b>#{req.seq} &middot; {tool}</b>'
                 f'{("&nbsp;&middot;&nbsp;" + subtitle) if subtitle else ""}'
                 f'{rationale_html}'
                 f'{preview_pre}'
+                f'{hint_html}'
             )
         )
 
@@ -812,14 +913,17 @@ def _is_protected_path(path_arg: str) -> bool:
     return False
 
 
-def _suggest_persist_pattern(cmd: str) -> str:
+def _suggest_persist_pattern(cmd: str, perms=None) -> str:
     """Regex form for ``~/.delfin/settings.json`` allow_patterns.
 
     Delegates to ``kit_settings.suggest_pattern_for_command`` so the same
-    rules apply that the engine consumes on load.
+    rules apply that the engine consumes on load. ``perms`` is the
+    session's KitToolPermissions: with it, a compound command's rule
+    covers the segments THIS session's gate asked about, its own rules
+    included.
     """
     try:
         from .kit_settings import suggest_pattern_for_command
-        return suggest_pattern_for_command(cmd)
+        return suggest_pattern_for_command(cmd, perms)
     except Exception:
         return ""

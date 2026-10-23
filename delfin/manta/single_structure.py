@@ -317,7 +317,7 @@ def _try_ensemble_router(smiles: str) -> Optional[Tuple[Optional[str], Optional[
 def _uff_seat_aromatic_bonds(mol, max_iters: int = 200,
                              force_constant: float = 1.0e4) -> None:
     """UFF-minimise ``mol`` with every AROMATIC ring bond harmonically pinned to
-    its delocalised CCDC target length (DELFIN_FFFREE_AROM_SEAT root seat).
+    its delocalised target length (aromatic_bond_targets; DELFIN_FFFREE_AROM_SEAT root seat).
 
     This is the metal-FREE lever: metal-free molecules return from the isomer
     pool before the post-hoc aromatic corrector ever runs, so the only place a
@@ -1183,7 +1183,7 @@ def smiles_to_xyz(
         if apply_uff and not has_metal:
             if os.environ.get("DELFIN_FFFREE_AROM_SEAT", "0") == "1":
                 # ROOT seat (metal-free path): constrain aromatic ring bonds to
-                # their delocalised CCDC targets during the UFF minimisation so
+                # their delocalised targets (aromatic_bond_targets) during the UFF minimisation so
                 # free organic aromatics are BUILT at the right length.  Default
                 # OFF → the else-branch below is the unchanged original path.
                 try:

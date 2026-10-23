@@ -1,0 +1,216 @@
+diff --git a/node_modules/@opentui/core/.bun-tag-5685aba83f16e23d b/.bun-tag-5685aba83f16e23d
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@opentui/core/.bun-tag-a7148b053dc417e8 b/.bun-tag-a7148b053dc417e8
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/chunk-bun-qphgryjx.js b/chunk-bun-qphgryjx.js
+index 9cb224d8b82d180b8e8b75120fb848f6df9dd31f..99507a7ca300930fddb615c480796610c6a38300 100644
+--- a/chunk-bun-qphgryjx.js
++++ b/chunk-bun-qphgryjx.js
+@@ -19785,6 +19785,7 @@ var ANSI = {
+   clearSavedLines: "\x1B[3J",
+   scrollDown: (lines) => `\x1B[${lines}T`,
+   scrollUp: (lines) => `\x1B[${lines}S`,
++  scrollIntoHistory: (lines, lastRow) => `\x1B7\x1B[${lastRow};1H${"\n".repeat(lines)}\x1B8`,
+   moveCursor: (row, col) => `\x1B[${row};${col}H`,
+   moveCursorAndClear: (row, col) => `\x1B[${row};${col}H\x1B[J`,
+   setRgbBackground: (r, g, b) => `\x1B[48;2;${r};${g};${b}m`,
+@@ -22692,6 +22693,35 @@ Captured external output:
+     const cursorRow = Number.isFinite(cursorState.y) ? Math.max(Math.trunc(cursorState.y), 1) : 1;
+     return Math.min(cursorRow, Math.max(this._terminalHeight, 1));
+   }
++  splitSeedRowsAfterReservation(cursorRow) {
++    // The startup cursor report answers a query sent BEFORE setup reserved the
++    // footer's rows below the cursor (native makeRoomForRendererOutput: height - 1
++    // newlines), which scrolls the screen when the cursor sits near the bottom. Seed
++    // from where the cursor row is after that; and when that row lies under the
++    // footer, push it up into history first -- seeded as it was, the first commit
++    // wrote over the row above it.
++    const height = Math.max(this._terminalHeight, 1);
++    const row = Math.min(Math.max(Math.trunc(cursorRow) || 1, 1), height);
++    const scrolled = Math.max(row + (this.splitSetupReservedRows ?? 0) - height, 0);
++    const tail = row - scrolled;
++    const pinned = this.getSplitPinnedRenderOffset();
++    if (pinned > 0 && tail > pinned) {
++      this.splitSeedScrollLines = tail - pinned;
++      this.flushSplitSeedScroll();
++      return pinned;
++    }
++    return tail;
++  }
++  flushSplitSeedScroll() {
++    // Written once setup has finished: a fast terminal's report can arrive while
++    // setup is still in flight, and the scroll must come after setup's own rows
++    // and before the first frame (setupTerminal flushes it right after setup).
++    if (!this.splitSeedScrollLines || !this._terminalIsSetup)
++      return;
++    const lines = this.splitSeedScrollLines;
++    this.splitSeedScrollLines = 0;
++    this.nativeSession.write(this.lib.encoder.encode(ANSI.scrollIntoHistory(lines, Math.max(this._terminalHeight, 1))));
++  }
+   isSplitCursorSeedFrameBlocked() {
+     return this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout" && this._splitHeight > 0 && this.pendingSplitStartupCursorSeed && this.splitStartupSeedTimeoutId !== null;
+   }
+@@ -22840,7 +22870,7 @@ Captured external output:
+       if (prevSplitHeight === 0 && nextSplitHeight > 0) {
+         scrollOutput = ANSI.scrollDown(this._terminalHeight - nextSplitHeight);
+       } else if (splitViewportScrollLines > 0) {
+-        scrollOutput = ANSI.scrollUp(splitViewportScrollLines);
++        scrollOutput = ANSI.scrollIntoHistory(splitViewportScrollLines, this._terminalHeight);
+       }
+     }
+     const clearOutput = terminalWritable && leavingSplitFooter && !terminalScreenModeChanged ? ANSI.moveCursorAndClear(splitTransitionSourceTopLine, 1) : shouldClearSplitSurfaceRowsImmediately ? this.getStaleSplitSurfaceClear(splitTransitionSourceTopLine, splitTransitionSourceHeight, this._externalOutputMode === "capture-stdout" ? splitTransitionTargetTopLine : nextPinnedRenderOffset + 1, nextSplitHeight) : "";
+@@ -22964,6 +22994,7 @@ Captured external output:
+       return this.nativeTerminalTransition;
+     const startupCursorCprActive = this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout";
+     this.pendingSplitStartupCursorSeed = startupCursorCprActive;
++    this.splitSetupReservedRows = this._screenMode === "alternate-screen" ? 0 : Math.max(this.height, 1) - 1;
+     this.updateStdinParserProtocolContext({
+       privateCapabilityRepliesActive: true,
+       explicitWidthCprActive: true,
+@@ -22991,6 +23022,7 @@ Captured external output:
+     }
+     if (this._isDestroyed)
+       return;
++    this.flushSplitSeedScroll();
+     if (this.debugOverlay.enabled) {
+       this.configureDebugOverlay({});
+       if (!this.memorySnapshotInterval) {
+@@ -23022,13 +23054,21 @@ Captured external output:
+         if (!this.pendingSplitStartupCursorSeed) {
+           return;
+         }
++        if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout" && this._terminalIsSetup) {
++          // No cursor report in time (a slow link): act as if the cursor were on the
++          // bottom row. That costs at most blank rows above the footer; the seed left
++          // from before the report (row 1) made the first commits overwrite the screen.
++          this.resetSplitScrollback(this.splitSeedRowsAfterReservation(Math.max(this._terminalHeight, 1)));
++          this.clearPendingSplitFooterTransition();
++          this.clearSplitStartupCursorSeed();
++        }
+         this.updateStdinParserProtocolContext({ startupCursorCprActive: false });
+         if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
+           this.requestRender();
+         }
+         if (this.externalOutputQueue.size > 0)
+           this.requestRender();
+-      }, 120);
++      }, Number(process.env.OTUI_SPLIT_CPR_TIMEOUT_MS) || 1500);
+     }
+     this.queryPixelResolution();
+     if (this.shouldSyncNativePaletteState()) {
+@@ -23111,7 +23151,7 @@ Captured external output:
+     this.emit("capabilities" /* CAPABILITIES */, this._capabilities);
+     const hadPendingSplitStartupCursorSeed = this.pendingSplitStartupCursorSeed;
+     if (hadPendingSplitStartupCursorSeed && hasCursorReport && this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
+-      this.resetSplitScrollback(this.getSplitCursorSeedRows());
++      this.resetSplitScrollback(this.splitSeedRowsAfterReservation(this.getSplitCursorSeedRows()));
+       this.clearPendingSplitFooterTransition();
+       this.clearSplitStartupCursorSeed();
+       this.updateStdinParserProtocolContext({ startupCursorCprActive: false });
+diff --git a/chunk-node-j1h89sfg.js b/chunk-node-j1h89sfg.js
+index 3c6432c3602ab2bb0972edfca27b198c32faa87f..07c73b80161133ffc5361a87e1118fd1d0cc1454 100644
+--- a/chunk-node-j1h89sfg.js
++++ b/chunk-node-j1h89sfg.js
+@@ -19784,6 +19784,7 @@ var ANSI = {
+   clearSavedLines: "\x1B[3J",
+   scrollDown: (lines) => `\x1B[${lines}T`,
+   scrollUp: (lines) => `\x1B[${lines}S`,
++  scrollIntoHistory: (lines, lastRow) => `\x1B7\x1B[${lastRow};1H${"\n".repeat(lines)}\x1B8`,
+   moveCursor: (row, col) => `\x1B[${row};${col}H`,
+   moveCursorAndClear: (row, col) => `\x1B[${row};${col}H\x1B[J`,
+   setRgbBackground: (r, g, b) => `\x1B[48;2;${r};${g};${b}m`,
+@@ -22691,6 +22692,35 @@ Captured external output:
+     const cursorRow = Number.isFinite(cursorState.y) ? Math.max(Math.trunc(cursorState.y), 1) : 1;
+     return Math.min(cursorRow, Math.max(this._terminalHeight, 1));
+   }
++  splitSeedRowsAfterReservation(cursorRow) {
++    // The startup cursor report answers a query sent BEFORE setup reserved the
++    // footer's rows below the cursor (native makeRoomForRendererOutput: height - 1
++    // newlines), which scrolls the screen when the cursor sits near the bottom. Seed
++    // from where the cursor row is after that; and when that row lies under the
++    // footer, push it up into history first -- seeded as it was, the first commit
++    // wrote over the row above it.
++    const height = Math.max(this._terminalHeight, 1);
++    const row = Math.min(Math.max(Math.trunc(cursorRow) || 1, 1), height);
++    const scrolled = Math.max(row + (this.splitSetupReservedRows ?? 0) - height, 0);
++    const tail = row - scrolled;
++    const pinned = this.getSplitPinnedRenderOffset();
++    if (pinned > 0 && tail > pinned) {
++      this.splitSeedScrollLines = tail - pinned;
++      this.flushSplitSeedScroll();
++      return pinned;
++    }
++    return tail;
++  }
++  flushSplitSeedScroll() {
++    // Written once setup has finished: a fast terminal's report can arrive while
++    // setup is still in flight, and the scroll must come after setup's own rows
++    // and before the first frame (setupTerminal flushes it right after setup).
++    if (!this.splitSeedScrollLines || !this._terminalIsSetup)
++      return;
++    const lines = this.splitSeedScrollLines;
++    this.splitSeedScrollLines = 0;
++    this.nativeSession.write(this.lib.encoder.encode(ANSI.scrollIntoHistory(lines, Math.max(this._terminalHeight, 1))));
++  }
+   isSplitCursorSeedFrameBlocked() {
+     return this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout" && this._splitHeight > 0 && this.pendingSplitStartupCursorSeed && this.splitStartupSeedTimeoutId !== null;
+   }
+@@ -22839,7 +22869,7 @@ Captured external output:
+       if (prevSplitHeight === 0 && nextSplitHeight > 0) {
+         scrollOutput = ANSI.scrollDown(this._terminalHeight - nextSplitHeight);
+       } else if (splitViewportScrollLines > 0) {
+-        scrollOutput = ANSI.scrollUp(splitViewportScrollLines);
++        scrollOutput = ANSI.scrollIntoHistory(splitViewportScrollLines, this._terminalHeight);
+       }
+     }
+     const clearOutput = terminalWritable && leavingSplitFooter && !terminalScreenModeChanged ? ANSI.moveCursorAndClear(splitTransitionSourceTopLine, 1) : shouldClearSplitSurfaceRowsImmediately ? this.getStaleSplitSurfaceClear(splitTransitionSourceTopLine, splitTransitionSourceHeight, this._externalOutputMode === "capture-stdout" ? splitTransitionTargetTopLine : nextPinnedRenderOffset + 1, nextSplitHeight) : "";
+@@ -22963,6 +22993,7 @@ Captured external output:
+       return this.nativeTerminalTransition;
+     const startupCursorCprActive = this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout";
+     this.pendingSplitStartupCursorSeed = startupCursorCprActive;
++    this.splitSetupReservedRows = this._screenMode === "alternate-screen" ? 0 : Math.max(this.height, 1) - 1;
+     this.updateStdinParserProtocolContext({
+       privateCapabilityRepliesActive: true,
+       explicitWidthCprActive: true,
+@@ -22990,6 +23021,7 @@ Captured external output:
+     }
+     if (this._isDestroyed)
+       return;
++    this.flushSplitSeedScroll();
+     if (this.debugOverlay.enabled) {
+       this.configureDebugOverlay({});
+       if (!this.memorySnapshotInterval) {
+@@ -23021,13 +23053,21 @@ Captured external output:
+         if (!this.pendingSplitStartupCursorSeed) {
+           return;
+         }
++        if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout" && this._terminalIsSetup) {
++          // No cursor report in time (a slow link): act as if the cursor were on the
++          // bottom row. That costs at most blank rows above the footer; the seed left
++          // from before the report (row 1) made the first commits overwrite the screen.
++          this.resetSplitScrollback(this.splitSeedRowsAfterReservation(Math.max(this._terminalHeight, 1)));
++          this.clearPendingSplitFooterTransition();
++          this.clearSplitStartupCursorSeed();
++        }
+         this.updateStdinParserProtocolContext({ startupCursorCprActive: false });
+         if (this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
+           this.requestRender();
+         }
+         if (this.externalOutputQueue.size > 0)
+           this.requestRender();
+-      }, 120);
++      }, Number(process.env.OTUI_SPLIT_CPR_TIMEOUT_MS) || 1500);
+     }
+     this.queryPixelResolution();
+     if (this.shouldSyncNativePaletteState()) {
+@@ -23110,7 +23150,7 @@ Captured external output:
+     this.emit("capabilities" /* CAPABILITIES */, this._capabilities);
+     const hadPendingSplitStartupCursorSeed = this.pendingSplitStartupCursorSeed;
+     if (hadPendingSplitStartupCursorSeed && hasCursorReport && this._screenMode === "split-footer" && this._externalOutputMode === "capture-stdout") {
+-      this.resetSplitScrollback(this.getSplitCursorSeedRows());
++      this.resetSplitScrollback(this.splitSeedRowsAfterReservation(this.getSplitCursorSeedRows()));
+       this.clearPendingSplitFooterTransition();
+       this.clearSplitStartupCursorSeed();
+       this.updateStdinParserProtocolContext({ startupCursorCprActive: false });

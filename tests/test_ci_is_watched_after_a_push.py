@@ -142,7 +142,7 @@ def test_a_rate_limited_watch_waits_for_the_reset(ws):
     """A login node is one address for all its users, and sixty
     unauthenticated calls an hour are shared by all of them. On 2026-09-15
     two watches emptied that budget; asking again only gets another 403."""
-    limited = {"message": "API rate limit exceeded for 141.52.43.10.",
+    limited = {"message": "API rate limit exceeded for 192.0.2.10.",
                "_retry_at": time.time() + 900}
     fetch = _Fetch({"actions/runs": limited})
     done = _check(ws, fetch)

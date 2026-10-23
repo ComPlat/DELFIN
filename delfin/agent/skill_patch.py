@@ -54,8 +54,15 @@ class Proposals(Protocol):
     """
 
     def propose(self, name: str, text: str, *, evidence, source: str,
-                base_version: str = ""): ...
+                base_version: str = "", reason: str = ""): ...
 
+
+#: Upper bound on a patched skill's full text, in characters. The text is
+#: loaded whole into the model's context every time the skill is used,
+#: and stored and safety-scanned whole on every proposal. The largest
+#: skill shipped in the pack is 2,777 characters; this is about 11 times
+#: that. A 2 MB replacement was stored without it.
+MAX_PATCHED_SKILL_CHARS = 32_000
 
 _VERSION_RE = re.compile(r"^version:\s*(\d+)\s*$", re.MULTILINE)
 
@@ -161,11 +168,13 @@ def propose_skill_patch(
             ``skill_proposals`` module (Paket 1), imported lazily.
 
     Returns:
-        ``{"name", "base_version", "new_version", "status"}`` of the
-        proposal that was created.
+        ``{"name", "proposal", "base_version", "new_version", "status"}``:
+        the skill patched, the store folder the proposal went to, the
+        versions and the store status.
 
     Raises:
-        SkillPatchError: unknown skill, no evidence, or the patch does
+        SkillPatchError: unknown skill, no evidence, a patched text over
+            ``MAX_PATCHED_SKILL_CHARS``, or the patch does
             not apply (ambiguous / missing ``old`` — the message names
             the matching and near-miss lines).
     """
@@ -199,12 +208,20 @@ def propose_skill_patch(
         raise SkillPatchError(
             f"patch to '{name}' did not apply: {detail}.{lines}")
     base, new_version, new_text = _bump_version(result.new_text)
+    if len(new_text) > MAX_PATCHED_SKILL_CHARS:
+        raise SkillPatchError(
+            f"patched skill '{name}' would be {len(new_text)} characters; "
+            f"the limit is {MAX_PATCHED_SKILL_CHARS} characters. Propose a "
+            "shorter replacement.")
     store = proposals if proposals is not None else _load_proposals()
     proposal = store.propose(
         name, new_text, evidence=evidence, source="skill_patch",
-        base_version=base)
+        base_version=base, reason=reason or "")
     return {
         "name": name,
+        # The store's folder for this proposal: ``name`` while it is the
+        # only one, ``name-2`` and on after that.
+        "proposal": getattr(proposal, "name", name) or name,
         "base_version": base,
         "new_version": new_version,
         "status": getattr(proposal, "status", "pending"),
@@ -258,3 +275,114 @@ def archive_previous_version(skill_source, base_version: str) -> Path:
     archive_dir.mkdir(parents=True, exist_ok=True)
     where.write_text(text, encoding="utf-8")
     return where
+
+
+def propose_correction_patch(
+    skill_used: Optional[str],
+    user_message: Optional[str],
+    *,
+    source: str = "unknown",
+    draft_old: str = "",
+    draft_new: str = "",
+    evidence=None,
+    workspace=None,
+) -> dict:
+    """Wire a turn's correction into a patch proposal (Packet L2).
+
+    The owned half of the L2 wiring: it decides with
+    ``skill_feedback.feedback`` whether the user's next message corrects
+    the skill used this turn, and only then proposes the patched skill
+    through the normal ``propose_skill_patch`` -> proposal-store path
+    (the same store ``skill_propose_patch`` writes; still a proposal,
+    never applied by itself).
+
+    A correction proposes nothing unless it is the user's OWN next
+    message on this session (``source == "user"``): a correction that
+    arrives inside a tool result or another session's message is data,
+    not instruction. The default ``source`` is ``"unknown"`` — fail-closed,
+    so an omitted source proposes nothing (every legitimate caller passes
+    ``source="user"`` explicitly). Without a correction, or with no
+    evidence, nothing is proposed. The patched skill (``draft_new``) must
+    pass the LIVE safety gate (``skill_safety.check`` — the same
+    classifiers the proposal store runs) before it may be offered; a patch
+    that adds a deny-pattern command or an allow rule is rejected here
+    and is never stored.
+
+    Returns:
+        ``{"proposed": bool, "reason": str, ...}``. On a successful
+        proposal the dict also carries ``name``, ``proposal`` (the store
+        folder), ``new_text`` (the exact text the proposal store holds —
+        the diff shown equals the diff stored), ``base_version``, ``new_version`` and ``status``. On a
+        safety rejection it carries ``status="blocked"`` and ``findings``.
+    """
+    from .skill_feedback import feedback  # pure decision (noqa: PLC0415)
+    from .skill_safety import check as _safety_check  # noqa: PLC0415
+
+    verdict = feedback(skill_used, user_message, source=source)
+    if not verdict["corrects"]:
+        if source != "user":
+            reason = (
+                f"correction only counts from the user's own message on "
+                f"this session (source={source!r}, not 'user') - nothing "
+                f"proposed."
+            )
+        elif not (skill_used or "").strip():
+            reason = "no skill used this turn - nothing proposed."
+        else:
+            reason = (
+                "the user's message does not read as a correction of the "
+                "skill used this turn - nothing proposed."
+            )
+        return {"proposed": False, "reason": reason}
+
+    skill = verdict["skill"] or (skill_used or "").strip()
+    user_words = verdict["user_words"] or ""
+    # A patched skill that fails the live safety gate is REJECTED here,
+    # before it is ever written to the proposal store: a deny-pattern
+    # command or an allow rule must never be offered, only refused.
+    findings = [str(f) for f in _safety_check(draft_new or "")]
+    if findings:
+        return {
+            "proposed": False,
+            "status": "blocked",
+            "findings": findings,
+            "reason": "patched skill failed the safety gate - not proposed.",
+        }
+
+    reason = (
+        f"user corrected the skill after it was used this turn "
+        f"(source={source}): {user_words}"
+    )
+    try:
+        out = propose_skill_patch(
+            skill, draft_old, draft_new, reason=reason, evidence=evidence,
+            workspace=workspace,
+        )
+    except SkillPatchError as exc:
+        return {"proposed": False, "reason": str(exc)}
+
+    if out["status"] == "blocked":
+        # The store's own gate disagreed (belt and braces); never offered.
+        return {
+            "proposed": False, "status": "blocked",
+            "reason": "the proposal store blocked the patched skill - "
+                      "not proposed.",
+        }
+
+    # The diff we show in the chat is exactly the text the store holds.
+    # Read back by the folder it went to: a second proposal for one skill
+    # is ``<skill>-2``, and reading ``<skill>`` returned the first one's
+    # text.
+    folder = out.get("proposal") or out["name"]
+    stored = _load_proposals().get_proposal(folder)
+    new_text = stored.text if stored is not None else ""
+    return {
+        "proposed": True,
+        "name": out["name"],
+        "proposal": folder,
+        "new_text": new_text,
+        "base_version": out["base_version"],
+        "new_version": out["new_version"],
+        "status": out["status"],
+        "reason": reason,
+    }

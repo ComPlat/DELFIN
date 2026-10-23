@@ -1,7 +1,7 @@
 """Evidence gathered through the shell has to count as evidence.
 
-Field report 20260831-083210_ka_user: read the singlet-triplet gap out
-of nine ORCA runs under /pfs/.../calc/TADFs-Jeneesh_*. The agent did it
+A field report (2026-08-31): read the singlet-triplet gap out
+of nine ORCA runs under /pfs/.../calc/TADFs-set_*. The agent did it
 correctly and the grounding guards fought it for two extra turns, because
 the data lives OUTSIDE the workspace and is therefore reached with `grep`
 through the shell rather than with `grep_file`.
@@ -60,7 +60,7 @@ def calc():
     with tempfile.TemporaryDirectory(prefix="ws-") as ws_dir, \
             tempfile.TemporaryDirectory(prefix="calc-") as calc_dir:
         ws = Path(ws_dir)
-        esd = Path(calc_dir) / "TADFs-Jeneesh_3" / "ESD"
+        esd = Path(calc_dir) / "TADFs-set_3" / "ESD"
         esd.mkdir(parents=True)
         (esd / "S1.out").write_text(
             "FINAL SINGLE POINT ENERGY   -1705.197734757559\n")

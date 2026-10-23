@@ -90,7 +90,7 @@ def test_running_and_completed_jobs_do_not_alert(tmp_path):
     assert jm.check_once(path=wp, run_fn=run) == []
 
 
-def test_error_signature_scan_finds_jeromes_venv_case(tmp_path):
+def test_error_signature_scan_finds_the_reported_venv_case(tmp_path):
     err = tmp_path / "delfin_4976064.err"
     err.write_text(
         "slurm_script: line 287: /scratch/.../delfin_venv/bin/activate: "
@@ -235,6 +235,14 @@ def test_diagnosis_uses_engine_and_records_summary(monkeypatch):
     assert f.diagnosis_session.startswith("monitor-4976064-")
     assert saved["sid"] == f.diagnosis_session
     assert "🚨" in saved.get("title", "")
+    # Resumable with its context: the engine's history holds the diagnosis
+    # (the prompt marked as the monitor's own), in the job's folder.
+    from delfin.agent.harness_rows import is_harness_row
+    rows = saved["engine_messages"]
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+    assert is_harness_row(rows[0]) and "READ-ONLY" in rows[0]["content"]
+    assert "venv-Tarball" in rows[1]["content"]
+    assert saved["workspace"] == "/calc/test"
 
 
 def test_diagnosis_attaches_fix_assessment_zero_tokens(monkeypatch, tmp_path):

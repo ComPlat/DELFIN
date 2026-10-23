@@ -78,7 +78,8 @@ def test_git_failing_gives_no_stamp_rather_than_raising(tmp_path,
                                                         monkeypatch):
     def _boom(*a, **k):
         raise OSError("no git here")
-    monkeypatch.setattr(M.subprocess, "run", _boom)
+    # git runs through safe_git; no process of it can start.
+    monkeypatch.setattr(M.safe_git.subprocess, "run", _boom)
     assert M._head_ref(tmp_path) == ""
 
 

@@ -895,7 +895,7 @@ def create_tab(ctx):
             color = STATUS_COLORS.get(job.status, '#333')
             tbl += (
                 f'<tr>'
-                f'<td><b>{job.job_id}</b></td>'
+                f'<td><b>{_html.escape(str(job.job_id))}</b></td>'
                 f'<td>{_html.escape(str(job.name))}</td>'
                 f'<td>{_html.escape(str(job.mode))}</td>'
                 f'<td><b style="color:{color};">{job.status}</b></td>'

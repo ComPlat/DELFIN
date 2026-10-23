@@ -72,7 +72,7 @@ def test_the_dashboard_is_wired_to_it():
     from delfin.dashboard import tab_agent
 
     src = inspect.getsource(tab_agent)
-    assert "SHELL_PREFIX" in src and "shell_escape as _escape" in src
+    assert "SHELL_PREFIX" in src and "shell_escape_result as _escape" in src
     assert "dashboard-shell-escape" in src, "it has to run off the UI thread"
 
 

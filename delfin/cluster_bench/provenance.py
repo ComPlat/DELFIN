@@ -47,11 +47,8 @@ def cbatch_effective_timeout(base_s, speed_factor) -> int:
 
 
 def _git(*args) -> str | None:
-    try:
-        done = subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True,
-                              text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        return None
+    from delfin.agent import safe_git
+    done = safe_git.run(args, REPO_ROOT, timeout=60)
     return done.stdout if done.returncode == 0 else None
 
 

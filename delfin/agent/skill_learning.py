@@ -17,6 +17,7 @@ tool chip counts as a tool call.
 
 from __future__ import annotations
 
+import json
 import re
 
 _TOOL_CHIP = re.compile(r'tool-name">([^<]+)<')
@@ -59,6 +60,47 @@ def _result_text(msg: dict) -> str:
     return m.group(1) if m else ""
 
 
+#: Argument keys whose value is text the call writes or sends, not where
+#: it acts: a model copies tool output into exactly these, so their values
+#: never reach the drafter as the record of a call.
+_CONTENT_ARG_KEYS = frozenset({
+    "content", "new_string", "old_string", "edits", "patch", "payload",
+    "message", "text", "body", "data", "prompt", "description", "input",
+})
+
+
+def _tool_args(msg: dict) -> str:
+    """Short argv of a tool call, never its result body or written text.
+
+    Tool messages are ``<span class="tool-name">NAME</span> ARG...<details
+    ...>...result...</details>``; the argv is the text between the name
+    chip and the result block (a ``<details`` tag with or without
+    attributes). When that text is a JSON object (the CLI trace form)
+    only the scalar values of keys outside ``_CONTENT_ARG_KEYS`` are kept,
+    as ``key=value``; a JSON-looking argv that does not parse (cut by a
+    length cap) is dropped whole. At most 80 characters.
+    """
+    import html as _html
+    c = _content(msg)
+    m = re.search(r'tool-name">[^<]*</span>(.*?)(?:<details\b|$)', c, re.S)
+    if not m:
+        return ""
+    argv = _html.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))
+    argv = " ".join(argv.split())
+    if argv.startswith("{"):
+        try:
+            obj = json.loads(argv)
+        except ValueError:
+            return ""
+        if not isinstance(obj, dict):
+            return ""
+        argv = " ".join(
+            f"{k}={v}" for k, v in obj.items()
+            if str(k).lower() not in _CONTENT_ARG_KEYS
+            and isinstance(v, (str, int, float, bool)))
+    return argv[:80]
+
+
 def _is_tool_failed(msg: dict, name: str | None) -> bool:
     """Did this tool result report failure? Tolerant, best-effort."""
     text = (_content(msg) + " " + _result_text(msg)).lower()
@@ -95,17 +137,65 @@ def _is_tool_green(msg: dict, name: str | None) -> bool:
     return False
 
 
+#: What makes a user message read as a course correction, lower case.
+#: skill_feedback matches the same list as whole words.
+CORRECTION_MARKERS = (
+    "no, ", "nein", "falsch", "wrong", "not what i meant",
+    "i meant", "stattdessen", "instead", "revert", "undo",
+    "please revert", "undo that", "rollback", "that's not",
+    "das ist falsch", "das war falsch", "ich meinte",
+    "nicht so", "anders", "stop, ", "halt,",
+)
+
+
 def _looks_like_correction(text: str) -> bool:
     """Does a user message read as a course correction?"""
     t = text.lower()
-    markers = (
-        "no, ", "nein", "falsch", "wrong", "not what i meant",
-        "i meant", "stattdessen", "instead", "revert", "undo",
-        "please revert", "undo that", "rollback", "that's not",
-        "das ist falsch", "das war falsch", "ich meinte",
-        "nicht so", "anders", "stop, ", "halt,",
-    )
-    return any(m in t for m in markers)
+    return any(m in t for m in CORRECTION_MARKERS)
+
+
+def _users_own_words(msg: dict) -> list:
+    try:
+        from .api_client import _classifier_user_texts
+        return _classifier_user_texts([msg])
+    except Exception:
+        return []
+
+
+def _trusted_excerpt(messages, cap: int = 8000) -> str:
+    """A trusted projection of the session for the skill drafter.
+
+    The drafter may ONLY see what the user said and what tools were
+    CALLED and whether they succeeded. Tool RESULT text (stdout, stderr,
+    file contents, web pages, other sessions' messages) never enters the
+    excerpt: it is unfenced, untrusted input that a paraphrase could
+    turn into a rule. Each tool message becomes a bare ``TOOL <name>
+    <argv> -> <flag>`` line with the outcome flag derived from the
+    exit_code only — never the result body. Assistant prose is dropped
+    (it may carry merged tool output); only role "user" carries text.
+    """
+    parts: list[str] = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        c = _content(m).strip()
+        if role == "user":
+            # Not everything in the user role is the user: a message from
+            # another session, a reminder, a wrapped tool result arrive
+            # there too. The same reading as the action classifier's --
+            # one definition of "the user's own words".
+            for own in _users_own_words(m):
+                parts.append(f"USER: {own[:600]}")
+            continue
+        name = _tool_name(m)
+        if name is None or not c:
+            continue
+        argv = _tool_args(m)
+        flag = ("red" if _is_tool_failed(m, name)
+                else "green" if _is_tool_green(m, name) else "?")
+        parts.append(f"TOOL {name} {argv or ''} -> {flag}")
+    return "\n".join(parts)[-cap:]
 
 
 def qualifies(messages) -> list[str]:
@@ -368,8 +458,7 @@ def learn_from_session(messages, *, settings=None, llm=None,
         if evidence is None:
             return None  # no proof, no proposal
 
-        from delfin.agent.memory_distill import _transcript_excerpt
-        excerpt = _transcript_excerpt(
+        excerpt = _trusted_excerpt(
             [m for m in (messages or []) if isinstance(m, dict)])
         ev_block = (f"kind: {evidence.kind}\nref: {evidence.ref}\n"
                     f"detail: {getattr(evidence, 'detail', '')}")

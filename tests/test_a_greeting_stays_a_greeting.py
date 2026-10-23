@@ -47,9 +47,17 @@ def test_the_fast_path_judges_the_bare_greeting_and_does_not_touch_the_text():
     text = _TAB.read_text(encoding="utf-8")
     i = text.index("# Greeting fast-path")
     body = text[i:i + 1600]
-    assert "_AE.is_bare_greeting(user_text)" in body
-    assert "_AE.is_greeting(user_text)" not in body
+    # The judgement is turn_context.greeting_hint, shared with the
+    # terminal paths; it is the engine's bare rule, asserted below.
+    assert "turn_context.greeting_hint(user_text)" in body
+    assert "is_greeting(user_text)" not in body
     assert 'state["_pending_turn_hint"]' in body
     assert "(Greeting — reply with ONE" not in body
     j = text.index('_turn_hint = str(state.pop("_pending_turn_hint", "") or "")')
     assert "_memory = (_memory" in text[j:j + 300]
+
+
+def test_the_shared_hint_is_the_bare_rule():
+    from delfin.agent import turn_context
+    assert turn_context.greeting_hint("hallo")
+    assert turn_context.greeting_hint("hallo, prüfe die Tabelle") == ""

@@ -234,7 +234,7 @@ def _detect_aromatic_rings(
             continue
         # ONE SOURCE (see import above): with the switch OFF exactly the old
         # comparison ``mittel >= 1.46``, with the switch ON the element-normalised
-        # mean d/(r_i+r_j) >= 0.939.  The elements must be passed along --
+        # mean d/(r_i+r_j) >= the supplied ratio threshold.  The elements must be passed along --
         # exactly the information the raw mean throws away.
         if ring_rejected_by_length(syms, bond_edges, bond_lens):
             continue  # saturated ring — leave its (correct) pucker alone

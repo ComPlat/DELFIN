@@ -10,9 +10,22 @@ into a real session's next turn.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
+
+# The suite runs every test in one process, and a process maps one C++
+# runtime: the first library that needs it decides for all later ones.
+# Test files import PyMuPDF directly (importorskip), past the product's
+# own preload in office._pymupdf, and on a host whose LD_LIBRARY_PATH
+# names an older runtime (an ORCA install) that import mapped it and every
+# later `import sqlite3` failed -- three manual tests failed after
+# tests/test_doctor.py and passed alone. The interpreter's runtime is
+# mapped here, before any test module is imported.
+from delfin.agent.native_libs import prefer_own_libstdcxx  # noqa: E402
+
+prefer_own_libstdcxx()
 
 
 # ---------------------------------------------------------------------------
@@ -67,8 +80,10 @@ _GENERATED_ROOTS = (
 # Build noise: byte-code caches and tool caches created by running at all,
 # plus the worktrees parallel agents check out under `.claude`, which are
 # separate working copies with their own runs going on in them.
+# Not ".hypothesis": the property-based tests' cache goes to a directory of
+# the session's own (pytest_configure), so one in the checkout is a leak.
 _CHECKOUT_NOISE = ("__pycache__", ".pytest_cache", ".git", ".mypy_cache",
-                   ".ruff_cache", ".hypothesis",
+                   ".ruff_cache",
                    ".claude", ".venv", "node_modules",
                    # The gate/coordination directory the operator and the
                    # swarm workers write their controls, control runs and
@@ -240,6 +255,42 @@ def _teardown_new_paths(before: frozenset,
 _LIFELINE_NAMES = ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS")
 _LIFELINE_SAVED: dict = {}
 
+#: Credential variables (a provider's key, a forge token, any secret): the
+#: rule of tui/spike/check_tmux.py's is_credential, held to the same
+#: answer by tests/test_the_tui_e2e_harness_passes_no_credentials.py.
+CREDENTIAL_PARTS = ("API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_CREDENTIALS",
+                    "_PRIVATE_KEY", "_ACCESS_KEY")
+CREDENTIAL_PREFIXES = ("KIT_", "OPENAI_", "ANTHROPIC_")
+CREDENTIAL_NAMES = frozenset({"TOKEN", "NETRC", "PGPASSWORD"})
+
+
+def is_credential(name: str) -> bool:
+    upper = name.upper()
+    return (upper in CREDENTIAL_NAMES or upper.startswith(CREDENTIAL_PREFIXES)
+            or any(part in upper for part in CREDENTIAL_PARTS))
+
+
+@pytest.fixture()
+def workspace_skills_trusted(monkeypatch):
+    """Read ``<ws>/.delfin/skills`` as if the user had trusted its content.
+
+    For tests about what a skill DOES once it loads -- parsing, patching,
+    proposals, the skill tool -- which build their skills in a fixture
+    workspace and edit them in place. The trust gate itself (untrusted by
+    default, digest-bound, no override of a built-in) is pinned in
+    tests/test_a_repository_skill_needs_trust.py, which does not use this.
+    The no-override rule and the link-out-of-workspace refusal still
+    apply under this fixture; only the trust lookup is answered "yes".
+    """
+    from delfin.agent import skills as _skills
+
+    def _trusted(workspace):
+        d = Path(workspace) / ".delfin" / "skills"
+        return d if d.is_dir() else None
+
+    monkeypatch.setattr(_skills, "_project_skill_dir", _trusted)
+    yield
+
 
 def child_env(tmp_path) -> dict:
     """An environment for a child process a test starts, so that the
@@ -264,15 +315,24 @@ def child_env(tmp_path) -> dict:
     (delfin.agent.cli applies it before any sink import); for the rest
     it is inert. The directories exist before the child starts, so a
     first write does not have to race a ``mkdir``.
+
+    No credentials (is_credential): DELFIN copies a provider key it finds
+    in its environment into ``$HOME/.delfin/credentials.json`` -- under
+    this HOME a copy of the developer's real key in the test's tmp_path.
+    A child that needs a key is given a fake one after this.
     """
     import os
     home = tmp_path / "child_home"
     scratch = tmp_path / "child_scratch"
     home.mkdir(exist_ok=True)
     (scratch / ".delfin").mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if not is_credential(k)}
     env["HOME"] = str(home)
     env["DELFIN_SCRATCH_STATE"] = str(scratch)
+    # The OS keyring does not follow HOME (it is a D-Bus service or the
+    # login keychain): keyring's own override selects its null backend,
+    # which DELFIN refuses as a store.
+    env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
     return env
 
 
@@ -387,6 +447,75 @@ def _the_suite_leaves_no_scratch_behind(tmp_path_factory):
         yield
     finally:
         tempfile.tempdir = previous
+
+
+try:  # pytest >= 7.3: the per-phase pass/fail record the retention policy reads
+    from _pytest.tmpdir import tmppath_result_key as _TMPPATH_RESULT_KEY
+except ImportError:  # pragma: no cover - older pytest has no retention policy
+    _TMPPATH_RESULT_KEY = None
+from _pytest.pathlib import make_numbered_dir as _make_numbered_dir  # noqa: E402
+
+_TMP_SHARDS = pytest.StashKey[dict]()
+
+
+@pytest.fixture
+def tmp_path(request, tmp_path_factory):
+    """pytest's ``tmp_path``, created in one numbered directory per test module.
+
+    Input: the requesting test. Output: a new, empty directory
+    ``<basetemp>/t<k>/<test name as pytest truncates it><n>``. ``t<k>`` is
+    made once per module and session; the inner name and numbering are
+    pytest's own (``_pytest.tmpdir._mk_tmp``). The retention policy is
+    applied as pytest applies it: under ``tmp_path_retention_policy =
+    "failed"`` the directory of a passing test is removed at teardown,
+    ``"all"`` (the default) and ``"none"`` keep it, and the per-run cleanup
+    of whole ``pytest-<N>`` base directories is untouched.
+    ``tmp_path_factory`` and ``getbasetemp()`` are unchanged, and every
+    ``tmp_path`` stays under ``gettempdir()``
+    (``test_the_suite_leaves_no_scratch_behind``).
+
+    Why: ``make_numbered_dir`` lists its parent to find the next free
+    number. In pytest's flat layout the parent is the base directory, which
+    holds one entry per test run so far, plus the ``-settings`` and
+    ``-approval-codes`` siblings of each and every bare ``mkdtemp``. Test
+    *k* scans ~1.3*k entries, so the run is O(N^2): ~420 s of a 36 min CI
+    run at 29 300 tests, the per-test p10 rising linearly from 3 ms to
+    28 ms over a local run (2026-10-15). Here the base holds one entry per
+    module (~1800) and a shard at most its own module's tests (largest
+    ~970). Measured on two paired local full runs: -405 s and -447 s, the
+    per-test p10 flat at 1 ms, the identical pass set.
+
+    Rejected: a ``mkdtemp`` shard named after the module -- paths grew by
+    the module name and two tests that measure path-length budgets went
+    red (5018 > 5000 characters). An unnumbered ``mkdtemp`` per test loses
+    pytest's ``<name><n>`` naming that failure output shows. The shard
+    here costs 4-6 characters of path.
+    """
+    store = request.config.stash.setdefault(_TMP_SHARDS, {})
+    base = tmp_path_factory.getbasetemp()
+    key = (str(base), request.node.nodeid.split("::", 1)[0])
+    shard = store.get(key)
+    if shard is None or not shard.is_dir():
+        shard = store[key] = _make_numbered_dir(root=base, prefix="t")
+    name = re.sub(r"[\W]", "_", request.node.name)[:30]
+    path = _make_numbered_dir(root=shard, prefix=name, mode=0o700)
+    yield path
+
+    if _TMPPATH_RESULT_KEY is None:
+        return
+    result = request.node.stash.get(_TMPPATH_RESULT_KEY, {})
+    policy = getattr(tmp_path_factory, "_retention_policy", "all")
+    if policy == "failed" and result.get("call", True):
+        import shutil
+        shutil.rmtree(path, ignore_errors=True)
+        # pytest removes dead ``<name>current`` links in the base only.
+        link = shard / f"{name}current"
+        if link.is_symlink() and not link.exists():
+            link.unlink(missing_ok=True)
+    try:
+        del request.node.stash[_TMPPATH_RESULT_KEY]
+    except KeyError:
+        pass
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -609,6 +738,32 @@ _SHARED_LEDGERS = (
 
 
 @pytest.fixture(autouse=True)
+def _each_test_starts_its_own_network_mode(monkeypatch):
+    """``egress_proxy.network_mode`` keeps the first answer of a process
+    as its ceiling (a session cannot loosen it). In the suite one process
+    runs every test, so the ceiling is reset per test."""
+    try:
+        from delfin.agent import egress_proxy as _ep
+        monkeypatch.setattr(_ep, "_MODE_AT_START", None)
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _each_test_starts_with_no_failed_wrap(monkeypatch):
+    """``api_client._BWRAP_RUNTIME_FAILURE`` withdraws the caged admission
+    for the rest of a process once a wrap failed at run time; reset per
+    test so one test's failed wrap does not change another's verdicts."""
+    try:
+        from delfin.agent import api_client as _ac
+        monkeypatch.setattr(_ac, "_BWRAP_RUNTIME_FAILURE", None)
+    except Exception:
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_shared_ledgers():
     """Each test gets its own copy of the shared evidence ledgers.
 
@@ -651,6 +806,37 @@ def _isolate_shared_ledgers():
 #: The stand-in used when the machine has no xtb. Shipped with the suite,
 #: so "universal" does not mean "whoever runs this installs xtb first".
 _XTB_STUB_DIR = Path(__file__).resolve().parent / "stubs"
+
+
+#: Process-wide as well as per test (the fixture below): a worker thread a
+#: test started can outlive it, and a per-test monkeypatch is undone at
+#: teardown. Measured 2026-10-15, test_gfn_methods_in_the_viewer.py alone
+#: with no xtb reachable and the per-test setting only: structure-editor
+#: worker threads of one test reached ensure_binary while the next test
+#: was in setup, and wrote xtb 6.7.1 into delfin/qm_tools/.mamba_env of the
+#: checkout 5 s into the run (test_the_switch_holds_between_tests_as_well).
+os.environ["DELFIN_AUTO_INSTALL_QM_TOOLS"] = "0"
+
+
+@pytest.fixture(autouse=True)
+def _no_test_installs_a_tool(monkeypatch):
+    """DELFIN_AUTO_INSTALL_QM_TOOLS=0 for every test.
+
+    Input: none. Output: ensure_binary (gfn_optimize) and
+    qm_health.ensure_tool refuse with "Automatic installation is switched
+    off" instead of running install_qm_tools.sh.
+
+    The default is on, and a test that reached optimize_with_gfn with no
+    usable xtb started a conda install into the tool root: the checkout's
+    delfin/qm_tools on CI, the user's ~/.delfin/qm_tools elsewhere. Every
+    later test in the process then resolved that real xtb before the
+    stand-in, so tests that read xtb's results passed only after the
+    download and failed when run alone or in another CI shard (PR #278).
+    A test that needs a real xtb asks for ``real_xtb`` and skips without
+    one; tests of the install path delete the variable and replace
+    ``install_xtb`` themselves.
+    """
+    monkeypatch.setenv("DELFIN_AUTO_INSTALL_QM_TOOLS", "0")
 
 
 @pytest.fixture
@@ -739,9 +925,37 @@ def _reset_workspace_trust_caches():
     refusals have already been reported. Both would otherwise leak from one
     test's tmp workspace into the next one's assertions."""
     from delfin.agent import workspace_trust as wt
+    from delfin.agent import mcp_client as _mcp
     wt.reset_announcements()
+    # The MCP pins live in each test's trust store; the answers and the
+    # withheld tools of one test are its process state, not the next's.
+    _mcp.forget_pin_decisions()
     yield
     wt.reset_announcements()
+    _mcp.forget_pin_decisions()
+
+
+@pytest.fixture(autouse=True)
+def _no_host_managed_policy(monkeypatch):
+    """The host's managed policy (/etc/delfin/managed_policy.json, the
+    package-side copy, DELFIN_MANAGED_POLICY) is shadowed, not read: a
+    policy an administrator installed would otherwise change what every
+    gate test decides on that machine and on no other. Tests of the
+    policy inject their own path."""
+    from delfin.agent import managed_policy as mp
+    monkeypatch.setattr(mp, "_PATHS_OVERRIDE", ())
+    monkeypatch.delenv(mp.ENV_VAR, raising=False)
+    mp.clear_cache()
+    yield
+    mp.clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def _the_branch_list_does_not_ask_gh(monkeypatch):
+    """The dashboard's branch list asks an installed ``gh`` for pull
+    requests, which is a network call. A test that builds the dashboard
+    must not make it; the tests of that path hand in a stand-in gh."""
+    monkeypatch.setenv("DELFIN_BRANCH_LIST_GH", "off")
 
 
 @pytest.fixture(autouse=True)
@@ -893,6 +1107,22 @@ def _no_watcher_ends_the_test_run(monkeypatch):
         monkeypatch.setattr(_lifeline, "watch", lambda on_gone, **kw: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_session_list_outlives_its_test():
+    """A session list (``agent_sessions.create_tab``) starts a refresh loop
+    that announces its sessions every few seconds into
+    ``session_presence._DIR`` and rewrites ``_OPEN_SESSIONS_PATH`` -- both
+    redirected into each test's own home. Left running, the loop of one
+    test wrote into the home of every later one. Stopped (and its running
+    tick waited for) when the test ends, before the next test's redirect.
+    Only if the module was imported: this must not import the dashboard."""
+    yield
+    import sys
+    mod = sys.modules.get("delfin.dashboard.agent_sessions")
+    if mod is not None and hasattr(mod, "stop_refresh_loops"):
+        mod.stop_refresh_loops()
+
+
 @pytest.fixture
 def real_lifeline_watch(monkeypatch):
     """The real ``lifeline.watch``, for a test that checks the watch itself
@@ -1010,6 +1240,38 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
 
     monkeypatch.setattr(_user_settings, "get_settings_path", _settings_path)
 
+    # The approval-code directory: beside tmp_path, as ~/.delfin lies
+    # beside a workspace in real use, not in it (the generic redirect above
+    # puts it under tmp_path, and a Landlock cage keeps no hide inside a
+    # write root). A test that moved Path.home gets that home's.
+    # tests/test_a_hidden_code_dir_keeps_its_root_writable.py puts it
+    # inside a workspace on purpose.
+    from delfin.agent import approval_code as _approval_code
+    codes_home = tmp_path.parent / f"{tmp_path.name}-approval-codes"
+
+    def _codes_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "approval_codes"
+        return codes_home
+
+    monkeypatch.setattr(_approval_code, "codes_dir", _codes_dir)
+
+    # The account key store, beside tmp_path for the same reason. Unlike
+    # the code directory its Landlock hide is kept inside a write root
+    # (api_client._landlock_hide_paths), which costs that root the right
+    # to create files at its top: with the store under tmp_path, every
+    # test whose workspace is tmp_path could no longer create a file
+    # there on a host without bubblewrap (the CI runners).
+    from delfin.agent import trust_store as _trust_store
+    store_home = tmp_path.parent / f"{tmp_path.name}-trust-store"
+
+    def _store_dir():
+        if _already_isolated():
+            return pathlib.Path.home() / ".delfin" / "trust_store"
+        return store_home
+
+    monkeypatch.setattr(_trust_store, "store_dir", _store_dir)
+
 
 # ---------------------------------------------------------------------------
 # The sandbox-escape gate
@@ -1098,9 +1360,22 @@ def _ci_parity_no_secrets(tmp_path, monkeypatch):
         from delfin.agent import credentials as _cred
         monkeypatch.setattr(_cred, "_DEFAULT_PATH",
                             tmp_path / "no_credentials.json")
+        # The OS keyring is the user's, on a desktop host reachable from
+        # this process: no test reads or writes it. Tests of the keyring
+        # path install a fake backend behind the real factory themselves.
+        if hasattr(_cred, "_disabled_keyring_factory"):
+            monkeypatch.setattr(_cred, "_keyring_factory",
+                                _cred._disabled_keyring_factory)
+            _cred.reset_keyring_state()
     except Exception:
         pass
     yield
+    try:
+        from delfin.agent import credentials as _cred
+        if hasattr(_cred, "reset_keyring_state"):
+            _cred.reset_keyring_state()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1420,49 @@ _SLOW_TEST_FILES = frozenset({
 })
 
 
+_HYPOTHESIS_STORE: dict[str, str | None] = {}
+
+
+def _hypothesis_store_outside_the_checkout() -> None:
+    """Point hypothesis's storage at a directory of this session.
+
+    hypothesis writes ``<cwd>/.hypothesis`` (the unicode table it caches
+    for text strategies, the constants it collects from the code under
+    test) even with ``database=None``: one run of the parser property
+    tests from the checkout root left ``.hypothesis/`` beside
+    pyproject.toml. The variable reaches every process a test starts; the
+    directory is created only when hypothesis writes, and removed at the
+    end of the session.
+
+    Rejected: a ``settings`` profile -- it sets the example database, not
+    the storage directory the unicode table and constants go to.
+    """
+    import os
+    import tempfile
+    where = os.path.join(tempfile.gettempdir(), f"delfin-hypothesis-{os.getpid()}")
+    _HYPOTHESIS_STORE["dir"] = where
+    _HYPOTHESIS_STORE["was"] = os.environ.get("HYPOTHESIS_STORAGE_DIRECTORY")
+    os.environ["HYPOTHESIS_STORAGE_DIRECTORY"] = where
+    try:  # already imported by its pytest plugin; the location is read once
+        from hypothesis.configuration import set_hypothesis_home_dir
+    except ImportError:
+        return
+    set_hypothesis_home_dir(where)
+
+
+def _hypothesis_store_removed() -> None:
+    import os
+    import shutil
+    where = _HYPOTHESIS_STORE.pop("dir", None)
+    was = _HYPOTHESIS_STORE.pop("was", None)
+    if was is None:
+        os.environ.pop("HYPOTHESIS_STORAGE_DIRECTORY", None)
+    else:
+        os.environ["HYPOTHESIS_STORAGE_DIRECTORY"] = was
+    if where:
+        shutil.rmtree(where, ignore_errors=True)
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
@@ -1154,12 +1472,14 @@ def pytest_configure(config):
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    _hypothesis_store_outside_the_checkout()
 
 
 def pytest_unconfigure(config):
     import os
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
+    _hypothesis_store_removed()
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -1194,6 +1514,31 @@ def pytest_collection_modifyitems(config, items):
         fname = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if fname in _SLOW_TEST_FILES:
             item.add_marker(pytest.mark.slow)
+
+
+_PACKAGE_AST_LAST: list = []
+
+
+def pytest_collection_finish(session):
+    """Name the last test of the run whose module uses ``_package_ast``.
+
+    After the final deselection (``-m``, ``-k``), so the name is one that
+    runs. ``pytest_runtest_logfinish`` drops the shared trees (~740 MB)
+    once that test is through; without a consumer nothing is held.
+    """
+    import _package_ast
+    _PACKAGE_AST_LAST.clear()
+    for item in session.items:
+        module = getattr(item, "module", None)
+        if module is not None and any(
+                value is _package_ast for value in vars(module).values()):
+            _PACKAGE_AST_LAST[:] = [item.nodeid]
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    if _PACKAGE_AST_LAST and nodeid == _PACKAGE_AST_LAST[0]:
+        import _package_ast
+        _package_ast.release()
 
 
 @pytest.fixture(autouse=True)

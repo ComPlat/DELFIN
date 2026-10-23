@@ -39,7 +39,7 @@ from dataclasses import dataclass
 _PROVIDER_TIERS: dict[str, dict[str, str]] = {
     "claude": {"strong": "sonnet",         "cheap": "haiku"},
     "openai": {"strong": "gpt-5.4",        "cheap": "gpt-5.4-mini"},
-    "kit":    {"strong": "azure.gpt-5.4",  "cheap": "kit.deepseek-v4-flash"},
+    "kit":    {"strong": "kit.glm-5.3-flash", "cheap": "kit.deepseek-v4-flash"},
     "ollama": {"strong": "qwen3-coder:32b", "cheap": "qwen2.5-coder:7b"},
 }
 

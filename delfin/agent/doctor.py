@@ -30,6 +30,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from . import safe_git
+
 PASS = "PASS"
 WARN = "WARN"
 FAIL = "FAIL"
@@ -428,13 +430,8 @@ def _check_git_tooling(ctx: dict) -> list[dict]:
         rows.append(_row("git installed", PASS, git))
         missing = []
         for field in ("user.name", "user.email"):
-            try:
-                done = subprocess.run(["git", "config", "--get", field],
-                                      capture_output=True, text=True,
-                                      timeout=10, cwd=cwd)
-                if done.returncode != 0 or not (done.stdout or "").strip():
-                    missing.append(field)
-            except (OSError, subprocess.SubprocessError):
+            done = safe_git.run(["config", "--get", field], cwd, timeout=10)
+            if done.returncode != 0 or not (done.stdout or "").strip():
                 missing.append(field)
         if missing:
             rows.append(_row(
@@ -499,18 +496,16 @@ def _remote_url(workspace: str, remote: str) -> str | None:
     against ``workspace`` because the probe runs elsewhere. None: the
     word is neither a configured remote nor a URL or path.
     """
-    try:
-        done = subprocess.run(["git", "remote", "get-url", "--push", remote],
-                              capture_output=True, text=True, timeout=10,
-                              cwd=workspace, stdin=subprocess.DEVNULL)
-        if done.returncode == 0 and done.stdout.strip():
-            remote = done.stdout.strip()
-        elif not any(c in remote for c in ":/\\") and remote != ".":
-            # A bare word that is not a configured remote: git would fail
-            # with "does not appear to be a git repository".
-            return None
-    except (OSError, subprocess.SubprocessError):
-        pass
+    done = safe_git.run(["remote", "get-url", "--push", remote], workspace,
+                        timeout=10)
+    if done.returncode == 0 and done.stdout.strip():
+        remote = done.stdout.strip()
+    elif (done.returncode not in (safe_git.MISSING, safe_git.TIMED_OUT,
+                                  safe_git.NOT_STARTED)
+          and not any(c in remote for c in ":/\\") and remote != "."):
+        # A bare word that is not a configured remote: git would fail
+        # with "does not appear to be a git repository".
+        return None
     if "://" in remote:
         return remote
     colon, slash = remote.find(":"), remote.find("/")
@@ -737,6 +732,14 @@ def _isolation_mechanism() -> str:
     answer is what will actually run rather than what is installed.
     """
     try:
+        from delfin.agent import container_exec as _ce
+        if _ce._configured_mode() == "container":
+            choice = _ce.choose()
+            if choice.runtime:
+                return f"container ({choice.runtime})"
+    except Exception:
+        pass
+    try:
         from delfin.agent.api_client import (
             _bwrap_functional, _landlock_functional, _seatbelt_functional)
     except Exception:
@@ -769,6 +772,20 @@ _IMPORT_ORDER_PAIRS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _installed(module: str) -> bool:
+    """Whether *module* can be found, without importing it.
+
+    ``find_spec`` on a top-level name reads the path entries only, so it
+    cannot map a shared library into this interpreter -- the reason the
+    pair itself is imported in a subprocess.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _check_loader_path(ctx: dict) -> list[dict]:
     """Can the native stack load in one interpreter, in both orders.
 
@@ -789,6 +806,15 @@ def _check_loader_path(ctx: dict) -> list[dict]:
     rows: list[dict] = []
     py = sys.executable or _sh.which("python3") or "python3"
     for first, second, what in _IMPORT_ORDER_PAIRS:
+        # pymupdf is the optional [pdf] extra. Absent, there is nothing to
+        # load first, and the subprocess would report ModuleNotFoundError
+        # with a remedy about LD_LIBRARY_PATH that does not apply.
+        if not _installed(first):
+            rows.append(_row(
+                "loader path", PASS,
+                f"{first} is not installed, so nothing in the {what} "
+                "pair can load first"))
+            continue
         code = (f"import {first}\n"
                 f"import {second}\n"
                 "print('ok')")
@@ -862,6 +888,21 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     no_mechanism = ("install bubblewrap, or run on a kernel with Landlock "
                     "(Linux 5.13+); the write-target gate stays active "
                     "either way")
+    if mode == "container":
+        if held_by.startswith("container"):
+            return [_row("bash isolation", PASS,
+                         f"{held_by} for every command")]
+        reason = ""
+        try:
+            from delfin.agent import container_exec as _ce
+            reason = _ce.choose().reason
+        except Exception:
+            pass
+        return [_row("bash isolation", WARN,
+                     f"container requested, not used: {reason}; commands "
+                     f"fall back to {held_by or 'the write-target gate only'}",
+                     "install apptainer, podman or docker and the image "
+                     "(docs/USER_MANUAL.md, container isolation)")]
     if mode == "bwrap":
         if held_by:
             return [{"check": "bash isolation", "status": "PASS",
@@ -1027,6 +1068,29 @@ def _check_disk(ctx: dict) -> list[dict]:
     )]
 
 
+def _check_tui(ctx: dict) -> list[dict]:
+    """The terminal window (`delfin-agent tui`): its binary, or Bun with
+    its packages, or not set up -- and whether the first start would set
+    it up by itself. No network, no install: launcher.tui_command and the
+    opt-out only."""
+    from delfin.agent.service import tui_setup
+
+    kind, detail = tui_setup.describe()
+    if kind != "missing":
+        return [_row("terminal window", PASS, detail)]
+    if tui_setup.auto_install_enabled():
+        detail += "; the first `delfin-agent tui` sets it up (a pinned Bun and bun.lock's packages)"
+    else:
+        detail += "; automatic setup is off (DELFIN_TUI_AUTO_INSTALL=0 or agent.tui_auto_install=false)"
+    asset = tui_setup.bun_asset()
+    bun_mb = tui_setup.BUN_ASSETS[asset][0] / 1e6 if asset in tui_setup.BUN_ASSETS else 42
+    return [_row("terminal window", WARN, detail,
+                 f"delfin-agent tui --setup (about {bun_mb:.0f} MB Bun from github.com, SHA-256 "
+                 f"pinned, and about {tui_setup.PACKAGES_DOWNLOAD_MB} MB of npm packages checked "
+                 "against bun.lock), or set DELFIN_TUI_BINARY to a delfin-tui binary",
+                 command="delfin-agent tui --setup")]
+
+
 # Names are looked up on the module at run time so tests can monkeypatch
 # a single ``_check_*`` function without rebuilding this table.
 _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
@@ -1046,8 +1110,32 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
+    ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
+    ("terminal window", "_check_tui"),
 )
+
+
+def _check_child_network(ctx: dict) -> list[dict]:
+    """What holds the network of a program a shell command starts.
+
+    The domain rules and the egress scan read the command text; only a
+    kernel layer (socket guard, network namespace, Landlock TCP) holds a
+    script's own sockets to the egress proxy. Reported from
+    ``api_client.child_network_enforcement``, the same probes the shell
+    wrapper picks from. PASS only where the layer holds every connect."""
+    try:
+        from delfin.agent.api_client import child_network_enforcement
+        state = child_network_enforcement()
+    except Exception as exc:
+        return [_row("command network", WARN, f"not verified: {exc}")]
+    if state["enforced"] and not state["partial"]:
+        return [_row("command network", PASS, state["notice"])]
+    fix = ("set agent.sandbox_network.mode = \"proxy\" (the default)"
+           if state["layer"] == "off" else
+           "a kernel with seccomp user notification (Linux 5.6+, x86_64 or "
+           "aarch64), a working bubblewrap, or Landlock ABI 4 (Linux 6.7+)")
+    return [_row("command network", WARN, state["notice"], fix)]
 
 
 def _normalise(row: Any, group: str) -> dict:

@@ -321,10 +321,13 @@ def _donor_plane_beta(P, syms, d):
     return abs(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(nrm, v / n_)))))))
 
 
-_BETA_BAND = 4.8        # deg -- the crystals' own upper beta, measured over clean CCDC
-
-
-                        # structures: 3.4 monodentate, 3.7 bidentate, 4.8 tetradentate.
+_BETA_BAND = 5.2        # deg -- the crystals' own upper beta.  PROVENANCE: measured on the
+                        # Crystallography Open Database (CC0): median beta of sp2 N donors
+                        # (own environment planar, rms < 0.10 A) bound to one metal, per
+                        # denticity of their own ligand, over 117 427 COD complexes -- 3.9 mono,
+                        # 3.7 bi, 3.5 tri, 5.2 tetradentate (n = 13 296, 95 % bootstrap CI
+                        # 5.1-5.4); the band is the largest of these medians
+                        # (see delfin/manta/PROVENANCE.md).
                         # NOT a tuning knob: below it a donor is as flat as real chemistry
                         # gets, so there is nothing to win by preferring a flatter conformer.
 
@@ -385,8 +388,8 @@ def _beta_score(syms, Q, donor_idxs):
     statement is a TORSION, a different quantity.
 
     ONLY THE EXCESS OVER THE CRYSTAL BAND IS SCORED.  Real complexes are not flat either:
-    measured against clean crystals, beta sits at 3.4 deg for monodentate donors, 3.7 for
-    bidentate and 4.8 for tetradentate.  A donor already inside that band is RIGHT, and
+    measured against clean crystals, beta sits at a few degrees, slightly higher the more
+    dentate the ligand.  A donor already inside that band is RIGHT, and
     preferring an even flatter conformer over it buys nothing while disturbing a pick that
     the historic clash order had made for a reason.
 

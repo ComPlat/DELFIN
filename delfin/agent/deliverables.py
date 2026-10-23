@@ -3,16 +3,17 @@
 An agent answer scrolls away; a report file survives, can be opened in a
 browser, attached to an ELN entry, or shared. ``publish_report`` writes a
 markdown report under ``<workspace>/reports/`` and renders a standalone
-HTML file next to it with a deterministic, dependency-free converter
-(headers, fenced code, inline code, bold/italic, lists, links, tables,
-rules). All content is HTML-escaped first — report text can never inject
-markup into the rendered page.
+HTML file next to it. The body is converted by the chat's renderer
+(``delfin.dashboard.chat_markdown.render``), so a report draws tables,
+lists, fences, quotes and links exactly as the chat drew the same answer;
+this module adds the page around it and the page's stylesheet. Every
+character of report text reaches the page escaped or not at all, and a
+link only to http(s) or mailto -- report text can never inject markup.
 """
 
 from __future__ import annotations
 
 import html as _html
-import re
 import time
 from pathlib import Path
 
@@ -36,109 +37,59 @@ _CSS = (
     "code{background:#f2f2f2;padding:.1em .3em;border-radius:3px;"
     "font-size:.92em}pre{background:#f6f6f6;padding:.8em;border-radius:6px;"
     "overflow-x:auto}pre code{background:none;padding:0}"
-    "table{border-collapse:collapse}td,th{border:1px solid #ccc;"
-    "padding:.3em .6em}h1,h2,h3{line-height:1.25}hr{border:none;"
+    "h1,h2,h3{line-height:1.25}hr{border:none;"
     "border-top:1px solid #ddd;margin:1.5em 0}"
     "blockquote{border-left:3px solid #ccc;margin-left:0;padding-left:1em;"
     "color:#444}"
+    # The classes chat_markdown emits for a table: the wrapper scrolls a
+    # wide table inside itself, al-c/al-r carry the alignment row, num
+    # lines figures up digit under digit.
+    ".delfin-md-table-wrap{overflow-x:auto;max-width:100%;margin:.6em 0}"
+    ".delfin-md-table{border-collapse:collapse}"
+    ".delfin-md-table th,.delfin-md-table td{border:1px solid #ccc;"
+    "padding:.3em .6em;text-align:left;vertical-align:top}"
+    ".delfin-md-table th{background:#f2f2f2;font-weight:600}"
+    ".delfin-md-table .al-r{text-align:right}"
+    ".delfin-md-table .al-c{text-align:center}"
+    ".delfin-md-table td.num{font-variant-numeric:tabular-nums;"
+    "white-space:nowrap}"
+    ".delfin-md-math{background:#f6f6f6;padding:.4em .8em;border-radius:4px;"
+    "font-family:monospace;white-space:pre-wrap}"
 )
 
-_INLINE_CODE = re.compile(r"`([^`\n]+)`")
-_BOLD = re.compile(r"\*\*([^*\n]+)\*\*")
-_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
-_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 
+def _code_block(lang: str, code: str) -> str:
+    """A fenced block as the report shows it: escaped, no highlighting.
 
-def _inline(text: str) -> str:
-    """Inline markdown on an ALREADY-ESCAPED line."""
-    text = _INLINE_CODE.sub(r"<code>\1</code>", text)
-    text = _BOLD.sub(r"<strong>\1</strong>", text)
-    text = _ITALIC.sub(r"<em>\1</em>", text)
-    text = _LINK.sub(r'<a href="\2">\1</a>', text)
-    return text
+    *lang* is not emitted: the page has no highlighter that would read it.
+    """
+    return "<pre><code>" + _html.escape(code, quote=False) + "</code></pre>"
 
 
 def md_to_html(markdown: str, *, title: str = "") -> str:
-    """Deterministic markdown -> standalone HTML page. Content is escaped
-    before any markup is generated; unsupported constructs degrade to
-    plain paragraphs rather than breaking the page."""
-    out: list[str] = []
-    in_code = False
-    in_list = False
-    in_table = False
+    """Report markdown -> a standalone HTML page.
 
-    def _close_list() -> None:
-        nonlocal in_list
-        if in_list:
-            out.append("</ul>")
-            in_list = False
+    Input: the report text and its title. Output: a complete document
+    (doctype, charset, escaped ``<title>``, this module's stylesheet)
+    whose body is ``chat_markdown.render(markdown)`` with plain escaped
+    code blocks.
 
-    def _close_table() -> None:
-        nonlocal in_table
-        if in_table:
-            out.append("</table>")
-            in_table = False
+    Rejected: the line-by-line converter this replaced. It drew a table
+    as header-less ``<td>`` rows, dropped the alignment row without
+    effect, split cells at ``\\|``, and showed a table under a sentence
+    or a list item, and every ordered list, as paragraphs -- a second
+    parser that disagreed with the chat about the same answer.
+    """
+    # Imported here: the dashboard package is not needed to import this
+    # module, only to render a page.
+    from delfin.dashboard.chat_markdown import render
 
-    for raw in (markdown or "").splitlines():
-        line = raw.rstrip("\n")
-        if line.strip().startswith("```"):
-            _close_list(); _close_table()
-            out.append("<pre><code>" if not in_code else "</code></pre>")
-            in_code = not in_code
-            continue
-        if in_code:
-            out.append(_html.escape(line))
-            continue
-        esc = _html.escape(line)
-        stripped = esc.strip()
-        if not stripped:
-            _close_list(); _close_table()
-            continue
-        m = re.match(r"^(#{1,4})\s+(.*)$", stripped)
-        if m:
-            _close_list(); _close_table()
-            level = len(m.group(1))
-            out.append(f"<h{level}>{_inline(m.group(2))}</h{level}>")
-            continue
-        if re.match(r"^(-{3,}|\*{3,})$", stripped):
-            _close_list(); _close_table()
-            out.append("<hr>")
-            continue
-        if stripped.startswith("|") and stripped.endswith("|"):
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
-            if all(re.match(r"^:?-{2,}:?$", c) for c in cells):
-                continue  # separator row
-            if not in_table:
-                _close_list()
-                out.append("<table>")
-                in_table = True
-            out.append(
-                "<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in cells)
-                + "</tr>")
-            continue
-        _close_table()
-        m = re.match(r"^[-*]\s+(.*)$", stripped)
-        if m:
-            if not in_list:
-                out.append("<ul>")
-                in_list = True
-            out.append(f"<li>{_inline(m.group(1))}</li>")
-            continue
-        _close_list()
-        if stripped.startswith("&gt;"):
-            out.append(
-                f"<blockquote>{_inline(stripped[4:].strip())}</blockquote>")
-            continue
-        out.append(f"<p>{_inline(stripped)}</p>")
-
-    if in_code:
-        out.append("</code></pre>")
-    _close_list(); _close_table()
+    body = render(markdown or "", _code_block)
     t = _html.escape(title or "DELFIN report")
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         f"<title>{t}</title><style>{_CSS}</style></head><body>\n"
-        + "\n".join(out) + "\n</body></html>\n"
+        + body + "\n</body></html>\n"
     )
 
 

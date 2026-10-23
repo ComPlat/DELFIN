@@ -292,7 +292,8 @@ def test_choosing_a_method_rebuilds_both_boxes(editor):
 
 
 @_needs_xtb
-def test_a_solvent_is_free_to_drag_in_except_for_the_one_that_is_not():
+def test_a_solvent_is_free_to_drag_in_except_for_the_one_that_is_not(
+        monkeypatch):
     """One follow step is what happens per push while an atom is held.
 
     Measured on a benzophenone, five cycles, median of five: GFN2 167 ms in
@@ -307,15 +308,38 @@ def test_a_solvent_is_free_to_drag_in_except_for_the_one_that_is_not():
     assert 'ddCOSMO costs about six times' in armed
     assert "_solv_model() == 'ddcosmo'" in armed
 
-    import time
-    seen = {}
-    for model in ('alpb', 'ddcosmo'):
-        began = time.perf_counter()
-        out = gfn.relax_steps(GLYCINE, method='gfn2', cycles=5, timeout=60,
-                              solvent='water', solvation_model=model)
-        seen[model] = time.perf_counter() - began
-        assert out['ok'], out['status']
-    assert seen['ddcosmo'] > 2 * seen['alpb'], seen
+    # What a step costs is measured as the CPU time xtb itself spends, on one
+    # thread, rather than as wall time.  Wall time is the machine's: on a
+    # CI runner (4 CPUs) one sample each gave ALPB 0.421 s and ddCOSMO
+    # 0.629 s -- a ratio of 1.5 -- because both carried the same few hundred
+    # milliseconds of contention; on four CPUs with four busy processes on
+    # them the wall-time version failed 7 of 10. The CPU time of a
+    # single-threaded xtb, measured 2026-10-16 on the same glycine, gave
+    # ddCOSMO/ALPB 8.2 to 9.3 idle and 9.3 to 9.7 under that load
+    # (conda-forge build), 7.7 to 8.4 with the release binary. With four
+    # threads under load it scattered from 1.4 to 6.4: OpenMP threads that
+    # wait for a CPU spin, and the spinning is counted as CPU time.
+    import resource
+
+    monkeypatch.setenv('DELFIN_GFN_CORES', '1')
+
+    def _xtb_cpu():
+        used = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return used.ru_utime + used.ru_stime
+
+    # The least of three for each: RUSAGE_CHILDREN also counts any other
+    # child this process reaps meanwhile (a worker an earlier test left
+    # running), which can only add.
+    seen = {'alpb': [], 'ddcosmo': []}
+    for _ in range(3):
+        for model in ('alpb', 'ddcosmo'):
+            began = _xtb_cpu()
+            out = gfn.relax_steps(GLYCINE, method='gfn2', cycles=5,
+                                  timeout=60, solvent='water',
+                                  solvation_model=model)
+            seen[model].append(_xtb_cpu() - began)
+            assert out['ok'], out['status']
+    assert min(seen['ddcosmo']) > 2 * min(seen['alpb']), seen
 
 
 def test_the_settle_after_a_release_reaches_both_engines():
