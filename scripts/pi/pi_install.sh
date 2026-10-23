@@ -146,8 +146,15 @@ EOF
 }
 
 restart_dashboard() {
-    sudo -n systemctl restart delfin-dashboard 2>/dev/null \
-        && echo "==> dashboard restarted" || true
+    # Only a running dashboard picks up the new code: `restart` STARTS a
+    # stopped unit, and an admin who stopped it (e.g. until access is
+    # secured) must not have it switched back on by a deploy.
+    if systemctl is-active --quiet delfin-dashboard 2>/dev/null; then
+        sudo -n systemctl restart delfin-dashboard 2>/dev/null \
+            && echo "==> dashboard restarted" || true
+    else
+        echo "==> dashboard not running: left stopped"
+    fi
 }
 
 smoke() {
