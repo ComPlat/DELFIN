@@ -23,7 +23,12 @@ from __future__ import annotations
 import re
 from typing import Callable, Dict, Iterable, List, Optional
 
-from delfin.scheduler_client import THROTTLED, query as scheduler_query
+from delfin.scheduler_client import (
+    THROTTLED,
+    SchedulerClient,
+    default_client,
+    kind_of_argv,
+)
 
 #: Columns one sacct call asks for. ``-X`` keeps the main allocation
 #: (no per-step rows); ``-P`` makes rows pipe-separable.
@@ -167,19 +172,17 @@ def account(job_ids, *, run_fn=None, client=None) -> Optional[dict]:
     argv = ["sacct", "-j", ",".join(ids), "-n", "-X", "-P",
             "-o", SACCT_COLUMNS]
     if run_fn is not None and client is None:
-        # Direct runner (tests, and callers that bring their own gate):
-        # still exactly one call.
-        out = run_fn(argv)
-        if out is THROTTLED or out is None:
-            return None
+        # A caller that brings its own runner (tests, isolated tooling)
+        # gets its own client: exactly one batched call, throttled like
+        # every scheduler query, but WITHOUT the process-wide cache —
+        # the caller owns its gate, the shared cache must not leak an
+        # answer across callers.
+        cl = SchedulerClient(runner=run_fn)
     else:
-        cl = client
-        if cl is None:
-            from delfin.scheduler_client import default_client
-            cl = default_client
-        out = cl.query("sacct", argv, runner=run_fn)
-        if out is THROTTLED or out is None:
-            return None
+        cl = client or default_client
+    out = cl.query(kind_of_argv(argv), argv)
+    if out is THROTTLED or out is None:
+        return None
     rows = _parse_sacct(out)
     # A failed attempt followed by a later run of the same job name is
     # a repeated job: the failure wasted its core-hours. The FIRST run
