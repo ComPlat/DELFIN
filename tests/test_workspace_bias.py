@@ -60,8 +60,11 @@ def test_permissions_delfin_workspace_gets_xtb_pattern():
         ws = _make_delfin_workspace(Path(d))
         perms = KitToolPermissions(workspace=ws)
         assert perms.is_delfin_workspace is True
-        # xtb is auto-allowed inside DELFIN
-        assert perms.matches_bash_auto_allow("xtb mol.xyz --opt") is True
+        # An xtb run is a calculation, decided by calc_policy on its setup
+        # and cores, not by this list (tests/test_a_checked_calculation_
+        # runs_without_a_dialog.py); its version query stays free.
+        assert perms.matches_bash_auto_allow("xtb mol.xyz --opt") is False
+        assert perms.matches_bash_auto_allow("xtb --version") is True
         # the read-only delfin subcommands too; acting ones are asked
         # (tests/test_an_acting_delfin_command_is_asked.py)
         assert perms.matches_bash_auto_allow("delfin qm_check xtb") is True

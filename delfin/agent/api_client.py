@@ -3804,7 +3804,9 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
 # Keeping them out by default avoids surprising "agent runs xtb on user
 # files" behaviour for non-DELFIN projects.
 _DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
-    r"^\s*xtb\s+\S+\.xyz\b",          # read-only xtb invocation
+    # An xtb run is a calculation: calc_policy decides it by its setup and
+    # its cores, not by its spelling (an `xtb <file>.xyz` pattern here let
+    # `-P 64` and an odd electron count run unasked).
     # The read-only subcommands of delfin-agent and delfin, by name; every
     # acting one is asked (classification above _DEFAULT_BASH_AUTO_ALLOW).
     *_delfin_cli_read_only_patterns(r"delfin-agent", r"delfin"),
@@ -7732,6 +7734,72 @@ def _artifact_path_inside(base: str, perms) -> str:
         return str(Path(str(ws)) / "agent_workspace" / f"{base}_{stamp}.png")
     except Exception:
         return ""
+
+
+def _calculation_verdict(perms, cmd: str, args: dict,
+                         wall_limit_s: Optional[float]):
+    """calc_policy's verdict for a bash command, or None on any failure.
+
+    The command's other segments must pass the gate's own auto-allow test,
+    so a calculation cannot carry an unrelated command past the dialog.
+    A failure of the check itself admits nothing: None falls through to
+    the gate's ordinary path.
+    """
+    try:
+        from . import calc_policy
+        cwd_arg = str((args or {}).get("cwd") or "").strip()
+        ws = Path(str(getattr(perms, "workspace", ".") or "."))
+        cwd = Path(cwd_arg) if cwd_arg else ws
+        if not cwd.is_absolute():
+            cwd = ws / cwd
+        return calc_policy.judge_command(
+            _split_shell_segments(cmd), cwd, perms._segment_auto_allowed,
+            tool_wall_s=wall_limit_s)
+    except Exception:
+        return None
+
+
+def _with_calculation_note(result: str, notes: list) -> str:
+    """The run's JSON result, naming the calculation the gate let start.
+
+    The model reads it and can tell the user what runs where; the same
+    line is in the security-event panel. A result that is not a JSON
+    object is returned unchanged.
+    """
+    if not notes:
+        return result
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    data["calculation_check"] = ("started without a dialog, setup and "
+                                 "resources checked: " + "; ".join(notes))
+    return json.dumps(data)
+
+
+def _mcp_calculation_verdict(base: str, args: dict):
+    """calc_policy's verdict for an ops tool that starts a calculation.
+
+    ``submit_calculation`` in ORCA mode and ``run_orca_input`` are checked;
+    every other tool (a DELFIN pipeline folder, a recalc, the workflow
+    runners) is not, and returns None: the dialog stays.
+    """
+    try:
+        from . import calc_policy
+        a = args or {}
+        if base == "submit_calculation" and str(a.get("mode") or "delfin") \
+                == "orca":
+            return calc_policy.judge_orca_submission(
+                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                int(a.get("maxcore") or 6000),
+                str(a.get("time_limit") or "12:00:00"))
+        if base == "run_orca_input" and a.get("input_file"):
+            return calc_policy.judge_orca_run(Path(str(a["input_file"])))
+    except Exception:
+        return None
+    return None
 
 
 def _is_honoured_dry_run(name: str, arguments) -> bool:
@@ -17722,12 +17790,15 @@ class _DocToolExecutor:
             # command, cwd, deny-list, secret scanner, and auto-allow
             # check are identical; only the execution model differs.
             _caged: list = []
+            _calc_notes: list = []
             if permissions is not None:
-                gate_name = "bash" if name == "bash_background" else name
-                gate_err = self._run_permission_gate(
-                    gate_name, arguments, permissions,
-                    **({"caged_admission": _caged} if gate_name == "bash"
-                       else {}))
+                if name in ("bash", "bash_background"):
+                    gate_err = self._gate_bash_call(name, arguments,
+                                                    permissions, _caged,
+                                                    _calc_notes)
+                else:
+                    gate_err = self._run_permission_gate(
+                        name, arguments, permissions)
                 if gate_err is not None:
                     return json.dumps({"error": gate_err})
             # The network tools and run_tests only needed the gate; their
@@ -17743,12 +17814,15 @@ class _DocToolExecutor:
                 if _caged:
                     return self._execute_bash(arguments, permissions,
                                               caged_unasked=True)
-                return self._execute_bash(arguments, permissions)
+                return _with_calculation_note(
+                    self._execute_bash(arguments, permissions), _calc_notes)
             if name == "bash_background":
                 if _caged:
                     return self._execute_bash_background(
                         arguments, permissions, caged_unasked=True)
-                return self._execute_bash_background(arguments, permissions)
+                return _with_calculation_note(
+                    self._execute_bash_background(arguments, permissions),
+                    _calc_notes)
 
         # Document writes. The per-path write gate runs inside the
         # executors: edit_sheet gates the file it edits, fill_pdf_form
@@ -21570,9 +21644,40 @@ class _DocToolExecutor:
         except Exception:
             return None
 
+    def _gate_bash_call(self, name: str, args: dict,
+                        perms: "KitToolPermissions",
+                        caged_admission: Optional[list] = None,
+                        calc_notes: Optional[list] = None,
+                        ) -> Optional[str]:
+        """The bash gate for ``bash`` and ``bash_background``.
+
+        The two share the gate; they differ in the wall-time limit the run
+        will have, which calc_policy needs for a local calculation on a
+        login node: the foreground tool's timeout (capped at
+        ``bash_max_timeout_s``) or the background job's ``timeout_s``
+        (capped at bash_jobs' 24 h).
+        """
+        try:
+            if name == "bash_background":
+                from .bash_jobs import _DEFAULT_BG_TIMEOUT_S as _bg_cap
+                wall = min(float(args.get("timeout_s") or _bg_cap),
+                           float(_bg_cap))
+            else:
+                wall = float(max(1, min(
+                    int(args.get("timeout_s", perms.bash_timeout_s)
+                        or perms.bash_timeout_s),
+                    perms.bash_max_timeout_s)))
+        except (TypeError, ValueError):
+            wall = None
+        return self._run_permission_gate(
+            "bash", args, perms, caged_admission=caged_admission,
+            wall_limit_s=wall, calc_notes=calc_notes)
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions",
         *, caged_admission: Optional[list] = None,
+        wall_limit_s: Optional[float] = None,
+        calc_notes: Optional[list] = None,
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None.
 
@@ -22338,6 +22443,32 @@ class _DocToolExecutor:
                     "read_only_shape", "bash",
                     f"{_ros_shape}: {cmd[:80]}", blocked=False)
                 return self._classifier_second_opinion(perms, name, args, mode)
+            # A calculation (xtb, crest, orca, sbatch): calc_policy checks
+            # its setup and its resources on this host. Passed, it starts
+            # without a dialog and is named in the security-event panel;
+            # failed, it stays off the caged admission and the dialog (or
+            # the refusal when nobody can be asked) states the reason. An
+            # ask or deny rule of the user's keeps it in the dialog, and an
+            # upload the egress scan flagged is never admitted here.
+            _calc = _calculation_verdict(perms, cmd, args, wall_limit_s)
+            _calc_reason = ""
+            if _calc is not None and _calc.calculation:
+                _calc_rule = _permission_rule_hit(perms, "bash",
+                                                  {"command": cmd})
+                if _calc_rule is not None and _calc_rule[0] == "deny":
+                    return _refuse_by_rule("bash", _calc_rule[1])
+                if (_calc.admit and _calc_rule is None and egress is None
+                        and not _approved_here):
+                    _record_security_event(
+                        "calculation_admitted", "bash",
+                        _calc.summary[:200], blocked=False)
+                    verdict = self._classifier_second_opinion(
+                        perms, name, args, mode)
+                    if verdict is None and calc_notes is not None:
+                        calc_notes.append(_calc.summary)
+                    return verdict
+                if not _calc.admit:
+                    _calc_reason = _calc.reason
             # Off the list, but held by the cage: writes confined to the
             # session's roots with the protected files read-only, no process
             # outside visible, network through the egress policy. Every tier
@@ -22354,6 +22485,7 @@ class _DocToolExecutor:
                 return _refuse_by_rule("bash", _caged_rule[1])
             _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
+                    and not _calc_reason
                     and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
@@ -22419,6 +22551,8 @@ class _DocToolExecutor:
                 # there, never asked as a read.
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
+                if _calc_reason:
+                    preview += f"\nNot started unasked: {_calc_reason}"
                 try:
                     ok = bool(_ask_confirm(perms, "bash", {"command": cmd}, preview))
                 except Exception as exc:
@@ -22456,6 +22590,14 @@ class _DocToolExecutor:
             # refusal is recorded where an unattended run's owner looks.
             if getattr(perms, "unisolated_fallback", False):
                 return self._unisolated_fallback_verdict(perms, name, args)
+            if _calc_reason:
+                _record_gate_refusal("calculation_not_checked", "bash",
+                                     _calc_reason[:300])
+                return (
+                    f"bash: the calculation '{cmd[:120]}' was not started: "
+                    f"{_calc_reason}. Fix the setup or the resources and run "
+                    "it again, or tell the user what you want to run and "
+                    "why and let them approve it.")
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
             # user the exact command and let them add an allow_pattern or switch
@@ -22912,11 +23054,31 @@ class _DocToolExecutor:
             # Nobody is asked here; the second opinion is the one look.
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
+        # A calculation the ops server starts: the same check as the bash
+        # gate's (calc_policy). Passed, it runs without a dialog; failed,
+        # the dialog or the refusal below states the reason. A deny or ask
+        # rule naming the tool keeps it in the dialog.
+        calc_reason = ""
+        calc = _mcp_calculation_verdict(base, args or {})
+        if calc is not None and calc.calculation:
+            rule = _permission_rule_hit(perms, name, args or {})
+            if calc.admit and rule is None:
+                _record_security_event("calculation_admitted", name,
+                                       calc.summary[:200], blocked=False)
+                return self._classifier_second_opinion(
+                    perms, name, args or {}, mode)
+            if not calc.admit:
+                calc_reason = calc.reason
         # An allow rule of the user's naming this tool answers the question
         # below (and its head-less refusal); the second opinion still looks.
         if _rule_answers(perms, "tool", name):
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
+        if perms.confirm_callback is None and calc_reason:
+            _record_security_event("mcp_side_effect", name, base, blocked=True)
+            return (f"'{name}' was not started: {calc_reason}. Fix the setup "
+                    "or the resources and call it again, or tell the user "
+                    "what you want to run and why and let them approve it.")
         if perms.confirm_callback is None:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
             return (
@@ -22927,6 +23089,8 @@ class _DocToolExecutor:
                 "the Perms mode chip."
             )
         preview = f"{name}\n" + _preview_args(args)
+        if calc_reason:
+            preview += f"\nNot started unasked: {calc_reason}"
         try:
             ok = bool(_ask_confirm(perms, name, args or {}, preview))
         except Exception as exc:
@@ -28538,10 +28702,13 @@ def _scrubbed_bash_env() -> dict:
     # program started without it takes every core the host has (measured:
     # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
     # on a cluster login node are everyone's cores. Inside a Slurm
-    # allocation the cap is the allocation; elsewhere a few cores. A job
+    # allocation the cap is the allocation, on a login node the local limit
+    # calc_policy admits (2), elsewhere at most four. A job
     # submitted from here inherits it unless its script sets its own.
-    _cap = env.get("SLURM_CPUS_PER_TASK", "")
-    if not (_cap.isdigit() and int(_cap) > 0):
+    try:
+        from . import calc_policy as _cp
+        _cap = str(_cp.default_threads(_cp.host_kind(env), env))
+    except Exception:
         _cap = str(max(1, min(4, os.cpu_count() or 1)))
     for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                   "OPENBLAS_NUM_THREADS"):
