@@ -51,6 +51,7 @@ unchanged; then it takes seconds.
 | `pi_bootstrap.sh` | Pi (root) | System setup: packages, agent user, uv + Python 3.11 venv, CLIs, dashboard service |
 | `pi_install.sh` | Pi (agent user) | Unpack a source tarball, install deps when `pyproject.toml` changed, keep `src.prev` for rollback |
 | `pi_firstboot.sh` | Pi (cloud-init) | First boot: `pi_bootstrap.sh` + `pi_install.sh` from the card |
+| `pi_github_deploy_key.sh` | Pi (agent user) | Push access to one repository via a deploy key, GitHub host key pinned |
 
 ## New card (Windows)
 
@@ -85,8 +86,18 @@ ssh pi@delfin-pi.local tail -f /var/log/delfin-firstboot.log
   `OPENAI_API_KEY`). With the KIT toolbox pass a model it serves, e.g.
   `delfin-agent run --provider kit --model kit.deepseek-v4-flash "..."`.
   For `backend=cli` log in once with `claude` / `codex` as `delfin`.
-- Once, as `delfin`: `git config --global user.name/user.email` and
-  `gh auth login`, so the agent can commit and open pull requests.
+- Once, as `delfin`: `git config --global user.name/user.email`, so the agent
+  can commit.
+- Push access, scoped to one repository: prefer a fine-grained token
+  (Resource owner = the organisation, only that repository, Contents +
+  Pull requests read/write) via `gh auth login --with-token`. Avoid the
+  browser `gh auth login`: its `repo` scope covers every repository you can
+  write to. If the organisation does not offer fine-grained tokens, use a
+  deploy key (any repository admin can add one):
+  `bash ~/delfin/src/scripts/pi/pi_github_deploy_key.sh`, add the printed key
+  with "Allow write access", then `... pi_github_deploy_key.sh --check`.
+  With a deploy key the agent pushes branches and hands you the compare URL
+  for the pull request.
 - VS Code: Remote-SSH to `delfin@delfin-pi.local`.
 - Dashboard: service `delfin-dashboard` on `127.0.0.1:8866` only. On the Pi use
   the "DELFIN Dashboard" menu entry; from your PC use a tunnel
