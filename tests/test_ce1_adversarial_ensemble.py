@@ -81,8 +81,12 @@ def test_nan_energy_is_refused_not_propagated(tmp_path):
         "1\nenergy: nan Eh\nH 0.0 0.0 0.0\n"
         "1\nenergy: -12.34 Eh\nH 0.0 0.0 0.0\n",
     )
-    frames = parse_ensemble(p)
+    # The fix refuses non-finite energies at the first gate (parse time,
+    # crest_ensemble.py isfinite check); the old form of this test let
+    # parse_ensemble succeed and expected relative_kcal to raise. Same
+    # intent: a NaN is refused, it never reaches a min()-based ranking.
     with pytest.raises(ValueError):
+        frames = parse_ensemble(p)
         relative_kcal(frames)
 
 
