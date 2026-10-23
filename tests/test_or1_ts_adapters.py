@@ -61,7 +61,9 @@ def test_orca_ts_opt_input_carries_tsopt_and_hessian_keyword(hcn_xyz, tmp_path, 
     def fake_run_orca(inp, out, timeout=None, working_dir=None):
         inp_path = Path(inp)
         seen_inputs.append(inp_path.read_text())
-        _write_orca_outputs(Path(working_dir), inp_path.stem, energy=-92.5)
+        wd = Path(working_dir)
+        (wd / f"{inp_path.stem}.xyz").write_text(HCN_XYZ)
+        _write_orca_outputs(wd, inp_path.stem, energy=-92.5)
         return True
 
     monkeypatch.setattr("delfin.orca.run_orca", fake_run_orca)
@@ -205,3 +207,52 @@ def test_orca_ts_irc_requires_ts_gbw(hcn_xyz, tmp_path, monkeypatch):
             basis="def2-SVP",
             work_dir=tmp_path / "irc2",
         )
+
+
+# ---------------------------------------------------------------------------
+# 4. Reviewer probes F-REV-2 / F-REV-3: SUCCESS never on an empty outcome
+# ---------------------------------------------------------------------------
+
+def test_orca_ts_irc_fails_when_no_direction_produces_an_endpoint(hcn_xyz, tmp_path, monkeypatch):
+    """If neither direction leaves an end geometry, the IRC traced no
+    path — SUCCESS with irc_endpoints=None would hide that (F-REV-2)."""
+    (tmp_path / "ts.gbw").write_bytes(b"fake-gbw")
+    monkeypatch.setattr(
+        "delfin.orca.run_orca",
+        lambda inp, out, timeout=None, working_dir=None: (
+            _write_orca_outputs(Path(working_dir), Path(inp).stem, energy=-92.5)
+            or True
+        ),  # writes the .out but NO .xyz
+    )
+    result = run_step(
+        "orca_ts_irc",
+        geometry=hcn_xyz,
+        charge=0,
+        method="B3LYP",
+        basis="def2-SVP",
+        moread=str(tmp_path / "ts.gbw"),
+        work_dir=tmp_path / "irc3",
+    )
+    assert result.status.name == "FAILED", result.error
+
+
+def test_orca_ts_opt_fails_when_no_ts_geometry_was_produced(hcn_xyz, tmp_path, monkeypatch):
+    """run_orca returning True without a <base>.xyz means no converged
+    geometry — SUCCESS with geometry=None would hide that (F-REV-3)."""
+    monkeypatch.setattr(
+        "delfin.orca.run_orca",
+        lambda inp, out, timeout=None, working_dir=None: (
+            _write_orca_outputs(Path(working_dir), Path(inp).stem, energy=-92.5)
+            or True
+        ),  # writes the .out but NO .xyz
+    )
+    result = run_step(
+        "orca_ts_opt",
+        geometry=hcn_xyz,
+        charge=0,
+        method="B3LYP",
+        basis="def2-SVP",
+        hessian_mode="AnFreq",
+        work_dir=tmp_path / "ts4",
+    )
+    assert result.status.name == "FAILED", result.error
