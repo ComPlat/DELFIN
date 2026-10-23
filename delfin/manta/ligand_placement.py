@@ -19,6 +19,11 @@ from delfin.manta.ml_tables import (
     _METAL_SET,
     _get_ml_bond_length,
 )
+from delfin.manta._ring_snap_length import (
+    ride_hydrogens as _rs_ride,
+    ring_scale_restoring_lengths as _rs_scale,
+    ring_snap_keep_length_enabled,
+)
 
 logger = get_logger("delfin.smiles_converter")
 
@@ -215,6 +220,30 @@ def _snap_fused_aromatic_groups_to_plane(
             offsets = cp @ normal
             rms = float(np.sqrt(float((offsets * offsets).mean())))
             if rms < rms_threshold:
+                continue
+            if ring_snap_keep_length_enabled():
+                # DELFIN_FFFREE_RING_SNAP_KEEP_LENGTH (see _ring_snap_length): projection,
+                # in-plane scale restoring the group's bond lengths, ring hydrogens ride.
+                _pos_of = {a: k for k, a in enumerate(idxs)}
+                _gb = [(_pos_of[b.GetBeginAtomIdx()], _pos_of[b.GetEndAtomIdx()])
+                       for b in mol.GetBonds()
+                       if b.GetBeginAtomIdx() in _pos_of and b.GetEndAtomIdx() in _pos_of]
+                _md = [k for k, a in enumerate(idxs) if any(
+                    nb.GetSymbol() in _METAL_SET for nb in mol.GetAtomWithIdx(int(a)).GetNeighbors())]
+                _proj = pts - offsets[:, None] * normal[None, :]
+                _proj = _rs_scale(pts, _proj, _gb, _md[0] if len(_md) == 1 else None,
+                                  skip=len(_md) > 1)
+                _hof = {int(a): [n.GetIdx() for n in mol.GetAtomWithIdx(int(a)).GetNeighbors()
+                                 if n.GetAtomicNum() == 1] for a in idxs}
+                _disp = {int(a): _proj[k] - pts[k] for k, a in enumerate(idxs)}
+                for _h, _d in _rs_ride(_disp, _hof).items():
+                    _hp = conf.GetAtomPosition(int(_h))
+                    conf.SetAtomPosition(int(_h), (float(_hp.x + _d[0]), float(_hp.y + _d[1]),
+                                                   float(_hp.z + _d[2])))
+                for idx, aidx in enumerate(idxs):
+                    conf.SetAtomPosition(int(aidx), (float(_proj[idx][0]), float(_proj[idx][1]),
+                                                     float(_proj[idx][2])))
+                changed = True
                 continue
             # Project atoms onto plane (minimal movement).
             for idx, aidx in enumerate(idxs):
@@ -648,6 +677,7 @@ def _snap_aromatic_rings_to_plane(
             return False
 
         changed = False
+        _keep_len = ring_snap_keep_length_enabled()
         for ring in ri.AtomRings():
             if len(ring) < 5 or len(ring) > 7:
                 continue
@@ -702,14 +732,36 @@ def _snap_aromatic_rings_to_plane(
             _ideal_xh = {"C": 1.08, "N": 1.01, "O": 0.96, "S": 1.34}
             ring_did_snap = False
             if rms >= rms_threshold:
-                # Minimal-movement projection: subtract normal-component
-                # from each ring atom.  Substituent heavy atoms unchanged.
-                for idx, atom_idx in enumerate(ring):
-                    new_p = pts[idx] - offsets[idx] * normal
-                    conf.SetAtomPosition(
-                        int(atom_idx),
-                        (float(new_p[0]), float(new_p[1]), float(new_p[2])),
-                    )
+                if _keep_len:
+                    # DELFIN_FFFREE_RING_SNAP_KEEP_LENGTH: projection, then the
+                    # in-plane scale that restores the ring's bond lengths, and the
+                    # ring hydrogens ride with their parent (see _ring_snap_length).
+                    _proj = pts - offsets[:, None] * normal[None, :]
+                    _md = [k for k, a in enumerate(ring) if any(
+                        nb.GetSymbol() in _METAL_SET
+                        for nb in mol.GetAtomWithIdx(int(a)).GetNeighbors())]
+                    _rb = [(k, (k + 1) % len(ring)) for k in range(len(ring))]
+                    _proj = _rs_scale(pts, _proj, _rb, _md[0] if len(_md) == 1 else None,
+                                      skip=len(_md) > 1)
+                    _hof = {int(a): [n.GetIdx() for n in mol.GetAtomWithIdx(int(a)).GetNeighbors()
+                                     if n.GetAtomicNum() == 1] for a in ring}
+                    _disp = {int(a): _proj[k] - pts[k] for k, a in enumerate(ring)}
+                    for _h, _d in _rs_ride(_disp, _hof).items():
+                        _hp = conf.GetAtomPosition(int(_h))
+                        conf.SetAtomPosition(int(_h), (float(_hp.x + _d[0]), float(_hp.y + _d[1]),
+                                                       float(_hp.z + _d[2])))
+                    for idx, atom_idx in enumerate(ring):
+                        conf.SetAtomPosition(int(atom_idx), (float(_proj[idx][0]), float(_proj[idx][1]),
+                                                             float(_proj[idx][2])))
+                else:
+                    # Minimal-movement projection: subtract normal-component
+                    # from each ring atom.  Substituent heavy atoms unchanged.
+                    for idx, atom_idx in enumerate(ring):
+                        new_p = pts[idx] - offsets[idx] * normal
+                        conf.SetAtomPosition(
+                            int(atom_idx),
+                            (float(new_p[0]), float(new_p[1]), float(new_p[2])),
+                        )
                 ring_did_snap = True
                 changed = True
 
