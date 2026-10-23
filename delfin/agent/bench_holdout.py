@@ -263,6 +263,11 @@ def trap_note(family_id: str, mol: Molecule) -> str:
         if not _electron_count_is_consistent(mol):
             return "odd electron count with wrong multiplicity"
         return ""
+    if family_id == "screening" and mol.charge == 0:
+        # Same F3 principle, per molecule: "anion without diffuse
+        # functions" is only presentable when the couple's drawn member
+        # is charged; a neutral species cannot present it.
+        return ""
     return _TRAP_BY_FAMILY.get(family_id, "")
 
 
@@ -282,12 +287,14 @@ def sample(seed: int, n: int) -> list[Instance]:
         solvent = rng.choice(list(fam.solvents))
         prop = rng.choice(list(fam.properties))
         levels = fam.grading_levels
-        if mol.charge != 0 or mol.multiplicity > 1:
-            # open-shell/charged instances keep the trap level if the
-            # family carries one, otherwise the family's own set stands.
-            trap = _TRAP_BY_FAMILY.get(fam.id)
-            if trap and "trap" not in levels:
-                levels = levels + ("trap",)
+        # The 'trap' level is attached ONLY when the trap is actually
+        # presentable with this molecule (F3, nacht-s15): trap_note is
+        # the single source of truth, so level set and trap note cannot
+        # disagree. The old charge/open-shell heuristic graded
+        # internally consistent charged molecules (redox /
+        # formaldehyde_cation) as traps.
+        if "trap" not in levels and trap_note(fam.id, mol):
+            levels = levels + ("trap",)
         template = _FAMILY_PROMPTS[fam.id]
         prompt = template.format(
             mol=mol.label.replace("_", " "),

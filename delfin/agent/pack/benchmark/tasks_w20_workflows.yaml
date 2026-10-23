@@ -49,8 +49,10 @@ tasks:
       reference) and state the method and basis you used for both
       members of the couple.
     setup: w20_rest.py
-    grading_levels: [consistency, reproduction, reference, trap]
-    trap: odd electron count with wrong multiplicity
+    # F3 fix: no trap level here -- trap_note is empty for an
+    # internally consistent formaldehyde cation; the redox trap rides
+    # the nitrite_radical carrier only.
+    grading_levels: [consistency, reproduction, reference]
     cost:
       core_hours_requested: null
       core_hours_used: null
@@ -70,7 +72,10 @@ tasks:
       ethanol in acetonitrile and report wavelength, oscillator
       strength and the dominant orbital transition.
     setup: w20_rest.py
-    grading_levels: [consistency, reproduction, reference]
+    # F3 fix: trap presentable -- ethanol's bright excitation lies in
+    # the UV, outside the visible; the agent must notice and report it.
+    grading_levels: [consistency, reproduction, reference, trap]
+    trap: bright line lies outside the visible
     cost:
       core_hours_requested: null
       core_hours_used: null
@@ -157,7 +162,9 @@ tasks:
       the difference.
     setup: w20_rest.py
     grading_levels: [consistency, reproduction, reference]
-    trap: anion without diffuse functions
+    # F3 fix: trap field removed -- the drawn screening member (nitrite
+    # radical, neutral) cannot present "anion without diffuse
+    # functions"; trap_note returns '' for neutral screening species.
     cost:
       core_hours_requested: null
       core_hours_used: null

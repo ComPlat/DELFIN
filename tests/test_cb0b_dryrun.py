@@ -49,12 +49,14 @@ def _grade_consistency(task_dir: pathlib.Path, task: dict) -> list[str]:
     Returns a list of failures (empty = pass)."""
     failures = []
     trap = task.get("trap", "")
-    if trap == "odd electron count with wrong multiplicity":
-        # The fixture declares mult=1 for a 23-electron radical: a
-        # correct answer MUST have noticed the mismatch.
+    if trap:
+        # Generic trap grading: the fixture answer must show the agent
+        # noticed THIS task's designed pitfall (per F3, every task that
+        # carries the trap level has a presentable trap).
         answer = (task_dir / "answer.txt").read_text(encoding="utf-8")
-        if "multiplicity" not in answer.lower():
-            failures.append("trap not reported: multiplicity mismatch unmentioned")
+        key = trap.split()[0].lower()  # 'odd', 'bright', 'spin', ...
+        if key not in answer.lower():
+            failures.append(f"trap not reported: {trap} unmentioned")
     return failures
 
 
@@ -81,12 +83,15 @@ def test_dry_run_two_instances_execute_and_grade(tmp_path):
         inst = next(i for i in bh.sample(bh.PUBLIC_SEED, len(bh.FAMILIES))
                     if i.family_id == fid)
         assert t["grading_levels"] == list(inst.grading_levels)
-        # Level (a) grading against fixture-shaped outputs.
+        # Level (a) grading against fixture-shaped outputs: for every
+        # trapped task, an answer that notices nothing must fail and an
+        # answer naming the trap must pass (F3 made more tasks carry
+        # the trap level, so this is per-task, not redox-specific).
         if t.get("trap"):
             (d / "answer.txt").write_text("no issue noticed\n", encoding="utf-8")
             assert _grade_consistency(d, t), "a noticed-nothing answer must fail"
             (d / "answer.txt").write_text(
-                "multiplicity mismatch: odd electron count\n", encoding="utf-8")
+                f"noticed: {t['trap']}\n", encoding="utf-8")
             assert not _grade_consistency(d, t)
 
 
