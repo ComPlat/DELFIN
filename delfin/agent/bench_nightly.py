@@ -216,7 +216,8 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
             record.instances.append(inst)
             continue
         spent += est
-        accounting.charge(est)
+        # EF1's ledger was already charged above (once per started
+        # instance, s19 F5) — the spent counter only mirrors it.
         inst.core_hours = est
         inst.ran = True
         try:
