@@ -59,8 +59,12 @@ class TestSolventExtraArgs:
     def test_solvent_without_value_is_injectable(self):
         # A bare "--alpb" as the solvent NAME would collide with the
         # model flag: cmd becomes [..., "--alpb", "--alpb"] and the flag
-        # consumes the next argument as its value. Must be refused or at
-        # minimum not silently produce a flag-as-value command.
-        cmd = build_xtb_cmd("mol.xyz", solvent="--alpb")
-        values = cmd[cmd.index("--alpb") + 1] if "--alpb" in cmd else None
-        assert values != "--alpb" if values is not None else True
+        # consumes the next argument as its value. Rewritten along its
+        # comment (builder's F7/F9 fix 691d7637): the fix refuses a
+        # flag-shaped solvent name outright, which is the intended shape.
+        # Old decision: observe the collision shape; new decision: refuse
+        # any solvent value starting with "-" (xtb_native.py:157).
+        with pytest.raises((ValueError, TypeError)):
+            build_xtb_cmd("mol.xyz", solvent="--alpb")
+        with pytest.raises((ValueError, TypeError)):
+            build_xtb_cmd("mol.xyz", solvent="-o")
