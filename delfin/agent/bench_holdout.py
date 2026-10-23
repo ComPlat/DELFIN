@@ -112,19 +112,23 @@ _POOL_F = Molecule("formaldehyde_cation", "CH2O", +1, 2, smiles="[CH2+]O")
 _POOL_S = Molecule("phosphine", "H3P", 0, 1, smiles="P")
 _POOL_CL = Molecule("chlorine", "Cl2", 0, 1, smiles="ClCl")
 _POOL_NO = Molecule("nitric_oxide", "NO", 0, 2, smiles="[N]=O")
+_POOL_E = Molecule("ethanol", "C2H6O", 0, 1, smiles="CCO")
+_POOL_FEC = Molecule("iron_pentacarbonyl", "FeC5O5", 0, 1,
+                     smiles="[Fe](C(#O))(C(#O))(C(#O))(C(#O))C#O")
 _POOL_NR = Molecule("nitrite_radical", "NO2", 0, 1, smiles="O=[N][O]")
 
 _POOL: tuple[Molecule, ...] = (
     _POOL_M, _POOL_C, _POOL_N, _POOL_O,
     _POOL_F, _POOL_S, _POOL_CL, _POOL_NO,
-    _POOL_NR,
+    _POOL_NR, _POOL_E, _POOL_FEC,
 )
 
 # Electron-count sanity for the pool: charge and multiplicity must be
 # allowed by the electron count (2*mult - 2 <= n_electrons < 2*mult + 2
 # is NOT enforced here — the graders do that — but gross mistakes are
 # refused when the family is built).
-_S = {"H": 1, "C": 6, "N": 7, "O": 8, "F": 9, "P": 15, "S": 16, "Cl": 17}
+_S = {"H": 1, "C": 6, "N": 7, "O": 8, "F": 9, "P": 15, "S": 16, "Cl": 17,
+      "Fe": 26}
 
 
 def _electrons(mol: Molecule) -> int:
@@ -167,9 +171,9 @@ _FAMILY_PROMPTS = {
         "correct it, and report a geometry with no negative curvature "
         "plus the energy change along the way."),
     "spin_states": (
-        "For the {dmetal} complex of {mol} determine which spin state "
-        "is lowest. Report relative energies of the candidate spin "
-        "states from ONE level of theory and the <S^2> values."),
+        "Determine which spin state of {mol} is lowest. Report the "
+        "relative energies of the candidate spin states from ONE level "
+        "of theory and the <S^2> values you obtained."),
     "conformer_prestep": (
         "{mol} is flexible. Before any expensive calculation, find its "
         "lowest-energy conformer with a fast semiempirical search and "
@@ -217,11 +221,11 @@ def _build_families() -> tuple[Family, ...]:
             ("relaxed structure without negative curvature",),
             ("consistency", "reproduction", "trap"),
             "Recover from a saddle-point relaxation."),
-        fam("spin_states", open_shell,
+        fam("spin_states", open_shell + [_POOL_FEC],
             ("lowest spin state",),
             ("consistency", "reproduction", "reference", "trap"),
             "Spin-state ordering of an open-shell species."),
-        fam("conformer_prestep", closed_neutral,
+        fam("conformer_prestep", [_POOL_M, _POOL_E],
             ("lowest-energy conformer",),
             ("consistency", "reproduction"),
             "Cheap conformer search before the expensive step."),
