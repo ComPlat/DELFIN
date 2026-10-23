@@ -17393,8 +17393,34 @@ class _DocToolExecutor:
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
         else:
-            result = self._dispatch_under_rules(
-                name, arguments, permissions, rule_hit)
+            # DR1 step journal: the call is about to RUN for real (past
+            # every refusal). One bracket, start before / finish after,
+            # per the package ruling. auto_start/auto_finish promise
+            # never to raise (step_journal.py:233), so this hook has no
+            # broad except-wrap: a wiring bug (ImportError, renamed
+            # function) fails a test instead of silently turning the
+            # journal off (wave-17 lesson 5). The only guarded path is
+            # the dispatch itself: a raising dispatch closes the bracket
+            # as failed so the step cannot read as open forever, and the
+            # exception is re-raised unchanged.
+            from . import step_journal as _step_journal
+            _sid = str(getattr(permissions, "task_session_id", "") or "")
+            _dr1_step = None
+            if _sid:
+                _dr1_step = _step_journal.auto_start(
+                    _sid, tool=name, arguments=arguments)
+            try:
+                result = self._dispatch_under_rules(
+                    name, arguments, permissions, rule_hit)
+            except Exception:
+                if _dr1_step is not None:
+                    _step_journal.auto_finish(
+                        _sid, _dr1_step, ok=False, result="raised")
+                raise
+            if _dr1_step is not None:
+                _step_journal.auto_finish(
+                    _sid, _dr1_step, ok=not result.startswith('{"error"'),
+                    result=result)
 
         # Track mtime after a successful read so the write tools can verify
         # the file hasn't changed since the agent last read it. read_document

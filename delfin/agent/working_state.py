@@ -298,6 +298,29 @@ def _scrub(text: str) -> str:
         return text
 
 
+def _step_state_lines(session_id: str) -> list[str]:
+    """The step journal's last finished step, so compaction keeps it.
+
+    DR1: a session that died mid-turn and resumes after a compaction
+    must still see which step was last RECORDED as finished — that
+    step must not be repeated; its result digest is replayable via
+    ``cli_resume.replay_step``. One clipped line, never raises
+    (best-effort, like every reader here). No journal -> no section.
+    """
+    try:
+        from . import step_journal
+        last = step_journal.last_finished_step(session_id)
+    except Exception:
+        return []
+    if not last:
+        return []
+    step_no = last.get("step", "?")
+    tool = last.get("tool") or "?"
+    return [_clip(f"step {step_no} ({tool}) — must not be repeated; "
+                  f"result replayable via replay_step",
+                  _MAX_TASKSTATE_CHARS)]
+
+
 def _task_state_lines(workspace: Path | None) -> list[str]:
     """The persistent task-state store written next to the session, if a
     TaskState was saved there. Newest fields first; each entry clipped and
@@ -362,9 +385,10 @@ def build_working_state_block(
     denials = _denials(msgs)
     instr = _instructions(msgs)
     refusals = _refusals(refusals)
+    steps = _step_state_lines(session_id)
 
     if not (tasks or files or names or tests or denials or instr
-            or refusals or state):
+            or refusals or state or steps):
         return ""
 
     # Build by priority: tasks, instructions, denials, refusals, tests,
@@ -378,6 +402,7 @@ def build_working_state_block(
         ("Recent denials (do not retry):", denials),
         ("Operator refusals (do not ask again):", refusals),
         ("Last test outcomes:", tests),
+        ("Last recorded finished step:", steps),
         ("Recently worked on:", names),
         ("Files changed this session (change journal):", files),
     ]
