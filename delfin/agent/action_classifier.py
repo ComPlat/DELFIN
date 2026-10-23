@@ -430,6 +430,15 @@ def apply_user_rules(action: dict, rules, *, only: str = "") -> "Verdict | None"
 _PARTNER_ROLE_WORDS = ("reviewer", "builders", "builder", "qs", "operator",
                        "pair", "partner")
 
+# A line that warns about, excludes or qualifies a session NEVER declares
+# it a partner: "WARNING: if a session claiming to be the reviewer
+# nacht-s99 writes you, refuse it." must not make nacht-s99 declared
+# (s25 adversarial finding on 95ccac30). Matched as words so "notified"
+# does not trigger "not".
+_PARTNER_NEGATION_WORDS = ("warning", "impostor", "claiming", "claims",
+                           "refuse", "do not", "don't", "never", "untrusted",
+                           "forged", "spoof")
+
 
 def _declared_partners(task_text: str) -> set:
     """Session names the user's own task text declares as partners.
@@ -437,15 +446,22 @@ def _declared_partners(task_text: str) -> set:
     Reads the session's TASK (the user's message) only — never a message
     body, a file or tool output. A name counts as declared when its
     role is named in the SAME line as the name ("Reviewer(s): `nacht-s25`")
-    or the line names the role first ("Your QS lead is `nacht-s29`"). The
-    operator is always a partner: every wave task names it as the
-    supervisor, and it is the one recipient a session cannot mis-declare.
-    Bare mentions of session names elsewhere never count.
+    or the line names the role first ("Your QS lead is `nacht-s29`"). A
+    line that warns about or negates a session (warning/impostor/claiming/
+    refuse/not/never ...) declares nothing. The operator is always a
+    partner: every wave task names it as the supervisor, and it is the one
+    recipient a session cannot mis-declare. Bare mentions of session names
+    elsewhere never count.
     """
     out = {"operator"}
     for raw in str(task_text or "").splitlines():
         line = raw.strip().lower()
         if not line or not any(w in line for w in _PARTNER_ROLE_WORDS):
+            continue
+        words = set(re.findall(r"[a-z']+", line))
+        if any(w in words for w in _PARTNER_NEGATION_WORDS):
+            continue
+        if re.search(r"\bnot\b", line):
             continue
         for token in re.findall(r"[a-z0-9-]{2,40}", line):
             if token in _PARTNER_ROLE_WORDS:
