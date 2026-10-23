@@ -536,6 +536,7 @@ from delfin.manta.topo_isomers import (
     _emit_nonmetal_ring_pucker_variants,
     _enumerate_hapto_sigma_isomers,
     _generate_topological_isomers,
+    _legconf_census,
     _verify_topology_from_graph,
 )  # noqa: F401
 
@@ -2572,6 +2573,7 @@ def _smiles_to_xyz_isomers_impl(
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
 
+    _legconf_census('before:Multi-metal_sampling_augmentation_---:L2575', mol, results)
     # --- Multi-metal sampling augmentation ---
     # For multi-metallic systems: augment with extra ETKDG conformers.
     # EXCEPTION: hapto complexes — ETKDG can't build Cp rings correctly
@@ -2903,6 +2905,7 @@ def _smiles_to_xyz_isomers_impl(
                     )
                     continue
                 new_results.append((xyz, re.sub(r'-\d+$', '',lbl) if lbl else lbl))
+            _legconf_census('before:new_results:L2906', mol, results)
             results = new_results
         except Exception as _dedup_exc:
             logger.debug("Geometry-based dedup failed, falling back to first-keep: %s", _dedup_exc)
@@ -3131,6 +3134,7 @@ def _smiles_to_xyz_isomers_impl(
                     "Output gate rejected isomer %r: graph topology violated", lbl
                 )
         if verified:
+            _legconf_census('before:verified:L3134', mol, results)
             results = verified
 
     # Sort isomers by a composite quality score (UFF energy +
@@ -3336,6 +3340,7 @@ def _smiles_to_xyz_isomers_impl(
                     return (_bucket, _g + _tp, _e)
                 scored.sort(key=_bucket_key)
             if scored:
+                _legconf_census('before:L3339:L3339', mol, results)
                 results = [(xyz, lbl) for _e, _g, _tp, xyz, lbl in scored]
         except Exception as _sort_exc:
             logger.debug("Energy-based sort failed: %s", _sort_exc)
@@ -3497,6 +3502,7 @@ def _smiles_to_xyz_isomers_impl(
                 #   go at the BACK -- additive by construction, the frame count
                 #   can no longer DROP here.
                 #   WITHOUT FIX: unchanged old behaviour, byte for byte.
+                _legconf_census('before:_eigene:L3500', mol, results)
                 results = _eigene if _keep_all else list(seen_sigs.values())
         except Exception as _dual_exc:
             logger.debug("Dual-parse union failed: %s", _dual_exc)
@@ -3540,6 +3546,7 @@ def _smiles_to_xyz_isomers_impl(
     # scaffold-path return point shares the same gate (mono σ here, plus
     # mono hapto / multi-metal hapto / fallback above).
     if has_metal:
+        _legconf_census('before:_apply_coord_angle_fix_if_enabled:L3543', mol, results)
         results = _apply_coord_angle_fix_if_enabled(mol, results, _dual_parse_done)
 
     # ── Welle-5j Agent A: Cp piano-stool hapticity refinement ──────────────
@@ -3552,6 +3559,7 @@ def _smiles_to_xyz_isomers_impl(
     # non-ring M-D bond would dissociate (Iter-15 hard invariant).
     # Opt-in via DELFIN_5J_A_CP_PIANO_STOOL=1.  Bit-exact when disabled.
     if has_metal:
+        _legconf_census('before:_apply_5j_a_cp_piano_stool_if_enabled:L3555', mol, results)
         results = _apply_5j_a_cp_piano_stool_if_enabled(
             mol, results, _dual_parse_done,
         )
@@ -3566,6 +3574,7 @@ def _smiles_to_xyz_isomers_impl(
     #
     # Runs for both metal AND non-metal complexes — aromatic-H out-of-plane
     # is a generic converter pathology independent of metal presence.
+    _legconf_census('before:_apply_baustein4_if_enabled:L3569', mol, results)
     results = _apply_baustein4_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-21 (2026-05-19): 81f8a1f-style M-X clearance final post-pass ───
@@ -3574,6 +3583,7 @@ def _smiles_to_xyz_isomers_impl(
     # and actual emitted XYZ (B3/B4 may re-introduce M-X clash via rotations
     # / π-projections).  Class-gated default-ON for hapto+multi_hapto only.
     # Welle-5f-F finally landed.
+    _legconf_census('before:_apply_hapto_clearance_if_enabled:L3577', mol, results)
     results = _apply_hapto_clearance_if_enabled(mol, results, _dual_parse_done)
 
     # ── Baustein 5 v2: PBD post-UFF geometry corrector ───────────────────────
@@ -3581,6 +3591,7 @@ def _smiles_to_xyz_isomers_impl(
     # Stage 2 angle corrections, Stage 3 clash resolution. Hard topology +
     # M-D drift gates prevent damage to good frames (only-fix-what-is-broken).
     # Bit-exact when DELFIN_BAUSTEIN5=0 (default).
+    _legconf_census('before:_apply_baustein5_if_enabled:L3584', mol, results)
     results = _apply_baustein5_if_enabled(mol, results, _dual_parse_done)
 
     # ── Baustein 6: variational L-BFGS-B refiner + 4-tier symmetry ──────────
@@ -3589,6 +3600,7 @@ def _smiles_to_xyz_isomers_impl(
     # post-B5 fixers below would have run — placed here so B5+B6 form a
     # single "geometry refinement" stack. Hard topology gate + fallback on
     # failure. Bit-exact when DELFIN_B6_WIRED=0 (default).
+    _legconf_census('before:_apply_baustein6_if_enabled:L3592', mol, results)
     results = _apply_baustein6_if_enabled(mol, results, _dual_parse_done)
 
     # ── Targeted post-B5 fixers (F19 / F25 / WUXQAK / μ-X bridging) ──────────
@@ -3600,16 +3612,23 @@ def _smiles_to_xyz_isomers_impl(
     # → SP2N-PLANARIZE (sp2-N/nitro planarity, inverse of F25) → WUXQAK
     # (sp3-C linear collapse) → bridging-anion (μ-X M-X-M angle for
     # bimetallic complexes).  See ``_apply_fixer_*`` docstrings.
+    _legconf_census('before:_apply_fixer_f19_if_enabled:L3603', mol, results)
     results = _apply_fixer_f19_if_enabled(mol, results, _dual_parse_done)
+    _legconf_census('before:_apply_hydroxyl_geom_if_enabled:L3604', mol, results)
     results = _apply_hydroxyl_geom_if_enabled(mol, results, _dual_parse_done)
+    _legconf_census('before:_apply_fixer_f25_if_enabled:L3605', mol, results)
     results = _apply_fixer_f25_if_enabled(mol, results, _dual_parse_done)
+    _legconf_census('before:_apply_fixer_sp2n_planarize_if_enabled:L3606', mol, results)
     results = _apply_fixer_sp2n_planarize_if_enabled(
         mol, results, _dual_parse_done,
     )
+    _legconf_census('before:_apply_fixer_sp2c_planarize_if_enabled:L3609', mol, results)
     results = _apply_fixer_sp2c_planarize_if_enabled(
         mol, results, _dual_parse_done,
     )
+    _legconf_census('before:_apply_fixer_wuxqak_if_enabled:L3612', mol, results)
     results = _apply_fixer_wuxqak_if_enabled(mol, results, _dual_parse_done)
+    _legconf_census('before:_apply_fixer_bridging_anion_if_enabled:L3613', mol, results)
     results = _apply_fixer_bridging_anion_if_enabled(
         mol, results, _dual_parse_done,
     )
@@ -3619,6 +3638,7 @@ def _smiles_to_xyz_isomers_impl(
     # bond-length gate) onto their SVD best-fit plane, centroid-preserving so
     # the M-ring distance / M-D invariant is untouched; ring-H dragged.
     # Class-cond default-ON {hapto, multi_hapto} (where rings pucker 72-75 %).
+    _legconf_census('before:_apply_aromatic_planarity_if_enabled:L3622', mol, results)
     results = _apply_aromatic_planarity_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-33 (2026-06-19): universal aromatic ring-SYSTEM planarisation ──
@@ -3628,6 +3648,7 @@ def _smiles_to_xyz_isomers_impl(
     # puckered (AXAGOY C5N donor rings 0.13-0.16 Å).  Coordinated ring atoms
     # are anchored (M-D invariant), only non-anchor atoms + ring-H + first
     # substituents projected.  Default-OFF byte-id (DELFIN_FFFREE_AROM_PLANARIZE).
+    _legconf_census('before:_apply_arom_planarize_if_enabled:L3631', mol, results)
     results = _apply_arom_planarize_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-34 (2026-06-19): coordinated planar π-donor co-planar-M orient ──
@@ -3638,6 +3659,7 @@ def _smiles_to_xyz_isomers_impl(
     # donors excluded (they bind perpendicular).  Donor + metal frozen → M-D
     # preserved; per-ring never-worse + clash never-worse + M-D rollback.
     # Default-OFF byte-id (DELFIN_FFFREE_PI_COPLANAR_M).
+    _legconf_census('before:_apply_pi_coplanar_m_if_enabled:L3641', mol, results)
     results = _apply_pi_coplanar_m_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-25 (2026-05-20): final bond-decollapse corrector ───────────────
@@ -3645,6 +3667,7 @@ def _smiles_to_xyz_isomers_impl(
     # superimposed atoms (metals + coord-sphere frozen, M-D invariant + collapse-
     # reduce rollback).  Fixes the ~79% hapto ligand-collapse (validated
     # -20.5pp).  Class-cond default-ON {hapto, multi_hapto}; runs LAST.
+    _legconf_census('before:_apply_bond_decollapse_if_enabled:L3648', mol, results)
     results = _apply_bond_decollapse_if_enabled(mol, results, _dual_parse_done)
 
     # ── Resonance-aware aromatic bond-length equalisation ───────────────────
@@ -3657,6 +3680,7 @@ def _smiles_to_xyz_isomers_impl(
     # ring atoms anchored, substituents rigidly dragged (lengths only -- angles/
     # planarity preserved); per-frame ring-bond-deviation never-worse rollback.
     # Default-OFF byte-id (DELFIN_FFFREE_AROM_BOND_LENGTH).
+    _legconf_census('before:_apply_arom_bond_length_if_enabled:L3660', mol, results)
     results = _apply_arom_bond_length_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
@@ -4206,6 +4230,7 @@ def _smiles_to_xyz_isomers_impl(
     # ``DELFIN_CASCADE_REFINER_CLASSES`` is unset.  Skipped for non-metal
     # complexes (UFF handles organic ligands correctly).  Per-frame M-D
     # invariant rollback inside ``refine_with_xtb`` catches topology breaks.
+    _legconf_census('before:_apply_xtb_cascade_if_enabled:L4209', mol, results)
     results = _apply_xtb_cascade_if_enabled(mol, results, _dual_parse_done)
 
     # Multi-sigma V2: restore the per-seed embedding timeout override on
@@ -4231,6 +4256,7 @@ def _smiles_to_xyz_isomers_impl(
     # collapsed, and BEFORE the rotamer/conformer expansions so each fold gets conformer
     # diversity too.  Additive + deterministic -> never-worse by construction.  Bit-exact
     # no-op when DELFIN_STEREOCENTER_ENUM=0 or no coordination-created X-H stereocentre exists.
+    _legconf_census('before:_apply_stereocenter_enum_if_enabled:L4234', mol, results)
     results = _apply_stereocenter_enum_if_enabled(mol, results, _dual_parse_done)
 
     # --- AXIAL completeness (atropisomers), additive, default OFF ---------------------------
@@ -4241,6 +4267,7 @@ def _smiles_to_xyz_isomers_impl(
     # ⚠ SECOND CALL SITE IN THE FF-FREE BRANCH: on 10.08. exactly this module family ran ONLY on
     # legacy, because the FF-free path has its own body.  That is why it is wired on both
     # sides from the start -- call sites count, not lines.
+    _legconf_census('before:_apply_atropisomer_enum_if_enabled:L4244', mol, results)
     results = _apply_atropisomer_enum_if_enabled(mol, results, _dual_parse_done)
 
     # --- MIRROR COMPLETION, now ALSO on the legacy path (27.08.2026) ------------------------
@@ -4267,6 +4294,7 @@ def _smiles_to_xyz_isomers_impl(
     # ⚠ NOT MEASURED: whether the 1325 MISS their CCDC isomer today.  Without this number the
     #   benefit is an upper bound, not a landing.  The eye decides that.
     # ⛔ Default OFF (DELFIN_MIRROR_ENUM) -> byte-identical, as on the FF-free path.
+    _legconf_census('before:_apply_mirror_enum_if_enabled:L4270', mol, results)
     results = _apply_mirror_enum_if_enabled(results)
 
     # --- Welle-5l Track-6: rotamer-diversity (env-flag gated, default OFF) ---
@@ -4457,8 +4485,10 @@ def _smiles_to_xyz_isomers_impl(
     # ABSOLUTELY LAST -- after every enumerator / conformer-expansion / xtb / stereocenter step -- so it
     # sees the FINAL collapsed frames those steps add (an earlier hook missed them: the frames were not yet
     # collapsed).  Default-OFF byte-id (DELFIN_FFFREE_ISOLATED_SEAT); per-frame rollback keeps never-worse.
+    _legconf_census('before:_apply_isolated_reseat_if_enabled:L4460', mol, results)
     results = _apply_isolated_reseat_if_enabled(mol, results, _dual_parse_done)
 
+    _legconf_census('before:L4462:L4462', mol, results)
     # UNION (see the DELFIN_FFFREE_UNION block at the FF-free return): when the FF-free
     # builder produced frames and was told not to short-circuit, its frames are PREPENDED
     # here so frame 0 stays the FF-free pick -- the deterministic, construction-first one --

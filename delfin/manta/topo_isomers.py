@@ -163,6 +163,54 @@ def _legconf_trace(tag: str, xyz, mol, extra: str = "") -> None:
         os.write(2, ("[LEGCONF] %s trace-failed %s\n" % (tag, str(_lc_exc)[:60])).encode())
 
 
+def _legconf_census(tag: str, mol, results) -> None:
+    """DELFIN_LEGCONF_TRACE=1 (default off, output only): one line per pipeline stage of the legacy
+    post-processing -- frames, frames with a ligand bond below 0.88 x its bond-order-aware reference
+    (rcov sum x 1 / 0.87 / 0.78 / 0.91 for single / double / triple / aromatic), frames with X-H above
+    1.20 A, frames whose atom count does not match ``mol`` (not assessed)."""
+    if os.environ.get("DELFIN_LEGCONF_TRACE", "0") != "1":
+        return
+    try:
+        from rdkit import Chem as _lc_Chem
+        _pt = _lc_Chem.GetPeriodicTable()
+        _sc = {_lc_Chem.BondType.SINGLE: 1.0, _lc_Chem.BondType.DOUBLE: 0.87,
+               _lc_Chem.BondType.TRIPLE: 0.78, _lc_Chem.BondType.AROMATIC: 0.91}
+        bonds = []
+        for b in mol.GetBonds():
+            a1, a2 = b.GetBeginAtom(), b.GetEndAtom()
+            if a1.GetSymbol() in _METAL_SET or a2.GetSymbol() in _METAL_SET:
+                continue
+            ish = 1 in (a1.GetAtomicNum(), a2.GetAtomicNum())
+            ref = (_pt.GetRcovalent(a1.GetAtomicNum()) + _pt.GetRcovalent(a2.GetAtomicNum())) \
+                * _sc.get(b.GetBondType(), 1.0)
+            bonds.append((a1.GetIdx(), a2.GetIdx(), ish, ref))
+        n = nb = nh = nna = 0
+        for item in (results or []):
+            xyz = item[0] if isinstance(item, (tuple, list)) else item
+            P = []
+            for _ln in str(xyz).strip().splitlines():
+                _p = _ln.split()
+                if len(_p) >= 4:
+                    P.append((float(_p[1]), float(_p[2]), float(_p[3])))
+            n += 1
+            if len(P) != mol.GetNumAtoms():
+                nna += 1
+                continue
+            bad_b = bad_h = False
+            for i, j, ish, ref in bonds:
+                d = math.dist(P[i], P[j])
+                if ish:
+                    bad_h = bad_h or d > 1.20
+                else:
+                    bad_b = bad_b or d < 0.88 * ref
+            nb += int(bad_b)
+            nh += int(bad_h)
+        os.write(2, ("[LEGCONF_CENSUS] %s frames=%d bond_short=%d xh_long=%d not_assessed=%d\n"
+                     % (tag, n, nb, nh, nna)).encode())
+    except Exception as _lc_exc:
+        os.write(2, ("[LEGCONF_CENSUS] %s failed %s\n" % (tag, str(_lc_exc)[:60])).encode())
+
+
 def _verify_topology_from_graph(
     xyz_delfin: str,
     mol_template,
