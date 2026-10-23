@@ -34,3 +34,15 @@ sudo -iu "$AGENT_USER" bash "$agent_home/delfin/pi_install.sh" install "$(cat "$
 
 touch "$MARKER"
 echo "=== delfin firstboot done $(date -Is) ==="
+
+# The Raspberry Pi OS kernel again with Landlock (about an hour), then one
+# tryboot into it; a kernel that does not come up falls back to the stock one.
+# LANDLOCK_KERNEL=0 leaves the stock kernel alone.
+if [[ "${LANDLOCK_KERNEL:-1}" == "1" ]]; then
+    kernel_script="$agent_home/delfin/src/scripts/pi/pi_kernel_landlock.sh"
+    if bash "$kernel_script" build; then
+        bash "$kernel_script" try
+    else
+        echo "warning: Landlock kernel build failed; the stock kernel stays (retry: sudo bash $kernel_script build)"
+    fi
+fi
