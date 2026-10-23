@@ -4,7 +4,8 @@ Turns a Raspberry Pi 5 (aarch64) into a dedicated machine for developing and
 testing the DELFIN agent. The agent runs as its own user `delfin` with
 passwordless `sudo`.
 
-QM binaries (ORCA, xtb, CREST, ...) are **not** installed. Everything else is:
+ORCA (licensed) and the other QM binaries are **not** installed, except xtb.
+Everything else is:
 
 - DELFIN with **every extra in `pyproject.toml`** except `ai-retro`, `orca`
   and `pymol` (new extras reach the Pi with the next deploy by themselves;
@@ -15,9 +16,14 @@ QM binaries (ORCA, xtb, CREST, ...) are **not** installed. Everything else is:
 - Playwright's Chromium (browser extra), tesseract + pytesseract (OCR),
   the manual search index (`delfin-docs-index`);
 - a git checkout `~/delfin/work/DELFIN` for the agent to work on;
-- the dashboard as a loopback-only service.
+- the dashboard as a loopback-only service;
+- xtb (conda-forge 6.7.1) and epic-MACE, each in an environment of its own
+  under `~/.delfin` by DELFIN's installer (`python -m delfin.installer`),
+  installed by `pi_install.sh` when missing; the venv is not touched;
+- the Raspberry Pi OS kernel rebuilt with Landlock, beside the stock kernel
+  (see "Landlock kernel" below).
 
-Check the result with `delfin-agent doctor` (expected warnings: xtb, orca,
+Check the result with `delfin-agent doctor` (expected warnings: orca,
 git identity / `gh` login until you set them, benchmark ground truth).
 
 Excluded extras: `ai-retro` (aizynthfinder pins `rdkit<2023`, which conflicts
@@ -31,8 +37,37 @@ bubblewrap on the Pi, network only through the egress proxy).
 `DELFIN_AGENT_SANDBOX` in `~/delfin/agent.env` only affects the older
 `sandbox.run_agent_command` path.
 
+## Landlock kernel
+
+The cage of the agent's commands is bubblewrap plus Landlock. Raspberry Pi OS
+builds its kernels without `CONFIG_SECURITY_LANDLOCK`. Only with Landlock
+(which confines a command's reads) does a command off the auto-allow list run
+in the cage without a question; without it the agent asks about each one. `pi_kernel_landlock.sh` builds the installed stock kernel again
+(the `linux-source` package of the same version, from the signed Raspberry Pi
+archive, and the same `/boot/config-<release>`) with only
+`CONFIG_SECURITY_LANDLOCK=y` and `CONFIG_LSM="landlock"` changed:
+
+- its files are its own (`kernel_2712_landlock.img`, `initramfs_2712_landlock`,
+  `/lib/modules/<release>-landlock`); apt and the raspi-firmware hooks do not
+  write them, and the stock kernel stays installed;
+- the first boot is a tryboot with `panic=10`: a kernel that does not come up
+  reboots into the stock one by itself. A boot unit adds the kernel line to
+  `config.txt` only once Landlock is active, inside the board's section
+  (`[pi5]`, or `[pi4]` for a Pi 4 with the `rpi-v8` kernel), so the card in
+  another model boots that model's stock kernel;
+- `status` says when apt brought a newer stock kernel: run `build` and `try`
+  again, the Landlock kernel does not get those updates by itself.
+
+A prepared card does this on first boot (`LANDLOCK_KERNEL=0` skips it). An
+existing Pi: `scripts/pi/deploy_pi.sh --landlock delfin@<host>`, or on the Pi
+`sudo bash ~/delfin/src/scripts/pi/pi_kernel_landlock.sh build` then `... try`.
+`... remove` goes back to the stock kernel.
+
 Known limits, not Pi-specific: `schnetpack` does not import with torch 2.13
-(`T_co` was removed from torch), `architector` needs `xtb` (QM, out of scope).
+(`T_co` was removed from torch). Architector and molSimplify are installed
+into the venv by pip, but build through xtb's Python module (`xtb-python`,
+conda-forge only), so their builds fail until they run in an environment
+that has it (`DELFIN_ARCHITECTOR_PYTHON`, `DELFIN_MOLSIMPLIFY_PYTHON`).
 `uv pip check` reports pymol's numpy>=2 metadata and the `pymol` vs
 `pymol-open-source` name; both are expected. The deployed tree has no `.git`,
 so `test_pre_refactor_api_preserved` (needs `git show`) fails under `--test`.
@@ -50,6 +85,7 @@ unchanged; then it takes seconds.
 | Script | Runs on | Purpose |
 | --- | --- | --- |
 | `make_pi_card.ps1` | Windows | Flash Raspberry Pi OS and put DELFIN + first-boot setup on the card |
+| `pi_kernel_landlock.sh` | Pi (root) | Rebuild the stock kernel with Landlock, tryboot into it, keep it once it runs |
 | `deploy_pi.sh` | PC (Git Bash / WSL / Linux / macOS) | Push the current working tree to a running Pi, roll back, run tests |
 | `pi_bootstrap.sh` | Pi (root) | System setup: packages, agent user, uv + Python 3.11 venv, CLIs, dashboard service |
 | `pi_install.sh` | Pi (agent user) | Unpack a source tarball, install deps when `pyproject.toml` changed, keep `src.prev` for rollback |

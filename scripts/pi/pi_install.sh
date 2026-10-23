@@ -108,6 +108,21 @@ set_up_extras() {
     fi
     "$ROOT/.venv/bin/delfin-docs-index" >/dev/null 2>&1 \
         || echo "warning: doc index build failed (retry: delfin-docs-index)" >&2
+    # xtb (conda-forge 6.7.1) and epic-MACE, each in an environment of its own
+    # under ~/.delfin by DELFIN's installer: the venv is left as it is.
+    local missing
+    missing="$("$VENV_PY" -m delfin.installer --status 2>/dev/null \
+        | awk '$1 == "missing" && ($3 == "xtb" || $3 == "epic_mace") {print $3}' | tr '\n' ' ')"
+    if [[ -n "${missing// }" ]]; then
+        # shellcheck disable=SC2086
+        ( cd "$ROOT/src" && "$VENV_PY" -m delfin.installer --install $missing </dev/null ) \
+            || echo "warning: installing $missing failed (retry: python -m delfin.installer --install $missing)" >&2
+    fi
+    if ! grep -qw landlock /sys/kernel/security/lsm 2>/dev/null; then
+        echo "note: this kernel has no Landlock, so the agent asks about every command the cage" >&2
+        echo "      would run unasked. Once: sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh build," >&2
+        echo "      then: sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh try" >&2
+    fi
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
 }
