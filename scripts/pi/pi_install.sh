@@ -22,7 +22,8 @@ SKIP_DEPS_RE='^pymol-open-source'
 # Everything except QM binaries (not pip anyway) and ai-retro, whose
 # aizynthfinder pins rdkit<2023 and conflicts with DELFIN's rdkit>=2023.3.
 EXTRAS="${DELFIN_PI_EXTRAS:-agent docs dev analysis mlp-full ai-foundation ai-screening ai-complex csp}"
-PYMOL_GIT="git+https://github.com/schrodinger/pymol-open-source.git"
+# Pinned to the commit verified on a Pi 5 (render test), not the moving master.
+PYMOL_GIT="git+https://github.com/schrodinger/pymol-open-source.git@edcda80f3a73ebf0b5922991f85910d17ffbcce5"
 
 cd "$ROOT"
 [[ -x "$VENV_PY" ]] || { echo "error: $VENV_PY missing - run pi_bootstrap.sh first" >&2; exit 1; }
