@@ -165,6 +165,9 @@ cat > "$HOME/.local/bin/delfin-dashboard" <<'EOF'
 set -euo pipefail
 source "$HOME/delfin/agent.env"
 source "$HOME/delfin/.venv/bin/activate"
+# A service, not a launcher: without this the server ends itself after
+# 10 min with no window open (resume_server.NEVER_CONNECTED_SECONDS).
+export DELFIN_DASHBOARD_STAY_UP=1
 cd "$HOME/delfin/work"
 exec delfin-voila --ip 127.0.0.1 --port 8866 --no-browser --token "$(cat "$HOME/.delfin/dashboard.token")"
 EOF
@@ -179,7 +182,7 @@ ConditionPathExists=$AGENT_HOME/delfin/src/pyproject.toml
 [Service]
 User=$AGENT_USER
 ExecStart=$AGENT_HOME/.local/bin/delfin-dashboard
-Restart=on-failure
+Restart=always
 RestartSec=10
 
 [Install]
