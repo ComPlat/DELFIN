@@ -108,6 +108,17 @@ def test_paths_are_lexical(tmp_path):
         str(tmp_path)) / "w.xyz"
 
 
+def test_a_submission_whose_input_asks_for_more_than_the_job_is_refused(
+        tmp_path):
+    (tmp_path / "w.inp").write_text("! HF def2-SVP PAL16\n* xyz 0 1\nO 0 0 0\n"
+                                    "H 0 0.76 0.59\nH 0 -0.76 0.59\n*\n")
+    v = C.judge_orca_submission(tmp_path, 8, 2000, "01:00:00",
+                                kind="login_node",
+                                limits_of=lambda n: {"MaxTime": "1-00:00:00"},
+                                jobs_now=lambda: 0)
+    assert not v.admit and "asks for 16 cores and the job requests 8" in v.reason
+
+
 def test_the_queue_is_asked_through_the_scheduler_client(monkeypatch):
     """One throttled, shared address for scheduler queries
     (delfin.scheduler_client); while its gate is closed, the last answer
