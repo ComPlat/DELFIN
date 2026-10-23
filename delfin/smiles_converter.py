@@ -3683,6 +3683,7 @@ def _smiles_to_xyz_isomers_impl(
     _legconf_census('before:_apply_arom_bond_length_if_enabled:L3660', mol, results)
     results = _apply_arom_bond_length_if_enabled(mol, results, _dual_parse_done)
 
+    _legconf_census('before:L3686:L3686', mol, results)
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
     # that produced 16-26 frames per crowded high-CN / multi-metal SMILES at
@@ -3921,6 +3922,7 @@ def _smiles_to_xyz_isomers_impl(
         except Exception as _gie_exc:
             logger.debug("General-isomer enumerator skipped: %s", _gie_exc)
 
+    _legconf_census('before:L3924:L3924', mol, results)
     # ── Iter-3.1 H1 universal aromatic-H projection (env-gated, default ON) ──
     # Iter-3 added new emit paths (Hapto-Diversity-Topology-Aware, General-
     # Isomer-N, conformer multiplication) that bypass the upstream
@@ -3999,6 +4001,7 @@ def _smiles_to_xyz_isomers_impl(
             except Exception:
                 pass
 
+    _legconf_census('before:L4002:L4002', mol, results)
     # ========================================================================
     # Iter-8.1 multi-hapto safe-fallback filter (FPCFD per-class extras-filter)
     # ========================================================================
@@ -4086,6 +4089,7 @@ def _smiles_to_xyz_isomers_impl(
         except Exception:
             pass
 
+    _legconf_census('before:L4089:L4089', mol, results)
     # ── Welle-5b B: donor-orientation realism (heavy-atom only) ─────────────
     # Three geometry patterns UFF does not enforce natively:
     #   1. Aromatic-N edge-on:  rotate aromatic-N rings around the M-N axis
@@ -4123,6 +4127,7 @@ def _smiles_to_xyz_isomers_impl(
         except Exception:
             pass
 
+    _legconf_census('before:L4126:L4126', mol, results)
     # ── Welle-5b A: universal VSEPR-correct H placement (end-of-pipeline) ──
     # Snap every X-H bond direction to the VSEPR-correct local geometry of
     # its heavy parent (sp/sp2/sp3 + lone-pair count).  Per-H rollback on
@@ -4166,6 +4171,7 @@ def _smiles_to_xyz_isomers_impl(
         except Exception:
             pass
 
+    _legconf_census('before:L4169:L4169', mol, results)
     # ── Welle-5f-D: inter-substituent H-H clash relief (rotamer-only) ──────
     # PMe3 / NMe3 / tBu pattern: H-H clashes between sibling alkyl groups
     # that share a heavy parent (e.g. P-CH3 + P-CH3 + P-CH3 on a phosphine).
@@ -4193,6 +4199,7 @@ def _smiles_to_xyz_isomers_impl(
         except Exception:
             pass
 
+    _legconf_census('before:L4196:L4196', mol, results)
     # ── Welle-5f-C: post-UFF M-H atom-overlap rescue ────────────────────────
     # D-QOPVEZ Fe-H 0.4 A pattern: UFF on unparametrised TM cations leaves
     # hydride H atoms inside the metal core.  Detect M-H pairs with d < 0.9 *
