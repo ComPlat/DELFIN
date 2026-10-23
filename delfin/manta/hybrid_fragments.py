@@ -21,6 +21,7 @@ from delfin.manta.ml_tables import (
     Point3D,
     RDKIT_AVAILABLE,
     _METAL_SET,
+    _check_ml_bond_length,
     _get_ml_bond_length,
 )
 
@@ -478,7 +479,7 @@ def _primary_organometal_module_quality_ok(
             dist = float(np.linalg.norm(atom_pos - metal_pos))
             min_allowed = max(
                 1.65,
-                0.90 * float(_get_ml_bond_length(metal_sym, atom.GetSymbol())),
+                0.90 * float(_check_ml_bond_length(metal_sym, atom.GetSymbol())),
             )
             if atom.GetIsAromatic():
                 min_allowed = max(min_allowed, 1.85)

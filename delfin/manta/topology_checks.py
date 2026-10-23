@@ -28,7 +28,7 @@ from delfin.manta.ml_tables import (
     RDKIT_AVAILABLE,
     _METAL_ATOMICNUMS,
     _METAL_SET,
-    _get_ml_bond_length,
+    _check_ml_bond_length as _get_ml_bond_length,  # every M-D length here is a check (BV scope "lengths")
     _target_mc_dist,
     pybel,
 )

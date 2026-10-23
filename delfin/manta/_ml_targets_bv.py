@@ -72,7 +72,13 @@ LITERATURE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LITERATURE"
 # "pins" = the seating plus the legacy UFF pins and pre-UFF snaps (ml_tables._pin_ml_bond_length); every
 # other per-element question (topology checks, tolerance windows, clash limits) keeps its historic value.
 SCOPE_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE"
+# "lengths" = every length a builder places, pins, snaps or scores against (all _get_ml_bond_length
+# callers and the seating), while the topology checks and tolerance windows (ml_tables._check_ml_bond_length,
+# polyhedra.md_distance without a donor atom) keep their historic value.  Measured 23.10.2026 on the 500
+# bench: "pins" missed the legacy length setters outside uff_constraints/pre_uff_snap (soft-donor UFF,
+# Open Babel constraints, post-optimiser, variational refiner, embed strategies) and lost 3.7 points K2.
 _PIN_DEPTH = [0]           # > 0 while a pin or snap asks for its target length
+_CHECK_DEPTH = [0]         # > 0 while a check asks for its comparison length
 HISTORIC_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_HISTORIC"
 LEVELS_ENV = "DELFIN_FFFREE_ML_TARGETS_BV_LEVELS"
 # The metallacycle of a chelate is embedded with its M-D radii at the targets (bounds pinned, donor-donor
@@ -572,7 +578,7 @@ def _same_environment_target(ctx, donor: str, cls: Optional[str]) -> Optional[fl
     return float(sum(vals) / len(vals))
 
 
-def target_for_donor(metal: str, donor: str, atom=None) -> Optional[float]:
+def target_for_donor(metal: str, donor: str, atom=None, source: str = "md") -> Optional[float]:
     """Target M-D length of the complex being built, or None (caller keeps its value).
 
     With ``atom`` (a donor of a ligand fragment), the target of its class; without, or when the
@@ -584,6 +590,8 @@ def target_for_donor(metal: str, donor: str, atom=None) -> Optional[float]:
     if atom is None:
         scope = os.environ.get(SCOPE_ENV, "all")
         if scope == "seat" or (scope == "pins" and _PIN_DEPTH[0] <= 0):
+            return None
+        if scope == "lengths" and _PIN_DEPTH[0] <= 0 and (source != "table" or _CHECK_DEPTH[0] > 0):
             return None
     if atom is not None:
         try:

@@ -226,3 +226,24 @@ def test_fragment_donor_that_lost_its_charge_reads_its_environment(monkeypatch):
     meoh = Chem.AddHs(Chem.MolFromSmiles("CO"))
     assert BV.target_for_donor("Zn", "O", atom=meoh.GetAtomWithIdx(1)) == pytest.approx(2.192)
     assert BV.target_for_donor("Zn", "O") is None
+
+
+def test_lengths_scope_answers_every_length_but_not_checks(tmp_path, monkeypatch):
+    path = _write_bv_table(tmp_path, [("D", "Pt", 2, 4, "N", "t3l", 99, 2.051)])
+    before = MT._get_ml_bond_length("Pt", "N")
+    before_md = PH.md_distance("Pt", "N")
+    monkeypatch.setenv(BV.FLAG, "1")
+    monkeypatch.setenv(BV.TABLE_ENV, path)
+    monkeypatch.setenv(BV.SCOPE_ENV, "lengths")
+    BV.set_context(CISPLATIN)
+    assert MT._get_ml_bond_length("Pt", "N") == pytest.approx(2.051)   # a builder's length
+    assert MT._pin_ml_bond_length("Pt", "N") == pytest.approx(2.051)
+    assert MT._check_ml_bond_length("Pt", "N") == before                # a check: historic
+    assert PH.md_distance("Pt", "N") == before_md                       # tolerance window: historic
+    from delfin.manta import topology_checks as TC
+    assert TC._get_ml_bond_length("Pt", "N") == before                  # the checks module reads checks
+
+
+def test_check_callers_import():
+    from delfin.manta import hybrid_fragments, secondary_metal_modules  # noqa: F401
+    assert callable(secondary_metal_modules._check_ml_bond_length)
