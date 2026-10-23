@@ -49,8 +49,13 @@ push_helper() {
 
 case "$action" in
 bootstrap)
-    tr -d '\r' < "$HERE/pi_bootstrap.sh" | ssh "$HOST" 'cat > /tmp/pi_bootstrap.sh'
-    ssh -t "$HOST" 'sudo bash /tmp/pi_bootstrap.sh && rm -f /tmp/pi_bootstrap.sh'
+    # A name from mktemp: created 0600 by the login user, and in the sticky
+    # temp directory nobody else can put another file under it before sudo
+    # runs it. A fixed name could be created or swapped by any local user.
+    remote="$(tr -d '\r' < "$HERE/pi_bootstrap.sh" \
+        | ssh "$HOST" 'f="$(mktemp)" && cat > "$f" && echo "$f"')"
+    [[ "$remote" == /* ]] || { echo "error: upload of pi_bootstrap.sh failed" >&2; exit 1; }
+    ssh -t "$HOST" "sudo bash '$remote'; rc=\$?; rm -f '$remote'; exit \$rc"
     ;;
 install)
     cd "$REPO"

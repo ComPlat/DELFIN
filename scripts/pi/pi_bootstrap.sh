@@ -108,10 +108,13 @@ mkdir -p "$HOME/delfin" "$HOME/delfin/work"
 # CLI backends of the agent (backend=cli). Login happens interactively later.
 # Download first: `curl | bash </dev/null` would feed bash /dev/null, not the script.
 if ! command -v claude >/dev/null && [[ ! -x "$HOME/.local/bin/claude" ]]; then
-    curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
-        && bash /tmp/claude-install.sh </dev/null \
+    # Into a directory of our own: a fixed name in /tmp could be created or
+    # swapped by another local user between the download and the run.
+    inst="$(mktemp -d)"
+    curl -fsSL https://claude.ai/install.sh -o "$inst/install.sh" \
+        && bash "$inst/install.sh" </dev/null \
         || echo "warning: Claude Code CLI install failed" >&2
-    rm -f /tmp/claude-install.sh
+    rm -rf "$inst"
 fi
 npm config set prefix "$HOME/.local" </dev/null
 command -v codex >/dev/null || npm install -g @openai/codex </dev/null \
