@@ -5,8 +5,7 @@ testing the DELFIN agent. The agent runs as its own user `delfin`, without
 root: free inside its frame, and the frame is not its to widen (see
 "Security" below).
 
-ORCA (licensed) and the other QM binaries are **not** installed, except xtb.
-Everything else is:
+QM binaries (ORCA, xtb, CREST, ...) are **not** installed. Everything else is:
 
 - DELFIN with **every extra in `pyproject.toml`** except `ai-retro`, `orca`
   and `pymol` (new extras reach the Pi with the next deploy by themselves;
@@ -18,13 +17,10 @@ Everything else is:
   the manual search index (`delfin-docs-index`);
 - a git checkout `~/delfin/work/DELFIN` for the agent to work on;
 - the dashboard as a loopback-only service;
-- xtb (conda-forge 6.7.1) and epic-MACE, each in an environment of its own
-  under `~/.delfin` by DELFIN's installer (`python -m delfin.installer`),
-  installed by `pi_install.sh` when missing; the venv is not touched;
 - the Raspberry Pi OS kernel rebuilt with Landlock, beside the stock kernel
   (see "Landlock kernel" below).
 
-Check the result with `delfin-agent doctor` (expected warnings: orca,
+Check the result with `delfin-agent doctor` (expected warnings: xtb, orca,
 git identity / `gh` login until you set them, benchmark ground truth).
 
 Excluded extras: `ai-retro` (aizynthfinder pins `rdkit<2023`, which conflicts
