@@ -150,7 +150,13 @@ def build_xtb_cmd(
     elif run == "fukui":
         cmd += ["--vfukui"]
     if solvent:
-        cmd += [f"--{solvent_model}", solvent]
+        if str(solvent).startswith("-"):
+            # A flag-shaped solvent name collides with the model flag:
+            # "--alpb" as the name yields [..., "--alpb", "--alpb"] and
+            # xtb consumes its own duplicate as the value.
+            raise ValueError(
+                f"solvent must be a solvent NAME (xtb list), got {solvent!r}")
+        cmd += [f"--{model}", str(solvent)]
     if accuracy is not None:
         cmd += ["--acc", str(accuracy)]
     if etemp is not None:
