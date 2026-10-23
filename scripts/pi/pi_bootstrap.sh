@@ -84,8 +84,13 @@ uv python install "$PY_VERSION"
 mkdir -p "$HOME/delfin" "$HOME/delfin/work"
 [[ -x "$HOME/delfin/.venv/bin/python" ]] || uv venv --python "$PY_VERSION" "$HOME/delfin/.venv"
 # CLI backends of the agent (backend=cli). Login happens interactively later.
-command -v claude >/dev/null || { curl -fsSL https://claude.ai/install.sh | bash </dev/null; } \
-    || echo "warning: Claude Code CLI install failed" >&2
+# Download first: `curl | bash </dev/null` would feed bash /dev/null, not the script.
+if ! command -v claude >/dev/null && [[ ! -x "$HOME/.local/bin/claude" ]]; then
+    curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
+        && bash /tmp/claude-install.sh </dev/null \
+        || echo "warning: Claude Code CLI install failed" >&2
+    rm -f /tmp/claude-install.sh
+fi
 npm config set prefix "$HOME/.local" </dev/null
 command -v codex >/dev/null || npm install -g @openai/codex </dev/null \
     || echo "warning: Codex CLI install failed" >&2
