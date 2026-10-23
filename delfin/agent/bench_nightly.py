@@ -69,6 +69,10 @@ class InstanceRecord:
     core_hours: float = 0.0
     duration_s: float = 0.0
     error: str = ""
+    # Submit path (P3): how the instance ran. "local" (default,
+    # in-process) or "slurm" when a submitter was configured.
+    submit_path: str = "local"
+    job_id: Optional[str] = None
 
 
 @dataclass
@@ -133,6 +137,14 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
     runner = config.get("runner")
     if runner is None:
         from .benchmark_runner import run_task as runner
+    submitter = config.get("submitter")
+    tool_python = config.get("tool_python")
+    if submitter is not None:
+        from ..cluster_bench.slurm_script import (
+            _cbatch_staging_lines as staging_lines,
+        )
+    else:
+        staging_lines = None
     sampler: Sampler = config["sampler"]
     grader: Grader = config["grader"]
     accounting: Accounting = config["accounting"]
@@ -220,6 +232,25 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
         # instance, s19 F5) — the spent counter only mirrors it.
         inst.core_hours = est
         inst.ran = True
+        # P3: jobs go through DELFIN's own submit path when a submitter
+        # is configured; the staging lines come from the REAL
+        # _cbatch_staging_lines (reused, never copied) and show the
+        # no-tool_python edge as [].
+        if submitter is not None:
+            inst.submit_path = "slurm"
+            try:
+                inst.job_id = submitter(
+                    task,
+                    staging_lines(tool_python),
+                    "delfin-bench-%s-%s" % (record.mode, task.id))
+            except Exception as exc:
+                # A broken submitter is recorded, not fatal: the round
+                # survives a failed stage interface (same rule as F1/F2).
+                inst.submit_path = "slurm-failed"
+                inst.error = ("submitter failed: %s: %s"
+                              % (type(exc).__name__, exc))
+                record.instances.append(inst)
+                continue
         try:
             t0 = now()
             result = runner(task, model=model)
