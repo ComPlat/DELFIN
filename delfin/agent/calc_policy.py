@@ -598,7 +598,7 @@ def _check_local(run: _Run, cwd: Path, kind: str, tool_wall_s: float,
         if kind == "login_node":
             share = min(share or 8000, LOGIN_LOCAL_CORES * 4000)
         if share and cores * maxcore > share:
-            return "", (f"orca {name} asks for {cores * maxcore} MB "
+            return "", (f"{run.program} {name} asks for {cores * maxcore} MB "
                         f"({cores} x %maxcore {maxcore}); at most {share} MB "
                         f"run {where} without asking.")
     if kind == "login_node":

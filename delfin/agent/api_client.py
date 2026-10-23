@@ -23130,9 +23130,10 @@ class _DocToolExecutor:
                 perms, name, args or {}, mode)
         if perms.confirm_callback is None and calc_reason:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
-            return (f"'{name}' was not started: {calc_reason}. Fix the setup "
-                    "or the resources and call it again, or tell the user "
-                    "what you want to run and why and let them approve it.")
+            return (f"'{name}' {what} and was not started unasked: "
+                    f"{calc_reason}. Fix the setup or the resources and call "
+                    "it again, or tell the user what you want to run and why "
+                    "and let them approve it.")
         if perms.confirm_callback is None:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
             return (
