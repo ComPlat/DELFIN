@@ -9,8 +9,9 @@ set -euo pipefail
 #
 # What this script does:
 #   1. Install apt packages (git, build tools, X/GL libs for rdkit drawing)
-#   2. Create a dedicated user (default: delfin) with passwordless sudo, so the
-#      agent can administer the box. The Pi itself is the sandbox.
+#   2. Create a dedicated user (default: delfin) WITHOUT root: it may only
+#      restart its dashboard service (AGENT_SUDO, below). The login user
+#      (pi) administers the box.
 #   3. Copy the invoking user's authorized_keys to that user
 #   4. Install uv + Python 3.11 for that user and create ~/delfin/.venv
 #   5. Write ~/delfin/agent.env and the ~/.local/bin/delfin-agent wrapper
@@ -18,12 +19,14 @@ set -euo pipefail
 # Code is NOT installed here - deploy_pi.sh pushes it to ~/delfin/src.
 #
 # Usage (on the Pi):
-#   sudo bash pi_bootstrap.sh            # full sudo for the agent user
-#   NO_SUDO=1 sudo bash pi_bootstrap.sh  # agent user without sudo
+#   sudo bash pi_bootstrap.sh                   # agent may restart its service only
+#   AGENT_SUDO=none sudo bash pi_bootstrap.sh   # agent user without sudo
+#   AGENT_SUDO=full sudo bash pi_bootstrap.sh   # root without password (not advised)
 # ============================================================================
 
 AGENT_USER="${AGENT_USER:-delfin}"
-NO_SUDO="${NO_SUDO:-0}"
+# NO_SUDO=1 (the earlier switch) still means no sudo at all.
+AGENT_SUDO="${AGENT_SUDO:-$([[ "${NO_SUDO:-0}" == "1" ]] && echo none || echo service)}"
 PY_VERSION="${PY_VERSION:-3.11}"
 
 if [[ $EUID -ne 0 ]]; then
@@ -51,10 +54,28 @@ if ! id "$AGENT_USER" >/dev/null 2>&1; then
     adduser --disabled-password --gecos "DELFIN agent" "$AGENT_USER"
 fi
 SUDOERS="/etc/sudoers.d/90-delfin-agent"
-if [[ "$NO_SUDO" == "1" ]]; then
-    rm -f "$SUDOERS"
-else
-    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$AGENT_USER" > "$SUDOERS.tmp"
+# What the agent user may do as root. Not "the Pi is the sandbox": what runs
+# outside DELFIN's command cage (a CLI backend's shell, MCP servers, the
+# agent process) runs as this user, and NOPASSWD:ALL made any approved
+# `sudo ...` root. Administration is the login user's (pi).
+#   service (default)  restart / query the dashboard service, nothing else
+#   none               no sudo at all
+#   full               NOPASSWD:ALL -- only when asked for, and said so
+case "$AGENT_SUDO" in
+    none)
+        rm -f "$SUDOERS" ;;
+    full)
+        echo "warning: AGENT_SUDO=full: the agent user becomes root without a password" >&2
+        printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$AGENT_USER" > "$SUDOERS.tmp" ;;
+    service)
+        systemctl_bin="$(command -v systemctl)"
+        printf '%s ALL=(root) NOPASSWD: %s restart delfin-dashboard, %s is-active delfin-dashboard\n' \
+            "$AGENT_USER" "$systemctl_bin" "$systemctl_bin" > "$SUDOERS.tmp" ;;
+    *)
+        echo "error: AGENT_SUDO must be service, none or full (got '$AGENT_SUDO')" >&2
+        exit 1 ;;
+esac
+if [[ -f "$SUDOERS.tmp" ]]; then
     chmod 0440 "$SUDOERS.tmp"
     visudo -cf "$SUDOERS.tmp" >/dev/null
     mv "$SUDOERS.tmp" "$SUDOERS"
@@ -127,9 +148,10 @@ set -euo pipefail
 ENV_FILE="$HOME/delfin/agent.env"
 if [[ ! -f "$ENV_FILE" ]]; then
     cat > "$ENV_FILE" <<'EOF'
-# Sourced by ~/.local/bin/delfin-agent. Edit freely.
-# The Pi is the sandbox: the agent's command runner needs no extra jail.
-export DELFIN_AGENT_SANDBOX=off
+# Sourced by ~/.local/bin/delfin-agent and the dashboard service. Edit freely.
+# auto: a command the dashboard runs for the agent is confined (bwrap, else
+# Landlock); off would run it with the account's full rights.
+export DELFIN_AGENT_SANDBOX=auto
 export DELFIN_AGENT_SANDBOX_TIMEOUT=600
 EOF
 fi
@@ -210,5 +232,5 @@ systemctl daemon-reload
 systemctl enable delfin-dashboard.service
 
 echo
-echo "Bootstrap done. Agent user: $AGENT_USER ($([[ "$NO_SUDO" == "1" ]] && echo 'no sudo' || echo 'passwordless sudo'))"
+echo "Bootstrap done. Agent user: $AGENT_USER (sudo: $AGENT_SUDO)"
 echo "Next (from your PC): scripts/pi/deploy_pi.sh $AGENT_USER@<pi-host>"

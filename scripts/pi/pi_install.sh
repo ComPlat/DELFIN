@@ -104,7 +104,10 @@ set_up_extras() {
     if "$VENV_PY" -c "import playwright" 2>/dev/null; then
         "$VENV_PY" -m playwright install chromium </dev/null \
             || echo "warning: playwright chromium install failed" >&2
-        sudo -n "$VENV_PY" -m playwright install-deps chromium </dev/null >/dev/null 2>&1 || true
+        # Its system libraries are apt packages, an admin's to install: the
+        # first boot does it as root and leaves the marker.
+        [[ -f /var/lib/delfin-playwright-deps.done ]] \
+            || echo "note: Chromium's system libraries, once as an admin: sudo $VENV_PY -m playwright install-deps chromium" >&2
     fi
     "$ROOT/.venv/bin/delfin-docs-index" >/dev/null 2>&1 \
         || echo "warning: doc index build failed (retry: delfin-docs-index)" >&2
@@ -120,8 +123,14 @@ set_up_extras() {
     fi
     if ! grep -qw landlock /sys/kernel/security/lsm 2>/dev/null; then
         echo "note: this kernel has no Landlock, so the agent asks about every command the cage" >&2
-        echo "      would run unasked. Once: sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh build," >&2
+        echo "      would run unasked. Once, as an admin (pi): sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh build," >&2
         echo "      then: sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh try" >&2
+    fi
+    # An agent.env from before: "off" ran a command the dashboard executes for
+    # the agent with the account's full rights. auto confines it.
+    if grep -q '^export DELFIN_AGENT_SANDBOX=off$' "$ROOT/agent.env" 2>/dev/null; then
+        sed -i 's/^export DELFIN_AGENT_SANDBOX=off$/export DELFIN_AGENT_SANDBOX=auto/' "$ROOT/agent.env"
+        echo "==> agent.env: DELFIN_AGENT_SANDBOX off -> auto"
     fi
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2

@@ -1,8 +1,9 @@
 # DELFIN agent box on a Raspberry Pi 5
 
 Turns a Raspberry Pi 5 (aarch64) into a dedicated machine for developing and
-testing the DELFIN agent. The agent runs as its own user `delfin` with
-passwordless `sudo`.
+testing the DELFIN agent. The agent runs as its own user `delfin`, without
+root: free inside its frame, and the frame is not its to widen (see
+"Security" below).
 
 ORCA (licensed) and the other QM binaries are **not** installed, except xtb.
 Everything else is:
@@ -32,10 +33,30 @@ aarch64 distribution on PyPI and is built from a pinned source commit
 (`--no-deps`, it runs on DELFIN's numpy<2); if that build fails only the PyMOL
 images in DOCX/ESP reports are missing.
 
-Shell commands of the agent run under `agent.bash_isolation` (default `auto`:
-bubblewrap on the Pi, network only through the egress proxy).
-`DELFIN_AGENT_SANDBOX` in `~/delfin/agent.env` only affects the older
-`sandbox.run_agent_command` path.
+## Security
+
+Free inside the frame, and nothing widens the frame but a person:
+
+- The agent's shell commands run in DELFIN's cage (`agent.bash_isolation`
+  `auto`: bubblewrap + Landlock): only the workspace is writable, `.git`
+  hooks and config read-only, credentials, `~/.ssh` and the dashboard token
+  unreadable, no other process visible, no sudo (no-new-privileges), network
+  only through the egress proxy. Inside it, commands run without a question;
+  writes in default mode are asked.
+- The agent user `delfin` has no root (`AGENT_SUDO=service`: it may restart
+  and query `delfin-dashboard`, nothing else). What runs outside the cage --
+  the shell of a CLI backend, the MCP servers, the agent process -- runs with
+  that user's rights only. Administration is the login user's (`pi`).
+  `AGENT_SUDO=none` drops even the service rule; `AGENT_SUDO=full` restores
+  root without a password and is not advised.
+- `DELFIN_AGENT_SANDBOX=auto` in `~/delfin/agent.env`: a command the dashboard
+  runs for the agent is confined as well (`off` ran it with the account's
+  full rights; `pi_install.sh` changes an old `off`).
+- A request of the agent for more rights (an auto-allow rule, a folder, a
+  mode) is flagged as such, asked twice, and never right after a refusal.
+- Push access: with a deploy key the agent can push any branch. Protect
+  `main` in the repository settings (pull requests only), so what the agent
+  pushes reaches `main` through review.
 
 ## Landlock kernel
 
@@ -119,7 +140,8 @@ ssh pi@delfin-pi.local tail -f /var/log/delfin-firstboot.log
 
 - `pi`: desktop autologin, SSH by key only, password locked. Set one for local
   logins with `sudo passwd pi`.
-- `delfin`: agent user, passwordless `sudo`, SSH by the same key.
+- `delfin`: agent user, no root (it may restart its dashboard service), SSH by
+  the same key.
 - API keys are entered on the Pi, never on the card:
   `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`). With the KIT toolbox pass a model it serves, e.g.
