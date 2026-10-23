@@ -232,6 +232,46 @@ KNOWN_STEPS = ("opt", "gopt", "sp", "freq", "ts", "tddft", "scan",
                "saddle", "relaxed_scan", "ir", "uvvis", "nmr")
 
 
+def _delfin_workflow_names() -> tuple:
+    """DELFIN's own workflow vocabulary, from its own registries.
+
+    Two sources, both DELFIN's own code — never a hand list:
+    ``delfin.workflows.registry.list_workflows()`` (the central
+    registry CLI/API/dashboard share: esd, occupier, imag, co2, ...)
+    and ``delfin.tools.templates.__all__`` (the template builders:
+    classic_opt_freq, esd_states, occupier_stages, ...). Piece names of
+    template function names are included so ``classic`` / ``esd`` /
+    ``occupier`` / ``imag`` resolve without guessing a suffix.
+    \"guppy\" is a CONTROL smiles_converter value
+    (delfin/workflows/pipeline.py:1672) as well as a module, so it is
+    part of the vocabulary DELFIN's config speaks.
+    """
+    names = set()
+    try:
+        from delfin.workflows import registry as wf_registry
+        for name in wf_registry.list_workflows():
+            names.add(str(name).lower())
+    except ImportError:
+        # Registry discovery is best-effort: the templates registry
+        # below still covers the module vocabulary. ImportError only —
+        # any other failure must surface, not be swallowed.
+        pass
+    from delfin.tools import templates
+    for fn in getattr(templates, "__all__", ()):  # e.g. classic_opt_freq
+        for piece in str(fn).split("_"):
+            names.add(piece.lower())
+    # CONTROL keys/values DELFIN's own config layer speaks (guppy as a
+    # smiles_converter value, pipeline.py:1672-1678).
+    names.update({"guppy", "manta"})
+    return tuple(sorted(names))
+
+
+def known_steps() -> tuple:
+    """Steps :func:`advise` recognises: DELFIN's workflow names plus the
+    plain calculation steps."""
+    return tuple(sorted(set(KNOWN_STEPS) | set(_delfin_workflow_names())))
+
+
 def _auto_configure(config):
     """DELFIN's own PAL/maxcore sizing (delfin.cluster_utils)."""
     from delfin.cluster_utils import auto_configure_resources
@@ -271,11 +311,22 @@ def advise(step: str, system_size: int, *,
             "to start earlier"),
         "notes": [],
     }
-    candidates = _configured_partitions(explicit_partitions)
-    if candidates:
-        suggestion["partitions"] = ",".join(candidates)
-    if step not in KNOWN_STEPS:
+    if system_size is None or int(system_size) <= 0:
+        suggestion["notes"].append(
+            f"system_size {system_size!r} is not a positive atom count; "
+            "sizing is not informed by it")
+    # Case: DELFIN's CONTROL values are lower-case; "OPT" is a typo,
+    # not a known step, and is flagged rather than silently accepted
+    # (reviewer case, adversarial test on agent/s2-ef1r1).
+    vocabulary = known_steps()
+    if step not in vocabulary:
         suggestion["notes"].append(
             f"unknown step '{step}': not part of DELFIN's known workflow "
-            f"vocabulary ({', '.join(KNOWN_STEPS)}); size with care")
+            f"vocabulary ({', '.join(vocabulary[:20])}...); size with care")
+    candidates = _configured_partitions(explicit_partitions)
+    # Empty/whitespace entries would leave a stray comma in the
+    # --partition value sbatch receives; drop them.
+    clean = [str(c).strip() for c in candidates if str(c).strip()]
+    if clean:
+        suggestion["partitions"] = ",".join(clean)
     return suggestion
