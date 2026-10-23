@@ -29,6 +29,16 @@ esac
 HOST="${1:-}"
 [[ -n "$HOST" ]] || usage
 
+# Git Bash's ssh cannot resolve mDNS (*.local); Windows itself can.
+if [[ "$HOST" == *.local && "$(uname -s)" == MINGW* ]]; then
+    name="${HOST#*@}"
+    ip="$(powershell.exe -NoProfile -Command \
+        "(Resolve-DnsName -Type A '$name' -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress" | tr -d '\r')"
+    [[ -n "$ip" ]] || { echo "error: cannot resolve $name" >&2; exit 1; }
+    [[ "$HOST" == *@* ]] && HOST="${HOST%@*}@$ip" || HOST="$ip"
+    echo "==> $name -> $ip"
+fi
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
 

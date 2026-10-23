@@ -39,7 +39,8 @@ for d in dict.fromkeys(deps):
     if not skip.match(d):
         print(d)
 EOF
-    "$UV" pip install --python "$VENV_PY" -r "$ROOT/requirements.pi.txt"
+    # CPU torch: PyPI's aarch64 torch drags in multi-GB CUDA (sbsa) wheels.
+    "$UV" pip install --python "$VENV_PY" --torch-backend cpu -r "$ROOT/requirements.pi.txt"
     "$UV" pip install --python "$VENV_PY" --no-deps -e "$ROOT/src"
     if ! "$VENV_PY" -c "import pymol" 2>/dev/null; then
         echo "==> building pymol from source (optional, only for report images)"
