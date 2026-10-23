@@ -3946,6 +3946,8 @@ def _smiles_to_xyz_isomers_impl(
                     _h1_xyz_snapped = _snap_aromatic_rings_in_xyz(
                         _h1_xyz, mol, rms_threshold=0.05,
                     )
+                    _legconf_census("H1:in", mol, [(_h1_xyz, "")])
+                    _legconf_census("H1:snapped", mol, [(_h1_xyz_snapped, "")])
                     # Iter-8.7 every-append gate on snapped frame
                     if _h1_gate_on:
                         try:
@@ -3954,6 +3956,7 @@ def _smiles_to_xyz_isomers_impl(
                                 _h1_xyz_snapped = _flat
                         except Exception:
                             pass
+                        _legconf_census("H1:flattened", mol, [(_h1_xyz_snapped, "")])
                         try:
                             _mt_g = Chem.RWMol(mol); _mt_g.RemoveAllConformers()
                             _c_g = _xyz_to_rdkit_conformer(_mt_g.GetMol(), _h1_xyz_snapped)
