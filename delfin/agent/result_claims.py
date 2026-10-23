@@ -41,7 +41,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-__all__ = ["Claim", "check", "worst_level"]
+__all__ = ["Claim", "check", "check_deviations", "worst_level"]
 
 _SCAN_LIMIT = 2_000_000          # chars; same bound as result_critic._read
 
@@ -227,3 +227,49 @@ def worst_level(claims: list[Claim]) -> str:
     if "warn" in levels:
         return "warn"
     return "ok"
+
+
+# Reason wording that justifies a deviation. A deviation record that
+# appears in the answer without nearby justification wording is flagged.
+_REASON_WORDS = ("because", "reason", "rationale", "instead of", "necessary",
+                 "required", "converg", "better description", "improve",
+                 "artifact", "problem", "fail", "insufficient")
+
+
+def check_deviations(answer_text, deviations) -> list[Claim]:
+    """Check that each workflow deviation has a stated reason in the answer.
+
+    ``deviations`` is an iterable of records shaped by CB0A's
+    ``deviations()``: ``{"parameter": ..., "default": ..., "actual":
+    ...}``. A deviation counts as *stated* when its actual value appears
+    in the answer AND a justification word occurs in the answer window
+    around it. Never raises.
+    """
+    try:
+        text = str(answer_text or "")[:_SCAN_LIMIT]
+        low = text.lower()
+        out: list[Claim] = []
+        for rec in (deviations or []):
+            if not isinstance(rec, dict):
+                continue
+            actual = str(rec.get("actual", "")).strip()
+            param = str(rec.get("parameter", "")).strip()
+            if not actual or not param:
+                continue
+            if actual.lower() not in low:
+                continue  # deviation not even mentioned: CB0A reports it
+            # find the mention and look for a reason word nearby
+            idx = low.find(actual.lower())
+            window = low[max(0, idx - 200):idx + len(actual) + 200]
+            if any(w in window for w in _REASON_WORDS):
+                continue
+            out.append(Claim(
+                code="deviation-unexplained",
+                level="error",
+                message=f"deviation {param}={actual} stated without a reason",
+            ))
+        return out
+    except Exception as exc:  # never raise: report as a warn claim
+        return [Claim(code="deviation-check-failed", level="warn",
+                      message=f"deviation check failed internally: {exc!r}")]
+
