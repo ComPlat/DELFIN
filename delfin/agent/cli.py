@@ -4163,6 +4163,30 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """One run read as a trace: turns, model calls, tool calls (OT1).
+
+    Text timeline from the existing stores only (tool_trace, turn_metrics,
+    session_store) — no new store, nothing sent anywhere.
+    """
+    from .otel_export import spans, timeline, write_otlp_json
+
+    session_id = args.session_id
+    if args.otlp:
+        path = write_otlp_json(session_id, args.otlp)
+        if path is None:
+            print(f"(could not write {args.otlp})")
+            return 1
+        print(f"OTLP/JSON written: {path}")
+    print(timeline(session_id))
+    # A trace with no recorded tool calls and no turns is likely a wrong
+    # session id; the note says so instead of leaving a blank screen.
+    if not spans(session_id):
+        print(f"(no spans for session {session_id!r} — check the id with "
+              "'delfin-agent sessions')")
+    return 0
+
+
 def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
@@ -5505,6 +5529,22 @@ def build_parser() -> argparse.ArgumentParser:
                             help="With --load: repeat every SECONDS "
                                  "(Ctrl-C to stop)")
     sessions_p.set_defaults(func=cmd_sessions)
+
+    # trace — one run read as a trace (OT1): text timeline from the
+    # existing tool_trace / turn_metrics / session_store records, plus
+    # an OTLP/JSON file with --otlp. Read-only; nothing is sent anywhere.
+    trace_p = sub.add_parser(
+        "trace",
+        help="One run as a trace: turns, model calls, tool calls "
+             "(text timeline; --otlp writes an OTLP/JSON file)",
+    )
+    trace_p.add_argument("session_id",
+                         help="Session id to render (see 'delfin-agent "
+                              "sessions')")
+    trace_p.add_argument("--otlp", default="", metavar="PATH",
+                         help="Also write the span tree as an OTLP/JSON "
+                              "file a collector can import (no network)")
+    trace_p.set_defaults(func=cmd_trace)
 
     # jobs — the cluster's jobs, read-only, without starting a session.
     # Same query and watch files the monitor daemon uses (cli_jobs is
