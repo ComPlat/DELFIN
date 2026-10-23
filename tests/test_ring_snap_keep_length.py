@@ -66,3 +66,16 @@ def test_arom_planarize_keeps_ring_length_with_the_switch(monkeypatch):
     _s, p0, _ = _parse_xyz(xyz)
     assert np.mean(_benzene_cc(p_off)) < np.mean(_benzene_cc(p0)) - 0.02
     assert abs(np.mean(_benzene_cc(p_on)) - np.mean(_benzene_cc(p0))) < 1e-6
+
+
+def test_snap_projection_restores_every_bond_not_only_the_mean(monkeypatch):
+    """Unequal tilts (one atom lifted far more than the others): the uniform scale alone would
+    leave the most-tilted bonds short; every bond comes back to its pre-projection length."""
+    monkeypatch.setenv(FLAG, "1")
+    mol = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1"))
+    P = _coords(_puckered_benzene_xyz(z=0.04))
+    P[0, 2] += 0.45
+    P[6, 2] += 0.45                                  # its H rides along
+    xyz = "\n".join(f"{s} {x:.6f} {y:.6f} {z:.6f}" for s, (x, y, z) in zip(["C"] * 6 + ["H"] * 6, P)) + "\n"
+    P1 = _coords(_snap_aromatic_rings_in_xyz(xyz, mol))
+    assert max(abs(a - b) for a, b in zip(_benzene_cc(P1), _benzene_cc(P))) < 2e-3
