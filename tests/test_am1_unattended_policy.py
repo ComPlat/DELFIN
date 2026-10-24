@@ -88,14 +88,9 @@ def test_classifier_refuse_stays_refused():
 
 
 # ---------------------------------------------------------------- layer 4
-def test_refused_but_needed_escalates_to_operator_inbox():
-    """A refused action the task really needs becomes ONE escalation
-    message, not a wait and not a retry."""
-    v = up.decide({"tool": "bash", "command": "special_tool"},
-                  verdict="refuse", ctx=_ctx(in_task=True, needed=True))
-    assert v.decision == "escalate"
-    assert v.message and v.message.strip()
-
+# Escalation to the operator inbox arrives in phase 2 (QS ruling s28
+# 2026-10-25: P1 is conservative — anything not clearly allowed is
+# refused, never escalated; P2 delivers escalation fire-and-forget).
 
 # ---------------------------------------------------------------- layer 5
 def test_three_refusals_pause_and_message_the_operator():
