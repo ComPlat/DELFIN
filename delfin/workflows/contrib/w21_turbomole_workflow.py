@@ -122,6 +122,14 @@ class TurbomoleWorkflow:
         finding F5: an un-parsed i-suffix line would hide a
         non-minimum, which is exactly what the reporting duty exists
         to prevent. Both formats count.
+
+        The rule is deliberately loose: any second token that parses
+        as a float and is either i-suffixed or negative counts. In
+        the aoforce mode table the second column IS the frequency,
+        so a line like ``1  -2.5  comment`` is a mode, not prose.
+        Until a real aoforce.out fixture lands this comment documents
+        the accepted ambiguity: over-counting keeps the minimum
+        UNVERIFIED — fail-safe, never silently green.
         """
         log = work_dir / "aoforce.out"
         if not log.is_file():
