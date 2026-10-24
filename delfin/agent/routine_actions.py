@@ -140,11 +140,14 @@ def _existing_branch_routine(sub: str, args: list) -> Verdict | None:
         import os
         if os.path.exists(name) or os.path.isdir(name):
             return None
-        import subprocess
-        probe = subprocess.run(
-            ["git", "show-ref", "--verify", "--quiet",
-             "refs/heads/" + name],
-            capture_output=True, timeout=5)
+        # Every git call DELFIN runs goes through safe_git (the guard
+        # test pins that). The session's own worktree is the process
+        # cwd here -- the routine shape is explicitly "the session's
+        # OWN worktree" -- so the repository to ask is Path.cwd().
+        from delfin.agent import safe_git
+        probe = safe_git.run(
+            ["show-ref", "--verify", "--quiet", "refs/heads/" + name],
+            os.getcwd(), timeout=5)
         if probe.returncode != 0:
             return None
     except Exception:

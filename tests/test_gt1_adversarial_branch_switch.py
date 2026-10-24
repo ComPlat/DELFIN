@@ -107,14 +107,18 @@ def test_switching_to_an_existing_local_branch_is_allowed(cmd, git_ws):
         "worktree was read as the path <worktree>/agent/s3-ds1b")
 
 
-def test_the_write_gate_read_the_branch_name_as_a_path(git_ws):
-    """Reproduce the DECIDING classification, not only the refusal:
-    patch_targets names <ws>/agent/s3-ds1b as a write target for the
-    branch operand, because _is_path_shaped treats any `/` as a path."""
+def test_the_classifier_names_the_branch_no_longer_as_a_path(git_ws):
+    """The fix's contract at the deciding tier: the operand of a
+    single-operand `git checkout <local-branch>` is NOT named as a
+    write path any more. The old version of this test pinned the wave-21
+    defect as expected behaviour (a branch operand -> path target);
+    the old decision was the broad 'any / means path' reading of
+    _is_path_shaped -- GT1 replaces it for confirmed local branches,
+    with the file reading still winning the ambiguity."""
     from delfin.agent import patch_targets
     targets = patch_targets.targets("git checkout agent/s3-ds1b",
                                     str(git_ws.workspace))
-    assert [str(git_ws.workspace / "agent" / "s3-ds1b")] == targets
+    assert [] == targets
 
 
 @pytest.mark.parametrize("cmd", [
