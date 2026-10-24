@@ -8,20 +8,22 @@ built .gate/pc1_cli_prcheck_wiring.patch as c31874c2. Green since.
 import subprocess
 import sys
 
+from conftest import child_env
 
-def test_delfin_cli_has_a_prcheck_subcommand():
+
+def test_delfin_cli_has_a_prcheck_subcommand(tmp_path):
     probe = subprocess.run(
         [sys.executable, "-m", "delfin.agent.cli", "prcheck", "--help"],
-        capture_output=True, text=True, timeout=120)
+        capture_output=True, text=True, timeout=120, env=child_env(tmp_path))
     assert probe.returncode == 0, probe.stderr
     # The subcommand must resolve on its own (the red state fell through
     # to chat's help with "usage: delfin-agent chat ...").
     assert "usage: delfin-agent prcheck" in probe.stdout
 
 
-def test_prcheck_accepts_the_documented_flags():
+def test_prcheck_accepts_the_documented_flags(tmp_path):
     probe = subprocess.run(
         [sys.executable, "-m", "delfin.agent.cli", "prcheck", "--help"],
-        capture_output=True, text=True, timeout=120)
+        capture_output=True, text=True, timeout=120, env=child_env(tmp_path))
     assert "--base" in probe.stdout
     assert "--partner" in probe.stdout
