@@ -334,6 +334,90 @@ def _largest_out_name(out_path: Path) -> str:
         return "(unknown)"
 
 
+def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
+    """UV-Vis/TDDFT plausibility checks, reusing DELFIN's excited-state
+    parser (delfin.api.extract_excited_states).
+
+    Sources: ORCA manual 6.1.1 §5.1 (%tddft nroots — fewer computed
+    roots than requested truncate the requested spectrum window) and
+    the manual's TDDFT output description for the per-state <S^2>
+    column; the deviation diagnostic |<S^2> - S(S+1)| is the same
+    scale as the ground-state check above (DELFIN methodology, "Spin
+    Contamination and State Selection"). Triplet state labels inside a
+    singlet TDDFT table mark spin-flip mixture, not singlet absorption.
+    A reported spectrum must state its broadening width (FWHM) or it
+    cannot be compared with experiment — missing width is an ok-level
+    note only.
+    """
+    import re as _re
+    findings: list[Critique] = []
+    try:
+        from delfin.api import extract_excited_states
+        res = extract_excited_states(str(out_path.parent))
+    except Exception:
+        return [Critique(
+            "warn", "uv-parser-error",
+            "UV-Vis/TDDFT check could not run (parser error); the "
+            "spectrum was NOT verified.")]
+    if res.error is not None or not res.transitions:
+        return findings
+    # Fewer roots than the user's echoed request.
+    m = _re.search(r"Number of roots\s+\.{2,}\s+(\d+)", content)
+    if m:
+        requested = int(m.group(1))
+        if res.n_states < requested:
+            findings.append(Critique(
+                "warn", "uv-few-roots",
+                f"{res.n_states} excited states computed but {requested} "
+                f"roots were requested — the requested spectrum range is "
+                f"truncated; raise nroots or state the covered range when "
+                f"reporting this spectrum."))
+    # Per-state spin contamination from the table's <S^2> column.
+    block_re = _re.search(
+        r"ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
+        r".*?\n-+\n.*?\n-+\n(.*?)(?:\n\n|\Z)", content, _re.DOTALL)
+    ideal = 0.0  # S(S+1) for a singlet reference (mult 1)
+    contaminated: list[tuple[str, float]] = []
+    if block_re:
+        for line in block_re.group(1).split("\n"):
+            lm = _re.match(
+                r"\s*(\S+\s+->\s+\S+)\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+"
+                r"[\d.]+\s+(-?\d+\.\d+)\s*$", line)
+            if not lm:
+                continue
+            state, s2 = lm.group(1), float(lm.group(2))
+            dev = abs(s2 - ideal)
+            if dev >= _SPIN_ERROR or dev >= _SPIN_WARN:
+                contaminated.append((state, dev))
+    if contaminated:
+        worst_state, worst_dev = max(contaminated, key=lambda t: t[1])
+        level = "error" if worst_dev >= _SPIN_ERROR else "warn"
+        findings.append(Critique(
+            level, "uv-spin-contamination",
+            f"{len(contaminated)} excited state(s) with <S^2> deviation up "
+            f"to {worst_dev:.2f} (worst: {worst_state}) — the states are "
+            f"spin-contaminated; energies and oscillator strengths of "
+            f"these states are unreliable."))
+    # Triplet states inside a singlet spectrum (state labels like 1-3A).
+    triplets = [t.state_to for t in res.transitions
+                if _re.search(r"\d+-3[A']|\d+3[A']", t.state_to or "")]
+    if triplets:
+        findings.append(Critique(
+            "error", "uv-triplet-in-singlet",
+            f"Triplet state(s) ({', '.join(sorted(set(triplets)))}) inside "
+            f"a singlet absorption spectrum — a spin-flip/ST mixture is "
+            f"leaking into the singlet table; these are not singlet "
+            f"excitations."))
+    # Broadening width must be stated for an experiment comparison.
+    if not _re.search(r"broadening|FWHM|fwhm", content):
+        findings.append(Critique(
+            "ok", "uv-no-broadening",
+            "No broadening width (FWHM) stated for this spectrum — a "
+            "spectrum compared with experiment must state the Gaussian "
+            "broadening used."))
+    return findings
+
+
 def _check_spectra(out_path: Path, content: str) -> list[Critique]:
     """Spectrum plausibility checks, reusing DELFIN's own parsers.
 
@@ -363,6 +447,7 @@ def _check_spectra(out_path: Path, content: str) -> list[Critique]:
             "warn", "spectra-parser-error",
             "Vibrational-spectrum check could not run (parser error); "
             "the spectrum was NOT verified."))
+    findings += _check_uvvis(content, out_path)
     return findings
 
 
