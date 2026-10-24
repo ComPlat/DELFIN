@@ -10,10 +10,25 @@ WB1 extension pattern, one call per rule family). Two rules:
 - ``lint_solvation_chain`` (spec level): explicit and implicit
   solvation on the same species double-count solvation. If a step
   AFTER the explicit shell (xtb_solvator / packmol_solvate) carries a
-  DFT solvent model (CPCM/SMD/ALPB via solvent_model), the free-energy
-  correction is counted twice. The finding is a WARNING because a
-  later single-point at a different solvent treatment can be
-  deliberate — but it must be justified, not silent.
+  continuum solvent model, the solvation free energy is counted
+  twice. The finding is a WARNING because a later single-point at a
+  different solvent treatment can be deliberate — but it must be
+  justified, not silent.
+
+Reviewer-confirmed design points (nacht-s19, F2/F3):
+
+- F2: the continuum set covers BOTH engines' models — ORCA's CPCM/SMD
+  (set via ``solvent_model``) and xTB's ALPB/GBSA (also set via
+  ``solvent_model`` on xtb_native steps). All of them double-count
+  after an explicit shell; there is no deliberate asymmetry.
+- F3: the rule keys on ``solvent_model`` ONLY, and shell steps are
+  excluded outright (``name not in _SHELL_STEPS``). The SOLVATOR
+  shell's own implicit component comes from the ``solvent`` key
+  (ORCA input line ``!GFN2-xTB ALPB(water)``) — that is the deliberate
+  ORCA-SOLVATOR design (explicit shell + ALPB background), NOT a
+  double count, and the rule can never fire on the shell step itself.
+  The double-count rule instead targets a LATER step (typically a DFT
+  single point) that adds CPCM/SMD/ALPB/GBSA on top of the shell.
 """
 
 from __future__ import annotations
@@ -24,7 +39,14 @@ from delfin.tools._science import ScienceFinding, _is_placeholder
 
 _XTB_HAMILTONIANS = frozenset({"gfn0-xtb", "gfn1-xtb", "gfn2-xtb"})
 _SHELL_STEPS = frozenset({"xtb_solvator", "packmol_solvate"})
-_DFT_SOLVENT_MODELS = frozenset({"cpcm", "cpcm(w)", "smd", "smd(w)"})
+# Continuum models the DFT engines set via `solvent_model` (CPCM/SMD,
+# ORCA) plus the xTB continuum models (ALPB/GBSA, set via solvent_model
+# on xtb_native steps, delfin/tools/adapters/xtb_native.py:50-52).
+# ALL of them double-count solvation when applied after an explicit
+# shell — ALPB/GBSA included (reviewer F2, nacht-s19).
+_DFT_SOLVENT_MODELS = frozenset({
+    "cpcm", "cpcm(w)", "cpcmc", "smd", "smd(w)",
+    "alpb", "gbsa"})
 
 
 def lint_solvator_step(label: str, step_name: str,

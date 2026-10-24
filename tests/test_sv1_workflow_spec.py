@@ -147,6 +147,11 @@ def test_rule_module_flags_double_counting_directly():
     findings = lint_solvation_chain(steps)
     assert len(findings) == 1
     assert findings[0].rule == "explicit-and-implicit-solvation-double-count"
+    # F2 (nacht-s19): xTB continuum models double-count too
+    for model in ("ALPB", "GBSA", "SMD", "CPCM"):
+        kw = dict(steps[2]["kwargs"], solvent_model=model)
+        assert lint_solvation_chain(steps[:2] + [
+            {"step": "orca_sp", "label": "dft_energy", "kwargs": kw}]), model
     # no double-count without a shell step before the implicit model
     # (a chain that only optimises and runs the DFT single point is the
     # ordinary implicit-solvation case, not a double count)
@@ -156,3 +161,21 @@ def test_rule_module_flags_double_counting_directly():
          "kwargs": {"solvent": "water", "solvent_model": "CPCM"}},
     ]
     assert lint_solvation_chain(no_shell) == []
+
+
+def test_shell_step_itself_never_fires_the_double_count_rule():
+    """F3 (nacht-s19): the SOLVATOR shell's own implicit component comes
+    from the `solvent` key (ORCA: explicit shell + ALPB background) —
+    that is deliberate ORCA design, not a double count. The rule keys on
+    `solvent_model` only and excludes shell steps outright."""
+    from delfin.tools.adapters.xtb_solvator_realism_lint import (
+        lint_solvation_chain)
+
+    steps = [
+        {"step": "packmol_solvate", "label": "packmol_box",
+         "kwargs": {"solvent_xyz": "{solvent_xyz}"}},
+        {"step": "xtb_solvator", "label": "explicit_shell",
+         "kwargs": {"solvent": "water", "method": "GFN2-xTB",
+                    "solvent_model": "ALPB"}},
+    ]
+    assert lint_solvation_chain(steps) == []
