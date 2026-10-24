@@ -35,7 +35,7 @@ def _write(tmp_path, name, content) -> Path:
 _TABLE_HDR = (
     "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS\n"
     "-------------------------------------------------------------------\n"
-    "State      Energy   Energy   Wavelength   fosc\n"
+    "State      Energy   Energy   Wavelength   fosc         S^2\n"
     "           (eV)    (cm-1)      (nm)\n"
     "-------------------------------------------------------------------\n"
 )
