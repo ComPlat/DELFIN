@@ -5,9 +5,11 @@ All tests are dry runs: rs_run_xtb stays off and ORCA is never executed
 """
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
+from ase import Atoms
 
 from delfin.co2 import reduction_surface as rs
 from delfin.co2 import CO2_Coordinator6 as _coord
@@ -67,6 +69,72 @@ class TestStationDeltas:
     def test_rs_charges_nonint_falls_back(self):
         ctrl = {"rs_charges": "a,b,c,d"}
         assert rs._station_deltas(ctrl) == [0, 1, 2, 2]
+
+
+class TestStationMultiplicity:
+    """_resolve_station_multiplicity: the OCCUPIER preference for the redox
+    species (folder named by delta) is the authority, validated against the
+    station's electron-count parity. Charge is relative to the catalytic
+    species."""
+
+    @staticmethod
+    def _occ(surf_dir, delta_name, mult, bs=None):
+        # Real OCCUPIER.txt shape: a '<-- PREFERRED VALUE' marker on an
+        # energy line, with the winning multiplicity on the FOLLOWING line.
+        d = Path(surf_dir) / f"{delta_name}_OCCUPIER"
+        d.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "FINAL SINGLE POINT ENERGY (2) = -2483.252 (H) <-- PREFERRED VALUE",
+        ]
+        if bs:
+            lines.append(f"multiplicity {mult}, BrokenSym {bs}")
+        else:
+            lines.append(f"multiplicity {mult}")
+        (d / "OCCUPIER.txt").write_text("\n".join(lines) + "\n")
+
+    def test_occupier_preference_is_authority(self, tmp_path):
+        # even electron count (28 - 0) -> needs ODD multiplicity; the
+        # occupier's triplet (3) in ox_step_1 is honored over the control's
+        # doublet (2). The co2h station (delta +1) reads ox_step_1.
+        self._occ(tmp_path, "ox_step_1", 3)
+        m, bs = rs._resolve_station_multiplicity(
+            str(tmp_path), "co2h", 1, 0, Atoms("Ni"), 2)
+        assert m == 3
+
+    def test_even_electrons_control_doublet_corrected_to_singlet(self, tmp_path):
+        # The 81-105_87 co2h failure shape: H nucleons sum 1, charge -1
+        # -> 2 electrons (even) -> doublet (2) impossible; corrected to 1.
+        m, _bs = rs._resolve_station_multiplicity(
+            str(tmp_path), "co2h", 1, -1, Atoms("H"), 2)
+        assert m == 1
+
+    def test_odd_electrons_control_doublet_kept(self, tmp_path):
+        # H, charge 0 -> 1 electron (odd) -> doublet (2) is valid, kept.
+        m, _bs = rs._resolve_station_multiplicity(
+            str(tmp_path), "co", 2, 0, Atoms("H"), 2)
+        assert m == 2
+
+    def test_incompatible_occupier_preference_dropped(self, tmp_path):
+        # H, charge 0 -> 1 electron (odd) -> needs even M; occupier says
+        # singlet (1, odd) which ORCA cannot run -> dropped, control used.
+        self._occ(tmp_path, "ox_step_1", 1)
+        m, _bs = rs._resolve_station_multiplicity(
+            str(tmp_path), "co2h", 1, 0, Atoms("H"), 2)
+        assert m == 2
+
+    def test_no_preference_and_control_kept_when_parity_ok(self, tmp_path):
+        # even electron count, control already odd (singlet) -> kept as is.
+        m, _bs = rs._resolve_station_multiplicity(
+            str(tmp_path), "co2h", 1, -1, Atoms("H"), 1)
+        assert m == 1
+
+    def test_initial_folder_for_delta_zero(self, tmp_path):
+        # Station co2 keeps the initial species charge (delta 0) and reads
+        # its preference from initial_OCCUPIER.
+        self._occ(tmp_path, "initial", 2)
+        m, _bs = rs._resolve_station_multiplicity(
+            str(tmp_path), "co2", 0, 0, Atoms("H"), 2)
+        assert m == 2
 
 
 class TestSurgery:

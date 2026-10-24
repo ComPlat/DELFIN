@@ -54,6 +54,7 @@ import json
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -178,6 +179,67 @@ def _station_deltas(control: Dict[str, Any]) -> List[int]:
     # Derived default: protonation adds +1 per H, the H2O release leaves
     # the charge on the body (H2O leaves neutral).
     return [st["delta"] for st in STATIONS]
+
+
+def _resolve_station_multiplicity(
+    coord_outdir: str, name: str, delta: int, charge: int,
+    atoms: Atoms, fallback_mult: int,
+) -> Tuple[int, Optional[str]]:
+    """Multiplicity + BrokenSym for one station.
+
+    The OCCUPIER preference for the redox species is the authority (user
+    decision 2026-10-24): "run the occupier for each species and take the
+    preferred multiplicity from it".  The occupier folder is named by the
+    species' delta relative to the catalytic species (0 -> ``initial``,
+    +1 -> ``ox_step_1``, ... via ``chain_setup.species_delta_to_name``),
+    the same convention ``setup_co2_from_delfin`` uses, so the preference
+    lives in ``<coord-outdir>/<delta-name>_OCCUPIER/OCCUPIER.txt``.
+    Charge is likewise relative to the catalytic species:
+    ``charge = base_charge + delta``; if the catalytic species has charge x,
+    co2h has x+1, co2h2 and co have x+2.
+
+    Before the preference is used it is validated against the station's
+    electron count, so ORCA never aborts with "multiplicity M is even and
+    number of electrons N is even -> impossible" (the 81-105_87 co2h
+    failure, charge +1 / 224 e / Doublet).
+
+    If no OCCUPIER preference exists the CONTROL multiplicity is used,
+    adjusted to be parity-consistent with the electron count.  A
+    PREFERRED value that contradicts the electron parity is reported
+    loudly and dropped, because ORCA cannot run it either way.
+    """
+    from delfin.copy_helpers import extract_preferred_spin
+    from delfin.co2.chain_setup import species_delta_to_name
+
+    # ORCA parity rule: for N electrons and multiplicity M, M - 1 is the
+    # number of unpaired electrons, so 2 n_a = N + (M - 1) must be even:
+    #   M is odd  <=> N is even,   M is even <=> N is odd.
+    nelec = int(np.asarray(atoms.get_atomic_numbers()).sum()) - charge
+    want_odd = (nelec % 2 == 0)
+
+    def _parity_ok(m: int) -> bool:
+        return (m % 2 == 1) == want_odd
+
+    occ_folder = Path(coord_outdir) / f"{species_delta_to_name(delta)}_OCCUPIER"
+    pref_mult, pref_bs = extract_preferred_spin(occ_folder)
+    if pref_mult is not None:
+        if _parity_ok(pref_mult):
+            return pref_mult, pref_bs
+        print(f"[reduction_surface][WARN] station {name}: OCCUPIER preference "
+              f"multiplicity={pref_mult} contradicts {nelec} electrons "
+              f"(expected {'odd' if want_odd else 'even'}) — dropping it and "
+              f"using the parity-consistent fallback.")
+
+    if _parity_ok(fallback_mult):
+        return fallback_mult, None
+    # e.g. base CONTROL multiplicity is a Doublet but the station's electron
+    # count is even — there is no way to run that; fall back to the lowest
+    # parity-consistent singlet-like value.
+    fallback = 1 if want_odd else 2
+    print(f"[reduction_surface][WARN] station {name}: CONTROL multiplicity "
+          f"{fallback_mult} contradicts {nelec} electrons — using "
+          f"multiplicity {fallback} so ORCA can run.")
+    return fallback, None
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +730,15 @@ def run_reduction_surface(coordinator_outdir: str,
             _write_xyz(station_xyz, current_atoms,
                        comment=f"station {name} (charge {charge})")
             entry["xyz"] = station_xyz
+
+            # Station multiplicity: the OCCUPIER preference for the species is
+            # the authority (folder named by delta); without one, the CONTROL
+            # multiplicity adjusted to be parity-consistent with the station's
+            # electron count. Fixes the co2h Doublet/224-e abort (user
+            # decision 2026-10-24). Charge is already relative to the catalytic
+            # species: charge = base_charge + delta.
+            multiplicity, broken_sym = _resolve_station_multiplicity(
+                coordinator_outdir, name, deltas[i], charge, current_atoms, multiplicity)
 
             # Preopt strategy (user decision, 2026-10-11): xTB ONLY on the
             # non-protonated first station; the protonated stations go
