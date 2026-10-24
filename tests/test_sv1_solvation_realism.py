@@ -112,3 +112,70 @@ def test_packmol_rejects_box_smaller_than_solute(tmp_path):
     )
     assert result.status.name == "FAILED"
     assert "box_side" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# R1: execute() must enforce the limits itself — the product call site
+# (delfin/agent/campaign.py:373) calls execute() directly, validate_params
+# is not in that path. Red tests below drive execute() with the SAME bad
+# parameters the validate_params tests use.
+# ---------------------------------------------------------------------------
+
+def test_xtb_solvator_execute_rejects_dft_method(tmp_path):
+    """A DFT method must not reach the ORCA input writer: the input file
+    must never be written with !B3LYP for an xTB feature."""
+    adapter = XtbSolvatorAdapter()
+    solute = tmp_path / "solute.xyz"
+    solute.write_text("1\nx\nO 0.0 0.0 0.0\n", encoding="utf-8")
+    result = adapter.execute(
+        tmp_path, geometry=solute, method="B3LYP", solvent="water")
+    assert result.status.name == "FAILED"
+    assert "xTB Hamiltonian" in (result.error or "")
+
+
+def test_xtb_solvator_execute_rejects_bad_mult_and_n_solvent(tmp_path):
+    adapter = XtbSolvatorAdapter()
+    solute = tmp_path / "solute.xyz"
+    solute.write_text("1\nx\nO 0.0 0.0 0.0\n", encoding="utf-8")
+    for kwargs in ({"mult": 0}, {"n_solvent": 0}, {"solvent": "   "}):
+        result = adapter.execute(tmp_path, geometry=solute, **kwargs)
+        assert result.status.name == "FAILED", kwargs
+        # An ORCA input must not be written for a refused combination
+        assert not (tmp_path / "XTB_SOLVATOR.inp").exists(), kwargs
+
+
+def test_xtb_solvator_execute_accepts_valid_params(tmp_path, monkeypatch):
+    """Does-not-fire direction: with valid params the adapter proceeds —
+    the ORCA input is written with the declared values (run_orca is
+    stubbed; this tests the adapter, not ORCA)."""
+    calls = {}
+
+    def fake_run_orca(inp, out, working_dir=None):
+        calls["inp"] = Path(inp).read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        "delfin.orca.run_orca", fake_run_orca)
+    adapter = XtbSolvatorAdapter()
+    solute = tmp_path / "solute.xyz"
+    solute.write_text("1\nx\nO 0.0 0.0 0.0\n", encoding="utf-8")
+    result = adapter.execute(
+        tmp_path, geometry=solute, solvent="water", charge=0, mult=1,
+        n_solvent=12, method="GFN2-xTB")
+    # With a stubbed run_orca no solvator xyz appears -> FAILED is the
+    # honest outcome; what matters is the input carries the right physics.
+    assert "GFN2-xTB" in calls["inp"]
+    assert "%SOLVATOR NSOLV 12" in calls["inp"]
+    assert "*xyz 0 1" in calls["inp"]
+
+
+def test_packmol_execute_rejects_bad_params(tmp_path):
+    """A refused combination must not reach the packmol wrapper."""
+    adapter = PackmolSolvateAdapter()
+    solute = tmp_path / "solute.xyz"
+    solute.write_text("1\nx\nO 0.0 0.0 0.0\n", encoding="utf-8")
+    for kwargs in ({"n_solvent": 0}, {"tolerance": -1.0}, {"box_side": 0}):
+        result = adapter.execute(
+            tmp_path, geometry=solute,
+            solvent_xyz=str(solute), **kwargs)
+        assert result.status.name == "FAILED", kwargs
+        assert "invalid" in (result.error or ""), kwargs
