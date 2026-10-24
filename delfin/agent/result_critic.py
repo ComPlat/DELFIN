@@ -353,6 +353,22 @@ def _largest_out_name(out_path: Path) -> str:
         return "(unknown)"
 
 
+def _s2_is_last_header_column(table_text: str) -> bool:
+    """True when the header line that names S^2 ends with it — the
+    assumption the per-state read relies on (s17 F2). A header that
+    names S^2 before further columns would make numbers[-1]
+    misattribute another column, so the caller treats that shape as
+    unparsed rather than guessed.
+    """
+    import re as _re
+    for line in table_text.split("\n"):
+        if _re.search(r"S\^2\b|S\*\*2\b|S²\b", line) and "State" in line:
+            tokens = line.split()
+            return bool(tokens) and tokens[-1] in (
+                "S^2", "S**2", "S²")
+    return True  # no State header line: keep the named-column rule
+
+
 def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
     """UV-Vis/TDDFT plausibility checks, reusing DELFIN's excited-state
     parser (delfin.api.extract_excited_states).
@@ -367,7 +383,16 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
     singlet absorption; a triplet reference lists them legitimately
     (F2). The per-state <S^2> is read as the LAST numeric column of a
     state row, so real ORCA tables with D**2 X Y Z columns before S^2
-    are covered (F3). ORCA does not print a per-state <S^2> column by
+    are covered (F3). Two guards hold before any value is attributed:
+    (a) the table header must NAME an S^2 column anywhere in the
+    header line — an unnamed column is never read (QS ruling s29);
+    (b) the read assumes S^2 IS the last column of the row. If the
+    header names S^2 but not as the last named column, the rows are
+    not attributed and a uv-s2-unparsed warning is emitted instead of
+    a guess. Rows whose tokens are not plain numbers (bare "0.",
+    negatives, E-notation are fine) make the table unparsable, which
+    is reported visibly (uv-s2-unparsed) rather than silently
+    skipped (s17 F1). ORCA does not print a per-state <S^2> column by
     default: where the header names none, the check stays silent and
     the ground-state <S^2> (the check above) remains the guard — an
     unnamed last column cannot be attributed (fosc, D**2, X, Y, Z
@@ -378,27 +403,28 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
     """
     import re as _re
     findings: list[Critique] = []
+    res_valid = False
     try:
         from delfin.api import extract_excited_states
         res = extract_excited_states(str(out_path.parent))
+        res_valid = res.error is None and bool(res.transitions)
     except Exception:
-        return [Critique(
+        findings.append(Critique(
             "warn", "uv-parser-error",
             "UV-Vis/TDDFT check could not run (parser error); the "
-            "spectrum was NOT verified.")]
-    if res.error is not None or not res.transitions:
-        return findings
-    # Fewer roots than the user's echoed request.
-    m = _re.search(r"Number of roots\s+\.{2,}\s+(\d+)", content)
-    if m:
-        requested = int(m.group(1))
-        if res.n_states < requested:
-            findings.append(Critique(
-                "warn", "uv-few-roots",
-                f"{res.n_states} excited states computed but {requested} "
-                f"roots were requested — the requested spectrum range is "
-                f"truncated; raise nroots or state the covered range when "
-                f"reporting this spectrum."))
+            "spectrum was NOT verified."))
+    if res_valid:
+        # Fewer roots than the user's echoed request.
+        m = _re.search(r"Number of roots\s+\.{2,}\s+(\d+)", content)
+        if m:
+            requested = int(m.group(1))
+            if res.n_states < requested:
+                findings.append(Critique(
+                    "warn", "uv-few-roots",
+                    f"{res.n_states} excited states computed but {requested} "
+                    f"roots were requested — the requested spectrum range is "
+                    f"truncated; raise nroots or state the covered range when "
+                    f"reporting this spectrum."))
     # Per-state spin contamination from the table's <S^2> column.
     # The <S^2> column must be NAMED in the table header ("S^2",
     # "S**2", "<S**2>" or "<S^2>"); without a header the value is
@@ -420,21 +446,54 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
     mult = int(mult_m.group(1)) if mult_m else 1
     ideal = 0.0 if mult == 1 else mult * (mult + 1)  # S(S+1)
     contaminated: list[tuple[str, float]] = []
+    unparsable = False
+    n_parsed = 0
     if rows_m and _re.search(r"S\^2\b|S\*\*2\b|S²\b", table_text):
         for line in rows_m.group(1).split("\n"):
-            lm = _re.match(
-                r"\s*(\S+\s+->\s+\S+)\s+((?:\d+\.\d+\s*)+)$", line)
+            lm = _re.match(r"\s*(\S+\s+->\s+\S+)\s+(.+)$", line)
             if not lm:
                 continue
-            numbers = [float(x) for x in lm.group(2).split()]
-            # The <S^2> value is the LAST numeric column of the row
-            # (ORCA prints it after fosc and the D**2 X Y Z columns;
-            # F3, s4: the fixed 6-column regex missed real tables).
+            # Float-tolerant split: ORCA prints bare "0." tokens
+            # (RX/TY/RZ columns), negatives and E-notation. A token
+            # that is not a number means the row shape is not what we
+            # assume — treat the whole table as unparsed, never guess.
+            try:
+                numbers = [float(x) for x in lm.group(2).split()]
+            except ValueError:
+                unparsable = True
+                continue
+            # The <S^2> value is read ONLY from a column NAMED S^2 in
+            # the header (QS ruling s29), and we assume it IS the last
+            # numeric column of the row (ORCA prints it after fosc and
+            # the D**2 X Y Z columns). If a future table names S^2
+            # before further columns, this read would misattribute —
+            # the header is therefore checked for the S^2 token being
+            # the last named column below.
             s2 = numbers[-1]
             state = lm.group(1)
+            n_parsed += 1
             dev = abs(s2 - ideal)
             if dev >= _SPIN_ERROR or dev >= _SPIN_WARN:
                 contaminated.append((state, dev))
+        if not contaminated and (unparsable or n_parsed == 0):
+            findings.append(Critique(
+                "warn", "uv-s2-unparsed",
+                "The TDDFT table names an S^2 column but none of its "
+                "state rows could be parsed as numbers — the "
+                "spin-contamination check could not read them. Check "
+                "the table shape manually; the check stays silent "
+                "rather than guess."))
+        elif not contaminated and not _s2_is_last_header_column(table_text):
+            findings.append(Critique(
+                "warn", "uv-s2-unparsed",
+                "The TDDFT table names S^2 but it is not the last "
+                "column of the header — the per-state read assumes "
+                "S^2 last and would misattribute other columns. "
+                "Check the S^2 values manually."))
+    elif rows_m and not contaminated:
+        # A TDDFT table without a named S^2 column: silence by design
+        # (QS ruling — an unnamed last column is never attributed).
+        pass
     if contaminated:
         worst_state, worst_dev = max(contaminated, key=lambda t: t[1])
         level = "error" if worst_dev >= _SPIN_ERROR else "warn"
