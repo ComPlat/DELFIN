@@ -134,10 +134,31 @@ def run_checks(spec: Dict[str, Any], *, system_size: Optional[int] = None,
         errors.extend(f"[lint:{f['rule']}] {f['step']}: {f['message']}"
                       for f in lint if f.get("level") == "error")
 
+    # Check 4: a real dry run — re-build the pipeline from the spec and
+    # validate it with the geometry flag (Pipeline.dry_run IS validate,
+    # pipeline.py:1648; it executes nothing). Distinct from check 2 only
+    # in that it goes through the pipeline object, catching spec shapes
+    # validate_spec's application path may accept but the pipeline cannot.
+    from delfin.tools._serialize import from_dict as _from_dict
+    dry_run = _from_dict(spec).validate(geometry=geometry)
+    if not dry_run.ok:
+        errors.extend(f"[dry_run] {e}" for e in dry_run.errors)
+
+    # Check 5: cost estimate. Provenance: without a caller-given size,
+    # DELFIN's default (10 atoms) is ASSUMED and each entry says so —
+    # a number without provenance is marked as an estimate.
+    assumed = system_size is None
     cost: List[Dict[str, Any]] = []
     for entry in spec.get("steps", []):
         size = system_size if system_size else 10
-        cost.append(cluster_efficiency.advise(entry.get("step", "?"), size))
+        suggestion = cluster_efficiency.advise(entry.get("step", "?"), size)
+        if assumed:
+            suggestion["assumed_size"] = True
+            suggestion["note"] = (
+                "system_size not given; a default of 10 atoms was "
+                "ASSUMED for sizing — give system_size for a measured "
+                "estimate")
+        cost.append(suggestion)
 
     return {
         "ok": not errors,
@@ -146,6 +167,7 @@ def run_checks(spec: Dict[str, Any], *, system_size: Optional[int] = None,
         "lint": lint,
         "report": report,
         "resolved": resolved,
+        "dry_run": dry_run,
         "cost": cost,
     }
 
@@ -156,10 +178,14 @@ def run_checks(spec: Dict[str, Any], *, system_size: Optional[int] = None,
 
 
 def _draft_spec(request: str) -> Dict[str, Any]:
-    from delfin.tools._serialize import from_dict
+    import delfin.tools.templates as templates
 
     name = _pick_template(request) or "classic_opt_freq"
-    tpl = getattr(__import__("delfin.tools.templates", fromlist=[name]), name)
+    tpl = getattr(templates, name, None)
+    if tpl is None or not hasattr(tpl, "to_dict"):
+        raise ValueError(
+            f"unknown template {name!r}: pick one of "
+            f"{sorted(getattr(templates, '__all__', []))}")
     spec = tpl.to_dict()
     spec.pop("delfin_pipeline_spec", None)
     spec = dict(spec)
