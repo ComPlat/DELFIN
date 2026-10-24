@@ -230,6 +230,14 @@ def _guard_area(source: str, rel: str) -> str:
     return ""
 
 
+#: Base names the root-commit fallback forgives: a fixture repo passes
+#: "main" while its default branch is whatever init.defaultBranch says.
+#: Any OTHER unresolvable --base is a user error, not a fixture shape,
+#: and must be reported, not silently checked against the root commit.
+DEFAULT_BASE_NAMES: frozenset[str] = frozenset(
+    {"main", "master", "origin/main", "origin/master"})
+
+
 def run(worktree: str, base: str = "origin/main",
         partners: list[str] | None = None) -> PrePRReport:
     """One verdict for ``worktree`` against ``base``.
@@ -242,6 +250,11 @@ def run(worktree: str, base: str = "origin/main",
     report = PrePRReport(
         verdict="BLOCKED", changed_files=changed,
         selected_tests=select_tests(changed, worktree))
+    if not _rev_exists(worktree, base) and base not in DEFAULT_BASE_NAMES:
+        report.blockers.append(Blocker(
+            "unknown-base",
+            f"--base '{base}' does not name a commit; pass the branch "
+            "the PR will be based on (e.g. origin/main)"))
     diff = _git(worktree, "diff", f"{_base_commit(worktree, base)}..HEAD")
     for kind in private_strings(diff):
         report.blockers.append(
