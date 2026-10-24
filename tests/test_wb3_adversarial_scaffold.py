@@ -9,7 +9,7 @@ green pins correctness once the fix arrives.
 Interface assumptions stated up front (to verify against the builder's
 implementation when reviewing): the subcommand binds a handler via
 set_defaults(func=...), accepts `--kind {program,parser,analysis}` and a
-`--dest` directory (defaulting to the user adapter dir); the handler calls
+`--dir` directory (default "."); the handler calls
 the public scaffold function in delfin.tools.scaffold. If the real interface
 differs, these tests are rewritten along their intent, not weakened.
 """
@@ -41,12 +41,15 @@ def test_scaffold_via_real_cli_path_end_to_end(tmp_path):
 
         parser = cli.build_parser()
         args = parser.parse_args(["new-adapter", "demo_probe", "--kind",
-                                  "analysis", "--dest", str(dest)])
+                                  "analysis", "--dir", str(dest)])
         handler = getattr(args, "func", None)
         assert handler is not None, (
             "new-adapter subcommand must bind a handler via set_defaults(func=...)"
         )
-        handler(args)
+        rc = handler(args)
+        assert rc == 0, (
+            "fresh scaffold must succeed with rc 0"
+        )
 
     # The scaffold wrote into the user adapters dir...
     assert (dest / "demo_probe.py").exists()
@@ -57,7 +60,7 @@ def test_scaffold_via_real_cli_path_end_to_end(tmp_path):
     _registry._REGISTRY.clear()
     with unittest.mock.patch.dict(os.environ, env_override):
         _registry._discover_builtin_adapters()
-    assert "demo_probe" in _registry._REGISTRY
+    assert "demo_probe_analysis" in _registry._REGISTRY
     # restore registry state for other tests
     _registry._DISCOVERED = False
     _registry._REGISTRY.clear()
@@ -78,14 +81,17 @@ def test_scaffolded_adapter_passes_contract_invariants(tmp_path):
 
         parser = cli.build_parser()
         args = parser.parse_args(["new-adapter", "contract_probe", "--kind",
-                                  "program", "--dest", str(dest)])
-        getattr(args, "func")(args)
-        from delfin.tools import _registry
+                                  "program", "--dir", str(dest)])
+        rc = getattr(args, "func")(args)
+        assert rc == 0, "scaffold into a fresh dir must succeed (rc 0)"
 
+        from delfin.tools import _registry
         _registry._DISCOVERED = False
         _registry._REGISTRY.clear()
         _registry._discover_builtin_adapters()
-        adapter = _registry._REGISTRY["contract_probe"]
+        # registered step name is <name>_<kind> unless the name already ends
+        # in it (scaffold.py:64-65)
+        adapter = _registry._REGISTRY["contract_probe_program"]
         # contract invariants from tests/test_tool_contracts.py
         assert adapter.category != ""
         assert adapter.contract()  # non-empty
@@ -112,12 +118,16 @@ def test_scaffolded_adapter_declares_required_params_enforced(tmp_path):
 
         parser = cli.build_parser()
         args = parser.parse_args(["new-adapter", "req_probe", "--kind",
-                                  "program", "--dest", str(dest)])
-        getattr(args, "func")(args)
+                                  "program", "--dir", str(dest)])
+        rc = getattr(args, "func")(args)
+        assert rc == 0, "fresh scaffold must succeed (rc 0)"
+
         _registry._DISCOVERED = False
         _registry._REGISTRY.clear()
         _registry._discover_builtin_adapters()
-        adapter = _registry._REGISTRY["req_probe"]
+        # registered step name is <name>_<kind> unless the name already ends
+        # in it (scaffold.py:64-65, scaffold._adapter_name)
+        adapter = _registry._REGISTRY["req_probe_program"]
         required = [p.name for p in adapter.params
                     if getattr(p, "required", False)]
         if not required:
@@ -140,10 +150,10 @@ def test_scaffold_refuses_path_traversal_in_name(tmp_path):
 
     parser = cli.build_parser()
     args = parser.parse_args(["new-adapter", "../evil", "--kind", "parser",
-                              "--dest", str(dest)])
+                              "--dir", str(dest)])
     before = sorted(os.listdir(tmp_path))
-    with pytest.raises(Exception):
-        getattr(args, "func")(args)
+    rc = getattr(args, "func")(args)
+    assert rc != 0, "path-traversal name must be refused (rc != 0)"
     after = sorted(os.listdir(tmp_path))
     assert before == after, "scaffold wrote outside --dest"
     assert (tmp_path / "evil.py").exists() is False
@@ -158,10 +168,10 @@ def test_scaffold_refuses_unicode_lookalike_or_empty_name(tmp_path):
 
     parser = cli.build_parser()
     for bad in ("", "..", "a/b", "a b", "a\nb"):
-        with pytest.raises(Exception):
-            args = parser.parse_args(["new-adapter", bad, "--kind", "parser",
-                                      "--dest", str(dest)])
-            getattr(args, "func")(args)
+        args = parser.parse_args(["new-adapter", bad, "--kind", "parser",
+                                  "--dir", str(dest)])
+        rc = getattr(args, "func")(args)
+        assert rc != 0, f"bad name {bad!r} must be refused (rc != 0)"
     assert sorted(os.listdir(dest)) == []
 
 
@@ -174,9 +184,9 @@ def test_scaffold_refuses_overwriting_an_existing_file(tmp_path):
 
     parser = cli.build_parser()
     args = parser.parse_args(["new-adapter", "mine", "--kind", "parser",
-                              "--dest", str(dest)])
-    with pytest.raises(Exception):
-        getattr(args, "func")(args)
+                              "--dir", str(dest)])
+    rc = getattr(args, "func")(args)
+    assert rc != 0, "overwriting an existing adapter must be refused (rc != 0)"
     assert existing.read_text(encoding="utf-8") == "# mine\n"
 
 
@@ -199,11 +209,12 @@ def test_scaffold_wiring_goes_through_build_parser(tmp_path):
 
     parser = cli.build_parser()
     args = parser.parse_args(["new-adapter", "wiring_probe", "--kind",
-                              "analysis", "--dest", str(dest)])
+                              "analysis", "--dir", str(dest)])
     with unittest.mock.patch.object(
-        scaffold, "scaffold_new_adapter",
-        wraps=scaffold.scaffold_new_adapter,
+        scaffold, "write_scaffold",
+        wraps=scaffold.write_scaffold,
     ) as spy:
-        getattr(args, "func")(args)
+        rc = getattr(args, "func")(args)
+        assert rc == 0, "fresh scaffold through the CLI must succeed (rc 0)"
     assert spy.called, "CLI handler must call delfin.tools.scaffold"
     assert (dest / "wiring_probe.py").exists()
