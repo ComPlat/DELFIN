@@ -289,8 +289,12 @@ def test_the_counts_still_match_what_was_measured():
     # recomputation (accept/w20_xt1_minimum.py and the per-system
     # wrappers, plus the uhf trap accept/w20_xt1_uhf_trap.py); the
     # fixtures stay in the task workspace the guard installs and removes.
+    # chemistry 5 -> 12 on 2026-10-20: tasks_w20_workflows.yaml (wave 20,
+    # package CB0B) -- one practice task per workflow family, setup
+    # scripts w20_classic_opt_freq.py and w20_rest.py write only
+    # <workspace>/w20_<family>_1/ and refuse to overwrite.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 11, "generalist": 22,
+                      "science": 23, "chemistry": 18, "generalist": 22,
                       "other": 71}, counts
 
 
