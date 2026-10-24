@@ -29,7 +29,8 @@ GOOD_OPT_FREQ = {
         {"step": "smiles_to_xyz", "kwargs": {"smiles": "CO"}},
         {"step": "orca_opt_freq",
          "kwargs": {"charge": 0, "mult": 1, "method": "PBE0",
-                    "basis": "def2-TZVP"}},
+                    "basis": "def2-TZVP", "freq_temp": 298.15,
+                    "freq_pressure": 1.0}},
     ],
 }
 
@@ -248,7 +249,9 @@ def test_ir_spectrum_does_not_demand_iridium_relativity():
     spec = {"name": "ir_co", "steps": [
         {"step": "orca_opt_freq", "kwargs": {"charge": 0, "mult": 1,
                                              "method": "PBE0",
-                                             "basis": "def2-TZVP"}},
+                                             "basis": "def2-TZVP",
+                                             "freq_temp": 298.15,
+                                             "freq_pressure": 1.0}},
         {"step": "ir_parse", "kwargs": {}}]}
     verdict = grade(spec, "the IR spectrum of carbon monoxide")
     assert verdict["status"] == "pass", verdict["reasons"]
@@ -344,7 +347,9 @@ def test_rigid_molecule_frequency_request_does_not_demand_conformers():
     spec = {"name": "chair_freq", "steps": [
         {"step": "orca_opt_freq", "kwargs": {"charge": 0, "mult": 1,
                                              "method": "PBE0",
-                                             "basis": "def2-TZVP"}}]}
+                                             "basis": "def2-TZVP",
+                                             "freq_temp": 298.15,
+                                             "freq_pressure": 1.0}}]}
     verdict = grade(
         spec, "frequencies of the fixed chair conformation of cyclohexane")
     assert verdict["status"] == "pass", verdict["reasons"]
