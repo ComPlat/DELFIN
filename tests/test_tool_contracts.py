@@ -26,6 +26,12 @@ _DUMMY_BY_TYPE = {
 
 
 def _dummy(pspec) -> object:
+    # A declared default or allowed value is what a real caller would pass;
+    # adapters that check physics in validate_params refuse a bare "x" or 0.
+    if pspec.default is not None:
+        return pspec.default
+    if pspec.enum:
+        return pspec.enum[0]
     return _DUMMY_BY_TYPE.get(pspec.type, "x")
 
 
