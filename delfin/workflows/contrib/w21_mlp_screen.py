@@ -28,6 +28,7 @@ workflow imports and re-uses them, it does not copy them:
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Dict, Optional
 
 from delfin.workflows.registry import register
@@ -77,6 +78,31 @@ class MlpScreenWorkflow:
         result = adapter.execute(wd, ensemble=ensemble, backend=backend,
                                  charge=charge, mult=mult, device=device)
         ranking = result.data.get("ranking") or []
+        # Reporting duty: a crashed per-structure evaluation surfaces as
+        # float("inf") in the ranking (delfin/mlp_tools/calculators.py:290
+        # sorts it last, but if it survives into the result it must never
+        # pass silently — an inf "best energy" is not an energy).  Warn on
+        # every non-finite entry and pick the best over FINITE energies
+        # only; with no finite entry at all there is no ranking to report.
+        import math
+
+        # A ranking entry is only a candidate for best_* if it has BOTH a
+        # finite energy and an int index: a float("inf") energy from a
+        # crashed evaluation is not an energy, and an index that is not an
+        # int (None from a partial writer) does not identify a structure
+        # the ensemble can deliver.  Entries failing either check go to
+        # the warning channel, never into min().
+        def _candidate(entry):
+            energy = entry.get("energy_eV")
+            index = entry.get("index")
+            return (isinstance(energy, (int, float))
+                    and not isinstance(energy, bool)
+                    and math.isfinite(energy)
+                    and isinstance(index, int)
+                    and not isinstance(index, bool))
+
+        finite = [entry for entry in ranking if _candidate(entry)]
+        nonfinite = len(ranking) - len(finite)
         out: Dict[str, Any] = {
             "ok": result.status.name == "SUCCESS",
             "backend": backend,
@@ -84,12 +110,20 @@ class MlpScreenWorkflow:
             "error": result.error,
             "n_structures": result.data.get("n_structures"),
             "ranking": ranking,
-            "best_index": ranking[0]["index"] if ranking else None,
-            "best_energy_eV": ranking[0]["energy_eV"] if ranking else None,
             "ensemble": ensemble,
         }
-        # Reporting duty: a non-SUCCESS step is surfaced, never swallowed.
-        if out["ok"] is False:
+        if finite:
+            best = min(finite, key=lambda e: e["energy_eV"])
+            out["best_index"] = best["index"]
+            out["best_energy_eV"] = best["energy_eV"]
+        if nonfinite:
+            out.setdefault("warnings", []).append(
+                f"{nonfinite} of {len(ranking)} structures have no valid "
+                "MLP ranking entry (no finite energy or no int index: "
+                "evaluation failed or the entry is a partial write); "
+                "best_* is chosen over fully valid entries only")
+        if result.status.name != "SUCCESS":
+            out["ok"] = False
             out.setdefault("errors", [result.error])
         return out
 
@@ -109,7 +143,10 @@ class MlpScreenWorkflow:
                 config={}, ensemble=args.ensemble, backend=args.backend,
                 charge=args.charge, mult=args.mult, device=args.device,
                 work_dir=args.work_dir)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — the CLI must print WHY it failed
+            # Wave-17 lesson 5: a bare failure with no message hides the
+            # cause (a missing binary, a wrong path). Print and fail.
+            print(f"mlp_screen failed: {exc}", file=sys.stderr)
             return 1
         return 0 if result.get("ok") else 1
 
