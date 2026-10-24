@@ -128,11 +128,24 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
                 continue
             label = st.get("label") or st.get("step") or "?"
             findings.extend(_lint_step(label, st.get("kwargs", {}) or {}))
+            # SV1 solvation realism rules (package SV1, wave 21): the
+            # step-level rule needs the step NAME, which _lint_step does
+            # not receive — called here, not inside _lint_step, to keep
+            # the WB1 signature untouched.
+            from delfin.tools.adapters.xtb_solvator_realism_lint import (
+                lint_solvator_step)
+            findings.extend(lint_solvator_step(
+                label, str(st.get("step") or ""), st.get("kwargs", {}) or {}))
             concrete.append(st)
         # spec-level chain rules need the whole concrete step sequence
         if collect:
             findings.extend(lint_chain(concrete))
             findings.extend(lint_system(concrete, _shared))
+            # SV1: explicit + implicit solvation double-counting (the
+            # rule needs the whole walked sequence, like the chain rules)
+            from delfin.tools.adapters.xtb_solvator_realism_lint import (
+                lint_solvation_chain)
+            findings.extend(lint_solvation_chain(concrete))
 
     _walk(inner.get("steps"), collect=True)
     for bname, bsteps in (inner.get("branches") or {}).items():
