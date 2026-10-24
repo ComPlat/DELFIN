@@ -118,10 +118,13 @@ def test_rule7_silent_without_metals_kwarg():
 
 # -------------------------------------------------------- robustness
 def test_robustness_system_hint_shapes():
-    # hint on a branch step, hint=None, hint unicode — nothing crashes
+    # hint on a branch step, hint=None, hint unicode — nothing crashes.
+    # (The branch case correctly gets conformer-search-missing under the
+    # corrected rule 6: no search step anywhere in the spec.)
     assert _rules({"steps": [], "branches": {
         "a": [_st("orca_sp", label="b1", system="flexible",
-                  method="B3LYP", dispersion="D4")]}}) == set()
+                  method="B3LYP", dispersion="D4")]}}) == {
+        ("conformer-search-missing", "b1", "warning")}
     assert _rules(_spec([_st("orca_sp", label="a", system=None)])) == set()
     assert _rules(_spec([_st("orca_sp", label="a",
                              system="спутник")])) == set()
