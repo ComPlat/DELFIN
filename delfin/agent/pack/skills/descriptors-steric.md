@@ -4,9 +4,7 @@ description: >
   Compute steric descriptors of a metal complex (buried volume %Vbur,
   cone angle, Sterimol, full report) through DELFIN's step registry with
   physically enforced validity limits.
-domains:
-  - descriptors
-  - workflows
+domains: [descriptors, workflows]
 ---
 
 # Steric descriptors of a metal complex (morfeus)
