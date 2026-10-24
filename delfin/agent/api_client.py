@@ -34580,6 +34580,10 @@ def _kit_sandbox(
     return kit_perms
 
 
+class BackendRefused(ValueError):
+    """The managed policy does not allow this backend (create_client)."""
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -34620,6 +34624,12 @@ def create_client(
     extra_dirs : list[str], optional
         Extra writable directories for the CLI (``--add-dir``).
     """
+    # The administrator's floor, before any client exists: a backend the
+    # managed policy refuses is never built (managed_policy.backend_refusal).
+    from . import managed_policy as _mp
+    _refused = _mp.backend_refusal(backend, provider)
+    if _refused:
+        raise BackendRefused(_refused)
     if provider == "kit":
         from .credentials import load_credential as _load_cred
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")
