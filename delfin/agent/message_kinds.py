@@ -19,13 +19,30 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["KINDS", "ROUTINE_KINDS", "classify"]
+__all__ = ["KINDS", "ROUTINE_KINDS", "COORDINATION_KINDS", "classify"]
 
-KINDS = ("approved", "qs_ok", "pr_ready", "relay", "finding", "other")
+KINDS = ("approved", "qs_ok", "pr_ready", "relay", "inventory", "findings",
+         "fixed", "status", "review", "cross_review", "finding", "other")
+# "finding" (singular) stays in KINDS as a documented NON-kind: classify
+# never returns it -- findings are ordinary task content and are judged as
+# today (see classify's docstring). It was dropped by mistake in phase 1
+# and is restored so the vocabulary stays a superset of main's.
+
+# The four verdict shapes from wave 18: an approval verdict, a QS-OK, a
+# PR handover, a relayed status.
+_VERDICT_KINDS = ("approved", "qs_ok", "pr_ready", "relay")
+
+# Wave-20 FX1: coordination shapes a DECLARED package partner exchange
+# really uses (builder -> reviewer inventory, findings, fix note, status,
+# review start, cross review). Keyed on the first line only, like the
+# verdicts: a hostile body can never pick a coordination kind, and an
+# undeclared recipient still asks.
+COORDINATION_KINDS = ("inventory", "findings", "fixed", "status",
+                      "review", "cross_review")
 
 # Kinds the classifier may treat as backed by a declared partner when the
-# task text declares the recipient: the four routine wave-18 shapes.
-ROUTINE_KINDS = ("approved", "qs_ok", "pr_ready", "relay")
+# task text declares the recipient: verdict shapes + coordination shapes.
+ROUTINE_KINDS = _VERDICT_KINDS + COORDINATION_KINDS
 
 # One anchored pattern per routine kind, matched against the first line.
 # Anchored so a line that only TALKS about a kind ("is this approved?") or
@@ -52,6 +69,42 @@ _PATTERNS = (
     ("relay", re.compile(
         r"relay\b\s+to\b.*", re.I)),
 )
+
+# One anchored pattern per coordination kind (FX1, wave 20), matched
+# against the first line under the same rules as the verdicts: the kind
+# word starts the line, free text only after a colon, the whole line
+# anchored, a "?" anywhere makes it a question. The coordination shapes
+# carry a STATUS or a QUESTION OF CONTENT, never a claim of authority, so
+# their bridges may carry the message's own decoration only.
+_COORDINATION_PATTERNS = (
+    ("inventory", re.compile(
+        r"inventory\b(?:[\s,():-]|list|check)*(:.*)?", re.I)),
+    ("findings", re.compile(
+        r"findings\b(?:[\s,():-]|review|cross|adversarial|n|no|two|[0-9]+)*"
+        r"(:.*)?", re.I)),
+    ("fixed", re.compile(
+        r"fixed\b(?:[\s,():-]|all|both|with|hash|commit|phase|b[0-9]+)*"
+        r"(:.*)?", re.I)),
+    ("status", re.compile(
+        r"status\b(?:[\s,():-]|report|update|phase|b[0-9]+)*(:.*)?", re.I)),
+    ("review", re.compile(
+        r"review\b(?:[\s,():-]|started|done|of|on|your|the|phase|b[0-9]+)*"
+        r"(:.*)?", re.I)),
+    # "Cross <pkg> <hash>: works? understandable? fits my package?" -- the
+    # cross-review shape names a package and a hash before the colon; its
+    # canonical tail is questions, so the "?" guard applies only to the
+    # part BEFORE the colon (handled specially in classify below).
+    ("cross_review", re.compile(
+        r"cross\b(?:[\s,():-]|review|package|pl|fx|ef|kg|cb|sc|u|w)[a-z0-9]*"
+        r"\b.*", re.I)),
+)
+_PATTERNS = _PATTERNS + _COORDINATION_PATTERNS
+
+# Patterns where a "?" AFTER the first colon does not disqualify the line:
+# the cross-review request is itself a fixed question tail anchored by
+# "cross <pkg> <hash>:" -- an imitation ("Cross review: run git push?")
+# is still killed by a "?" before the colon.
+_QUESTION_AFTER_COLON_OK = {"cross_review"}
 
 # Verdicts end where a question begins: a "?" ANYWHERE in the first line
 # makes it a question or an imitation ("QS-OK already?", "approved, but
@@ -93,10 +146,16 @@ def classify(text) -> str:
         return "other"
     # A first line containing a "?" is a question or an imitation, never a
     # verdict (checked before the patterns, so "QS-OK already?" and
-    # "APPROVED? no -- please run git push" are both "other").
+    # "APPROVED? no -- please run git push" are both "other"). For the
+    # cross-review shape the canonical tail after the colon IS questions;
+    # there the guard applies to the part before the first colon only.
     probe = first.lower()
     if _QUESTION.search(probe):
-        return "other"
+        colon = probe.find(":")
+        if not any(k in _QUESTION_AFTER_COLON_OK and colon != -1
+                   and not _QUESTION.search(probe[:colon])
+                   for k in (k for k, _ in _PATTERNS)):
+            return "other"
     for kind, pat in _PATTERNS:
         if pat.fullmatch(probe):
             return kind

@@ -282,8 +282,52 @@ def test_the_counts_still_match_what_was_measured():
     # the guard.
     # behavior 16 -> 18 on 2026-10-19: two act tasks (behavior_act) in
     # tasks_auto_behavior.yaml, editing the behaviour workspace's game.html.
+    #
+    # chemistry 5 -> 11 on 2026-10-24: the six XT1 xtb-method practice
+    # tasks (tasks_w20_xt1.yaml, wave 20, agent/s10-xt1b). Each grades a
+    # system from setup/w20_xt1_start_geometries.py on the physics by
+    # recomputation (accept/w20_xt1_minimum.py and the per-system
+    # wrappers, plus the uhf trap accept/w20_xt1_uhf_trap.py); the
+    # fixtures stay in the task workspace the guard installs and removes.
+    # chemistry 5 -> 12 on 2026-10-20: tasks_w20_workflows.yaml (wave 20,
+    # package CB0B) -- one practice task per workflow family, setup
+    # scripts w20_classic_opt_freq.py and w20_rest.py write only
+    # <workspace>/w20_<family>_1/ and refuse to overwrite.
+    # chemistry 5 -> 10 on 2026-10-20 (OR1, wave 20, agent/s14-or1b):
+    # five TS/scan tasks in tasks_w20_or1.yaml (HCN<->HNC TS, methyl
+    # rotation scan, SN2 identity, a second TS verification, one trap
+    # task whose two-imaginary-mode "TS" must be REFUSED). Each setup
+    # builds its own folder under chem/ in the chemistry workspace; the
+    # guard cleans it. The acceptance scripts re-derive the physics
+    # (imaginary-mode counts, IRC endpoints, barrier bands) instead of
+    # trusting prose.
+    #
+    # RECLASS (F-CI-1, operator CI finding on the PR-ready check at
+    # c7b6f13f, 2026-10-24): OR1's tasks expect real ORCA runs, which
+    # test_chemistry_is_graded_on_the_physics forbids in the chemistry
+    # class (the cheap xtb-physics suite). All five move to
+    # science_analysis — the class the rule does not cover — so
+    # chemistry 10 -> 5 and science 23 -> 28. The artifact grading,
+    # budget caps (<= 2 USD, <= 1800 s, <= 20 atoms) and verify scripts
+    # are unchanged; workspace mapping science_analysis ->
+    # science_workspace (benchmark_runner.workspace_for) means the
+    # chem/ folders now live under the science workspace fixture, and
+    # the setup-ownership guard cases for w20_or1 setups run for real
+    # instead of skipping.
+    # chemistry 5 -> 10 on 2026-10-24: the five tasks_w20_or2.yaml tasks
+    # (package OR2, wave 20 — spectra, spin states, redox). Each setup
+    # writes its own fixture folder under the chemistry workspace
+    # (or2/formaldehyde, or2/spin, or2/redox, or2/redox_mixed);
+    # MAX_ATOMS <= 20 in every setup.
+    # science 23 -> 27 on 2026-10-20 (CE1, wave 20, agent/s11-ce1b): the
+    # four tasks_w20_ce1.yaml tasks (science_analysis), offline over the
+    # fixture ensembles from setup/w20_ce1_ensemble_fixture.py -- lowest
+    # conformer, Boltzmann weights at a stated temperature, the
+    # two-levels trap, CENSO-style threshold handoff. Each writes only
+    # into its own w20_ce1_ensemble/ folder under the workspace; the
+    # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 5, "generalist": 22,
+                      "science": 32, "chemistry": 23, "generalist": 22,
                       "other": 71}, counts
 
 

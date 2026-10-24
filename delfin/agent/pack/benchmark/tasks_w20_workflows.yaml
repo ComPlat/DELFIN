@@ -1,0 +1,183 @@
+# Wave-20 workflow tasks (package CB0B, builder nacht-s13).
+#
+# One concrete practice task per workflow family: the FIRST draw of
+# bench_holdout.sample(PUBLIC_SEED, 7), verbatim. The holdout sampler
+# stays the generator over the whole families x molecules x solvents
+# space; this file pins the seven instances a runner can execute
+# offline (fixture start geometries, no cluster needed for a dry run).
+#
+# Grading levels, cheapest first (brief item 5): consistency (no
+# reference needed), reproduction (runner recomputes with validated
+# defaults), reference (literature, table frozen by the person into
+# the protected reference file), trap (the agent must notice and
+# report a designed pitfall). The "cost" block is a PLACEHOLDER:
+# EF1's cluster accounting does not exist yet (checked 2026-10-20);
+# when it lands, core-hours requested/used, queue wait and
+# failed/repeated jobs are read from it here.
+
+tasks:
+
+  - id: w20_classic_opt_freq_1
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In w20_classic_opt_freq_1/ you find start.xyz (nitric oxide,
+      charge 0, multiplicity 2) and brief.txt. Optimise nitric oxide in
+      the gas phase and confirm the resulting geometry is a true
+      minimum. Report the lowest-energy structure's thermochemical
+      correction at 298 K and the count of imaginary frequencies.
+    setup: w20_classic_opt_freq.py
+    verify: w20_workflow_verify.py
+    grading_levels: [consistency, reproduction, reference, trap]
+    trap: start geometry relaxes to a saddle point
+    cost:
+      core_hours_requested: null
+      core_hours_used: null
+      queue_wait_s: null
+      failed_repeated_jobs: null
+      note: placeholder until EF1 accounting exists
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20_redox_1
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In w20_redox_1/ you find start.xyz (formaldehyde cation, charge
+      +1, multiplicity 2) and brief.txt. Estimate the one-electron
+      potential for formaldehyde cation in acetonitrile (vs. a suitable
+      reference) and state the method and basis you used for both
+      members of the couple.
+    setup: w20_rest.py
+    # F3 fix: no trap level here -- trap_note is empty for an
+    # internally consistent formaldehyde cation; the redox trap rides
+    # the nitrite_radical carrier only.
+    verify: w20_workflow_verify.py
+    grading_levels: [consistency, reproduction, reference]
+    cost:
+      core_hours_requested: null
+      core_hours_used: null
+      queue_wait_s: null
+      failed_repeated_jobs: null
+      note: placeholder until EF1 accounting exists
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20_excited_states_1
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In w20_excited_states_1/ you find start.xyz (ethanol) and
+      brief.txt. Compute the first optically bright excitation of
+      ethanol in acetonitrile and report wavelength, oscillator
+      strength and the dominant orbital transition.
+    setup: w20_rest.py
+    # F3 fix: trap presentable -- ethanol's bright excitation lies in
+    # the UV, outside the visible; the agent must notice and report it.
+    verify: w20_workflow_verify.py
+    grading_levels: [consistency, reproduction, reference, trap]
+    trap: bright line lies outside the visible
+    cost:
+      core_hours_requested: null
+      core_hours_used: null
+      queue_wait_s: null
+      failed_repeated_jobs: null
+      note: placeholder until EF1 accounting exists
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20_imaginary_mode_1
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In w20_imaginary_mode_1/ you find start.xyz (nitrite anion,
+      charge -1) and brief.txt. A colleague's optimisation of nitrite
+      anion ended with one negative curvature direction. Find out where
+      the structure wants to go, correct it, and report a geometry with
+      no negative curvature plus the energy change along the way.
+    setup: w20_rest.py
+    verify: w20_workflow_verify.py
+    grading_levels: [consistency, reproduction, trap]
+    trap: start geometry relaxes to a saddle point
+    cost:
+      core_hours_requested: null
+      core_hours_used: null
+      queue_wait_s: null
+      failed_repeated_jobs: null
+      note: placeholder until EF1 accounting exists
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20_spin_states_1
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In w20_spin_states_1/ you find start.xyz (formaldehyde cation)
+      and brief.txt. Determine which spin state of formaldehyde cation
+      is lowest. Report the relative energies of the candidate spin
+      states from ONE level of theory and the <S^2> values you obtained.
+    setup: w20_rest.py
+    verify: w20_workflow_verify.py
+    grading_levels: [consistency, reproduction, reference, trap]
+    trap: spin contamination
+    cost:
+      core_hours_requested: null
+      core_hours_used: null
+      queue_wait_s: null
+      failed_repeated_jobs: null
+      note: placeholder until EF1 accounting exists
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20_conformer_prestep_1
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In w20_conformer_prestep_1/ you find start.xyz (ethanol) and
+      brief.txt. ethanol is flexible. Before any expensive calculation,
+      find its lowest-energy conformer with a fast semiempirical search
+      and report the conformer energy spread and the SMILES/geometry of
+      the winner.
+    setup: w20_rest.py
+    verify: w20_workflow_verify.py
+    grading_levels: [consistency, reproduction]
+    cost:
+      core_hours_requested: null
+      core_hours_used: null
+      queue_wait_s: null
+      failed_repeated_jobs: null
+      note: placeholder until EF1 accounting exists
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20_screening_1
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In w20_screening_1/ you find start.xyz (nitrite radical, neutral
+      radical declared as closed-shell request — check before running)
+      and brief.txt. Screen water as medium for nitrite radical:
+      compute the solvation free-energy contribution at the same level
+      for the neutral and the charged member of the couple and report
+      the difference.
+    setup: w20_rest.py
+    verify: w20_workflow_verify.py
+    grading_levels: [consistency, reproduction, reference]
+    # F3 fix: trap field removed -- the drawn screening member (nitrite
+    # radical, neutral) cannot present "anion without diffuse
+    # functions"; trap_note returns '' for neutral screening species.
+    cost:
+      core_hours_requested: null
+      core_hours_used: null
+      queue_wait_s: null
+      failed_repeated_jobs: null
+      note: placeholder until EF1 accounting exists
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
