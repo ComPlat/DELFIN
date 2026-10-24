@@ -46,18 +46,9 @@ Decision = namedtuple(
 # decision: "run" | "refuse" | "escalate" | "pause"
 # message: the operator-inbox text for escalate/pause decisions.
 
-# The floor: patterns of actions that are refused in every mode. Kept as
-# shapes, not spellings — one pattern covers curl -X POST and curl -O.
-_FLOOR_SHAPES = (
-    ("ssh", "ssh/scp/rsync to another host"),
-    ("scp ", "ssh/scp/rsync to another host"),
-    ("rsync", "ssh/scp/rsync to another host"),
-    ("wget", "network fetch outside DELFIN's web tools"),
-    ("pip install", "package installation"),
-    ("git commit -am", "mass-commit of every tracked change"),
-    ("git push", "push"),
-    ("curl", "network fetch outside DELFIN's web tools"),
-)
+# The floor shapes live in _floor_hit's first-token logic below (reviewer
+# s26 F1-F5: first-token, case-insensitive, pip family, flag-normalized
+# git commit, wider transfer family).
 
 # Registered routine predicates (FR1's allow-list hooks in here).
 _ROUTINE_PREDICATES = []
@@ -81,13 +72,35 @@ def is_routine(action) -> bool:
 
 
 def _floor_hit(action) -> str | None:
-    """The reason text of the floor shape hit, or None."""
-    text = str(action.get("command") or action.get("url") or "")
+    """The reason text of the floor shape hit, or None.
+
+    Reviewer s26 findings F1-F5 fixed: matching is on the FIRST TOKEN of
+    the command (never a bare substring in the middle of a read, F5),
+    case-insensitive (F1), with a pip front-end family (F2), flag-
+    normalized git commit (F3: -am, -a -m, -m+staged all mass-commit
+    risk) and a wider transfer family (F4: sftp, nc/ncat/netcat).
+    """
+    text = str(action.get("command") or action.get("url") or "").strip()
     tool = str(action.get("tool") or "")
-    for shape, reason in _FLOOR_SHAPES:
-        if shape in text:
-            return reason
-    if tool in ("ssh", "scp", "rsync"):
+    low = text.lower()
+    first = low.split()[0] if low.split() else ""
+    if first in ("ssh", "scp", "rsync", "sftp", "nc", "ncat", "netcat",
+                 "wget", "curl"):
+        return "network transfer outside DELFIN's web tools"
+    if first in ("pip", "pip3") or (
+            first == "python" and len(low.split()) > 2
+            and low.split()[1] == "-m" and low.split()[2] == "pip"):
+        return "package installation"
+    if first == "git":
+        rest = low.split()[1:]
+        if rest and rest[0] == "push":
+            return "push"
+        if rest and rest[0] == "commit" and (
+                "-a" in rest or "-am" in rest):
+            # A mass-commit (everything tracked, no staged selection).
+            # ``git commit -m`` alone is a normal commit, NOT the floor.
+            return "mass-commit of every tracked change"
+    if tool in ("ssh", "scp", "rsync", "sftp"):
         return "network transfer outside DELFIN"
     return None
 
