@@ -82,7 +82,9 @@ def test_no_records_behaves_like_today():
 
 def test_boundary_threshold_from_measured_populations():
     """The boundary sits between the two recorded populations
-    (~1.5 % SOLVATOR vs ~90 % DFT); exactly 10 % is still fine."""
+    (1.53 % SOLVATOR pal 2 vs 35.75 % pal 1, see
+    tests/test_rs1_resource_sizing.py); a record exactly at the
+    threshold is not low-parallel."""
     at = _rec("104", "opt", "COMPLETED", ce.LOW_PARALLEL_EFFICIENCY, 600)
     adv = ce.advise("opt", 20, efficiency_records=[at])
     assert adv["efficiency"]["low_parallel"] is False

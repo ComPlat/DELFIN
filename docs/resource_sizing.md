@@ -60,8 +60,11 @@ Job Wall-clock time: 00:03:34
 the two measured populations — 1.53 % (pal 2, FAILED run) and 35.75 %
 (pal 1, smaller shell) — far from either, so a step kind is classified
 low-parallel only when its measured mean is closer to the SOLVATOR
-population than to the well-parallelised one. The measured DFT
-populations (opt/freq/sp, ~90 % in wave-21 runs) sit far above.
+population than to the upper band. No DFT population (opt/freq/sp) was
+measured inside this package; the well-parallelised direction is
+covered by the advice test (a 90 % record produces no advice, see
+tests/test_rs1_advise_from_measurements.py) and should be backed by a
+measured DFT run before any DFT-facing threshold is claimed.
 
 ## Advice semantics (what advise() does and never does)
 
