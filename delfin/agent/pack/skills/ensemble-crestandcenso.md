@@ -96,8 +96,8 @@ CENSO — Grimme et al., J. Phys. Chem. A 125, 4039 (2021), DOI
 Chem. Chem. Phys. 22, 7169 (2020), DOI 10.1039/C9CP06869D; [3]
 r2SCAN-3c — Grimme, Hansen, Ehlert, Mewes, J. Chem. Phys. 154, 064103
 (2021), DOI 10.1063/5.0040021; [4] GFN2-xTB — Bannwarth, Ehlert,
-Grimme, J. Chem. Theory Comput. 15, 1652 (2019), DOI
-10.1021/acs.jctc.8b01191) -> **Refinement and weighting**
+Grimme, J. Chem. Theory Comput. 15 (3), 1652-1671 (2019), DOI
+10.1021/acs.jctc.8b01176) -> **Refinement and weighting**
 (phases run, counts in/out per phase, level per ensemble, Boltzmann
 table with degeneracies at the stated T) -> **What it means and what it
 does not** (xtb preselection vs DFT ordering) -> **Handed-over
