@@ -30,8 +30,11 @@ def _w20_tasks():
 
 
 def test_w20_tasks_load_through_the_public_loader():
-    ids = {t.id for t in load_tasks() if t.id.startswith("w20_")}
-    assert ids == {t["id"] for t in _w20_tasks()}
+    # Every CB0B task loads through the public loader. Other wave-20 packages
+    # also use the "w20_" prefix, so the check is "mine are all there".
+    loaded = {t.id for t in load_tasks()}
+    mine = {t["id"] for t in _w20_tasks()}
+    assert mine and mine <= loaded, sorted(mine - loaded)
 
 
 def _run_setup(script: str, ws: pathlib.Path) -> None:
