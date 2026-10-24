@@ -111,7 +111,10 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
     inner = spec.get("spec") if "spec" in spec and "steps" not in spec else spec
     findings: List[ScienceFinding] = []
 
-    def _walk(steps):
+    from delfin.tools._science_rules.chain import lint_chain
+
+    def _walk(steps, collect=False):
+        concrete = []
         for st in steps or []:
             if not isinstance(st, dict):
                 # a branch may serialize a malformed entry; lint never crashes
@@ -119,8 +122,12 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
                 continue
             label = st.get("label") or st.get("step") or "?"
             findings.extend(_lint_step(label, st.get("kwargs", {}) or {}))
+            concrete.append(st)
+        # spec-level chain rules need the whole concrete step sequence
+        if collect:
+            findings.extend(lint_chain(concrete))
 
-    _walk(inner.get("steps"))
+    _walk(inner.get("steps"), collect=True)
     for bname, bsteps in (inner.get("branches") or {}).items():
         # branches serialize either as a list of steps or as a nested spec dict;
         # anything else is spec-shape noise the lint skips, never crashes on
@@ -130,7 +137,7 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
             steps = bsteps
         else:
             continue
-        _walk(steps)
+        _walk(steps, collect=True)
     return findings
 
 

@@ -52,7 +52,7 @@ def lint_electronic(label: str, kwargs: Dict[str, Any]) -> List[ScienceFinding]:
     # Rule 3: anions / Rydberg / diffuse excited states need diffuse functions.
     basis = kwargs.get("basis")
     if _needs_diffuse_basis(kwargs) and isinstance(basis, str) and basis:
-        if not any(m in basis for m in _DIFFUSE_MARKERS):
+        if not any(m in basis.lower() for m in _DIFFUSE_MARKERS):
             out.append(ScienceFinding(
                 label, "warning", "diffuse-basis-required",
                 f"charge {kwargs.get('charge')} / state '{kwargs.get('excited_state')}' "
@@ -65,7 +65,7 @@ def lint_electronic(label: str, kwargs: Dict[str, Any]) -> List[ScienceFinding]:
     if isinstance(metals, list) and metals and not _is_placeholder(metals):
         from delfin.utils import _should_use_rel
         relativity = str(kwargs.get("relativity") or "").strip().lower()
-        basis_s = str(basis or "")
+        basis_s = str(basis or "").lower()
         has_rel = any(m in basis_s for m in ("zora", "dkh", "x2c", "sarc"))
         if _should_use_rel([str(m) for m in metals]) and not (relativity or has_rel):
             out.append(ScienceFinding(
