@@ -80,7 +80,10 @@ def _git_routine(tokens: list, sub: str) -> Verdict | None:
         forced = "-B" if sub == "checkout" else "-C"
         if not args or args[0] != flag:
             return None
-        if any(a in ("-f", "--force", "-d", "--detach", forced) for a in args):
+        # Positional-only beyond the flag: any other dash-token could
+        # carry a destructive mode (--discard-changes, --track, ...) --
+        # reject the shape, not a list of spellings.
+        if any(a.startswith("-") for a in args[1:]):
             return None
         if "--" in args or len(args) not in (2, 3):
             return None
@@ -110,6 +113,10 @@ def _url_routine(action: dict) -> Verdict | None:
         return None
     url = str(action.get("url") or "").strip()
     if not (url.startswith("http://") or url.startswith("https://")):
+        return None
+    # No userinfo: user@host in the authority is a credential-carrying
+    # URL, not an ordinary literature fetch -- reject the shape.
+    if "@" in url.split("//", 1)[-1].split("/", 1)[0]:
         return None
     # The action dict always carries "tool"; only url/timeout_s may be
     # in the ARGUMENTS on top of it.
