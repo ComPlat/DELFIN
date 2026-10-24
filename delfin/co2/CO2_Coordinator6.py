@@ -950,8 +950,8 @@ def _write_co2_control_for_occupier(occ_dir: Path, args: Dict) -> None:
         f"pal_jobs={args.get('pal_jobs', '')}",
         f"initial_guess={args.get('initial_guess', '')}",
         f"initial_sequence={args.get('initial_sequence', '')}",
-        f"even_seq={args.get('even_seq', '')}",
-        f"odd_seq={args.get('odd_seq', '')}",
+        f"even_seq={args.get('even_seq') or []!s}",
+        f"odd_seq={args.get('odd_seq') or []!s}",
         "occ_folder_compare=FSPE",
     ]
     (occ_dir / "CONTROL.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")

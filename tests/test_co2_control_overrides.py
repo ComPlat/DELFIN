@@ -291,3 +291,48 @@ def test_one_is_a_multiplicity(tmp_path, monkeypatch):
 
     co2_ctrl = (tmp_path / "CO2_coordination" / "CONTROL.txt").read_text()
     assert "multiplicity=1" in co2_ctrl
+
+
+def test_adduct_occupier_control_writes_empty_sequences_as_lists(tmp_path):
+    """An adduct OCCUPIER CONTROL without explicit FoB sequences must carry
+    ``even_seq=[]`` / ``odd_seq=[]``, never the bare ``even_seq=`` marker.
+
+    The OCCUPIER CONTROL validator treats that marker as '' — not a list —
+    and refuses the run with "even_seq must be a list of mappings; odd_seq
+    must be a list of mappings" (observed on job 7700786 in the inverse-RSS
+    CO2 adduct step). An empty *list* is what the validator accepts.
+    """
+    from delfin.co2.CO2_Coordinator6 import _write_co2_control_for_occupier
+
+    occ_dir = tmp_path / "adduct_occupier"
+    occ_dir.mkdir()
+
+    # No sequence keys at all in args (the pre-fix crash path).
+    _write_co2_control_for_occupier(occ_dir, {"charge": 0, "multiplicity": 2})
+
+    ctrl = (occ_dir / "CONTROL.txt").read_text()
+    assert "even_seq=[]\n" in ctrl, ctrl
+    assert "odd_seq=[]\n" in ctrl, ctrl
+    assert "even_seq=\n" not in ctrl, "bare even_seq= marker must not survive"
+    assert "odd_seq=\n" not in ctrl, "bare odd_seq= marker must not survive"
+
+
+def test_adduct_occupier_control_keeps_real_sequences(tmp_path):
+    """When the CO2 chain carries real FoB sequences into the adduct
+    OCCUPIER args, they are written verbatim — a JSON list, not a marker."""
+    from delfin.co2.CO2_Coordinator6 import _write_co2_control_for_occupier
+
+    occ_dir = tmp_path / "adduct_occupier"
+    occ_dir.mkdir()
+
+    _write_co2_control_for_occupier(occ_dir, {
+        "charge": 0,
+        "multiplicity": 2,
+        "even_seq": [{"index": 1, "m": 1, "BS": ""},
+                     {"index": 4, "m": 3, "BS": ""}],
+        "odd_seq": [{"index": 1, "m": 2, "BS": ""}],
+    })
+
+    ctrl = (occ_dir / "CONTROL.txt").read_text()
+    assert "even_seq=[{'index': 1, 'm': 1, 'BS': ''}, {'index': 4, 'm': 3, 'BS': ''}]\n" in ctrl, ctrl
+    assert "odd_seq=[{'index': 1, 'm': 2, 'BS': ''}]\n" in ctrl, ctrl

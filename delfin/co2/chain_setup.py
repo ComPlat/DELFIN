@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from delfin.config import OCCUPIER_parser
+from delfin.occupier_sequences import resolve_sequences_for_delta
+
 
 # ---------------------------------------------------------------------------
 # Species naming
@@ -297,6 +300,20 @@ def _build_co2_control(
             parts.append(f"{k}={merged.get(k, '')}")
         parts.append("")
 
+    # OCCUPIER FoB sequences (inverse-RSS): carry verbatim into the CO2
+    # CONTROL so the adduct_occupier CONTROL writer sees real lists, never
+    # empty strings that crash sequence validation.
+    seq_lines = []
+    for seq_key in ("even_seq", "odd_seq"):
+        val = _co2_override_value(delfin_ctrl, seq_key)
+        if val and val.strip():
+            seq_lines.append(f"{seq_key}={val.strip()}")
+    if seq_lines:
+        parts.append("# OCCUPIER FoB sequences (inverse-RSS)")
+        parts.append("------------------------------------")
+        parts.extend(seq_lines)
+        parts.append("")
+
     return "\n".join(parts) + "\n"
 
 
@@ -400,6 +417,19 @@ def setup_co2_from_delfin(job_dir: str | Path, species_delta: int) -> Path:
     print("[CO2 chain] Created CO2_coordination/co2.xyz")
 
     # 7. Generate CO2 CONTROL.txt
+    # Resolve the OCCUPIER FoB sequences for this species delta from the main
+    # CONTROL and inject them flat so _build_co2_control carries them through.
+    try:
+        main_cfg = OCCUPIER_parser(str(delfin_control_path))
+        seq_bundle = resolve_sequences_for_delta(main_cfg, species_delta)
+        for seq_key in ("even_seq", "odd_seq"):
+            entries = seq_bundle.get(seq_key) or []
+            if entries:
+                delfin_ctrl[seq_key] = json.dumps(entries)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[CO2 chain] Warning: could not resolve OCCUPIER sequences "
+              f"for delta={species_delta}: {exc}")
+
     co2_control = _build_co2_control(co2_charge, mult, broken_sym, delfin_ctrl)
     (co2_dir / "CONTROL.txt").write_text(co2_control, encoding="utf-8")
     print("[CO2 chain] Created CO2_coordination/CONTROL.txt")
