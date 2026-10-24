@@ -11,6 +11,7 @@ exactly WB0's tasks.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,25 @@ _YAML = (_ROOT / "delfin" / "agent" / "pack" / "benchmark"
          / "tasks_w21_build.yaml")
 _SETUP = _YAML.parent / "setup" / "w21_build_fixtures.py"
 _VERIFY = _YAML.parent / "accept" / "w21_build_verify.py"
+
+
+def _subprocess_env():
+    """PYTHONPATH pinned to this checkout's root.
+
+    The verify/setup scripts import delfin from the tree the test file
+    lives in — not from whatever site-packages or main checkout the
+    invoking interpreter happens to carry. Without this, a run started
+    OUTSIDE the gate (plain `python -m pytest`, a reviewer's scratch
+    merge) resolves `delfin.agent.workflow_grader` from the main
+    checkout, where the file does not exist until the PR lands, and the
+    test reports an ImportError that has nothing to do with the code.
+    """
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    if str(_ROOT) not in existing.split(os.pathsep):
+        env["PYTHONPATH"] = (
+            str(_ROOT) + os.pathsep + existing if existing else str(_ROOT))
+    return env
 
 # The correct spec for the conformers brief: conformer search first, then
 # one consistent level of theory with thermochemistry.
@@ -83,7 +103,7 @@ def test_every_task_is_verified_and_setup_resolves():
 def test_setup_refuses_to_overwrite_and_writes_fixtures(tmp_path):
     rc = subprocess.run(
         [sys.executable, str(_SETUP), str(tmp_path)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode == 0, rc.stderr
     folders = sorted(p.name for p in tmp_path.iterdir())
     assert folders == sorted(
@@ -98,13 +118,13 @@ def test_setup_refuses_to_overwrite_and_writes_fixtures(tmp_path):
     # second run refuses
     rc = subprocess.run(
         [sys.executable, str(_SETUP), str(tmp_path)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode == 1, rc.stdout
 
 
 def test_setup_without_argument_prints_usage_and_exits_nonzero():
     rc = subprocess.run([sys.executable, str(_SETUP)],
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode != 0
     assert "usage" in (rc.stderr + rc.stdout).lower()
 
@@ -127,7 +147,7 @@ def _run_verify(tmp_path, spec, *, with_brief=True):
     return subprocess.run(
         [sys.executable, str(_VERIFY), str(tmp_path),
          "w21_build_conformers"],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=_subprocess_env())
 
 
 def test_verify_accepts_a_good_spec(tmp_path):
@@ -154,14 +174,15 @@ def test_verify_refuses_a_missing_spec(tmp_path):
     (tmp_path / "w21_build_conformers").mkdir()
     rc = subprocess.run(
         [sys.executable, str(_VERIFY), str(tmp_path),
-         "w21_build_conformers"], capture_output=True, text=True)
+         "w21_build_conformers"], capture_output=True, text=True,
+        env=_subprocess_env())
     assert rc.returncode == 1
 
 
 def test_verify_rejects_an_unknown_task_id(tmp_path):
     rc = subprocess.run(
         [sys.executable, str(_VERIFY), str(tmp_path), "w21_build_none"],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode == 2, rc.stderr
 
 
@@ -200,7 +221,7 @@ _BAD_RUN_SPEC = {
 def test_run_setup_refuses_to_overwrite_and_writes_control(tmp_path):
     rc = subprocess.run(
         [sys.executable, str(_RUN_SETUP), str(tmp_path)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode == 0, rc.stderr
     assert (tmp_path / "w21_run_methanol" / "CONTROL.txt").is_file()
     control = (tmp_path / "w21_run_methanol" / "CONTROL.txt").read_text(
@@ -210,13 +231,13 @@ def test_run_setup_refuses_to_overwrite_and_writes_control(tmp_path):
 
     rc = subprocess.run(
         [sys.executable, str(_RUN_SETUP), str(tmp_path)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode == 1, rc.stdout
 
 
 def test_run_setup_without_argument_prints_usage_and_exits_nonzero():
     rc = subprocess.run([sys.executable, str(_RUN_SETUP)],
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode != 0
     assert "usage" in (rc.stderr + rc.stdout).lower()
 
@@ -239,7 +260,8 @@ def _prep_run(tmp_path, spec, *, result=None, control=None):
                                        encoding="utf-8")
     return subprocess.run(
         [sys.executable, str(_RUN_VERIFY), str(tmp_path),
-         "w21_run_methanol"], capture_output=True, text=True)
+         "w21_run_methanol"], capture_output=True, text=True,
+        env=_subprocess_env())
 
 
 def test_run_verify_refuses_a_faked_run(tmp_path):
@@ -266,7 +288,7 @@ def test_run_verify_refuses_a_physically_wrong_spec(tmp_path):
 def test_run_verify_rejects_an_unknown_task_id(tmp_path):
     rc = subprocess.run(
         [sys.executable, str(_RUN_VERIFY), str(tmp_path), "w21_run_none"],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env=_subprocess_env())
     assert rc.returncode == 2, rc.stderr
 
 
@@ -275,7 +297,8 @@ def test_run_verify_rejects_missing_spec(tmp_path):
     d.mkdir()
     rc = subprocess.run(
         [sys.executable, str(_RUN_VERIFY), str(tmp_path),
-         "w21_run_methanol"], capture_output=True, text=True)
+         "w21_run_methanol"], capture_output=True, text=True,
+        env=_subprocess_env())
     assert rc.returncode == 1
 
 
