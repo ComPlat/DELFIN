@@ -30,6 +30,9 @@ _REFUSAL = re.compile(r"(?i)(refuse|cannot|not comparable|mixed level|"
                       r"different level|incomparable|meaningless)")
 _LEVELS = re.compile(r"(?i)(B3LYP|PBE0|functional|basis)")
 _ELECTRODE = re.compile(r"(?i)(reference electrode|E_ref|vs\.?\s*(SHE|Fc|Ag))")
+# The user-override route (delfin/config.py:1042-1044: get_E_ref
+# returns the user's E_ref before the solvent table) must be stated.
+_OVERRIDE = re.compile(r"(?i)(overrid|manually set|set E_ref)")
 # A bare potential: label (E, E_ox, E(red), E1/2 ...) = number [V],
 # in ANY spelling. Structure, not a word list: the whole text is NFKD-
 # folded and look-alike letters mapped to ASCII (Cyrillic Е->E, о->o,
@@ -47,6 +50,10 @@ def _fold(text: str) -> str:
     return folded
 
 
+# The bare-potential label is E, E_ox, E(red), E1/2 ... — NOT e_ref:
+# the reference electrode potential itself (e.g. E_ref(acetonitrile) =
+# 4.745 V) is a reference value, not a computed potential, and an
+# answer may (and must) state it (reviewer control + QS ruling).
 _BARE = re.compile(
     r"(?i)e\s*[\(_]*\s*(?:ox|red|1/2|1_2)?\s*[\)_]*\s*=\s*[-+]?\d\.\d+")
 
@@ -56,7 +63,7 @@ def _bare_potentials(text: str) -> list[str]:
     hits = []
     for line in folded.splitlines():
         stripped = re.sub(r"^\W+", "", line)  # bullets, "( ", quotes
-        if _BARE.search(stripped):
+        if _BARE.search(stripped) and "e_ref" not in stripped:
             hits.append(line)
     return hits
 
@@ -77,6 +84,12 @@ def check(workspace: Path) -> tuple[bool, str]:
     if not _ELECTRODE.search(text):
         return (False, "no reference electrode / E_ref named as required "
                        "for any reported potential")
+    if not _OVERRIDE.search(text):
+        return (False, "the E_ref override route is not stated: get_E_ref "
+                       "(delfin/config.py) returns a user-set E_ref before "
+                       "the solvent table, so the answer must say the "
+                       "reference potential can be overridden by setting "
+                       "E_ref in CONTROL.txt")
     bare = _bare_potentials(text)
     # A bare "E = X V" line is only acceptable if the SAME line context
     # marks it as invalid — i.e. the refusal text also appears (the

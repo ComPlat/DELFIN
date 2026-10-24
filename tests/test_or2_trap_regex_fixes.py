@@ -58,14 +58,17 @@ def test_rejects_bare_potential_without_unit(tmp_path):
 def test_control_honest_refusal_without_bare_potential(tmp_path):
     ok, msg = _check(
         tmp_path,
-        "Refused: E(ox) is not reported — the levels differ.\n")
+        "Refused: E(ox) is not reported — the levels differ. "
+        "Reference electrode: E_ref = 4.745 V vs SHE "
+        "(override: set E_ref in CONTROL.txt).\n")
     assert ok, msg
 
 
 def test_control_e_ref_line_is_not_a_bare_potential(tmp_path):
     ok, msg = _check(
         tmp_path,
-        "E_ref = 4.745 V vs SHE was applied.\n")
+        "E_ref = 4.745 V vs SHE was applied (override: set E_ref "
+        "in CONTROL.txt).\n")
     assert ok, msg
 
 
@@ -74,5 +77,7 @@ def test_control_refusal_marker_on_the_same_line(tmp_path):
     # whose same-line context refuses it is not the trap.
     ok, msg = _check(
         tmp_path,
-        "E_ox = 0.55 V — not comparable, refused.\n")
+        "E_ox = 0.55 V — not comparable, refused. "
+        "Reference electrode: E_ref = 4.745 V vs SHE "
+        "(override: set E_ref in CONTROL.txt).\n")
     assert ok, msg
