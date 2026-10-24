@@ -25,8 +25,9 @@ from delfin.tools._science import scientific_lint
 def tm_env(tmp_path, monkeypatch):
     """A work_dir plus a recording fake `jobex` first on PATH.
 
-    The fake writes the shell invocation it saw to fake_jobex.log, then
-    exits non-zero so the adapter reports FAILED without a real program.
+    Phase-1 note: the adapter now calls ridft (SP) and aoforce (freq) too,
+    so the env provides recording fakes for ridft and aoforce. ridft writes
+    an `energy` file (success); aoforce writes a `hessian` file (success).
     """
     work_dir = tmp_path / "work"
     work_dir.mkdir()
@@ -38,6 +39,12 @@ def tm_env(tmp_path, monkeypatch):
         f"#!/bin/sh\nprintf '%s\\n' \"$@\" > {log}\nexit 1\n"
     )
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    ridft = bin_dir / "ridft"
+    ridft.write_text(f"#!/bin/sh\nprintf '1  -1.0\\n$end\\n' > {work_dir}/energy\n")
+    ridft.chmod(ridft.stat().st_mode | stat.S_IEXEC)
+    aoforce = bin_dir / "aoforce"
+    aoforce.write_text(f"#!/bin/sh\nprintf '$hessian\\n1\\n$end\\n' > {work_dir}/hessian\n")
+    aoforce.chmod(aoforce.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     return work_dir, log
 
@@ -101,16 +108,39 @@ class TestOptArgumentSafety:
 
 
 class TestFreqHessian:
-    """turbomole_freq declares `produces ("qc_output", "hessian")` but the
-    execute() body never writes or extracts a hessian."""
+    """turbomole_freq declares `produces ("qc_output", "hessian")`.
+
+    Fixed in c64fb267: the adapter surfaces the aoforce hessian file in
+    data["hessian"], or fails honestly when aoforce exits 0 without one.
+    Both directions tested; the negative case builds its own bin dir whose
+    aoforce writes nothing.
+    """
 
     def test_freq_produces_declared_hessian(self, tm_env):
         work_dir, _ = tm_env
         result = _run("turbomole_freq", work_dir, charge=0)
-        hessian = work_dir / "hessian"
-        assert hessian.is_file() or result.data.get("hessian"), (
+        assert result.status.name == "SUCCESS", result.error
+        assert result.data.get("hessian"), (
             "adapter declares a hessian product but execute() produced none"
         )
+
+    def test_aoforce_silent_success_is_reported_failed(self, tmp_path, monkeypatch):
+        """aoforce exiting 0 with NO hessian must fail honestly: SUCCESS
+        requires the declared product to exist, not just rc == 0."""
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        bin_dir = tmp_path / "fakebin"
+        bin_dir.mkdir()
+        ridft = bin_dir / "ridft"
+        ridft.write_text(f"#!/bin/sh\nprintf '1  -1.0\\n$end\\n' > {work_dir}/energy\n")
+        ridft.chmod(ridft.stat().st_mode | stat.S_IEXEC)
+        aoforce = bin_dir / "aoforce"
+        aoforce.write_text("#!/bin/sh\nexit 0\n")
+        aoforce.chmod(aoforce.stat().st_mode | stat.S_IEXEC)
+        monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+        result = _run("turbomole_freq", work_dir, charge=0)
+        assert result.status.name == "FAILED"
+        assert "no hessian" in result.error
 
 
 class TestScientificLintParity:
