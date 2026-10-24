@@ -95,9 +95,14 @@ def _floor_hit(action) -> str | None:
     if not commands and not url:
         return None
     for line in commands.splitlines() or [""]:
-        reason = _floor_hit_one_line(line, tool)
-        if reason:
-            return reason
+        # I-class (reviewer s26 round 4): a pipeline's later segments
+        # are commands too — 'cat urls.txt | xargs -n1 curl' carries the
+        # refused act in a segment the head-based floor never read.
+        # Split on | and judge every segment on its own.
+        for segment in line.split("|"):
+            reason = _floor_hit_one_line(segment, tool)
+            if reason:
+                return reason
     return None
 
 
@@ -140,7 +145,7 @@ def _floor_hit_one_line(line: str, tool: str) -> str | None:
         return None
     if binary == "nohup":
         return _floor_hit_one_line(" ".join(tokens[1:]), tool)
-    if binary == "timeout":
+    if binary == "timeout" or binary.startswith("timeout"):
         rest = tokens[1:]
         if rest and rest[0].replace(".", "").isdigit():
             rest = rest[1:]
