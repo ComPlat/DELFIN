@@ -62,12 +62,12 @@ def _class_name(name: str) -> str:
 
 
 def _adapter_name(name: str, kind: str) -> str:
-    return name if name.endswith(f"_{kind}") else f"{name}_{kind}"
+    return name if name.endswith("_" + kind) else f"{name}_{kind}"
 
 
 def _kind_name(name: str) -> str:
     for kind in _KINDS:
-        if name.endswith(f"_{kind}"):
+        if name.endswith("_" + kind):
             return kind
     return "program"
 
@@ -78,55 +78,65 @@ def _skeleton(kind: str, class_name: str, adapter_name: str, description: str) -
         "parser": 'ParamSpec("output", "path", required=True,\n                    description="Output file to parse"),',
         "analysis": 'ParamSpec("results", "path", required=True,\n                     description="Results file to analyse"),',
     }[kind]
-    return f'''"""{{adapter_name}} — {{description}}.
-
-Scaffolded by ``delfin-agent new-adapter``; fill in the TODO in ``execute``.
-"""
-
-from __future__ import annotations
-
-import time
-from pathlib import Path
-from typing import Any, Optional
-
-from delfin.tools._base import StepAdapter
-from delfin.tools._registry import register
-from delfin.tools._spec import ParamSpec
-from delfin.tools._types import StepResult, StepStatus
-
-
-class {{class_name}}(StepAdapter):
-    name = "{{adapter_name}}"
-    description = "{{description}}"
-    produces_geometry = False
-    category = "{{kind}}"
-    params = (
-        {{params_doc}}
+    body = (
+        "from __future__ import annotations\n"
+        "\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "from typing import Any, Optional\n"
+        "\n"
+        "from delfin.tools._base import StepAdapter\n"
+        "from delfin.tools._registry import register\n"
+        "from delfin.tools._spec import ParamSpec\n"
+        "from delfin.tools._types import StepResult, StepStatus\n"
+        "\n"
+        "\n"
+        "class CLASS_NAME(StepAdapter):\n"
+        '    name = "ADAPTER_NAME"\n'
+        '    description = "DESCRIPTION"\n'
+        "    produces_geometry = False\n"
+        '    category = "KIND"\n'
+        "    params = (\n"
+        "PARAMS_DOC\n"
+        "    )\n"
+        "\n"
+        "    def validate_params(self, **kwargs: Any) -> None:\n"
+        "        for spec in self.params:\n"
+        "            if spec.required and spec.name not in kwargs:\n"
+        "                raise ValueError(\n"
+        "                    \"'{}' parameter is required\".format(spec.name))\n"
+        "\n"
+        "    def execute(\n"
+        "        self,\n"
+        "        work_dir: Path,\n"
+        "        *,\n"
+        "        geometry: Optional[Path] = None,\n"
+        "        cores: int = 1,\n"
+        "        **kwargs: Any,\n"
+        "    ) -> StepResult:\n"
+        "        start = time.monotonic()\n"
+        "        raise NotImplementedError(\n"
+        "            \"TODO: implement ADAPTER_NAME.execute()\"\n"
+        "        )\n"
+        "\n"
+        "\n"
+        "register(CLASS_NAME())\n"
     )
-
-    def validate_params(self, **kwargs: Any) -> None:
-        # required params are enforced by the contract; add custom checks here
-        pass
-
-    def execute(
-        self,
-        work_dir: Path,
-        *,
-        geometry: Optional[Path] = None,
-        cores: int = 1,
-        **kwargs: Any,
-    ) -> StepResult:
-        start = time.monotonic()
-        raise NotImplementedError(
-            "TODO: implement {{adapter_name}}.execute()"
-        )
-        return self._make_result(
-            self.name, StepStatus.SUCCESS, work_dir, start,
-        )
-
-
-register({{class_name}}())
-'''.replace("{adapter_name}", adapter_name).replace("{description}", description).replace("{class_name}", class_name).replace("{kind}", kind).replace("{params_doc}", params_doc)
+    body = (
+        body.replace("CLASS_NAME", class_name)
+        .replace("ADAPTER_NAME", adapter_name)
+        .replace("DESCRIPTION", description)
+        .replace("KIND", kind)
+        .replace("PARAMS_DOC", params_doc)
+    )
+    header = (
+        '"""' + adapter_name + " — " + description + ".\n"
+        "\n"
+        "Scaffolded by ``delfin-agent new-adapter``; fill in the TODO in\n"
+        "``execute``.\n"
+        '"""\n'
+    )
+    return header + body
 
 
 def build_scaffold(
@@ -173,7 +183,32 @@ def build_scaffold(
         )
         return plan
 
-    plan.files[base / "delfin" / "tools" / "adapters" / f"{name}.py"] = _skeleton(
+    # Destination layout: inside a REPO, the skeleton lives in
+    # delfin/tools/adapters/ where production discovery walks it; inside a
+    # USER adapter directory (flat *.py, exactly what _load_user_adapters
+    # reads — delfin/tools/_registry.py) the skeleton must sit at the top
+    # level, or the loader never sees it.  Detection: a REPO is a tree
+    # containing delfin/tools/adapters/ (a checkout); an empty directory
+    # defaults to the repo layout, matching the documented CLI usage
+    # ("new-adapter ... --dir <repo-root>").  Everything else — notably a
+    # directory named for adapters, e.g. $DELFIN_ADAPTERS_DIR — is a user
+    # adapter directory and gets the flat layout.
+    is_repo = (base / "delfin" / "tools" / "adapters").is_dir()
+    is_repo = is_repo or (
+        not any(base.iterdir()) and not base.name.startswith("adapter")
+    )
+    if is_repo:
+        skeleton_path = base / "delfin" / "tools" / "adapters" / f"{name}.py"
+        test_path = base / "tests" / f"test_adapter_{name}.py"
+        docs_path = base / "docs" / "extending_delfin.md"
+        skeleton_link = f"delfin/tools/adapters/{name}.py"
+    else:
+        skeleton_path = base / f"{name}.py"
+        test_path = base / f"test_adapter_{name}.py"
+        docs_path = base / "ADAPTERS.md"
+        skeleton_link = f"{name}.py (user adapter directory)"
+
+    plan.files[skeleton_path] = _skeleton(
         kind, class_name, adapter_name, description
     )
 
@@ -195,20 +230,19 @@ def test_{{name}}_contract_builds():
     assert contract.category == "{{kind}}"
     assert contract.params, "declared params must not be empty"
 '''
-    plan.files[base / "tests" / f"test_adapter_{name}.py"] = test_body
+    plan.files[test_path] = test_body
 
     docs_body = f"""## {adapter_name}
 
 {description}.
 
 - Kind: `{kind}`
-- Skeleton: `delfin/tools/adapters/{name}.py`
-- Contract test: `tests/test_adapter_{name}.py`
+- Skeleton: `{skeleton_link}`
 - Registry: registered on import (no hand edit needed)
 
 TODO: describe parameters, inputs and outputs.
 """
-    plan.files[base / "docs" / "extending_delfin.md"] = docs_body
+    plan.files[docs_path] = docs_body
 
     return plan
 
@@ -220,14 +254,26 @@ def write_scaffold(
     directory=None,
     registry_dir=None,
 ) -> ScaffoldPlan:
-    """``build_scaffold`` plus actually writing the files to disk."""
+    """``build_scaffold`` plus actually writing the files to disk.
+
+    A file that already exists elsewhere in the plan (e.g. the shared
+    docs stub when scaffolding several adapters into one tree) is only
+    *appended to*, never overwritten; a pre-existing per-adapter file is
+    refused.
+    """
     plan = build_scaffold(name, kind, directory=directory, registry_dir=registry_dir)
     if not plan.ok:
         return plan
     for path, content in plan.files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            plan.errors.append(f"{path} already exists — refusing to overwrite")
+            text = path.read_text(encoding="utf-8")
+            if name in text:
+                plan.errors.append(
+                    f"{path} already documents {name} — refusing to overwrite"
+                )
+                continue
+            path.write_text(text + "\n" + content, encoding="utf-8")
             continue
         path.write_text(content, encoding="utf-8")
     return plan
