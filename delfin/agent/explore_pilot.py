@@ -26,6 +26,7 @@ sub-agent, and compares tokens, wall time, tool calls and correctness.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -169,3 +170,148 @@ def child_runner(parent_perms: Any, slot: Any, runner: Any = None) -> Any:
         _pilot_slot=child_slot, parent_client=None,
         parent_perms=parent_perms, **kw) if runner is None else runner(
         _pilot_slot=child_slot, **kw)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — the measurement harness
+# ---------------------------------------------------------------------------
+
+import re as _re
+from dataclasses import dataclass, field as _field
+
+
+_CITATION = _re.compile(
+    r"\b([A-Za-z0-9_./\-]+\.[a-z]{1,4}):(\d+)\b")
+
+
+@dataclass
+class PilotTask:
+    task_id: str
+    prompt: str
+
+
+@dataclass
+class CitationReport:
+    claims: int = 0
+    bad: list[str] = _field(default_factory=list)
+
+
+@dataclass
+class ArmResult:
+    arm: str
+    success: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    tool_calls: int = 0
+    duration_s: float = 0.0
+    final_text: str = ""
+    citations_ok: bool = False
+    citation_report: CitationReport = _field(default_factory=CitationReport)
+
+
+@dataclass
+class TaskRow:
+    task_id: str
+    arms: dict[str, ArmResult] = _field(default_factory=dict)
+
+
+def verify_citations(text: str, *, root: Any = None,
+                     expect: str = "") -> CitationReport:
+    """Every ``path:line`` claim in ``text`` must exist under ``root`` and
+    the line must contain ``expect`` when that is given (the line is read
+    from the real file — no mock stands in for the filesystem).
+
+    A claim whose file is missing, whose line number is out of range or
+    whose content contradicts ``expect`` is listed in ``bad`` with the
+    reason; the report counts how many claims were checked.
+    """
+    report = CitationReport()
+    for m in _CITATION.finditer(str(text or "")):
+        rel, line_no = m.group(1), int(m.group(2))
+        report.claims += 1
+        path = (Path(root) / rel) if root else Path(rel)
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            report.bad.append(f"{rel}:{line_no}: file missing or unreadable")
+            continue
+        if not (1 <= line_no <= len(lines)):
+            report.bad.append(f"{rel}:{line_no}: out of range "
+                              f"({len(lines)} lines)")
+            continue
+        if expect and expect not in lines[line_no - 1]:
+            report.bad.append(f"{rel}:{line_no}: line does not mention "
+                              f"{expect!r}")
+    return report
+
+
+def run_pilot(tasks: list[PilotTask], *, runner: Any,
+              root: Any = ".") -> list[TaskRow]:
+    """Run every task twice — arm ``plain`` and arm ``explore`` — through
+    ``runner(task, arm=...)``, and check each arm's final text for
+    correct ``path:line`` citations against ``root``.
+
+    ``runner`` returns a dict with success, input_tokens, output_tokens,
+    tool_calls, duration_s and final_text; in production it is
+    ``benchmark_runner.run_task`` (protected, read-only for this package)
+    called once per arm. Here the shape is the contract, not the runner.
+    """
+    rows: list[TaskRow] = []
+    for task in tasks:
+        row = TaskRow(task_id=task.task_id)
+        for arm in ("plain", "explore"):
+            raw = runner(task, arm=arm) or {}
+            report = verify_citations(raw.get("final_text", ""), root=root)
+            row.arms[arm] = ArmResult(
+                arm=arm, success=bool(raw.get("success")),
+                input_tokens=int(raw.get("input_tokens") or 0),
+                output_tokens=int(raw.get("output_tokens") or 0),
+                tool_calls=int(raw.get("tool_calls") or 0),
+                duration_s=float(raw.get("duration_s") or 0.0),
+                final_text=str(raw.get("final_text") or ""),
+                citations_ok=(report.claims == 0 or not report.bad),
+                citation_report=report)
+        rows.append(row)
+    return rows
+
+
+@dataclass
+class PilotVerdict:
+    explore_wins: bool | None = None
+    equal_correctness: bool | None = None
+    detail: str = ""
+
+
+def pilot_verdict(rows: list[TaskRow]) -> PilotVerdict:
+    """Does the explore arm win? Wins = strictly fewer tool calls and
+    less wall time at EQUAL correctness (every arm either fully cited or
+    both arms equally wrong). One task's noise is not a win: the verdict
+    is None while the evidence is mixed."""
+    v = PilotVerdict()
+    wins = ties = losses = 0
+    correct_all = True
+    for row in rows:
+        plain, pilot = row.arms.get("plain"), row.arms.get("explore")
+        if plain is None or pilot is None:
+            continue
+        if plain.citations_ok != pilot.citations_ok:
+            correct_all = False
+        if not (plain.success and pilot.success):
+            continue
+        if pilot.tool_calls < plain.tool_calls and pilot.duration_s <= plain.duration_s:
+            wins += 1
+        elif pilot.tool_calls > plain.tool_calls or pilot.duration_s > plain.duration_s:
+            losses += 1
+        else:
+            ties += 1
+    v.equal_correctness = correct_all
+    if not rows:
+        v.detail = "no tasks measured"
+        return v
+    if wins and not losses:
+        v.explore_wins = True
+    elif losses and not wins:
+        v.explore_wins = False
+    v.detail = (f"{len(rows)} tasks: {wins} explore-wins, {ties} ties, "
+                f"{losses} losses; correctness equal: {correct_all}")
+    return v

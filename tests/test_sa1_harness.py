@@ -23,7 +23,7 @@ class TestVerifyCitations:
         f = tmp_path / "mod.py"
         f.write_text("import os\n\nX = 1\n", encoding="utf-8")
         report = explore_pilot.verify_citations(
-            f"the constant sits in mod.py:3 — see mod.py:3", root=tmp_path)
+            "the constant sits in mod.py:3", root=tmp_path)
         assert report.claims == 1 and report.bad == []
 
     def test_missing_file_is_flagged(self, tmp_path):
