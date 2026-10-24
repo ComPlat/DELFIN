@@ -39,9 +39,10 @@ def test_the_file_exists_and_carries_tasks():
 
 
 def test_one_concrete_task_per_family_from_the_public_seed():
-    """The practice set: the FIRST public-seed draw of each family.
-    The holdout stays the generator; this file pins the concrete
-    practice instances a runner can execute without a cluster."""
+    """The practice set: ONE concrete task per family, the FIRST
+    public-seed draw. The holdout stays the generator; this file pins
+    the concrete practice instances a runner can execute without a
+    cluster."""
     by_family: dict[str, int] = {}
     for t in _tasks():
         parts = t["id"].split("_")
