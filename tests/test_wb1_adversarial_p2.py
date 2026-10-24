@@ -60,10 +60,12 @@ def test_rule2_fires_for_opt_without_freq():
 
 def test_rule2_silent_for_opt_freq_pair():
     spec = _spec([_st("orca_opt", label="o1", freq_temp=350.0),
-                  _st("orca_freq", label="f1", freq_temp=350.0)])
+                  _st("orca_freq", label="f1", freq_temp=350.0,
+                      freq_pressure=1.0)])
     rules = _rules(spec)
     assert ("freq-after-opt-missing", "o1", "warning") not in rules
-    # rule 9: both freq steps state the temperature -> silent
+    # rule 9: the freq step states temperature AND pressure -> silent
+    # (o1's freq_temp sits on an orca_opt — no thermochemistry there)
     assert "thermochemistry-conditions-missing" not in {r for r, _, _ in rules}
 
 
