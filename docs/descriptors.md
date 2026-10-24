@@ -17,6 +17,7 @@ limits are machine-readable on each adapter (`validity_limits`) and
 | bite angle | exactly 2 `donor_indices` | Definition of the bite angle. |
 | Sterimol axis | `atom1_index` != `atom2_index` | Two identical indices define a degenerate axis. |
 | system | metal complex with a metal centre | Buried volume / cone angle are meaningless without a ligand sphere around a metal. |
+| cone angle (output) | 0–360°, sanity window | The exact cone angle (Bilbrey/Allen, J. Comput. Chem. 2013, 34, 1189; doi:10.1002/jcc.23217) is the apex angle of the most acute cone containing the whole ligand; for ligands wrapping past a hemisphere (e.g. chelating ligands, ZnCl2(OH2)2 spanning the sphere) it exceeds 180° and is bounded by the solid-angle relation Ω ∈ [0, 4π] ↔ Θ ∈ [0°, 360°]. Values outside [0°, 360°] are non-physical. |
 
 If an out-of-range index still reaches morfeus (e.g. past the last
 atom), the step fails with a ValueError naming the physics, not a bare
