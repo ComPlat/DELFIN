@@ -74,35 +74,105 @@ def is_routine(action) -> bool:
 def _floor_hit(action) -> str | None:
     """The reason text of the floor shape hit, or None.
 
-    Reviewer s26 findings F1-F5 fixed: matching is on the FIRST TOKEN of
-    the command (never a bare substring in the middle of a read, F5),
-    case-insensitive (F1), with a pip front-end family (F2), flag-
-    normalized git commit (F3: -am, -a -m, -m+staged all mass-commit
-    risk) and a wider transfer family (F4: sftp, nc/ncat/netcat).
+    Reviewer s26 round-2 (G1-G10) rebuild, QS taste ruling taken: the
+    floor is ALLOW-FIRST at the token level. The command text is
+    tokenised (whole line, never a bare substring: F5/G10), each line of
+    a multi-line script is checked (G4), env prefixes are peeled
+    (FOO=bar, env FOO=bar: G1-G2), command substitution voids the token
+    picture so the line is refused outright ($(...) hides what runs:
+    G3), path-qualified binaries resolve to their basename (G5-G7), and
+    git commit with ANY flag of the -a/--all family mass-commits (G8-G9).
+    The url field is floor-checked like a binary (G10).
     """
-    text = str(action.get("command") or action.get("url") or "").strip()
     tool = str(action.get("tool") or "")
-    low = text.lower()
-    first = low.split()[0] if low.split() else ""
-    if first in ("ssh", "scp", "rsync", "sftp", "nc", "ncat", "netcat",
-                 "wget", "curl"):
-        return "network transfer outside DELFIN's web tools"
-    if first in ("pip", "pip3") or (
-            first == "python" and len(low.split()) > 2
-            and low.split()[1] == "-m" and low.split()[2] == "pip"):
+    url = str(action.get("url") or "")
+    # G10, allow-first: a url is only legal on DELFIN's own web-fetch
+    # tool; on any other tool (bash carrying a url) it is an outward
+    # target the tool's own contract never checks.
+    if url and tool not in ("web_fetch", "web"):
+        return "url field on a tool that does not define it"
+    commands = str(action.get("command") or "")
+    if not commands and not url:
+        return None
+    for line in commands.splitlines() or [""]:
+        reason = _floor_hit_one_line(line, tool)
+        if reason:
+            return reason
+    return None
+
+
+def _floor_hit_one_line(line: str, tool: str) -> str | None:
+    tokens = _tokens(line)
+    if tokens is None:
+        return "command substitution hides what runs; write it as a visible command"
+    if not tokens:
+        return None
+    # G1: peel VAR=value prefixes; G2: peel env(1) prefixes. Loop until
+    # stable: "env FOO=bar curl" peels env, then the next VAR=value.
+    while True:
+        if tokens and "=" in tokens[0] and tokens[0].split("=")[0]:
+            tokens = tokens[1:]
+            continue
+        if tokens and tokens[0] == "env":
+            tokens = tokens[1:]
+            continue
+        break
+    if not tokens:
+        return None
+    binary = tokens[0].rsplit("/", 1)[-1] if "/" in tokens[0] else tokens[0]
+    if binary in _FLOOR_REASONS:
+        if binary == "curl" and len(tokens) > 1:
+            # A "$(echo curl)" first token resolves to "curl" only by the
+            # value of the substitution, which _tokens refuses: it cannot
+            # appear here. A real multi-word argument list after a plain
+            # curl binary is still curl.
+            pass
+        return _FLOOR_REASONS[binary]
+    if binary in ("pip", "pip3") or (
+            len(tokens) > 2 and tokens[:3] == ["python", "-m", "pip"]):
         return "package installation"
-    if first == "git":
-        rest = low.split()[1:]
+    if binary == "git":
+        rest = tokens[1:]
         if rest and rest[0] == "push":
             return "push"
-        if rest and rest[0] == "commit" and (
-                "-a" in rest or "-am" in rest):
+        if rest and rest[0] == "commit" and any(
+                f == "-a" or f == "-am" or f == "--all" or f.startswith("-am")
+                or f.startswith("--all=") for f in rest):
             # A mass-commit (everything tracked, no staged selection).
             # ``git commit -m`` alone is a normal commit, NOT the floor.
             return "mass-commit of every tracked change"
     if tool in ("ssh", "scp", "rsync", "sftp"):
         return "network transfer outside DELFIN"
     return None
+
+
+_FLOOR_REASONS = {
+    "ssh": "ssh/scp/rsync to another host",
+    "scp": "ssh/scp/rsync to another host",
+    "rsync": "ssh/scp/rsync to another host",
+    "sftp": "ssh/scp/rsync to another host",
+    "nc": "network transfer outside DELFIN",
+    "ncat": "network transfer outside DELFIN",
+    "netcat": "network transfer outside DELFIN",
+    "wget": "network fetch outside DELFIN's web tools",
+    "curl": "network fetch outside DELFIN's web tools",
+}
+
+
+def _tokens(line: str) -> list[str] | None:
+    """Tokenise one shell line, lowercased; None when the argv picture is
+    false (command substitution: what runs is not what the line shows,
+    and a false argv picture must never read as an allow)."""
+    stripped = line.strip()
+    if not stripped:
+        return []
+    if "$(" in stripped or "`" in stripped:
+        return None
+    try:
+        import shlex
+        return [t.lower() for t in shlex.split(stripped)]
+    except ValueError:
+        return None
 
 
 def _plain_read(action) -> bool:
