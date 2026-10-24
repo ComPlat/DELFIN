@@ -63,6 +63,10 @@ _ORCA_PARAMS = (
               description="Per-element basis overrides, e.g. {'Fe':'def2-TZVP'}"),
     ParamSpec("broken_sym", "str", description="Broken-symmetry %scf block"),
     ParamSpec("base_name", "str", description="Base name for input/output files"),
+    ParamSpec("freq_temp", "float", unit="K",
+              description="Thermochemistry temperature for %freq (rule 9: T AND P)"),
+    ParamSpec("freq_pressure", "float", unit="atm",
+              description="Thermochemistry pressure for %freq (rule 9: T AND P)"),
 )
 _ORCA_DATA = (
     DataKeySpec("energy_Eh", "float", "Eh", "Final electronic energy"),
@@ -146,6 +150,7 @@ def _build_full_orca_input(
     scf_maxiter: Optional[int] = None,
     scf_extra: str = "",
     freq_temp: Optional[float] = None,
+    freq_pressure: Optional[float] = None,
     output_blocks: str = "",
     extra_blocks: str = "",
     xyzfile_mode: bool = False,
@@ -193,8 +198,14 @@ def _build_full_orca_input(
         parts.append("%basis\n" + "\n".join(basis_lines) + "\nend\n")
 
     # --- %freq ---
-    if freq_temp is not None:
+    if freq_temp is not None and freq_pressure is not None:
+        # Rule 9 (physical_realism.md): temperature AND pressure stated
+        # together — one %freq block carrying both.
+        parts.append(f"%freq\n  Temp {freq_temp}\n  Pressure {freq_pressure}\nend\n")
+    elif freq_temp is not None:
         parts.append(f"%freq\n  Temp {freq_temp}\nend\n")
+    elif freq_pressure is not None:
+        parts.append(f"%freq\n  Pressure {freq_pressure}\nend\n")
 
     # --- Broken symmetry ---
     if broken_sym:
@@ -345,6 +356,7 @@ class _OrcaBase(StepAdapter):
             scf_maxiter=kwargs.get("scf_maxiter"),
             scf_extra=kwargs.get("scf_extra", ""),
             freq_temp=kwargs.get("freq_temp"),
+            freq_pressure=kwargs.get("freq_pressure"),
             output_blocks=kwargs.get("output_blocks", ""),
             extra_blocks=kwargs.get("extra_blocks", ""),
         )
