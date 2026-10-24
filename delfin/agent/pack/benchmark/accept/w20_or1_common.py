@@ -54,8 +54,8 @@ def one_imaginary_mode(folder: Path):
 
 
 _BARRIER_RE = re.compile(
-    r"(?:barrier|activation)\s+(?:is|of|height(?:\s+is)?|energy\s+is|"
-    r"energy\s+of|to)\s*(?:about|approx\.?|~)?\s*"
+    r"(?:barrier|activation)(?:\s+\w+){0,5}?"
+    r"(?::\s*|\s+(?:is|of)\s*)(?:about|approx\.?|~)?\s*"
     r"(-?\d+(?:\.\d+)?)\s*kcal", re.I)
 # A bare "<num> kcal" span that is part of a RANGE citation (lo-hi,
 # en-dash or written-out "between A and B") is never a computed value.
