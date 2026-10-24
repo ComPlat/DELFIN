@@ -314,8 +314,13 @@ def test_the_counts_still_match_what_was_measured():
     # chem/ folders now live under the science workspace fixture, and
     # the setup-ownership guard cases for w20_or1 setups run for real
     # instead of skipping.
+    # chemistry 5 -> 10 on 2026-10-24: the five tasks_w20_or2.yaml tasks
+    # (package OR2, wave 20 — spectra, spin states, redox). Each setup
+    # writes its own fixture folder under the chemistry workspace
+    # (or2/formaldehyde, or2/spin, or2/redox, or2/redox_mixed);
+    # MAX_ATOMS <= 20 in every setup.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 28, "chemistry": 18, "generalist": 22,
+                      "science": 28, "chemistry": 23, "generalist": 22,
                       "other": 71}, counts
 
 
