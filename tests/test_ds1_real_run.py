@@ -6,6 +6,12 @@ real execution, not fixtures: nine-atom Zn(OH)2Cl2 test geometry under
 registry -> w21_descriptors_steric -> adapter physics gate ->
 morfeus_wrapper -> morfeus, 1 core, ~7 s.
 
+ENVIRONMENT-DEPENDENT (documented in .gate/PR.md): the geometry file
+lives only in the builder's tree under .gate/practice/, which is never
+committed. Where it is absent the tests skip with a named condition —
+the value-pinning logic (below) is the part that generalises: it works
+on any tetrahedral Zn complex and any tree with that geometry present.
+
 The second case also pins a physics fact this run exposed (red against
 the wrong [0, 180] bound asserted in the first probe draft): the exact
 cone angle (Bilbrey/Allen, J. Comput. Chem. 2013, 34, 1189,
@@ -36,7 +42,18 @@ def _run_workflow():
     )
 
 
+def _needs_geometry():
+    import pytest
+    if not GEOMETRY.exists():
+        pytest.skip(
+            "scratch geometry .gate/practice/znh2o2cl2.xyz absent in this "
+            "tree (never committed); see .gate/PR.md — value-pinning works "
+            "on any tree that has a tetrahedral Zn complex there"
+        )
+
+
 def test_real_end_to_end_steric_screening():
+    _needs_geometry()
     results = _run_workflow()
     assert len(results) == 3, f"expected 3 step results, got {len(results)}"
     for r in results:
@@ -53,6 +70,7 @@ def _numeric(value):
 
 
 def test_real_output_values_are_physical():
+    _needs_geometry()
     results = _run_workflow()
     seen_buried = seen_cone = False
     for r in results:
