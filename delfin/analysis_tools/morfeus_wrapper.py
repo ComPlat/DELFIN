@@ -119,7 +119,14 @@ def buried_volume(
     )
 
     return {
-        "percent_buried_volume": bv.percent_buried_volume,
+        # morfeus's deprecated percent_buried_volume returns a FRACTION
+        # (site-packages/morfeus/buried_volume.py:619 -> fraction),
+        # observed 0.5845 on cisplatin.  Label both units correctly:
+        # "fraction_buried_volume" is the raw fraction, and the % key
+        # really carries percent (x100) — a number that says % must be
+        # a percent (RUN1 real-run finding R4, cisplatin 2026-10-26).
+        "fraction_buried_volume": bv.fraction_buried_volume,
+        "percent_buried_volume": 100.0 * bv.fraction_buried_volume,
         "free_volume": bv.free_volume,
         "buried_volume": bv.buried_volume,
         "total_volume": 4 / 3 * 3.14159265 * radius**3,
