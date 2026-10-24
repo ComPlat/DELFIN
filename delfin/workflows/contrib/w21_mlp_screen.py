@@ -77,6 +77,20 @@ class MlpScreenWorkflow:
         result = adapter.execute(wd, ensemble=ensemble, backend=backend,
                                  charge=charge, mult=mult, device=device)
         ranking = result.data.get("ranking") or []
+        # Reporting duty: a crashed per-structure evaluation surfaces as
+        # float("inf") in the ranking (delfin/mlp_tools/calculators.py:290
+        # sorts it last, but if it survives into the result it must never
+        # pass silently — an inf "best energy" is not an energy).  Warn on
+        # every non-finite entry and pick the best over FINITE energies
+        # only; with no finite entry at all there is no ranking to report.
+        import math
+
+        finite = [
+            entry for entry in ranking
+            if isinstance(entry.get("energy_eV"), (int, float))
+            and math.isfinite(entry["energy_eV"])
+        ]
+        nonfinite = len(ranking) - len(finite)
         out: Dict[str, Any] = {
             "ok": result.status.name == "SUCCESS",
             "backend": backend,
@@ -84,12 +98,19 @@ class MlpScreenWorkflow:
             "error": result.error,
             "n_structures": result.data.get("n_structures"),
             "ranking": ranking,
-            "best_index": ranking[0]["index"] if ranking else None,
-            "best_energy_eV": ranking[0]["energy_eV"] if ranking else None,
             "ensemble": ensemble,
         }
-        # Reporting duty: a non-SUCCESS step is surfaced, never swallowed.
-        if out["ok"] is False:
+        if finite:
+            best = min(finite, key=lambda e: e["energy_eV"])
+            out["best_index"] = best["index"]
+            out["best_energy_eV"] = best["energy_eV"]
+        if nonfinite:
+            out.setdefault("warnings", []).append(
+                f"{nonfinite} of {len(ranking)} structures have no valid "
+                "MLP energy (evaluation failed, recorded as inf/nan); "
+                "best_* is chosen over the finite energies only")
+        if result.status.name != "SUCCESS":
+            out["ok"] = False
             out.setdefault("errors", [result.error])
         return out
 
