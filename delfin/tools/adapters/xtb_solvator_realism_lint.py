@@ -25,8 +25,10 @@ Reviewer-confirmed design points (nacht-s19, F2/F3):
   excluded outright (``name not in _SHELL_STEPS``). The SOLVATOR
   shell's own implicit component comes from the ``solvent`` key
   (ORCA input line ``!GFN2-xTB ALPB(water)``) — that is the deliberate
-  ORCA-SOLVATOR design (explicit shell + ALPB background), NOT a
-  double count, and the rule can never fire on the shell step itself.
+  ORCA-SOLVATOR design (explicit shell + ALPB background, the manual's
+  canonical form: ORCA 6.1.1 manual §4.11.1, the documented example is
+  ``!GFN2-XTB ALPB(WATER)`` + ``%SOLVATOR NSOLV``), NOT a double
+  count, and the rule can never fire on the shell step itself.
   The double-count rule instead targets a LATER step (typically a DFT
   single point) that adds CPCM/SMD/ALPB/GBSA on top of the shell.
 """
