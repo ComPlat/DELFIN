@@ -112,6 +112,7 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
     findings: List[ScienceFinding] = []
 
     from delfin.tools._science_rules.chain import lint_chain
+    from delfin.tools._science_rules.system import lint_system
 
     def _walk(steps, collect=False):
         concrete = []
@@ -126,6 +127,7 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
         # spec-level chain rules need the whole concrete step sequence
         if collect:
             findings.extend(lint_chain(concrete))
+            findings.extend(lint_system(concrete))
 
     _walk(inner.get("steps"), collect=True)
     for bname, bsteps in (inner.get("branches") or {}).items():
