@@ -12,6 +12,11 @@ logger = get_logger(__name__)
 _REGISTRY: Dict[str, StepAdapter] = {}
 _DISCOVERED = False
 
+# Modules kept for backwards compatibility that the directory walk cannot
+# reach (currently none — every adapter lives as <stem>.py under adapters/).
+# Kept as a hook so a renamed/legacy module still loads after discovery.
+_LEGACY_ADAPTER_MODULES: tuple = ()
+
 
 def register(adapter: StepAdapter) -> StepAdapter:
     """Register a step adapter instance."""
@@ -37,36 +42,26 @@ def list_steps() -> Dict[str, StepAdapter]:
 
 
 def _discover_builtin_adapters() -> None:
-    """Lazy-import built-in adapter modules to populate the registry."""
+    """Lazy-import built-in adapter modules to populate the registry.
+
+    Every module file under ``delfin/tools/adapters/`` is imported, so a new
+    adapter that registers itself on import is reachable without editing
+    this list (the wave-20 OR1 defect: three adapters registered on import
+    but their module names were missing from a hardcoded tuple and nothing
+    imported them).  The explicit tuple below is kept ONLY for modules whose
+    names no longer match their file (legacy); prefer the directory walk.
+    """
     global _DISCOVERED
     _DISCOVERED = True
-    for mod in (
-        "delfin.tools.adapters.smiles",
-        "delfin.tools.adapters.morfeus",
-        "delfin.tools.adapters.cclib",
-        "delfin.tools.adapters.xtb",
-        "delfin.tools.adapters.xtb_native",
-        "delfin.tools.adapters.orca",
-        "delfin.tools.adapters.crest",
-        "delfin.tools.adapters.censo",
-        "delfin.tools.adapters.packmol",
-        "delfin.tools.adapters.multiwfn",
-        "delfin.tools.adapters.imag",
-        "delfin.tools.adapters.occupier",
-        "delfin.tools.adapters.esd",
-        "delfin.tools.adapters.guppy",
-        "delfin.tools.adapters.mlp",
-        "delfin.tools.adapters.xtb_solvator",
-        "delfin.tools.adapters.genarris",
-        "delfin.tools.adapters.uv_vis",
-        "delfin.tools.adapters.afp",
-        "delfin.tools.adapters.reporting",
-        "delfin.tools.adapters.python_func",
-        "delfin.tools.adapters.ase_adapter",
-        "delfin.tools.adapters.turbomole",
-        "delfin.tools.adapters.openbabel",
-        "delfin.tools.adapters.orca_ts_adapters",
-    ):
+    from pathlib import Path
+
+    adapters_dir = Path(__file__).parent / "adapters"
+    if adapters_dir.is_dir():
+        for path in sorted(adapters_dir.glob("*.py")):
+            if path.stem == "__init__":
+                continue
+            _try_import(f"{__name__.rsplit('.', 1)[0]}.adapters.{path.stem}")
+    for mod in _LEGACY_ADAPTER_MODULES:
         _try_import(mod)
     _load_user_adapters()
 
