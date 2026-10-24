@@ -92,13 +92,16 @@ def barrier_band(text: str, lo: float, hi: float) -> bool:
 
 
 def barrier_with_artifact(folder: Path, text: str, lo: float,
-                          hi: float) -> bool:
-    """barrier_band gated on a frequency artifact in folder.
+                          hi: float, freq_required: bool = True) -> bool:
+    """barrier_band gated on an artifact in folder.
 
-    Evidence before claim: no frequency output in the task folder ->
-    the barrier is never graded as passing, whatever the prose says.
+    Evidence before claim: no artifact in the task folder -> the
+    barrier is never graded as passing, whatever the prose says.
+    freq_required (the TS tasks): a frequency output must exist. The
+    scan task passes freq_required=False: its artifact is the scan
+    output, which the script's own scan_ran precondition already gates.
     """
-    if not find_freq_outputs(folder):
+    if freq_required and not find_freq_outputs(folder):
         return False
     return barrier_band(text, lo, hi)
 

@@ -48,6 +48,8 @@ tasks:
     setup: w20_or1_seed.py
     verify: w20_or1_ts_hcn_verify.py
     expected_signals:
+      - pattern: '(?i)barrier (is|of|height)'
+        against: text
       - pattern: '(?i)(orca_ts_opt|hessian_mode)'
         against: text
       - pattern: '(?i)(imaginary|imag)'
@@ -78,6 +80,8 @@ tasks:
     setup: w20_or1_seed.py
     verify: w20_or1_scan_ethane_verify.py
     expected_signals:
+      - pattern: '(?i)barrier (is|of|height)'
+        against: text
       - pattern: '(?i)(xtb)'
         against: any
       - pattern: '(?i)(scan|constraint)'
@@ -110,6 +114,8 @@ tasks:
     setup: w20_or1_seed.py
     verify: w20_or1_ts_sn2_verify.py
     expected_signals:
+      - pattern: '(?i)barrier (is|of|height)'
+        against: text
       - pattern: '(?i)(orca_ts_opt|hessian_mode)'
         against: text
       - pattern: '(?i)(imaginary|imag)'
