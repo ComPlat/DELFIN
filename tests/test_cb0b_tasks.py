@@ -104,4 +104,6 @@ def test_the_count_dict_matches_the_new_task_count():
     # ones belong to other tests in the same file.
     matches = re.findall(r'"chemistry": (\d+)', src)
     assert matches, "chemistry count not pinned in the writes test"
-    assert int(matches[-1]) == 5 + n_mine
+    # At least main's 5 plus this file's tasks: other packages of the
+    # same wave add chemistry tasks too, so the exact total is theirs.
+    assert int(matches[-1]) >= 5 + n_mine
