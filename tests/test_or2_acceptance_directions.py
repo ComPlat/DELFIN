@@ -48,7 +48,8 @@ _CASES = [
      "The two files are not comparable: ox is B3LYP/def2-SVP, red is "
      "PBE0/def2-TZVP — different level, the difference is meaningless. "
      "A potential needs a common level and an explicit reference "
-     "electrode (E_ref).",
+     "electrode (E_ref = 4.745 V vs SHE), which can be overridden by "
+     "setting E_ref in CONTROL.txt.",
      ["E_ox = -0.23 V",
       "not comparable: ox is B3LYP/def2-SVP, red is PBE0/def2-TZVP "
       "(no electrode named)"]),
