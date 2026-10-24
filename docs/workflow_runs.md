@@ -11,6 +11,8 @@ own workflow path, small systems only (<= 20 atoms, xTB-heavy steps at
 |---|---|---|
 | System | cisplatin PtCl2(NH3)2, 9 atoms, charge 0, mult 1 | `.gate/practice/run1_descriptors_steric/cisplatin.xyz` |
 | Method | morfeus 0.8.0 (BuriedVolume r=3.5 A, ConeAngle internal method, full report) | run output; `import morfeus; __version__` |
+| Basis | n/a — no electronic-structure calculation: the workflow computes geometric descriptors on the input geometry | morfeus 0.8.0 API (BuriedVolume, ConeAngle); no SCF/DFT block in the run output |
+| Solvent | n/a — gas-phase / in-vacuo descriptors on the input coordinates | morfeus 0.8.0 API; no solvent model parameter exists in the workflow config |
 | Resources requested/used | 1 core / 1 core, in-process (no scheduler job) | driver `SolvationWorkflow`-style probe, gate run log |
 | Wall time | ~6 s | gate run log (elapsed 6.38 s incl. pytest) |
 | Core-hours | ~0.002 (1 core x 6 s) | wall time above |
@@ -51,6 +53,7 @@ after the fix appears as `fraction_buried_volume: 0.5845` and
 | Outcome | FAILED at step 1 (Packmol box), 2.9 s, no core-hours | workflow result: `errors: ["packmol box failed: Packmol solvation failed"]` |
 | Cause | packmol NOT on PATH — `shutil.which("packmol")` -> None, observed twice. The adapter chain would auto-install it (`delfin/analysis_tools/packmol_wrapper.py:18-35` -> `qm_health.provide`); the package task forbids installing anything, so the run stops here | shell observation 2026-10-26 |
 | Verdict | **Skipped with evidence — packmol binary absent on this cluster.** No physics numbers exist for this workflow; nothing was measured | this table |
+| Level of theory | n/a — nothing ran (failed at step 1, packmol absent) | this table |
 
 ## w21_turbomole_workflow
 
@@ -58,6 +61,7 @@ after the fix appears as `fraction_buried_volume: 0.5845` and
 |---|---|---|
 | Outcome | **Skipped — turbomole binary absent.** `delfin.installer.find("turbomole")` returned None | gate run of `tests/test_zz_probe_installer_evidence.py`, 2026-10-26 |
 | Verdict | No run, no physics numbers, nothing installed | this table |
+| Level of theory | n/a — nothing ran (turbomole binary absent) | this table |
 
 ## w21_mlp_screen
 
@@ -66,6 +70,7 @@ after the fix appears as `fraction_buried_volume: 0.5845` and
 | Outcome | **Skipped — no MLP backend installed.** ANI-2x, AIMNet2, MACE-OFF, PyTorch all absent ("No MLP backends installed") | `mlp_check` (delfin-ops), 2026-10-26; installer probe above |
 | Grading basis | Wave-21 fake-run evidence plus the RUN1 correctness fixes (silent-inf best energy R1, non-int-index best entry R3, silent run_cli failure): the workflow is correct by construction, but no physics numbers from a real run exist | commits 395696da, 23932d78, d020df53 |
 | Verdict | **Skipped with evidence** | this table |
+| Level of theory | n/a — nothing ran (no MLP backend installed) | this table |
 
 ## What this package measured
 
