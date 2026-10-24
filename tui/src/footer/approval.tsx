@@ -131,10 +131,14 @@ function previewLines(asked: Asked, max: number, rows: number = PREVIEW_MAX): Li
   const room = Math.max(1, Math.min(rows, PREVIEW_MAX))
   const more = `… ${lines.length - room + 1} more lines` + (fullPreviewKey ? ` (${fullPreviewKey} shows all)` : "")
   const shown = lines.length <= room ? lines : [...lines.slice(0, Math.max(0, room - 1)), more]
+  // "⚠" opens a question that widens the agent's own permissions
+  // (api_client._confirm_widening): it must not read like a routine one.
   return shown.map((line, i) => [{
     text: i === shown.length - 1 && line.startsWith("… ") && lines.length > room ? fit(line, max) : middle(line, max),
-    tone: line.startsWith("+") && !line.startsWith("+++") ? "ok"
+    tone: line.startsWith("⚠") ? "warn"
+      : line.startsWith("+") && !line.startsWith("+++") ? "ok"
       : line.startsWith("-") && !line.startsWith("---") ? "err" : "text",
+    ...(line.startsWith("⚠") ? { bold: true } : {}),
   }])
 }
 

@@ -104,17 +104,57 @@ set_up_extras() {
     if "$VENV_PY" -c "import playwright" 2>/dev/null; then
         "$VENV_PY" -m playwright install chromium </dev/null \
             || echo "warning: playwright chromium install failed" >&2
-        sudo -n "$VENV_PY" -m playwright install-deps chromium </dev/null >/dev/null 2>&1 || true
+        # Its system libraries are apt packages, an admin's to install: the
+        # first boot does it as root and leaves the marker.
+        [[ -f /var/lib/delfin-playwright-deps.done ]] \
+            || echo "note: Chromium's system libraries, once as an admin: sudo $VENV_PY -m playwright install-deps chromium" >&2
     fi
     "$ROOT/.venv/bin/delfin-docs-index" >/dev/null 2>&1 \
         || echo "warning: doc index build failed (retry: delfin-docs-index)" >&2
+    if ! grep -qw landlock /sys/kernel/security/lsm 2>/dev/null; then
+        echo "note: this kernel has no Landlock, so the agent asks about every command the cage" >&2
+        echo "      would run unasked. Once, as an admin (pi): sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh build," >&2
+        echo "      then: sudo bash $ROOT/src/scripts/pi/pi_kernel_landlock.sh try" >&2
+    fi
+    # An agent.env from before: "off" ran a command the dashboard executes for
+    # the agent with the account's full rights. auto confines it.
+    if grep -q '^export DELFIN_AGENT_SANDBOX=off$' "$ROOT/agent.env" 2>/dev/null; then
+        sed -i 's/^export DELFIN_AGENT_SANDBOX=off$/export DELFIN_AGENT_SANDBOX=auto/' "$ROOT/agent.env"
+        echo "==> agent.env: DELFIN_AGENT_SANDBOX off -> auto"
+    fi
+    if [[ -f "$ROOT/agent.env" ]] && ! grep -q '^export DELFIN_MCP_ISOLATION=' "$ROOT/agent.env"; then
+        printf '%s\n' "# DELFIN's own MCP servers run in bwrap, seeing only their folders." \
+            "export DELFIN_MCP_ISOLATION=builtin" >> "$ROOT/agent.env"
+        echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
+    fi
+    # Sessions start on the KIT toolbox (DELFIN's own, caged tool loop) unless
+    # a provider was chosen: the CLI default would be refused by the policy.
+    "$VENV_PY" - <<'EOF' || echo "warning: could not set the default provider" >&2
+import json
+from delfin.user_settings import get_settings_path, load_settings, save_settings
+path = get_settings_path()
+raw = json.loads(path.read_text()) if path.exists() else {}
+if not str((raw.get("agent") or {}).get("provider") or "").strip():
+    settings = load_settings()
+    settings.setdefault("agent", {}).update(
+        {"provider": "kit", "model": "kit.deepseek-v4-flash"})
+    save_settings(settings)
+    print("==> default provider: kit (kit.deepseek-v4-flash)")
+EOF
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
 }
 
 restart_dashboard() {
-    sudo -n systemctl restart delfin-dashboard 2>/dev/null \
-        && echo "==> dashboard restarted" || true
+    # Only a running dashboard picks up the new code: `restart` STARTS a
+    # stopped unit, and an admin who stopped it (e.g. until access is
+    # secured) must not have it switched back on by a deploy.
+    if systemctl is-active --quiet delfin-dashboard 2>/dev/null; then
+        sudo -n systemctl restart delfin-dashboard 2>/dev/null \
+            && echo "==> dashboard restarted" || true
+    else
+        echo "==> dashboard not running: left stopped"
+    fi
 }
 
 smoke() {

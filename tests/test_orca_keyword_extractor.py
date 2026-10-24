@@ -33,14 +33,17 @@ from delfin.agent.orca_keyword_extractor import (
 
 
 _INDEX = Path.home() / ".delfin" / "doc_index.json"
-_has_index = _INDEX.exists()
+# An index is not a manual: a machine without ORCA (it is licensed) indexes
+# the documents it has, and the extraction from it is empty.
+_NAMESPACE = extract_keyword_namespace() if _INDEX.exists() else {}
+_has_index = bool(_NAMESPACE)
 
 
 @pytest.fixture(scope="module")
 def namespace():
     if not _has_index:
-        pytest.skip(f"No doc_index at {_INDEX}")
-    return extract_keyword_namespace()
+        pytest.skip(f"No indexed ORCA manual in {_INDEX}")
+    return _NAMESPACE
 
 
 @pytest.mark.skipif(not _has_index, reason="No indexed ORCA manual")
