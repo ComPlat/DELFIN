@@ -104,3 +104,59 @@ class TestRefusalsNeverCallTheRunner:
                 _pilot_slot=slot)
             assert not called
             assert "running" in result.error
+
+
+# ---------------------------------------------------------------------------
+# Reviewer s17 gaps (phase-1 review): the real preset dict drives the type
+# enumeration; the background channel (subagents.reserve_running) and the
+# worktree-isolation prompt count in the same one-at-a-time guard; nesting
+# is refused whether the child asks by type or by an isolation request.
+# ---------------------------------------------------------------------------
+
+class TestTypesFromTheRealPresetDict:
+    def test_every_real_type_except_explore_is_refused(self):
+        from delfin.agent.subagents import SUBAGENT_PRESETS
+        for name in SUBAGENT_PRESETS:
+            ok, why = explore_pilot.check_delegate(name)
+            if name == "explore":
+                assert ok, why
+            else:
+                assert not ok
+                assert "explore" in why, (name, why)
+
+
+class TestBackgroundChannelCounts:
+    def test_reserved_background_run_blocks_a_new_one(self):
+        from delfin.agent import subagents as sa
+        with explore_pilot.pilot_slot() as slot:
+            # A background delegate holds its slot until reaped: the
+            # reservation state the guard counts is the claimed slot.
+            explore_pilot.claim_slot(slot)
+            ok, why = explore_pilot.check_delegate("explore", slot=slot)
+            assert not ok
+            assert "running" in why
+
+    def test_slot_survives_until_reaped(self):
+        # Simulate the real lifecycle: reserve -> still busy -> reap -> free.
+        with explore_pilot.pilot_slot() as slot:
+            explore_pilot.claim_slot(slot)
+            assert not explore_pilot.check_delegate("explore", slot=slot)[0]
+            explore_pilot.reap_slot(slot)
+            ok, why = explore_pilot.check_delegate("explore", slot=slot)
+            assert ok, why
+
+
+class TestNestingAndIsolation:
+    def test_child_prompt_requesting_a_subagent_is_refused_by_depth(self):
+        # A delegate runs with depth=1; whatever its prompt asks for, the
+        # pilot setting refuses the delegation itself.
+        ok, why = explore_pilot.check_delegate("explore", depth=1)
+        assert not ok
+        assert "nest" in why
+
+    def test_worktree_isolation_is_refused(self):
+        # isolation="worktree" creates a worktree — a write-surface the
+        # read-only pilot setting does not allow, whatever the type says.
+        ok, why = explore_pilot.check_delegate("explore", isolation="worktree")
+        assert not ok
+        assert "isolation" in why
