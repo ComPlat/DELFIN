@@ -81,14 +81,18 @@ populations (opt/freq/sp, ~90 % in wave-21 runs) sit far above.
 
 ## What the advice would have saved (wave-20/21 practice runs)
 
-Run 1 above requested 2 cores x 00:30:00 for a step that used 1.53 %
-of its allocated CPU time and was killed at its limit (FAILED, exit
-138): 2 cores x 00:24:47 wall = 0.83 core-hours allocated, of which
-0.013 core-hours actually computed (CPU Utilized 00:01:31 — the
-hyperthread factor sits in the scheduler's denominator, not in the
-allocation). At pal 1 with a time limit sized from the measured wall
-time, the same submit would have held 1 core instead of 2 and its
-limit would have matched reality. EF1's accounting rows that carry
+Run 1 above requested 2 cores x 00:30:00 for a step that was killed
+before its limit (FAILED, exit 138) after 00:24:47 wall: 2 cores x
+00:24:47 wall = 0.83 core-hours allocated, of which 0.025 core-hours
+actually computed (CPU Utilized 00:01:31 = 91 CPU-seconds). The .out's
+1.53 % divides the 91 s by the scheduler's core-walltime denominator,
+which counts LOGICAL CPUs (01:39:08 = 00:24:47 x 4 logical CPUs for
+2 allocated cores on this hyperthreaded node); against the physical
+allocation the fraction is 91 s / 2987 s = 3.0 %. Either way the step
+used roughly one thirtieth to one sixtieth of what it was given. At
+pal 1 with a time limit sized from the measured wall time, the same
+submit would have held 1 core instead of 2 and its limit would have
+matched reality. EF1's accounting rows that carry
 this number did not exist before this package's phase 1; future
 measured runs feed the same path through `account()`. No number on
 this page comes from anywhere but a recorded run or a labeled
