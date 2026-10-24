@@ -114,6 +114,11 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
     from delfin.tools._science_rules.chain import lint_chain
     from delfin.tools._science_rules.system import lint_system
 
+    # the system rules' satisfaction flags are shared across the whole
+    # spec: a search/scan in the trunk closes the requirement in the
+    # branches too (reviewer finding F6/F7, branch case)
+    _shared = {}
+
     def _walk(steps, collect=False):
         concrete = []
         for st in steps or []:
@@ -127,7 +132,7 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
         # spec-level chain rules need the whole concrete step sequence
         if collect:
             findings.extend(lint_chain(concrete))
-            findings.extend(lint_system(concrete))
+            findings.extend(lint_system(concrete, _shared))
 
     _walk(inner.get("steps"), collect=True)
     for bname, bsteps in (inner.get("branches") or {}).items():

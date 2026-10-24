@@ -18,7 +18,7 @@ Sources:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from delfin.tools._science import ScienceFinding, _is_placeholder
 
@@ -49,11 +49,25 @@ def _system_hint(kwargs: Dict[str, Any]) -> str:
     return ""
 
 
-def lint_system(steps: List[Dict[str, Any]]) -> List[ScienceFinding]:
-    """Rules 5, 6, 7 over one walked step sequence (trunk or branch)."""
+def lint_system(steps: List[Dict[str, Any]],
+                shared: Optional[Dict[str, bool]] = None
+                ) -> List[ScienceFinding]:
+    """Rules 5, 6, 7 over one walked step sequence (trunk or branch).
+
+    ``shared`` carries the two satisfaction flags ACROSS the walked
+    sequences (trunk first, then branches): a conformer search or spin
+    scan seen in ANY sequence closes the requirement everywhere — the
+    walker in _science.scientific_lint passes one dict for the whole
+    spec.
+    """
     out: List[ScienceFinding] = []
-    conformer_done: set = set()   # system hints already covered by a search
-    spin_scan_done: set = set()
+    # F6/F7 fix: a search/scan step need not repeat the system hint — the
+    # real workflow states the hint on the DFT step. So the requirement is
+    # closed by ANY search/scan step anywhere in the sequence (a presence
+    # flag), not by a hint-matched registration. One conformer search per
+    # chain serves the whole chain, however many steps carry hints.
+    conformer_done = bool(shared and shared.get("conformer_done"))
+    spin_scan_done = bool(shared and shared.get("spin_scan_done"))
 
     for st in steps:
         if not isinstance(st, dict):
@@ -64,9 +78,12 @@ def lint_system(steps: List[Dict[str, Any]]) -> List[ScienceFinding]:
         hint = _system_hint(kw)
 
         if name in _CONFORMER_STEPS:
-            conformer_done.add(hint)
+            conformer_done = True
         if name in _SPIN_SCAN_STEPS:
-            spin_scan_done.add(hint)
+            spin_scan_done = True
+        if shared is not None:
+            shared["conformer_done"] = conformer_done
+            shared["spin_scan_done"] = spin_scan_done
 
         if hint in (_SYSTEM_NONCOVALENT, _SYSTEM_FLEXIBLE):
             # ── Rule 5: dispersion correction ──
@@ -82,7 +99,7 @@ def lint_system(steps: List[Dict[str, Any]]) -> List[ScienceFinding]:
                     "composite method that includes one (…-3c)"))
             # ── Rule 6: conformer search before DFT ──
             if (hint == _SYSTEM_FLEXIBLE and name.startswith("orca")
-                    and hint not in conformer_done):
+                    and not conformer_done):
                 out.append(ScienceFinding(
                     label, "warning", "conformer-search-missing",
                     "a flexible molecule has many low-energy conformers — "
@@ -96,7 +113,7 @@ def lint_system(steps: List[Dict[str, Any]]) -> List[ScienceFinding]:
             # the metals kwarg is the physical fact (same vocabulary the
             # rule-4 relativistic check reads); the system hint alone does
             # not fire — the static lint invents no chemistry
-            has_scan = (hint in spin_scan_done
+            has_scan = (spin_scan_done
                         or kw.get("broken_symmetry")
                         or kw.get("broken_sym"))
             if not has_scan:
