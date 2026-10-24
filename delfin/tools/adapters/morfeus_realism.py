@@ -146,7 +146,13 @@ def validate_physics_full_report(kwargs: dict) -> None:
     validate_physics_radius(kwargs)
 
 
-def _wrap_execute(adapter_cls, physics):
+def wrap_execute(adapter_cls, physics):
+    """Attach a physics gate to ``adapter_cls.execute``.
+
+    Shared definition for the DS1 realism modules (multiwfn_realism
+    imports it from here): ``physics(kwargs)`` runs before the real
+    execute; a ValueError from it is the step's failure reason.
+    """
     original = adapter_cls.execute
 
     def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
@@ -180,7 +186,7 @@ def install() -> None:
          validate_physics_full_report),
     ):
         cls.validity_limits = limits
-        _wrap_execute(cls, physics)
+        wrap_execute(cls, physics)
 
 
 install()

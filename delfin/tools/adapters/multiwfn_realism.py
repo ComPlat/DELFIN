@@ -12,6 +12,7 @@ per the repo-wide contract invariant in tests/test_tool_contracts.py.
 """
 from __future__ import annotations
 
+from delfin.tools.adapters.morfeus_realism import wrap_execute
 from delfin.tools.adapters.multiwfn import MultiwfnBondOrdersAdapter
 
 _BOND_ORDER_LIMITS = {
@@ -46,20 +47,12 @@ def validate_physics(kwargs: dict) -> None:
         )
 
 
-def _wrap_execute(adapter_cls, physics):
-    original = adapter_cls.execute
-
-    def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
-        physics(kwargs)
-        return original(self, work_dir, geometry=geometry, cores=cores,
-                        **kwargs)
-
-    adapter_cls.execute = execute
-
-
 def install() -> None:
     MultiwfnBondOrdersAdapter.validity_limits = _BOND_ORDER_LIMITS
-    _wrap_execute(MultiwfnBondOrdersAdapter, validate_physics)
+    # Shared physics gate (morfeus_realism.wrap_execute); the IndexError
+    # branch is morfeus-specific but harmless here — Multiwfn never raises
+    # IndexError for a bad index through this path.
+    wrap_execute(MultiwfnBondOrdersAdapter, validate_physics)
 
 
 install()
