@@ -37,10 +37,6 @@ COORDINATION_KINDS = ("inventory", "findings", "fixed", "status",
                       "review", "cross_review")
 
 # Kinds the classifier may treat as backed by a declared partner when the
-# task text declares the recipient.
-ROUTINE_KINDS = _VERDICT_KINDS + COORDINATION_KINDS
-
-# Kinds the classifier may treat as backed by a declared partner when the
 # task text declares the recipient: verdict shapes + coordination shapes.
 ROUTINE_KINDS = _VERDICT_KINDS + COORDINATION_KINDS
 
