@@ -319,13 +319,6 @@ def test_the_counts_still_match_what_was_measured():
     # writes its own fixture folder under the chemistry workspace
     # (or2/formaldehyde, or2/spin, or2/redox, or2/redox_mixed);
     # MAX_ATOMS <= 20 in every setup.
-    # science 23 -> 27 on 2026-10-20 (CE1, wave 20, agent/s11-ce1b): the
-    # four tasks_w20_ce1.yaml tasks (science_analysis), offline over the
-    # fixture ensembles from setup/w20_ce1_ensemble_fixture.py -- lowest
-    # conformer, Boltzmann weights at a stated temperature, the
-    # two-levels trap, CENSO-style threshold handoff. Each writes only
-    # into its own w20_ce1_ensemble/ folder under the workspace; the
-    # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
     #
     # science 28 -> 34 on 2026-10-25: the six wave-21 workflow-BUILDING
     # tasks (tasks_w21_build.yaml, package WB0) -- the agent builds a
@@ -345,6 +338,13 @@ def test_the_counts_still_match_what_was_measured():
     # BOTH halves (spec via workflow_grader, run via CB0A's
     # run_evidence.collect + grade_run, max_cores=2). Setup
     # setup/w21_run_fixtures.py (<= 6 atoms, CONTROL pins charge/mult).
+    # science 23 -> 27 on 2026-10-20 (CE1, wave 20, agent/s11-ce1b): the
+    # four tasks_w20_ce1.yaml tasks (science_analysis), offline over the
+    # fixture ensembles from setup/w20_ce1_ensemble_fixture.py -- lowest
+    # conformer, Boltzmann weights at a stated temperature, the
+    # two-levels trap, CENSO-style threshold handoff. Each writes only
+    # into its own w20_ce1_ensemble/ folder under the workspace; the
+    # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 41, "chemistry": 23, "generalist": 22,
                       "other": 71}, counts
