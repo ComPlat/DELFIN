@@ -37,7 +37,17 @@ tasks:
 
   # ── TS task: the HCN <-> HNC isomerisation ────────────────────────────
   - id: or1_hcn_hnc_ts_and_irc
-    task_class: chemistry
+    # NOT task_class chemistry: that class is the cheap xtb-physics
+    # suite (test_chemistry_is_graded_on_the_physics forbids ORCA
+    # expectations there). OR1 runs real ORCA through DELFIN's own
+    # adapters, graded on the artifact, so it takes the class the
+    # rule does not cover (F-CI-1, operator finding on the
+    # PR-ready check at c7b6f13f; QS-informed, s14's recommendation
+    # (b) adopted — grading on inputs only would drop the artifact
+    # physics). Workspace mapping science_analysis -> science_workspace
+    # and the setup guard + count dict were updated in the same
+    # commit.
+    task_class: science_analysis
     mode: solo
     prompt: >-
       In chem/hcn_hnc/ are start.xyz (linear HCN, the more stable
@@ -73,7 +83,9 @@ tasks:
 
   # ── scan task: methyl rotation in ethane ──────────────────────────────
   - id: or1_ethane_methyl_rotation_scan
-    task_class: chemistry
+    # See the comment at or1_hcn_hnc_ts_and_irc: real-ORCA TS tasks are
+    # graded on the artifact, so not the chemistry class (F-CI-1).
+    task_class: science_analysis
     mode: solo
     prompt: >-
       In chem/ethane/ there is start.xyz of ethane. Set up a relaxed
@@ -107,7 +119,8 @@ tasks:
 
   # ── SN2 identity reaction: symmetric TS ───────────────────────────────
   - id: or1_sn2_identity_barrier
-    task_class: chemistry
+    # See the comment at or1_hcn_hnc_ts_and_irc (F-CI-1).
+    task_class: science_analysis
     mode: solo
     prompt: >-
       In chem/sn2/ are start.xyz (CH3F) and f_anion.xyz (F-, charge
@@ -145,7 +158,8 @@ tasks:
 
   # ── verification-only task: judge a given TS candidate ────────────────
   - id: or1_ts_candidate_verdict
-    task_class: chemistry
+    # See the comment at or1_hcn_hnc_ts_and_irc (F-CI-1).
+    task_class: science_analysis
     mode: solo
     prompt: >-
       In chem/ts_candidate/ there is ts_candidate.xyz, a candidate
@@ -168,7 +182,8 @@ tasks:
 
   # ── the trap: a two-imaginary-mode "TS" must be refused ───────────────
   - id: or1_two_imaginary_trap_refused
-    task_class: chemistry
+    # See the comment at or1_hcn_hnc_ts_and_irc (F-CI-1).
+    task_class: science_analysis
     mode: solo
     prompt: >-
       In chem/trap_ts/ there is ts_trap.xyz, which a colleague calls

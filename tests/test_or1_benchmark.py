@@ -56,7 +56,10 @@ def test_the_or1_yaml_defines_five_chemistry_tasks():
             "or1_sn2_identity_barrier", "or1_ts_candidate_verdict",
             "or1_two_imaginary_trap_refused"} == ids
     for t in tasks:
-        assert t["task_class"] == "chemistry"
+        # F-CI-1: chemistry is the cheap-xtb-physics class and forbids
+        # ORCA expectations; OR1 runs real ORCA on the artifact, so the
+        # suite class the rule does not cover is the honest one.
+        assert t["task_class"] == "science_analysis"
         assert Path(SETUP / t["setup"]).is_file(), t["id"]
         assert Path(ACCEPT / t["verify"]).is_file(), t["id"]
 

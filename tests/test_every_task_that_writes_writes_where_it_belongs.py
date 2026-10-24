@@ -291,8 +291,21 @@ def test_the_counts_still_match_what_was_measured():
     # guard cleans it. The acceptance scripts re-derive the physics
     # (imaginary-mode counts, IRC endpoints, barrier bands) instead of
     # trusting prose.
+    #
+    # RECLASS (F-CI-1, operator CI finding on the PR-ready check at
+    # c7b6f13f, 2026-10-24): OR1's tasks expect real ORCA runs, which
+    # test_chemistry_is_graded_on_the_physics forbids in the chemistry
+    # class (the cheap xtb-physics suite). All five move to
+    # science_analysis — the class the rule does not cover — so
+    # chemistry 10 -> 5 and science 23 -> 28. The artifact grading,
+    # budget caps (<= 2 USD, <= 1800 s, <= 20 atoms) and verify scripts
+    # are unchanged; workspace mapping science_analysis ->
+    # science_workspace (benchmark_runner.workspace_for) means the
+    # chem/ folders now live under the science workspace fixture, and
+    # the setup-ownership guard cases for w20_or1 setups run for real
+    # instead of skipping.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 10, "generalist": 22,
+                      "science": 28, "chemistry": 5, "generalist": 22,
                       "other": 71}, counts
 
 
