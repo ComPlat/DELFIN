@@ -2190,6 +2190,18 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 pass
 
 
+def _run_prcheck_subcommand(args: argparse.Namespace) -> int:
+    """The `prcheck` subcommand body (package PC1): delegate to the
+    owned module so the check itself is tested outside cli.py."""
+    from .cli_prcheck import main as prcheck_main
+    argv = []
+    if getattr(args, "base", "origin/main") != "origin/main":
+        argv += ["--base", args.base]
+    for partner in getattr(args, "partner", []):
+        argv += ["--partner", partner]
+    return prcheck_main(argv)
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from .project_init import init_project
     target = Path(args.path or os.getcwd()).expanduser().resolve()
@@ -4794,6 +4806,17 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true",
                       help="Overwrite existing files")
     init.set_defaults(func=cmd_init)
+
+    # prcheck (package PC1)
+    prcheck = sub.add_parser(
+        "prcheck", help="The pre-PR self-check: run, verify, then hand over")
+    prcheck.add_argument(
+        "--base", default="origin/main",
+        help="Branch to diff against (default: origin/main)")
+    prcheck.add_argument(
+        "--partner", action="append", default=[],
+        help="Reviewer branch that must be merged in; repeatable")
+    prcheck.set_defaults(func=_run_prcheck_subcommand)
 
     # bench — canned-task benchmark suite
     bench = sub.add_parser(
