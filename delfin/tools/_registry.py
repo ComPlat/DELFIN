@@ -65,6 +65,7 @@ def _discover_builtin_adapters() -> None:
         "delfin.tools.adapters.ase_adapter",
         "delfin.tools.adapters.turbomole",
         "delfin.tools.adapters.openbabel",
+        "delfin.tools.adapters.orca_ts_adapters",
     ):
         _try_import(mod)
     _load_user_adapters()

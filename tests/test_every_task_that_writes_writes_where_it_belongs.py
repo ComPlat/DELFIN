@@ -293,8 +293,29 @@ def test_the_counts_still_match_what_was_measured():
     # package CB0B) -- one practice task per workflow family, setup
     # scripts w20_classic_opt_freq.py and w20_rest.py write only
     # <workspace>/w20_<family>_1/ and refuse to overwrite.
+    # chemistry 5 -> 10 on 2026-10-20 (OR1, wave 20, agent/s14-or1b):
+    # five TS/scan tasks in tasks_w20_or1.yaml (HCN<->HNC TS, methyl
+    # rotation scan, SN2 identity, a second TS verification, one trap
+    # task whose two-imaginary-mode "TS" must be REFUSED). Each setup
+    # builds its own folder under chem/ in the chemistry workspace; the
+    # guard cleans it. The acceptance scripts re-derive the physics
+    # (imaginary-mode counts, IRC endpoints, barrier bands) instead of
+    # trusting prose.
+    #
+    # RECLASS (F-CI-1, operator CI finding on the PR-ready check at
+    # c7b6f13f, 2026-10-24): OR1's tasks expect real ORCA runs, which
+    # test_chemistry_is_graded_on_the_physics forbids in the chemistry
+    # class (the cheap xtb-physics suite). All five move to
+    # science_analysis — the class the rule does not cover — so
+    # chemistry 10 -> 5 and science 23 -> 28. The artifact grading,
+    # budget caps (<= 2 USD, <= 1800 s, <= 20 atoms) and verify scripts
+    # are unchanged; workspace mapping science_analysis ->
+    # science_workspace (benchmark_runner.workspace_for) means the
+    # chem/ folders now live under the science workspace fixture, and
+    # the setup-ownership guard cases for w20_or1 setups run for real
+    # instead of skipping.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 18, "generalist": 22,
+                      "science": 28, "chemistry": 18, "generalist": 22,
                       "other": 71}, counts
 
 
