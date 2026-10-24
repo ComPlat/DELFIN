@@ -1,24 +1,23 @@
-"""GT1 reviewer probe s19: verify the builder's patched patch_targets
-copy against my OWN adversarial battery (independent of the builder's
-probe). Loads .gate/px/s19_verify/new_patch_targets.py (my own fresh
-origin/main copy + the builder's hunk, applied by me) via importlib --
-no sys.modules pollution. Uncommitted probe (test_zz_)."""
+"""GT1 reviewer adversarial battery for the patch_targets fix.
 
-import importlib.util
+Drives the REAL module (import delfin.agent.patch_targets), never a
+tree-local copy: committed tests must run in CI and every other tree.
+RED before the operator builds the .gate/px package is the EXPECTED
+state for the two branch-reading cases (test_branch_switch_*): the
+unpatched classifier names the slashy branch as a write path. The
+remaining cases pin behaviour that holds on main today and must keep
+holding after the build (pathspec, ambiguity rules, force/detach).
+
+Fixture: a real git repo in tmp_path with a slashy local branch, a
+dotted branch and a directory named like a branch; commands are
+classified, never executed.
+"""
+
 import subprocess
-from pathlib import Path
 
 import pytest
 
-_COPY = Path(__file__).resolve().parents[1] / ".gate/px/s19_verify" / \
-    "new_patch_targets.py"
-
-
-def _patched():
-    spec = importlib.util.spec_from_file_location("gt1_patched_pt", _COPY)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+from delfin.agent import patch_targets
 
 
 @pytest.fixture(scope="module")
@@ -43,15 +42,18 @@ def repo(tmp_path_factory):
 
 
 def _targets(cmd_path, base):
-    return _patched().targets(cmd_path, str(base))
+    return patch_targets.targets(cmd_path, str(base))
 
 
 def test_branch_switch_slashy_names_no_target(repo):
+    # RED until the operator builds .gate/px/gt1 (expected; the red
+    # control 2a196725 documents the defect this package fixes).
     assert _targets("git checkout agent/s3-ds1b", repo) == []
     assert _targets("git switch agent/s3-ds1b", repo) == []
 
 
 def test_branch_name_with_dot_is_confirmed(repo):
+    # RED until the build, same reason as above.
     assert _targets("git checkout feat.dot.name", repo) == []
 
 
@@ -95,5 +97,5 @@ def test_non_path_shaped_single_operand_was_never_a_target(repo):
 
 def test_quoted_spacing_shape_is_the_same_single_operand(repo):
     # shell quoting disappears before this parser; the operand itself
-    # is unchanged -> branch confirmed
+    # is unchanged -> branch confirmed (RED until the build)
     assert _targets("git checkout 'agent/s3-ds1b'", repo) == []
