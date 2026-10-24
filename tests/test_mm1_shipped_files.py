@@ -9,6 +9,13 @@ from delfin.agent import knowledge_check as kc
 from delfin.agent import knowledge_curation as kcur
 
 PACK = kn.global_dir()
+# The wave-20 seed lessons ship under pack/knowledge/operating/ — the
+# subfolder the package's write scope grants (QS R1 preferred flat, but a
+# flat write is refused by write_allow_globs; the placement ruling is
+# with the QS lead, the entries exist here either way). Recall of the
+# subfolder is a separate, known gap (read_entries globs top level,
+# knowledge.py:259) — recorded for the phase that moves them.
+PACK_SEEDS = PACK / "operating"
 
 # The wave-20 lessons this package ships (task brief; each keeps its
 # evidence). Evidence kinds are public-only: test nodes, commits, PRs,
@@ -25,31 +32,41 @@ SEEDS = [
 
 
 def test_every_seed_entry_exists():
-    missing = [s for s in SEEDS if not (PACK / f"{s}.md").is_file()]
+    missing = [s for s in SEEDS
+               if not (PACK_SEEDS / f"{s}.md").is_file()]
     assert missing == []
 
 
 def test_every_seed_entry_passes_the_template():
     topics = kn.read_topics(PACK)
     for slug in SEEDS:
-        e = kn.parse_entry((PACK / f"{slug}.md").read_text(encoding="utf-8"),
-                           slug=slug, layer=kn.GLOBAL)
+        e = kn.parse_entry(
+            (PACK_SEEDS / f"{slug}.md").read_text(encoding="utf-8"),
+            slug=slug, layer=kn.GLOBAL)
         assert kn.template_findings(e, topics=topics, layer=kn.GLOBAL) == [], \
             slug
 
 
 def test_every_seed_entry_passes_the_public_privacy_check():
+    # Published values (the F- + CH3F benchmark numbers and the DOI
+    # parts, 10.1063/1.4921857) are marked releasable, the way the rule
+    # asks ("mark it releasable if it is published"); everything else
+    # must pass plain.
+    published = {"0.45 kcal/mol", "0.10 kcal/mol", "10.1063", "1.4921857"}
     for slug in SEEDS:
-        e = kn.parse_entry((PACK / f"{slug}.md").read_text(encoding="utf-8"),
-                           slug=slug, layer=kn.GLOBAL)
-        assert kc.check(e.text, public=True, identity={},
-                        unpublished_terms=()) == [], slug
+        e = kn.parse_entry(
+            (PACK_SEEDS / f"{slug}.md").read_text(encoding="utf-8"),
+            slug=slug, layer=kn.GLOBAL)
+        findings = kc.check(e.text, public=True, identity={},
+                            unpublished_terms=(), releasable=published)
+        assert findings == [], slug
 
 
 def test_every_seed_entry_carries_public_evidence():
     for slug in SEEDS:
-        e = kn.parse_entry((PACK / f"{slug}.md").read_text(encoding="utf-8"),
-                           slug=slug, layer=kn.GLOBAL)
+        e = kn.parse_entry(
+            (PACK_SEEDS / f"{slug}.md").read_text(encoding="utf-8"),
+            slug=slug, layer=kn.GLOBAL)
         assert e.provenance, slug
         for p in e.provenance:
             assert p.evidence.split(":", 1)[0] in kn.PUBLIC_EVIDENCE_KINDS, \
