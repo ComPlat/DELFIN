@@ -119,3 +119,56 @@ tasks:
     max_duration_s: 600
     max_cost_usd: 0.50
     max_tool_calls: 25
+
+  # --- the three REAL-RUN tasks (phase 3): the agent builds the
+  # workflow AND runs it through DELFIN's own submit path; both halves
+  # are graded — the spec by workflow_grader, the run by CB0A's
+  # run_evidence.collect + grade_run (accept/w21_run_verify.py).
+  # <= 6 atoms, <= 2 cores (practice rules).
+  - id: w21_run_methanol
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In w21_run_methanol/ you find start.xyz (methanol), CONTROL.txt
+      and brief.txt. Build the workflow the brief asks for (write it
+      as spec.json, justify your choices in answer.txt) and then run
+      it through DELFIN's own submit path. Report the numbers in
+      result.json.
+    setup: w21_run_fixtures.py
+    verify: w21_run_verify.py
+    grading_levels: [consistency, reproduction]
+    max_duration_s: 1800
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: w21_run_water_ir
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In w21_run_water_ir/ you find start.xyz (water), CONTROL.txt and
+      brief.txt. Build the workflow the brief asks for (write it as
+      spec.json, justify your choices in answer.txt) and then run it
+      through DELFIN's own submit path. Report the numbers in
+      result.json.
+    setup: w21_run_fixtures.py
+    verify: w21_run_verify.py
+    grading_levels: [consistency, reproduction]
+    max_duration_s: 1800
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: w21_run_hcl_spectrum
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In w21_run_hcl_spectrum/ you find start.xyz (hydrogen chloride),
+      CONTROL.txt and brief.txt. Build the workflow the brief asks for
+      (write it as spec.json, justify your choices in answer.txt) and
+      then run it through DELFIN's own submit path. Report the numbers
+      in result.json.
+    setup: w21_run_fixtures.py
+    verify: w21_run_verify.py
+    grading_levels: [consistency, reproduction]
+    max_duration_s: 1800
+    max_cost_usd: 1.00
+    max_tool_calls: 30

@@ -330,8 +330,16 @@ def test_the_counts_still_match_what_was_measured():
     # orca, tests/test_chemistry_is_graded_on_the_physics.py:57). One
     # setup script (setup/w21_build_fixtures.py) writes all six folders
     # and refuses an existing one.
+    #
+    # science 34 -> 37 on 2026-10-25 (WB0 phase 3): the three real-run
+    # tasks w21_run_methanol / w21_run_water_ir / w21_run_hcl_spectrum
+    # in the same file -- the agent builds the workflow AND runs it
+    # through DELFIN's own submit path; accept/w21_run_verify.py grades
+    # BOTH halves (spec via workflow_grader, run via CB0A's
+    # run_evidence.collect + grade_run, max_cores=2). Setup
+    # setup/w21_run_fixtures.py (<= 6 atoms, CONTROL pins charge/mult).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                        "science": 34, "chemistry": 23, "generalist": 22,
+                        "science": 37, "chemistry": 23, "generalist": 22,
                         "other": 71}, counts
 
 
