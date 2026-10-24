@@ -33,6 +33,41 @@ class XtbSolvatorAdapter(StepAdapter):
         if "solvent" not in kwargs:
             raise ValueError("'solvent' parameter is required (e.g. 'water', 'acetonitrile')")
 
+        # ── Declared physical limits (SV1) ─────────────────────────────
+        # SOLVATOR is an xTB feature (ORCA manual, %SOLVATOR block): the
+        # method must be an xTB Hamiltonian. A DFT name here would only
+        # surface as an ORCA error after queue time.
+        method = str(kwargs.get("method", "GFN2-xTB")).strip()
+        if method.upper() not in ("GFN0-XTB", "GFN1-XTB", "GFN2-XTB"):
+            raise ValueError(
+                f"method {method!r} is not an xTB Hamiltonian; %SOLVATOR "
+                "(ORCA manual, %SOLVATOR block) supports GFN0-xTB, "
+                "GFN1-xTB or GFN2-xTB")
+
+        solvent = kwargs.get("solvent")
+        if not isinstance(solvent, str) or not solvent.strip():
+            raise ValueError(
+                "solvent must be a non-empty string naming an ALPB/ALPHA "
+                "solvent (ORCA manual §4.5), e.g. 'water' or 'acetonitrile'")
+
+        mult = kwargs.get("mult", 1)
+        if isinstance(mult, bool) or not isinstance(mult, int) or mult < 1:
+            raise ValueError(
+                f"mult {mult!r} is invalid; spin multiplicity (2S+1) must "
+                "be an integer >= 1")
+
+        charge = kwargs.get("charge", 0)
+        if isinstance(charge, bool) or not isinstance(charge, int):
+            raise ValueError(
+                f"charge {charge!r} is invalid; the molecular charge must "
+                "be an integer")
+
+        n_solv = kwargs.get("n_solvent", 12)
+        if isinstance(n_solv, bool) or not isinstance(n_solv, int) or n_solv < 1:
+            raise ValueError(
+                f"n_solvent {n_solv!r} is invalid; NSOLV counts explicit "
+                "solvent molecules and must be an integer >= 1")
+
     def execute(self, work_dir: Path, *, geometry: Optional[Path] = None, cores: int = 1, **kwargs: Any) -> StepResult:
         start = time.monotonic()
 
