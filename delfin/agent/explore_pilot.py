@@ -94,10 +94,18 @@ def reap_slot(slot: Any) -> None:
 
 
 class _PilotSlot:
-    """Claimed for the duration of one sub-agent run; released on exit."""
+    """One delegation channel of the pilot setting.
 
-    def __init__(self) -> None:
+    ``depth`` is a property of the slot, not of the call: the slot says
+    who is allowed to delegate through it (the session, depth 0) and the
+    guard is installed with the SAME slot for anything it lets run, so a
+    delegate that re-enters the pilot entry is seen at depth 1 and
+    refused — not handed a fresh unconstrained slot.
+    """
+
+    def __init__(self, depth: int = 0) -> None:
         self.claimed = False
+        self.depth = depth
 
     def __enter__(self) -> "_PilotSlot":
         return self
@@ -119,7 +127,13 @@ def run_pilot_subagent(*, subagent_type: str, description: str, prompt: str,
 
     Every refusal returns a ``SubagentResult`` with the reason in
     ``error`` — the same shape the real runner returns for its own
-    refusals — and the real runner is never called.
+    refusals — and the real runner is never called. The slot and its
+    depth travel with the call: the delegate's own runner is built with
+    ``depth=slot.depth + 1`` baked in, so nesting is refused on the real
+    path, not only when a caller passes depth by hand.
+
+    Like the real ``run_subagent``, this never raises: a delegate that
+    crashes returns an error result, so the harness never loses an arm.
     """
     slot = _pilot_slot if _pilot_slot is not None else _PilotSlot()
     ok, why = check_delegate(subagent_type, slot=slot, depth=depth)
@@ -134,5 +148,24 @@ def run_pilot_subagent(*, subagent_type: str, description: str, prompt: str,
             prompt=prompt, parent_client=parent_client,
             parent_perms=parent_perms, model=model,
             inherit_context=inherit_context, **kwargs)
+    except Exception as exc:  # the real runner's contract: never raises
+        return SimpleNamespace(subagent_type=subagent_type,
+                               description=description,
+                               final_text="", error=f"delegate failed: {exc}")
     finally:
         slot.claimed = False
+
+
+def child_runner(parent_perms: Any, slot: Any, runner: Any = None) -> Any:
+    """The runner installed for a delegate the pilot let run.
+
+    Depth is a property of whose runner it is: anything a delegate tries
+    to start goes through a slot one level deeper, where the guard
+    refuses it. The returned callable binds (slot, depth) so the guard
+    cannot be forgotten on the child path.
+    """
+    child_slot = _PilotSlot(depth=slot.depth + 1)
+    return lambda **kw: run_pilot_subagent(
+        _pilot_slot=child_slot, parent_client=None,
+        parent_perms=parent_perms, **kw) if runner is None else runner(
+        _pilot_slot=child_slot, **kw)
