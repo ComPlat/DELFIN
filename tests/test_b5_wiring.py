@@ -215,4 +215,10 @@ def test_end_to_end_judge_with_faithful_stub():
 
 
 def test_vocabulary_backing():
-    assert mk.ROUTINE_KINDS == ("approved", "qs_ok", "pr_ready", "relay")
+    # FX1 (wave 20) added the six coordination kinds: a declared partner's
+    # inventory/findings/fixed/status/review/cross-review message counts as
+    # routine on the first line only; hostile bodies still ask.
+    assert mk.ROUTINE_KINDS == (
+        "approved", "qs_ok", "pr_ready", "relay",
+        "inventory", "findings", "fixed", "status", "review", "cross_review",
+    )
