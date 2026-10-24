@@ -86,17 +86,80 @@ def test_ts_accept_passes_on_one_imag_and_fails_without(tmp_path):
     good = tmp_path / "good"
     (good / "chem" / "hcn_hnc").mkdir(parents=True)
     _freq_out(good / "chem" / "hcn_hnc" / "calc.out", [2100.0])
+    (good / "chem" / "hcn_hnc" / "report.md").write_text(
+        "The computed barrier is 49.1 kcal/mol relative to HCN, "
+        "ZPE included, at the stated level.\n")
     assert _run_accept("w20_or1_ts_hcn_verify.py", good) == 0
     bad = tmp_path / "bad"
     (bad / "chem" / "hcn_hnc").mkdir(parents=True)
     assert _run_accept("w20_or1_ts_hcn_verify.py", bad) != 0
+    # a one-imag TS but only a band citation: no barrier grade, no pass
+    cite = tmp_path / "cite"
+    (cite / "chem" / "hcn_hnc").mkdir(parents=True)
+    _freq_out(cite / "chem" / "hcn_hnc" / "calc.out", [2100.0])
+    (cite / "chem" / "hcn_hnc" / "report.md").write_text(
+        "Literature band: barriers between 45 and 53 kcal/mol (cited).\n")
+    assert _run_accept("w20_or1_ts_hcn_verify.py", cite) != 0
 
 
 def test_ts_accept_fails_on_two_imag_modes(tmp_path):
     two = tmp_path / "two"
     (two / "chem" / "hcn_hnc").mkdir(parents=True)
     _freq_out(two / "chem" / "hcn_hnc" / "calc.out", [1200.0, 300.0])
+    (two / "chem" / "hcn_hnc" / "report.md").write_text(
+        "The computed barrier is 49.1 kcal/mol relative to HCN.\n")
     assert _run_accept("w20_or1_ts_hcn_verify.py", two) != 0
+
+
+def test_barrier_tasks_grade_on_artifact_not_citation(tmp_path):
+    """F-QS-1 (nacht-s27): the barrier band must be graded from a
+    computed statement over a real artifact, never from a citation
+    that would also pass the runner's expected_values judge."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "w20_or1_common", ACCEPT / "w20_or1_common.py")
+    C = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(C)
+
+    # a run that only cites the band: no pass, even with artifacts
+    cite = tmp_path / "cite"
+    (cite / "chem" / "sn2").mkdir(parents=True)
+    _freq_out(cite / "chem" / "sn2" / "calc.out", [600.0])
+    (cite / "chem" / "sn2" / "report.md").write_text(
+        "Literature band: barriers between 12 and 20 kcal/mol (cited).\n")
+    assert not C.barrier_with_artifact(
+        cite / "chem" / "sn2",
+        (cite / "chem" / "sn2" / "report.md").read_text(), 12, 20)
+
+    # a computed barrier over the artifact: pass
+    computed = tmp_path / "computed"
+    (computed / "chem" / "sn2").mkdir(parents=True)
+    _freq_out(computed / "chem" / "sn2" / "calc.out", [600.0])
+    (computed / "chem" / "sn2" / "report.md").write_text(
+        "The computed barrier is 16.2 kcal/mol relative to separated "
+        "reactants, ZPE included, at the stated level.\n")
+    assert C.barrier_with_artifact(
+        computed / "chem" / "sn2",
+        (computed / "chem" / "sn2" / "report.md").read_text(), 12, 20)
+
+
+def test_barrier_task_yamls_demand_a_computed_barrier_statement():
+    """The prompt must ask for a computed barrier (phrasing the runner
+    can require as a signal) and the accept script must enforce the
+    band on the artifact."""
+    import yaml
+    data = yaml.safe_load(
+        Path("delfin/agent/pack/benchmark/tasks_w20_or1.yaml").read_text())
+    by_id = {t["id"]: t for t in data["tasks"]}
+    for tid, band in (("or1_hcn_hnc_ts_and_irc", (45, 53)),
+                      ("or1_ethane_methyl_rotation_scan", (2.3, 3.5)),
+                      ("or1_sn2_identity_barrier", (12, 20))):
+        t = by_id[tid]
+        assert any(p["pattern"].startswith("(?i)barrier")
+                   for p in t["expected_signals"]), tid
+        verify = (ACCEPT / t["verify"]).read_text()
+        assert "barrier_with_artifact" in verify, tid
+        assert str(band[0]) in verify and str(band[1]) in verify, tid
 
 
 def test_trap_accept_requires_refusal(tmp_path):
@@ -122,12 +185,25 @@ def test_scan_accept_needs_geom_block_with_output(tmp_path):
     d.mkdir(parents=True)
     (d / "scan.inp").write_text("%geom\n  Scan\nend\n")
     (d / "scan.out").write_text("done\n")
+    (d / "report.md").write_text(
+        "The computed barrier is 2.9 kcal/mol relative to staggered.\n")
     assert _run_accept("w20_or1_scan_ethane_verify.py", ok) == 0
     no_out = tmp_path / "noout"
     d2 = no_out / "chem" / "ethane"
     d2.mkdir(parents=True)
     (d2 / "scan.inp").write_text("%geom\n  Scan\nend\n")
+    (d2 / "report.md").write_text(
+        "The computed barrier is 2.9 kcal/mol relative to staggered.\n")
     assert _run_accept("w20_or1_scan_ethane_verify.py", no_out) != 0
+    # scan ran but only the band is cited: the artifact grade refuses
+    cite = tmp_path / "cite"
+    d3 = cite / "chem" / "ethane"
+    d3.mkdir(parents=True)
+    (d3 / "scan.inp").write_text("%geom\n  Scan\nend\n")
+    (d3 / "scan.out").write_text("done\n")
+    (d3 / "report.md").write_text(
+        "Literature band: 2.9 +/- 0.6 kcal/mol (cited).\n")
+    assert _run_accept("w20_or1_scan_ethane_verify.py", cite) != 0
 
 
 def test_verdict_accept_needs_a_freq_output(tmp_path):

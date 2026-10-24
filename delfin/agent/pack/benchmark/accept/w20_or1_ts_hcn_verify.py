@@ -29,10 +29,13 @@ def main(argv) -> int:
     prose = ""
     for md in folder.rglob("*.md"):
         prose += md.read_text(encoding="utf-8", errors="ignore")
-    # the barrier lives in the transcript; grade only the artifact here
-    # and let the runner's expected_values machinery judge the prose.
+    # F-QS-1: the band is graded HERE on the artifact (a computed
+    # barrier statement over the freq output), not left to the runner's
+    # permissive expected_values judge, which a cited band also passes.
+    ok_band = C.barrier_with_artifact(folder, prose, 45, 53)
     return C.finish([
         (ok_mode, f"TS carries exactly one imaginary mode ({ev})"),
+        (ok_band, "computed barrier stated in 45-53 kcal/mol over the artifact"),
     ])
 
 

@@ -33,9 +33,18 @@ def main(argv) -> int:
             continue
     scan_ran = any(
         (inp.with_suffix(".out")).is_file() for inp in scan_inputs)
+    prose = ""
+    for md in folder.rglob("*.md"):
+        prose += md.read_text(encoding="utf-8", errors="ignore")
+    # F-QS-1: the band is graded HERE on the artifact (a computed
+    # barrier statement over the scan output), not left to the runner's
+    # permissive expected_values judge, which a cited band also passes.
+    ok_band = C.barrier_with_artifact(
+        folder, prose, 2.3, 3.5, freq_required=False)
     return C.finish([
         (bool(scan_inputs), "an input with a %geom scan/constraint block exists"),
         (scan_ran, "an output sits beside the scan input"),
+        (ok_band, "computed barrier stated in 2.3-3.5 kcal/mol over the artifact"),
     ])
 
 
