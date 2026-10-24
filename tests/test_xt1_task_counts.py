@@ -21,7 +21,11 @@ def test_xt1_tasks_file_has_six_chemistry_tasks():
 
 
 def test_count_dict_says_chemistry_11():
+    # At least main's 5 plus the six XT1 tasks: other packages of the
+    # same wave add chemistry tasks too, so the exact total is theirs.
+    import re
     src = _COUNTS.read_text(encoding="utf-8")
-    assert '"chemistry": 11' in src, (
+    pinned = [int(n) for n in re.findall(r'"chemistry": (\d+)', src)]
+    assert pinned and pinned[-1] >= 11, (
         "count dict in test_every_task_that_writes_writes_where_it_belongs.py "
-        "must say chemistry: 11 once the six XT1 tasks are committed")
+        "must count at least the six XT1 tasks on top of main's five")
