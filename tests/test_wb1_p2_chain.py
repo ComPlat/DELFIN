@@ -49,7 +49,7 @@ def test_freq_at_same_level_as_opt_is_silent():
         _st("orca_opt", "opt", charge=0, mult=1, method="B3LYP",
             basis="def2-SVP"),
         _st("orca_freq", "freq", charge=0, mult=1, method="B3LYP",
-            basis="def2-SVP", freq_temp=298.15),
+            basis="def2-SVP", freq_temp=298.15, freq_pressure=1.0),
     ]}
     assert _rules(spec) == set()
 
@@ -60,7 +60,7 @@ def test_inherited_level_is_not_flagged():
     # own frequency requirement
     spec = {"name": "s", "steps": [
         _st("orca_opt", "opt", charge=0, method="B3LYP", basis="def2-SVP"),
-        _st("orca_opt_freq", "of", charge=0),
+        _st("orca_opt_freq", "of", charge=0, freq_temp=298.15, freq_pressure=1.0),
     ]}
     assert _rules(spec) == set()
 
@@ -89,14 +89,14 @@ def test_opt_without_freq_is_flagged():
 def test_opt_followed_by_freq_is_silent():
     spec = {"name": "s", "steps": [
         _st("orca_opt", "opt", charge=0, mult=1),
-        _st("orca_freq", "freq", charge=0, mult=1, freq_temp=298.15),
+        _st("orca_freq", "freq", charge=0, mult=1, freq_temp=298.15, freq_pressure=1.0),
     ]}
     assert _rules(spec) == set()
 
 
 def test_combined_opt_freq_is_silent():
     assert _rules({"name": "s", "steps": [
-        _st("orca_opt_freq", "of", charge=0, mult=1)]}) == set()
+        _st("orca_opt_freq", "of", charge=0, mult=1, freq_temp=298.15, freq_pressure=1.0)]}) == set()
 
 
 def test_ts_opt_without_freq_check_and_irc_is_flagged():
@@ -122,7 +122,7 @@ def test_ts_full_chain_is_silent():
     spec = {"name": "s", "steps": [
         _st("orca_ts_opt", "ts", charge=0, mult=1),
         _st("orca_ts_freq_check", "tscheck", charge=0, mult=1,
-            freq_temp=298.15),
+            freq_temp=298.15, freq_pressure=1.0),
         _st("orca_ts_irc", "irc", charge=0, mult=1),
     ]}
     assert _rules(spec) == set()
@@ -154,7 +154,7 @@ def test_two_different_solvents_in_one_chain_is_flagged():
 def test_one_solvent_through_the_chain_is_silent():
     spec = {"name": "s", "steps": [
         _st("orca_opt", "opt", charge=0, mult=1, solvent="water"),
-        _st("orca_opt_freq", "of", charge=0, mult=1, solvent="water"),
+        _st("orca_opt_freq", "of", charge=0, mult=1, solvent="water", freq_temp=298.15, freq_pressure=1.0),
     ]}
     assert _rules(spec) == set()
 
@@ -164,7 +164,8 @@ def test_missing_solvent_in_a_step_is_not_a_mismatch():
     # different solvent
     spec = {"name": "s", "steps": [
         _st("orca_opt", "opt", charge=0, mult=1, solvent="water"),
-        _st("orca_opt_freq", "of", charge=0, mult=1),
+        _st("orca_opt_freq", "of", charge=0, mult=1,
+            freq_temp=298.15, freq_pressure=1.0),
     ]}
     assert _rules(spec) == set()
 
@@ -173,7 +174,7 @@ def test_gas_phase_chain_is_silent():
     assert _rules({"name": "s", "steps": [
         _st("orca_opt", "opt", charge=0, mult=1, solvent="water"),
         _st("orca_freq", "freq", charge=0, mult=1, solvent="water",
-            freq_temp=298.15),
+            freq_temp=298.15, freq_pressure=1.0),
     ]}) == set()
 
 
@@ -199,7 +200,7 @@ def test_freq_without_explicit_temperature_is_flagged():
 
 def test_freq_with_explicit_temperature_is_silent():
     spec = {"name": "s", "steps": [
-        _st("orca_freq", "freq", charge=0, mult=1, freq_temp=373.15),
+        _st("orca_freq", "freq", charge=0, mult=1, freq_temp=373.15, freq_pressure=1.0),
     ]}
     assert _rules(spec) == set()
 

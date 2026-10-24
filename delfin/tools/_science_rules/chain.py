@@ -112,15 +112,21 @@ def lint_chain(steps: List[Dict[str, Any]]) -> List[ScienceFinding]:
         elif name in _OPT_STEP_NAMES:
             # orca_opt_freq IS its own frequency calculation — nothing pending
             opt_pending.append(label)
-        if name == "orca_freq":
+        if name in _FREQ_STEP_NAMES:
             # ── Rule 9: explicit conditions for thermochemistry ──
-            if not _norm(kw.get("freq_temp")):
+            # ORCA computes ZPE/thermal corrections at explicit T AND P
+            # (defaults 298.15 K / 1 atm); both must be stated, and the
+            # combined orca_opt_freq carries the same obligation (F5).
+            # With neither set the whole statement is implicit; with only
+            # T set, P stays implicit (F4).
+            if not _norm(kw.get("freq_temp")) or not _norm(kw.get("freq_pressure")):
                 out.append(ScienceFinding(
                     label, "warning", "thermochemistry-conditions-missing",
-                    "thermochemistry (ZPE, thermal corrections) is "
-                    "computed at ORCA's default 298.15 K / 1 atm unless "
-                    "stated — set freq_temp explicitly so the conditions "
-                    "of the reported Gibbs energy are unambiguous"))
+                    "thermochemistry (ZPE, thermal corrections) runs at "
+                    "ORCA's default 298.15 K / 1 atm unless both are "
+                    "stated — set freq_temp AND freq_pressure explicitly "
+                    "so the conditions of the reported Gibbs energy are "
+                    "unambiguous"))
         if name in _TS_OPT:
             ts_pending.append(label)
             ts_check_seen = False
