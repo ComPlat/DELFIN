@@ -23,24 +23,21 @@ def _dev(actual="def2-TZVP", param="basis", default="def2-SVP"):
 
 def test_a1_synonym_outside_wordlist_is_flagged():
     # A real justification the word list does not know. The record
-    # drives the check; the wording list decides acceptance. A list
-    # this narrow silently passes real unexplained deviations whose
-    # wording it does not recognise. Structural question: the only
-    # structural alternative is requiring an explicit marker. This
-    # test pins that an actual justification with a list-unknown
-    # synonym must still be flagged (i.e. the list cannot be the
-    # ONLY acceptance signal without false-negatives) OR must be
-    # documented as deliberately conservative.
+    # drives the check; the wording list decides acceptance. Decision
+    # (QS ruling s29, 2026-10-23): the list is deliberately
+    # conservative and stays the acceptance signal for text-only
+    # justification; the STRUCTURAL escape is the record-level
+    # `reason` field (test_sc1_workflow.py covers the short-circuit).
+    # This test pins the documented consequence: a text justification
+    # with a list-unknown synonym IS flagged. The escape hatch is
+    # structural, not vocabulary.
     ans = ("We ran def2-TZVP; the choice follows from a systematic "
            "basis-set study we completed first (see SI Table 2).")
     claims = rcl.check_deviations(ans, _dev())
-    # SYNONYM NOT in _REASON_WORDS: builder's wording list flags this
-    # as unexplained. Finding if red: a legitimately justified
-    # deviation is flagged. Report, not bend.
     unexplained = [c for c in claims if c.code == "deviation-unexplained"]
     assert unexplained, (
-        "If this goes green the synonym was accepted; either outcome "
-        "is a documented finding, see report text.")
+        "A list-unknown synonym justification is flagged by design; "
+        "the structural escape is the record-level reason field.")
 
 
 def test_a2_deviation_word_absent_means_not_flagged_here():
