@@ -51,6 +51,9 @@ def _refuse_three(perms, cmds):
     return out
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "waits for the protected api_client.py unattended-pause wiring "
+    "(.gate/am1_unattended_pause.patch), built by the person"))
 def test_unattended_lock_pauses_with_operator_message_not_a_wait(perms):
     first = _second_opinion(perms, "cmd-one --flag")
     assert first and "refused" in first
