@@ -28,7 +28,9 @@ runs — in this fixed order:
    method with a redundant basis, relativity without a relativistic
    basis, a solvation model with no solvent, an impossible
    multiplicity). A lint *error* blocks; warnings are shown with the fix.
-4. **dry run** — static validation with the geometry flag.
+4. **dry run** — static validation with the geometry flag. This is a
+   re-validation (`Pipeline.dry_run` is an alias of `Pipeline.validate`),
+   not an execution — nothing runs at this stage either.
 5. **cost** — `cluster_efficiency.advise` per step, DELFIN's own
    resource sizing (PAL/maxcore/partitions).
 

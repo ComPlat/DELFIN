@@ -41,7 +41,10 @@ def default_root() -> Path:
 
 
 def _check_name(name: str) -> str:
-    if not isinstance(name, str) or not _NAME_RE.match(name):
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        # fullmatch, not match: "x\n" passes .match ($ also matches before
+        # a final newline) and would derive a newline-carrying file name —
+        # the same pitfall skill_share._check_name guards against.
         raise ValueError(
             "workflow name must be [A-Za-z][A-Za-z0-9_-]{0,63} "
             f"(a file name is derived from it), got: {name!r}")
@@ -154,8 +157,13 @@ def list_workflows(*, root: Optional[Path] = None) -> List[Dict[str, Any]]:
         versions = _versions(dir_path)
         if not versions:
             continue
-        spec = json.loads((dir_path / f"v{versions[-1]:03d}.json")
-                          .read_text(encoding="utf-8"))["spec"]
+        try:
+            spec = json.loads((dir_path / f"v{versions[-1]:03d}.json")
+                              .read_text(encoding="utf-8"))["spec"]
+        except (json.JSONDecodeError, KeyError, OSError):
+            # One corrupt record degrades the listing, it does not
+            # vanish: skip this workflow, keep the rest.
+            continue
         out.append({
             "name": dir_path.name,
             "version": versions[-1],

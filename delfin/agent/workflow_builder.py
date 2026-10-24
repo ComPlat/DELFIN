@@ -8,6 +8,15 @@ submitted or saved:
 2. validate_spec  — static wiring/contract validation
 3. scientific_lint— physics plausibility (an ``error`` blocks)
 4. dry run        — Pipeline.validate with the geometry flag
+
+NOTE (R1, reviewer): the "dry run" stage is NOT an execution —
+``Pipeline.dry_run`` (delfin/tools/pipeline.py:1648) is an alias of
+``Pipeline.validate`` (:1629). Stage 4 therefore re-validates with the
+geometry flag satisfied; the chain's distinct checks are
+resolve -> validate -> lint -> cost. It is kept as an explicit stage so
+a geometry-flagged validation always happens before submit, but it adds
+no execution. The skill and docs say the same.
+
 5. cost estimate  — cluster_efficiency.advise per step (DELFIN's own sizing)
 
 A failed check returns the findings verbatim (the fix is named, never

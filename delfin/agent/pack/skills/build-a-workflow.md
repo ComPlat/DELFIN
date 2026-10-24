@@ -20,7 +20,10 @@ checks in this fixed order before anything is saved or submitted:
 `resolve_spec` -> `validate_spec` -> `scientific_lint` -> dry run ->
 cost estimate (`cluster_efficiency.advise`, DELFIN's own sizing).
 A failed check returns the finding verbatim — fix the spec and rerun;
-never edit around a finding or drop the failing step silently.
+never edit around a finding or drop the failing step silently. The
+"dry run" stage is a re-validation with the geometry flag, NOT an
+execution — nothing ever runs during building; submission is a
+separate explicit act.
 
 ## 3. Nothing runs before every check passes
 `checks["ok"]` is the gate. A lint error (e.g. multiplicity < 1, a
