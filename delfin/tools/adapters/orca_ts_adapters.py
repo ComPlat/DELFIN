@@ -97,11 +97,6 @@ class OrcaTsOptAdapter(StepAdapter):
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:
             raise ValueError("'charge' parameter is required")
-        if kwargs.get("hessian_mode", "AnFreq") not in _HAISSIAN_MODES:
-            raise ValueError(
-                f"hessian_mode must be one of {', '.join(_HAISSIAN_MODES)}; "
-                f"got {kwargs.get('hessian_mode')!r}"
-            )
 
     def execute(self, work_dir: Path, *, geometry: Optional[Path] = None, cores: int = 1, **kwargs: Any) -> StepResult:
         start = time.monotonic()
@@ -117,6 +112,11 @@ class OrcaTsOptAdapter(StepAdapter):
             return self._make_result(self.name, StepStatus.FAILED, work_dir, start, error="geometry is required")
 
         coords = _read_xyz_coords(geometry)
+        if hessian_mode not in _HAISSIAN_MODES:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=(f"hessian_mode must be one of "
+                       f"{', '.join(_HAISSIAN_MODES)}; got {hessian_mode!r}"))
         bang = f"{method} {basis} OptTS {hessian_mode}"
         inp_content = _build_orca_ts_input(bang, charge, mult, cores, maxcore, coords)
         inp_path = work_dir / f"{base_name}.inp"

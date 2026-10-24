@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from delfin.tools import run_step
+from delfin.tools._types import StepStatus
 import delfin.tools.adapters.orca_ts_adapters  # noqa: F401  (registers the adapters)
 
 
@@ -85,20 +86,27 @@ def test_orca_ts_opt_input_carries_tsopt_and_hessian_keyword(hcn_xyz, tmp_path, 
 
 def test_orca_ts_opt_input_rejects_unknown_hessian_mode(hcn_xyz, tmp_path, monkeypatch):
     """An unknown hessian_mode must be refused, not silently mapped to a
-    default the caller never asked for."""
+    default the caller never asked for. Refusal happens at EXECUTE time
+    as a FAILED step, not in validate_params: the contract layer treats
+    adapter enums as advisory (delfin/tools/_validate.py:192-212) and
+    the generic contract test feeds a full kwargs dict with dummy
+    strings that must pass validate_params (tests/test_tool_contracts
+    .py:70-82)."""
     monkeypatch.setattr("delfin.orca.run_orca", lambda *a, **k: True)
     from delfin.tools._registry import list_steps
     assert "orca_ts_opt" in list_steps(), "control must run against a known step"
-    with pytest.raises(ValueError):
-        run_step(
-            "orca_ts_opt",
-            geometry=hcn_xyz,
-            charge=0,
-            method="B3LYP",
-            basis="def2-SVP",
-            hessian_mode="BlackMagic",
-            work_dir=tmp_path / "ts2",
-        )
+    result = run_step(
+        "orca_ts_opt",
+        geometry=hcn_xyz,
+        charge=0,
+        method="B3LYP",
+        basis="def2-SVP",
+        hessian_mode="BlackMagic",
+        work_dir=tmp_path / "ts2",
+    )
+    assert result.status is StepStatus.FAILED
+    assert "hessian_mode must be one of" in (result.error or "")
+    assert "BlackMagic" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
