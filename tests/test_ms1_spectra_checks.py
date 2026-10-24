@@ -98,11 +98,14 @@ def test_nonlinear_minimum_with_wrong_real_mode_count_fires(tmp_path):
 def test_linear_molecule_marker_switches_to_3n_minus_5(tmp_path):
     """A linear 3-atom molecule: 3N-5 = 4 real modes expected.
 
-    CO2-shaped output: linear marker echoed, 4 real modes, no fire.
+    CO2-shaped output: ZERO first rotational constant in the
+    thermochemistry block (ORCA manual 6.1.1 §4.7 — the real marker;
+    s4's F1: no literal "linear molecule" phrase exists in ORCA
+    output), 4 real modes, no fire.
     """
     lin = (_TERM + _ENERGY
            + "Number of atoms                             ...      3\n"
-           + "linear molecule\n"
+           + "Rotational constants in cm-1: 0.000000 0.390721 0.390721\n"
            + _FREQ_HDR
            + "   0:         0.00 cm**-1\n"
            + "   1:         0.00 cm**-1\n"

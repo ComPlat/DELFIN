@@ -35,8 +35,8 @@ def _write(tmp_path, name, content) -> Path:
 _TABLE_HDR = (
     "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS\n"
     "-------------------------------------------------------------------\n"
-    "State      Energy   Energy   Wavelength   fosc         S^2\n"
-    "           (eV)    (cm-1)      (nm)\n"
+    "State      Energy   Energy   Wavelength   fosc          <S**2>\n"
+    "           (eV)    (cm-1)      (nm)                         (-)\n"
     "-------------------------------------------------------------------\n"
 )
 
@@ -51,8 +51,8 @@ def _triplet_ref_out() -> str:
         "Multiplicity                     ...    3\n"
         "Number of atoms                             ...      4\n"
         + _TABLE_HDR
-        + "0-3A  ->  1-3A    2.200000     17744.2     563.6     0.010000\n"
-        + "0-3A  ->  2-3A    2.650000     21373.7     467.9     0.412300\n"
+        + "0-3A  ->  1-3A    2.200000     17744.2     563.6     0.010000   2.0000\n"
+        + "0-3A  ->  2-3A    2.650000     21373.7     467.9     0.412300   2.0000\n"
         + "\n\n"
     )
 
