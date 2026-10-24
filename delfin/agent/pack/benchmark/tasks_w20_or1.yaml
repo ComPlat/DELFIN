@@ -174,7 +174,7 @@ tasks:
     expected_signals:
       - pattern: '(?i)(orca_ts_freq_check|n_imag)'
         against: text
-      - pattern: '(?i)(cm.?-?1|cm\*\*-1)'
+      - pattern: '(?i)cm(\.|\s|\u00b7)?-?1'
         against: text
     max_duration_s: 900
     max_cost_usd: 1.00
