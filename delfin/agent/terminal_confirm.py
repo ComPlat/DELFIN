@@ -212,7 +212,15 @@ def publish_waiting(*, surface: str, session_id: str = "",
         "needs_code": True,
     }
     from . import approval_code as _code
-    _code.issue(record["id"])
+    code = _code.issue(record["id"])
+    # The code also goes to the durable code file (0600 under the
+    # approval_codes dir), so the dialog's "--code" line can be rebuilt
+    # after THIS process dies: outside_answer_line reads the in-process
+    # map only, and a restart emptied it while the published record kept
+    # waiting (FX1: request 1792774523-ff10a3a0 showed no --code line).
+    # The file is the same channel file_confirm.show_code_on_terminal
+    # already uses for the person's `delfin-agent approvals` run.
+    _code.write_code_file(record["id"], code)
     # The same filename file_confirm uses, so its reader, its lister and
     # its answer writer apply here unchanged -- with every careful part
     # they carry: not a symlink, this user's, not group-writable, naming
@@ -306,6 +314,10 @@ def outside_answer_line(published, *, choice: bool = False) -> str:
     try:
         from . import approval_code as _code
         code = _code.code_for(rid)
+        if not code:
+            # This process did not issue the code (a restart published it
+            # before): the durable code file carries it, 0600, this uid.
+            code = _code.read_code_file(rid)
     except Exception:
         code = ""
     if not code:
