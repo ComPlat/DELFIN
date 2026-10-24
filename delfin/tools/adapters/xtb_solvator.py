@@ -74,6 +74,17 @@ class XtbSolvatorAdapter(StepAdapter):
         if geometry is None:
             return self._make_result(self.name, StepStatus.FAILED, work_dir, start, error="geometry is required")
 
+        # ── Enforce declared limits here too (SV1, reviewer R1) ────────
+        # The product call site (delfin/agent/campaign.py:373) calls
+        # execute() directly; validate_params is not in that path, so the
+        # limits must hold in execute() itself. A refused combination
+        # never reaches run_orca: no input file, no queue time.
+        try:
+            self.validate_params(**kwargs)
+        except ValueError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start, error=str(exc))
+
         charge = kwargs.get("charge", 0)
         mult = kwargs.get("mult", 1)
         solvent = kwargs["solvent"]

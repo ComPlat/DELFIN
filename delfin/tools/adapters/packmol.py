@@ -80,6 +80,16 @@ class PackmolSolvateAdapter(StepAdapter):
         if geometry is None:
             return self._make_result(self.name, StepStatus.FAILED, work_dir, start, error="geometry (solute) is required")
 
+        # ── Enforce declared limits here too (SV1, reviewer R1) ────────
+        # The product call site (delfin/agent/campaign.py:373) calls
+        # execute() directly; validate_params is not in that path. A
+        # refused combination must never reach the packmol wrapper.
+        try:
+            self.validate_params(**kwargs)
+        except ValueError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start, error=str(exc))
+
         # ── Box must hold the solute (SV1) ─────────────────────────────
         # The solute is centred in the box (packmol_wrapper.solvate,
         # `fixed 0. 0. 0.` + `center`), so its largest extent must fit
