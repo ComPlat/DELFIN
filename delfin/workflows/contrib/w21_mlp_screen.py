@@ -85,11 +85,22 @@ class MlpScreenWorkflow:
         # only; with no finite entry at all there is no ranking to report.
         import math
 
-        finite = [
-            entry for entry in ranking
-            if isinstance(entry.get("energy_eV"), (int, float))
-            and math.isfinite(entry["energy_eV"])
-        ]
+        # A ranking entry is only a candidate for best_* if it has BOTH a
+        # finite energy and an int index: a float("inf") energy from a
+        # crashed evaluation is not an energy, and an index that is not an
+        # int (None from a partial writer) does not identify a structure
+        # the ensemble can deliver.  Entries failing either check go to
+        # the warning channel, never into min().
+        def _candidate(entry):
+            energy = entry.get("energy_eV")
+            index = entry.get("index")
+            return (isinstance(energy, (int, float))
+                    and not isinstance(energy, bool)
+                    and math.isfinite(energy)
+                    and isinstance(index, int)
+                    and not isinstance(index, bool))
+
+        finite = [entry for entry in ranking if _candidate(entry)]
         nonfinite = len(ranking) - len(finite)
         out: Dict[str, Any] = {
             "ok": result.status.name == "SUCCESS",
@@ -107,8 +118,9 @@ class MlpScreenWorkflow:
         if nonfinite:
             out.setdefault("warnings", []).append(
                 f"{nonfinite} of {len(ranking)} structures have no valid "
-                "MLP energy (evaluation failed, recorded as inf/nan); "
-                "best_* is chosen over the finite energies only")
+                "MLP ranking entry (no finite energy or no int index: "
+                "evaluation failed or the entry is a partial write); "
+                "best_* is chosen over fully valid entries only")
         if result.status.name != "SUCCESS":
             out["ok"] = False
             out.setdefault("errors", [result.error])
