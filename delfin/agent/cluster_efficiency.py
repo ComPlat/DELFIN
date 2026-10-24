@@ -276,9 +276,19 @@ KNOWN_STEPS = ("opt", "gopt", "sp", "freq", "ts", "tddft", "scan",
 
 #: Below this measured mean CPU efficiency a step kind is called
 #: low-parallel. The boundary sits between the two recorded wave-21
-#: populations — SOLVATOR ~1.5 % (sv1_tiny_solvator, delfin_7922181.out
-#: 'CPU Utilized' 00:01:31) vs DFT opt ~90 % — so either population is
-#: classified far from the threshold.
+#: populations — SOLVATOR at pal 2 used 1.53 % of its allocated CPU
+#: time (run .gate/practice/sv1_tiny_solvator/delfin_7922181.out,
+#: 'CPU Efficiency: 1.53% of 01:39:08 core-walltime', job FAILED with
+#: exit code 138 — the number comes from the .out summary line, not
+#: from TotalCPU, which is an artefact on killed jobs) vs a pal 1 run
+#: of a SMALLER shell (NSOLV 3, different task) at 35.75 %
+#: (.gate/practice/sv1_tiny_solvator_r2/delfin_7922985.out). The
+#: core-walltime figures count LOGICAL CPUs (hyperthreads): 00:24:47
+#: x 2 logical CPUs x 2 threads = 01:39:08. The two runs are NOT the
+#: same task — no "pal 1 finished the same task in 38 s" claim is
+#: defensible. Exact lines fixed as records in
+#: tests/test_rs1_resource_sizing.py (operator message, wave 22,
+#: md5 of run 1 .out 2f195b869915ee805aa9602ec31be629).
 LOW_PARALLEL_EFFICIENCY = 0.10
 
 #: Steps with well-parallelised kinds (DFT opt/freq/sp) are expected to
