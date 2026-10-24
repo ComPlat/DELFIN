@@ -51,7 +51,7 @@ def test_noncovalent_with_dispersion_is_silent():
     assert _rules({"name": "s", "steps": [
         _st("orca_opt_freq", "opt", charge=0, mult=1, method="B3LYP",
             basis="def2-SVP", dispersion="D4", system="noncovalent",
-            freq_temp=298.15),
+            freq_temp=298.15, freq_pressure=1.0),
     ]}) == set()
 
 
@@ -59,7 +59,7 @@ def test_composite_method_counts_as_dispersed():
     # r2scan-3c includes its own dispersion (the composite rule documents it)
     assert _rules({"name": "s", "steps": [
         _st("orca_opt_freq", "opt", charge=0, mult=1, method="r2scan-3c",
-            system="noncovalent", freq_temp=298.15),
+            system="noncovalent", freq_temp=298.15, freq_pressure=1.0),
     ]}) == set()
 
 
@@ -67,7 +67,7 @@ def test_no_system_hint_means_rule_is_silent():
     # fires only on data it actually has — no invented chemistry
     assert _rules({"name": "s", "steps": [
         _st("orca_opt_freq", "opt", charge=0, mult=1, method="B3LYP",
-            basis="def2-SVP", freq_temp=298.15),
+            basis="def2-SVP", freq_temp=298.15, freq_pressure=1.0),
     ]}) == set()
 
 
@@ -86,7 +86,7 @@ def test_flexible_system_with_crest_step_is_silent():
             system="flexible"),
         _st("orca_opt_freq", "opt", charge=0, mult=1, method="B3LYP",
             basis="def2-SVP", dispersion="D4", system="flexible",
-            freq_temp=298.15),
+            freq_temp=298.15, freq_pressure=1.0),
     ]}
     assert ("conformer-search-missing", "opt", "warning") not in _rules(spec)
     assert _rules(spec) == set()
@@ -99,7 +99,7 @@ def test_noncovalent_rigid_system_needs_no_conformer_search():
     out = _rules({"name": "s", "steps": [
         _st("orca_opt_freq", "opt", charge=0, mult=1, method="B3LYP",
             basis="def2-SVP", dispersion="D4", system="noncovalent",
-            freq_temp=298.15),
+            freq_temp=298.15, freq_pressure=1.0),
     ]})
     assert ("conformer-search-missing", "opt", "warning") not in out
 
@@ -119,7 +119,7 @@ def test_3d_complex_with_occupier_step_is_silent():
         _st("occupier", "spin", charge=0, mult=5, metals=["Fe"],
             system="3d_complex"),
         _st("orca_opt_freq", "opt", charge=0, mult=5, metals=["Fe"],
-            system="3d_complex", freq_temp=298.15),
+            system="3d_complex", freq_temp=298.15, freq_pressure=1.0),
     ]}
     assert ("spin-state-scan-missing", "opt", "warning") not in _rules(spec)
     assert _rules(spec) == set()
@@ -130,7 +130,7 @@ def test_3d_complex_with_broken_symmetry_flag_is_silent():
     # considered open-shell coupling
     assert _rules({"name": "s", "steps": [
         _st("orca_opt_freq", "opt", charge=0, mult=5, metals=["Fe"],
-            system="3d_complex", broken_symmetry=True, freq_temp=298.15),
+            system="3d_complex", broken_symmetry=True, freq_temp=298.15, freq_pressure=1.0),
     ]}) == set()
 
 
@@ -140,5 +140,5 @@ def test_nonmetal_system_needs_no_spin_scan():
     # as the physical fact and stays silent without one
     assert _rules({"name": "s", "steps": [
         _st("orca_opt_freq", "opt", charge=0, mult=1,
-            system="3d_complex", freq_temp=298.15),
+            system="3d_complex", freq_temp=298.15, freq_pressure=1.0),
     ]}) == set()
