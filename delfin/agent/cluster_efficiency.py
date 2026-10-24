@@ -20,6 +20,7 @@ partition rule.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -362,7 +363,12 @@ def _efficiency_summary(step, records):
                            f"'{step}'")}
     measured = [r for r in rows
                 if r.get("state") == "COMPLETED"
-                and isinstance(r.get("cpu_efficiency"), (int, float))]
+                and isinstance(r.get("cpu_efficiency"), (int, float))
+                and math.isfinite(float(r["cpu_efficiency"]))]
+    # NaN/inf pass the isinstance filter and poison the mean (NaN <
+    # threshold is False): a genuinely low-parallel step would
+    # silently lose its advice. Excluded like the TIMEOUT/CANCELLED
+    # artefact rows, with a count.
     excluded = len(rows) - len(measured)
     if not measured:
         return {"low_parallel": False, "advice": None,
@@ -375,6 +381,7 @@ def _efficiency_summary(step, records):
     low = mean < LOW_PARALLEL_EFFICIENCY
     summary = {
         "low_parallel": low,
+        "advice": None,
         "measured_runs": len(measured),
         "excluded_runs": excluded,
         "mean_cpu_efficiency": mean,

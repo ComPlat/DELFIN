@@ -97,3 +97,49 @@ def test_hostile_step_names_do_not_crash():
     for step in ("OPT", "x" * 5000, "schiff_basesüß", "", None):
         adv = ce.advise(step, 12, efficiency_records=[other])
         assert "efficiency" in adv
+
+
+# --------------------------------------------------------------------
+# Reviewer findings F1/F2 (s15, on c0cfb0f7). Red on c0cfb0f7.
+# --------------------------------------------------------------------
+
+def test_nan_efficiency_is_not_silent_low_parallel_false():
+    """F1: a NaN record passes isinstance(float) and poisons the mean;
+    NaN < threshold is False, so a genuinely low-parallel step would
+    silently get low_parallel=False and no advice. NaN/inf must be
+    excluded like the TIMEOUT/CANCELLED rows, with a count."""
+    low = _rec("101", "xtb_solvator", "COMPLETED", 0.015, 3580)
+    poisoned = _rec("102", "xtb_solvator", "COMPLETED", float("nan"),
+                    3500)
+    adv = ce.advise("xtb_solvator", 12,
+                    efficiency_records=[low, poisoned])
+    eff = adv["efficiency"]
+    assert eff["low_parallel"] is True, eff
+    assert eff["measured_runs"] == 1, eff
+    assert eff["excluded_runs"] == 1, eff
+    assert eff["mean_cpu_efficiency"] == pytest.approx(0.015), eff
+
+
+def test_inf_efficiency_is_excluded_like_nan():
+    """F1: +inf passes the same isinstance filter."""
+    low = _rec("101", "xtb_solvator", "COMPLETED", 0.015, 3580)
+    poisoned = _rec("102", "xtb_solvator", "COMPLETED", float("inf"),
+                    3500)
+    adv = ce.advise("xtb_solvator", 12,
+                    efficiency_records=[low, poisoned])
+    eff = adv["efficiency"]
+    assert eff["low_parallel"] is True, eff
+    assert eff["excluded_runs"] == 1, eff
+
+
+def test_summary_always_carries_the_advice_key():
+    """F2: healthy low/normal summaries and zero-run summaries all
+    carry "advice" (None when not low) — one shape for consumers."""
+    low = _rec("101", "xtb_solvator", "COMPLETED", 0.015, 3580)
+    good = _rec("102", "dft_opt", "COMPLETED", 0.9, 1800, cores=8)
+    low_adv = ce.advise("xtb_solvator", 12, efficiency_records=[low])
+    assert "advice" in low_adv["efficiency"], low_adv
+    good_adv = ce.advise("opt", 20, efficiency_records=[good])
+    assert good_adv["efficiency"]["advice"] is None, good_adv
+    zero = ce.advise("crest", 4, efficiency_records=[good])
+    assert zero["efficiency"]["advice"] is None, zero
