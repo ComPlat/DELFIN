@@ -88,20 +88,38 @@ def validate_physics_radius(kwargs: dict, param: str = "radius") -> None:
         )
 
 
+def validate_physics_index(kwargs: dict, param: str) -> None:
+    """A 0-based atom index must not be negative (the wrapper's +1
+    conversion would turn -1 into 0 and morfeus would die with a
+    misleading "indices should not be 0 (1-indexed)" error)."""
+    value = kwargs.get(param)
+    if value is None:
+        return
+    if int(value) < 0:
+        raise ValueError(
+            f"'{param}'={value} is negative: atom indices are 0-based and "
+            "must be >= 0"
+        )
+
+
 def validate_physics_buried_volume(kwargs: dict) -> None:
     if "metal_index" not in kwargs:
         raise ValueError("'metal_index' parameter is required")
+    validate_physics_index(kwargs, "metal_index")
     validate_physics_radius(kwargs)
 
 
 def validate_physics_cone_angle(kwargs: dict) -> None:
     if "metal_index" not in kwargs:
         raise ValueError("'metal_index' parameter is required")
+    validate_physics_index(kwargs, "metal_index")
 
 
 def validate_physics_sterimol(kwargs: dict) -> None:
     if "atom1_index" not in kwargs or "atom2_index" not in kwargs:
         raise ValueError("'atom1_index' and 'atom2_index' are required")
+    validate_physics_index(kwargs, "atom1_index")
+    validate_physics_index(kwargs, "atom2_index")
     if kwargs["atom1_index"] == kwargs["atom2_index"]:
         raise ValueError(
             "atom1_index and atom2_index must differ: a Sterimol axis "
@@ -112,7 +130,15 @@ def validate_physics_sterimol(kwargs: dict) -> None:
 def validate_physics_full_report(kwargs: dict) -> None:
     if "metal_index" not in kwargs:
         raise ValueError("'metal_index' parameter is required")
+    validate_physics_index(kwargs, "metal_index")
     donors = kwargs.get("donor_indices")
+    if donors is not None:
+        for i, donor in enumerate(donors):
+            if int(donor) < 0:
+                raise ValueError(
+                    f"'donor_indices[{i}]'={donor} is negative: atom "
+                    "indices are 0-based and must be >= 0"
+                )
     if donors is not None and len(donors) != 2:
         raise ValueError(
             f"bite angle needs exactly 2 donor_indices, got {len(donors)}"
@@ -125,8 +151,18 @@ def _wrap_execute(adapter_cls, physics):
 
     def execute(self, work_dir, *, geometry=None, cores=1, **kwargs):
         physics(kwargs)  # ValueError surfaces as the step's failure reason
-        return original(self, work_dir, geometry=geometry, cores=cores,
-                        **kwargs)
+        try:
+            return original(self, work_dir, geometry=geometry, cores=cores,
+                            **kwargs)
+        except IndexError as exc:
+            # morfeus rejects out-of-range indices with a bare IndexError
+            # ("indices should not be 0 (1-indexed)") that does not name the
+            # physics: re-raise as a named physics error. Narrow catch —
+            # anything else propagates unchanged.
+            raise ValueError(
+                f"atom index rejected by morfeus ({exc}): the indices must "
+                "be 0-based and point at existing atoms of the geometry"
+            ) from exc
 
     adapter_cls.execute = execute
 
