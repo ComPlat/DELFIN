@@ -1,5 +1,6 @@
 ---
 name: xtb-method
+domains: code
 description: >
   Choose the right xTB level (GFN0/1/2, GFN-FF), pass charge and unpaired
   electrons correctly, pick ALPB vs GBSA solvation, and know when semiempirical
