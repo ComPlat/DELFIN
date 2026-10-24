@@ -160,9 +160,12 @@ def test_workflow_chain_succeeds_and_reports_levels(
     assert result["solvated_geometry"].endswith("XTB_SOLVATOR.solvator.xyz")
 
 
-def test_run_cli_prints_why_it_failed(tmp_path, capsys):
+def test_run_cli_prints_why_it_failed(tmp_path, monkeypatch, capsys):
     """F1 (nacht-s19): exit 1 with NO message hides the cause (missing
-    binary, wrong path) — run_cli must print the reason to stderr."""
+    binary, wrong path) — run_cli must print the reason to stderr.
+    Cross-review finding (nacht-s3): without a chdir the default
+    work_dir lands in the checkout and trips the conftest leak guard."""
+    monkeypatch.chdir(tmp_path)
     wf = _workflow()
     rc = wf.run_cli(["missing.xyz", "missing_solvent.xyz"])
     out = capsys.readouterr()
