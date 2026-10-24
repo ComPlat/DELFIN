@@ -107,9 +107,13 @@ _GIT_DESTRUCTIVE_FLAGS = frozenset({
 # ``git log/diff/show --output=FILE`` writes a file, ``--ext-diff`` /
 # ``--textconv`` run a configured program, ``git branch --set-upstream-to``
 # / ``--unset-upstream`` write .git/config and ``--edit-description``
-# starts the configured editor: none of them is a read.
-_GIT_WRITING_OPTION_PREFIXES = ("--output", "--ext-diff", "--textconv",
-                                "--set-upstream", "--unset-upstream",
+# starts the configured editor: none of them is a read. ``-o FILE`` is
+# the short form of --output=FILE for show/log/diff and -oFILE the
+# attached one (a bare -o with no value is not a git option, but
+# treating a bare -o as writing only adds friction).
+_GIT_WRITING_OPTION_PREFIXES = ("--output", "-o", "--ext-diff",
+                                "--textconv", "--set-upstream",
+                                "--unset-upstream",
                                 "--edit-description")
 
 # The one sed form that is a plain read: print a line range of a file.
@@ -691,6 +695,21 @@ def screen(action: dict, context: dict, rules=()) -> "Verdict | None":
     injection = _injection_verdict(action, str(context.get("task") or ""))
     if injection is not None:
         return injection
+    # FR1: a small, code-checked allow-list of routine shapes (own-tree
+    # git hygiene, a read-only web fetch) runs without the model. AFTER
+    # the never-rules and the injection guard, so both keep precedence.
+    # delfin.agent.routine_actions.routine_verdict: pure matching, no
+    # I/O; the path gates still hold everything it allows. Only a
+    # missing module is tolerated (older checkout); a BUG inside
+    # routine_verdict raises -- a swallowed bug would make every
+    # routine decision silently equal to "judged" (wave-17 lesson 5).
+    try:
+        from . import routine_actions as _ra
+    except ImportError:
+        _ra = None
+    routine = _ra.routine_verdict(action, context) if _ra else None
+    if routine is not None:
+        return routine
     return apply_user_rules(action, rules, only="always")
 
 
