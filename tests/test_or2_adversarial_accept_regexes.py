@@ -39,7 +39,9 @@ def _ws05(tmp_path, text):
 
 _REFUSAL_OK = ("The two files are not comparable: mixed level of theory "
                "(B3LYP/def2-SVP vs PBE0/def2-TZVP). A potential needs a "
-               "common level and an explicit reference electrode (E_ref).")
+               "common level and an explicit reference electrode (E_ref). "
+               "The reference potential can be overridden by setting E_ref "
+               "in CONTROL.txt.")
 
 
 def test_trap_rejects_bare_potential(tmp_path):
