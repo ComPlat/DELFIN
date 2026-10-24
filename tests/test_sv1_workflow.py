@@ -158,3 +158,30 @@ def test_workflow_chain_succeeds_and_reports_levels(
     assert result["levels"]["box_relaxation"].startswith("GFN-xTB")
     assert result["levels"]["explicit_shell"] == "GFN2-xTB"
     assert result["solvated_geometry"].endswith("XTB_SOLVATOR.solvator.xyz")
+
+
+def test_run_cli_prints_why_it_failed(tmp_path, capsys):
+    """F1 (nacht-s19): exit 1 with NO message hides the cause (missing
+    binary, wrong path) — run_cli must print the reason to stderr."""
+    wf = _workflow()
+    rc = wf.run_cli(["missing.xyz", "missing_solvent.xyz"])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert out.err.strip(), "run_cli failed silently"
+    assert "explicit_solvation" in out.err or "geometry" in out.err
+
+
+def test_run_cli_success_path(tmp_path, monkeypatch, capsys):
+    """The CLI exit 0 on a run whose steps succeed (stubs at the
+    binary boundary, as in the chain test)."""
+    capture: dict = {}
+    _stub_run_orca(monkeypatch, capture)
+    _stub_solvate(monkeypatch, tmp_path / "box.xyz")
+    _stub_xtb_opt(monkeypatch, tmp_path / "relaxed.xyz")
+    solute = _write_solute(tmp_path / "solute.xyz")
+    solvent = _write_solvent(tmp_path / "water.xyz")
+    wf = _workflow()
+    rc = wf.run_cli([
+        str(solute), str(solvent), "--nsolv", "12",
+        "--work-dir", str(tmp_path / "run")])
+    assert rc == 0, capsys.readouterr().err
