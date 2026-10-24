@@ -1,3 +1,6 @@
+---
+domains: research
+---
 # Scientific method — how to report a DELFIN result
 
 Concrete rules for every answer that states a quantum-chemistry result.
