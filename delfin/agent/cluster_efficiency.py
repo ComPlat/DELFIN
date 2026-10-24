@@ -43,6 +43,11 @@ SACCT_COLUMNS = ("JobID,JobName,State,ExitCode,Elapsed,Timelimit,"
 _WASTED_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
                   "NODE_FAIL", "PREEMPTED"}
 
+#: Among the wasted states, the ones where TotalCPU on this cluster is
+#: a known artefact (killed at the time limit, also CANCELLED by the
+#: backup): the efficiency is UNKNOWN, never derived from it.
+_ARTEFACT_EFFICIENCY_STATES = {"TIMEOUT", "CANCELLED"}
+
 _SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
@@ -141,11 +146,27 @@ def _account_row(row: dict, *, is_repeated_waste: bool) -> dict:
     # CPU efficiency: the fraction of the allocated cores that actually
     # computed. TotalCPU is the consumed CPU time the scheduler
     # measured; missing it stays None — never a fabricated 0.0 %.
+    # On this cluster TotalCPU is a known artefact for jobs killed at
+    # their time limit (TIMEOUT, also CANCELLED by the backup): it
+    # comes out ~0 although the job computed for hours (operator note,
+    # wave 22). For those states the efficiency is UNKNOWN, never 0 %,
+    # and never a basis for advice. A real cross-check is the 'CPU
+    # Utilized' line DELFIN prints into the job .out.
     total_cpu_s = _slurm_seconds(row.get("total_cpu", ""))
     alloc_cpus = _int_or_none(row["alloc_cpus"])
     cpu_efficiency = None
     if total_cpu_s is not None and alloc_cpus and elapsed > 0:
         cpu_efficiency = total_cpu_s / (alloc_cpus * elapsed)
+    notes: List[str] = []
+    if wasted and state in _ARTEFACT_EFFICIENCY_STATES:
+        notes.append(
+            f"state {state}: TotalCPU is a known scheduler artefact "
+            "for jobs killed at the time limit (the job did compute, "
+            "but the number is not trustworthy); cpu_efficiency "
+            "reported UNKNOWN. Cross-check the job .out 'CPU "
+            "Utilized' line.")
+    if notes:
+        cpu_efficiency = None
     return {
         "job_id": row["job_id"],
         "job_name": row["job_name"],
@@ -155,6 +176,7 @@ def _account_row(row: dict, *, is_repeated_waste: bool) -> dict:
         "used": {"cores": alloc_cpus,
                  "mem_mb": used_mem, "wall_s": elapsed},
         "cpu_efficiency": cpu_efficiency,
+        "notes": notes,
         "queue_wait_s": queue_wait,
         "core_hours_used": round(used_core_hours, 3),
         "core_hours_wasted": round(
