@@ -83,6 +83,9 @@ _KINDS = {
     # A second approval of the same kind in a turn whose first one went
     # unanswered: not asked again, refused, and the panel says so.
     "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
+    # AM1: an unattended session hit the three-refusal lock; it pauses and
+    # leaves one message for the operator instead of waiting for nobody.
+    "unattended_pause": ("⏸", "Unattended session paused after three refusals"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "isolation_missing": ("⚠", "Filesystem isolation NOT active"),
     # A client built without a permissions policy runs only the index tools.
