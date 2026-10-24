@@ -22,7 +22,11 @@ import re
 __all__ = ["KINDS", "ROUTINE_KINDS", "COORDINATION_KINDS", "classify"]
 
 KINDS = ("approved", "qs_ok", "pr_ready", "relay", "inventory", "findings",
-         "fixed", "status", "review", "cross_review", "other")
+         "fixed", "status", "review", "cross_review", "finding", "other")
+# "finding" (singular) stays in KINDS as a documented NON-kind: classify
+# never returns it -- findings are ordinary task content and are judged as
+# today (see classify's docstring). It was dropped by mistake in phase 1
+# and is restored so the vocabulary stays a superset of main's.
 
 # The four verdict shapes from wave 18: an approval verdict, a QS-OK, a
 # PR handover, a relayed status.

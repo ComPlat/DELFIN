@@ -135,3 +135,13 @@ def test_non_message_action_is_never_routine():
     assert not _routine_partner_message(
         {"tool": "bash", "path": "nacht-s12",
          "message": "Inventory: x"}, TASK)
+
+
+def test_finding_singular_stays_in_kinds_as_documented_non_kind():
+    # Phase 1 accidentally dropped the "finding" entry from KINDS; main's
+    # vocabulary keeps it as a DOCUMENTED NON-kind (classify never returns
+    # it -- findings are ordinary task content, see classify's docstring).
+    # Restored in FX1 so the vocabulary stays a superset of main's.
+    assert "finding" in message_kinds.KINDS
+    assert message_kinds.classify(
+        "Finding: the wiring test calls the inner function.") == "other"
