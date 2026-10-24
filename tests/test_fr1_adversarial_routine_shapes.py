@@ -95,9 +95,10 @@ def test_web_fetch_timeout_type_and_boundary():
 
 def test_web_fetch_userinfo_and_fragment_are_still_get_only():
     # Credentials in a URL are a secret-handling question the model must
-    # see. As committed (F3 open): userinfo IS currently routine -- pinned
-    # until the builder rules on F3.
-    assert _fetch(url="https://user@host/x") is not None
+    # see. Since the builder's F3 fix (5fd24488), a userinfo URL is NOT
+    # routine -- judged as today. A fragment is a plain GET and stays
+    # routine.
+    assert _fetch(url="https://user@host/x") is None
     assert _fetch(url="http://host/x#frag") is not None
 
 
