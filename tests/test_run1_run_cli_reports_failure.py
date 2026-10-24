@@ -1,17 +1,17 @@
-"""QS finding (via s25/s29): run_cli swallows exceptions bare.
+"""RUN1 control: every w21 run_cli reports WHY it failed (QS via s25/s29).
 
-w21_mlp_screen.py:145-146 and w21_turbomole_workflow.py:170 return 1
-with NO message on any exception, while w21_solvation_workflow.py:155-158
-prints WHY it failed (wave-17 lesson 5: a bare failure with no message
-hides the cause).  A user whose run dies sees nothing.  Expected: every
-w21 run_cli prints the failure reason to stderr before returning 1.
-
-Run through the gate on the UNFIXED commit: red for mlp + turbomole.
+w21_mlp_screen.py run_cli and w21_turbomole_workflow.py run_cli caught
+Exception and returned 1 with NO message, while
+w21_solvation_workflow.py:155-158 prints WHY it failed (wave-17 lesson
+5: a bare failure with no message hides the cause).  A user whose run
+dies sees nothing.  Expected: every w21 run_cli prints the failure
+reason to stderr before returning 1.  Red through the gate on the
+UNFIXED commit (rc=1, empty stderr, observed for both).
 """
 
+import contextlib
 import io
 import sys
-import contextlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
