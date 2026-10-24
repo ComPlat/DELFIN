@@ -237,16 +237,35 @@ def _n_atoms(content: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _is_linear(content: str) -> bool:
+    """Linear molecule, from ORCA's thermochemistry block (F1, s4).
+
+    Real ORCA output never prints a literal "linear molecule" phrase.
+    A linear rotor has a ZERO first rotational constant
+    ("Rotational constants in cm-1: 0.000000 A B B"); source: ORCA
+    manual 6.1.1 §4.7 thermochemistry output description.
+    """
+    import re as _re
+    m = _re.search(r"Rotational constants in cm-1\s*:?\s*"
+                   r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", content)
+    if m:
+        return float(m.group(1)) == 0.0
+    return False
+
+
 def _check_mode_count(content: str, modes) -> list[Critique]:
-    """Real-mode count vs 3N-6 (non-linear) / 3N-5 (linear molecule).
+    """Real-mode count vs 3N-6 (non-linear) / 3N-5 (linear rotor).
 
     Source: standard vibrational analysis; ORCA manual 6.1.1 section
     4.6 "Vibrational Frequencies" (3N-6 vibrational normal modes for a
     non-linear molecule). Translational/rotational zero modes (the 6
     or 5 near-0 cm^-1 rows the parser returns) are excluded before
     counting, because the parser returns ALL rows (water fixture:
-    9 rows = 6 zeros + 3 real). A linear marker in the output switches
-    the expectation to 3N-5.
+    9 rows = 6 zeros + 3 real). Linearity comes from the
+    thermochemistry block's zero first rotational constant
+    (_is_linear, ORCA manual §4.7) — not from a phrase. When the
+    thermochemistry block is absent the output is assumed non-linear
+    (the common case) and the expectation is 3N-6.
     """
     n = _n_atoms(content)
     if n is None:
@@ -254,7 +273,7 @@ def _check_mode_count(content: str, modes) -> list[Critique]:
     real = [m for m in modes if abs(m.frequency_cm) > 1.0]
     if not real:
         return []
-    linear = "linear molecule" in content.lower()
+    linear = _is_linear(content)
     expected = 3 * n - 5 if linear else 3 * n - 6
     if len(real) == expected:
         return []
