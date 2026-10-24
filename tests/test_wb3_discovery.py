@@ -24,32 +24,40 @@ def test_every_real_adapter_module_is_discovered_by_the_public_path():
     For each module file in delfin/tools/adapters/ (excluding __init__),
     import it (exactly as discovery does), collect its ``StepAdapter``
     instances (i.e. module-level ``register(...)`` calls), and require
-    every such name to appear in ``list_steps()``.
+    every such name to appear in ``list_steps()``.  The registry is
+    snapshotted and restored so this test leaves no state behind in a
+    full-suite run.
     """
-    reg._DISCOVERED = False
-    reg._REGISTRY.clear()
-    names = set(list_steps())
+    saved = (reg._DISCOVERED, dict(reg._REGISTRY))
+    try:
+        reg._DISCOVERED = False
+        reg._REGISTRY.clear()
+        names = set(list_steps())
 
-    adapters_dir = Path(reg.__file__).parent / "adapters"
-    missing = []
-    for path in sorted(adapters_dir.glob("*.py")):
-        if path.stem == "__init__":
-            continue
-        mod_name = f"delfin.tools.adapters.{path.stem}"
-        try:
-            module = importlib.import_module(mod_name)
-        except ImportError:
-            # optional-dependency module that cannot even import here
-            continue
-        instance_names = [
-            getattr(obj, "name")
-            for obj in vars(module).values()
-            if isinstance(obj, StepAdapter) and getattr(obj, "name", "")
-        ]
-        for n in instance_names:
-            if n not in names:
-                missing.append(f"{mod_name}: {n}")
-    assert missing == [], (
-        "modules under delfin/tools/adapters/ register adapters that the "
-        f"registry discovery never reaches: {missing}"
-    )
+        adapters_dir = Path(reg.__file__).parent / "adapters"
+        missing = []
+        for path in sorted(adapters_dir.glob("*.py")):
+            if path.stem == "__init__":
+                continue
+            mod_name = f"delfin.tools.adapters.{path.stem}"
+            try:
+                module = importlib.import_module(mod_name)
+            except ImportError:
+                # optional-dependency module that cannot even import here
+                continue
+            instance_names = [
+                getattr(obj, "name")
+                for obj in vars(module).values()
+                if isinstance(obj, StepAdapter) and getattr(obj, "name", "")
+            ]
+            for n in instance_names:
+                if n not in names:
+                    missing.append(f"{mod_name}: {n}")
+        assert missing == [], (
+            "modules under delfin/tools/adapters/ register adapters that the "
+            f"registry discovery never reaches: {missing}"
+        )
+    finally:
+        reg._DISCOVERED, snapshot = saved
+        reg._REGISTRY.clear()
+        reg._REGISTRY.update(snapshot)

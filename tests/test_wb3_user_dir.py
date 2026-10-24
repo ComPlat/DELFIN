@@ -36,14 +36,20 @@ def test_user_adapter_dir_scaffold_is_discovered_by_real_loader(tmp_path, monkey
         "skeleton must be FLAT in a user adapter directory"
     )
 
-    reg._DISCOVERED = False
-    reg._REGISTRY.clear()
-    monkeypatch.setenv("DELFIN_ADAPTERS_DIR", str(user_dir))
-    reg._load_user_adapters()
-    names = set(list_steps())
-    assert "wb3_user_demo_parser" in names, (
-        f"user-adapter scaffold not discovered (saw {len(names)} steps)"
-    )
+    saved = (reg._DISCOVERED, dict(reg._REGISTRY))
+    try:
+        reg._DISCOVERED = False
+        reg._REGISTRY.clear()
+        monkeypatch.setenv("DELFIN_ADAPTERS_DIR", str(user_dir))
+        reg._load_user_adapters()
+        names = set(list_steps())
+        assert "wb3_user_demo_parser" in names, (
+            f"user-adapter scaffold not discovered (saw {len(names)} steps)"
+        )
+    finally:
+        reg._DISCOVERED, snapshot = saved
+        reg._REGISTRY.clear()
+        reg._REGISTRY.update(snapshot)
 
 
 def test_second_scaffold_in_same_tree_succeeds(tmp_path, monkeypatch):
