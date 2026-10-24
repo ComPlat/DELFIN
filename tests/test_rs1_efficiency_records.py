@@ -68,3 +68,50 @@ def test_missing_total_cpu_stays_none_not_zero():
     )
     rows = ce.account(["201"], run_fn=_sacct_runner(out))
     assert rows["jobs"]["201"]["cpu_efficiency"] is None
+
+
+# --------------------------------------------------------------------
+# Operator cautions (wave-22, RS1): two artefacts of the scheduler's
+# TotalCPU number must never become a fabricated efficiency.
+# --------------------------------------------------------------------
+
+def test_timeout_job_reports_unknown_efficiency_never_zero():
+    """A job killed at its time limit computed, but this cluster's
+    TotalCPU for TIMEOUT rows is a known artefact (0 although the job
+    computed). The efficiency must be UNKNOWN (None), never 0.0, and
+    the row must carry a note saying why."""
+    out = (
+        "301|shell_run|TIMEOUT|0:9|00:30:00|00:30:00|cpu=12,mem=8G|12|2G|"
+        "2026-10-20T22:00:00|2026-10-20T22:01:00|2026-10-20T22:31:00|"
+        "00:00:00\n"
+    )
+    rows = ce.account(["301"], run_fn=_sacct_runner(out))
+    job = rows["jobs"]["301"]
+    assert job["cpu_efficiency"] is None, job
+    assert any("TIMEOUT" in note for note in job.get("notes", [])), job
+
+
+def test_cancelled_job_reports_unknown_efficiency_never_zero():
+    """CANCELLED (also by the backup) is the same artefact family."""
+    out = (
+        "302|killed_run|CANCELLED|0:0|00:15:00|01:00:00|cpu=4,mem=2G|4|1G|"
+        "2026-10-20T22:00:00|2026-10-20T22:01:00|2026-10-20T22:16:00|"
+        "00:00:00\n"
+    )
+    rows = ce.account(["302"], run_fn=_sacct_runner(out))
+    job = rows["jobs"]["302"]
+    assert job["cpu_efficiency"] is None, job
+    assert any("TotalCPU" in note for note in job.get("notes", [])), job
+
+
+def test_zero_artefact_never_reported_as_low_efficiency_on_wasted_state():
+    """The red direction: an arbitrary tiny-but-plausible TotalCPU on a
+    TIMEOUT row is still the artefact, not a measurement — efficiency
+    stays None even when the number would have computed to 1 %."""
+    out = (
+        "303|shell_run|TIMEOUT|0:9|00:30:00|00:30:00|cpu=2,mem=4G|2|1G|"
+        "2026-10-20T22:00:00|2026-10-20T22:01:00|2026-10-20T22:31:00|"
+        "00:00:30\n"
+    )
+    rows = ce.account(["303"], run_fn=_sacct_runner(out))
+    assert rows["jobs"]["303"]["cpu_efficiency"] is None
