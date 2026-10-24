@@ -282,8 +282,15 @@ def test_the_counts_still_match_what_was_measured():
     # the guard.
     # behavior 16 -> 18 on 2026-10-19: two act tasks (behavior_act) in
     # tasks_auto_behavior.yaml, editing the behaviour workspace's game.html.
+    #
+    # chemistry 5 -> 11 on 2026-10-24: the six XT1 xtb-method practice
+    # tasks (tasks_w20_xt1.yaml, wave 20, agent/s10-xt1b). Each grades a
+    # system from setup/w20_xt1_start_geometries.py on the physics by
+    # recomputation (accept/w20_xt1_minimum.py and the per-system
+    # wrappers, plus the uhf trap accept/w20_xt1_uhf_trap.py); the
+    # fixtures stay in the task workspace the guard installs and removes.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 5, "generalist": 22,
+                      "science": 23, "chemistry": 11, "generalist": 22,
                       "other": 71}, counts
 
 
