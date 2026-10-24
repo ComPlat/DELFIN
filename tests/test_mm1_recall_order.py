@@ -13,6 +13,9 @@ SESSION_TEXT = "Yesterday we fixed the OpenBabel fallback for iron complexes."
 def _levels(task, **kw):
     kw.setdefault("session_text", SESSION_TEXT)
     kw.setdefault("project_text", "Project: MM1 ships distill_for_shipping.")
+    kw.setdefault("knowledge_text", "Shipped lesson: check a lesson "
+                                    "against the code before relying on it.")
+    kw.setdefault("user_text", "The user prefers markdown tables in reports.")
     return md.recall_levels(task, **kw)
 
 

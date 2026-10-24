@@ -477,3 +477,61 @@ def distill_for_shipping(
         if kn.near_duplicate(e, other):
             return kn.write_entry(target, kn.merge_entries(other, e))
     return kn.write_entry(target, e)
+
+
+# ---------------------------------------------------------------------------
+# Recall order: the four memory levels, narrowest first (MM1 P2)
+# ---------------------------------------------------------------------------
+
+RECALL_LEVELS = ("session", "project", "knowledge", "user")
+
+
+def recall_levels(task_text: str, *, session_text: str = "",
+                  project_text: str = "", knowledge_text: str = "",
+                  user_text: str = "") -> list[tuple[str, str]]:
+    """The four memory levels in recall order, narrowest first.
+
+    Takes the ALREADY-FETCHED text of each level (the fetching lives in
+    prompt_loader — session history, project store, shipped pack
+    knowledge, user store) and returns ``[(level, text), ...]`` with:
+
+    * the fixed narrowest-first order session -> project -> knowledge ->
+      user (a session fact is more specific than the project's, the
+      project's than what every DELFIN user ships, the shipped pack than
+      the user's personal store);
+    * a ``source`` label on every level, so recalled text always says
+      where it came from;
+    * empty levels dropped — no level with no text is recalled;
+    * a wider level that merely repeats a narrower one dropped
+      (near-duplicate of the narrower text — the shipped copy of a
+      lesson the session already carries adds nothing and would be
+      recalled twice);
+    * no recall at all without a task (the same rule
+      knowledge.load_block applies, knowledge.py:548).
+
+    Returns ``[(level, text), ...]``; callers render each level as
+    ``--- <Level> ---`` blocks, the same shape prompt_loader already
+    uses for the separate blocks.
+    """
+    if not (task_text or "").strip():
+        return []
+    level_texts = [("session", session_text), ("project", project_text),
+                   ("knowledge", knowledge_text), ("user", user_text)]
+    out: list[tuple[str, str]] = []
+    kept_texts: list[str] = []
+    for level, text in level_texts:
+        text = str(text or "").strip()
+        if not text:
+            continue
+        from .memory_store import _inverts_polarity, _normalise_text
+        # A wider level repeating a narrower one is dropped: near-
+        # duplicate of the narrower text, or verbatim inside it.
+        duplicate_of_narrower = any(
+            text in kept or (_normalise_text(text) == _normalise_text(kept))
+            for kept in kept_texts)
+        if duplicate_of_narrower and not _inverts_polarity(text, " ".join(
+                kept_texts) or text):
+            continue
+        out.append((level, f"[source: {level}] {text}"))
+        kept_texts.append(text)
+    return out
