@@ -60,10 +60,35 @@ def _discover_builtin_adapters() -> None:
         for path in sorted(adapters_dir.glob("*.py")):
             if path.stem == "__init__":
                 continue
-            _try_import(f"{__name__.rsplit('.', 1)[0]}.adapters.{path.stem}")
+            mod_name = f"{__name__.rsplit('.', 1)[0]}.adapters.{path.stem}"
+            _reexec_module(mod_name, path)
     for mod in _LEGACY_ADAPTER_MODULES:
         _try_import(mod)
     _load_user_adapters()
+
+
+def _reexec_module(mod_name: str, path) -> None:
+    """(Re-)execute an adapter module so registration always happens.
+
+    Import from sys.modules cache re-runs no module body, so a SECOND
+    discovery in one process (e.g. after a registry reset) registered
+    nothing and the registry stayed empty.  Re-executing the file
+    guarantees every module-level ``register(...)`` call runs again.
+    User adapters never enter sys.modules (spec_from_file_location),
+    so only the builtin walk needs this.
+    """
+    import importlib.util
+    import sys
+
+    try:
+        module = sys.modules.pop(mod_name, None)
+        if module is None:
+            __import__(mod_name)
+            return
+        importlib.util.module_from_spec(module.__spec__)
+        module.__spec__.loader.exec_module(module)
+    except ImportError:
+        logger.debug("Optional adapter module not available: %s", mod_name)
 
 
 def _user_adapter_dirs():

@@ -83,18 +83,20 @@ def test_new_adapter_scaffolded_module_is_listed_by_registry(tmp_path, monkeypat
 def test_new_adapter_rejects_bad_name(tmp_path, monkeypatch):
     """An invalid name is refused: argparse rejects it OR the handler exits 2."""
     monkeypatch.chdir(tmp_path)
+    rc = 0
     try:
-        cli.main(["new-adapter", "../escape", "--kind", "parser"])
-        pytest.fail("bad name must not exit 0")
+        rc = cli.main(["new-adapter", "../escape", "--kind", "parser"])
     except SystemExit as exc:
-        assert exc.code != 0
+        rc = exc.code if isinstance(exc.code, int) else 1
+    assert rc != 0, "bad name must not exit 0"
 
 
 def test_new_adapter_rejects_unknown_kind(tmp_path, monkeypatch):
     """An unknown kind is refused: argparse rejects it OR the handler exits 2."""
     monkeypatch.chdir(tmp_path)
+    rc = 0
     try:
-        cli.main(["new-adapter", "wb3_demo", "--kind", "magic"])
-        pytest.fail("unknown kind must not exit 0")
+        rc = cli.main(["new-adapter", "wb3_demo", "--kind", "magic"])
     except SystemExit as exc:
-        assert exc.code != 0
+        rc = exc.code if isinstance(exc.code, int) else 1
+    assert rc != 0, "unknown kind must not exit 0"
