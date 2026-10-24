@@ -93,6 +93,11 @@ def _lint_step(label: str, kwargs: Dict[str, Any]) -> List[ScienceFinding]:
             label, "error", "invalid-multiplicity",
             f"multiplicity {mult} is invalid; spin multiplicity (2S+1) must be ≥ 1"))
 
+    # WB1 electronic realism rules (diffuse basis, relativistic elements,
+    # electron-count/multiplicity parity) — same module tree, same entry point.
+    from delfin.tools._science_rules.electronic import lint_electronic
+    out.extend(lint_electronic(label, kwargs))
+
     return out
 
 
