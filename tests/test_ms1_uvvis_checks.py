@@ -156,3 +156,72 @@ def test_stated_broadening_width_silences_the_note(tmp_path):
                  _td(extra="Gaussian broadening FWHM = 20 nm\n"))
     crits = rc.critique_output(out)
     assert "uv-no-broadening" not in _codes(crits)
+
+
+# --- s17 cross-review F1: float-tolerant row parsing -------------------
+# Real ORCA TDDFT rows carry bare "0." tokens (RX/TY/RZ columns),
+# negative values and E-notation. The row parser must accept them, or
+# a named-S^2 table is silently unparsed and the gate is off where it
+# must fire.
+
+_ORCA_REAL_ROW = (
+    " 0 -> 2.0   0.200  0.0 0.0  0.0     0.0   0.20  0.0"
+    "  0. 0. 0.  2.20")
+
+
+def _td_named(*state_lines, nroots="3", extra=""):
+    """Table whose header explicitly names the S^2 column."""
+    header = (
+        "State   Energy   Wavelength  fosc   D**2    X     Y     Z"
+        "     S^2\n"
+        "        (eV)     (nm)        (-)    (-)                      \n"
+        "----------------------------------------------------------------------------\n")
+    body = "".join(line + "\n" for line in state_lines)
+    return (_TERM + _ENERGY + _ATOMS
+            + f"Number of roots         ...   {nroots}\n"
+            + "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS\n"
+            + header + body + extra)
+
+
+def test_bare_zero_dot_tokens_do_not_silence_spin_contamination(tmp_path):
+    """A contaminated row with bare '0.' RX/TY/RZ tokens is parsed and
+    the 2.20 <S^2> fires (s17 probe: silently skipped before).
+    """
+    out = _write(tmp_path, "bare.out", _td_named(_ORCA_REAL_ROW))
+    crits = rc.critique_output(out)
+    assert "uv-spin-contamination" in _codes(crits)
+
+
+def test_negative_and_enotation_tokens_are_parsed(tmp_path):
+    """Rows with -0.12 and 1.23E-05 style tokens still parse."""
+    row = (" 0 -> 2.0   0.200  -0.12 0.0     0.0   0.20  0.0"
+           "  0. 0. 0.  2.20")
+    out = _write(tmp_path, "neg.out", _td_named(row))
+    crits = rc.critique_output(out)
+    assert "uv-spin-contamination" in _codes(crits)
+
+
+def test_clean_real_shaped_rows_still_do_not_fire(tmp_path):
+    """Control: real-shaped rows with <S^2> ~ 0 stay quiet."""
+    row = (" 0 -> 2.0   0.200  0.0 0.0  0.0     0.0   0.20  0.0"
+           "  0. 0. 0.  0.02")
+    out = _write(tmp_path, "cleanreal.out", _td_named(row))
+    crits = rc.critique_output(out)
+    assert "uv-spin-contamination" not in _codes(crits)
+
+
+def test_named_s2_table_with_no_parsed_rows_fails_visible(tmp_path):
+    """Fail-visible: a named-S^2 table whose rows parse to nothing
+    emits a uv-s2-unparsed warning instead of silence.
+    """
+    rows = "State   Energy   Wavelength  fosc      S^2\n"
+    out = _write(tmp_path, "garbage.out", _td_named(rows))
+    crits = rc.critique_output(out)
+    assert "uv-s2-unparsed" in _codes(crits)
+
+
+def test_parsed_rows_in_named_table_do_not_emit_unparsed_note(tmp_path):
+    """Control: when rows parse, uv-s2-unparsed stays quiet."""
+    out = _write(tmp_path, "parses.out", _td_named(_ORCA_REAL_ROW))
+    crits = rc.critique_output(out)
+    assert "uv-s2-unparsed" not in _codes(crits)
