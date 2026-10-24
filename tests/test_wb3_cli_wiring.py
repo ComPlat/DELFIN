@@ -44,14 +44,20 @@ def test_scaffolded_module_registers_through_user_adapter_loader(tmp_path, monke
     args = _parse("wb3_demo", "--kind", "parser", "--dir", str(tmp_path))
     assert cli_new_adapter.handler(args) == 0
 
-    reg._DISCOVERED = False
-    reg._REGISTRY.clear()
-    skeleton = tmp_path / "delfin" / "tools" / "adapters" / "wb3_demo.py"
-    reg.load_user_adapter_file(skeleton)
-    names = set(list_steps())
-    assert "wb3_demo_parser" in names, (
-        f"scaffolded adapter missing after load (saw {len(names)} steps)"
-    )
+    saved = (reg._DISCOVERED, dict(reg._REGISTRY))
+    try:
+        reg._DISCOVERED = False
+        reg._REGISTRY.clear()
+        skeleton = tmp_path / "delfin" / "tools" / "adapters" / "wb3_demo.py"
+        reg.load_user_adapter_file(skeleton)
+        names = set(list_steps())
+        assert "wb3_demo_parser" in names, (
+            f"scaffolded adapter missing after load (saw {len(names)} steps)"
+        )
+    finally:
+        reg._DISCOVERED, snapshot = saved
+        reg._REGISTRY.clear()
+        reg._REGISTRY.update(snapshot)
 
 
 def test_handler_refuses_existing_file(tmp_path, monkeypatch):

@@ -26,6 +26,7 @@ def argparse_Sub():
 def scaffolded(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("DELFIN_ADAPTERS_DIR", str(tmp_path / "user_adapters"))
+    saved = (reg._DISCOVERED, dict(reg._REGISTRY))
     parser = cli_new_adapter.build_parser(argparse_Sub())
     repo = tmp_path / "repo"
     (repo / "delfin" / "tools" / "adapters").mkdir(parents=True)
@@ -38,8 +39,9 @@ def scaffolded(tmp_path, monkeypatch):
         # keep prior registrations visible so all three coexist
         reg.load_user_adapter_file(skeleton)
     yield
-    reg._DISCOVERED = False
+    reg._DISCOVERED, snapshot = saved
     reg._REGISTRY.clear()
+    reg._REGISTRY.update(snapshot)
 
 
 def test_all_kinds_scaffold_and_register(scaffolded):

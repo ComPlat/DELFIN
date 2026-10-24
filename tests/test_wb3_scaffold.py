@@ -42,16 +42,29 @@ def test_newly_added_adapter_module_is_picked_up(tmp_path):
     probe.write_text(_TEMPLATE)
     import os
     import sys
+    saved = (reg._DISCOVERED, dict(reg._REGISTRY))
     sys.path.insert(0, str(tmp_path))
     old = os.environ.get("DELFIN_ADAPTERS_DIR")
     os.environ["DELFIN_ADAPTERS_DIR"] = str(tmp_path)
     try:
         reg._DISCOVERED = False
         reg._REGISTRY.clear()
+        # probe module import loads delfin.tools._registry fresh from
+        # sys.modules, so its register() lands in the LIVE registry —
+        # visible here through the public path after reset.
+        names = set(list_steps())
+        # force re-discovery of the probe module's registration
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "wb3_probe_adapter_module", probe
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
         names = set(list_steps())
     finally:
-        reg._DISCOVERED = False
+        reg._DISCOVERED, snapshot = saved
         reg._REGISTRY.clear()
+        reg._REGISTRY.update(snapshot)
         sys.path.remove(str(tmp_path))
         if old is None:
             os.environ.pop("DELFIN_ADAPTERS_DIR", None)
