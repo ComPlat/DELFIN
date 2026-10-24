@@ -9189,7 +9189,19 @@ def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
     if (not ok and isinstance(away, dict) and token
             and _DocToolExecutor._confirm_timed_out(perms)):
         away[kind] = token
+    elif not ok and token:
+        _note_refusal_in_turn(perms)
     return ok
+
+
+def _note_refusal_in_turn(perms) -> None:
+    """The user said no in this turn (_confirm_widening reads it)."""
+    try:
+        token = getattr(perms, "turn_token", 0)
+        if token:
+            perms.approval_refused_turn = token
+    except Exception:
+        pass
 
 
 def _not_asked_again_note() -> str:
@@ -9462,6 +9474,10 @@ class KitToolPermissions:
     #: mapped to the turn_token it expired in (_ask_confirm). Shared by
     #: reference with sub-agents (dataclasses.replace) like denied_actions.
     approval_away: dict = field(default_factory=dict)
+    #: The turn_token of the turn in which the user last refused a dialog
+    #: (_ask_confirm, the widening dialogs): a request to widen the agent's
+    #: own permissions right after a refusal is not asked (_confirm_widening).
+    approval_refused_turn: int = 0
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -23928,17 +23944,36 @@ class _DocToolExecutor:
                 "remember_permission needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
-        try:
-            ok = bool(perms.confirm_callback(
-                "remember_permission",
-                {"kind": kind, "value": value, "scope": scope,
-                 "rationale": rationale},
-                preview,
-            ))
-        except Exception as exc:
-            return json.dumps({"error": f"confirm_callback raised: {exc}"})
-        if not ok:
-            return json.dumps({"status": "denied", "kind": kind, "value": value})
+        call_args = {"kind": kind, "value": value, "scope": scope,
+                     "rationale": rationale}
+        if kind == "deny_pattern":
+            # Narrows what the agent may do: one ordinary question.
+            try:
+                ok = bool(perms.confirm_callback(
+                    "remember_permission", call_args, preview))
+            except Exception as exc:
+                return json.dumps({"error": f"confirm_callback raised: {exc}"})
+            if not ok:
+                return json.dumps({"status": "denied", "kind": kind, "value": value})
+        else:
+            where = ("in every project" if scope == "user"
+                     else f"in {perms.workspace}")
+            plain = {
+                "allow_pattern": (
+                    f"Shell commands matching {value} will run WITHOUT asking "
+                    f"you, {where}, in this and every later session."),
+                "extra_dir": (
+                    f"The agent may WRITE in {value} and everything below it, "
+                    f"{where}, in this and every later session."),
+                "default_mode": (
+                    f"Every later session starts in mode '{value}'"
+                    + (", in which the agent acts WITHOUT asking you."
+                       if value in ("bypassPermissions", "all_free") else ".")),
+            }[kind]
+            refused = self._confirm_widening(
+                perms, "remember_permission", call_args, preview, plain)
+            if refused is not None:
+                return refused
 
         # Apply the change to disk and to the live permissions.
         try:
@@ -23982,6 +24017,51 @@ class _DocToolExecutor:
             "scope": scope,
             "path": scope_path,
         })
+
+    def _confirm_widening(self, perms: "KitToolPermissions", tool: str,
+                          args: dict, preview: str, plain: str) -> Optional[str]:
+        """Ask twice, plainly, before the agent's own permissions widen.
+
+        Input: the call (an allow pattern, a workspace root, a starting
+        mode, a bundle of them) and ``plain``, what a yes means in words a
+        person who does not read regexes understands. Output: None when the
+        user said yes twice, else the tool's answer (refused or denied).
+
+        The model writes both the rule and the rationale the user reads,
+        and one y made it permanent for every later session. Measured
+        2026-10-23: refused a write, a model answered with
+        remember_permission_bundle -- a workspace root under /tmp and ten
+        auto-allow patterns into the user's settings. So: the question says
+        in its first line that the agent asks for more rights, permanently;
+        a second question asks again; and right after the user refused
+        something in this turn it is not asked at all.
+        """
+        token = getattr(perms, "turn_token", 0)
+        if token and getattr(perms, "approval_refused_turn", 0) == token:
+            _record_security_event("widening_after_refusal", tool,
+                                   plain[:120], blocked=True)
+            return json.dumps({"error": (
+                f"{tool} is refused: the user said no to something in this "
+                "turn, and a request for more permissions right after a no "
+                "is not put to them. Do not try another route to the same "
+                "permission. Tell the user what you need and why; they can "
+                "grant it themselves.")})
+        first = (f"{_WIDENING_BANNER}\n{plain}\n"
+                 "The agent wrote the reason below itself. If you are not "
+                 f"sure, answer no.\n\n{preview}")
+        second = (f"{_WIDENING_AGAIN}\n{plain}\n"
+                  "Answer yes only if you asked for this yourself.")
+        try:
+            for text, extra in ((first, {}), (second, {"confirm": "again"})):
+                if not bool(perms.confirm_callback(tool, {**args, **extra}, text)):
+                    if not self._confirm_timed_out(perms):
+                        _note_refusal_in_turn(perms)
+                    _record_security_event("denied_by_user", tool, plain[:120])
+                    return json.dumps({"status": "denied", "tool": tool,
+                                       "meaning": plain})
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        return None
 
     # Bundle profiles: name -> list of allow-pattern templates. The
     # placeholder ``{dir_re}`` is replaced with a regex-escaped form of the
@@ -24117,19 +24197,16 @@ class _DocToolExecutor:
                 "remember_permission_bundle needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
-        try:
-            ok = bool(perms.confirm_callback(
-                "remember_permission_bundle",
-                {"profile": profile, "directory": str(dir_path),
-                 "scope": scope, "rationale": rationale,
-                 "patterns": patterns},
-                preview,
-            ))
-        except Exception as exc:
-            return json.dumps({"error": f"confirm_callback raised: {exc}"})
-        if not ok:
-            return json.dumps({"status": "denied", "profile": profile,
-                               "directory": str(dir_path)})
+        refused = self._confirm_widening(
+            perms, "remember_permission_bundle",
+            {"profile": profile, "directory": str(dir_path),
+             "scope": scope, "rationale": rationale, "patterns": patterns},
+            preview,
+            (f"The agent may WRITE in {dir_path} and run {len(patterns)} kinds "
+             "of commands there WITHOUT asking you, in this and every later "
+             "session."))
+        if refused is not None:
+            return refused
 
         # Apply atomically. If the directory step or any pattern fails,
         # roll back what we already wrote so the user isn't left with a
@@ -34309,6 +34386,12 @@ class CodexCLIClient(_BaseClient):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+#: The first line of every question that widens the agent's own permissions
+#: (_confirm_widening); the front ends mark lines starting with "⚠".
+_WIDENING_BANNER = "⚠ THE AGENT ASKS FOR MORE RIGHTS — PERMANENTLY"
+_WIDENING_AGAIN = "⚠ CONFIRM AGAIN — THIS IS PERMANENT"
+
 
 def _map_kit_permission_mode(permission_mode: str) -> str:
     """Map dashboard CLI-permission strings to KitToolPermissions modes.
