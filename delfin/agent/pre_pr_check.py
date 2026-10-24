@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import re
 import subprocess
+
 from dataclasses import dataclass, field
+
+from delfin.agent import safe_git
 
 __all__ = ["Blocker", "PrePRReport", "run", "select_tests"]
 
@@ -63,18 +66,17 @@ class PrePRReport:
 
 def _git(worktree: str, *args: str) -> str:
     """One read-only git call, stdout returned; raises on a non-zero exit."""
-    result = subprocess.run(
-        ["git", *args], cwd=worktree, capture_output=True, text=True)
+    result = safe_git.run(list(args), cwd=worktree)
     if result.returncode != 0:
         raise RuntimeError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}")
+            f"git {' '.join(args)} failed: {(result.stderr or '').strip()}")
     return result.stdout
 
 
 def _rev_exists(worktree: str, rev: str) -> bool:
-    probe = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
-        cwd=worktree, capture_output=True, text=True)
+    probe = safe_git.run(
+        ["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+        cwd=worktree)
     return probe.returncode == 0
 
 
@@ -106,6 +108,10 @@ def select_tests(changed: list[str], worktree: str = ".") -> list[str]:
     * every ``tests/test_*guard*.py`` whose file or its matcher names what
       changed (the EF1 miss: a direct sacct call passed 33 own tests and
       failed ``test_r3_direct_scheduler_call_guard.py``);
+    * the same for the repo-wide invariant families ``tests/test_every_*.py``
+      and ``tests/test_delfins_own_*.py`` — invariant tests are not all
+      named ``*guard*`` (the 4723e1b0 miss: a direct git call skipped
+      ``test_delfins_own_git_reads_go_through_safe_git.py``);
     * every test that loads skills when ``delfin/agent/pack/skills/`` changed
       (the #383 miss: a skill without ``domains`` failed
       ``test_skills_match_the_workspace.py``);
@@ -140,18 +146,34 @@ def select_tests(changed: list[str], worktree: str = ".") -> list[str]:
 
 
 def _guard_tests_for(tree: set[str], worktree: str) -> list[str]:
-    """Guard tests whose scanned surface (or name) matches what changed."""
+    """Guard tests whose scanned surface (or name) matches what changed.
+
+    Beyond ``*guard*`` names, the repo-wide invariant families
+    ``tests/test_every_*.py`` and ``tests/test_delfins_own_*.py`` are
+    scanned the same way (operator finding on 4723e1b0: the safe_git
+    invariant is not named *guard*, so a direct-git change skipped it).
+    """
     out: list[str] = []
     for path in _iter_test_files(worktree):
         rel = path.replace("\\", "/")
         base = rel.rsplit("/", 1)[-1]
         if not base.startswith("test_") or not base.endswith(".py"):
             continue
-        if "guard" not in base:
+        if "guard" not in base and not _is_invariant_family(base):
             continue
         if _guard_covers(rel, path, tree, worktree):
             out.append(rel)
     return sorted(set(out))
+
+
+#: Repo-wide invariant tests are not all named ``*guard*``; these name
+#: prefixes mark the families that behave like one (a scan over delfin/
+#: that every change must survive).
+INVARIANT_PREFIXES = ("test_every_", "test_delfins_own_")
+
+
+def _is_invariant_family(base: str) -> bool:
+    return base.startswith(INVARIANT_PREFIXES)
 
 
 def _iter_test_files(worktree: str) -> list[str]:
@@ -261,9 +283,9 @@ def run(worktree: str, base: str = "origin/main",
             Blocker("private-string",
                     f"credential-shaped string in the diff: {kind}"))
     for partner in partners:
-        probe = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", partner, "HEAD"],
-            cwd=worktree, capture_output=True, text=True)
+        probe = safe_git.run(
+            ["merge-base", "--is-ancestor", partner, "HEAD"],
+            cwd=worktree)
         if probe.returncode != 0:
             report.blockers.append(Blocker(
                 "partner-not-merged",
