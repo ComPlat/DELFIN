@@ -756,6 +756,18 @@ class KitConfirmBroker:
             f'</pre>'
         )
 
+        # A question that widens the agent's own permissions
+        # (api_client._confirm_widening) opens with "⚠" and what a yes
+        # means in plain words: that paragraph is shown above the details,
+        # large and red, so it cannot be read as a routine approval.
+        if req.preview.startswith("⚠"):
+            said = req.preview.split("\n\n", 1)[0]
+            preview_pre = (
+                f'<div style="border:2px solid #b91c1c; background:#fef2f2; '
+                f'color:#7f1d1d; padding:8px 10px; margin:4px 0; '
+                f'font-size:13px; line-height:1.45; white-space:pre-wrap;">'
+                f'<b>{_html_escape(said)}</b></div>' + preview_pre)
+
         hint = self.outside_answer_hint(req)
         hint_html = (
             f'<div style="font-size:11px; color:#9aa5b1; margin:2px 0;">'
@@ -811,6 +823,14 @@ class KitConfirmBroker:
                     "for this session — no write access, nothing saved. "
                     "Future sessions ask again.",
         )
+        if req.preview.startswith("⚠"):
+            # Here the click itself writes the permanent rule: "once" would
+            # say the opposite of what it does.
+            approve.description = "Grant permanently"
+            approve.button_style = "danger"
+            approve.tooltip = ("Writes this permission to the settings file: "
+                               "it holds in every later session until "
+                               "someone removes it there.")
         approve_persist = widgets.Button(
             description="Allow + Permanent",
             button_style="info",

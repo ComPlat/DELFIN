@@ -238,9 +238,9 @@ def decide(token: str, event: dict) -> str | None:
     # The permission rules (permission_rules.py) -- the administrator's
     # managed rules first, then the user's and the project's, one matcher
     # -- on the native name of the call: deny refuses, ask asks through
-    # the same relay, and with nobody to ask an ask refuses. allow is not
-    # consulted here -- this hook only refuses or passes, it never answers
-    # a question for the CLI.
+    # the same relay, and with nobody to ask an ask refuses. An allow rule
+    # is not consulted here: what passes is passed by the gates below, and
+    # main() answers "allow" only for the tools they decide.
     native, native_args = _native_call(tool, args, cwd, state["workspace"])
     hit = ac._permission_rule_hit(perms, native, native_args)
     if hit is not None and hit[0] == "deny":
@@ -256,9 +256,12 @@ def decide(token: str, event: dict) -> str | None:
     elif tool in _WRITE_TOOLS:
         raw = args.get(_WRITE_TOOLS[tool])
         if raw:
+            # The native tool and its own arguments (content, old_string,
+            # new_string, edits share their names): the dialog previews the
+            # change. With the path alone a new file was "(no changes)".
             err = ex._gate_write_path(
-                str(_abs(raw, cwd, state["workspace"])), perms, "write_file",
-                {"path": str(raw)})
+                str(_abs(raw, cwd, state["workspace"])), perms,
+                _NATIVE_NAMES.get(tool, "write_file"), {**args, "path": str(raw)})
     elif tool == "Bash":
         cmd = str(args.get("command") or "")
         # The same refusal as the native bash gate: a pending approval is
@@ -298,6 +301,8 @@ def decide(token: str, event: dict) -> str | None:
                            f"'{target}', which is outside what you may "
                            f"modify. {_unjson(gate)}")
                     break
+        if err is None:
+            err = _ask_for_command(perms, cmd, ex)
 
     # Keep what this call granted or refused for the next one.
     with _locked(token) as path:
@@ -319,11 +324,57 @@ def decide(token: str, event: dict) -> str | None:
     return _unjson(err)
 
 
+#: The tools whose call DELFIN's gate decides in full; what it lets through
+#: it answers "allow" for (main).
+_DECIDED_TOOLS = frozenset((*_READ_TOOLS, *_WRITE_TOOLS, "Bash"))
+
+
+def _ask_for_command(perms, cmd: str, ex) -> str | None:
+    """The native bash gate's question, for a command the CLI would run.
+
+    In default and acceptEdits a command off the auto-allow list is asked
+    about, as on every other backend (the CLI's shell runs outside DELFIN's
+    cage, so no cage admits it unasked). Plan and bypass are the CLI's own
+    modes and pass. None when it may run, else the refusal.
+    """
+    from . import api_client as ac
+    if perms.mode not in ("default", "acceptEdits"):
+        return None
+    if perms.matches_bash_auto_allow(cmd):
+        return None
+    if perms.confirm_callback is None:
+        return ("refused: this command is not on the auto-allow list and "
+                "nobody can be asked in this session. Tell the user what it "
+                "is for.")
+    try:
+        ok = bool(ac._ask_confirm(perms, "bash", {"command": cmd}, f"$ {cmd}"))
+    except Exception as exc:
+        return f"refused: the question could not be asked ({exc})"
+    if ok:
+        return None
+    if ex._confirm_timed_out(perms):
+        return ("approval for this command TIMED OUT -- the user is away, "
+                "this is NOT a denial. Do not retry it now; say what is "
+                "waiting for them.")
+    return ("user denied this command. Do NOT retry it or reach the same "
+            "effect another way." + ex._said_why(perms))
+
+
 def main(argv: list[str]) -> int:
-    """Hook entry point: PreToolUse JSON on stdin, a decision on stdout."""
+    """Hook entry point: PreToolUse JSON on stdin, a decision on stdout.
+
+    A call DELFIN refuses is denied. A read, write or command its gate let
+    through -- asking the user where that is the rule -- is allowed, so the
+    CLI does not ask a second time: under ``-p`` it has nobody to ask and
+    refused every write the user had just approved. The CLI's own deny
+    rules (the secret files, _cli_secret_deny_rules) still hold over an
+    allow (measured with claude 2.1.309). Any other tool is left to the CLI.
+    """
     token = argv[1] if len(argv) > 1 else ""
+    tool = ""
     try:
         event = json.loads(sys.stdin.read() or "{}")
+        tool = str(event.get("tool_name") or "")
         reason = decide(token, event)
     except Exception as exc:
         reason = (f"refused: DELFIN's gate could not check this call "
@@ -333,6 +384,12 @@ def main(argv: list[str]) -> int:
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
+        }}))
+    elif tool in _DECIDED_TOOLS:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "DELFIN's gate let this call through",
         }}))
     return 0
 

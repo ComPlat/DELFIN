@@ -9,7 +9,7 @@
     3. copy the current DELFIN working tree (LF endings) + setup scripts onto
        the boot partition and write a cloud-init user-data
   On first boot (LAN needed) the Pi provisions itself: user 'pi' (SSH key
-  only, desktop autologin), agent user 'delfin' with passwordless sudo,
+  only, desktop autologin, the admin), agent user 'delfin' without root,
   Python 3.11 venv with all DELFIN extras, Claude/Codex CLIs, dashboard
   service on 127.0.0.1:8866. Progress: /var/log/delfin-firstboot.log
   Later updates: scripts/pi/deploy_pi.sh delfin@<host>

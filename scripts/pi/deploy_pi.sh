@@ -10,12 +10,13 @@ set -euo pipefail
 #   deploy_pi.sh --test delfin@raspi     # deploy + run pytest -m "not slow"
 #   deploy_pi.sh --rollback delfin@raspi # back to the previous deploy
 #   deploy_pi.sh --status delfin@raspi   # show deployed version
+#   deploy_pi.sh --landlock pi@raspi     # once, as the admin: Landlock kernel (~1 h, reboots)
 #
 # Deploys exactly what git tracks plus untracked-but-not-ignored files, so
 # .gitignore'd secrets, venvs and caches never leave this machine.
 # ============================================================================
 
-usage() { sed -n '7,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '7,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 action=install
 run_tests=""
@@ -23,6 +24,7 @@ case "${1:-}" in
     --bootstrap) action=bootstrap; shift ;;
     --rollback)  action=rollback;  shift ;;
     --status)    action=status;    shift ;;
+    --landlock)  action=landlock;  shift ;;
     --test)      run_tests="--test"; shift ;;
     -h|--help|"") usage ;;
 esac
@@ -73,6 +75,12 @@ install)
     push_helper
     git -c core.autocrlf=false -c core.eol=lf archive --format=tar.gz "$tree" \
         | ssh "$HOST" "bash ~/delfin/pi_install.sh install '$version' $run_tests"
+    ;;
+landlock)
+    # As the admin (the agent user has no root), from the agent's deployed
+    # tree; tryboot falls back to the stock kernel by itself.
+    k="~${AGENT_USER:-delfin}/delfin/src/scripts/pi/pi_kernel_landlock.sh"
+    ssh -t "$HOST" "sudo bash $k build && sudo bash $k try"
     ;;
 rollback|status)
     push_helper
