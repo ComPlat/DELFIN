@@ -127,6 +127,9 @@ _KINDS = {
     # code it showed (file_confirm reads it; cli refuses to write it).
     "approval_code_refused": ("🚫", "Approval answer without the session's code"),
     "approval_code_missing": ("🚫", "Approval answer not written: no code"),
+    # A request for more rights right after the user said no: refused, not
+    # put to them (api_client._confirm_widening).
+    "widening_after_refusal": ("🚫", "More rights requested right after a refusal (not asked)"),
     # A hand-over directory every session on the repository can write.
     "handover_root":  ("📂", "Shared hand-over directory in use"),
     "settings_updated": ("🛡", "Settings changed by a security update"),

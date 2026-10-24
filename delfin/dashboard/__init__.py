@@ -793,6 +793,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 branch_panel.row.layout.display = 'none'
             _draw_hint()
             return
+        installed = _installed_copy_hint(rd)
+        if installed is not None:
+            _hint_state['hint'] = installed
+            pull_delfin_btn.disabled = True
+            rollback_delfin_btn.disabled = True
+            if branch_panel is not None:
+                branch_panel.row.layout.display = 'none'
+            _draw_hint()
+            return
         try:
             _hint_state['hint'] = _git_status_hint(rd)
         except Exception as exc:
@@ -1316,6 +1325,30 @@ def _format_git_status_html(repo_dir):
         f'padding:2px 6px; border:1px solid #cfd8dc; border-radius:4px;">'
         f'{html.escape(text)}</span>'
     )
+
+def _installed_copy_hint(repo_dir):
+    """The header's hint when DELFIN runs from an installed copy; else None.
+
+    The header follows the installed package (_find_delfin_root), and a
+    package is not always a checkout: a pip install lives in site-packages,
+    a deploy (scripts/pi) is an unpacked archive. Asked for its git status,
+    such a directory answered "git status failed" -- a warning about
+    nothing, on every page load -- with Pull and Rollback aimed at a
+    repository that is not there.
+    """
+    if (Path(repo_dir) / '.git').exists():
+        return None
+    try:
+        from delfin import __version__
+        name = f'DELFIN {__version__}'
+    except Exception:
+        name = 'DELFIN'
+    return {'text': 'installed', 'icon': '◆',
+            'title': (f'{name} runs from an installed copy ({repo_dir}), not '
+                      'a git checkout: there is nothing to pull or roll back '
+                      'here. Update it the way it was installed.'),
+            'state': 'ok'}
+
 
 def _git_status_hint(repo_dir):
     """The header's status hint for the shared checkout, as data.
