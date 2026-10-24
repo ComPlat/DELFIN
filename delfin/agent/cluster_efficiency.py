@@ -273,6 +273,19 @@ def account(job_ids, *, run_fn=None, client=None) -> Optional[dict]:
 KNOWN_STEPS = ("opt", "gopt", "sp", "freq", "ts", "tddft", "scan",
                "saddle", "relaxed_scan", "ir", "uvvis", "nmr")
 
+#: Below this measured mean CPU efficiency a step kind is called
+#: low-parallel. The boundary sits between the two recorded wave-21
+#: populations — SOLVATOR ~1.5 % (sv1_tiny_solvator, delfin_7922181.out
+#: 'CPU Utilized' 00:01:31) vs DFT opt ~90 % — so either population is
+#: classified far from the threshold.
+LOW_PARALLEL_EFFICIENCY = 0.10
+
+#: Steps with well-parallelised kinds (DFT opt/freq/sp) are expected to
+#: use their cores; only kinds measured low-parallel get advice.
+HIGH_PARALLEL_STEPS = ("opt", "gopt", "sp", "freq", "ts", "tddft",
+                       "scan", "saddle", "relaxed_scan", "ir", "uvvis",
+                       "nmr")
+
 
 def _delfin_workflow_names() -> tuple:
     """DELFIN's own workflow vocabulary, from its own registries.
@@ -326,8 +339,65 @@ def _configured_partitions(explicit=None, *, profile=None):
     return configured_partitions(explicit, profile=profile)
 
 
+def _efficiency_summary(step, records):
+    """Mean CPU efficiency of one step kind from account() records.
+
+    Matching is by exact job_name against the step (case-sensitive,
+    like DELFIN's CONTROL step names) — a prefix match would credit
+    'crest' with 'crest_preopt''s measurement. Only COMPLETED rows
+    with a measured cpu_efficiency count: TIMEOUT/CANCELLED rows
+    carry the TotalCPU artefact (operator caution, wave 22) and are
+    excluded with a count, never read as 0 %.
+    """
+    rows = [r for r in records
+            if isinstance(r, dict) and r.get("job_name") == step]
+    if not rows:
+        # Records exist but none for this step: a zero-run summary,
+        # never None — the caller must see that nothing matched
+        # (a prefix/typo mismatch looks exactly like "no data").
+        return {"low_parallel": False, "advice": None,
+                "measured_runs": 0, "excluded_runs": 0,
+                "mean_cpu_efficiency": None, "max_measured_wall_s": None,
+                "source": (f"account() records contain no run of "
+                           f"'{step}'")}
+    measured = [r for r in rows
+                if r.get("state") == "COMPLETED"
+                and isinstance(r.get("cpu_efficiency"), (int, float))]
+    excluded = len(rows) - len(measured)
+    if not measured:
+        return {"low_parallel": False, "advice": None,
+                "measured_runs": 0, "excluded_runs": excluded,
+                "mean_cpu_efficiency": None, "max_measured_wall_s": None,
+                "source": "account() records (no measured COMPLETED run)"}
+    effs = [float(r["cpu_efficiency"]) for r in measured]
+    walls = [int(r.get("used", {}).get("wall_s") or 0) for r in measured]
+    mean = sum(effs) / len(effs)
+    low = mean < LOW_PARALLEL_EFFICIENCY
+    summary = {
+        "low_parallel": low,
+        "measured_runs": len(measured),
+        "excluded_runs": excluded,
+        "mean_cpu_efficiency": mean,
+        "max_measured_wall_s": max(walls),
+        "source": (f"EF1 account() records: {len(measured)} COMPLETED "
+                   f"run(s) of '{step}'"),
+    }
+    if low:
+        # Advice only — the numbers are what the runs measured; a
+        # time-limit kill of a low-parallel run is the recorded
+        # failure mode this advice exists to prevent.
+        summary["advice"] = (
+            f"measured mean CPU efficiency of '{step}' is "
+            f"{mean * 100:.1f} % over {len(measured)} COMPLETED run(s) "
+            f"(EF1 account()); this kind scales poorly with cores. "
+            "Consider pal 1 and a time limit from the measured "
+            f"wall time (max {max(walls)} s); decide yourself — the "
+            "user's PAL/maxcore/time are never changed by advice.")
+    return summary
+
+
 def advise(step: str, system_size: int, *,
-           explicit_partitions=None) -> dict:
+           explicit_partitions=None, efficiency_records=None) -> dict:
     """A resource suggestion for a workflow step, from DELFIN's logic only.
 
     PAL/maxcore come from :func:`delfin.cluster_utils.auto_configure_resources`
@@ -371,4 +441,15 @@ def advise(step: str, system_size: int, *,
     clean = [str(c).strip() for c in candidates if str(c).strip()]
     if clean:
         suggestion["partitions"] = ",".join(clean)
+    # Pre-submit efficiency advice (RS1 phase 2): only when the caller
+    # brings measured account() records for this step kind. Missing
+    # records behave exactly like today's advice.
+    if efficiency_records is not None:
+        suggestion["efficiency"] = _efficiency_summary(step,
+                                                       efficiency_records)
+        summary = suggestion["efficiency"]
+        if summary and summary["low_parallel"]:
+            suggestion["notes"].append(summary["advice"])
+    else:
+        suggestion["efficiency"] = None
     return suggestion
