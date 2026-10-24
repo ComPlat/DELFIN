@@ -57,9 +57,15 @@ def test_other(text):
 
 
 def test_kind_vocabulary():
+    # FX1 (wave 20) added the six coordination kinds to KINDS and made them
+    # routine for a DECLARED partner (first line only; hostile bodies and
+    # undeclared recipients still ask).
     assert set(mk.KINDS) == {"approved", "qs_ok", "pr_ready", "relay",
-                             "finding", "other"}
-    assert set(mk.ROUTINE_KINDS) == {"approved", "qs_ok", "pr_ready", "relay"}
+                             "finding", "other", "inventory", "findings",
+                             "fixed", "status", "review", "cross_review"}
+    assert set(mk.ROUTINE_KINDS) == {
+        "approved", "qs_ok", "pr_ready", "relay",
+        "inventory", "findings", "fixed", "status", "review", "cross_review"}
 
 
 def test_pure_no_state():
