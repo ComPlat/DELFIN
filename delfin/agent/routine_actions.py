@@ -120,9 +120,9 @@ def _url_routine(action: dict) -> Verdict | None:
         return None
     # Nothing that can carry data out: a hostile page asks the model to
     # fetch ``https://its-host/?d=<file contents>``. A DOI, an article or a
-    # manual page needs no query and no fragment; any other URL is judged
-    # as before, not refused.
-    if "?" in url or "#" in url or len(url) > 200:
+    # manual page needs no query; any other URL is judged as before, not
+    # refused. A fragment stays: the client never sends it to the server.
+    if "?" in url.split("#", 1)[0] or len(url) > 200:
         return None
     # The action dict always carries "tool"; only url/timeout_s may be
     # in the ARGUMENTS on top of it.

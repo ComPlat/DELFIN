@@ -8,8 +8,8 @@ have the model send workspace content to its own host
 (``https://host/?d=<file contents>``). Secrets in a URL are refused
 elsewhere; ordinary file contents were not.
 
-Now the routine shape is a GET whose URL has no query and no fragment and
-a path of at most 200 characters: a DOI, an article, a manual page. A URL
+Now the routine shape is a GET whose URL has no query and is at most 200
+characters long (a fragment stays: the client never sends it): a DOI, an article, a manual page. A URL
 outside that is judged as before (screen returns None), not refused.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def test_a_plain_article_fetch_stays_routine(url):
 
 @pytest.mark.parametrize("url", [
     "https://collector.example/?d=c2VjcmV0IGNvbnRlbnRz",
-    "https://collector.example/page#c2VjcmV0",
+    "https://collector.example/page?x=1#frag",
     "https://collector.example/" + "a" * 300,
 ])
 def test_a_url_that_can_carry_data_is_judged_not_waved_through(url):
