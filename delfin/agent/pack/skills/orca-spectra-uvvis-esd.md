@@ -5,6 +5,7 @@ description: >-
   states, oscillator strengths, solvation, n->pi* vs pi->pi* character.
   Use when the user asks for an absorption spectrum, excitation
   energies, or an excited state of a small molecule.
+domains: code
 ---
 
 # UV-Vis via TD-DFT and the _esd workflow

@@ -5,6 +5,7 @@ description: >-
   scaling factors with their source, IR activity and point group.
   Use when the user asks for an IR spectrum, vibrational frequencies
   to compare with experiment, or Raman activities.
+domains: code
 ---
 
 # IR / Raman spectra through DELFIN

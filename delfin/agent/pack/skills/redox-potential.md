@@ -5,6 +5,7 @@ description: >-
   thermodynamic cycle, the reference electrode (E_ref), the M1/M2/M3
   methods, and what makes a reported potential scientifically valid.
   Use when the user asks for an oxidation, reduction, or redox potential.
+domains: code
 ---
 
 # Redox potentials through DELFIN's redox workflow

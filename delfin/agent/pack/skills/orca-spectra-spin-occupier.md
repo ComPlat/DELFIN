@@ -4,6 +4,7 @@ description: >-
   Determine preferred spin states and broken-symmetry solutions through
   DELFIN's OCCUPIER workflow. Use when the user asks about spin states,
   high-spin vs low-spin, or spin contamination of a metal complex.
+domains: code
 ---
 
 # Spin states and broken symmetry via OCCUPIER
