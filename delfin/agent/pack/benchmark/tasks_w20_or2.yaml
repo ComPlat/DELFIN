@@ -71,7 +71,7 @@ tasks:
     max_tool_calls: 25
 
   - id: w20-or2-03
-    skill: orca-spin-occupier
+    skill: orca-spectra-spin-occupier
     task_class: chemistry
     mode: solo
     prompt: >-
