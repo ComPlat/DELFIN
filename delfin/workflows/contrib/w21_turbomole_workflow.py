@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -167,7 +168,10 @@ class TurbomoleWorkflow:
                 config={}, geometry=args.geometry, charge=args.charge,
                 mult=args.mult, method=args.method, basis=args.basis,
                 cores=args.cores, work_dir=args.work_dir)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — the CLI must print WHY it failed
+            # Wave-17 lesson 5: a bare failure with no message hides the
+            # cause (a missing binary, a wrong path). Print and fail.
+            print(f"turbomole failed: {exc}", file=sys.stderr)
             return 1
         return 0 if result.get("ok") else 1
 

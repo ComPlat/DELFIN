@@ -28,6 +28,7 @@ workflow imports and re-uses them, it does not copy them:
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Dict, Optional
 
 from delfin.workflows.registry import register
@@ -142,7 +143,10 @@ class MlpScreenWorkflow:
                 config={}, ensemble=args.ensemble, backend=args.backend,
                 charge=args.charge, mult=args.mult, device=args.device,
                 work_dir=args.work_dir)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — the CLI must print WHY it failed
+            # Wave-17 lesson 5: a bare failure with no message hides the
+            # cause (a missing binary, a wrong path). Print and fail.
+            print(f"mlp_screen failed: {exc}", file=sys.stderr)
             return 1
         return 0 if result.get("ok") else 1
 
