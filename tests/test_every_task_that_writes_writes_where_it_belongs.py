@@ -338,9 +338,16 @@ def test_the_counts_still_match_what_was_measured():
     # BOTH halves (spec via workflow_grader, run via CB0A's
     # run_evidence.collect + grade_run, max_cores=2). Setup
     # setup/w21_run_fixtures.py (<= 6 atoms, CONTROL pins charge/mult).
+    # science 23 -> 27 on 2026-10-20 (CE1, wave 20, agent/s11-ce1b): the
+    # four tasks_w20_ce1.yaml tasks (science_analysis), offline over the
+    # fixture ensembles from setup/w20_ce1_ensemble_fixture.py -- lowest
+    # conformer, Boltzmann weights at a stated temperature, the
+    # two-levels trap, CENSO-style threshold handoff. Each writes only
+    # into its own w20_ce1_ensemble/ folder under the workspace; the
+    # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                        "science": 37, "chemistry": 23, "generalist": 22,
-                        "other": 71}, counts
+                      "science": 41, "chemistry": 23, "generalist": 22,
+                      "other": 71}, counts
 
 
 # ---------------------------------------------------------------------------
