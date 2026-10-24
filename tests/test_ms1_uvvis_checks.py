@@ -225,3 +225,30 @@ def test_parsed_rows_in_named_table_do_not_emit_unparsed_note(tmp_path):
     out = _write(tmp_path, "parses.out", _td_named(_ORCA_REAL_ROW))
     crits = rc.critique_output(out)
     assert "uv-s2-unparsed" not in _codes(crits)
+
+
+def test_parser_exception_keeps_other_findings_and_no_critic_error(tmp_path):
+    """s17 F3: when the api parser RAISES, res must not be unbound.
+    Before the fix the triplet block hit NameError at the res.transitions
+    read and critique_output collapsed every finding into critic-error.
+    With the fix: uv-parser-error warn appears, the content-based
+    termination finding survives, no critic-error, no NameError.
+    """
+    out = _write(tmp_path, "raise.out", _td())
+    orig = rc.__dict__.get("_orig_extract_excited_states")
+    def _boom(folder):
+        raise RuntimeError("forced parser failure")
+    saved = None
+    import delfin.api as api
+    saved = api.extract_excited_states
+    try:
+        api.extract_excited_states = _boom
+        # _check_uvvis imports inside the function, so patch the source
+        # module it resolves through: delfin.api.
+        crits = rc.critique_output(out)
+    finally:
+        api.extract_excited_states = saved
+    codes = _codes(crits)
+    assert "uv-parser-error" in codes
+    assert "critic-error" not in codes
+    assert "termination" in codes  # other findings survive

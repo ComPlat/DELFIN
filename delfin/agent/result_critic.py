@@ -409,6 +409,8 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
         res = extract_excited_states(str(out_path.parent))
         res_valid = res.error is None and bool(res.transitions)
     except Exception:
+        res = None  # s17 F3: keep the name bound; the triplet block
+        # below reads res.transitions at function level.
         findings.append(Critique(
             "warn", "uv-parser-error",
             "UV-Vis/TDDFT check could not run (parser error); the "
@@ -508,7 +510,7 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
     # ... 3 in the echo) legitimately lists triplet excitations — only
     # a mult-1 reference makes a triplet row a spin-flip mixture.
     triplets = []
-    if mult == 1:
+    if mult == 1 and res_valid:
         triplets = [t.state_to for t in res.transitions
                     if _re.search(r"\d+-3[A']|\d+3[A']", t.state_to or "")]
     if triplets:
