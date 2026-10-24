@@ -27,6 +27,7 @@ tasks:
       minimum. Report the lowest-energy structure's thermochemical
       correction at 298 K and the count of imaginary frequencies.
     setup: w20_classic_opt_freq.py
+    verify: w20_workflow_verify.py
     grading_levels: [consistency, reproduction, reference, trap]
     trap: start geometry relaxes to a saddle point
     cost:
@@ -52,6 +53,7 @@ tasks:
     # F3 fix: no trap level here -- trap_note is empty for an
     # internally consistent formaldehyde cation; the redox trap rides
     # the nitrite_radical carrier only.
+    verify: w20_workflow_verify.py
     grading_levels: [consistency, reproduction, reference]
     cost:
       core_hours_requested: null
@@ -74,6 +76,7 @@ tasks:
     setup: w20_rest.py
     # F3 fix: trap presentable -- ethanol's bright excitation lies in
     # the UV, outside the visible; the agent must notice and report it.
+    verify: w20_workflow_verify.py
     grading_levels: [consistency, reproduction, reference, trap]
     trap: bright line lies outside the visible
     cost:
@@ -96,6 +99,7 @@ tasks:
       the structure wants to go, correct it, and report a geometry with
       no negative curvature plus the energy change along the way.
     setup: w20_rest.py
+    verify: w20_workflow_verify.py
     grading_levels: [consistency, reproduction, trap]
     trap: start geometry relaxes to a saddle point
     cost:
@@ -117,6 +121,7 @@ tasks:
       is lowest. Report the relative energies of the candidate spin
       states from ONE level of theory and the <S^2> values you obtained.
     setup: w20_rest.py
+    verify: w20_workflow_verify.py
     grading_levels: [consistency, reproduction, reference, trap]
     trap: spin contamination
     cost:
@@ -139,6 +144,7 @@ tasks:
       and report the conformer energy spread and the SMILES/geometry of
       the winner.
     setup: w20_rest.py
+    verify: w20_workflow_verify.py
     grading_levels: [consistency, reproduction]
     cost:
       core_hours_requested: null
@@ -161,6 +167,7 @@ tasks:
       for the neutral and the charged member of the couple and report
       the difference.
     setup: w20_rest.py
+    verify: w20_workflow_verify.py
     grading_levels: [consistency, reproduction, reference]
     # F3 fix: trap field removed -- the drawn screening member (nitrite
     # radical, neutral) cannot present "anion without diffuse
