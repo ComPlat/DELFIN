@@ -41,7 +41,8 @@ __all__ = ["ROUTINE_KINDS", "routine_verdict"]
 
 Verdict = _ac.Verdict
 
-ROUTINE_KINDS = ("merge_abort", "new_local_branch", "git_mv", "web_fetch_get")
+ROUTINE_KINDS = ("merge_abort", "new_local_branch", "existing_local_branch",
+                 "git_mv", "web_fetch_get")
 
 
 # Shell operators or nested execution anywhere in a command: the moment
@@ -79,6 +80,15 @@ def _git_routine(tokens: list, sub: str) -> Verdict | None:
         flag = "-b" if sub == "checkout" else "-c"
         forced = "-B" if sub == "checkout" else "-C"
         if not args or args[0] != flag:
+            # GT1: a plain switch to an EXISTING local branch of the
+            # session's own worktree is the same tree-hygiene class:
+            # exactly one operand, no flags, no "--", nothing detach-
+            # shaped, and the operand must resolve to a local branch
+            # (verified against git's own ref store, never against a
+            # path in the tree). Anything else is judged as today.
+            v = _existing_branch_routine(sub, args)
+            if v is not None:
+                return v
             return None
         # Positional-only beyond the flag: any other dash-token could
         # carry a destructive mode (--discard-changes, --track, ...) --
@@ -104,6 +114,45 @@ def _git_routine(tokens: list, sub: str) -> Verdict | None:
             "allow", "routine: git mv of an own file inside the scope; "
             "the write gate still holds the path.")
     return None
+
+
+def _existing_branch_routine(sub: str, args: list) -> Verdict | None:
+    """GT1: ``git checkout <branch>`` / ``git switch <branch>`` for a
+    branch that EXISTS locally.
+
+    The shape is exact: one operand, no flags, no ``--``, nothing that
+    carries a detach/force/orphan mode. The operand must resolve to a
+    LOCAL branch in the session's own repository (``git show-ref
+    --verify refs/heads/<name>``) and must NOT be an existing file --
+    if the name also names a file in the tree, the command could be a
+    path checkout, and that stays judged (fail-safe direction). Never
+    raises: a git probe that fails means "not routine", which is where
+    the command already was.
+    """
+    if len(args) != 1 or args[0].startswith("-") or args[0] == "--":
+        return None
+    name = args[0]
+    # A path-shaped operand could be a pathspec; a bare name with no
+    # separator never is, but an EXISTING file wins the ambiguity
+    # against the branch reading (git checks the index and the tree
+    # before the refs). Probe the tree first, fail-closed.
+    try:
+        import os
+        if os.path.exists(name) or os.path.isdir(name):
+            return None
+        import subprocess
+        probe = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet",
+             "refs/heads/" + name],
+            capture_output=True, timeout=5)
+        if probe.returncode != 0:
+            return None
+    except Exception:
+        return None
+    return Verdict(
+        "allow",
+        f"routine: {sub} to the existing local branch '{name}' of the "
+        "own worktree; no paths, no force, no detach.")
 
 
 def _url_routine(action: dict) -> Verdict | None:
