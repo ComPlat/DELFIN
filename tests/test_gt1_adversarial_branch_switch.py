@@ -108,13 +108,18 @@ def test_switching_to_an_existing_local_branch_is_allowed(cmd, git_ws):
 
 
 def test_the_write_gate_read_the_branch_name_as_a_path(git_ws):
-    """Reproduce the DECIDING classification, not only the refusal:
-    patch_targets names <ws>/agent/s3-ds1b as a write target for the
-    branch operand, because _is_path_shaped treats any `/` as a path."""
+    """GT1: the DECIDING classification, pinned in its INTENT, not its
+    old defect. Originally this test reproduced the wave-21 defect
+    (the branch operand was named as a write path) and stayed red until
+    the px fix landed; the operator ruled the fix turns it red by
+    design, so the assertion is INVERTED per its purpose: a branch
+    operand must NOT be named as a path, while a real pathspec of the
+    same shape still is (see test_checkout_dashdash_not_routine's tier
+    and the *_is_still_named cases in test_gt1_existing_branch_switch)."""
     from delfin.agent import patch_targets
     targets = patch_targets.targets("git checkout agent/s3-ds1b",
                                     str(git_ws.workspace))
-    assert [str(git_ws.workspace / "agent" / "s3-ds1b")] == targets
+    assert [str(git_ws.workspace / "agent" / "s3-ds1b")] != targets
 
 
 @pytest.mark.parametrize("cmd", [

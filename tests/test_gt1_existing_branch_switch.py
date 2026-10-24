@@ -109,8 +109,26 @@ def test_checkout_shell_operator_not_routine():
 
 # --- (B) write-gate target parser --------------------------------------------
 
+def _tmp_branch_repo():
+    """A real tmp git repository that carries the local branch
+    ``agent/s3-ds1b`` -- the fail-closed branch probe needs a ref store
+    to ask; a bare directory would keep the operand a path forever."""
+    import os
+    import subprocess
+    import tempfile
+    td = tempfile.mkdtemp(prefix="gt1-branch-")
+    subprocess.run(["git", "init", "-q", td], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", td, "commit", "-q", "--allow-empty",
+                    "-m", "gt1 fixture"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", td, "branch", "agent/s3-ds1b"],
+                   check=True, capture_output=True)
+    return td
+
+
 def test_checkout_branch_operand_is_not_named_as_a_write_path():
-    got = pt.targets("git checkout agent/s3-ds1b", "/some/worktree")
+    wd = _tmp_branch_repo()
+    got = pt.targets("git checkout agent/s3-ds1b", wd)
     assert got == [], got
 
 
