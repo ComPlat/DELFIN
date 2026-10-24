@@ -192,3 +192,63 @@ def test_an_unknown_step_name_fails():
     verdict = grade({"name": "m", "steps": [{"step": "classic_opt_freq"}]},
                     "Optimise methanol.")
     assert verdict["status"] == "fail"
+
+
+# ---------------------------------------------------------------------------
+# Reviewer s25 findings (A1-A4, B5) — false-positive physics demands
+# ---------------------------------------------------------------------------
+
+def test_reddox_request_does_not_demand_rhenium_relativity():
+    """A1: the word 'redox' contains 're' — a word prefix must never
+    trigger the 5d rule."""
+    spec = {"name": "copper_redox", "steps": [
+        {"step": "orca_sp", "kwargs": {"charge": 1, "mult": 2,
+                                       "method": "PBE0",
+                                       "basis": "def2-TZVP"}}]}
+    verdict = grade(spec, "redox potential of a copper complex")
+    assert verdict["status"] == "pass", verdict["reasons"]
+
+
+def test_ir_spectrum_does_not_demand_iridium_relativity():
+    """A2: 'IR spectrum' contains 'ir'. The spec carries the IR parse step
+    the request needs — only the false relativity demand must go."""
+    spec = {"name": "ir_co", "steps": [
+        {"step": "orca_opt_freq", "kwargs": {"charge": 0, "mult": 1,
+                                             "method": "PBE0",
+                                             "basis": "def2-TZVP"}},
+        {"step": "ir_parse", "kwargs": {}}]}
+    verdict = grade(spec, "the IR spectrum of carbon monoxide")
+    assert verdict["status"] == "pass", verdict["reasons"]
+
+
+def test_water_does_not_demand_tungsten_relativity():
+    """A3: 'water' contains 'w'."""
+    spec = {"name": "water_sp", "steps": [
+        {"step": "orca_sp", "kwargs": {"charge": 0, "mult": 1,
+                                       "method": "PBE0",
+                                       "basis": "def2-TZVP"}}]}
+    verdict = grade(spec, "the energy of water")
+    assert verdict["status"] == "pass", verdict["reasons"]
+
+
+def test_hf_symbol_case_insensitive_still_caught():
+    """A4 positive control: a real 5d mention still fails without
+    relativity (the symbol, upper case, as a chemist writes it)."""
+    spec = {"name": "au_sp", "steps": [
+        {"step": "orca_sp", "kwargs": {"charge": 0, "mult": 1,
+                                       "method": "PBE0",
+                                       "basis": "def2-TZVP"}}]}
+    verdict = grade(spec, "the energy of the Au complex")
+    assert verdict["status"] == "fail"
+
+
+def test_rigid_molecule_frequency_request_does_not_demand_conformers():
+    """B5: 'frequencies of the fixed chair conformation' mentions the
+    word conformation — a rigid-molecule request must pass."""
+    spec = {"name": "chair_freq", "steps": [
+        {"step": "orca_opt_freq", "kwargs": {"charge": 0, "mult": 1,
+                                             "method": "PBE0",
+                                             "basis": "def2-TZVP"}}]}
+    verdict = grade(
+        spec, "frequencies of the fixed chair conformation of cyclohexane")
+    assert verdict["status"] == "pass", verdict["reasons"]

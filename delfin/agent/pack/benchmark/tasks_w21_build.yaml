@@ -80,7 +80,10 @@ tasks:
     setup: w21_build_fixtures.py
     verify: w21_build_verify.py
     grading_levels: [consistency, reproduction, trap]
-    trap: an iron complex computed without a relativistic treatment
+    # 3d iron: the grader's relativity rule targets 5d/6p elements only
+    # (s25 finding C) — the trap here is spin-state handling, not
+    # relativistics.
+    trap: an iron complex whose spin states were not all computed at one level
     max_duration_s: 600
     max_cost_usd: 0.50
     max_tool_calls: 25

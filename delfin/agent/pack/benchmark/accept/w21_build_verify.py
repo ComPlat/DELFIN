@@ -70,8 +70,6 @@ def main(argv: list[str]) -> None:
         _fail(f"{answer_p} missing — unjustified deviations cannot be graded")
     answer = answer_p.read_text(encoding="utf-8")
 
-    brief = brief_p.read_text(encoding="utf-8")
-
     from delfin.agent import workflow_grader
     verdict = workflow_grader.grade(spec, brief, answer=answer)
     if verdict["status"] != "pass":

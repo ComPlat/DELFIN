@@ -83,13 +83,19 @@ _CORE_HOUR_ESTIMATE = {
 #: nothing in the spec matches fails the coverage check.
 _COVERAGE = (
     (("optimise", "optimize", "optimization", "optimisation"), ("orca_opt", "orca_opt_freq", "xtb_opt", "orca_ts_opt")),
-    (("frequency", "frequencies", "frequent", "thermochem", "thermochemical", "minimum", "saddle"), ("orca_freq", "orca_opt_freq", "cclib_vibrations", "ir_parse")),
-    (("conformer", "conformation", "flexible", "rotamer"), ("crest_conformers", "xtb_goat")),
-    (("spectrum", "excitation", "absorption", "uv", "uv-vis", "optically", "bright"), ("orca_tddft", "uv_vis_parse", "esd")),
+    (("frequency", "frequencies", "thermochem", "thermochemical", "minimum", "saddle"), ("orca_freq", "orca_opt_freq", "cclib_vibrations", "ir_parse")),
+    (("conformer", "conformers", "flexible", "rotamer"), ("crest_conformers", "xtb_goat")),
+    # ir_parse satisfies a spectrum request only when the request names
+    # IR; a UV/visible spectrum needs the TDDFT chain (s25 A2 review run).
+    (("ir spectrum", "infrared"), ("ir_parse", "orca_opt_freq")),
+    (("spectrum", "excitation", "absorption", "optically", "bright"), ("orca_tddft", "uv_vis_parse", "esd", "ir_parse")),
+    # a UV/visible request needs the TDDFT/ESD chain; ir_parse alone
+    # cannot deliver it (the IR entry above covers the infrared side).
+    (("uv", "uv-vis"), ("orca_tddft", "uv_vis_parse", "esd")),
     (("spin",), ("orca_sp", "orca_opt", "orca_opt_freq")),
     (("potential", "redox", "ionisation", "ionization", "oxidation", "reduction"), ("orca_sp", "cclib_energies")),
     (("solvation", "solvent", "solvated", "solvate", "medium"), ("xtb_solvator", "esd")),
-    (("transition state", " ts ", "ts search", "reaction path", "irc", "barrier"), ("orca_ts_opt", "orca_ts_irc", "orca_ts_freq_check", "imag_fix")),
+    (("transition state", "ts search", "reaction path", "irc", "barrier"), ("orca_ts_opt", "orca_ts_irc", "orca_ts_freq_check", "imag_fix")),
 )
 
 # Level-of-theory normalisation for the "one difference, one level" rule.
@@ -117,6 +123,12 @@ _5D_METALS = (
     ("ta", "tantalum"), ("hf", "hafnium"), ("hg", "mercury"),
     ("tl", "thallium"), ("pb", "lead"), ("bi", "bismuth"),
 )
+#: (case-sensitive symbol, case-insensitive element name) — the symbol
+#: match is case-sensitive so 'IR' (infrared) never reads as 'Ir'
+#: (iridium) or 'HF' (hydrogen fluoride) as 'Hf' (hafnium). Symbols are
+#: stored capitalised; the element name in lowercase.
+_5D_SYMBOLS = tuple(
+    (sym.capitalize(), name) for sym, name in _5D_METALS)
 
 _RELATIVISTIC = ("zora", "dkh", "x2c", "sarc")
 
@@ -190,9 +202,19 @@ def _anion_reason(spec: dict, steps: List[dict]) -> Optional[str]:
 
 
 def _relativistic_reason(request: str, steps: List[dict]) -> Optional[str]:
-    """A 5d (or 6p) element needs a relativistic Hamiltonian."""
-    text = request.lower()
-    if not any(re.search(rf"\b{sym}|{name}\b", text) for sym, name in _5D_METALS):
+    """A 5d (or 6p) element needs a relativistic Hamiltonian.
+
+    Element matching is on WHOLE words in both spellings (s25 finding
+    A1-A4): the word boundary must wrap the whole alternation —
+    ``\\b(?:au|gold)\\b`` — or a prefix hits inside unrelated words
+    ('redox' contains 're', 'IR' contains 'ir', 'water' contains 'w').
+    The SYMBOL is matched case-sensitively (a chemist writes formulas
+    capitalised: 'IR' is infrared, 'Ir' is iridium) and the ELEMENT NAME
+    case-insensitively."""
+    if (not any(re.search(rf"\b(?:{sym}|{name})\b", request)
+                for sym, name in _5D_SYMBOLS)
+            and not any(re.search(rf"\b{name}\b", request.lower())
+                        for _, name in _5D_SYMBOLS)):
         return None
     for s in steps:
         kw = s.get("kwargs", {}) or {}
@@ -202,12 +224,22 @@ def _relativistic_reason(request: str, steps: List[dict]) -> Optional[str]:
             "to zora/dkh/x2c with a matching recontracted basis")
 
 
+def _word_in(text: str, word: str) -> bool:
+    """Whole-word match (s25 finding B5): a substring test fires inside
+    unrelated words ('frequencies of the fixed chair conformation' would
+    otherwise demand a conformer search for a rigid molecule)."""
+    return re.search(rf"\b{re.escape(word)}\b", text) is not None
+
+
 def _conformer_reason(request: str, steps: List[dict]) -> Optional[str]:
     """A flexible molecule asked for its conformer landscape needs a cheap
-    conformer search BEFORE the expensive level."""
+    conformer search BEFORE the expensive level. Whole-word matching: a
+    rigid-molecule request that merely mentions 'conformation' (as in
+    'the fixed chair conformation') must not trigger it."""
     text = request.lower()
-    asks_landscape = any(w in text for w in
-                         ("conformer", "conformation", "flexible", "rotamer"))
+    asks_landscape = (
+        _word_in(text, "conformer") or _word_in(text, "conformers")
+        or _word_in(text, "flexible") or _word_in(text, "rotamer"))
     if not asks_landscape:
         return None
     if any(_norm(s.get("step")) in ("crest_conformers", "xtb_goat")
@@ -218,12 +250,14 @@ def _conformer_reason(request: str, steps: List[dict]) -> Optional[str]:
 
 
 def _coverage_reason(request: str, steps: List[dict]) -> Optional[str]:
-    """Every capability the request names must be covered by a step."""
-    text = " " + request.lower() + " "
+    """Every capability the request names must be covered by a step.
+    Keywords match as whole words (s25 finding B5)."""
+    text = request.lower()
     names = {_norm(s.get("step")) for s in steps}
     missing = []
     for keywords, satisfying in _COVERAGE:
-        if any(k in text for k in keywords) and not (names & set(satisfying)):
+        if (any(_word_in(text, k.strip()) for k in keywords)
+                and not (names & set(satisfying))):
             missing.append(keywords[0])
     if missing:
         return (f"the request asks for {missing} but no step covers it "
