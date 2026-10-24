@@ -115,10 +115,13 @@ class TurbomoleWorkflow:
 
     @staticmethod
     def _count_imaginary(work_dir: Path) -> Optional[int]:
-        """Count negative frequencies in the aoforce output, if present.
+        """Count imaginary modes in the aoforce output, if present.
 
-        The aoforce log carries ``n(t-i)`` lines with the harmonic
-        frequencies in cm-1; negative values are imaginary modes.
+        Aoforce prints imaginary modes either as a bare negative number
+        or with an explicit ``i`` suffix (``-123.45i``) — reviewer
+        finding F5: an un-parsed i-suffix line would hide a
+        non-minimum, which is exactly what the reporting duty exists
+        to prevent. Both formats count.
         """
         log = work_dir / "aoforce.out"
         if not log.is_file():
@@ -126,12 +129,17 @@ class TurbomoleWorkflow:
         count = 0
         for line in log.read_text(errors="replace").splitlines():
             parts = line.split()
-            if len(parts) >= 2 and parts[1].lstrip("-").replace(".", "", 1).isdigit():
-                try:
-                    if float(parts[1]) < 0:
-                        count += 1
-                except ValueError:
-                    continue
+            if len(parts) < 2:
+                continue
+            token = parts[1].lower()
+            has_i_suffix = token.endswith("i") or token.endswith("i*")
+            bare = token.rstrip("*i")
+            try:
+                value = float(bare)
+            except ValueError:
+                continue
+            if has_i_suffix or value < 0:
+                count += 1
         return count
 
     def run_cli(self, argv: list) -> int:

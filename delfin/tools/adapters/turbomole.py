@@ -127,6 +127,7 @@ def _setup_control(work_dir: Path, **kwargs: Any) -> None:
     mult = kwargs.get("mult", 1)
     cores = kwargs.get("cores", 1)
     define = shutil.which("define")
+    ri = bool(kwargs.get("ri", True))
     if define:
         # Use define with input script
         define_input = f"""
@@ -144,13 +145,21 @@ y
 dft
 func {method}
 *
-ri
+"""
+        if ri:
+            # The RI block only when the caller asked for RI (N1):
+            # ri=False must produce a conventional dscf setup, not an
+            # RI one the caller never requested.
+            define_input += f"""ri
 {cores}
 *
-unpaired {mult - 1}
-*
-q
 """
+        if mult > 1:
+            # Only for an open shell (N2): an unpaired 0 for a singlet
+            # is an unnecessary directive and some Turbomole versions
+            # treat it as a (harmless but misleading) RHF/UHF switch.
+            define_input += f"unpaired {mult - 1}\n*\n"
+        define_input += "q\n"
         result = subprocess.run(
             [define], input=define_input, cwd=work_dir,
             capture_output=True, text=True, timeout=60,
