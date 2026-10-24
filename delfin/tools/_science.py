@@ -108,13 +108,23 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
 
     def _walk(steps):
         for st in steps or []:
+            if not isinstance(st, dict):
+                # a branch may serialize a malformed entry; lint never crashes
+                # on spec shape — it reports findings, not errors (finding F1)
+                continue
             label = st.get("label") or st.get("step") or "?"
             findings.extend(_lint_step(label, st.get("kwargs", {}) or {}))
 
     _walk(inner.get("steps"))
     for bname, bsteps in (inner.get("branches") or {}).items():
-        # branches serialize either as a list of steps or as a nested spec dict
-        steps = bsteps.get("steps") if isinstance(bsteps, dict) else bsteps
+        # branches serialize either as a list of steps or as a nested spec dict;
+        # anything else is spec-shape noise the lint skips, never crashes on
+        if isinstance(bsteps, dict):
+            steps = bsteps.get("steps")
+        elif isinstance(bsteps, list):
+            steps = bsteps
+        else:
+            continue
         _walk(steps)
     return findings
 
