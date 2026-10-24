@@ -39,6 +39,15 @@ done
 systemctl mask rpcbind.socket rpcbind.service >/dev/null 2>&1 || true
 
 echo "==> [2/6] sshd"
+# Passwords go off below. A login user without a key would be locked out of
+# SSH by that, so stop here rather than after the reload.
+login_home="$(getent passwd "$LOGIN_USER" | cut -d: -f6)"
+if ! grep -qE '^(ssh|ecdsa|sk-)' "$login_home/.ssh/authorized_keys" 2>/dev/null; then
+    echo "error: $LOGIN_USER has no key in $login_home/.ssh/authorized_keys;" >&2
+    echo "       SSH passwords would be turned off and lock $LOGIN_USER out." >&2
+    echo "       Add a key first (ssh-copy-id $LOGIN_USER@<pi>), then run this again." >&2
+    exit 1
+fi
 # Loaded before cloud-init's 50-* file; sshd keeps the first value it reads.
 cat > /etc/ssh/sshd_config.d/40-delfin-hardening.conf <<EOF
 # DELFIN agent box (pi_harden_host.sh): key only, no root, few tries.
