@@ -31,9 +31,13 @@ from delfin.scheduler_client import (
 )
 
 #: Columns one sacct call asks for. ``-X`` keeps the main allocation
-#: (no per-step rows); ``-P`` makes rows pipe-separable.
+#: (no per-step rows); ``-P`` makes rows pipe-separable. ``TotalCPU``
+#: is the consumed CPU time — the number RS1's pre-submit advice needs:
+#: the fraction of the allocated cores that actually computed
+#: (TotalCPU / (AllocCPUS * Elapsed)); SOLVATOR at pal 2 ran at
+#: ~1.5 % CPU in wave 21, invisible without this column.
 SACCT_COLUMNS = ("JobID,JobName,State,ExitCode,Elapsed,Timelimit,"
-                 "ReqTRES,AllocCPUS,MaxRSS,Submit,Start,End")
+                 "ReqTRES,AllocCPUS,MaxRSS,Submit,Start,End,TotalCPU")
 
 #: States whose core-hours served nothing.
 _WASTED_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
@@ -106,10 +110,14 @@ def _parse_sacct(text: str) -> Dict[str, List[dict]]:
         fields = line.split("|")
         if len(fields) < 12:
             continue
+        # A row the scheduler reports without the TotalCPU column is still
+        # accounted for; its cpu_efficiency is None, not the row dropped.
+        if len(fields) == 12:
+            fields.append("")
         row = dict(zip(
             ("job_id", "job_name", "state", "exit_code", "elapsed",
              "timelimit", "req_tres", "alloc_cpus", "max_rss",
-             "submit", "start", "end"), fields))
+             "submit", "start", "end", "total_cpu"), fields))
         rows.setdefault(row["job_id"].split(".")[0], []).append(row)
     return rows
 
@@ -130,14 +138,23 @@ def _account_row(row: dict, *, is_repeated_waste: bool) -> dict:
     state = row["state"].split("+")[0].split(" ")[0] or "UNKNOWN"
     wasted = state in _WASTED_STATES
     used_core_hours = 0.0 if wasted else (cores or 0) * elapsed / 3600.0
+    # CPU efficiency: the fraction of the allocated cores that actually
+    # computed. TotalCPU is the consumed CPU time the scheduler
+    # measured; missing it stays None — never a fabricated 0.0 %.
+    total_cpu_s = _slurm_seconds(row.get("total_cpu", ""))
+    alloc_cpus = _int_or_none(row["alloc_cpus"])
+    cpu_efficiency = None
+    if total_cpu_s is not None and alloc_cpus and elapsed > 0:
+        cpu_efficiency = total_cpu_s / (alloc_cpus * elapsed)
     return {
         "job_id": row["job_id"],
         "job_name": row["job_name"],
         "state": state,
         "requested": {"cores": cores, "mem_mb": req_mem,
                       "wall_s": _slurm_seconds(row["timelimit"])},
-        "used": {"cores": _int_or_none(row["alloc_cpus"]),
+        "used": {"cores": alloc_cpus,
                  "mem_mb": used_mem, "wall_s": elapsed},
+        "cpu_efficiency": cpu_efficiency,
         "queue_wait_s": queue_wait,
         "core_hours_used": round(used_core_hours, 3),
         "core_hours_wasted": round(
