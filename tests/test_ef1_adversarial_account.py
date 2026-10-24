@@ -10,7 +10,7 @@ from delfin.agent import cluster_efficiency as ce
 from delfin.scheduler_client import SchedulerClient, THROTTLED
 
 SACCT_COLUMNS = ("JobID,JobName,State,ExitCode,Elapsed,Timelimit,"
-                 "ReqTRES,AllocCPUS,MaxRSS,Submit,Start,End")
+                 "ReqTRES,AllocCPUS,MaxRSS,Submit,Start,End,TotalCPU")
 
 
 def _sacct_runner(text, calls):
