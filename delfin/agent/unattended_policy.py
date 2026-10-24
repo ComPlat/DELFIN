@@ -120,6 +120,31 @@ def _floor_hit_one_line(line: str, tool: str) -> str | None:
     if not tokens:
         return None
     binary = tokens[0].rsplit("/", 1)[-1] if "/" in tokens[0] else tokens[0]
+    # H-class (reviewer s26 round 3), QS ruling: wrappers must not hide
+    # the refused binary. bash/sh -c recurse into the wrapped command;
+    # nohup/timeout/xargs drop their own arguments and recurse. sudo is
+    # refused outright in unattended mode — no shape where it runs.
+    if binary == "sudo":
+        return "sudo needs the person's word; unattended sessions do not raise their own rights"
+    if binary == "xargs":
+        return "xargs feeds its input to a command the line does not name; write the command out"
+    if binary in ("bash", "sh"):
+        wrapped = [t for t in tokens[1:] if t != "-c"]
+        if wrapped:
+            inner = wrapped[-1] if len(wrapped) == 1 else " ".join(wrapped)
+            inner_hit = _floor_hit_one_line(inner, tool)
+            if inner_hit:
+                return inner_hit
+            return ("bash -c of a command the floor cannot fully see; "
+                    "write the command directly")
+        return None
+    if binary == "nohup":
+        return _floor_hit_one_line(" ".join(tokens[1:]), tool)
+    if binary == "timeout":
+        rest = tokens[1:]
+        if rest and rest[0].replace(".", "").isdigit():
+            rest = rest[1:]
+        return _floor_hit_one_line(" ".join(rest), tool)
     if binary in _FLOOR_REASONS:
         if binary == "curl" and len(tokens) > 1:
             # A "$(echo curl)" first token resolves to "curl" only by the
@@ -166,7 +191,10 @@ def _tokens(line: str) -> list[str] | None:
     stripped = line.strip()
     if not stripped:
         return []
-    if "$(" in stripped or "`" in stripped:
+    if ("$(" in stripped or "`" in stripped or "<(" in stripped
+            or "(" in stripped):
+        # H-class: <( ) / >( ) process substitution runs the command
+        # inside the parentheses, so the argv picture is false too.
         return None
     try:
         import shlex
