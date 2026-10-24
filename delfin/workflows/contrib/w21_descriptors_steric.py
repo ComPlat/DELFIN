@@ -97,7 +97,14 @@ class StericScreeningWorkflow:
                   "work_dir": args.work_dir}
         if args.donor_indices:
             kwargs["donor_indices"] = args.donor_indices
-        results = self.run(config={}, **kwargs)
+        try:
+            results = self.run(config={}, **kwargs)
+        except ValueError as exc:
+            # A physics-gate refusal (bad index, bad radius) is a clean
+            # non-zero CLI exit with the named physics reason — never a
+            # traceback crash.
+            print(f"steric_screening: refused: {exc}")
+            return 1
         ok = all(getattr(r, "ok", True) or
                  getattr(getattr(r, "status", None), "name", "") == "SUCCESS"
                  for r in results)
