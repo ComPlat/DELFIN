@@ -134,3 +134,41 @@ def test_changed_files_are_listed(repo):
     report = pre_pr_check.run(str(repo), base="main", partners=[])
     assert "delfin/a.py" in report.changed_files
     assert "tests/test_a_thing.py" in report.changed_files
+
+
+def test_guard_that_only_mentions_the_area_does_not_over_select(repo):
+    """Reviewer finding (s19, on 73e6aaa6): a guard whose source only
+    MENTIONS delfin/ in a comment must not be selected for every delfin/
+    change — only a guard that scans the area does.  The guard file sits
+    at the branch point (unchanged here), so only its scanned surface can
+    select it, not its own being changed."""
+    (repo / "tests" / "test_output_guard.py").write_text(
+        '# a unit test file, only a comment mentions delfin/\n'
+        'def t(): pass\n')
+    (repo / "tests" / "test_r3_direct_scheduler_call_guard.py").write_text(
+        '# guard test\n')
+    _commit_all(repo, "guards")
+    _git(repo, "branch", "guards")
+    (repo / "delfin" / "agent").mkdir()
+    (repo / "delfin" / "agent" / "new.py").write_text("x = 1\n")
+    _commit_all(repo, "delfin change")
+    report = pre_pr_check.run(str(repo), base="guards", partners=[])
+    names = [t.rsplit("/", 1)[-1] for t in report.selected_tests]
+    assert "test_output_guard.py" not in names
+    assert "test_r3_direct_scheduler_call_guard.py" in names
+
+
+def test_guard_scanning_the_area_still_selects(repo):
+    """The converse of the finding: a guard that really scans delfin/ (its
+    source walks the area) is selected for a delfin/ change."""
+    (repo / "tests" / "test_output_guard.py").write_text(
+        'import pathlib\n'
+        'for p in pathlib.Path("delfin").rglob("*.py"):\n'
+        '    pass\n')
+    _commit_all(repo, "scanner")
+    _git(repo, "branch", "scanner")
+    (repo / "delfin" / "agent").mkdir()
+    (repo / "delfin" / "agent" / "new.py").write_text("x = 1\n")
+    _commit_all(repo, "delfin change")
+    report = pre_pr_check.run(str(repo), base="scanner", partners=[])
+    assert "tests/test_output_guard.py" in report.selected_tests

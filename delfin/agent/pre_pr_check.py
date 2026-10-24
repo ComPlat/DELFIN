@@ -190,8 +190,12 @@ def _guard_covers(rel: str, path: str, tree: set[str], worktree: str) -> bool:
     except OSError:
         return False
     # A guard test that scans delfin/ applies to any change there (the r3
-    # scheduler guard is an AST scan over every delfin/**.py).
-    if "delfin/" in source and any(p.startswith("delfin/") for p in tree):
+    # scheduler guard is an AST scan over every delfin/**.py).  The
+    # mention-only case lives in _guard_area below.
+    if any(p.startswith("delfin/") for p in tree) and (
+            re.search(r"Path\([\"']delfin", source)
+            or re.search(r"(glob|rglob|walk|iterdir)\([\"']?delfin", source)
+            or "import ast" in source):
         return True
     for changed in tree:
         stem = changed.rsplit("/", 1)[-1].rsplit(".", 1)[0]
@@ -210,13 +214,18 @@ def _guard_covers(rel: str, path: str, tree: set[str], worktree: str) -> bool:
 def _guard_area(source: str, rel: str) -> str:
     """The tree area a guard test scans, read from its own source.
 
-    A guard whose test file only comments that it is a guard over the
-    tree ("# guard test" against delfin/, no named file) covers every
-    delfin/ change: that is what a guard is — a scan over the area, not a
-    matcher on a name.  The area is read from the guard's own source, and
-    a fixture whose whole source names nothing covers the whole tree.
+    A guard that SCANS an area of the tree — it walks or globs it in its
+    own source — covers any change there: that is what a guard is, a scan
+    over the area, not a matcher on a name.  A source that only mentions
+    the area in a comment or a string literal does not scan it, so it is
+    not selected for the area (reviewer finding on 73e6aaa6: a guard file
+    whose only "delfin/" is a comment over-selected every delfin/ change).
+    A fixture whose whole source names nothing covers nothing.
     """
-    if re.search(r"delfin/", source) or "guard test" in source:
+    if re.search(r"Path\([\"']delfin", source) or re.search(
+            r"(glob|rglob|walk|iterdir)\([\"']?delfin", source):
+        return "delfin/"
+    if "# guard test" in source:
         return "delfin/"
     return ""
 
