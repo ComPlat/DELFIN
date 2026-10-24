@@ -53,7 +53,7 @@ sorted keys, reproducible byte-identically:
   reproduction, reference, trap), cost beside every score;
 - `weakest_queue`: the tasks under 60 quality, weakest first, as the
   next round's queue;
-- `stop_verdict`: stop after two consecutive rounds without positive
+- `stop`: stop after two consecutive rounds without positive
   gain, or when the daily budget is exhausted — with the reason.
 
 ## Scheduling
