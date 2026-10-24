@@ -319,9 +319,20 @@ def test_the_counts_still_match_what_was_measured():
     # writes its own fixture folder under the chemistry workspace
     # (or2/formaldehyde, or2/spin, or2/redox, or2/redox_mixed);
     # MAX_ATOMS <= 20 in every setup.
+    #
+    # science 28 -> 34 on 2026-10-25: the six wave-21 workflow-BUILDING
+    # tasks (tasks_w21_build.yaml, package WB0) -- the agent builds a
+    # DELFIN pipeline spec (spec.json) for a chemist's brief and justifies
+    # deviations in answer.txt; w21_build_verify.py grades the spec with
+    # workflow_grader.grade(), no calculation. Class science_analysis
+    # (writing class -> confined science_workspace; the "chemistry" class
+    # is reserved for the cheap-xtb physics suite whose signals forbid
+    # orca, tests/test_chemistry_is_graded_on_the_physics.py:57). One
+    # setup script (setup/w21_build_fixtures.py) writes all six folders
+    # and refuses an existing one.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 28, "chemistry": 23, "generalist": 22,
-                      "other": 71}, counts
+                        "science": 34, "chemistry": 23, "generalist": 22,
+                        "other": 71}, counts
 
 
 # ---------------------------------------------------------------------------
