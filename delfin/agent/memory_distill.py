@@ -15,7 +15,9 @@ the memories it saves compound across sessions). Manual trigger via
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
+import datetime as dt
 
 
 _DISTILL_SYSTEM = (
@@ -361,3 +363,117 @@ def distill_and_save(
         return save_facts(parse_facts(raw, cfg["max_facts"]), repo_root=repo_root)
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Shipping a lesson into the pack knowledge (MM1)
+# ---------------------------------------------------------------------------
+
+def _split_labels(text: str) -> tuple[str, str, str]:
+    """(situation, lesson, why) from the lesson text. Missing labels fall
+    back to the plain-text split of ``knowledge_private._split``: the
+    shipped entry uses the same shape as a private lesson."""
+    from .knowledge_private import _split
+    return _split(text)
+
+
+def distill_for_shipping(
+    text: str,
+    evidence,
+    *,
+    author: str = "delfin-agent",
+    topic: str = "delfin-development",
+    title: str = "",
+    review_by: str = "",
+    folder=None,
+    today=None,
+) -> "Path":
+    """Ship a session lesson as a knowledge entry — only through the four
+    gates, raising ValueError otherwise.
+
+    Gates (all existing DELFIN checks, no new ones):
+    1. Evidence: every pointer must be a ``kind:ref`` AND one of
+       ``knowledge.PUBLIC_EVIDENCE_KINDS`` — a job/session/calc/swarm id
+       names one machine and no reader elsewhere can follow it.
+    2. Privacy: ``knowledge_check.check(public=True)`` on the whole entry
+       text — secrets (DELFIN's own redaction), emails, home paths,
+       account/host names, user-specific text, machine references.
+    3. Instruction: ``knowledge_check.instruction_findings`` — a lesson
+       that tells the reader to change a protected file or skip a check
+       is not shipped.
+    4. Dedupe: ``knowledge.near_duplicate`` against every entry already
+       in the target folder. A duplicate MERGES (provenance added, one
+       file); a contradiction raises instead of silently overwriting an
+       existing lesson.
+
+    ``review_by`` defaults to one year out so shipped lessons get the
+    same periodic re-review as the rest of the pack.
+
+    Returns the written entry path. The duplicate-merge path returns the
+    existing entry's path.
+    """
+    from . import knowledge as kn
+    from . import knowledge_check as kc
+
+    text = str(text or "").strip()
+    if not text:
+        raise ValueError("an empty lesson is not shippable")
+
+    # Gate 1 — evidence: present, well-formed, and followable anywhere.
+    pointers = [str(e).strip() for e in (evidence or []) if str(e).strip()]
+    if not pointers:
+        raise ValueError("a shipped lesson needs evidence: a pointer such "
+                         "as test:<node> or commit:<sha>")
+    bad = [p for p in pointers if not kn.valid_evidence(p)]
+    if bad:
+        raise ValueError(f"evidence must be kind:ref pointers: {bad!r}")
+    machine_local = [p for p in pointers
+                     if p.split(":", 1)[0] not in kn.PUBLIC_EVIDENCE_KINDS]
+    if machine_local:
+        raise ValueError(
+            "evidence must be followable by any reader; these names one "
+            "machine only: " + ", ".join(machine_local))
+
+    # Shape the entry.
+    situation, lesson, why = _split_labels(text)
+    if not lesson:
+        raise ValueError("the lesson text carries no Lesson label")
+    slug = kn.slugify(title or lesson)
+    if not title:
+        title = (lesson.split(". ")[0] or lesson)[:kn.MAX_TITLE].rstrip(".")
+    if not review_by:
+        year = (dt.date.today() if today is None else today).year
+        review_by = f"{year + 1}-12-31"
+
+    e = kn.Entry(
+        slug=slug, title=title, topic=topic, scope="delfin-development",
+        provenance=[kn.Provenance(author=author, date=(
+            dt.date.today() if today is None else today).isoformat(),
+            evidence=p) for p in pointers],
+        review_by=review_by,
+        situation=situation, lesson=lesson, why=why, layer=kn.GLOBAL)
+
+    # Gates 2+3 — privacy and instructions, the same checks CI lint runs.
+    findings = [f.line() for f in kc.check(e.text, public=True,
+                                           identity={},
+                                           unpublished_terms=())]
+    findings += [f.line() for f in kc.instruction_findings(e.text)]
+    if findings:
+        raise ValueError("the lesson is not shippable (private or "
+                         "instructional content): " + "; ".join(findings))
+
+    # Gate 4 — dedupe against the shipped folder. A contradiction is
+    # checked on EVERY entry first (near_duplicate returns False for
+    # polarity-inverted pairs by design, knowledge.py:437 — that is the
+    # pair contradicts() exists for); only then the duplicate merge.
+    target = kn.Path(folder) if folder is not None else kn.global_dir()
+    existing = kn.read_entries(target, layer=kn.GLOBAL)
+    for other in existing:
+        if kn.contradicts(e, other):
+            raise ValueError(
+                f"the lesson contradicts the shipped entry {other.slug!r}"
+                " — merge it by hand, do not ship")
+    for other in existing:
+        if kn.near_duplicate(e, other):
+            return kn.write_entry(target, kn.merge_entries(other, e))
+    return kn.write_entry(target, e)
