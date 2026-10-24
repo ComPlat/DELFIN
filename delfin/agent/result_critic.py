@@ -363,7 +363,15 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
     column; the deviation diagnostic |<S^2> - S(S+1)| is the same
     scale as the ground-state check above (DELFIN methodology, "Spin
     Contamination and State Selection"). Triplet state labels inside a
-    singlet TDDFT table mark spin-flip mixture, not singlet absorption.
+    singlet-reference (mult 1) TDDFT table mark spin-flip mixture, not
+    singlet absorption; a triplet reference lists them legitimately
+    (F2). The per-state <S^2> is read as the LAST numeric column of a
+    state row, so real ORCA tables with D**2 X Y Z columns before S^2
+    are covered (F3). ORCA does not print a per-state <S^2> column by
+    default: where the header names none, the check stays silent and
+    the ground-state <S^2> (the check above) remains the guard — an
+    unnamed last column cannot be attributed (fosc, D**2, X, Y, Z
+    look alike) and guessing would flag clean states.
     A reported spectrum must state its broadening width (FWHM) or it
     cannot be compared with experiment — missing width is an ok-level
     note only.
@@ -392,19 +400,38 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
                 f"truncated; raise nroots or state the covered range when "
                 f"reporting this spectrum."))
     # Per-state spin contamination from the table's <S^2> column.
-    block_re = _re.search(
+    # The <S^2> column must be NAMED in the table header ("S^2",
+    # "S**2", "<S**2>" or "<S^2>"); without a header the value is
+    # ambiguous (fosc, D**2, X, Y, Z all look alike) and no check is
+    # made — reading an unnamed last column flagged clean states
+    # (F3 probe). The header check runs over the WHOLE table text
+    # (header rows sit above the dashed separator that bounds the
+    # state rows), the state-row scan over the rows only.
+    table_m = _re.search(
         r"ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
-        r".*?\n-+\n.*?\n-+\n(.*?)(?:\n\n|\Z)", content, _re.DOTALL)
-    ideal = 0.0  # S(S+1) for a singlet reference (mult 1)
+        r"(.*?)(?:\n\n|\Z)", content, _re.DOTALL)
+    if not table_m:
+        return findings
+    table_text = table_m.group(1)
+    rows_m = _re.search(r"\n-+\n(.*?)$", table_text, _re.DOTALL)
+    # Reference multiplicity from the echo: ideal <S^2> = S(S+1). A
+    # triplet reference (mult 3) has ideal 2.0, a singlet 0.0.
+    mult_m = _re.search(r"Multiplicity\s+\.{2,}\s+(\d+)", content)
+    mult = int(mult_m.group(1)) if mult_m else 1
+    ideal = 0.0 if mult == 1 else mult * (mult + 1)  # S(S+1)
     contaminated: list[tuple[str, float]] = []
-    if block_re:
-        for line in block_re.group(1).split("\n"):
+    if rows_m and _re.search(r"S\^2\b|S\*\*2\b|S²\b", table_text):
+        for line in rows_m.group(1).split("\n"):
             lm = _re.match(
-                r"\s*(\S+\s+->\s+\S+)\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+"
-                r"[\d.]+\s+(-?\d+\.\d+)\s*$", line)
+                r"\s*(\S+\s+->\s+\S+)\s+((?:\d+\.\d+\s*)+)$", line)
             if not lm:
                 continue
-            state, s2 = lm.group(1), float(lm.group(2))
+            numbers = [float(x) for x in lm.group(2).split()]
+            # The <S^2> value is the LAST numeric column of the row
+            # (ORCA prints it after fosc and the D**2 X Y Z columns;
+            # F3, s4: the fixed 6-column regex missed real tables).
+            s2 = numbers[-1]
+            state = lm.group(1)
             dev = abs(s2 - ideal)
             if dev >= _SPIN_ERROR or dev >= _SPIN_WARN:
                 contaminated.append((state, dev))
@@ -417,9 +444,14 @@ def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
             f"to {worst_dev:.2f} (worst: {worst_state}) — the states are "
             f"spin-contaminated; energies and oscillator strengths of "
             f"these states are unreliable."))
-    # Triplet states inside a singlet spectrum (state labels like 1-3A).
-    triplets = [t.state_to for t in res.transitions
-                if _re.search(r"\d+-3[A']|\d+3[A']", t.state_to or "")]
+    # Triplet states inside a SINGLET spectrum (state labels like
+    # 1-3A). F2 (s4): a triplet-REFERENCE calculation (Multiplicity
+    # ... 3 in the echo) legitimately lists triplet excitations — only
+    # a mult-1 reference makes a triplet row a spin-flip mixture.
+    triplets = []
+    if mult == 1:
+        triplets = [t.state_to for t in res.transitions
+                    if _re.search(r"\d+-3[A']|\d+3[A']", t.state_to or "")]
     if triplets:
         findings.append(Critique(
             "error", "uv-triplet-in-singlet",
