@@ -19,9 +19,15 @@
 #    quality; sources: E. Herbst, and later CCSD(T) studies). Band
 #    used below: 45-53 kcal/mol, flagged as an estimate band for
 #    grading only.
-#  - SN2 identity F- + CH3F -> FCH3 + F-: symmetric, single barrier
-#    ~15-17 kcal/mol in gas phase at correlated levels (sources:
-#    photo detachment / ab initio studies). Band used: 12-20.
+#  - SN2 identity F- + CH3F -> FCH3 + F-: gas phase, symmetric, the
+#    central barrier relative to SEPARATED REACTANTS is SUBMERGED:
+#    -0.45 +/- 0.10 kcal/mol classical central barrier height (best
+#    estimate; source: Szabo & Czako, J. Chem. Phys. 142, 244301
+#    (2015), DOI 10.1063/1.4921857). Band used below: -2 to +2
+#    kcal/mol relative to separated reactants (centred on the
+#    verified value, widened for the DFT levels a practice run uses).
+#    Regime corroboration only (no numbers quoted): Glukhovtsev et
+#    al., JACS 1996, 118, 11258-11264, DOI 10.1021/ja9620191.
 #
 # Offline grading: the acceptance scripts run through DELFIN's own
 # adapters with a mocked run layer where no compute is available, and
@@ -109,8 +115,11 @@ tasks:
       F- + CH3F -> FCH3 + F- with DELFIN's orca_ts_opt, verify exactly
       one imaginary mode with orca_ts_freq_check (it must be the C-F
       stretching coordinate), and report the barrier in kcal/mol
-      relative to separated reactants at one level with ZPE same
-      level; literature band 12-20 kcal/mol (cited).
+      relative to separated reactants (gas phase; note the central
+      barrier for this identity reaction is submerged, near 0) at one
+      level with ZPE same level; literature band -2 to +2 kcal/mol
+      relative to separated reactants (cited: Szabo & Czako, JCP
+      2015, DOI 10.1063/1.4921857).
     setup: w20_or1_seed.py
     verify: w20_or1_ts_sn2_verify.py
     expected_signals:
@@ -121,9 +130,14 @@ tasks:
       - pattern: '(?i)(imaginary|imag)'
         against: text
     expected_values:
-      - label: sn2_barrier_kcal
-        value: 15.0
-        tolerance: 4.0
+      # Barrier relative to separated reactants, gas phase; the
+      # central barrier is submerged (-0.45 +/- 0.10, DOI
+      # 10.1063/1.4921857), so the graded band is centred on ~0, not
+      # on a positive 15.0. Marked as an estimate band for grading
+      # only, widened for the DFT levels a practice run uses.
+      - label: sn2_central_barrier_vs_reactants_kcal
+        value: 0.0
+        tolerance: 2.0
         against: text
     max_duration_s: 1800
     max_cost_usd: 2.00

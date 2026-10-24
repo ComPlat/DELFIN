@@ -126,21 +126,22 @@ def test_barrier_tasks_grade_on_artifact_not_citation(tmp_path):
     (cite / "chem" / "sn2").mkdir(parents=True)
     _freq_out(cite / "chem" / "sn2" / "calc.out", [600.0])
     (cite / "chem" / "sn2" / "report.md").write_text(
-        "Literature band: barriers between 12 and 20 kcal/mol (cited).\n")
+        "Literature band: barriers between -2 and 2 kcal/mol (cited).\n")
     assert not C.barrier_with_artifact(
         cite / "chem" / "sn2",
-        (cite / "chem" / "sn2" / "report.md").read_text(), 12, 20)
+        (cite / "chem" / "sn2" / "report.md").read_text(), -2, 2)
 
-    # a computed barrier over the artifact: pass
+    # a computed barrier over the artifact: pass (submerged central
+    # barrier, relative to separated reactants)
     computed = tmp_path / "computed"
     (computed / "chem" / "sn2").mkdir(parents=True)
     _freq_out(computed / "chem" / "sn2" / "calc.out", [600.0])
     (computed / "chem" / "sn2" / "report.md").write_text(
-        "The computed barrier is 16.2 kcal/mol relative to separated "
+        "The computed barrier is -0.8 kcal/mol relative to separated "
         "reactants, ZPE included, at the stated level.\n")
     assert C.barrier_with_artifact(
         computed / "chem" / "sn2",
-        (computed / "chem" / "sn2" / "report.md").read_text(), 12, 20)
+        (computed / "chem" / "sn2" / "report.md").read_text(), -2, 2)
 
 
 def test_barrier_task_yamls_demand_a_computed_barrier_statement():
@@ -153,7 +154,7 @@ def test_barrier_task_yamls_demand_a_computed_barrier_statement():
     by_id = {t["id"]: t for t in data["tasks"]}
     for tid, band in (("or1_hcn_hnc_ts_and_irc", (45, 53)),
                       ("or1_ethane_methyl_rotation_scan", (2.3, 3.5)),
-                      ("or1_sn2_identity_barrier", (12, 20))):
+                      ("or1_sn2_identity_barrier", (-2, 2))):
         t = by_id[tid]
         assert any(p["pattern"].startswith("(?i)barrier")
                    for p in t["expected_signals"]), tid

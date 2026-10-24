@@ -3,7 +3,8 @@
 
 Hard precondition, from the artifact: a frequency output under
 chem/sn2 with EXACTLY one imaginary mode (the symmetric TS); the
-barrier band (15 +/- 4 kcal, literature 12-20) is graded on the prose
+barrier band (-2 to +2 kcal/mol relative to separated reactants,
+literature 10.1063/1.4921857) is graded on the prose
 by the runner's expected_values machinery.
 
 usage: w20_or1_ts_sn2_verify.py <workspace>
@@ -29,10 +30,11 @@ def main(argv) -> int:
     # F-QS-1: the band is graded HERE on the artifact (a computed
     # barrier statement over the freq output), not left to the runner's
     # permissive expected_values judge, which a cited band also passes.
-    ok_band = C.barrier_with_artifact(folder, prose, 12, 20)
+    ok_band = C.barrier_with_artifact(folder, prose, -2, 2)
     return C.finish([
         (ok_mode, f"SN2 TS carries exactly one imaginary mode ({ev})"),
-        (ok_band, "computed barrier stated in 12-20 kcal/mol over the artifact"),
+        (ok_band, "computed barrier stated in -2 to +2 kcal/mol "
+                  "relative to separated reactants over the artifact"),
     ])
 
 
