@@ -12,8 +12,23 @@ MAX_ATOMS documents the small-systems limit this package is graded on.
 from __future__ import annotations
 
 import pathlib
+import sys
 
 MAX_ATOMS = 16
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(f"usage: {pathlib.Path(argv[0]).name} <workspace>",
+              file=sys.stderr)
+        return 2
+    run(pathlib.Path(argv[1]).resolve())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+
 
 # Deliberately mixed: oxidised form at B3LYP/def2-SVP, reduced form at
 # PBE0/def2-TZVP. The energies are plausible, not interchangeable.
