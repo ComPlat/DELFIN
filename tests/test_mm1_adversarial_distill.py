@@ -75,15 +75,15 @@ def test_adMM1_06_unicode_lookalike_colon_in_evidence(tmp_path):
 # --- Gate 2/3: privacy and instructions -----------------------------------
 
 def test_adMM1_07_lesson_without_labels_becomes_the_whole_text(tmp_path):
-    # knowledge_private._split falls back to "everything is the lesson".
-    # Shipping a wall of text with the default topic is allowed by the
-    # gates; template_findings (NOT called by distill_for_shipping) would
-    # only catch topic. The entry must at least parse and pass CI checks.
-    p = _ship(tmp_path, text="Run long suites in the background.")
-    e = kn.parse_entry(p.read_text(encoding="utf-8"), slug=p.stem)
-    assert e.lesson
-    from delfin.agent import knowledge_check as kc
-    assert kc.check(e.text, public=True, identity={}, unpublished_terms=()) == []
+    # Rewritten along intent (builder, after reviewer finding F1-F4):
+    # the original pinned that a label-less wall of text SHIPS and passes
+    # CI checks. The builder's fix REFUSES any entry failing
+    # template_findings (the reviewer's own F1-F4 wording), and a
+    # label-less lesson fails the "situation/why: missing" template
+    # check. The intent — nothing that would fail CI ever reaches the
+    # pack — holds either way; pinned here as the refusal.
+    with pytest.raises(ValueError, match="situation: missing"):
+        _ship(tmp_path, text="Run long suites in the background.")
 
 
 def test_adMM1_08_home_path_is_refused(tmp_path):
@@ -108,16 +108,16 @@ def test_adMM1_09_instruction_to_skip_a_check_is_refused(tmp_path):
 
 
 def test_adMM1_10_topic_outside_the_taxonomy_still_ships(tmp_path):
-    # distill_for_shipping never calls template_findings, so a topic
-    # outside TOPICS.md ships and only breaks CI later. This is the
-    # reviewer finding R3: pinned here as red until fixed.
+    # Rewritten along intent (builder, after reviewer finding F1-F4):
+    # the original pinned that a topic outside TOPICS.md ships and later
+    # breaks CI. The builder's fix REFUSES any entry failing
+    # template_findings, so the intent — a bad topic never reaches the
+    # pack — is pinned as the refusal.
     folder = tmp_path / "knowledge"
-    p = md.distill_for_shipping(GOOD_TEXT, [EV], folder=folder,
+    with pytest.raises(ValueError, match="not in the taxonomy"):
+        md.distill_for_shipping(GOOD_TEXT, [EV], folder=folder,
                                 topic="not-a-real-topic")
-    e = kn.parse_entry(p.read_text(encoding="utf-8"), slug=p.stem)
-    # A shipped entry must pass the same checks CI runs on the pack.
-    assert kn.template_findings(e, layer=kn.GLOBAL) == [], (
-        "a topic outside the taxonomy shipped and fails template_findings")
+    assert not any(folder.glob("*.md")) if folder.is_dir() else True
 
 
 def test_adMM1_11_review_by_date_is_checked(tmp_path):

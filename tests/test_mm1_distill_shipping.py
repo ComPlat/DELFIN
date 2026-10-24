@@ -109,14 +109,20 @@ def test_duplicate_is_merged_not_added(tmp_path):
 
 
 def test_a_contradiction_is_not_silently_merged(tmp_path):
+    # near_duplicate AND inverted polarity: same title, opposite
+    # obligation ("never" vs "always").
+    base = ("Situation: A long test suite blocks the shell.\n"
+            "Lesson: {0}\n"
+            "Why: The turn is blocked until the command ends.")
     folder = _clean(tmp_path)
     md.distill_for_shipping(
-        GOOD_TEXT.replace(
-            "Run a suite longer than a few minutes with "
-            "bash_background and continue with other work.",
-            "Run long suites synchronously so the result is seen."),
-        ["test:tests/one.py::t"], author="nacht-s1", folder=folder)
+        base.format("Never run a long suite synchronously; run it with "
+                    "bash_background instead."),
+        ["test:tests/one.py::t"], author="nacht-s1", folder=folder,
+        title="long-suite-blocking")
     with pytest.raises(ValueError, match="contradicts"):
         md.distill_for_shipping(
-            GOOD_TEXT, ["test:tests/other.py::t"], author="nacht-s2",
-            folder=folder)
+            base.format("Always run a long suite synchronously so the "
+                        "result is seen directly."),
+            ["test:tests/other.py::t"], author="nacht-s2", folder=folder,
+            title="long-suite-blocking")

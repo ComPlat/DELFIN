@@ -453,11 +453,17 @@ def distill_for_shipping(
         review_by=review_by,
         situation=situation, lesson=lesson, why=why, layer=kn.GLOBAL)
 
-    # Gates 2+3 — privacy and instructions, the same checks CI lint runs.
+    # Gates 2+3 — privacy, instructions and the entry template, the same
+    # checks CI lint runs on every shipped entry (knowledge_curation.
+    # _recheck, knowledge_curation.py:324-332). Without the template here
+    # a bad topic, date, length or author handle would ship and only fail
+    # in CI.
     findings = [f.line() for f in kc.check(e.text, public=True,
                                            identity={},
                                            unpublished_terms=())]
     findings += [f.line() for f in kc.instruction_findings(e.text)]
+    topics = kn.read_topics(kn.global_dir())
+    findings += kn.template_findings(e, topics=topics, layer=kn.GLOBAL)
     if findings:
         raise ValueError("the lesson is not shippable (private or "
                          "instructional content): " + "; ".join(findings))
