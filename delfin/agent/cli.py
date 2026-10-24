@@ -4807,6 +4807,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Overwrite existing files")
     init.set_defaults(func=cmd_init)
 
+    # new-adapter (WB3): the hook is exactly these two lines; everything
+    # else lives in delfin/agent/cli_new_adapter.py.
+    from delfin.agent import cli_new_adapter
+    _na = cli_new_adapter.build_parser(sub)
+    _na.set_defaults(func=cli_new_adapter.handler)
+
     # prcheck (package PC1)
     prcheck = sub.add_parser(
         "prcheck", help="The pre-PR self-check: run, verify, then hand over")
