@@ -112,23 +112,44 @@ _BASIS_CANON = {"def2-svp": "def2-svp", "def2-tzvp": "def2-tzvp",
 _DIFFUSE_MARKERS = ("aug-", "ma-", "def2-tzvpd", "def2-tzvpdd", "6-31+g",
                     "cc-pvtz-d", "sapporo", "cdnz", "aug-cc")
 
-# 5d metals whose chemistry is meaningless without scalar relativistic
-# effects (ZORA/DKH/X2C) — a plain non-relativistic Hamiltonian is a
-# physics defect, not a style choice. (symbol, element name) pairs so a
-# chemist's request ("a gold-containing complex") is caught like a
-# formula ("Au").
-_5D_METALS = (
-    ("au", "gold"), ("pt", "platinum"), ("ir", "iridium"),
-    ("os", "osmium"), ("re", "rhenium"), ("w", "tungsten"),
-    ("ta", "tantalum"), ("hf", "hafnium"), ("hg", "mercury"),
-    ("tl", "thallium"), ("pb", "lead"), ("bi", "bismuth"),
+#: (capitalised symbol, lowercase element name) — the TEXT->SYMBOL
+#: resolver for the relativity rule. The DECISION comes from DELFIN's
+#: own policy (delfin.utils._should_use_rel, utils.py:203-217: 4d/5d,
+#: 4f/5f, mixed -> relativity; pure 3d and metal-free -> none), so this
+#: table must cover every symbol classify_tm_presence knows plus the
+#: element names a chemist writes in prose. The SYMBOL is matched
+#: case-sensitively (a chemist writes formulas capitalised: 'IR' is
+#: infrared, 'Ir' is iridium; 'HF' is hydrogen fluoride, 'Hf' hafnium).
+_REL_METAL_NAMES = (
+    # 3d (decision False for a pure set — kept for completeness)
+    ("Sc", "scandium"), ("Ti", "titanium"), ("V", "vanadium"),
+    ("Cr", "chromium"), ("Mn", "manganese"), ("Fe", "iron"),
+    ("Co", "cobalt"), ("Ni", "nickel"), ("Cu", "copper"), ("Zn", "zinc"),
+    # 4d
+    ("Y", "yttrium"), ("Zr", "zirconium"), ("Nb", "niobium"),
+    ("Mo", "molybdenum"), ("Tc", "technetium"), ("Ru", "ruthenium"),
+    ("Rh", "rhodium"), ("Pd", "palladium"), ("Ag", "silver"),
+    ("Cd", "cadmium"),
+    # 5d
+    ("Hf", "hafnium"), ("Ta", "tantalum"), ("W", "tungsten"),
+    ("Re", "rhenium"), ("Os", "osmium"), ("Ir", "iridium"),
+    ("Pt", "platinum"), ("Au", "gold"), ("Hg", "mercury"),
+    # 4f lanthanides
+    ("La", "lanthanum"), ("Ce", "cerium"), ("Pr", "praseodymium"),
+    ("Nd", "neodymium"), ("Pm", "promethium"), ("Sm", "samarium"),
+    ("Eu", "europium"), ("Gd", "gadolinium"), ("Tb", "terbium"),
+    ("Dy", "dysprosium"), ("Ho", "holmium"), ("Er", "erbium"),
+    ("Tm", "thulium"), ("Yb", "ytterbium"), ("Lu", "lutetium"),
+    # 5f actinides
+    ("Ac", "actinium"), ("Th", "thorium"), ("Pa", "protactinium"),
+    ("U", "uranium"), ("Np", "neptunium"), ("Pu", "plutonium"),
+    ("Am", "americium"), ("Cm", "curium"),
 )
-#: (case-sensitive symbol, case-insensitive element name) — the symbol
-#: match is case-sensitive so 'IR' (infrared) never reads as 'Ir'
-#: (iridium) or 'HF' (hydrogen fluoride) as 'Hf' (hafnium). Symbols are
-#: stored capitalised; the element name in lowercase.
-_5D_SYMBOLS = tuple(
-    (sym.capitalize(), name) for sym, name in _5D_METALS)
+
+# Deliberately NOT in the resolver: main-group 6p elements (Tl, Pb, Bi,
+# Po, At, Rn). DELFIN's policy (utils.py:203-217) returns
+# _should_use_rel=False for them, and the grader must agree — matching
+# them would make the grader stricter than the platform it grades for.
 
 _RELATIVISTIC = ("zora", "dkh", "x2c", "sarc")
 
@@ -201,27 +222,45 @@ def _anion_reason(spec: dict, steps: List[dict]) -> Optional[str]:
     return None
 
 
-def _relativistic_reason(request: str, steps: List[dict]) -> Optional[str]:
-    """A 5d (or 6p) element needs a relativistic Hamiltonian.
+def _metals_of(request: str, steps: List[dict]) -> List[str]:
+    """The metal SYMBOLS the request text or the spec's metal_basis names.
 
-    Element matching is on WHOLE words in both spellings (s25 finding
-    A1-A4): the word boundary must wrap the whole alternation —
-    ``\\b(?:au|gold)\\b`` — or a prefix hits inside unrelated words
-    ('redox' contains 're', 'IR' contains 'ir', 'water' contains 'w').
-    The SYMBOL is matched case-sensitively (a chemist writes formulas
+    The table below is only the TEXT->SYMBOL resolver: the relativity
+    DECISION comes from DELFIN's own policy, delfin.utils._should_use_rel
+    (utils.py:203-217), never from a grader-local element list (QS
+    finding F1, s29/s25). Whole-word matching for both spellings; the
+    SYMBOL is matched case-sensitively (a chemist writes formulas
     capitalised: 'IR' is infrared, 'Ir' is iridium) and the ELEMENT NAME
     case-insensitively."""
-    if (not any(re.search(rf"\b(?:{sym}|{name})\b", request)
-                for sym, name in _5D_SYMBOLS)
-            and not any(re.search(rf"\b{name}\b", request.lower())
-                        for _, name in _5D_SYMBOLS)):
+    found: List[str] = []
+    for sym, name in _REL_METAL_NAMES:
+        if re.search(rf"\b{sym}\b", request) or \
+                re.search(rf"\b{name}\b", request.lower()):
+            found.append(sym)
+    for s in steps:
+        mb = (s.get("kwargs", {}) or {}).get("metal_basis")
+        if isinstance(mb, dict):
+            found.extend(k for k in mb if isinstance(k, str) and k)
+    return found
+
+
+def _relativistic_reason(request: str, steps: List[dict]) -> Optional[str]:
+    """A metal whose row DELFIN's policy says needs relativity — pure 3d
+    systems do not, 4d/5d and lanthanides/actinides (4f/5f) and mixed
+    systems do (delfin/utils.py:203-217) — must set a relativistic
+    Hamiltonian in the spec."""
+    from delfin.utils import _should_use_rel
+
+    metals = _metals_of(request, steps)
+    if not metals or not _should_use_rel(metals):
         return None
     for s in steps:
         kw = s.get("kwargs", {}) or {}
         if _norm(kw.get("relativity")):
             return None
-    return ("a 5d metal needs a relativistic Hamiltonian: set relativity "
-            "to zora/dkh/x2c with a matching recontracted basis")
+    return (f"the metal set {sorted(set(metals))} needs a relativistic "
+            f"Hamiltonian by DELFIN's policy (_should_use_rel): set "
+            f"relativity to zora/dkh/x2c with a matching recontracted basis")
 
 
 def _word_in(text: str, word: str) -> bool:

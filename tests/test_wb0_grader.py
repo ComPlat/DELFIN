@@ -173,6 +173,39 @@ def test_a_justified_lint_warning_passes():
     assert verdict["status"] == "pass"
 
 
+def test_the_justification_branch_is_graded_per_finding():
+    """s25 approved-package note: the 'justified' field of each lint
+    finding must flip exactly with the answer text — with no answer the
+    warning is unjustified and fails; with the substance named it passes;
+    the same answer for a DIFFERENT unjustified deviation does not clear
+    it."""
+    spec = {
+        "name": "composite_redundant",
+        "steps": [
+            {"step": "orca_sp", "kwargs": {"charge": 0, "mult": 1,
+                                           "method": "r2scan-3c",
+                                           "basis": "def2-TZVP"}},
+        ],
+    }
+    no_answer = grade(spec, "Energy of methanol.", answer="")
+    assert no_answer["status"] == "fail"
+    assert no_answer["findings"]["lint"][0]["justified"] is False
+
+    justified = grade(spec, "Energy of methanol.",
+                      answer="The explicit basis def2-TZVP is ignored by "
+                             "the composite method; I know this and I keep "
+                             "it only as documentation for the metal_basis "
+                             "override I plan later.")
+    assert justified["status"] == "pass"
+    assert justified["findings"]["lint"][0]["justified"] is True
+
+    # the justification names the WRONG deviation: still unjustified
+    wrong = grade(spec, "Energy of methanol.",
+                  answer="I chose PBE0 because it is semi-local and fast.")
+    assert wrong["status"] == "fail"
+    assert wrong["findings"]["lint"][0]["justified"] is False
+
+
 # ---------------------------------------------------------------------------
 # Broken input is refused, never half-graded
 # ---------------------------------------------------------------------------
@@ -240,6 +273,69 @@ def test_hf_symbol_case_insensitive_still_caught():
                                        "basis": "def2-TZVP"}}]}
     verdict = grade(spec, "the energy of the Au complex")
     assert verdict["status"] == "fail"
+
+
+# ---------------------------------------------------------------------------
+# QS finding F1 (s29, seconded s25): the relativity DECISION must come
+# from DELFIN's own policy — delfin.utils._should_use_rel (:203-217,
+# '4d5d'/'4f5f'/'mixed') — never from a grader-local element list. The
+# grader's table is only the TEXT->SYMBOL resolver.
+# ---------------------------------------------------------------------------
+
+def test_a_4d_metal_is_caught_without_relativity():
+    spec = {"name": "ru_sp", "steps": [
+        {"step": "orca_sp", "kwargs": {"charge": 0, "mult": 1,
+                                       "method": "PBE0",
+                                       "basis": "def2-TZVP"}}]}
+    verdict = grade(spec, "the energy of the Ru complex")
+    assert verdict["status"] == "fail"
+
+
+def test_a_lanthanide_is_caught_without_relativity():
+    spec = {"name": "gd_sp", "steps": [
+        {"step": "orca_sp", "kwargs": {"charge": 0, "mult": 1,
+                                       "method": "PBE0",
+                                       "basis": "def2-TZVP"}}]}
+    verdict = grade(spec, "the energy of the gadolinium complex")
+    assert verdict["status"] == "fail"
+
+
+def test_pure_3d_iron_is_not_caught():
+    """_should_use_rel returns False for a pure 3d system — the grader
+    must agree (the spin task grades spin handling, not relativity)."""
+    spec = {"name": "fe_sp", "steps": [
+        {"step": "orca_sp", "kwargs": {"charge": 0, "mult": 5,
+                                       "method": "PBE0",
+                                       "basis": "def2-TZVP"}}]}
+    verdict = grade(spec, "the energy of the iron complex")
+    assert verdict["status"] == "pass", verdict["reasons"]
+
+
+def test_grader_and_policy_agree_on_the_pin_set():
+    """The grader's verdict and DELFIN's _should_use_rel must agree for
+    every element of the pin set {Fe, Au, Os, Gd, Rn}."""
+    from delfin.utils import _should_use_rel
+
+    spec = {"name": "pin", "steps": [
+        {"step": "orca_sp", "kwargs": {"charge": 0, "mult": 1,
+                                       "method": "PBE0",
+                                       "basis": "def2-TZVP"}}]}
+    for request, metals in (
+            ("the energy of the iron complex", ["Fe"]),
+            ("the energy of the Au complex", ["Au"]),
+            ("the energy of the osmium complex", ["Os"]),
+            ("the energy of the gadolinium complex", ["Gd"]),
+            ("the energy of the radon compound", ["Rn"])):
+        verdict = grade(spec, request)
+        needs = _should_use_rel(metals)
+        rel_reasons = [r for r in verdict["reasons"] if "relativistic" in r]
+        if needs:
+            assert verdict["status"] == "fail", (request, verdict["reasons"])
+            assert len(rel_reasons) == 1, (request, verdict["reasons"])
+        else:
+            # For not-needs, relativity is only one of several checks:
+            # assert the specific reason is absent, not a blanket pass.
+            assert not rel_reasons, (request, verdict["reasons"])
 
 
 def test_rigid_molecule_frequency_request_does_not_demand_conformers():
