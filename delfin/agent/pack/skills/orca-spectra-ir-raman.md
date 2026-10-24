@@ -50,11 +50,14 @@ to experiment. The factor depends on functional AND basis set.
   (comp.chem.umn.edu/freqscale); for double-hybrids and DFT:
   Kesharwani, Brauer & Martin, *J. Phys. Chem. A* 2015, 119, 1701–1714,
   DOI 10.1021/jp508422u.
-- Typical order of magnitude (verify the exact pair against the
-  databases above before quoting): B3LYP with a double-zeta basis
-  ≈ 0.957–0.961; BP86 similar; TPSSh/hybrid-meta slightly higher;
-  HF ≈ 0.90. A ZPE factor is a DIFFERENT number (~0.97–0.99) — do not
-  use one for the other.
+- Typical order of magnitude — QUOTE THE SOURCE FIRST, then the range:
+  name the pair's source (database + entry) in the same sentence, and
+  only then the number ("B3LYP/def2-SVP, 0.960 per Kesharwani et al.
+  2015, DOI 10.1021/jp508422u"). Ranges below are orientation only
+  (verify the exact pair against the databases above before quoting):
+  B3LYP with a double-zeta basis ≈ 0.957–0.961; BP86 similar;
+  TPSSh/hybrid-meta slightly higher; HF ≈ 0.90. A ZPE factor is a
+  DIFFERENT number (~0.97–0.99) — do not use one for the other.
 
 ## Deviations need a reason
 
