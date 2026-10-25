@@ -20,6 +20,7 @@ partition rule.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable, Dict, Iterable, List, Optional
 
@@ -31,13 +32,22 @@ from delfin.scheduler_client import (
 )
 
 #: Columns one sacct call asks for. ``-X`` keeps the main allocation
-#: (no per-step rows); ``-P`` makes rows pipe-separable.
+#: (no per-step rows); ``-P`` makes rows pipe-separable. ``TotalCPU``
+#: is the consumed CPU time — the number RS1's pre-submit advice needs:
+#: the fraction of the allocated cores that actually computed
+#: (TotalCPU / (AllocCPUS * Elapsed)); SOLVATOR at pal 2 ran at
+#: ~1.5 % CPU in wave 21, invisible without this column.
 SACCT_COLUMNS = ("JobID,JobName,State,ExitCode,Elapsed,Timelimit,"
-                 "ReqTRES,AllocCPUS,MaxRSS,Submit,Start,End")
+                 "ReqTRES,AllocCPUS,MaxRSS,Submit,Start,End,TotalCPU")
 
 #: States whose core-hours served nothing.
 _WASTED_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
                   "NODE_FAIL", "PREEMPTED"}
+
+#: Among the wasted states, the ones where TotalCPU on this cluster is
+#: a known artefact (killed at the time limit, also CANCELLED by the
+#: backup): the efficiency is UNKNOWN, never derived from it.
+_ARTEFACT_EFFICIENCY_STATES = {"TIMEOUT", "CANCELLED"}
 
 _SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
@@ -106,10 +116,14 @@ def _parse_sacct(text: str) -> Dict[str, List[dict]]:
         fields = line.split("|")
         if len(fields) < 12:
             continue
+        # A row the scheduler reports without the TotalCPU column is still
+        # accounted for; its cpu_efficiency is None, not the row dropped.
+        if len(fields) == 12:
+            fields.append("")
         row = dict(zip(
             ("job_id", "job_name", "state", "exit_code", "elapsed",
              "timelimit", "req_tres", "alloc_cpus", "max_rss",
-             "submit", "start", "end"), fields))
+             "submit", "start", "end", "total_cpu"), fields))
         rows.setdefault(row["job_id"].split(".")[0], []).append(row)
     return rows
 
@@ -130,14 +144,40 @@ def _account_row(row: dict, *, is_repeated_waste: bool) -> dict:
     state = row["state"].split("+")[0].split(" ")[0] or "UNKNOWN"
     wasted = state in _WASTED_STATES
     used_core_hours = 0.0 if wasted else (cores or 0) * elapsed / 3600.0
+    # CPU efficiency: the fraction of the allocated cores that actually
+    # computed. TotalCPU is the consumed CPU time the scheduler
+    # measured; missing it stays None — never a fabricated 0.0 %.
+    # On this cluster TotalCPU is a known artefact for jobs killed at
+    # their time limit (TIMEOUT, also CANCELLED by the backup): it
+    # comes out ~0 although the job computed for hours (operator note,
+    # wave 22). For those states the efficiency is UNKNOWN, never 0 %,
+    # and never a basis for advice. A real cross-check is the 'CPU
+    # Utilized' line DELFIN prints into the job .out.
+    total_cpu_s = _slurm_seconds(row.get("total_cpu", ""))
+    alloc_cpus = _int_or_none(row["alloc_cpus"])
+    cpu_efficiency = None
+    if total_cpu_s is not None and alloc_cpus and elapsed > 0:
+        cpu_efficiency = total_cpu_s / (alloc_cpus * elapsed)
+    notes: List[str] = []
+    if wasted and state in _ARTEFACT_EFFICIENCY_STATES:
+        notes.append(
+            f"state {state}: TotalCPU is a known scheduler artefact "
+            "for jobs killed at the time limit (the job did compute, "
+            "but the number is not trustworthy); cpu_efficiency "
+            "reported UNKNOWN. Cross-check the job .out 'CPU "
+            "Utilized' line.")
+    if notes:
+        cpu_efficiency = None
     return {
         "job_id": row["job_id"],
         "job_name": row["job_name"],
         "state": state,
         "requested": {"cores": cores, "mem_mb": req_mem,
                       "wall_s": _slurm_seconds(row["timelimit"])},
-        "used": {"cores": _int_or_none(row["alloc_cpus"]),
+        "used": {"cores": alloc_cpus,
                  "mem_mb": used_mem, "wall_s": elapsed},
+        "cpu_efficiency": cpu_efficiency,
+        "notes": notes,
         "queue_wait_s": queue_wait,
         "core_hours_used": round(used_core_hours, 3),
         "core_hours_wasted": round(
@@ -234,6 +274,29 @@ def account(job_ids, *, run_fn=None, client=None) -> Optional[dict]:
 KNOWN_STEPS = ("opt", "gopt", "sp", "freq", "ts", "tddft", "scan",
                "saddle", "relaxed_scan", "ir", "uvvis", "nmr")
 
+#: Below this measured mean CPU efficiency a step kind is called
+#: low-parallel. The boundary sits between the two recorded wave-21
+#: populations — SOLVATOR at pal 2 used 1.53 % of its allocated CPU
+#: time (run .gate/practice/sv1_tiny_solvator/delfin_7922181.out,
+#: 'CPU Efficiency: 1.53% of 01:39:08 core-walltime', job FAILED with
+#: exit code 138 — the number comes from the .out summary line, not
+#: from TotalCPU, which is an artefact on killed jobs) vs a pal 1 run
+#: of a SMALLER shell (NSOLV 3, different task) at 35.75 %
+#: (.gate/practice/sv1_tiny_solvator_r2/delfin_7922985.out). The
+#: core-walltime figures count LOGICAL CPUs (hyperthreads): 00:24:47
+#: x 2 logical CPUs x 2 threads = 01:39:08. The two runs are NOT the
+#: same task — no "pal 1 finished the same task in 38 s" claim is
+#: defensible. Exact lines fixed as records in
+#: tests/test_rs1_resource_sizing.py (operator message, wave 22,
+#: md5 of run 1 .out 2f195b869915ee805aa9602ec31be629).
+LOW_PARALLEL_EFFICIENCY = 0.10
+
+#: Steps with well-parallelised kinds (DFT opt/freq/sp) are expected to
+#: use their cores; only kinds measured low-parallel get advice.
+HIGH_PARALLEL_STEPS = ("opt", "gopt", "sp", "freq", "ts", "tddft",
+                       "scan", "saddle", "relaxed_scan", "ir", "uvvis",
+                       "nmr")
+
 
 def _delfin_workflow_names() -> tuple:
     """DELFIN's own workflow vocabulary, from its own registries.
@@ -287,8 +350,71 @@ def _configured_partitions(explicit=None, *, profile=None):
     return configured_partitions(explicit, profile=profile)
 
 
+def _efficiency_summary(step, records):
+    """Mean CPU efficiency of one step kind from account() records.
+
+    Matching is by exact job_name against the step (case-sensitive,
+    like DELFIN's CONTROL step names) — a prefix match would credit
+    'crest' with 'crest_preopt''s measurement. Only COMPLETED rows
+    with a measured cpu_efficiency count: TIMEOUT/CANCELLED rows
+    carry the TotalCPU artefact (operator caution, wave 22) and are
+    excluded with a count, never read as 0 %.
+    """
+    rows = [r for r in records
+            if isinstance(r, dict) and r.get("job_name") == step]
+    if not rows:
+        # Records exist but none for this step: a zero-run summary,
+        # never None — the caller must see that nothing matched
+        # (a prefix/typo mismatch looks exactly like "no data").
+        return {"low_parallel": False, "advice": None,
+                "measured_runs": 0, "excluded_runs": 0,
+                "mean_cpu_efficiency": None, "max_measured_wall_s": None,
+                "source": (f"account() records contain no run of "
+                           f"'{step}'")}
+    measured = [r for r in rows
+                if r.get("state") == "COMPLETED"
+                and isinstance(r.get("cpu_efficiency"), (int, float))
+                and math.isfinite(float(r["cpu_efficiency"]))]
+    # NaN/inf pass the isinstance filter and poison the mean (NaN <
+    # threshold is False): a genuinely low-parallel step would
+    # silently lose its advice. Excluded like the TIMEOUT/CANCELLED
+    # artefact rows, with a count.
+    excluded = len(rows) - len(measured)
+    if not measured:
+        return {"low_parallel": False, "advice": None,
+                "measured_runs": 0, "excluded_runs": excluded,
+                "mean_cpu_efficiency": None, "max_measured_wall_s": None,
+                "source": "account() records (no measured COMPLETED run)"}
+    effs = [float(r["cpu_efficiency"]) for r in measured]
+    walls = [int(r.get("used", {}).get("wall_s") or 0) for r in measured]
+    mean = sum(effs) / len(effs)
+    low = mean < LOW_PARALLEL_EFFICIENCY
+    summary = {
+        "low_parallel": low,
+        "advice": None,
+        "measured_runs": len(measured),
+        "excluded_runs": excluded,
+        "mean_cpu_efficiency": mean,
+        "max_measured_wall_s": max(walls),
+        "source": (f"EF1 account() records: {len(measured)} COMPLETED "
+                   f"run(s) of '{step}'"),
+    }
+    if low:
+        # Advice only — the numbers are what the runs measured; a
+        # time-limit kill of a low-parallel run is the recorded
+        # failure mode this advice exists to prevent.
+        summary["advice"] = (
+            f"measured mean CPU efficiency of '{step}' is "
+            f"{mean * 100:.1f} % over {len(measured)} COMPLETED run(s) "
+            f"(EF1 account()); this kind scales poorly with cores. "
+            "Consider pal 1 and a time limit from the measured "
+            f"wall time (max {max(walls)} s); decide yourself — the "
+            "user's PAL/maxcore/time are never changed by advice.")
+    return summary
+
+
 def advise(step: str, system_size: int, *,
-           explicit_partitions=None) -> dict:
+           explicit_partitions=None, efficiency_records=None) -> dict:
     """A resource suggestion for a workflow step, from DELFIN's logic only.
 
     PAL/maxcore come from :func:`delfin.cluster_utils.auto_configure_resources`
@@ -332,4 +458,15 @@ def advise(step: str, system_size: int, *,
     clean = [str(c).strip() for c in candidates if str(c).strip()]
     if clean:
         suggestion["partitions"] = ",".join(clean)
+    # Pre-submit efficiency advice (RS1 phase 2): only when the caller
+    # brings measured account() records for this step kind. Missing
+    # records behave exactly like today's advice.
+    if efficiency_records is not None:
+        suggestion["efficiency"] = _efficiency_summary(step,
+                                                       efficiency_records)
+        summary = suggestion["efficiency"]
+        if summary and summary["low_parallel"]:
+            suggestion["notes"].append(summary["advice"])
+    else:
+        suggestion["efficiency"] = None
     return suggestion
