@@ -17,6 +17,7 @@ On ``delfin --recalc`` (``DELFIN_RECALC=1``), ``should_skip()`` returns:
  - Classic mode: True when output is complete.
 """
 
+import ast
 import hashlib
 import logging
 import os
@@ -600,6 +601,48 @@ def store_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _occupier_sequences_parseable(inp_path: Path) -> bool:
+    """Return False when a sibling OCCUPIER CONTROL carries malformed sequences.
+
+    The adduct OCCUPIER writer regenerates the stage CONTROL.txt from the CO2
+    coordination settings; when that regeneration was skipped by an earlier
+    smart-recalc pass, an old file can carry configparser-quoted values
+    (even_seq="[" / odd_seq="[{...}]" with backslash escapes, observed
+    2026-10-25 in adduct_occupier/CONTROL.txt:28-29 after the stale-skip of
+    job 7939842). The OCCUPIER validator then reads strings instead of lists
+    and the whole FoB chain aborts. In that state the run must NOT be skipped:
+    the writer has to regenerate the CONTROL first.
+    """
+    control = inp_path.parent / "CONTROL.txt"
+    if not control.exists():
+        return True
+    try:
+        text = control.read_text(encoding="utf-8")
+    except Exception:
+        return True
+    for key in ("even_seq", "odd_seq"):
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(f"{key}="):
+                continue
+            value = stripped[len(key) + 1:].strip()
+            if not value:
+                continue
+            if value.startswith(('"', "'")):
+                # configparser round-trip quoting: value is a quoted string,
+                # not the list literal the OCCUPIER validator requires.
+                return False
+            if value.startswith("["):
+                try:
+                    parsed = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    return False
+                if not isinstance(parsed, list):
+                    return False
+            break
+    return True
+
+
 def should_skip(
     inp_path,
     out_path,
@@ -618,6 +661,13 @@ def should_skip(
     if not recalc_enabled():
         return False
     if not outputs_complete(inp_path, out_path, required_outputs=required_outputs):
+        return False
+    if smart_mode_enabled() and not _occupier_sequences_parseable(Path(inp_path)):
+        logger.info(
+            "[smart_recalc] %s: sibling OCCUPIER CONTROL has malformed "
+            "even_seq/odd_seq values; regenerating instead of skipping.",
+            inp_path,
+        )
         return False
     if not smart_mode_enabled():
         return True
