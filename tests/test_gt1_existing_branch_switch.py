@@ -25,17 +25,20 @@ def _verdict(action):
 
 # --- (A) routine shape --------------------------------------------------------
 
-def test_checkout_existing_branch_is_routine():
+def test_checkout_existing_branch_is_routine(monkeypatch):
+    monkeypatch.chdir(_tmp_branch_repo())
     v = _verdict({"tool": "bash", "command": "git checkout agent/s3-ds1b"})
     assert v is not None and v.decision == "allow"
 
 
-def test_switch_existing_branch_is_routine():
+def test_switch_existing_branch_is_routine(monkeypatch):
+    monkeypatch.chdir(_tmp_branch_repo())
     v = _verdict({"tool": "bash", "command": "git switch agent/s3-ds1b"})
     assert v is not None and v.decision == "allow"
 
 
-def test_switch_to_existing_local_branch_is_routine():
+def test_switch_to_existing_local_branch_is_routine(monkeypatch):
+    monkeypatch.chdir(_tmp_branch_repo())
     v = _verdict({"tool": "bash", "command": "git switch main"})
     assert v is not None and v.decision == "allow"
 
@@ -110,9 +113,13 @@ def test_checkout_shell_operator_not_routine():
 # --- (B) write-gate target parser --------------------------------------------
 
 def _tmp_branch_repo():
-    """A real tmp git repository that carries the local branch
-    ``agent/s3-ds1b`` -- the fail-closed branch probe needs a ref store
-    to ask; a bare directory would keep the operand a path forever."""
+    """A real tmp git repository that carries the local branches
+    ``main`` and ``agent/s3-ds1b``. The fail-closed branch probe needs a
+    ref store to ask; a bare directory would keep the operand a path
+    forever. The routine-shape tests chdir here, because
+    routine_actions asks git in os.getcwd() -- without the chdir they
+    depend on whatever repo pytest starts in (the CI checkout of a PR
+    head has neither branch, wave-22 CI shard 3)."""
     import os
     import subprocess
     import tempfile
@@ -130,7 +137,7 @@ def _tmp_branch_repo():
     env["GIT_AUTHOR_EMAIL"] = "gt1-fixture@example.invalid"
     env["GIT_COMMITTER_NAME"] = "gt1 fixture"
     env["GIT_COMMITTER_EMAIL"] = "gt1-fixture@example.invalid"
-    for cmd in (["git", "init", "-q", td],
+    for cmd in (["git", "init", "-q", "-b", "main", td],
                 ["git", "-C", td, "commit", "-q", "--allow-empty",
                  "-m", "gt1 fixture"],
                 ["git", "-C", td, "branch", "agent/s3-ds1b"]):
