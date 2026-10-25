@@ -249,6 +249,10 @@ class GlueGrader:
         # value from a flagged output) keeps the verdict — the rubric
         # verdict already carries what the run achieved (s25 finding,
         # answered-vs-unanswered split per result_claims.py:170-189).
+        # The caveat is still surfaced: the warn Claim itself carries
+        # level="warn" plus the flags that triggered it (result_claims
+        # Claim.flags), and worst_level() reports it in the return —
+        # it is not dropped, it just does not flip the verdict.
         if worst_level(claims) == "error":
             return (False, 0)
         return success, quality
