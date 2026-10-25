@@ -229,3 +229,17 @@ once, then deploy as above; then, as `pi`,
 `sudo bash ~delfin/delfin/src/scripts/pi/pi_harden_host.sh` and
 `deploy_pi.sh --landlock pi@<host>`, and the checklist "After the first
 boot".
+
+## SimpleX messenger: forum and session chats
+
+After installing the `agent,messenger` extras into the gateway environment,
+provision with `pi_messenger.sh`. Pair the phone, then send `/sync` to the bot:
+it invites you to **DELFIN Forum** and one private group per local session.
+Accept these invitations in SimpleX. Repeat `/sync` to add new sessions.
+
+A session chat addresses exactly that session. The forum addresses all connected
+sessions. `/status` reads the current state, `/update` requests a short progress
+report, and `/pending` shows questions and approvals. Only summaries and requests
+are sent, not the full conversation. Use `/answer CODE text`, `/approve CODE` or
+`/deny CODE` in the relevant session chat. Approvals are single-use and expire;
+there is no forum-wide approval. See [setup and command reference](../../docs/design/messenger-simplex.md).

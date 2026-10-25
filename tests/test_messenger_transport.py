@@ -46,7 +46,7 @@ def test_simplex_preserves_events_while_commands_wait_for_replies():
         reader = asyncio.create_task(daemon._read())
         try:
             replies = await asyncio.wait_for(asyncio.gather(
-                daemon.command({'type': 'one'}), daemon.command({'type': 'two'})), 2)
+                daemon.command('/user'), daemon.command('/_contacts 1')), 2)
             assert replies == [{'type': 'ok'}, {'type': 'ok'}]
             events = daemon.events()
             assert (await anext(events))['type'] == 'newChatItems'
@@ -55,4 +55,50 @@ def test_simplex_preserves_events_while_commands_wait_for_replies():
         finally:
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
+    asyncio.run(run())
+
+
+def received(group=10, sender=7, direction='groupRcv', mid=44):
+    return {'type': 'newChatItems', 'user': {'userId': 1}, 'chatItems': [{
+        'chatInfo': {'type': 'group', 'groupInfo': {'groupId': group}},
+        'chatItem': {'chatDir': {'type': direction, 'groupMember': {'memberContactId': sender}},
+                     'meta': {'itemId': mid},
+                     'content': {'type': 'rcvMsgContent', 'msgContent': {'type': 'text', 'text': 'hello'}}}}]}
+
+
+def test_real_simplex_envelope_keeps_all_received_items_and_ignores_own_messages():
+    from delfin.messenger.simplex import messages_of
+    event = received()
+    event['chatItems'] += received(group=20, mid=45)['chatItems']
+    assert messages_of(event) == [
+        {'chat': '#10', 'sender': '7', 'text': 'hello', 'id': '44'},
+        {'chat': '#20', 'sender': '7', 'text': 'hello', 'id': '45'}]
+    assert messages_of(received(direction='groupSnd')) == []
+    assert messages_of(received(sender=None)) == []
+
+
+def test_simplex_commands_use_documented_string_syntax():
+    async def run():
+        daemon = Daemon()
+        commands = []
+        async def command(text):
+            commands.append(text)
+            if text == '/user':
+                return {'type': 'activeUser', 'user': {'userId': 1}}
+            if text.startswith('/_group'):
+                return {'type': 'groupCreated', 'groupInfo': {'groupId': 10}}
+            if text.startswith('/_connect'):
+                return {'type': 'invitation', 'connLinkInvitation': {'connFullLink': 'simplex:/inv'},
+                        'connection': {'pccConnId': 9}}
+            return {'type': 'cmdOk'}
+        daemon.command = command
+        assert await daemon.create_group('DELFIN session') == '#10'
+        await daemon.invite('#10', '7')
+        await daemon.send_chat('#10', 'hello')
+        assert await daemon.pending_invitation() == 'simplex:/inv'
+        assert daemon.invitation_id == 9
+        assert commands[1].startswith('/_group 1 {')
+        assert '/_add #10 7 member' in commands
+        sent = next(s for s in commands if s.startswith('/_send'))
+        assert json.loads(sent.split(' json ', 1)[1])[0]['msgContent']['text'] == 'hello'
     asyncio.run(run())

@@ -1,321 +1,244 @@
-"""The command loop: only the paired contact commands, with limits.
+"""A private group per session, plus an explicitly labelled shared forum.
 
-What the phone may say:
-    status                    -> what the sessions are doing
-    sitzungen / sessions      -> the session list
-    stop                      -> the agent service stops (sessions are saved)
-    hilfe / help              -> this list
-    @name text                -> the task goes to the named session
-    1 / 2 / text as a reply   -> the answer to the newest question, by its
-                                 number from the last `pending` message
-    anything else             -> a task for the "phone" session
-
-What the phone never does: approve. A confirm/plan in `pending` is shown
-with where to approve (dashboard or terminal), and an answer that names
-an approval is refused by the bridge as well.
+Only the paired human's received messages are commands. Agent notifications
+are never fed back into other agents. Stable group/session IDs determine the
+recipient; names are presentation only.
 """
-
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections import deque
 
-from . import simplex
-from .bridge_client import BridgeClient, BridgeDown, default_socket_path
+from . import simplex, store
+from .bridge_client import BridgeClient, default_socket_path
 
-#: The message the phone may send, and how often: at most RATE_LIMIT
-#: messages per RATE_WINDOW_S, at most SIZE_LIMIT characters.
-RATE_LIMIT = 15
-RATE_WINDOW_S = 60.0
-SIZE_LIMIT = 4_096
-MAX_BRIDGE_TEXT = 2_000
-
-HELP_TEXT = (
-    "Befehle:\n"
-    "status - was die Sitzungen tun\n"
-    "sessions / sitzungen - die Liste der Sitzungen\n"
-    "pending - offene Fragen und Hinweise\n"
-    "stop - alle Agenten anhalten (Sitzungen bleiben erhalten)\n"
-    "hilfe / help - diese Liste\n"
-    "@name text - Auftrag an die Sitzung »name«\n"
-    "Antwort auf eine Frage: Nummer (1, 2, ...) oder Text schicken\n"
-    "alles andere: Auftrag an die Handysitzung\n"
-    "Freigaben gibt es nur am Dashboard/Terminal, nie per Handy")
+HELP = (
+    'Einzelchat: Text geht nur an diese Sitzung.\n'
+    'Forum: Text geht an alle verbundenen Sitzungen.\n'
+    '/status – Stand; /update – kurzen Bericht anfordern; /pending – offene Anfragen\n'
+    '/answer CODE Text – Rückfrage beantworten\n'
+    '/approve CODE oder /deny CODE – konkrete Anfrage im Einzelchat entscheiden\n'
+    '/stop – aktuellen Lauf anhalten (im Forum: verbundene Sitzungen)\n'
+    '/sessions – Sitzungen; /chat SITZUNGS-ID – Einzelchat einrichten\n'
+    '/forum – Forum einrichten; /sync – aktuelle Sitzungen verbinden\n'
+    'Freigaben gelten einmalig; Planfreigaben wechseln in den Standardmodus.'
+)
+UPDATE = 'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.'
 
 
-class Refused(RuntimeError):
-    """A message the gateway will not act on."""
+def label(room: dict) -> str:
+    return f"{room['title']} · {room['session_id']}"
 
 
-def _trim(text: str, limit: int = MAX_BRIDGE_TEXT) -> str:
-    text = str(text or "")
-    if len(text) <= limit:
-        return text
-    return text[:limit - 1] + "…"
-
-
-class PhoneSession:
-    """One message the phone sent, with its id: processed once."""
-
-    def __init__(self, contact_id: str, text: str, msg_id: str):
-        self.contact_id = contact_id
-        self.text = text
-        self.msg_id = msg_id
-
-
-class Gateway:
-    def __init__(self, *, contact_id: str, bridge: BridgeClient | None = None,
-                 send_text=None, now=time.monotonic, pairing_check=None):
-        self.contact_id = contact_id
-        self.pairing_check = pairing_check
+class Rooms:
+    def __init__(self, daemon, bridge=None):
+        self.daemon = daemon
         self.bridge = bridge or BridgeClient(default_socket_path())
-        self.send_text = send_text          # async (cid, text) -> None
-        self.now = now
-        self._seen_ids: deque[str] = deque(maxlen=2048)
-        self._rate: deque[float] = deque()
-        self.questions: dict[int, str] = {}      # number -> attention item id
-        self._selected: str | None = None        # the item a bare number chose
+        self.owner = store.paired_contact()
+        self._rate = deque()
+        self._shown = {}
+        self._setup = asyncio.Lock()
 
-    def paired(self) -> bool:
-        return self.pairing_check is None or self.pairing_check() == self.contact_id
+    def paired(self):
+        return bool(self.owner) and store.paired_contact() == self.owner
 
-    # -- limits ---------------------------------------------------------------------------
+    async def ask(self, command):
+        if not self.paired():
+            raise ValueError('Handy wurde entkoppelt.')
+        return await asyncio.to_thread(self.bridge.ask, command)
 
-    def _check_limits(self, message: PhoneSession) -> None:
-        now = self.now()
-        self._rate.append(now)
-        while self._rate and now - self._rate[0] > RATE_WINDOW_S:
-            self._rate.popleft()
-        if len(self._rate) > RATE_LIMIT:
-            raise Refused("zu viele Nachrichten; warte kurz")
-        if len(message.text) > SIZE_LIMIT:
-            raise Refused(f"Nachricht zu lang ({len(message.text)} > {SIZE_LIMIT})")
-        if message.msg_id and message.msg_id in self._seen_ids:
-            raise Refused("dieselbe Nachricht noch einmal")
-        if message.msg_id:
-            self._seen_ids.append(message.msg_id)
+    async def session(self, sid, action, **kwargs):
+        return await self.ask({'cmd': 'session', 'session': sid, 'action': action, **kwargs})
 
-    # -- dispatch --------------------------------------------------------------------------
-
-    async def handle(self, message: PhoneSession) -> str:
-        """One message from the paired contact, the reply text."""
-        if not self.paired() or message.contact_id != self.contact_id:
-            raise Refused("nicht gekoppelt")
-        self._check_limits(message)
-        text = message.text.strip()
-        if not text:
-            return ""
-        if text.lower() in ("hilfe", "help"):
-            return HELP_TEXT
-        if text.lower() in ("status", "sitzungen", "sessions", "pending"):
-            return self._bridge_command("status" if text.lower() == "status"
-                                        else "pending" if text.lower() == "pending"
-                                        else "sessions")
-        if text.lower() == "stop":
-            return self._bridge_command("stop")
-        # @name text: the task goes to the named session.
-        if text.startswith("@"):
-            name, _, rest = text.partition(" ")
-            if not rest.strip():
-                return "Gib nach dem @Namen den Auftrag an."
-            return self._bridge_task(rest.strip(), session=name[1:])
-        # A number chooses the item it names (a question or, visible as
-        # such, an approval); the answer follows as the next message and
-        # the bridge refuses an approval verbatim. An unknown number is
-        # not an answer: it becomes a task like any other text.
-        if text.isdigit():
-            number = int(text)
-            if number in self.questions:
-                self._selected = self.questions[number]
-                return "Ausgewählt — jetzt den Antworttext schicken."
-            return self._bridge_task(text)
-        # Free text: an answer to the chosen item, else the first open
-        # question (the bridge refuses a non-question), else a task.
-        if self._selected:
-            item_id, self._selected = self._selected, None
-            return self._bridge_answer(item_id, text)
-        if self.questions:
-            try:
-                reply = self.bridge.ask({"cmd": "pending"})
-            except (BridgeDown, OSError):
-                reply = {}
-            items = reply.get("items") or []
-            if items and items[0].get("kind") == "question":
-                return self._bridge_answer(str(items[0].get("id") or ""), text)
-        return self._bridge_task(text)
-
-    # -- bridge calls, each cut and with its errors turned into text -----
-
-    def _bridge_command(self, cmd: str) -> str:
-        try:
-            reply = self.bridge.ask({"cmd": cmd})
-        except BridgeDown as exc:
-            return f"Der Agentendienst ist nicht erreichbar ({exc})."
-        except OSError as exc:
-            return f"Der Agentendienst ist nicht erreichbar ({exc})."
-        if reply.get("error"):
-            return f"Fehler: {reply['error']}"
-        return self._render(cmd, reply)
-
-    def _bridge_task(self, text: str, session: str | None = None) -> str:
-        command = {"cmd": "prompt", "text": _trim(text)}
-        if session:
-            command["session"] = _trim(session, 64)
-        try:
-            reply = self.bridge.ask(command)
-        except (BridgeDown, OSError) as exc:
-            return f"Der Agentendienst ist nicht erreichbar ({exc})."
-        if reply.get("error"):
-            return f"Fehler: {reply['error']}"
-        name = reply.get("session") or session or "Handy"
-        return (f"Auftrag an »{name}« übergeben."
-                if reply.get("accepted") or reply.get("queued")
-                else f"Auftrag an »{name}« weitergereicht.")
-
-    def _bridge_answer(self, item_id: str, text: str) -> str:
-        if not item_id:
-            return "Die Frage ist nicht mehr offen."
-        try:
-            reply = self.bridge.ask({"cmd": "answer", "id": item_id,
-                                     "text": _trim(text)})
-        except (BridgeDown, OSError) as exc:
-            return f"Der Agentendienst ist nicht erreichbar ({exc})."
-        if reply.get("error"):
-            return reply["error"]      # the refusal of an approval, verbatim
-        return "Antwort weitergegeben."
-
-    # -- rendering -----------------------------------------------------------------------
-
-    def _render(self, cmd: str, reply: dict) -> str:
-        if cmd == "status":
-            rows = reply.get("sessions") or []
-            if not rows:
-                return "Keine Sitzungen."
-            lines = [f"{r.get('title') or r.get('id')}: {r.get('state')}"
-                     for r in rows]
-            out = "\n".join(lines)
-            self._remember_questions_from_pending()
-            return _trim(out, 2_000)
-        if cmd == "sessions":
-            rows = reply.get("sessions") or []
-            if not rows:
-                return "Keine Sitzungen."
-            return _trim("\n".join(
-                f"{r.get('name') or r.get('id')}: {r.get('state')}"
-                for r in rows), 2_000)
-        if cmd == "pending":
-            return self._render_pending(reply)
-        if cmd == "stop":
-            return ("Alle Agenten werden angehalten "
-                    f"({reply.get('sessions')} Sitzungen enden und werden gesichert).")
-        return json.dumps(reply, ensure_ascii=False)[:1_000]
-
-    def _render_pending(self, reply: dict) -> str:
-        items = reply.get("items") or []
-        if not items:
-            self.questions = {}
-            self._selected = None
-            return "Nichts offen."
-        self._last_number = 0
-        self.questions = {}
-        lines: list[str] = []
-        for item in items[:5]:
-            kind = item.get("kind")
-            title = item.get("session") or item.get("sessionTitle") or ""
-            text = item.get("text") or item.get("detail") or ""
-            self._last_number += 1
-            self.questions[self._last_number] = str(item.get("id") or "")
-            if kind == "question":
-                lines.append(f"{self._last_number}. Frage ({title}): "
-                             f"{_trim(text, 200)}")
-            elif kind in ("confirm", "plan"):
-                lines.append(f"{self._last_number}. Freigabe nötig ({title}): "
-                             f"{_trim(text, 200)}\n"
-                             "→ am Dashboard/Terminal genehmigen (Antwort hier wird abgelehnt)")
+    async def ensure_room(self, sid=None):
+        async with self._setup:
+            if not self.paired():
+                raise ValueError('Handy wurde entkoppelt.')
+            existing = next(((chat, r) for chat, r in store.rooms().items()
+                             if r['session_id'] == sid), None)
+            if existing and existing[1].get('ready'):
+                return existing[0]
+            if sid is not None:
+                reply = await self.session(sid, 'status')
+                if reply.get('error'):
+                    raise ValueError(reply['error'])
+                title = str(reply.get('title') or sid)
+                name = f'DELFIN {title[:40]} {sid[:12]}'
             else:
-                lines.append(f"{kind} ({title}): {_trim(text, 200)}")
-        return _trim("\n".join(lines), 2_000)
+                title, name = 'DELFIN Forum – alle verbundenen Sitzungen', 'DELFIN Forum'
+            chat = existing[0] if existing else await self.daemon.create_group(name)
+            store.put_room(chat, sid, title, owner=self.owner)
+            await self.daemon.invite(chat, self.owner)
+            store.put_room(chat, sid, title, owner=self.owner, ready=True)
+            return chat
 
-    def _remember_questions_from_pending(self) -> None:
-        # The numbers the phone answers with stay valid: after a status
-        # the question set is refreshed quietly.
-        try:
-            reply = self.bridge.ask({"cmd": "pending"})
-        except (BridgeDown, OSError):
+    async def sync(self):
+        await self.ensure_room()
+        reply = await self.ask({'cmd': 'sessions'})
+        if reply.get('error'):
+            raise ValueError(reply['error'])
+        for row in reply.get('sessions', []):
+            if row.get('id') and not row.get('elsewhere'):
+                await self.ensure_room(row['id'])
+
+    async def send(self, chat, text):
+        if not self.paired():
             return
-        self._render_pending(reply)
+        if chat != '@' + self.owner and not store.rooms().get(chat, {}).get('ready'):
+            return
+        # Split at message boundaries; never truncate an approval preview silently.
+        for start in range(0, len(text), 2000):
+            if self.paired():
+                await self.daemon.send_chat(chat, text[start:start + 2000])
 
-
-class Listener:
-    """The run loop: daemon events in, gateway decisions, bridge calls,
-    answers back to the paired contact only."""
-
-    def __init__(self, *, contact_id: str, gateway: Gateway):
-        self.contact_id = contact_id
-        self.gateway = gateway
-
-    async def run(self, daemon: simplex.Daemon) -> None:
-        await daemon.subscribe()
-        notifications = asyncio.create_task(self._notifications(daemon))
+    async def handle(self, message):
+        if not self.paired() or message['sender'] != self.owner:
+            return
+        chat = message['chat']
+        room = store.rooms().get(chat)
+        direct = chat == '@' + self.owner
+        if not direct and (not room or not room.get('ready')):
+            return
+        text = message['text'].strip()
+        now = time.monotonic()
+        while self._rate and now - self._rate[0] > 60:
+            self._rate.popleft()
+        if len(self._rate) >= 15 or len(text) > 4096 or not text:
+            return
+        self._rate.append(now)
+        if not store.claim_message(chat, message['id']):
+            return
         try:
-            await self._messages(daemon)
-        finally:
-            notifications.cancel()
-            await asyncio.gather(notifications, return_exceptions=True)
+            result = await self.dispatch(text, room)
+        except Exception:
+            # No raw service exceptions or credentials in phone error messages.
+            result = 'Nicht ausgeführt oder Verbindung unterbrochen. Bitte /status prüfen; nicht automatisch erneut gesendet.'
+        await self.send(chat, result)
 
-    async def _notifications(self, daemon) -> None:
-        states = {}
-        attention = None
-        while self.gateway.paired():
+    async def dispatch(self, text, room):
+        word, _, rest = text.partition(' ')
+        command = word.lower().lstrip('/')
+        if command in {'help', 'hilfe'}:
+            return HELP
+        if command in {'sessions', 'sitzungen'}:
+            reply = await self.ask({'cmd': 'sessions'})
+            return reply.get('error') or '\n'.join(
+                f"{r['id']} · {r.get('name') or r['id']} · {r.get('state')}" for r in reply.get('sessions', [])) or 'Keine Sitzungen.'
+        if command == 'forum':
+            await self.ensure_room()
+            return 'Einladung zum Forum liegt im SimpleX-Chat. Dort geht freier Text an alle verbundenen Sitzungen.'
+        if command == 'sync':
+            await self.sync()
+            return 'Forum und Einzelchats eingerichtet. Bitte die Gruppeneinladungen annehmen.'
+        if command == 'chat' and rest.strip():
+            await self.ensure_room(rest.strip())
+            return 'Einladung zum festen Sitzungs-Chat gesendet. Bitte in SimpleX annehmen.'
+        if room is None:
+            return 'Dieser Chat dient nur der Einrichtung. /sessions zeigt IDs, /chat ID verbindet eine Sitzung, /sync richtet Forum und Einzelchats ein.'
+        sid = room['session_id']
+        if command in {'approve', 'deny', 'answer'}:
+            if sid is None:
+                return 'Bitte die Anfrage im zugehörigen Einzelchat beantworten oder freigeben. Im Forum gibt es keine Sammelfreigabe.'
+            code, _, answer = rest.strip().partition(' ')
+            if not code or (command == 'answer' and not answer):
+                return 'Syntax: /approve CODE, /deny CODE oder /answer CODE Text. /pending zeigt die Codes.'
+            reply = await self.session(sid, command, id=code, **({'text': answer} if command == 'answer' else {}))
+            return reply.get('error') or ('Entscheidung übernommen.' if reply.get('ok') else 'Nicht übernommen.')
+        if text.startswith('@'):
+            return 'Dieser Chat hat feste Empfänger. Bitte den Einzelchat der gewünschten Sitzung öffnen.'
+        if text.startswith('/') and command not in {'status', 'pending', 'stop', 'update'}:
+            return 'Unbekannter Befehl. /help zeigt die verfügbaren Befehle.'
+        targets = [room] if sid else [r for r in store.rooms().values() if r['session_id'] and r.get('ready')]
+        if not targets:
+            return 'Keine Sitzungen verbunden. /sync verbindet die aktuellen Sitzungen.'
+        results = []
+        for target in targets:
+            # Revalidate before each dispatch: a revoke must stop a broadcast too.
+            if not self.paired():
+                break
+            target_sid = target['session_id']
             try:
-                async for event in self.gateway.bridge.events():
-                    if not self.gateway.paired():
-                        return
-                    text = ""
-                    if event.get("event") == "attention":
-                        items = event.get("items") or []
-                        if items != attention:
-                            attention = items
-                            text = self.gateway._render_pending({"items": items}) if items else ""
-                            if not items:
-                                self.gateway._render_pending({"items": []})
-                    elif event.get("event") == "session":
-                        sid, state = event.get("session"), event.get("state")
-                        previous = states.get(sid)
-                        states[sid] = state
-                        if state != previous and state in {"idle", "done", "failed", "error", "exited"}:
-                            text = f"{event.get('title') or sid}: {state}"
-                    elif event.get("event") == "service":
-                        text = "Agentendienst: " + str(event.get("reason") or "Status geändert")
-                    if text and self.gateway.paired():
-                        await daemon.send_text(self.contact_id, _trim(text))
-            except (OSError, BridgeDown):
-                pass
-            await asyncio.sleep(2)
+                if command == 'pending':
+                    reply = await self.session(target_sid, 'pending')
+                    result = reply.get('error') or self.pending_text(reply.get('items', []))
+                elif command == 'status':
+                    reply = await self.session(target_sid, 'status')
+                    result = reply.get('error') or '\n'.join(filter(None, [reply.get('state'), reply.get('activity'), reply.get('answer')]))
+                else:
+                    action = 'stop' if command == 'stop' else 'update' if command == 'update' else 'prompt'
+                    task = UPDATE if command == 'update' else text
+                    reply = await self.session(target_sid, action, **({'text': task} if action in {'prompt', 'update'} else {}))
+                    result = reply.get('error') or ('Lauf wird angehalten.' if action == 'stop' else 'Nachricht übergeben.')
+            except Exception:
+                result = 'Zustellung unklar: Verbindung unterbrochen. Vor erneutem Senden /status prüfen.'
+            results.append(f'[{label(target)}]\n{result}')
+        return '\n\n'.join(results)
 
-    async def _messages(self, daemon):
-        async for event in daemon.events():
-            cid_text = simplex.text_of(event)
-            if cid_text is None:
-                # A contact request from a stranger: refused, logged.
-                if simplex.new_contact_id(event) and \
-                        simplex.new_contact_id(event) != self.contact_id:
-                    continue
+    @staticmethod
+    def pending_text(items):
+        lines = []
+        for item in items:
+            code, kind = item['id'], item.get('kind')
+            text = f"{kind} · {code}\n{item.get('tool') or ''}\n{item.get('text') or ''}"
+            if kind == 'question':
+                text += f'\n/answer {code} Antworttext'
+            elif kind in {'confirm', 'plan'}:
+                if item.get('phoneApproval'):
+                    text += f'\n/approve {code} – ' + ('Plan starten im Standardmodus' if kind == 'plan' else 'einmal erlauben')
+                else:
+                    text += '\nVollständige Aktion am Dashboard prüfen; Handyfreigabe nicht verfügbar.'
+                text += f'\n/deny {code} – ablehnen'
+            lines.append(text)
+        return '\n\n'.join(lines) or 'Nichts offen.'
+
+    async def refresh(self):
+        """Bounded summaries and pending requests only; never fetch a transcript."""
+        bindings = store.rooms()
+        forums = [chat for chat, r in bindings.items() if r['session_id'] is None and r.get('ready')]
+        for chat, room in bindings.items():
+            sid = room['session_id']
+            if not sid or not room.get('ready') or not self.paired():
                 continue
-            cid, text = cid_text
-            if not self.gateway.paired():
-                return
-            if cid != self.contact_id:
-                continue                     # only the paired contact
-            message = PhoneSession(cid, text, str(event.get("itemId") or "")
-                                   or str(time.time()))
-            try:
-                reply = await self.gateway.handle(message)
-            except Refused as exc:
-                reply = f"Aufgabe abgelehnt: {exc}"
-            except Exception as exc:  # noqa: BLE001
-                reply = f"Interner Fehler: {type(exc).__name__}: {exc}"
-            if reply and self.gateway.paired():
-                await daemon.send_text(self.contact_id, _trim(reply, 2_000))
+            status = await self.session(sid, 'status')
+            next_shown = dict(self._shown)
+            notices = []
+            if status.get('error'):
+                fingerprint = status['error']
+                if self._shown.get((chat, 'status')) != fingerprint:
+                    notices.append(fingerprint)
+                    next_shown[(chat, 'status')] = fingerprint
+            else:
+                state, answer = status.get('state'), status.get('answer') or ''
+                fingerprint = (state, answer)
+                if state in {'idle', 'done', 'failed', 'error', 'ended'} and self._shown.get((chat, 'status')) != fingerprint:
+                    notices.append(str(state) + ('\n' + answer if answer else ''))
+                next_shown[(chat, 'status')] = fingerprint
+                pending = await self.session(sid, 'pending')
+                items = pending.get('items', [])
+                if items and self._shown.get((chat, 'pending')) != items:
+                    notices.append(self.pending_text(items))
+                next_shown[(chat, 'pending')] = items
+            for notice in notices:
+                text = f'[{label(room)}]\n{notice}'
+                for destination in [chat, *forums]:
+                    await self.send(destination, text)
+            self._shown = next_shown
+
+    async def run(self):
+        await self.daemon.subscribe()
+        async def notifications():
+            while self.paired():
+                try:
+                    await self.refresh()
+                except Exception:
+                    pass  # Retry summaries after a transient service/daemon failure.
+                await asyncio.sleep(5)
+        task = asyncio.create_task(notifications())
+        try:
+            async for event in self.daemon.events():
+                for message in simplex.messages_of(event):
+                    await self.handle(message)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

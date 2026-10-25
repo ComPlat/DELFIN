@@ -1110,6 +1110,11 @@ class Supervisor:
                 "pending": list(session.pending.values()), "events": events,
                 "summary": session.summary()}
 
+    async def _m_session_pending(self, _client: Client, params: dict) -> dict:
+        # Read the current requests without attaching, replaying or waking a worker.
+        session = self.sessions.get(str(params["sessionId"]))
+        return {"pending": list(session.pending.values()) if session else []}
+
     async def _m_session_detach(self, client: Client, params: dict) -> dict:
         session = self.sessions.get(str(params["sessionId"]))
         if session is not None:

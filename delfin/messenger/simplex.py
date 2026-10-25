@@ -57,16 +57,19 @@ class Daemon:
             self._reader.cancel()
             await asyncio.gather(self._reader, return_exceptions=True)
 
-    async def command(self, params: dict) -> dict:
+    async def command(self, params: str) -> dict:
         """One command, one response, matched by corrId."""
         self._corr_id += 1
         corr = f"delfin-{self._corr_id}"
-        payload = {"corrId": corr, "cmd": json.dumps(params, ensure_ascii=False)}
+        payload = {"corrId": corr, "cmd": params}
         future = asyncio.get_running_loop().create_future()
         self._pending[corr] = future
         try:
             await self._ws.send(json.dumps(payload))
-            return await asyncio.wait_for(future, 30)
+            reply = await asyncio.wait_for(future, 30)
+            if reply.get("type") == "chatCmdError":
+                raise RuntimeError("SimpleX rejected the command")
+            return reply
         finally:
             self._pending.pop(corr, None)
 
@@ -105,24 +108,37 @@ class Daemon:
     # -- the narrow API surface ----------------------------------------------------------
 
     async def subscribe(self) -> dict:
-        return await self.command({"type": "subscribe"})
+        # CLI WebSockets push events automatically. /user checks readiness.
+        return await self.command("/user")
+
+    async def user_id(self) -> str:
+        reply = await self.command("/user")
+        return str(int(reply["user"]["userId"]))
 
     async def contacts(self) -> dict:
-        return await self.command({"type": "getContacts"})
+        return await self.command(f"/_contacts {await self.user_id()}")
 
     async def send_text(self, contact_id: str, text: str) -> dict:
-        return await self.command(
-            {"type": "sendMessages", "contactId": contact_id,
-             "messageText": text})
+        return await self.send_chat("@" + str(int(contact_id)), text)
+
+    async def send_chat(self, chat: str, text: str) -> dict:
+        if chat[:1] not in {"@", "#"} or not chat[1:].isdigit():
+            raise ValueError("invalid chat reference")
+        messages = [{"msgContent": {"type": "text", "text": text}, "mentions": {}}]
+        return await self.command(f"/_send {chat} json " + json.dumps(messages, ensure_ascii=False))
+
+    async def create_group(self, title: str) -> str:
+        profile = {"displayName": title, "fullName": title}
+        reply = await self.command(f"/_group {await self.user_id()} " + json.dumps(profile))
+        return "#" + str(int(reply["groupInfo"]["groupId"]))
+
+    async def invite(self, chat: str, contact_id: str) -> None:
+        await self.command(f"/_add #{int(chat[1:])} {int(contact_id)} member")
 
     async def pending_invitation(self) -> str | None:
-        """The connection invitation the daemon generated for pairing
-        (chat.exploreContact INVITATION response), when there is one."""
-        reply = await self.command({"type": "createLink"})
-        if isinstance(reply, dict):
-            conn = reply.get("connection") or {}
-            return conn.get("connectionCode") or reply.get("connection")
-        return None
+        reply = await self.command(f"/_connect {await self.user_id()}")
+        self.invitation_id = (reply.get("connection") or {}).get("pccConnId")
+        return (reply.get("connLinkInvitation") or {}).get("connFullLink")
 
 
 def extract_contact_list(reply: dict) -> list[dict]:
@@ -148,28 +164,45 @@ def contact_name_of(contact: dict) -> str:
 
 
 def new_contact_id(event: dict) -> str | None:
-    """The contact id in a chat.contact.connected / newContact event, so
-    ``pair`` can catch the moment the phone scanned the link."""
-    info = event.get("user") or event.get("contact") or {}
-    if isinstance(info, dict):
-        return str(info.get("contactId") or "") or None
-    return None
+    if event.get("type") != "contactConnected":
+        return None
+    return contact_id_of(event.get("contact") or {})
+
+
+def messages_of(event: dict) -> list[dict]:
+    """Only received text messages, preserving chat, sender and stable item ID."""
+    if event.get("type") != "newChatItems":
+        return []
+    messages = []
+    for wrapped in event.get("chatItems") or []:
+        info = wrapped.get("chatInfo") or {}
+        item = wrapped.get("chatItem") or {}
+        direction = item.get("chatDir") or {}
+        content = item.get("content") or {}
+        msg = content.get("msgContent") or {}
+        meta = item.get("meta") or {}
+        if content.get("type") != "rcvMsgContent" or msg.get("type") != "text":
+            continue
+        if meta.get("itemDeleted") or meta.get("itemId") is None:
+            continue
+        if info.get("type") == "direct" and direction.get("type") == "directRcv":
+            sender = contact_id_of(info.get("contact") or {})
+            chat = "@" + str(sender)
+        elif info.get("type") == "group" and direction.get("type") == "groupRcv":
+            member = direction.get("groupMember") or {}
+            sender = str(member.get("memberContactId") or "")
+            group_id = (info.get("groupInfo") or {}).get("groupId")
+            if group_id is None:
+                continue
+            chat = "#" + str(group_id)
+        else:
+            continue
+        if sender:
+            messages.append({"chat": chat, "sender": sender, "text": str(msg.get("text") or ""),
+                             "id": str(meta["itemId"])})
+    return messages
 
 
 def text_of(event: dict) -> tuple[str, str] | None:
-    """(contactId, text) out of a chat.contact.switchTo / newChatItems
-    event's message, when it carries one."""
-    items = (event.get("chatItems")
-             or (event.get("user") and [])
-             or [])
-    if not isinstance(items, list):
-        return None
-    for item in items:
-        content = (item.get("chatItem") or item).get("msgContent") or {}
-        if isinstance(content, dict) and content.get("type") == "text":
-            cid = contact_id_of((item.get("chatItem") or item)
-                                .get("contact") or {})
-            text = str(content.get("text") or "")
-            if cid and text:
-                return cid, text
-    return None
+    messages = messages_of(event)
+    return (messages[0]["sender"], messages[0]["text"]) if messages else None

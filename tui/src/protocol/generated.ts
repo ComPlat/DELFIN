@@ -427,6 +427,9 @@ export interface SessionAttachParams {
   "sessionId": string
   "turns"?: number | null
 }
+export interface SessionPendingParams {
+  "sessionId": string
+}
 export interface SessionDetachParams {
   "sessionId": string
 }
@@ -456,6 +459,7 @@ export interface ServiceRequests {
   "sessions.list": SessionsListParams
   "session.create": SessionCreateParams
   "session.attach": SessionAttachParams
+  "session.pending": SessionPendingParams
   "session.detach": SessionDetachParams
   "session.message": SessionMessageParams
   "sessions.past": SessionsPastParams
@@ -491,6 +495,9 @@ export interface SessionAttachResult {
   "pending": Record<string, unknown>[]
   "events": Record<string, unknown>[]
   "summary": Record<string, unknown>
+}
+export interface SessionPendingResult {
+  "pending": Record<string, unknown>[]
 }
 export interface SessionDetachResult {
   "detached": boolean
@@ -531,6 +538,7 @@ export interface ServiceResults {
   "sessions.list": SessionsListResult
   "session.create": SessionCreateResult
   "session.attach": SessionAttachResult
+  "session.pending": SessionPendingResult
   "session.detach": SessionDetachResult
   "session.message": SessionMessageResult
   "sessions.past": SessionsPastResult

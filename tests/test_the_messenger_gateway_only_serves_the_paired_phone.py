@@ -1,325 +1,229 @@
-"""The messenger gateway: only the paired contact commands, with limits.
-
-* a message from another contact is refused, whatever it says;
-* the same message id acts once, its replay is refused;
-* the rate limit turns messages away; a message over the size limit is
-  refused;
-* status/sessions/pending/stop/hilfe reach the bridge and the answer is
-  rendered; an approval in pending is named with where to approve;
-* a number chooses the question, the next message answers it; free text
-  answers the first open question; with nothing open it becomes a task
-  for the phone session; @name routes to the named session;
-* the bridge being down is a readable reply, not a crash;
-* only the paired contact gets replies (Listener over a fake daemon).
-"""
-
-from __future__ import annotations
-
+"""Chat IDs, never titles or the last active agent, determine recipients."""
 import asyncio
 
 import pytest
 
-from delfin.messenger import gateway as gw
-from delfin.messenger.bridge_client import BridgeDown
-from delfin.messenger.gateway import Gateway, PhoneSession, Refused
+from delfin.messenger import store
+from delfin.messenger.gateway import Rooms, UPDATE
 
 
-class FakeBridge:
-    """Stands in for the bridge socket: records what was asked."""
-
-    def __init__(self, replies=None):
-        self.asked: list[dict] = []
-        self.replies = replies or {}
-        self.down = False
-
-    def ask(self, command: dict) -> dict:
-        if self.down:
-            raise BridgeDown("socket gone")
-        self.asked.append(command)
-        cmd = command.get("cmd")
-        if cmd in self.replies:
-            return self.replies[cmd]
-        if cmd == "status":
-            return {"ok": True, "sessions": [
-                {"id": "s1", "title": "Benzol", "state": "running",
-                 "pending": []}]}
-        if cmd == "sessions":
-            return {"ok": True, "sessions": [
-                {"id": "s1", "name": "Benzol", "state": "running"}]}
-        if cmd == "pending":
-            return {"ok": True, "items": [
-                {"id": "q1", "kind": "question", "session": "Benzol",
-                 "text": "welches Loesungsmittel?"},
-                {"id": "c1", "kind": "confirm", "session": "Benzol",
-                 "text": "may run orca"}]}
-        if cmd == "stop":
-            return {"ok": True, "stopping": True, "sessions": 2}
-        if cmd == "prompt":
-            return {"ok": True, "session": "phone-1", "accepted": True}
-        if cmd == "answer":
-            if command.get("id") == "c1":
-                return {"error": "approvals are never answered from the phone; "
-                                 "approve at the dashboard or terminal"}
-            return {"ok": True}
-        return {"error": f"no command {cmd!r}"}
+class Daemon:
+    def __init__(self):
+        self.sent = []
+        self.groups = []
+        self.invited = []
+    async def send_chat(self, chat, text):
+        self.sent.append((chat, text))
+    async def create_group(self, title):
+        self.groups.append(title)
+        return '#' + str(100 + len(self.groups))
+    async def invite(self, chat, owner):
+        self.invited.append((chat, owner))
 
 
-def make(contact_id: str = "phone-contact"):
-    bridge = FakeBridge()
-    g = Gateway(contact_id=contact_id, bridge=bridge)
-    return g, bridge
+class Bridge:
+    def __init__(self):
+        self.calls = []
+        self.missing = set()
+        self.pending = {}
+    def ask(self, command):
+        self.calls.append(command)
+        if command['cmd'] == 'sessions':
+            return {'sessions': [{'id': sid, 'name': 'same title', 'state': 'idle'} for sid in ['s1', 's2']]}
+        sid = command['session']
+        if sid in self.missing:
+            return {'error': 'Sitzung nicht verfügbar'}
+        action = command['action']
+        if action == 'status':
+            return {'ok': True, 'title': 'same title', 'state': 'idle', 'answer': 'short result'}
+        if action == 'pending':
+            return {'ok': True, 'items': self.pending.get(sid, [])}
+        return {'ok': True, 'accepted': True}
 
 
-def msg(text: str, cid: str = "phone-contact", mid: str = "m1") -> PhoneSession:
-    return PhoneSession(cid, text, mid)
-
-
-class TestSenderGate:
-    def test_a_message_from_another_contact_is_refused(self):
-        async def run():
-            g, bridge = make()
-            with pytest.raises(Refused):
-                await g.handle(msg("status", cid="stranger"))
-            assert bridge.asked == []
-        asyncio.run(run())
-
-    def test_the_paired_contact_is_served(self):
-        async def run():
-            g, _ = make()
-            reply = await g.handle(msg("status"))
-            assert "Benzol" in reply
-        asyncio.run(run())
-
-
-class TestLimits:
-    def test_the_same_message_id_acts_once(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("stop", mid="m7"))
-            with pytest.raises(Refused):
-                await g.handle(msg("stop", mid="m7"))
-            stops = [a for a in bridge.asked if a.get("cmd") == "stop"]
-            assert len(stops) == 1
-        asyncio.run(run())
-
-    def test_the_rate_limit_turns_flood_away(self):
-        async def run():
-            g, _ = make()
-            g.now = lambda: 0.0
-            for i in range(gw.RATE_LIMIT):
-                await g.handle(msg("status", mid=f"r{i}"))
-            with pytest.raises(Refused):
-                await g.handle(msg("status", mid="flood"))
-        asyncio.run(run())
-
-    def test_the_rate_limit_relaxes_after_the_window(self):
-        async def run():
-            g, _ = make()
-            now = [0.0]
-            g.now = lambda: now[0]
-            for i in range(gw.RATE_LIMIT):
-                await g.handle(msg("status", mid=f"w{i}"))
-            now[0] = gw.RATE_WINDOW_S + 1.0
-            reply = await g.handle(msg("status", mid="later"))
-            assert "Benzol" in reply
-        asyncio.run(run())
-
-    def test_an_oversized_message_is_refused(self):
-        async def run():
-            g, bridge = make()
-            with pytest.raises(Refused):
-                await g.handle(msg("x" * (gw.SIZE_LIMIT + 1), mid="big"))
-            assert bridge.asked == []
-        asyncio.run(run())
-
-
-class TestCommands:
-    def test_help_says_where_approvals_live(self):
-        async def run():
-            g, _ = make()
-            reply = await g.handle(msg("hilfe"))
-            assert "Dashboard" in reply or "dashboard" in reply
-            reply = await g.handle(msg("help", mid="m2"))
-            assert "Dashboard" in reply or "dashboard" in reply
-        asyncio.run(run())
-
-    def test_sessions_in_german_and_english(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("sitzungen", mid="m2"))
-            await g.handle(msg("sessions", mid="m3"))
-            assert all(a.get("cmd") == "sessions" for a in bridge.asked)
-        asyncio.run(run())
-
-    def test_pending_names_the_approval_with_where_to_approve(self):
-        async def run():
-            g, _ = make()
-            reply = await g.handle(msg("pending", mid="m2"))
-            assert "1. Frage" in reply
-            assert "Freigabe nötig" in reply
-            assert "Dashboard/Terminal" in reply
-            assert "orca" in reply
-        asyncio.run(run())
-
-    def test_stop_reaches_the_bridge(self):
-        async def run():
-            g, bridge = make()
-            reply = await g.handle(msg("stop", mid="m2"))
-            assert bridge.asked[-1] == {"cmd": "stop"}
-            assert "angehalten" in reply
-        asyncio.run(run())
-
-    def test_at_name_routes_to_the_named_session(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("@Benzol starte die Frequenzrechnung", mid="m2"))
-            prompt = bridge.asked[-1]
-            assert prompt["cmd"] == "prompt"
-            assert prompt["session"] == "Benzol"
-            assert "Frequenzrechnung" in prompt["text"]
-        asyncio.run(run())
-
-    def test_free_text_becomes_a_phone_session_task(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("rechne die Hessian von Benzol", mid="m2"))
-            prompt = bridge.asked[-1]
-            assert prompt["cmd"] == "prompt"
-            assert "session" not in prompt      # the bridge makes the session
-            assert "Hessian" in prompt["text"]
-        asyncio.run(run())
-
-
-class TestAnswers:
-    def test_a_number_selects_the_question_then_text_answers_it(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("pending", mid="m2"))
-            reply = await g.handle(msg("1", mid="m3"))
-            assert "Ausgewählt" in reply
-            reply = await g.handle(msg("DMF", mid="m4"))
-            answer = bridge.asked[-1]
-            assert answer["cmd"] == "answer"
-            assert answer["id"] == "q1"
-            assert answer["text"] == "DMF"
-            assert "weitergegeben" in reply
-        asyncio.run(run())
-
-    def test_an_answer_to_an_approval_is_refused_verbatim(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("pending", mid="m2"))
-            await g.handle(msg("2", mid="m3"))
-            reply = await g.handle(msg("yes", mid="m4"))
-            assert "never answered from the phone" in reply
-            assert "Antwort weitergegeben" not in reply
-        asyncio.run(run())
-
-    def test_text_answers_the_first_open_question(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("pending", mid="m2"))
-            await g.handle(msg("DMF bitte", mid="m3"))
-            answer = bridge.asked[-1]
-            assert answer["cmd"] == "answer"
-            assert answer["id"] == "q1"
-        asyncio.run(run())
-
-    def test_unknown_number_is_a_task_not_an_answer(self):
-        async def run():
-            g, bridge = make()
-            await g.handle(msg("pending", mid="m2"))
-            await g.handle(msg("42", mid="m3"))
-            assert bridge.asked[-1]["cmd"] == "prompt"
-        asyncio.run(run())
-
-
-class TestBridgeDown:
-    def test_a_down_bridge_is_a_readable_reply(self):
-        async def run():
-            g, bridge = make()
-            bridge.down = True
-            for text, mid in (("status", "m2"), ("stop", "m3"),
-                              ("rechne was", "m4")):
-                reply = await g.handle(msg(text, mid=mid))
-                assert "nicht erreichbar" in reply
-        asyncio.run(run())
-
-
-class TestListener:
-    def test_only_the_paired_contact_gets_replies(self):
-        sent: list[tuple[str, str]] = []
-
-        class FakeDaemon:
-            async def subscribe(self):
-                pass
-
-            async def events(self):
-                yield {"chatItems": [{"chatItem": {
-                    "contact": {"contactId": "phone-contact"},
-                    "msgContent": {"type": "text", "text": "status"}}}]}
-                yield {"chatItems": [{"chatItem": {
-                    "contact": {"contactId": "stranger"},
-                    "msgContent": {"type": "text", "text": "stop"}}}]}
-                yield {"chatItems": []}
-
-            async def send_text(self, cid, text):
-                sent.append((cid, text))
-
-        async def run():
-            g, _ = make()
-            listener = gw.Listener(contact_id="phone-contact", gateway=g)
-            await listener.run(FakeDaemon())
-
-        asyncio.run(run())
-        assert len(sent) == 1
-        assert sent[0][0] == "phone-contact"
-        assert "Benzol" in sent[0][1]
-
-
-def test_trim_cuts_with_an_ellipsis():
-    out = gw._trim("x" * 5_000, 100)
-    assert len(out) == 100
-    assert out.endswith("…")
-
-
-def test_running_gateway_refuses_contact_after_revoke(tmp_path, monkeypatch):
-    from delfin.messenger import store
+@pytest.fixture
+def rig(tmp_path, monkeypatch):
     monkeypatch.setenv('DELFIN_MESSENGER_DIR', str(tmp_path))
-    store.save('phone-contact')
-    bridge = FakeBridge()
-    gateway = Gateway(contact_id='phone-contact', bridge=bridge,
-                      pairing_check=store.paired_contact)
-    async def run():
-        await gateway.handle(msg('help'))
-        store.revoke()
-        with pytest.raises(Refused):
-            await gateway.handle(msg('stop', mid='after-revoke'))
-        assert not bridge.asked
-    asyncio.run(run())
+    store.save('7')
+    store.put_room('#10', 's1', 'same title', owner='7', ready=True)
+    store.put_room('#20', 's2', 'same title', owner='7', ready=True)
+    store.put_room('#30', None, 'Forum', owner='7', ready=True)
+    daemon, bridge = Daemon(), Bridge()
+    return Rooms(daemon, bridge), daemon, bridge
 
 
-def test_notifications_arrive_without_a_phone_command_and_stop_on_revoke():
-    paired = ['phone-contact']
-    class EventBridge(FakeBridge):
-        async def events(self):
-            yield {'event': 'session', 'session': 's1', 'state': 'idle', 'title': 'calc'}
-            yield {'event': 'attention', 'items': [
-                {'id': 'q1', 'kind': 'question', 'text': 'Which solvent?'}]}
-            paired.clear()
-            yield {'event': 'session', 'session': 's2', 'state': 'failed'}
-    class Daemon:
-        def __init__(self):
-            self.sent = []
-        async def send_text(self, cid, text):
-            self.sent.append((cid, text))
-    async def run():
-        gateway = Gateway(contact_id='phone-contact', bridge=EventBridge(),
-                          pairing_check=lambda: paired[0] if paired else None)
-        daemon = Daemon()
-        await gw.Listener(contact_id='phone-contact', gateway=gateway)._notifications(daemon)
-        assert len(daemon.sent) == 2
-        assert 'idle' in daemon.sent[0][1]
-        assert 'Which solvent?' in daemon.sent[1][1]
-        assert gateway.questions == {1: 'q1'}
-    asyncio.run(run())
+def message(chat='#10', text='calculate', sender='7', mid='1'):
+    return {'chat': chat, 'text': text, 'sender': sender, 'id': mid}
+
+
+def test_chat_routes_to_exact_session_even_when_titles_match(rig):
+    rooms, _, bridge = rig
+    asyncio.run(rooms.handle(message()))
+    assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'prompt', 'text': 'calculate'}]
+
+
+def test_forum_delivers_once_to_each_connected_session(rig):
+    rooms, daemon, bridge = rig
+    asyncio.run(rooms.handle(message('#30', 'report progress')))
+    assert [r['session'] for r in bridge.calls] == ['s1', 's2']
+    assert 's1' in daemon.sent[-1][1] and 's2' in daemon.sent[-1][1]
+
+
+def test_replay_stays_refused_after_restart(rig):
+    rooms, daemon, bridge = rig
+    asyncio.run(rooms.handle(message('#30')))
+    asyncio.run(Rooms(daemon, bridge).handle(message('#30')))
+    assert len(bridge.calls) == 2
+
+
+@pytest.mark.parametrize('chat,sender', [('#99', '7'), ('#10', '8'), ('@8', '8')])
+def test_unknown_group_or_sender_is_ignored(rig, chat, sender):
+    rooms, daemon, bridge = rig
+    asyncio.run(rooms.handle(message(chat, sender=sender)))
+    assert not bridge.calls and not daemon.sent
+
+
+def test_old_direct_chat_no_longer_dispatches_tasks(rig):
+    rooms, daemon, bridge = rig
+    asyncio.run(rooms.handle(message('@7')))
+    assert not bridge.calls
+    assert 'Einrichtung' in daemon.sent[-1][1]
+
+
+def test_revoke_stops_running_gateway_and_notifications(rig):
+    rooms, daemon, bridge = rig
+    store.revoke()
+    asyncio.run(rooms.handle(message()))
+    asyncio.run(rooms.refresh())
+    assert not bridge.calls and not daemon.sent
+
+
+def test_status_and_update_stay_in_the_room(rig):
+    rooms, _, bridge = rig
+    asyncio.run(rooms.handle(message(text='/status')))
+    asyncio.run(rooms.handle(message(text='/update', mid='2')))
+    assert bridge.calls == [
+        {'cmd': 'session', 'session': 's1', 'action': 'status'},
+        {'cmd': 'session', 'session': 's1', 'action': 'update', 'text': UPDATE}]
+
+
+def test_forum_update_and_stop_only_target_connected_sessions(rig):
+    rooms, _, bridge = rig
+    asyncio.run(rooms.handle(message('#30', '/update')))
+    asyncio.run(rooms.handle(message('#30', '/stop', mid='2')))
+    assert [r['session'] for r in bridge.calls] == ['s1', 's2', 's1', 's2']
+    assert [r['action'] for r in bridge.calls] == ['update', 'update', 'stop', 'stop']
+    assert all(r['cmd'] == 'session' for r in bridge.calls)
+
+
+def test_no_cross_session_redirect_or_global_approval(rig):
+    rooms, daemon, bridge = rig
+    asyncio.run(rooms.handle(message(text='@s2 do something')))
+    asyncio.run(rooms.handle(message('#30', '/approve abc', mid='2')))
+    assert not bridge.calls
+    assert 'Einzelchat' in daemon.sent[-1][1]
+
+
+def test_approval_answer_and_denial_carry_fixed_session(rig):
+    rooms, _, bridge = rig
+    for i, text in enumerate(['/approve abc', '/deny def', '/answer ghi DMF']):
+        asyncio.run(rooms.handle(message(text=text, mid=str(i))))
+    assert [r['action'] for r in bridge.calls] == ['approve', 'deny', 'answer']
+    assert all(r['session'] == 's1' for r in bridge.calls)
+    assert bridge.calls[-1]['text'] == 'DMF'
+
+
+def test_missing_session_never_creates_or_uses_another(rig):
+    rooms, daemon, bridge = rig
+    bridge.missing.add('s1')
+    asyncio.run(rooms.handle(message()))
+    assert len(bridge.calls) == 1
+    assert 'nicht verfügbar' in daemon.sent[-1][1]
+
+
+def test_notifications_go_to_own_room_and_forum_only(rig):
+    rooms, daemon, bridge = rig
+    bridge.pending['s1'] = [{'id': 'abc', 'kind': 'confirm', 'text': 'run calculation', 'phoneApproval': True}]
+    asyncio.run(rooms.refresh())
+    s1 = [(chat, text) for chat, text in daemon.sent if '· s1]' in text]
+    assert {chat for chat, _ in s1} == {'#10', '#30'}
+    assert any('/approve abc' in text for _, text in s1)
+    count = len(daemon.sent)
+    asyncio.run(rooms.refresh())
+    assert len(daemon.sent) == count
+    assert all(r['cmd'] == 'session' and r['action'] in {'status', 'pending'} for r in bridge.calls)
+
+
+def test_setup_is_idempotent_and_new_room_is_fixed(rig):
+    rooms, daemon, _ = rig
+    asyncio.run(rooms.sync())
+    assert not daemon.groups
+    asyncio.run(rooms.ensure_room('s3'))
+    asyncio.run(rooms.ensure_room('s3'))
+    assert len(daemon.groups) == len(daemon.invited) == 1
+    with pytest.raises(ValueError, match='rebound'):
+        store.put_room('#101', 's4', 'changed', owner='7')
+
+
+def test_partial_broadcast_failure_is_reported_without_resending(rig):
+    rooms, daemon, bridge = rig
+    bridge.missing.add('s1')
+    asyncio.run(rooms.handle(message('#30')))
+    assert [r['session'] for r in bridge.calls] == ['s1', 's2']
+    assert 'nicht verfügbar' in daemon.sent[-1][1] and 'Nachricht übergeben' in daemon.sent[-1][1]
+
+
+def test_limits_and_no_automatic_answer_to_a_pending_question(rig):
+    rooms, _, bridge = rig
+    asyncio.run(rooms.handle(message(text='x' * 4097)))
+    assert not bridge.calls
+    for i in range(20):
+        asyncio.run(rooms.handle(message(text='yes', mid=str(i))))
+    assert len(bridge.calls) == 15
+    assert all(r['action'] == 'prompt' for r in bridge.calls)
+
+
+def test_disconnected_recipient_does_not_hide_other_broadcast_results(rig):
+    rooms, daemon, bridge = rig
+    original = bridge.ask
+    def ask(command):
+        if command.get('session') == 's1':
+            bridge.calls.append(command)
+            raise ConnectionError('private exception detail')
+        return original(command)
+    bridge.ask = ask
+    asyncio.run(rooms.handle(message('#30')))
+    assert [r['session'] for r in bridge.calls] == ['s1', 's2']
+    assert 'Zustellung unklar' in daemon.sent[-1][1]
+    assert 'private exception' not in daemon.sent[-1][1]
+    assert 'Nachricht übergeben' in daemon.sent[-1][1]
+
+
+def test_failed_notification_is_retried(rig):
+    rooms, daemon, _ = rig
+    original = daemon.send_chat
+    async def fail(chat, text):
+        raise ConnectionError('offline')
+    daemon.send_chat = fail
+    with pytest.raises(ConnectionError):
+        asyncio.run(rooms.refresh())
+    daemon.send_chat = original
+    asyncio.run(rooms.refresh())
+    assert {chat for chat, _ in daemon.sent} == {'#10', '#20', '#30'}
+
+
+def test_pairing_rejects_an_unidentified_invitation(tmp_path, monkeypatch):
+    from delfin.messenger import __main__ as cli
+    monkeypatch.setenv('DELFIN_MESSENGER_DIR', str(tmp_path))
+    class InvalidDaemon:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def subscribe(self):
+            pass
+        async def pending_invitation(self):
+            return 'simplex:/inv'
+    monkeypatch.setattr(cli.simplex, 'Daemon', InvalidDaemon)
+    assert cli._pair() == 1
+    assert store.paired_contact() is None

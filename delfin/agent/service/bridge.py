@@ -12,9 +12,10 @@ so a credential never reaches the phone and an event never becomes a
 megabyte. The bridge itself connects to the service's own socket
 (``agent.sock``) as a window client (``client="delfin-tui"``-like name) --
 a process that is not an agent child, so it may act; the supervisor's own
-agent-detection and cage stay untouched. ``answer`` reaches only
-``attention.answer`` (a parked QUESTION): the bridge has no permission.reply
-at all, so an approval can never be granted from the phone.
+agent-detection and cage stay untouched. Scoped room commands use exact session IDs. A phone decision consumes a
+short-lived code bound to the live request and goes through permission.reply;
+only one-shot confirmation or a plan's default mode is allowed. No permanent
+allow rule or accept-edits mode can be selected from the messenger.
 
 Commands (one JSON object per line, both ways):
     {"cmd": "status"}                     -> the service's status (trimmed)
@@ -37,6 +38,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
+import time
 import sys
 from pathlib import Path
 
@@ -56,6 +59,7 @@ MAX_LINE_BYTES = 8_192
 
 #: Commands the gateway may send, and what each takes.
 COMMANDS = {
+    "session": {"session": "string", "action": "string", "text": "string?", "id": "string?"},
     "status": {},
     "sessions": {},
     "pending": {},
@@ -118,6 +122,7 @@ def _short_event(event: dict, redactor) -> dict:
             trimmed.append({
                 "id": str(item.get("id") or ""),
                 "kind": str(item.get("kind") or ""),
+                "sessionId": str(item.get("sessionId") or item.get("session") or ""),
                 "sessionTitle": _truncate(str(item.get("sessionTitle") or "")),
                 "text": redactor.text(_truncate(str(item.get("text") or ""))),
                 "detail": redactor.text(_truncate(str(item.get("detail") or ""))),
@@ -128,7 +133,8 @@ def _short_event(event: dict, redactor) -> dict:
         return {"event": kind, "ts": event.get("ts"), "session": event.get("session"),
                 "state": str(summary.get("state") or ""),
                 "title": redactor.text(_truncate(str(summary.get("title") or ""))),
-                "pending": _pending_count(summary.get("pending"))}
+                "pending": _pending_count(summary.get("pending")),
+                "answer": _truncate(str(summary.get("answer") or ""), 1500)}
     return {"event": kind, "ts": event.get("ts"),
             "reason": _truncate(str(event.get("reason") or ""))}
 
@@ -153,6 +159,7 @@ class Bridge:
         self._service: object | None = None
         self._pump_task: object | None = None
         self._phone_session: str | None = None
+        self._issued: dict[str, tuple] = {}
 
     # -- the service side ---------------------------------------------------------------
 
@@ -330,6 +337,84 @@ class Bridge:
     async def _request(self, method: str, params: dict | None = None) -> dict:
         return await asyncio.to_thread(self._client().request, method, params or {})
 
+    async def _cmd_session(self, params: dict) -> dict:
+        """Room commands require an exact, local session ID; never fall back."""
+        sid = params["session"]
+        listing = await self._request("sessions.list")
+        row = next((r for r in listing.get("sessions", [])
+                    if str(r.get("sessionId") or r.get("id") or "") == sid), None)
+        if row is None:
+            return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+        action = params["action"]
+        if action == "status":
+            return {"ok": True, "state": row.get("state"), "title": row.get("title"), "sessionId": sid,
+                    "activity": _truncate(self._redactor().text(str(row.get("activity") or ""))),
+                    "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 1000)}
+        if action == "pending":
+            live = await self._request("session.pending", {"sessionId": sid})
+            items = []
+            now = time.monotonic()
+            self._issued = {k: v for k, v in self._issued.items() if now - v[3] < 600}
+            for req in live.get("pending", []):
+                rid, kind = str(req.get("requestId") or ""), req.get("kind")
+                preview = self._redactor().text(str(req.get("question") or req.get("preview") or ""))
+                if kind == "ask" and req.get("choices"):
+                    preview += "\n" + self._redactor().text(" / ".join(map(str, req["choices"])))
+                fingerprint = json.dumps(req, sort_keys=True)
+                code = next((k for k, v in self._issued.items() if v[:3] == (sid, rid, fingerprint)), None)
+                if code is None:
+                    code = secrets.token_hex(4)
+                    self._issued[code] = (sid, rid, fingerprint, now)
+                keys = {o.get("key") for o in req.get("options", [])}
+                # Never approve a truncated action or a lasting permission change.
+                allowed = len(preview) <= 1400 and ((kind == "confirm" and "y" in keys) or
+                                                   (kind == "plan" and "d" in keys))
+                items.append({"id": code, "kind": "question" if kind == "ask" else kind,
+                              "sessionId": sid, "text": _truncate(preview, 1400),
+                              "phoneApproval": allowed, "tool": req.get("tool", "")})
+            return {"ok": True, "items": items}
+        if action in {"answer", "approve", "deny"}:
+            code = str(params.get("id") or "")
+            issued = self._issued.get(code)
+            if issued is None or issued[0] != sid or time.monotonic() - issued[3] >= 600:
+                return {"error": "Anfrage abgelaufen oder gehört zu einer anderen Sitzung. pending erneut aufrufen."}
+            live = await self._request("session.pending", {"sessionId": sid})
+            req = next((r for r in live.get("pending", []) if r.get("requestId") == issued[1]), None)
+            if req is None or json.dumps(req, sort_keys=True) != issued[2]:
+                self._issued.pop(code, None)
+                return {"error": "Anfrage nicht mehr offen oder geändert."}
+            kind = req.get("kind")
+            reply_params = {"sessionId": sid, "requestId": issued[1]}
+            if action == "answer" and kind == "ask":
+                reply_params["text"] = str(params.get("text") or "")
+                if not reply_params["text"].strip():
+                    return {"error": "Leere Antwort."}
+            elif action in {"approve", "deny"} and kind in {"confirm", "plan"}:
+                choice = "n" if action == "deny" else "d" if kind == "plan" else "y"
+                if choice not in {o.get("key") for o in req.get("options", [])}:
+                    return {"error": "Diese Entscheidung ist für die Anfrage nicht verfügbar."}
+                preview = self._redactor().text(str(req.get("preview") or ""))
+                if action == "approve" and len(preview) > 1400:
+                    return {"error": "Aktion zu lang für die Handyansicht. Bitte am Dashboard freigeben."}
+                reply_params.update(choice=choice, persist=False)
+            else:
+                return {"error": "Antwort und Freigabe dürfen nicht verwechselt werden."}
+            # Consume before awaiting: concurrent replies cannot apply this code twice.
+            if time.monotonic() - issued[3] >= 600 or self._issued.pop(code, None) != issued:
+                return {"error": "Anfrage bereits beantwortet."}
+            reply = await self._request("permission.reply", reply_params)
+            return {"ok": bool(reply.get("applied")), "error": None if reply.get("applied") else "Anfrage bereits erledigt."}
+        if action in {"prompt", "update"}:
+            text = str(params.get("text") or "").strip()
+            if not text:
+                return {"error": "Leerer Auftrag."}
+            reply = await self._request("session.prompt", {"sessionId": sid, "text": text, "how": "steer" if action == "update" else "queue"})
+            return {"ok": True, "sessionId": sid, **reply}
+        if action == "stop":
+            reply = await self._request("session.cancel", {"sessionId": sid})
+            return {"ok": True, **reply}
+        return {"error": "Unbekannter Sitzungsbefehl."}
+
     async def _cmd_status(self, _params: dict) -> dict:
         reply = await self._request("service.status")
         sessions = []
@@ -365,6 +450,7 @@ class Bridge:
                 "id": str(item.get("id") or ""),
                 "kind": kind,
                 "session": self._redactor().text(_truncate(str(item.get("sessionTitle") or ""))),
+                "sessionId": str(item.get("sessionId") or item.get("session") or ""),
                 "text": text,
                 # An approval is NAMED here, never granted: the phone is
                 # told where to approve, the dashboard keeps the right.
