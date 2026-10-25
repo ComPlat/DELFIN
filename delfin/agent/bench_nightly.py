@@ -266,3 +266,71 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
     record.spent_core_hours = spent
     record.ended_at = now()
     return record
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point (HB1 phase 3)
+# ---------------------------------------------------------------------------
+
+def main(argv: Optional[list] = None) -> int:
+    """``python -m delfin.agent.bench_nightly`` — the one entry point
+    the operator runs for a nightly round (HB1).
+
+    ::
+
+        --model M            the model the benchmark runs against
+        --instances N        how many tasks to draw (default 10)
+        --seed-path PATH     the holdout seed file's PATH (a setting);
+                             the VALUE is read into memory, never
+                             printed, logged or written
+        --practice           practice mode on the public seed; the
+                             seed file is not consulted
+        --budget H           daily core-hour budget (default 50)
+
+    Without the seed file the holdout is REFUSED (run()'s seed gate)
+    and the CLI exits non-zero, printing the refusal reason. Practice
+    runs never touch the seed file.
+    """
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="python -m delfin.agent.bench_nightly",
+        description="One nightly benchmark round: sample, budget-gate, "
+                    "run through benchmark_runner.run_task, grade with "
+                    "DELFIN's own grading, record the cost.")
+    parser.add_argument("--model", default="")
+    parser.add_argument("--instances", type=int, default=10)
+    parser.add_argument("--seed-path", default="")
+    parser.add_argument("--practice", action="store_true")
+    parser.add_argument("--budget", type=float,
+                        default=DEFAULT_DAILY_BUDGET_CORE_HOURS)
+    args = parser.parse_args(argv)
+
+    if not args.model:
+        print("error: --model is required (the model the benchmark "
+              "runs against)", file=sys.stderr)
+        return 2
+
+    from .bench_holdout_glue import build_default_config
+
+    cfg = build_default_config(
+        model=args.model,
+        instances=args.instances,
+        mode="practice" if args.practice else "holdout",
+        holdout_seed_path=args.seed_path,
+    )
+    cfg["daily_budget_core_hours"] = args.budget
+    record = run(cfg)
+    print(json.dumps(record.to_dict(), indent=2, sort_keys=True,
+                     default=str))
+    if record.holdout_refusal_reason:
+        print("refused: %s" % record.holdout_refusal_reason,
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover — exercised via main()
+    raise SystemExit(main())
