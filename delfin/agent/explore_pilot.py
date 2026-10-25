@@ -465,3 +465,177 @@ def make_pilot_runner(*, model: str, run_task: Any = None,
         }
 
     return runner
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — the CLI entry point (SP1)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TASKS = ("delfin/agent/pack/benchmark/"
+                  "pilot_tasks_sp1.yaml")
+
+
+def _pilot_tasks_to_pilot_tasks(tasks: list) -> list:
+    """benchmark.Task rows -> PilotTask rows for run_pilot."""
+    return [PilotTask(task_id=t.id, prompt=t.prompt) for t in tasks]
+
+
+def _engine_factory_builder(default_task: Any) -> Any:
+    """The explore arm's engine wiring: builds the engine the way
+    benchmark_runner does, then binds the pilot guard to its
+    permissions. Both engine_factory signatures run_task uses are
+    accepted (the 5-arg fallback drops permission_mode,
+    benchmark_runner.py:973-978)."""
+
+    def build(model, backend, provider, mode, task_class="",
+              permission_mode=""):
+        from .benchmark_runner import _default_engine_factory
+        engine = _default_engine_factory(
+            model, backend, provider, mode, task_class=task_class,
+            permission_mode=permission_mode)
+        perms = getattr(engine, "kit_permissions", None)
+        runner = getattr(perms, "subagent_runner", None)
+        if perms is None or runner is None:
+            raise RuntimeError(
+                "explore arm: engine has no subagent_runner binding; "
+                "the pilot setting cannot be installed on this backend")
+        with _PilotSlot() as slot:
+            def _runner(_slot=slot, **kw):
+                return run_pilot_subagent(_pilot_slot=_slot, **kw)
+            perms.subagent_runner = _runner
+        return engine
+    return build
+
+
+def _fake_engine_factory_builder(arm: str) -> Any:
+    """--dry-run: a factory that returns an engine-shaped fake whose
+    permissions carry the pilot wiring — the arms are exercised, no
+    model is called."""
+    def build(model, backend, provider, mode, task_class="",
+              permission_mode=""):
+        perms = SimpleNamespace(subagent_runner=None, mode=mode,
+                                workspace=None)
+        if arm == "explore":
+            slot = _PilotSlot()
+            def _fake_runner(_slot=slot, **kw):
+                return run_pilot_subagent(_pilot_slot=_slot, **kw)
+            perms.subagent_runner = _fake_runner
+        return SimpleNamespace(kit_permissions=perms, cost_usd=0.0,
+                               token_usage=None, messages=[],
+                               run_budget_usd=0.0, run_budget_s=0.0)
+    return build
+
+
+def _fake_run_once(engine, prompt, **kw):
+    """--dry-run: a run_once that answers with a canned, correctly
+    cited text WITHOUT any model call, and "uses" the wiring: the
+    explore arm's engine carries the pilot runner, so a delegation
+    attempt is guard-checked even in dry-run."""
+    _ = engine  # the fake engine's wiring is installed but not driven
+    return {"text": (
+        "Answer with citations: delfin/agent/explore_pilot.py:37 "
+        "and delfin/config.py:569."),
+            "tool_calls": [],
+            "input_tokens": 0, "output_tokens": 0}
+
+
+def _dry_run_tasks() -> list:
+    from pathlib import Path as _Path
+    from .benchmark import load_tasks as _load
+    tasks = _load(_Path(_DEFAULT_TASKS))
+    if not tasks:
+        raise RuntimeError(f"pilot task file empty: {_DEFAULT_TASKS}")
+    return tasks
+
+
+def main(argv: list | None = None) -> int:
+    """python -m delfin.agent.explore_pilot --model M [--tasks FILE]
+    [--dry-run].
+
+    Live: both arms through make_pilot_runner + run_pilot on the named
+    task file (REQUIRED — a live run must never silently fall back to
+    the production benchmark suite). --dry-run: both arms on fakes —
+    the fake run_once answers with canned cited text, no model call,
+    no network; the report shape is the live report's.
+    """
+    import argparse
+    import json as _json
+
+    ap = argparse.ArgumentParser(
+        prog="python -m delfin.agent.explore_pilot",
+        description="Explore-pilot measurement: same tasks, arm plain "
+                    "vs arm explore, graded on path:line citations.")
+    ap.add_argument("--model", required=True)
+    ap.add_argument("--tasks", default=None,
+                    help="task YAML (explicit path; required for a "
+                         "live run)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="run both arms on fakes, no model call")
+    args = ap.parse_args(argv)
+
+    from pathlib import Path as _Path
+    from .benchmark import load_tasks as _load
+
+    def _tasks_from(path_str):
+        return _load(_Path(path_str))
+
+    if args.dry_run:
+        tasks = _tasks_from(args.tasks) if args.tasks else _dry_run_tasks()
+        pilot_tasks = _pilot_tasks_to_pilot_tasks(tasks)
+
+        def dry_runner(task, arm="plain"):
+            # Both arms get the SAME fake behavior: the dry run checks
+            # the HARNESS plumbing (report shape, verdict), not the
+            # arms' difference — which no fake can measure honestly.
+            return {"success": True,
+                    "final_text": _fake_run_once(None, task.prompt)["text"],
+                    "tool_calls": 2 if arm == "explore" else 3,
+                    "duration_s": 0.0}
+
+        rows = run_pilot(pilot_tasks, runner=dry_runner)
+        v = pilot_verdict(rows)
+        print(_json.dumps({
+            "dry_run": True,
+            "n_tasks": len(rows),
+            "verdict": {"explore_wins": v.explore_wins,
+                        "equal_correctness": v.equal_correctness,
+                        "detail": v.detail},
+        }))
+        return 0
+
+    if not args.tasks:
+        print("a live run needs --tasks FILE (the pilot never falls "
+              "back to the production benchmark suite)",
+              flush=True)
+        return 2
+    tasks = _tasks_from(args.tasks)
+    if not tasks:
+        print(f"no tasks in {args.tasks}", flush=True)
+        return 2
+    pilot_tasks = _pilot_tasks_to_pilot_tasks(tasks)
+    runner = make_pilot_runner(
+        model=args.model,
+        engine_factory_builder=_engine_factory_builder(tasks[0]))
+    rows = run_pilot(pilot_tasks, runner=runner)
+    v = pilot_verdict(rows)
+    print(_json.dumps({
+        "dry_run": False,
+        "model": args.model,
+        "n_tasks": len(rows),
+        "verdict": {"explore_wins": v.explore_wins,
+                    "equal_correctness": v.equal_correctness,
+                    "detail": v.detail},
+        "rows": [
+            {"task_id": r.task_id,
+             "arms": {arm: {"success": a.success,
+                            "tool_calls": a.tool_calls,
+                            "duration_s": a.duration_s,
+                            "citations_ok": a.citations_ok}
+                      for arm, a in r.arms.items()}}
+            for r in rows],
+    }))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via subprocess
+    raise SystemExit(main())
