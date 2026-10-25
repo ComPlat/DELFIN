@@ -65,3 +65,12 @@ unless the question is about phosphorescence or intersystem crossing.
 - The companion skill tddft-excited-states covers the dashboard/TD-DFT
   mechanics; this skill covers the _esd workflow specifics. Use both
   when the task is a full spectrum.
+
+## Run `/check` before you report the spectrum
+
+`/check` (result_critic.py, docs/result_critic.md) reads the TDDFT
+table back and flags: fewer roots than requested (truncated window),
+per-state spin contamination (⟨S²⟩ deviation — only read where the
+table header names the column), triplet states inside a singlet
+spectrum, and a missing broadening width. Report every ⚠️ with the
+user verbatim; never report over a ❌ without saying why. Report-only.

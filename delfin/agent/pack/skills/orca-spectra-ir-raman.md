@@ -75,3 +75,12 @@ comparison is with another harmonic calculation").
 - The scaling factor is quoted WITH its method/basis pair and its source.
 - Imaginary modes are reported, never hidden (see the
   freq-thermochemistry skill for thermochemistry after a clean Hessian).
+
+## Run `/check` before you report the spectrum
+
+`/check` (result_critic.py, see docs/result_critic.md) reads the
+spectrum back and flags what is physically implausible: a mode count
+that is not 3N-6/3N-5, negative IR intensities, imaginary modes listed
+as spectrum peaks. A ⚠️ there means the caveat goes to the user
+verbatim; a ❌ means the spectrum is not reportable without saying why.
+The check is report-only — it never fixes anything for you.
