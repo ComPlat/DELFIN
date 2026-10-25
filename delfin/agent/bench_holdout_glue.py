@@ -239,15 +239,19 @@ class GlueGrader:
 
     def _claim_layer(self, success, quality, answer, evidence) -> tuple:
         from .result_claims import check as check_claims
+        from .result_claims import worst_level
         try:
             claims = check_claims(answer, evidence)
         except Exception:  # noqa: BLE001
             return success, quality
-        if not claims:
-            return success, quality
-        # An unanswered claim is a stated number with no source: the
-        # verdict fails, quality drops to the floor.
-        return (False, 0)
+        # An ERROR claim is a stated number with no source: the verdict
+        # fails, quality drops to the floor. A "warn" claim (a sourced
+        # value from a flagged output) keeps the verdict — the rubric
+        # verdict already carries what the run achieved (s25 finding,
+        # answered-vs-unanswered split per result_claims.py:170-189).
+        if worst_level(claims) == "error":
+            return (False, 0)
+        return success, quality
 
 
 # ---------------------------------------------------------------------------
