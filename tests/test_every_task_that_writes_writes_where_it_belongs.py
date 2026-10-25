@@ -352,9 +352,13 @@ def test_the_counts_still_match_what_was_measured():
     # two-levels trap, CENSO-style threshold handoff. Each writes only
     # into its own w20_ce1_ensemble/ folder under the workspace; the
     # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
+    # other 71 -> 77 on 2026-10-25 (SP1, wave 22, agent/s13-sp1b): the six
+    # explore-pilot tasks of pilot_tasks_sp1.yaml (solo, read-only). This
+    # test globs every pack/benchmark/*.yaml; the production suite loads
+    # only tasks_*.yaml, so the pilot never runs in a normal bench run.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 41, "chemistry": 23, "generalist": 22,
-                      "other": 71}, counts
+                      "other": 77}, counts
 
 
 # ---------------------------------------------------------------------------
