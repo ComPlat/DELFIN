@@ -117,12 +117,24 @@ def _tmp_branch_repo():
     import subprocess
     import tempfile
     td = tempfile.mkdtemp(prefix="gt1-branch-")
-    subprocess.run(["git", "init", "-q", td], check=True,
-                   capture_output=True)
-    subprocess.run(["git", "-C", td, "commit", "-q", "--allow-empty",
-                    "-m", "gt1 fixture"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", td, "branch", "agent/s3-ds1b"],
-                   check=True, capture_output=True)
+    # The CI runner has no git identity, so a bare `git commit` exits
+    # 128 there; sandbox the fixture from the host config either way
+    # (HOME=tmp) and set identity via env, like the reviewer's git_ws
+    # fixture in tests/test_gt1_adversarial_branch_switch.py.
+    home = tempfile.mkdtemp(prefix="gt1-home-")
+    env = dict(os.environ)
+    env["HOME"] = home
+    env["GIT_CONFIG_GLOBAL"] = os.path.join(home, ".gitconfig")
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env["GIT_AUTHOR_NAME"] = "gt1 fixture"
+    env["GIT_AUTHOR_EMAIL"] = "gt1-fixture@example.invalid"
+    env["GIT_COMMITTER_NAME"] = "gt1 fixture"
+    env["GIT_COMMITTER_EMAIL"] = "gt1-fixture@example.invalid"
+    for cmd in (["git", "init", "-q", td],
+                ["git", "-C", td, "commit", "-q", "--allow-empty",
+                 "-m", "gt1 fixture"],
+                ["git", "-C", td, "branch", "agent/s3-ds1b"]):
+        subprocess.run(cmd, check=True, capture_output=True, env=env)
     return td
 
 
