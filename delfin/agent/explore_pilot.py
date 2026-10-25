@@ -418,15 +418,29 @@ def make_pilot_runner(*, model: str, run_task: Any = None,
         fields.pop("prompt", None)
         return _Task(id=tid, prompt=prompt, **fields)
 
-    def _arm_run_once_factory(captured: dict) -> Any:
+    def _task_prompt(task: Any) -> str:
+        """The prompt the task's own run_once turn is driven with —
+        the capture anchor for the wrapper below."""
+        return str(getattr(task, "prompt", "") or "")
+
+    def _arm_run_once_factory(captured: dict, task_prompt: str) -> Any:
         """A run_once that delegates to the real one and keeps the FULL
         text — the excerpt in BenchmarkResult is not enough for citation
-        grading."""
+        grading.
+
+        Capture is bound to the TASK'S OWN turn: run_task calls run_once
+        again for every mid-run steer (benchmark_runner.py:1051, 1076),
+        and the steer text is not the answer. The first call whose
+        prompt is the task prompt wins; later calls only fill the
+        capture if none happened yet (a fake caller may drive run_once
+        with a single turn of a different shape).
+        """
         from .cli import _run_once as _real_run_once
 
         def run_once(engine, prompt, **kw):
             raw = _real_run_once(engine, prompt, **kw)
-            captured["full_text"] = str(raw.get("text") or "")
+            if prompt == task_prompt or "full_text" not in captured:
+                captured["full_text"] = str(raw.get("text") or "")
             return raw
         return run_once
 
@@ -437,7 +451,8 @@ def make_pilot_runner(*, model: str, run_task: Any = None,
         captured: dict = {}
         kwargs = dict(run_task_kwargs)
         kwargs["model"] = model
-        kwargs["run_once"] = _arm_run_once_factory(captured)
+        kwargs["run_once"] = _arm_run_once_factory(captured,
+                                                   _task_prompt(task))
         if engine_factory_builder is not None:
             if arm == "explore":
                 # The wiring the package exists to measure: the engine
@@ -452,9 +467,15 @@ def make_pilot_runner(*, model: str, run_task: Any = None,
         if not final_text:
             # A fake caller without a real run_once falls back to the
             # excerpt (or an explicit full_text) rather than hiding the
-            # answer entirely — but the fallback is visible.
-            final_text = full_text or str(
-                getattr(result, "text_excerpt", "") or "")
+            # answer entirely — but ONLY for a successful result. A
+            # failed run never reached the model's answer turn
+            # (benchmark_runner.py:979-983): its text_excerpt is a
+            # fragment of an error path, not an answer, and grading it
+            # through the citation check would count an unmeasured run
+            # as measured.
+            if getattr(result, "success", False):
+                final_text = full_text or str(
+                    getattr(result, "text_excerpt", "") or "")
         return {
             "success": bool(getattr(result, "success", False)),
             "input_tokens": int(getattr(result, "input_tokens", 0) or 0),
