@@ -17,8 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "delfin" / "agent"))
 
-import bench_holdout as bh  # noqa: E402
-import bench_nightly as bn  # noqa: E402
+from delfin.agent import bench_holdout as bh  # noqa: E402
+from delfin.agent import bench_nightly as bn  # noqa: E402
+from delfin.agent.bench_holdout_glue import GlueSampler  # noqa: E402
 
 
 class FakeAccounting:
@@ -58,7 +59,7 @@ def test_sampled_instance_reaches_runner_without_crashing():
     task.id / task.task_class, task handed to the runner."""
     runner = FakeRunner()
     cfg = {
-        "sampler": bh,
+        "sampler": GlueSampler(),
         "grader": _fake_grader(),
         "accounting": FakeAccounting(),
         "runner": runner,
@@ -79,7 +80,7 @@ def test_budget_gate_refuses_above_limit():
     """With a small daily budget, later instances are refused, not run."""
     runner = FakeRunner()
     cfg = {
-        "sampler": bh,
+        "sampler": GlueSampler(),
         "grader": _fake_grader(),
         "accounting": FakeAccounting(est=2.0),
         "runner": runner,
@@ -99,7 +100,7 @@ def test_holdout_without_seed_file_refuses_and_hides_seed():
     """Holdout mode, no seed file: refusal, zero instances, and the
     PUBLIC_SEED value must not leak into the record."""
     cfg = {
-        "sampler": bh,
+        "sampler": GlueSampler(),
         "grader": _fake_grader(),
         "accounting": FakeAccounting(),
         "runner": FakeRunner(),
@@ -129,7 +130,7 @@ def test_seed_value_never_in_record_when_practice():
         fh.write(marker)
     runner = FakeRunner()
     cfg = {
-        "sampler": bh,
+        "sampler": GlueSampler(),
         "grader": _fake_grader(),
         "accounting": FakeAccounting(),
         "runner": runner,
