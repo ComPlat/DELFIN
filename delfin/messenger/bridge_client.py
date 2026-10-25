@@ -8,6 +8,7 @@ event lines carry ``{"event": ...}`` and arrive between answers.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -44,28 +45,41 @@ class BridgeClient:
             if len(line) > MAX_LINE_BYTES:
                 raise ValueError("command too long")
             sock.sendall(line)
-            while True:
-                data = b""
-                while not data.endswith(b"\n"):
-                    chunk = sock.recv(MAX_LINE_BYTES)
-                    if not chunk:
+            with sock.makefile("rb") as stream:
+                while True:
+                    data = stream.readline(MAX_LINE_BYTES + 1)
+                    if not data:
                         raise BridgeDown("the bridge closed the connection")
-                    data += chunk
-                    if len(data) > MAX_LINE_BYTES:
+                    if len(data) > MAX_LINE_BYTES or not data.endswith(b"\n"):
                         raise BridgeDown("line too long")
-                message = json.loads(data)
-                if "event" in message and on_event is not None:
-                    on_event(message)
-                    continue
-                return message
+                    message = json.loads(data)
+                    if "event" in message:
+                        if on_event is not None:
+                            on_event(message)
+                        continue
+                    return message
         finally:
             sock.close()
+
+    async def events(self):
+        reader, writer = await asyncio.open_unix_connection(str(self.path), limit=MAX_LINE_BYTES)
+        try:
+            while line := await reader.readline():
+                event = json.loads(line)
+                if "event" in event:
+                    yield event
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
 
 def default_socket_path() -> Path:
     """Where the bridge serves on this host: the agent service's runtime
     directory, which the gateway may reach only as the configured group
     member (the provisioning chgrps it)."""
+    explicit = os.environ.get("DELFIN_MESSENGER_SOCKET")
+    if explicit:
+        return Path(explicit)
     base = os.environ.get("DELFIN_RUNTIME_DIR", "").strip() or "/tmp"
     return Path(base) / f"delfin-{_service_uid()}" / "messenger.sock"
 

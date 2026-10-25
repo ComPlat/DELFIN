@@ -1,6 +1,6 @@
-# Messenger for the DELFIN agents (plan, not started)
+# Messenger for the DELFIN agents
 
-Status: planned 2026-10-24, waiting for the user's go. Nothing is built yet.
+Status: bridge, gateway and provisioning implemented; real-phone acceptance pending.
 
 ## Goal
 Talk to the DELFIN agents from a phone: get told when an agent is done,
@@ -118,3 +118,32 @@ Regeln:
   jeder Nachricht die Zeile: Co-Authored-By: Claude <noreply@anthropic.com>
 - Nichts außerhalb dieses Worktrees ändern. Kein Push ohne Freigabe; wenn
   alles grün ist: Branch pushen und den Compare-Link nennen.
+
+## Deployment and regression checks
+
+The provisioner uses port 5227 for both the daemon and gateway. Install DELFIN
+with the `messenger` extra (`pip install ".[agent,messenger]"` from the checkout) in `/opt/delfin-messenger/bin/venv`
+before provisioning. The agent service must already run as `delfin` (override
+with `MESSENGER_SERVICE_USER`); `MESSENGER_BRIDGE_PYTHON` can select that user's
+Python installation. The script provisions a bridge unit as that user, with
+primary group `delfin-gw`, and a separate 0750 runtime directory at
+`/run/delfin-messenger-bridge`. Its socket is 0660. The agent service's own
+runtime directory remains private. The bridge uses the host's `/tmp` to reach
+the agent service and restarts after service connection failures.
+
+Pair as `delfin-gw`, using the same state directory as the gateway:
+
+```sh
+sudo -u delfin-gw env DELFIN_MESSENGER_DIR=/var/lib/delfin-messenger/pairing /opt/delfin-messenger/bin/venv/bin/python -m delfin.messenger pair
+```
+
+Use the same environment and executable with `revoke` to remove the pairing.
+The running gateway checks the pairing before accepting commands and sending
+notifications; a command already handed to the agent service is not undone.
+Restart the gateway after pairing a different phone. Approvals remain at the
+terminal/dashboard.
+
+Regression tests cover unsolicited bridge events, gateway notifications,
+revocation during a running gateway, real service summary fields, named-session
+routing, and agreement between generated units on port, socket and state path.
+A real SimpleX daemon and phone are still required for deployment acceptance.

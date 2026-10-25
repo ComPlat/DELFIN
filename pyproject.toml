@@ -133,6 +133,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+messenger = ["websockets"]
 # PyMOL renders the ESP, dipole-moment and orbital pictures of the Word and
 # ESD reports (delfin/reporting/esp_report.py, delfin_docx_report.py). Without
 # it those pictures are skipped with a logged notice and every other part of

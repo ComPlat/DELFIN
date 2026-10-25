@@ -281,3 +281,45 @@ def test_trim_cuts_with_an_ellipsis():
     out = gw._trim("x" * 5_000, 100)
     assert len(out) == 100
     assert out.endswith("…")
+
+
+def test_running_gateway_refuses_contact_after_revoke(tmp_path, monkeypatch):
+    from delfin.messenger import store
+    monkeypatch.setenv('DELFIN_MESSENGER_DIR', str(tmp_path))
+    store.save('phone-contact')
+    bridge = FakeBridge()
+    gateway = Gateway(contact_id='phone-contact', bridge=bridge,
+                      pairing_check=store.paired_contact)
+    async def run():
+        await gateway.handle(msg('help'))
+        store.revoke()
+        with pytest.raises(Refused):
+            await gateway.handle(msg('stop', mid='after-revoke'))
+        assert not bridge.asked
+    asyncio.run(run())
+
+
+def test_notifications_arrive_without_a_phone_command_and_stop_on_revoke():
+    paired = ['phone-contact']
+    class EventBridge(FakeBridge):
+        async def events(self):
+            yield {'event': 'session', 'session': 's1', 'state': 'idle', 'title': 'calc'}
+            yield {'event': 'attention', 'items': [
+                {'id': 'q1', 'kind': 'question', 'text': 'Which solvent?'}]}
+            paired.clear()
+            yield {'event': 'session', 'session': 's2', 'state': 'failed'}
+    class Daemon:
+        def __init__(self):
+            self.sent = []
+        async def send_text(self, cid, text):
+            self.sent.append((cid, text))
+    async def run():
+        gateway = Gateway(contact_id='phone-contact', bridge=EventBridge(),
+                          pairing_check=lambda: paired[0] if paired else None)
+        daemon = Daemon()
+        await gw.Listener(contact_id='phone-contact', gateway=gateway)._notifications(daemon)
+        assert len(daemon.sent) == 2
+        assert 'idle' in daemon.sent[0][1]
+        assert 'Which solvent?' in daemon.sent[1][1]
+        assert gateway.questions == {1: 'q1'}
+    asyncio.run(run())

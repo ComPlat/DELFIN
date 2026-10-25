@@ -43,8 +43,11 @@ GW_USER="delfin-gw"
 # Where the systemd units live; overridable for tests and for systems whose
 # unit dir lies elsewhere (a bind mount, a container image).
 UNIT_DIR="${MESSENGER_UNIT_DIR:-/etc/systemd/system}"
-PREFIX="/opt/delfin-messenger"
-STATE_DIR="/var/lib/delfin-messenger"
+PREFIX="${MESSENGER_PREFIX:-/opt/delfin-messenger}"
+STATE_DIR="${MESSENGER_STATE_DIR:-/var/lib/delfin-messenger}"
+SERVICE_USER="${MESSENGER_SERVICE_USER:-delfin}"
+BRIDGE_PYTHON="${MESSENGER_BRIDGE_PYTHON:-${PREFIX}/bin/venv/bin/python}"
+BRIDGE_SOCKET="/run/delfin-messenger-bridge/messenger.sock"
 API_PORT="5227"          # simplex-chat daemon local API (--server-port)
 NFT_TABLE="delfin_messenger"
 
@@ -163,12 +166,15 @@ gateway_unit() {
   cat <<EOF
 [Unit]
 Description=DELFIN messenger gateway (phone <-> agent-service bridge)
-After=simplex-chat-daemon.service
-Requires=simplex-chat-daemon.service
+After=simplex-chat-daemon.service delfin-messenger-bridge.service
+Requires=simplex-chat-daemon.service delfin-messenger-bridge.service
 
 [Service]
 User=${GW_USER}
 Group=${GW_USER}
+Environment=DELFIN_MESSENGER_PORT=${API_PORT}
+Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
+Environment=DELFIN_MESSENGER_DIR=${STATE_DIR}/pairing
 ExecStart=${PREFIX}/bin/venv/bin/python -m delfin.messenger run
 Restart=on-failure
 RestartSec=5
@@ -195,6 +201,36 @@ WantedBy=multi-user.target
 EOF
 }
 
+bridge_unit() {
+  cat <<EOF
+[Unit]
+Description=DELFIN agent service bridge for the messenger gateway
+After=network.target
+
+[Service]
+User=${SERVICE_USER}
+Group=${GW_USER}
+RuntimeDirectory=delfin-messenger-bridge
+RuntimeDirectoryMode=0750
+Environment=DELFIN_MESSENGER_PEER_UID=$(id -u "${GW_USER}")
+Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
+ExecStart=${BRIDGE_PYTHON} -m delfin.agent.service.bridge
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# The agent service socket is in the host's private per-user /tmp directory.
+PrivateTmp=no
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 # The daemon must bind its API only on the loopback interface; the nftables
 # rule below keeps even local users other than delfin-gw out.
 daemon_conf() {
@@ -210,12 +246,18 @@ install_units() {
   install -d -m 0755 -o root -g root "${UNIT_DIR}"
   daemon_unit > "${UNIT_DIR}/simplex-chat-daemon.service"
   if [ -x "${PREFIX}/bin/venv/bin/python" ]; then
+    id "${SERVICE_USER}" >/dev/null 2>&1 || die "agent service user does not exist: ${SERVICE_USER}"
+    [ -x "${BRIDGE_PYTHON}" ] || die "bridge Python not executable: ${BRIDGE_PYTHON}"
+    bridge_unit > "${UNIT_DIR}/delfin-messenger-bridge.service"
     gateway_unit > "${UNIT_DIR}/delfin-messenger-gateway.service"
   else
     say "no gateway venv under ${PREFIX}/bin/venv -- skipping the gateway unit (install DELFIN for ${GW_USER} first, then re-run)"
   fi
   systemctl daemon-reload
   systemctl enable --now simplex-chat-daemon.service
+  if [ -f "${UNIT_DIR}/delfin-messenger-bridge.service" ]; then
+    systemctl enable --now delfin-messenger-bridge.service
+  fi
   [ -f "${UNIT_DIR}/delfin-messenger-gateway.service" ] \
     && systemctl enable --now delfin-messenger-gateway.service || true
   say "units installed and started"
@@ -228,8 +270,8 @@ install_nftables() {
   nft delete table inet ${NFT_TABLE} 2>/dev/null || true
   nft -f - <<EOF
 table inet ${NFT_TABLE} {
-  chain input {
-    type filter hook input priority 0;
+  chain output {
+    type filter hook output priority 0;
     ip daddr 127.0.0.1 tcp dport ${API_PORT} meta skuid "${GW_USER}" accept
     ip daddr 127.0.0.1 tcp dport ${API_PORT} drop
   }
@@ -241,6 +283,8 @@ EOF
 # --- uninstall --------------------------------------------------------------
 uninstall() {
   systemctl disable --now delfin-messenger-gateway.service 2>/dev/null || true
+  systemctl disable --now delfin-messenger-bridge.service 2>/dev/null || true
+  rm -f "${UNIT_DIR}/delfin-messenger-bridge.service"
   systemctl disable --now simplex-chat-daemon.service 2>/dev/null || true
   rm -f "${UNIT_DIR}/delfin-messenger-gateway.service"
   rm -f "${UNIT_DIR}/simplex-chat-daemon.service"
@@ -261,8 +305,8 @@ case "${action}" in
     else
       fetch_binary "${PREFIX}/bin/simplex-chat"
     fi
-    install_units
     [ "${want_nftables}" = 1 ] && install_nftables
-    say "done. Next: pair the phone (as ${GW_USER}): ${PREFIX}/bin/venv/bin/python -m delfin.messenger pair"
+    install_units
+    say "done. Next: pair the phone (as ${GW_USER}): DELFIN_MESSENGER_DIR=${STATE_DIR}/pairing ${PREFIX}/bin/venv/bin/python -m delfin.messenger pair"
     ;;
 esac

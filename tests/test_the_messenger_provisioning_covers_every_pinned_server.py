@@ -77,7 +77,6 @@ def run_script(
     log("sha256sum", f"echo {sha256}")
     log("install", 'isdir=0; last=""; for a in "$@"; do [ "$a" = "-d" ] && isdir=1; last="$a"; done; if [ "$isdir" = 1 ]; then mkdir -p "$last"; fi; echo "install $*"')
     log("systemctl", "echo ok")
-    log("cat", 'echo "[unit]"')  # not used by the script; heredocs are inline
 
     env = dict(
         os.environ,
@@ -86,6 +85,8 @@ def run_script(
         MESSENGER_OS_RELEASE=str(tmp_path / "os-release"),
         MESSENGER_TMPFILE=str(tmp_path / "download.tmp"),
         MESSENGER_UNIT_DIR=str(tmp_path / "units"),
+        MESSENGER_PREFIX=str(tmp_path / "prefix"),
+        MESSENGER_STATE_DIR=str(tmp_path / "state"),
     )
     # /etc/os-release stand-in for the Ubuntu detection.
     os_release = tmp_path / "os-release"
@@ -193,3 +194,25 @@ def test_install_uses_mktemp_for_the_download(tmp_path: Path) -> None:
     # downloaded.bin as a marker; the script itself must have called mktemp.
     # (Direct /tmp evidence is already refused by the static test above.)
     assert "curl" in log
+
+
+def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
+    from delfin.messenger.simplex import DEFAULT_PORT
+    python = tmp_path / 'prefix/bin/venv/bin/python'
+    python.parent.mkdir(parents=True)
+    python.write_text('#!/bin/sh\nexit 0\n')
+    python.chmod(0o755)
+    done = run_script(tmp_path)
+    assert done.returncode == 0, done.stderr
+    gateway = (tmp_path / 'units/delfin-messenger-gateway.service').read_text()
+    bridge = (tmp_path / 'units/delfin-messenger-bridge.service').read_text()
+    daemon = (tmp_path / 'units/simplex-chat-daemon.service').read_text()
+    assert f'--server-port {DEFAULT_PORT}' in daemon
+    assert f'Environment=DELFIN_MESSENGER_PORT={DEFAULT_PORT}' in gateway
+    assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in gateway
+    assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in bridge
+    assert 'RuntimeDirectoryMode=0750' in bridge
+    assert 'Group=delfin-gw' in bridge
+    assert 'DELFIN_MESSENGER_PEER_UID=' in bridge
+    assert f'DELFIN_MESSENGER_DIR={tmp_path}/state/pairing' in gateway
+    assert 'PrivateTmp=no' in bridge

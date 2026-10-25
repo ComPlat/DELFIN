@@ -298,3 +298,63 @@ def test_pending_names_approvals_without_granting_them(rig):
         assert items["q1"]["approvable"] is False
     finally:
         c.close()
+
+
+def test_idle_gateway_receives_service_events(tmp_path, monkeypatch):
+    """Exercise serve's real background pump, without a gateway command."""
+    service = FakeService()
+    bridge = bridge_mod.Bridge(allowed_uid=os.getuid())
+    def connect():
+        bridge._service = service
+        return service
+    monkeypatch.setattr(bridge, '_connect_service', connect)
+
+    async def run():
+        path = tmp_path / 'events.sock'
+        task = asyncio.create_task(bridge.serve(path))
+        try:
+            for _ in range(100):
+                if path.exists():
+                    break
+                await asyncio.sleep(.01)
+            reader, writer = await asyncio.open_unix_connection(str(path))
+            try:
+                for _ in range(100):
+                    if bridge._subscribers:
+                        break
+                    await asyncio.sleep(.01)
+                with service._cond:
+                    service.events.append({'type': 'session.summary', 'session': 's1',
+                                           'summary': {'state': 'idle', 'pending': 0}})
+                    service._cond.notify_all()
+                event = json.loads(await asyncio.wait_for(reader.readline(), 2))
+                assert event['event'] == 'session'
+                assert event['state'] == 'idle'
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(run())
+
+
+def test_named_prompt_resolves_title_to_session_id(rig):
+    c = rig.conn()
+    try:
+        assert c.ask({'cmd': 'prompt', 'session': 'calc 1', 'text': 'run'})['ok']
+        assert rig.service.asked[-1][1]['sessionId'] == 's1'
+    finally:
+        c.close()
+
+
+def test_status_accepts_real_service_summary(rig):
+    rig.service._answer = lambda *args: {'sessions': [
+        {'sessionId': 's1', 'state': 'idle', 'pending': 2}]}
+    c = rig.conn()
+    try:
+        reply = c.ask({'cmd': 'status'})
+        assert reply['sessions'][0]['pending'] == 2
+        assert reply['sessions'][0]['id'] == 's1'
+    finally:
+        c.close()

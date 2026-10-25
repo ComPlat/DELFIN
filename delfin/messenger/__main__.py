@@ -49,7 +49,7 @@ def _run() -> int:
         print("not paired; run `python -m delfin.messenger pair` first",
               file=sys.stderr)
         return 1
-    gateway = Gateway(contact_id=contact_id)
+    gateway = Gateway(contact_id=contact_id, pairing_check=store.paired_contact)
     listener = Listener(contact_id=contact_id, gateway=gateway)
 
     async def run() -> int:

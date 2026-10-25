@@ -88,7 +88,7 @@ def peer_uid_allowed(uid: int | None, allowed: int | None) -> bool:
 
 
 def socket_path() -> Path:
-    return rundir.runtime_dir() / SOCKET_NAME
+    return Path(os.environ.get("DELFIN_MESSENGER_SOCKET") or (rundir.runtime_dir() / SOCKET_NAME))
 
 
 def _truncate(text: str, limit: int = 400) -> str:
@@ -98,10 +98,15 @@ def _truncate(text: str, limit: int = 400) -> str:
     return text[:limit - 1] + "…"
 
 
+def _pending_count(value) -> int:
+    return value if isinstance(value, int) else len(value or [])
+
+
 def _short_event(event: dict, redactor) -> dict:
     """The one line about an event that goes to the gateway: kind, which
     session, the title and state, a question's text -- through the
     redactor, cut."""
+    event = redactor.value(event)
     etype = str(event.get("type") or "")
     kind = ("attention" if etype in ("attention.updated",) else
             "service" if etype in ("service.stopping", "service.status")
@@ -123,7 +128,7 @@ def _short_event(event: dict, redactor) -> dict:
         return {"event": kind, "ts": event.get("ts"), "session": event.get("session"),
                 "state": str(summary.get("state") or ""),
                 "title": redactor.text(_truncate(str(summary.get("title") or ""))),
-                "pending": len(summary.get("pending") or [])}
+                "pending": _pending_count(summary.get("pending"))}
     return {"event": kind, "ts": event.get("ts"),
             "reason": _truncate(str(event.get("reason") or ""))}
 
@@ -179,24 +184,31 @@ class Bridge:
                 pass
         server = await asyncio.start_unix_server(self._client_task, path=str(path))
         os.chmod(path, 0o660)
-        # Group access only: the provisioning chgrps the socket to the
-        # gateway's group; here we at least keep the mode right.
+        # The provisioned unit runs with the gateway group, so the socket
+        # inherits that group without opening the private service directory.
         self._socket_path = path
 
-        self._connect_service()
-        self._pump_task = asyncio.get_running_loop().run_in_executor(
-            None, self._pump_service)
-
+        self._loop = asyncio.get_running_loop()
+        serving = None
         try:
-            await server.serve_forever()
+            self._connect_service()
+            self._pump_task = self._loop.run_in_executor(None, self._pump_service)
+            serving = asyncio.create_task(server.serve_forever())
+            done, _ = await asyncio.wait(
+                [serving, self._pump_task], return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+            raise ConnectionError("agent service connection closed")
         finally:
             server.close()
-            try:
-                await server.wait_closed()
-            except Exception:
-                pass
+            await server.wait_closed()
+            if serving is not None:
+                serving.cancel()
+                await asyncio.gather(serving, return_exceptions=True)
             if self._service is not None:
                 self._service.close()
+            if self._pump_task is not None:
+                await self._pump_task
 
     def _pump_service(self):
         """Thread: shorten and fan out what the service sends. The client
@@ -214,8 +226,11 @@ class Bridge:
             while index < len(client.events):
                 event = client.events[index]
                 index += 1
+                if event.get("type") not in {"session.summary", "attention.updated",
+                                              "service.stopping", "service.status"}:
+                    continue
                 short = _short_event(event, self._redactor())
-                asyncio.get_event_loop().call_soon_threadsafe(self._fan_out, short)
+                self._loop.call_soon_threadsafe(self._fan_out, short)
 
     def _fan_out(self, short: dict) -> None:
         for writer, queue in list(self._subscribers.items()):
@@ -232,8 +247,13 @@ class Bridge:
             return
         queue: asyncio.Queue = asyncio.Queue(maxsize=self.queue_depth)
         self._subscribers[writer] = queue
+        async def send_events():
+            while True:
+                await self._send(writer, await queue.get())
+
+        sender = asyncio.create_task(send_events())
         try:
-            # Both directions, one loop: a command line in, an event out.
+            # Events flow even while the gateway sends no commands.
             while True:
                 line = await asyncio.wait_for(reader.readline(), timeout=None)
                 if not line:
@@ -251,19 +271,16 @@ class Bridge:
                     continue
                 reply = await self._run_command(request)
                 await self._send(writer, reply)
-                try:
-                    while True:
-                        event = queue.get_nowait()
-                        await self._send(writer, event)
-                except asyncio.QueueEmpty:
-                    pass
         except (ConnectionError, asyncio.IncompleteReadError, OSError):
             pass
         finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
             self._subscribers.pop(writer, None)
             writer.close()
 
     async def _send(self, writer, payload: dict) -> None:
+        payload = self._redactor().value(payload)
         data = (json.dumps(payload, ensure_ascii=False) + "\n").encode()
         if len(data) > MAX_LINE_BYTES:
             payload = {"error": "output too long",
@@ -318,10 +335,10 @@ class Bridge:
         sessions = []
         for row in reply.get("sessions") or []:
             sessions.append({
-                "id": str(row.get("id") or ""),
+                "id": str(row.get("sessionId") or row.get("id") or ""),
                 "title": self._redactor().text(_truncate(str(row.get("title") or ""))),
                 "state": str(row.get("state") or ""),
-                "pending": len(row.get("pending") or []),
+                "pending": _pending_count(row.get("pending")),
             })
         return {"ok": True, "host": reply.get("host"), "pid": reply.get("pid"),
                 "sessions": sessions}
@@ -331,7 +348,7 @@ class Bridge:
         rows = []
         for row in (reply.get("sessions") or []) + (reply.get("elsewhere") or []):
             rows.append({
-                "id": str(row.get("id") or ""),
+                "id": str(row.get("sessionId") or row.get("id") or ""),
                 "name": self._redactor().text(_truncate(str(row.get("title") or row.get("name") or ""))),
                 "state": str(row.get("state") or ""),
                 "elsewhere": bool(row.get("host")) if row in (reply.get("elsewhere") or []) else False,
@@ -368,7 +385,7 @@ class Bridge:
         kind = kinds.get(item_id)
         if kind is None:
             return {"error": f"no pending item {item_id!r}"}
-        if kind in ("confirm", "plan"):
+        if kind != "question":
             return {"error": "approvals are never answered from the phone; "
                              "approve at the dashboard or terminal"}
         reply = await self._request("attention.answer", {"id": item_id, "text": text})
@@ -385,6 +402,7 @@ class Bridge:
             known = await self._known_session(session)
             if not known:
                 return {"error": f"no session {session!r}"}
+            session = known
         else:
             session = await self._ensure_phone_session()
         reply = await self._request("session.prompt",
@@ -394,16 +412,16 @@ class Bridge:
                 "accepted": bool(reply.get("accepted")),
                 "queued": bool(reply.get("queued"))}
 
-    async def _known_session(self, name_or_id: str) -> bool:
+    async def _known_session(self, name_or_id: str) -> str | None:
         try:
             reply = await self._request("sessions.list")
         except Exception:
-            return False
+            return None
         rows = (reply.get("sessions") or []) + (reply.get("elsewhere") or [])
         for row in rows:
-            if name_or_id in (str(row.get("id") or ""), str(row.get("title") or "")):
-                return True
-        return False
+            if name_or_id in (str(row.get("sessionId") or row.get("id") or ""), str(row.get("title") or "")):
+                return str(row.get("sessionId") or row.get("id") or "")
+        return None
 
     async def _ensure_phone_session(self) -> str:
         if self._phone_session:

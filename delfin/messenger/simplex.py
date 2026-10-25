@@ -13,12 +13,13 @@ paired contact is refused by the gateway, not by the daemon alone.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
 import websockets
 
-DEFAULT_PORT = 5225
+DEFAULT_PORT = 5227
 
 
 def daemon_port() -> int:
@@ -42,56 +43,64 @@ class Daemon:
         self.url = ws_url(port)
         self._ws = None
         self._corr_id = 0
+        self._pending = {}
+        self._events = asyncio.Queue()
 
     async def __aenter__(self) -> "Daemon":
         self._ws = await websockets.connect(self.url)
+        self._reader = asyncio.create_task(self._read())
         return self
 
     async def __aexit__(self, *exc) -> None:
         if self._ws is not None:
             await self._ws.close()
+            self._reader.cancel()
+            await asyncio.gather(self._reader, return_exceptions=True)
 
     async def command(self, params: dict) -> dict:
         """One command, one response, matched by corrId."""
         self._corr_id += 1
         corr = f"delfin-{self._corr_id}"
         payload = {"corrId": corr, "cmd": json.dumps(params, ensure_ascii=False)}
-        await self._ws.send(json.dumps(payload))
-        while True:
-            raw = await self._ws.recv()
-            try:
-                message = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if message.get("corrId") != corr:
-                continue          # an event or another client's response
-            response = message.get("resp")
-            if response is None:
-                continue
-            if isinstance(response, str):
-                try:
-                    response = json.loads(response)
-                except ValueError:
-                    return {"type": "unknown", "text": response}
-            return response
+        future = asyncio.get_running_loop().create_future()
+        self._pending[corr] = future
+        try:
+            await self._ws.send(json.dumps(payload))
+            return await asyncio.wait_for(future, 30)
+        finally:
+            self._pending.pop(corr, None)
 
-    async def events(self):
-        """Everything the daemon pushes that is not a command response;
-        the caller filters by contact."""
-        while True:
-            raw = await self._ws.recv()
-            try:
+    async def _read(self):
+        error = ConnectionError("SimpleX connection closed")
+        try:
+            async for raw in self._ws:
                 message = json.loads(raw)
-            except (TypeError, ValueError):
-                continue
-            if message.get("corrId") is None:
                 response = message.get("resp")
                 if isinstance(response, str):
-                    try:
-                        response = json.loads(response)
-                    except ValueError:
-                        continue
-                yield response
+                    response = json.loads(response)
+                if not isinstance(response, dict):
+                    continue
+                corr = message.get("corrId")
+                if corr is None:
+                    await self._events.put(response)
+                else:
+                    future = self._pending.get(corr)
+                    if future is not None and not future.done():
+                        future.set_result(response)
+        except Exception as exc:
+            error = exc
+        finally:
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(error)
+            await self._events.put(error)
+
+    async def events(self):
+        while True:
+            event = await self._events.get()
+            if isinstance(event, Exception):
+                raise event
+            yield event
 
     # -- the narrow API surface ----------------------------------------------------------
 

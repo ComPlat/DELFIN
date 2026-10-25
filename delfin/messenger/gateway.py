@@ -17,6 +17,7 @@ an approval is refused by the bridge as well.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections import deque
@@ -66,8 +67,9 @@ class PhoneSession:
 
 class Gateway:
     def __init__(self, *, contact_id: str, bridge: BridgeClient | None = None,
-                 send_text=None, now=time.monotonic):
+                 send_text=None, now=time.monotonic, pairing_check=None):
         self.contact_id = contact_id
+        self.pairing_check = pairing_check
         self.bridge = bridge or BridgeClient(default_socket_path())
         self.send_text = send_text          # async (cid, text) -> None
         self.now = now
@@ -75,6 +77,9 @@ class Gateway:
         self._rate: deque[float] = deque()
         self.questions: dict[int, str] = {}      # number -> attention item id
         self._selected: str | None = None        # the item a bare number chose
+
+    def paired(self) -> bool:
+        return self.pairing_check is None or self.pairing_check() == self.contact_id
 
     # -- limits ---------------------------------------------------------------------------
 
@@ -96,7 +101,7 @@ class Gateway:
 
     async def handle(self, message: PhoneSession) -> str:
         """One message from the paired contact, the reply text."""
-        if message.contact_id != self.contact_id:
+        if not self.paired() or message.contact_id != self.contact_id:
             raise Refused("nicht gekoppelt")
         self._check_limits(message)
         text = message.text.strip()
@@ -210,13 +215,15 @@ class Gateway:
     def _render_pending(self, reply: dict) -> str:
         items = reply.get("items") or []
         if not items:
+            self.questions = {}
+            self._selected = None
             return "Nichts offen."
         self._last_number = 0
         self.questions = {}
         lines: list[str] = []
         for item in items[:5]:
             kind = item.get("kind")
-            title = item.get("session") or ""
+            title = item.get("session") or item.get("sessionTitle") or ""
             text = item.get("text") or item.get("detail") or ""
             self._last_number += 1
             self.questions[self._last_number] = str(item.get("id") or "")
@@ -251,6 +258,44 @@ class Listener:
 
     async def run(self, daemon: simplex.Daemon) -> None:
         await daemon.subscribe()
+        notifications = asyncio.create_task(self._notifications(daemon))
+        try:
+            await self._messages(daemon)
+        finally:
+            notifications.cancel()
+            await asyncio.gather(notifications, return_exceptions=True)
+
+    async def _notifications(self, daemon) -> None:
+        states = {}
+        attention = None
+        while self.gateway.paired():
+            try:
+                async for event in self.gateway.bridge.events():
+                    if not self.gateway.paired():
+                        return
+                    text = ""
+                    if event.get("event") == "attention":
+                        items = event.get("items") or []
+                        if items != attention:
+                            attention = items
+                            text = self.gateway._render_pending({"items": items}) if items else ""
+                            if not items:
+                                self.gateway._render_pending({"items": []})
+                    elif event.get("event") == "session":
+                        sid, state = event.get("session"), event.get("state")
+                        previous = states.get(sid)
+                        states[sid] = state
+                        if state != previous and state in {"idle", "done", "failed", "error", "exited"}:
+                            text = f"{event.get('title') or sid}: {state}"
+                    elif event.get("event") == "service":
+                        text = "Agentendienst: " + str(event.get("reason") or "Status geändert")
+                    if text and self.gateway.paired():
+                        await daemon.send_text(self.contact_id, _trim(text))
+            except (OSError, BridgeDown):
+                pass
+            await asyncio.sleep(2)
+
+    async def _messages(self, daemon):
         async for event in daemon.events():
             cid_text = simplex.text_of(event)
             if cid_text is None:
@@ -260,6 +305,8 @@ class Listener:
                     continue
                 continue
             cid, text = cid_text
+            if not self.gateway.paired():
+                return
             if cid != self.contact_id:
                 continue                     # only the paired contact
             message = PhoneSession(cid, text, str(event.get("itemId") or "")
@@ -270,5 +317,5 @@ class Listener:
                 reply = f"Aufgabe abgelehnt: {exc}"
             except Exception as exc:  # noqa: BLE001
                 reply = f"Interner Fehler: {type(exc).__name__}: {exc}"
-            if reply:
+            if reply and self.gateway.paired():
                 await daemon.send_text(self.contact_id, _trim(reply, 2_000))
