@@ -315,3 +315,136 @@ def pilot_verdict(rows: list[TaskRow]) -> PilotVerdict:
     v.detail = (f"{len(rows)} tasks: {wins} explore-wins, {ties} ties, "
                 f"{losses} losses; correctness equal: {correct_all}")
     return v
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — the production runner adapter (SP1)
+# ---------------------------------------------------------------------------
+
+# The keys run_pilot reads from every arm result (explore_pilot.py:254-257).
+# The production runner is benchmark_runner.run_task (protected, called
+# never edited), which returns a BenchmarkResult that carries NO
+# final_text — only ``text_excerpt``, truncated to 400 chars on success
+# (benchmark.py:2012-2013). A citation answer read through the excerpt is
+# graded on 400 characters, so the adapter captures the FULL text the
+# real ``run_once`` produced and forwards it as ``final_text``.
+
+_ARMS = ("plain", "explore")
+
+
+def make_pilot_runner(*, model: str, run_task: Any = None,
+                      full_text: str = "",
+                      engine_factory_builder: Any = None,
+                      default_task: Any = None,
+                      **run_task_kwargs: Any) -> Any:
+    """Build the runner ``run_pilot`` expects around
+    ``benchmark_runner.run_task``.
+
+    The returned callable is ``runner(task, arm=...) -> dict`` with the
+    six keys run_pilot reads (success, input_tokens, output_tokens,
+    tool_calls, duration_s, final_text).
+
+    - ``model``: the model both arms run under (one measurement = one
+      model; the arms differ ONLY in the delegation permission).
+    - ``run_task``: the production runner; default
+      ``benchmark_runner.run_task`` (imported lazily so a test can hand a
+      fake without importing the protected module first).
+    - ``full_text``: the full final text of the LAST run's model output,
+      captured by the run_once wrapper below. A caller that already has
+      it (tests) may pass it directly.
+    - ``engine_factory_builder(arm) -> factory``: optional hook so the
+      explore arm can hand run_task an engine whose permissions bind
+      ``run_pilot_subagent`` (the pilot guard) while the plain arm's
+      engine is built untouched. ``None``: no engine_factory is passed
+      and both arms use run_task's default factory — the wiring used by
+      the CLI entry point, which builds its own engines.
+    - ``default_task``: benchmark.Task defaults (task_class, mode,
+      permission_mode) applied to tasks that do not carry them.
+    - extra kwargs are forwarded to run_task verbatim (backend,
+      provider, max_tokens, ...).
+    """
+    if run_task is None:
+        from .benchmark_runner import run_task as _production_run_task
+        run_task = _production_run_task
+    task_defaults = dict(default_task) if isinstance(default_task, dict) \
+        else (vars(default_task).copy() if default_task is not None else {})
+
+    def _to_benchmark_task(task: Any) -> Any:
+        """Map a PilotTask (or a Task-like dict) onto the shape run_task
+        needs. A real benchmark.Task passes through unchanged; a
+        PilotTask gets its defaults from ``default_task``."""
+        from .benchmark import Task as _Task
+        if isinstance(task, _Task):
+            return task
+        tid = getattr(task, "task_id", None)
+        if tid is None:
+            tid = getattr(task, "id", "")
+        prompt = getattr(task, "prompt", "")
+        fields = dict(task_defaults)
+        fields.setdefault("task_class", "pilot")
+        # solo: the pilot measures a read-heavy answering task; the
+        # benchmark's modes are solo|dashboard|office|research
+        # (benchmark.py:301-303) and solo is the one with no fixture
+        # workspace dependency.
+        fields.setdefault("mode", "solo")
+        fields["id"] = tid
+        fields["prompt"] = prompt
+        # Only valid Task keys survive: an unknown key in the YAML is a
+        # spelling error the caller must see, not a silent default.
+        import dataclasses as _dc
+        known = {f.name for f in _dc.fields(_Task)}
+        dropped = sorted(set(fields) - known - {"id", "prompt"})
+        if dropped:
+            raise ValueError(
+                f"task {tid}: unknown benchmark.Task field(s) {dropped}")
+        fields.pop("id", None)
+        fields.pop("prompt", None)
+        return _Task(id=tid, prompt=prompt, **fields)
+
+    def _arm_run_once_factory(captured: dict) -> Any:
+        """A run_once that delegates to the real one and keeps the FULL
+        text — the excerpt in BenchmarkResult is not enough for citation
+        grading."""
+        from .cli import _run_once as _real_run_once
+
+        def run_once(engine, prompt, **kw):
+            raw = _real_run_once(engine, prompt, **kw)
+            captured["full_text"] = str(raw.get("text") or "")
+            return raw
+        return run_once
+
+    def runner(task: Any, arm: str = "plain") -> dict:
+        if arm not in _ARMS:
+            raise ValueError(
+                f"unknown arm {arm!r}; the pilot measures {_ARMS}")
+        captured: dict = {}
+        kwargs = dict(run_task_kwargs)
+        kwargs["model"] = model
+        kwargs["run_once"] = _arm_run_once_factory(captured)
+        if engine_factory_builder is not None:
+            if arm == "explore":
+                # The wiring the package exists to measure: the engine
+                # built for this arm binds the pilot guard, so the task
+                # MAY delegate (explore only, one at a time, depth 0).
+                kwargs["engine_factory"] = engine_factory_builder("explore")
+            # The plain arm passes nothing: run_task's default factory
+            # builds an engine with no subagent_runner binding, so a
+            # delegate attempt is refused upstream (engine.py:972-974).
+        result = run_task(_to_benchmark_task(task), **kwargs)
+        final_text = captured.get("full_text") or ""
+        if not final_text:
+            # A fake caller without a real run_once falls back to the
+            # excerpt (or an explicit full_text) rather than hiding the
+            # answer entirely — but the fallback is visible.
+            final_text = full_text or str(
+                getattr(result, "text_excerpt", "") or "")
+        return {
+            "success": bool(getattr(result, "success", False)),
+            "input_tokens": int(getattr(result, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(result, "output_tokens", 0) or 0),
+            "tool_calls": int(getattr(result, "tool_calls", 0) or 0),
+            "duration_s": float(getattr(result, "duration_s", 0.0) or 0.0),
+            "final_text": final_text,
+        }
+
+    return runner

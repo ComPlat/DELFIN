@@ -55,12 +55,13 @@ def test_adapter_returns_six_key_contract():
 
 
 def test_adapter_carries_full_text_not_excerpt():
-    full = "the answer is delfin/agent/explore_pilot.py:248 with citations" * 3
+    line = "the answer is delfin/agent/explore_pilot.py:248 with citations "
+    full = (line * 15)[:700]  # > 400 chars: longer than the excerpt cap
     rt = FakeRunTask(_fake_result(text_excerpt=full[:400]))
     adapter = ep.make_pilot_runner(run_task=rt, model="m", full_text=full)
     raw = adapter(ep.PilotTask(task_id="t1", prompt="p"), arm="plain")
     assert raw["final_text"] == full
-    assert raw["final_text"] != raw["final_text"][:400]
+    assert len(raw["final_text"]) > 400
 
 
 def test_adapter_arms_call_run_task_twice_independently():
@@ -85,7 +86,17 @@ def test_explore_arm_binds_pilot_guard_via_engine_factory():
             return object()
         return build
 
-    rt = FakeRunTask()
+    class DrivingRunTask(FakeRunTask):
+        """The real run_task CALLS engine_factory; the fake must too,
+        else the wiring is never exercised."""
+
+        def __call__(self, task, **kwargs):
+            factory = kwargs.get("engine_factory")
+            if factory is not None:
+                factory("m", "api", "", "solo")
+            return FakeRunTask.__call__(self, task, **kwargs)
+
+    rt = DrivingRunTask()
     adapter = ep.make_pilot_runner(
         run_task=rt, model="m",
         engine_factory_builder=fake_engine_factory)
