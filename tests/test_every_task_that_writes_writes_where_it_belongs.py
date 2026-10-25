@@ -326,9 +326,39 @@ def test_the_counts_still_match_what_was_measured():
     # two-levels trap, CENSO-style threshold handoff. Each writes only
     # into its own w20_ce1_ensemble/ folder under the workspace; the
     # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
+    #
+    # science 28 -> 34 on 2026-10-25: the six wave-21 workflow-BUILDING
+    # tasks (tasks_w21_build.yaml, package WB0) -- the agent builds a
+    # DELFIN pipeline spec (spec.json) for a chemist's brief and justifies
+    # deviations in answer.txt; w21_build_verify.py grades the spec with
+    # workflow_grader.grade(), no calculation. Class science_analysis
+    # (writing class -> confined science_workspace; the "chemistry" class
+    # is reserved for the cheap-xtb physics suite whose signals forbid
+    # orca, tests/test_chemistry_is_graded_on_the_physics.py:57). One
+    # setup script (setup/w21_build_fixtures.py) writes all six folders
+    # and refuses an existing one.
+    #
+    # science 34 -> 37 on 2026-10-25 (WB0 phase 3): the three real-run
+    # tasks w21_run_methanol / w21_run_water_ir / w21_run_hcl_spectrum
+    # in the same file -- the agent builds the workflow AND runs it
+    # through DELFIN's own submit path; accept/w21_run_verify.py grades
+    # BOTH halves (spec via workflow_grader, run via CB0A's
+    # run_evidence.collect + grade_run, max_cores=2). Setup
+    # setup/w21_run_fixtures.py (<= 6 atoms, CONTROL pins charge/mult).
+    # science 23 -> 27 on 2026-10-20 (CE1, wave 20, agent/s11-ce1b): the
+    # four tasks_w20_ce1.yaml tasks (science_analysis), offline over the
+    # fixture ensembles from setup/w20_ce1_ensemble_fixture.py -- lowest
+    # conformer, Boltzmann weights at a stated temperature, the
+    # two-levels trap, CENSO-style threshold handoff. Each writes only
+    # into its own w20_ce1_ensemble/ folder under the workspace; the
+    # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
+    # other 71 -> 77 on 2026-10-25 (SP1, wave 22, agent/s13-sp1b): the six
+    # explore-pilot tasks of pilot_tasks_sp1.yaml (solo, read-only). This
+    # test globs every pack/benchmark/*.yaml; the production suite loads
+    # only tasks_*.yaml, so the pilot never runs in a normal bench run.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 32, "chemistry": 23, "generalist": 22,
-                      "other": 71}, counts
+                      "science": 41, "chemistry": 23, "generalist": 22,
+                      "other": 77}, counts
 
 
 # ---------------------------------------------------------------------------

@@ -21486,6 +21486,20 @@ class _DocToolExecutor:
         # auto-accepted edit waits for the user too. No model call.
         if int(state.get("refusals") or 0) >= _CLASSIFIER_REFUSALS_PER_TURN:
             _record_security_event("classifier_refuse", base, shown)
+            if perms.confirm_callback is None:
+                # AM1 unattended mode: nobody can be asked, so the lock
+                # does not wait for a person who is not there. The policy
+                # (unattended_policy.decide) says pause: one fire-and-
+                # forget operator message, then stop the turn cleanly.
+                _record_security_event(
+                    "unattended_pause", base, shown)
+                return (
+                    f"'{base}' ({shown}) was not run: three actions were "
+                    "refused in this turn. Unattended mode: the session "
+                    "is PAUSED — queue ONE session_message to 'operator' "
+                    "with the three refusals and their reasons, then end "
+                    "your turn. Do not wait for an answer; do not retry "
+                    "any refused action in another spelling.")
             return (
                 f"'{base}' ({shown}) was not run: three actions were "
                 "refused in this turn, so nothing but reading runs until "
@@ -21570,6 +21584,9 @@ class _DocToolExecutor:
             "task": task,
             "recent_user": earlier,
             "recent_calls": list(state["calls"][-6:]),
+            # Where the command runs: the routine shapes that look at the
+            # tree (an existing branch, GT1) look there, not in the cwd.
+            "workspace": str(getattr(perms, "workspace", "") or ""),
         }
         state["calls"].append({"tool": base, "args": shown})
         failed: list = []

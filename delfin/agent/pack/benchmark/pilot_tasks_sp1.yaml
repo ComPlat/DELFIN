@@ -1,0 +1,106 @@
+# SP1 pilot tasks: code-reading questions about DELFIN itself, measured
+# by the SA1 explore-pilot harness (delfin/agent/explore_pilot.py).
+#
+# Loaded EXPLICITLY (benchmark.load_tasks(path=...), benchmark.py:684-685):
+# this file is deliberately NOT named tasks_*.yaml, so the default glob
+# (benchmark.py:688) never pulls the pilot suite into the production
+# benchmark. The arms are compared on path:line citations; every answer
+# is checkable against this repository with verify_citations.
+#
+# Every prompt REQUIRES path:line citations in the answer (SA1 reviewer
+# carry: prompts without that requirement compare the arms at an unequal
+# bar). The facts asked for are verified locations in this tree as of
+# this file's writing (grep-verified, see the comment per task).
+#
+# mode: solo — read-heavy answering, no fixture workspace dependency
+# (benchmark.py:301-303). Budgets are per-arm wall/cost caps; explore
+# tasks may call more tools than plain ones, hence max_tool_calls 12.
+
+tasks:
+
+  # verified: PILOT_TYPE = "explore" at explore_pilot.py:37;
+  # check_delegate at 49.
+  - id: sp1_pilot_guard
+    task_class: pilot
+    mode: solo
+    prompt: >-
+      In this DELFIN repository, find where the explore-pilot guard is
+      defined in delfin/agent/explore_pilot.py: which sub-agent type is
+      the ONLY one the pilot setting allows, and where is the function
+      that decides whether a delegation is allowed? Answer with
+      path:line citations in the form file.py:LINE for each fact.
+    max_duration_s: 300
+    max_cost_usd: 0.50
+    max_tool_calls: 12
+
+  # verified: parse_control_text at delfin/config.py:569;
+  # validate_control_text at 632.
+  - id: sp1_control_parsing
+    task_class: pilot
+    mode: solo
+    prompt: >-
+      In this DELFIN repository: where in delfin/config.py is a CONTROL
+      text parsed, and where is a CONTROL text validated? Give the two
+      function definitions with path:line citations in the form
+      file.py:LINE.
+    max_duration_s: 300
+    max_cost_usd: 0.50
+    max_tool_calls: 12
+
+  # verified: run_task at delfin/agent/benchmark_runner.py:1450;
+  # Task class at delfin/agent/benchmark.py:296.
+  - id: sp1_benchmark_runner_entry
+    task_class: pilot
+    mode: solo
+    prompt: >-
+      In this DELFIN repository: which function executes one benchmark
+      task (in delfin/agent/benchmark_runner.py), and where is the
+      benchmark Task class defined (in delfin/agent/benchmark.py)?
+      Answer with path:line citations in the form file.py:LINE.
+    max_duration_s: 300
+    max_cost_usd: 0.50
+    max_tool_calls: 12
+
+  # verified: run_pilot at explore_pilot.py:255; verify_citations at
+  # 225.
+  - id: sp1_pilot_harness
+    task_class: pilot
+    mode: solo
+    prompt: >-
+      In delfin/agent/explore_pilot.py of this repository: which
+      function runs the same task twice (arm plain and arm explore), and
+      which function checks path:line citations against the real
+      repository? Answer with path:line citations in the form
+      file.py:LINE.
+    max_duration_s: 300
+    max_cost_usd: 0.50
+    max_tool_calls: 12
+
+  # verified: score_outcome at delfin/agent/benchmark.py:1806;
+  # BenchmarkResult at benchmark.py:488.
+  - id: sp1_scoring_result
+    task_class: pilot
+    mode: solo
+    prompt: >-
+      In this DELFIN repository (delfin/agent/benchmark.py): where is
+      the deterministic rubric function that scores one outcome, and
+      where is the BenchmarkResult dataclass defined? Answer with
+      path:line citations in the form file.py:LINE.
+    max_duration_s: 300
+    max_cost_usd: 0.50
+    max_tool_calls: 12
+
+  # verified: child_runner at explore_pilot.py:167; make_pilot_runner
+  # at 352.
+  - id: sp1_pilot_wiring
+    task_class: pilot
+    mode: solo
+    prompt: >-
+      In delfin/agent/explore_pilot.py of this repository: where is the
+      child runner builder (the runner installed for a delegate the
+      pilot let run), and where is the factory that builds the
+      production pilot runner around benchmark_runner.run_task? Answer
+      with path:line citations in the form file.py:LINE.
+    max_duration_s: 300
+    max_cost_usd: 0.50
+    max_tool_calls: 12

@@ -58,3 +58,12 @@ What the workflow does:
   same sentence.
 - Never report a spin-state ordering from memory or a ligand-field
   argument alone — the comparison must come from the workflow's runs.
+
+## Run `/check` before you report
+
+`/check` (result_critic.py, docs/result_critic.md) reads each output
+back and flags spin contamination (ground state via the UHF block;
+per excited state where the TDDFT table header names an S^2 column),
+imaginary modes on a supposedly-preferred state, and unfinished runs.
+Report every ⚠️ verbatim; never report over a ❌ without saying why.
+Report-only.
