@@ -63,7 +63,8 @@ def _plain_tokens(command: str):
     return cmd.split()
 
 
-def _git_routine(tokens: list, sub: str) -> Verdict | None:
+def _git_routine(tokens: list, sub: str,
+                 workspace: str = "") -> Verdict | None:
     """Judge the three routine git shapes. tokens[0] is 'git'."""
     if len(tokens) < 2 or tokens[1] != sub:
         return None
@@ -86,7 +87,7 @@ def _git_routine(tokens: list, sub: str) -> Verdict | None:
             # shaped, and the operand must resolve to a local branch
             # (verified against git's own ref store, never against a
             # path in the tree). Anything else is judged as today.
-            v = _existing_branch_routine(sub, args)
+            v = _existing_branch_routine(sub, args, workspace)
             if v is not None:
                 return v
             return None
@@ -116,7 +117,8 @@ def _git_routine(tokens: list, sub: str) -> Verdict | None:
     return None
 
 
-def _existing_branch_routine(sub: str, args: list) -> Verdict | None:
+def _existing_branch_routine(sub: str, args: list,
+                             workspace: str = "") -> Verdict | None:
     """GT1: ``git checkout <branch>`` / ``git switch <branch>`` for a
     branch that EXISTS locally.
 
@@ -136,9 +138,14 @@ def _existing_branch_routine(sub: str, args: list) -> Verdict | None:
     # separator never is, but an EXISTING file wins the ambiguity
     # against the branch reading (git checks the index and the tree
     # before the refs). Probe the tree first, fail-closed.
+    # Asked in the session's workspace, where the command runs: the
+    # process's cwd is another tree in the dashboard, and a branch there
+    # said nothing about a same-named file here.
+    if not workspace:
+        return None
     try:
         import os
-        if os.path.exists(name) or os.path.isdir(name):
+        if os.path.lexists(os.path.join(workspace, name)):
             return None
         # Every git call DELFIN runs goes through safe_git (the guard
         # test pins that). The session's own worktree is the process
@@ -147,7 +154,7 @@ def _existing_branch_routine(sub: str, args: list) -> Verdict | None:
         from delfin.agent import safe_git
         probe = safe_git.run(
             ["show-ref", "--verify", "--quiet", "refs/heads/" + name],
-            os.getcwd(), timeout=5)
+            workspace, timeout=5)
         if probe.returncode != 0:
             return None
     except Exception:
@@ -205,9 +212,14 @@ def routine_verdict(action: dict, context: dict) -> Verdict | None:
     tool = str(action.get("tool") or "")
     if tool in ("bash", "bash_background"):
         tokens = _plain_tokens(str(action.get("command") or ""))
+        # A command with a cwd of its own runs elsewhere than the
+        # workspace the shapes are checked in.
+        cwd = str(action.get("cwd") or "").strip()
+        workspace = ("" if cwd not in ("", ".")
+                     else str(context.get("workspace") or ""))
         if tokens and tokens[0] == "git":
             for sub in ("merge", "checkout", "switch", "mv"):
-                v = _git_routine(tokens, sub)
+                v = _git_routine(tokens, sub, workspace)
                 if v is not None:
                     return v
         return None

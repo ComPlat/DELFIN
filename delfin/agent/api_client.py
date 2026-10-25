@@ -21584,6 +21584,9 @@ class _DocToolExecutor:
             "task": task,
             "recent_user": earlier,
             "recent_calls": list(state["calls"][-6:]),
+            # Where the command runs: the routine shapes that look at the
+            # tree (an existing branch, GT1) look there, not in the cwd.
+            "workspace": str(getattr(perms, "workspace", "") or ""),
         }
         state["calls"].append({"tool": base, "args": shown})
         failed: list = []

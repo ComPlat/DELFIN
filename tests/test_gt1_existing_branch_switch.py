@@ -20,7 +20,11 @@ from delfin.agent import patch_targets as pt
 
 
 def _verdict(action):
-    return ac.screen(action, {"task": "GT1: existing-branch switch"})
+    # The session's workspace is the tree the test chdir'ed into: the
+    # routine shape is judged where the command runs.
+    import os
+    return ac.screen(action, {"task": "GT1: existing-branch switch",
+                              "workspace": os.getcwd()})
 
 
 # --- (A) routine shape --------------------------------------------------------
