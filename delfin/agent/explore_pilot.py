@@ -31,6 +31,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from . import subagents as _sa
+from .subagents import SubagentResult as _SubagentResult
 
 # The one type the pilot setting allows.
 PILOT_TYPE = "explore"
@@ -137,11 +138,17 @@ def run_pilot_subagent(*, subagent_type: str, description: str, prompt: str,
     crashes returns an error result, so the harness never loses an arm.
     """
     slot = _pilot_slot if _pilot_slot is not None else _PilotSlot()
-    ok, why = check_delegate(subagent_type, slot=slot, depth=depth)
+    # Depth is a property of the SLOT, not of the call (F2, s15): a
+    # child slot carries depth 1, and a caller passing depth=0 by hand
+    # must not downgrade it — take the max so nesting is refused on the
+    # real path even when the kwargs say otherwise.
+    effective_depth = max(int(depth), int(getattr(slot, "depth", 0)))
+    ok, why = check_delegate(subagent_type, slot=slot,
+                             depth=effective_depth)
     if not ok:
-        return SimpleNamespace(subagent_type=subagent_type,
-                               description=description,
-                               final_text="", error=why)
+        return _SubagentResult(
+            subagent_type=subagent_type, description=description,
+            final_text="", error=why)
     claim_slot(slot)
     try:
         return _real_run_subagent(
@@ -150,9 +157,9 @@ def run_pilot_subagent(*, subagent_type: str, description: str, prompt: str,
             parent_perms=parent_perms, model=model,
             inherit_context=inherit_context, **kwargs)
     except Exception as exc:  # the real runner's contract: never raises
-        return SimpleNamespace(subagent_type=subagent_type,
-                               description=description,
-                               final_text="", error=f"delegate failed: {exc}")
+        return _SubagentResult(
+            subagent_type=subagent_type, description=description,
+            final_text="", error=f"delegate failed: {exc}")
     finally:
         slot.claimed = False
 
@@ -262,6 +269,10 @@ def run_pilot(tasks: list[PilotTask], *, runner: Any,
         for arm in ("plain", "explore"):
             raw = runner(task, arm=arm) or {}
             report = verify_citations(raw.get("final_text", ""), root=root)
+            # A text with NO path:line claim has not met the bar the arms
+            # are compared at (F1, s15): the tasks require citations, so an
+            # uncited answer is an uncited answer, not a fully-cited one.
+            citations_ok = report.claims > 0 and not report.bad
             row.arms[arm] = ArmResult(
                 arm=arm, success=bool(raw.get("success")),
                 input_tokens=int(raw.get("input_tokens") or 0),
@@ -269,7 +280,7 @@ def run_pilot(tasks: list[PilotTask], *, runner: Any,
                 tool_calls=int(raw.get("tool_calls") or 0),
                 duration_s=float(raw.get("duration_s") or 0.0),
                 final_text=str(raw.get("final_text") or ""),
-                citations_ok=(report.claims == 0 or not report.bad),
+                citations_ok=citations_ok,
                 citation_report=report)
         rows.append(row)
     return rows
@@ -297,6 +308,12 @@ def pilot_verdict(rows: list[TaskRow]) -> PilotVerdict:
         if plain.citations_ok != pilot.citations_ok:
             correct_all = False
         if not (plain.success and pilot.success):
+            continue
+        if plain.citations_ok != pilot.citations_ok:
+            # An arm that failed the citation bar cannot win the
+            # comparison at equal correctness (F1, s15): count it a
+            # loss when that arm is the pilot.
+            losses += 1 if not pilot.citations_ok else 0
             continue
         if pilot.tool_calls < plain.tool_calls and pilot.duration_s <= plain.duration_s:
             wins += 1
