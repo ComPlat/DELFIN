@@ -62,3 +62,37 @@ The runner is a pure function; the nightly schedule drives it with a
 fresh config each round (yesterday's report feeds
 `previous_rounds_gain`). Jobs larger than the calc policy's small-
 system limits must go through the submit path, never raw `sbatch`.
+
+## Command-line entry point (HB1)
+
+The one command the person runs for a nightly round:
+
+    python -m delfin.agent.bench_nightly --model M --instances N \
+        --seed-path PATH [--practice] [--budget H]
+
+- `--seed-path PATH` is the *path* of the holdout seed file outside
+  the repository (a setting, not the seed). The value is read into
+  memory only — never printed, logged or written; the record says
+  only whether the file was present.
+- Without the seed file the holdout is refused: the refusal reason is
+  printed on stderr and the exit status is 1. `--practice` uses the
+  public seed instead and never consults the seed file.
+- stdout carries the full `RunRecord` as JSON — the input
+  `bench_report.write` consumes.
+
+The round's wiring comes from `bench_holdout_glue`
+(`build_default_config`): the CB0B sampler draws through
+`bench_holdout.sample`, each instance is adapted to a
+`benchmark.Task` (`instance_to_task`, unique draw ids
+`<instance_id>.<n>`), the runner goes through
+`benchmark_runner.run_task`, the grader layers DELFIN's own verdicts
+(the runner's rubric result, the CB0A run-evidence check
+`grade_run`, the SC1 claim check `result_claims.check` — extra layers
+only lower), and the accounting estimate comes from DELFIN's own
+resource logic (`workflow_grader._CORE_HOUR_ESTIMATE` per family
+step, capped by `cluster_efficiency.advise` PAL vs
+`calc_policy.LOGIN_LOCAL_CORES`).
+
+A real holdout baseline is run by the person with the real seed file;
+practice runs (`--practice`) measure the wiring on fakes and never
+touch the seed.
