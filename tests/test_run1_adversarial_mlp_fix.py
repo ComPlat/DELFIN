@@ -43,15 +43,20 @@ class _ShapeFake:
         )
 
 
-def _run(tmp_path, ranking):
+def _run(tmp_path, monkeypatch, ranking):
     reg._discover_builtin_adapters()
-    reg.register(_ShapeFake(ranking))
+    # monkeypatch.setitem is undone after each test — without it the
+    # fake REPLACES the real mlp_rank adapter in reg._REGISTRY for the
+    # rest of the CI process (CI #409 shard 3 / #410 shard 1: the
+    # run_cli probe then succeeded on a missing file, and
+    # test_tab_tools hit AttributeError on _ShapeFake.contract).
+    monkeypatch.setitem(reg._REGISTRY, "mlp_rank", _ShapeFake(ranking))
     return MlpScreenWorkflow().run(
         config={}, ensemble="ens.xyz", work_dir=str(tmp_path / "wd"))
 
 
-def test_a1_none_index_finite_energy_never_best(tmp_path):
-    res = _run(tmp_path, [
+def test_a1_none_index_finite_energy_never_best(tmp_path, monkeypatch):
+    res = _run(tmp_path, monkeypatch, [
         {"index": None, "energy_eV": -99.0},   # nonsense index
         {"index": 1, "energy_eV": -10.0},
     ])
@@ -59,8 +64,8 @@ def test_a1_none_index_finite_energy_never_best(tmp_path):
     assert res.get("best_energy_eV") == -10.0, res
 
 
-def test_a2_string_energy_counts_nonfinite_and_warns(tmp_path):
-    res = _run(tmp_path, [
+def test_a2_string_energy_counts_nonfinite_and_warns(tmp_path, monkeypatch):
+    res = _run(tmp_path, monkeypatch, [
         {"index": 0, "energy_eV": "-12.0"},    # string, not a number
         {"index": 1, "energy_eV": -10.0},
     ])
@@ -69,8 +74,8 @@ def test_a2_string_energy_counts_nonfinite_and_warns(tmp_path):
     assert res.get("warnings"), res
 
 
-def test_a3_all_nonfinite_no_best_but_warned(tmp_path):
-    res = _run(tmp_path, [
+def test_a3_all_nonfinite_no_best_but_warned(tmp_path, monkeypatch):
+    res = _run(tmp_path, monkeypatch, [
         {"index": 0, "energy_eV": float("inf")},
         {"index": 1, "energy_eV": float("nan")},
     ])
