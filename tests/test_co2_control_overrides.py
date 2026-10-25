@@ -334,5 +334,5 @@ def test_adduct_occupier_control_keeps_real_sequences(tmp_path):
     })
 
     ctrl = (occ_dir / "CONTROL.txt").read_text()
-    assert "even_seq=[{'index': 1, 'm': 1, 'BS': ''}, {'index': 4, 'm': 3, 'BS': ''}]\n" in ctrl, ctrl
-    assert "odd_seq=[{'index': 1, 'm': 2, 'BS': ''}]\n" in ctrl, ctrl
+    assert 'even_seq=[{"index":1,"m":1,"BS":""},{"index":4,"m":3,"BS":""}]\n' in ctrl, ctrl
+    assert 'odd_seq=[{"index":1,"m":2,"BS":""}]\n' in ctrl, ctrl

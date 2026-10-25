@@ -14,6 +14,7 @@ matplotlib.use("Agg")
 import re
 import shutil
 import subprocess
+import json
 import numpy as np
 from pathlib import Path
 from io import StringIO
@@ -950,11 +951,26 @@ def _write_co2_control_for_occupier(occ_dir: Path, args: Dict) -> None:
         f"pal_jobs={args.get('pal_jobs', '')}",
         f"initial_guess={args.get('initial_guess', '')}",
         f"initial_sequence={args.get('initial_sequence', '')}",
-        f"even_seq={args.get('even_seq') or []!s}",
-        f"odd_seq={args.get('odd_seq') or []!s}",
+        f"even_seq={_seq_control_value(args.get('even_seq'))}",
+        f"odd_seq={_seq_control_value(args.get('odd_seq'))}",
         "occ_folder_compare=FSPE",
     ]
     (occ_dir / "CONTROL.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _seq_control_value(value):
+    """Serialize a FoB sequence as a single-line CONTROL list literal.
+
+    Python's str() of a list of dicts renders multi-line when entries are
+    long, but the DELFIN config parser reads only one line per key, so a
+    bare 'even_seq=[' aborts the run with "'[' was never closed" (observed
+    2026-10-24, adduct_occupier/CONTROL.txt:28). json.dumps with compact
+    separators always yields one line and matches the list-literal format
+    the parser accepts.
+    """
+    if not value:
+        return "[]"
+    return json.dumps(value, separators=(",", ":"))
 
 
 def detect_metal_index(atoms):
