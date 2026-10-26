@@ -34,6 +34,10 @@ class _Renaming(_Daemon):
     async def rename_group(self, chat, name):
         self.renamed.append((chat, name))
 
+    async def create_group(self, name):
+        self.groups.append(name)
+        return f"#{20 + len(self.groups)}"
+
 
 @pytest.fixture
 def rooms(tmp_path, monkeypatch):
