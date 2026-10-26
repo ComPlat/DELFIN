@@ -201,7 +201,11 @@ EVENTS: dict[str, dict[str, str]] = {
                          "choices": "[string]?",
                          "choiceDetails": "[string]?",
                          "multiSelect": "boolean?",
-                         "suggestion": "string?", "readDir": "string?"},
+                         "suggestion": "string?", "readDir": "string?",
+                         # The tool call's own one-line description (the
+                         # bash tool requires one), masked; the model's
+                         # statement, not a check of the command.
+                         "purpose": "string?"},
     # by: client | outside | expired | abort
     "permission.resolved": {"requestId": "string", "decision": "string",
                             "by": "string"},

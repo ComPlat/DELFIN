@@ -232,26 +232,30 @@ boot".
 
 ## SimpleX messenger: forum and session chats
 
-After installing the `agent,messenger` extras, provision with `pi_messenger.sh`
-and pair the phone once. In each desired TUI/dashboard session type `/sync`;
-new sessions stay off. Accept the session-group and forum invitations in SimpleX.
-`/sync off` disables that session again.
+Set up in one run on the Pi (or any Linux with systemd and glibc >= 2.34),
+after a deploy:
 
-Reply directly to a question/approval message using SimpleX's Reply gesture and
-`yes/no`, `ja/nein`, an offered option or a text answer. The same local request
-closes in TUI/dashboard. Late replies never approve the next action.
+```bash
+sudo apt install qrencode          # optional: the pairing link as a QR code
+sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=Pi
+```
 
-`name NAME` names a chat/session; `status`, `update`, and `pending` request details.
-`forum on/off` controls participation, and `austausch on/off` in the forum controls
-explicit agent announcements. Only short notices are sent by default; choose
-`meldungen fragen` or `meldungen aus` for less. Attach files/images up to 8 MiB;
-retrieve explicitly prepared artifacts with `dateien` and `datei NAME`. Optional
-local voice transcription needs faster-whisper and `DELFIN_WHISPER_MODEL` pointing
-to an installed model; review its transcript before sending.
+`--name=` labels the bot (`DELFIN-Pi`) and every chat, for a phone paired with
+several machines; the default is the host name.
+
+Scan the code with SimpleX on the phone and compare the security code. The
+script installs the pinned simplex-chat build (its daemon creates the bot
+profile), the gateway venv (hashed), the units including the agent service, and
+with `--whisper` local speech recognition (pinned faster-whisper-small, every
+file digest-checked, about 0.5 GB). After a DELFIN update run it again.
+
+On the phone, `neu NAME` (or `neu NAME: task`) starts a session in
+`~/DELFIN-Handy/NAME` and invites you to its chat; it asks before commands and
+edits. A session started at the computer joins with `/sync` there. Reply to a
+question/approval with SimpleX's Reply gesture and `ja/nein`, an offered option or
+a text answer -- spoken or typed; a spoken sentence frees nothing. Late replies
+never approve the next action. `status`, `update`, `pending`, `stop`, `name NAME`,
+`dateien`, `datei NAME`, `forum on/off`, `meldungen kurz/fragen/aus`; files and
+images up to 8 MiB.
 
 See [setup, security boundaries and command reference](../../docs/design/messenger-simplex.md).
-
-Voice messages: `sudo bash scripts/pi/pi_messenger.sh --whisper` adds local speech
-recognition (pinned faster-whisper + faster-whisper-small, every file
-digest-checked; about 0.5 GB). A spoken "ja"/"nein" in reply to an approval
-decides it like the typed word; anything longer frees nothing.

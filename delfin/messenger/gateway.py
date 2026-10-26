@@ -7,6 +7,8 @@ recipient; names are presentation only.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import time
 from collections import deque
 
@@ -22,10 +24,37 @@ HELP = (
     'name NAME – Sitzung und Chat benennen; forum on/off – Forumteilnahme; meldungen kurz/fragen/aus.\n'
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
-    'sync aktualisiert nur bereits in TUI/Dashboard aktivierte Sitzungen.'
+    'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'sync aktualisiert die aktivierten Sitzungen.'
 )
 
 UPDATE = 'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.'
+
+
+def machine_label() -> str:
+    """Which installation this is, for chat names only (never for routing:
+    rooms are bound by chat and session ID). [A-Za-z0-9_-], 24 characters."""
+    return re.sub(r'[^A-Za-z0-9_-]+', '', os.environ.get('DELFIN_MESSENGER_LABEL', ''))[:24]
+
+
+def bot_name() -> str:
+    machine = machine_label()
+    return f'DELFIN-{machine}' if machine else 'DELFIN'
+
+
+def group_name(title: str, sid: str | None) -> str:
+    if sid is None:
+        return f'DELFIN Forum {machine_label()}'.strip()
+    return f'{bot_name()} {title[:40]} {sid[:12]}'
+
+
+#: What an approval would do, in plain words, by the request's flags. The
+#: agent's purpose line follows, labelled as its own; the command after it.
+_PLAIN = {
+    'shell': 'Was passiert: Ein Befehl wird auf {machine} ausgeführt.',
+    'write': 'Was passiert: Eine Datei wird geändert oder angelegt.',
+    'read': 'Was passiert: Eine Datei außerhalb des Arbeitsordners wird gelesen.',
+}
 
 
 def label(room: dict) -> str:
@@ -67,9 +96,9 @@ class Rooms:
                 if reply.get('error') or reply.get('messengerEnabled') is not True:
                     raise ValueError('Diese Sitzung muss zuerst in TUI/Dashboard mit /sync aktiviert werden.')
                 title = str(reply.get('title') or sid)
-                name = f'DELFIN {title[:40]} {sid[:12]}'
             else:
-                title, name = 'DELFIN Forum – aktivierte Sitzungen', 'DELFIN Forum'
+                title = 'DELFIN Forum – aktivierte Sitzungen'
+            name = group_name(title, sid)
             if existing and existing[1].get('ready'):
                 if sid is not None and existing[1]['title'] != title:
                     await self.daemon.rename_group(existing[0], name)
@@ -173,7 +202,7 @@ class Rooms:
                 if not reply.get('ok'):
                     return reply.get('error') or 'Name konnte nicht geändert werden.'
                 title = reply.get('title') or title
-            await self.daemon.rename_group(chat, title)
+            await self.daemon.rename_group(chat, group_name(title, room['session_id']))
             store.put_room(chat, room['session_id'], title, owner=self.owner, ready=True)
             return f'Name geändert: {title}. Die Sitzungszuordnung bleibt erhalten.'
         if command == 'austausch' and room and room['session_id'] is None:
@@ -197,6 +226,8 @@ class Rooms:
         if command == 'sync':
             await self.sync()
             return 'Aktivierte Sitzungen abgeglichen. Neue Sitzungen zuerst dort mit /sync aktivieren.'
+        if command in {'neu', 'new'}:
+            return await self.start_session(rest)
         if command == 'chat' and rest.strip():
             if rest.strip() not in self._active:
                 return 'Zuerst in der gewünschten TUI-/Dashboard-Sitzung /sync eingeben.'
@@ -259,13 +290,35 @@ class Rooms:
             results.append(f'[{label(target)}]\n{result}')
         return '\n\n'.join(results)
 
+    async def start_session(self, rest):
+        """`neu NAME[: task]`: a session in a folder of its own, its chat, and
+        the task as its first prompt. The host chooses folder and profile."""
+        name, colon, task = rest.partition(':')
+        reply = await self.ask({'cmd': 'create', 'name': name.strip()})
+        if not reply.get('ok'):
+            return reply.get('error') or 'Sitzung wurde nicht gestartet.'
+        sid = reply['sessionId']
+        await self.active_sessions()
+        await self.ensure_room(sid)
+        text = f"Neue Sitzung {reply.get('title') or sid} gestartet (Ordner {reply.get('folder')}). Einladung zum Chat liegt in SimpleX; sie fragt vor Befehlen."
+        if colon and task.strip():
+            sent = await self.session(sid, 'prompt', text=task.strip())
+            text += '\n' + (sent.get('error') or 'Auftrag übergeben.')
+        return text
+
     @staticmethod
     def pending_text(items):
         lines = []
         for item in items:
             kind = item.get('kind')
             name = '❓ Rückfrage' if kind == 'question' else '📋 Planfreigabe' if kind == 'plan' else '🔐 Freigabe nötig'
-            text = f"{name}\n\n{item.get('tool') or ''}\n{item.get('text') or ''}\n"
+            text = f"{name}\n\n"
+            plain = _PLAIN.get(item.get('action') or '')
+            if kind == 'confirm' and plain:
+                text += plain.format(machine=bot_name()) + '\n'
+            if item.get('purpose'):
+                text += f"Angabe des Agenten (ungeprüft): {item['purpose']}\n"
+            text += f"\n{item.get('tool') or ''}\n{item.get('text') or ''}\n"
             if kind == 'question':
                 text += '\nBitte direkt auf diese Nachricht antworten, mit deiner Auswahl oder eigenem Text.'
             else:

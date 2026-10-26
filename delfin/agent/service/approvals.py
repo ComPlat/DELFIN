@@ -58,6 +58,17 @@ def _preview(req: tc.ConfirmRequest) -> str:
         return rr.strip_control(req.preview or "")
 
 
+def _purpose(req: tc.ConfirmRequest) -> str:
+    """The call's own one-line description, masked twice: the preview's
+    line masking and the service redactor, which also finds a bare key."""
+    text = str((req.args or {}).get("description") or "")
+    if not text.strip():
+        return ""
+    from .redact import Redactor
+    masked = Redactor().text(_preview(tc.ConfirmRequest(kind=req.kind, preview=text)))
+    return " ".join(masked.split())[:200]
+
+
 def _choices(payload: dict) -> list[tuple[str, str]]:
     """``(label, description)`` per option of an ask_user_question.
 
@@ -166,6 +177,9 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         }
         if suggestion:
             fields["suggestion"] = suggestion
+        purpose = _purpose(req)
+        if purpose:
+            fields["purpose"] = purpose
         read_dir = tc.read_dir_for(req) if req.is_outside_read else ""
         if read_dir:
             fields["readDir"] = read_dir
