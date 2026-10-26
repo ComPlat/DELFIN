@@ -250,3 +250,8 @@ local voice transcription needs faster-whisper and `DELFIN_WHISPER_MODEL` pointi
 to an installed model; review its transcript before sending.
 
 See [setup, security boundaries and command reference](../../docs/design/messenger-simplex.md).
+
+Voice messages: `sudo bash scripts/pi/pi_messenger.sh --whisper` adds local speech
+recognition (pinned faster-whisper + faster-whisper-small, every file
+digest-checked; about 0.5 GB). A spoken "ja"/"nein" in reply to an approval
+decides it like the typed word; anything longer frees nothing.

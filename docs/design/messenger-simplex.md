@@ -44,7 +44,8 @@ Forum text addresses enabled participants only, with a delivery result for each.
 Use SimpleX's **Reply** gesture on the concrete request, then type `yes`/`ja`,
 `no`/`nein`, an offered option key or its full label. For a question, reply with
 your selection or free text. No slash command or code is required. A bare `yes`
-without a reply reference never approves anything. Images/audio are not approvals.
+without a reply reference never approves anything. Images are not approvals; a
+spoken decision word in reply counts like the typed one (see below).
 
 The message shows the session, action/plan/question and the actual local options.
 A yes selects the normal approval (for TUI plans, default mode); alternative modes
@@ -85,12 +86,25 @@ requires a vision-capable model. Downloads come only from the corresponding
 hardlink, device, directory and traversal downloads are rejected. Files are sent
 as binary data on explicit request, not automatically redacted like text summaries.
 
-Voice transcription is optional and local. Install `faster-whisper` in the gateway
-environment and set `DELFIN_WHISPER_MODEL` to an already installed local model
-directory readable by the hardened gateway service (for example under
-`/opt/delfin-messenger/models`). No model download or external speech API is invoked.
-A separate process has a 120-second deadline. The transcript is shown for review;
-reply `senden` to submit it as an ordinary prompt. It cannot answer an approval.
+Voice transcription is optional and local. `sudo bash scripts/pi/pi_messenger.sh
+--whisper` installs it: faster-whisper 1.2.1 in a venv of its own
+(`/opt/delfin-messenger/whisper-venv`; it needs numpy 2, DELFIN keeps numpy below 2)
+with `--require-hashes` from `whisper-requirements-<arch>.txt`, and the
+faster-whisper-small model at a pinned revision, every file checked against its
+SHA-256, under `/opt/delfin-messenger/models`. The gateway unit then carries
+`DELFIN_WHISPER_MODEL` and `DELFIN_WHISPER_PYTHON`. No model download or external
+speech API is invoked at run time; a separate isolated process (`python -I`) has a
+120-second deadline.
+
+A voice message does what the same words typed would do, and no more:
+- without a reply reference it is the session's next prompt, and the phone is shown
+  the transcript;
+- as a reply to a question, the transcript is the answer;
+- as a reply to an approval, only a transcript that is exactly a decision word
+  (`ja`, `nein`, `yes`, `no`) or an offered option's label decides it, through the
+  same path as the typed word; anything else (a sentence, "ja aber nicht jetzt")
+  frees nothing and says what was understood;
+- a lasting rule is never confirmed by voice.
 Without working transcription, the recording is delivered as an audio attachment
 with an explanation; the agent is not assumed to understand audio automatically.
 

@@ -76,7 +76,7 @@ def run_script(
     log("systemctl", "echo ok")
     log("nft", "echo ok")
     log("sha256sum", sha256_body or f"echo {sha256}")
-    log("install", 'isdir=0; last=""; for a in "$@"; do [ "$a" = "-d" ] && isdir=1; last="$a"; done; if [ "$isdir" = 1 ]; then mkdir -p "$last"; fi; echo "install $*"')
+    log("install", 'isdir=0; prev=""; last=""; for a in "$@"; do [ "$a" = "-d" ] && isdir=1; prev="$last"; last="$a"; done; if [ "$isdir" = 1 ]; then mkdir -p "$last"; elif [ -f "$prev" ]; then cp "$prev" "$last"; fi; echo "install $*"')
     log("systemctl", "echo ok")
 
     env = dict(

@@ -146,31 +146,42 @@ def cache_file(name):
     return folder / filename(name)
 
 
+#: The transcriber, run as ``python -I -c`` in the whisper interpreter: it
+#: imports only faster-whisper, never DELFIN, and reads only the local
+#: model directory (``local_files_only``).
+_TRANSCRIBER = """
+import json, sys
+from faster_whisper import WhisperModel
+model = WhisperModel(sys.argv[2], device='cpu', compute_type='int8',
+                     local_files_only=True)
+segments, _ = model.transcribe(sys.argv[1], vad_filter=True)
+parts = []
+for segment in segments:
+    parts.append(segment.text.strip())
+    if sum(map(len, parts)) >= 4000:
+        break
+print(json.dumps(' '.join(parts)[:4000]))
+"""
+
+
 def transcribe(path):
-    """Run local speech decoding with a deadline, without downloads/cloud APIs."""
+    """Run local speech decoding with a deadline, without downloads/cloud APIs.
+
+    The interpreter is ``DELFIN_WHISPER_PYTHON`` (default: this one): a
+    separate environment, because faster-whisper needs numpy 2.x and
+    DELFIN keeps numpy below 2. ``-I`` keeps DELFIN, the current directory
+    and the user's site-packages out of it.
+    """
     import subprocess
     import sys
     model_path = os.environ.get('DELFIN_WHISPER_MODEL', '')
     if not model_path or not Path(model_path).is_dir():
         raise ValueError('Lokale Spracherkennung ist noch nicht eingerichtet (DELFIN_WHISPER_MODEL).')
+    python = os.environ.get('DELFIN_WHISPER_PYTHON', '') or sys.executable
     try:
-        result = subprocess.run([sys.executable, '-m', 'delfin.messenger.media', str(path), model_path],
+        result = subprocess.run([python, '-I', '-c', _TRANSCRIBER, str(path), model_path],
                                 capture_output=True, text=True, timeout=120, check=True)
         import json
         return str(json.loads(result.stdout))[:4000]
-    except (subprocess.SubprocessError, ValueError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         raise ValueError('Lokale Spracherkennung fehlgeschlagen; faster-whisper und Modell prüfen.') from None
-
-
-if __name__ == '__main__':
-    import json
-    import sys
-    from faster_whisper import WhisperModel
-    model = WhisperModel(sys.argv[2], device='cpu', compute_type='int8', local_files_only=True)
-    segments, _ = model.transcribe(sys.argv[1], vad_filter=True)
-    parts = []
-    for segment in segments:
-        parts.append(segment.text.strip())
-        if sum(map(len, parts)) >= 4000:
-            break
-    print(json.dumps(' '.join(parts)[:4000]))

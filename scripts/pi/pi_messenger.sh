@@ -2,7 +2,7 @@
 # ============================================================================
 # Provision the messenger gateway host: SimpleX daemon + DELFIN gateway.
 #
-#   sudo bash provision_messenger.sh [--uninstall] [--no-nftables]
+#   sudo bash provision_messenger.sh [--uninstall] [--no-nftables] [--whisper]
 #
 # Works on any Linux server the pinned releases cover -- a Raspberry Pi
 # (aarch64), a login node or a compute frontend (x86_64) -- by picking the
@@ -21,6 +21,13 @@
 #   - an nftables rule letting only `meta skuid delfin-gw` reach the
 #     daemon's local API port (skipped with --no-nftables, e.g. when the
 #     host's firewall is managed elsewhere);
+#   - with --whisper: local speech recognition for voice messages --
+#     faster-whisper in a venv of its own (${PREFIX}/whisper-venv; it needs
+#     numpy 2, DELFIN keeps numpy below 2), installed --require-hashes
+#     from whisper-requirements-<arch>.txt, and the faster-whisper-small
+#     model at a pinned revision, every file checked against its SHA-256,
+#     under ${PREFIX}/models (root-owned, readable). Nothing is fetched at
+#     run time; the gateway transcribes offline;
 #   - nothing else. No fixed /tmp names: every temporary file comes from
 #     mktemp and runs nothing from it.
 #
@@ -51,15 +58,29 @@ BRIDGE_SOCKET="/run/delfin-messenger-bridge/messenger.sock"
 API_PORT="5227"          # simplex-chat daemon local API (--chat-server-port)
 NFT_TABLE="delfin_messenger"
 
+# Local speech recognition (--whisper). The model is faster-whisper-small
+# at one revision; each file is checked against its SHA-256 before install.
+WHISPER_REPO="Systran/faster-whisper-small"
+WHISPER_REVISION="536b0662742c02347bc0e980a01041f333bce120"
+WHISPER_FILES="config.json:b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828
+model.bin:3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671
+tokenizer.json:fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab
+vocabulary.txt:34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+WHISPER_DIR="${PREFIX}/models/faster-whisper-small"
+WHISPER_VENV="${PREFIX}/whisper-venv"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
 say() { printf '[messenger] %s\n' "$*" >&2; }
 die() { printf '[messenger] ERROR: %s\n' "$*" >&2; exit 1; }
 
 action=install
 want_nftables=1
+want_whisper=0
 for arg in "$@"; do
   case "$arg" in
     --uninstall) action=uninstall ;;
     --no-nftables) want_nftables=0 ;;
+    --whisper) want_whisper=1 ;;
     *) die "unknown argument: $arg" ;;
   esac
 done
@@ -162,6 +183,14 @@ WantedBy=multi-user.target
 EOF
 }
 
+whisper_env() {
+  # Only a model that install_whisper verified and an interpreter for it.
+  if [ -f "${WHISPER_DIR}/model.bin" ] && [ -x "${WHISPER_VENV}/bin/python" ]; then
+    printf 'Environment=DELFIN_WHISPER_MODEL=%s\n' "${WHISPER_DIR}"
+    printf 'Environment=DELFIN_WHISPER_PYTHON=%s\n' "${WHISPER_VENV}/bin/python"
+  fi
+}
+
 gateway_unit() {
   cat <<EOF
 [Unit]
@@ -175,6 +204,7 @@ Group=${GW_USER}
 Environment=DELFIN_MESSENGER_PORT=${API_PORT}
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
 Environment=DELFIN_MESSENGER_DIR=${STATE_DIR}/pairing
+$(whisper_env)
 ExecStart=${PREFIX}/bin/venv/bin/python -m delfin.messenger run
 Restart=on-failure
 RestartSec=5
@@ -293,6 +323,41 @@ uninstall() {
   say "units, nftables table and state left in place: ${STATE_DIR} (delete it by hand if wanted)"
 }
 
+# --- local speech recognition (--whisper) -----------------------------------
+install_whisper() {
+  local base="${PREFIX}/bin/venv/bin/python" req tmpdir entry name want got
+  [ -x "${base}" ] || die "--whisper needs the gateway venv (${PREFIX}/bin/venv) first"
+  "${base}" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 11))' \
+    || die "--whisper: the pinned wheels are for CPython 3.11; the gateway venv is another version"
+  req="${HERE}/whisper-requirements-${machine}.txt"
+  [ -f "${req}" ] || die "no pinned whisper requirements for ${machine}"
+  [ -x "${WHISPER_VENV}/bin/python" ] || "${base}" -m venv "${WHISPER_VENV}"
+  "${WHISPER_VENV}/bin/python" -m pip install --quiet --require-hashes --no-deps -r "${req}" \
+    || die "whisper packages did not install"
+  tmpdir="$(mktemp -d)"
+  for entry in ${WHISPER_FILES}; do
+    name="${entry%%:*}"; want="${entry#*:}"
+    if [ -f "${WHISPER_DIR}/${name}" ] \
+       && [ "$(sha256sum "${WHISPER_DIR}/${name}" | cut -d' ' -f1)" = "${want}" ]; then
+      cp "${WHISPER_DIR}/${name}" "${tmpdir}/${name}"
+      continue
+    fi
+    curl -fL --retry 2 -o "${tmpdir}/${name}" \
+      "https://huggingface.co/${WHISPER_REPO}/resolve/${WHISPER_REVISION}/${name}" \
+      || { rm -rf "${tmpdir}"; die "download failed: ${name}"; }
+    got="$(sha256sum "${tmpdir}/${name}" | cut -d' ' -f1)"
+    [ "${got}" = "${want}" ] \
+      || { rm -rf "${tmpdir}"; die "digest mismatch for ${name}: got ${got}, want ${want}"; }
+  done
+  install -d -m 0755 -o root -g root "${PREFIX}/models" "${WHISPER_DIR}"
+  for entry in ${WHISPER_FILES}; do
+    name="${entry%%:*}"
+    install -m 0644 -o root -g root "${tmpdir}/${name}" "${WHISPER_DIR}/${name}"
+  done
+  rm -rf "${tmpdir}"
+  say "speech recognition: ${WHISPER_DIR}, interpreter ${WHISPER_VENV}/bin/python"
+}
+
 # --- main -------------------------------------------------------------------
 case "${action}" in
   uninstall) uninstall ;;
@@ -306,6 +371,7 @@ case "${action}" in
       fetch_binary "${PREFIX}/bin/simplex-chat"
     fi
     [ "${want_nftables}" = 1 ] && install_nftables
+    [ "${want_whisper}" = 1 ] && install_whisper
     install_units
     say "done. Next: pair the phone (as ${GW_USER}): DELFIN_MESSENGER_DIR=${STATE_DIR}/pairing ${PREFIX}/bin/venv/bin/python -m delfin.messenger pair"
     ;;
