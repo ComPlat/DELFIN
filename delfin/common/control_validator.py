@@ -2485,6 +2485,34 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     for seq_key in ("even_seq", "odd_seq"):
         if seq_key in config:
             raw_seq = config[seq_key]
+            # A configparser round-trip can corrupt the value in two ways:
+            # (a) as a quoted string, or (b) as a LIST OF CHARACTERS /
+            # fragment strings when a multi-line block was split line-wise
+            # (observed 2026-10-26 as "odd_seq[1..17] must be a mapping"
+            # from a 17-segment fragment list in job 7984841/v11). Re-join
+            # fragment lists and parse the rebuilt literal.
+            if (isinstance(raw_seq, list) and raw_seq
+                    and all(isinstance(e, str) for e in raw_seq)):
+                joined = "".join(raw_seq).strip()
+                if joined.startswith("[") and joined.rstrip().endswith("]"):
+                    attempts = [joined]
+                    for _ in range(3):
+                        collapsed = attempts[-1].replace('\\"', '"')
+                        if collapsed != attempts[-1]:
+                            attempts.append(collapsed)
+                    for attempt in attempts:
+                        try:
+                            rebuilt = ast.literal_eval(attempt)
+                        except (ValueError, SyntaxError):
+                            try:
+                                rebuilt = _json_loads(attempt)
+                            except (ValueError, TypeError):
+                                continue
+                        if isinstance(rebuilt, list) and all(
+                                isinstance(e, dict) for e in rebuilt or [{}]):
+                            config[seq_key] = rebuilt
+                            raw_seq = rebuilt
+                            break
             # A configparser round-trip can leave the value as a quoted
             # string even though the writer emitted a bare list literal
             # (observed 2026-10-26: adduct_occupier/CONTROL.txt:28 carried
