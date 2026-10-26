@@ -61,6 +61,12 @@ def recording_xtb(tmp_path, monkeypatch):
         "exit 1\n", encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin")
+    # The user's own tool copy (~/.delfin/qm_tools) is searched before PATH:
+    # on a host whose user installed xtb there, it was found instead of this
+    # stand-in. An empty one of the test's own, as CI has none.
+    from delfin import qm_runtime
+    monkeypatch.setattr(qm_runtime, "get_user_qm_tools_root",
+                        lambda: tmp_path / "user_qm_tools")
     monkeypatch.setenv("DELFIN_QM_TOOLS_ROOT", str(tmp_path / "no-tools"))
     monkeypatch.delenv("XTBHOME", raising=False)
     monkeypatch.delenv("OPENBLAS_NUM_THREADS", raising=False)
