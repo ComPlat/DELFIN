@@ -51,6 +51,7 @@ def run_script(
     ubuntu_id: str = "24.04",
     sha256: str = FAKE_SHA,
     args: list[str] | None = None,
+    sha256_body: str = "",
 ) -> subprocess.CompletedProcess:
     """Run the provisioner against stand-ins; returns the completed run."""
     fake = tmp_path / "fakebin"
@@ -70,11 +71,11 @@ def run_script(
     log("uname", f'case "$1" in -m) echo {machine} ;; *) echo Linux ;; esac')
     log("id", 'case "$*" in -u) echo 0 ;; *) echo delfin-gw exists ;; esac')
     log("curl", 'out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done; printf content > "$out"')
-    log("mktemp", 'printf "%s\\n" "$MESSENGER_TMPFILE"')
+    log("mktemp", 'if [ "$1" = "-d" ]; then mkdir -p "$MESSENGER_TMPFILE.d"; printf "%s\\n" "$MESSENGER_TMPFILE.d"; else printf "%s\\n" "$MESSENGER_TMPFILE"; fi')
     log("useradd", "echo ok")
     log("systemctl", "echo ok")
     log("nft", "echo ok")
-    log("sha256sum", f"echo {sha256}")
+    log("sha256sum", sha256_body or f"echo {sha256}")
     log("install", 'isdir=0; last=""; for a in "$@"; do [ "$a" = "-d" ] && isdir=1; last="$a"; done; if [ "$isdir" = 1 ]; then mkdir -p "$last"; fi; echo "install $*"')
     log("systemctl", "echo ok")
 
@@ -217,3 +218,74 @@ def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
     assert 'DELFIN_MESSENGER_PEER_UID=' in bridge
     assert f'DELFIN_MESSENGER_DIR={tmp_path}/state/pairing' in gateway
     assert 'PrivateTmp=no' in bridge
+
+
+# --- optional local speech recognition (--whisper) -------------------------
+
+_WHISPER_PINS = {
+    "config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
+    "model.bin": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+    "tokenizer.json": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+    "vocabulary.txt": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+}
+
+
+def _gateway_venv(tmp_path, *, version="3.11"):
+    """A stand-in gateway python: logs its argv, answers the version
+    check, and makes a venv whose python is a copy of itself."""
+    python = tmp_path / "prefix/bin/venv/bin/python"
+    python.parent.mkdir(parents=True)
+    major, minor = version.split(".")
+    python.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "python $*" >> "{tmp_path}/calls.log"\n'
+        'case "$*" in\n'
+        f'  *version_info*) [ "{major}.{minor}" = "3.11" ]; exit $? ;;\n'
+        '  "-m venv "*) mkdir -p "$3/bin"; cp "$0" "$3/bin/python" ;;\n'
+        "esac\nexit 0\n")
+    python.chmod(0o755)
+    return python
+
+
+def _digest_by_name():
+    lines = "".join(f'  *{name}) echo "{digest}  $1" ;;\n'
+                    for name, digest in _WHISPER_PINS.items())
+    return f'case "$1" in\n{lines}  *) echo {FAKE_SHA} ;;\nesac'
+
+
+def test_whisper_is_pinned_by_revision_digest_and_hashes(script_text):
+    assert "536b0662742c02347bc0e980a01041f333bce120" in script_text
+    for digest in _WHISPER_PINS.values():
+        assert digest in script_text
+    assert "--require-hashes" in script_text
+    for arch in ("aarch64", "x86_64"):
+        req = SCRIPT.parent / f"whisper-requirements-{arch}.txt"
+        text = req.read_text()
+        assert "faster-whisper==1.2.1" in text and "--hash=sha256:" in text
+
+
+def test_a_wrong_model_digest_installs_no_model(tmp_path):
+    _gateway_venv(tmp_path)
+    done = run_script(tmp_path, args=["--whisper"])
+    assert done.returncode != 0
+    assert "digest mismatch" in done.stderr
+    assert not (tmp_path / "prefix/models/faster-whisper-small/model.bin").exists()
+
+
+def test_a_verified_model_reaches_the_gateway_unit(tmp_path):
+    _gateway_venv(tmp_path)
+    done = run_script(tmp_path, args=["--whisper"], sha256_body=_digest_by_name())
+    assert done.returncode == 0, done.stderr
+    calls = (tmp_path / "calls.log").read_text()
+    assert "--require-hashes --no-deps -r" in calls
+    gateway = (tmp_path / "units/delfin-messenger-gateway.service").read_text()
+    assert (f"Environment=DELFIN_WHISPER_MODEL={tmp_path}/prefix/models/"
+            "faster-whisper-small") in gateway
+    assert (f"Environment=DELFIN_WHISPER_PYTHON={tmp_path}/prefix/"
+            "whisper-venv/bin/python") in gateway
+
+
+def test_whisper_refuses_an_interpreter_the_wheels_are_not_for(tmp_path):
+    _gateway_venv(tmp_path, version="3.13")
+    done = run_script(tmp_path, args=["--whisper"], sha256_body=_digest_by_name())
+    assert done.returncode != 0 and "3.11" in done.stderr
