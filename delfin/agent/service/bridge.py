@@ -80,9 +80,18 @@ def configured_peer_uid() -> int | None:
     if not raw:
         return None
     try:
-        return int(raw)
+        uid = int(raw)
     except ValueError:
         return None
+    # The gateway is a user of its own. The service's own uid would admit
+    # every process of this user -- the agent's shell commands among them,
+    # which could then answer the agent's own approvals as "the phone".
+    if uid == os.getuid():
+        print(f"[messenger] {PEER_UID_ENV} is this service's own uid; "
+              "the bridge admits nobody. Run the gateway as its own user "
+              "(scripts/pi/pi_messenger.sh).", file=sys.stderr)
+        return None
+    return uid
 
 
 def peer_uid_allowed(uid: int | None, allowed: int | None) -> bool:
