@@ -8,6 +8,7 @@ An activated service session remains addressable while its worker is available.
 The background gateway discovers enabled sessions and invites the paired user to
 one private group per session, plus DELFIN Forum. Accept the SimpleX invitations.
 Phone `sync` refreshes invitations; it cannot activate another session.
+`neu NAME` on the phone starts a new session instead (see below).
 
 ## Everyday use
 
@@ -25,6 +26,7 @@ Commands below are plain text; a leading slash is optional:
 | `pending` | Show currently open questions and approvals |
 | `stop` | Cancel the current turn |
 | `sessions` | List locally enabled sessions |
+| `neu NAME` / `neu NAME: task` | Start a session in its own folder, invite to its chat, optionally with a first task |
 | `name NAME` | Name this session/chat |
 | `forum on` / `forum off` | Join/leave forum routing; in the forum itself, enable/disable it globally |
 | `meldungen kurz` | Questions, approvals and brief completion/error messages (default) |
@@ -119,25 +121,48 @@ limits of one announcement per source per minute and ten per gateway per hour
 bound automated chatter. The gateway does not request replies or relay transcripts.
 Turn this off with `austausch off`, or remove a session with `forum off`.
 
+## Sessions started from the phone
+
+`neu NAME` starts a session in `~/DELFIN-Handy/NAME` of the agent-service user
+(`DELFIN_MESSENGER_WORKSPACES` in the bridge unit). The phone supplies the name
+only: it is reduced to letters, digits, `.`, `_` and `-` (no leading dot, 40
+characters), an existing entry is reused only when it is a real directory, never
+a symlink, and no folder, model or permission field is accepted from the gateway.
+The session starts with the permission profile `default` -- it asks before
+commands and edits, whatever the configured profile is -- and is enabled for the
+messenger at once, so its chat follows without `/sync` at the computer. At most
+three starts per ten minutes. `neu NAME: task` sends the task as the first prompt.
+Provisioning with `--no-phone-sessions` leaves the folder root out; the bridge
+then refuses every start.
+
 ## Setup
 
-Install DELFIN with `pip install ".[agent,messenger]"` into
-`/opt/delfin-messenger/bin/venv` and provision with `scripts/pi/pi_messenger.sh`.
-The agent service must run on the same host as user `delfin`, or set
-`MESSENGER_SERVICE_USER` and optionally `MESSENGER_BRIDGE_PYTHON` when provisioning.
-Restart the agent service after upgrading: the bridge needs `session.pending`.
-The daemon and gateway use port 5227. The bridge runs as the agent-service user
-with group `delfin-gw`; its 0660 socket is under `/run/delfin-messenger-bridge`
-(0750). The service runtime directory stays private.
-
-Create a SimpleX bot profile in the daemon database, then pair:
+One run on the machine that hosts the agent service (a Pi, a server, a
+workstation; any Linux with systemd and glibc >= 2.34):
 
 ```sh
-sudo -u delfin-gw env DELFIN_MESSENGER_DIR=/var/lib/delfin-messenger/pairing /opt/delfin-messenger/bin/venv/bin/python -m delfin.messenger pair
+sudo bash scripts/pi/pi_messenger.sh --whisper --pair
 ```
 
-Open the one-time phone link and compare the connection security code. Only its
-contact can complete pairing. Activate desired sessions locally with `/sync`.
+It installs the pinned simplex-chat build and lets its daemon create the bot
+profile, makes the gateway venv (Python 3.11 from `MESSENGER_PYTHON`, uv or
+`python3.11`; websockets with `--require-hashes`, DELFIN copied root-owned from
+the checkout the script lies in), writes the units and, with `--pair`, prints the
+invitation, as a QR code too when `qrencode` is installed. Scan it with SimpleX
+and compare the connection security code. Only that contact can complete pairing.
+Without `--whisper` voice messages arrive as audio files; `--pair` can be given
+on a later run. After a DELFIN update, run the script again: it copies the new
+code and restarts daemon, bridge and gateway, never the agent service.
+
+The agent service runs as user `delfin` (`MESSENGER_SERVICE_USER` names
+another), as its own unit `delfin-agent-service` when that user has the DELFIN
+venv `~/delfin/.venv` (the Pi layout; `MESSENGER_BRIDGE_PYTHON` names another
+interpreter). The bridge uses the same interpreter. A service a terminal started
+first is used as it is; the unit takes over when it ends. The daemon and
+gateway use port 5227. The bridge runs as the agent-service user with group
+`delfin-gw`; its 0660 socket is under `/run/delfin-messenger-bridge` (0750), and
+the service user's home is its one writable path. The service runtime directory
+stays private. Activate desired sessions locally with `/sync`.
 The direct contact remains a setup channel. `revoke` with the same environment
 removes routing authorization immediately; already dispatched commands are not
 undone. `status` lists stored chat bindings.
