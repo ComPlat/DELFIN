@@ -81,6 +81,7 @@ def run_script(
     log("sha256sum", sha256_body or f"echo {sha256}")
     log("install", 'isdir=0; prev=""; last=""; for a in "$@"; do [ "$a" = "-d" ] && isdir=1; prev="$last"; last="$a"; done; if [ "$isdir" = 1 ]; then mkdir -p "$last"; elif [ -f "$prev" ]; then cp "$prev" "$last"; fi; echo "install $*"')
     log("systemctl", "echo ok")
+    log("chown", "echo ok")
     log("getconf", f'echo "glibc {glibc}"')
     # The interpreter a fresh gateway venv is made from: a venv's python is
     # a copy of the stand-in, which answers the version and site checks.
@@ -221,10 +222,6 @@ def test_install_uses_mktemp_for_the_download(tmp_path: Path) -> None:
 
 def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
     from delfin.messenger.simplex import DEFAULT_PORT
-    python = tmp_path / 'prefix/bin/venv/bin/python'
-    python.parent.mkdir(parents=True)
-    python.write_text('#!/bin/sh\nexit 0\n')
-    python.chmod(0o755)
     done = run_script(tmp_path)
     assert done.returncode == 0, done.stderr
     gateway = (tmp_path / 'units/delfin-messenger-gateway.service').read_text()
@@ -263,6 +260,7 @@ def _gateway_venv(tmp_path, *, version="3.11"):
         f'printf "%s\\n" "python $*" >> "{tmp_path}/calls.log"\n'
         'case "$*" in\n'
         f'  *version_info*) [ "{major}.{minor}" = "3.11" ]; exit $? ;;\n'
+        f'  *purelib*) mkdir -p "{tmp_path}/site"; echo "{tmp_path}/site" ;;\n'
         '  "-m venv "*) mkdir -p "$3/bin"; cp "$0" "$3/bin/python" ;;\n'
         "esac\nexit 0\n")
     python.chmod(0o755)
