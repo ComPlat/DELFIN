@@ -1013,6 +1013,7 @@ _HOME_SECRET_DIRS = (
     # The account key and the MCP pins (trust_store): read by DELFIN's
     # own processes, never by a command an agent runs.
     ".delfin/trust_store",
+    ".delfin/messenger_sessions",
 )
 
 
@@ -1037,6 +1038,12 @@ def runtime_masked_dirs() -> list[str]:
             out.append(str(d.resolve()))
     except Exception:
         pass
+    # Not the messenger's activation records: they live in
+    # ~/.delfin/messenger_sessions, masked with the other home secrets
+    # (_HOME_SECRET_DIRS) and refused by the path deny globs, like the trust
+    # store. As a runtime mask the directory was created on every cage build,
+    # and a workspace containing it (a workspace at $HOME) lost its write
+    # root under Landlock, which cannot carve a hole into an allowed tree.
     return out
 
 

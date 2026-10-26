@@ -237,6 +237,7 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        # names the row.
                        "brief": "string?", "briefTitle": "string?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
+    "session.pending": {"sessionId": "string"},
     "session.detach": {"sessionId": "string"},
     # A message for a session elsewhere (dashboard, another terminal).
     "session.message": {"key": "string", "text": "string"},
@@ -272,6 +273,7 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "session.attach": {"session": "object", "state": "string",
                        "pending": "[object]", "events": "[object]",
                        "summary": "object"},
+    "session.pending": {"pending": "[object]"},
     "session.detach": {"detached": "boolean"},
     "session.message": {"sent": "boolean"},
     # sessionId, title, workspace, model, provider, updatedAt, running

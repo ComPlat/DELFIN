@@ -660,17 +660,11 @@ class KitConfirmBroker:
         except Exception:
             pass
 
-    def _build_request_row(self, req: _ConfirmRequest, widgets):
-        # ---- 1. Classify the request and compute what (if anything) can
-        # be persisted. The "Allow + Permanent" button must be actionable
-        # when it makes sense, and CLEARLY explain why it is unavailable
-        # when it isn't. ----------------------------------------------
+    def persistence_for(self, req):
+        """The same permanent option for the widget and the paired phone."""
         tool = req.tool_name
         cmd = req.args.get("command", "") if tool == "bash" else ""
         path_arg = req.args.get("path", "") if tool != "bash" else ""
-        rationale = (req.args.get("rationale", "")
-                     or req.args.get("description", "")).strip()
-
         persist_pat = ""
         persist_kind = ""        # 'allow_pattern' / 'extra_dir' / ''
         persist_disabled_reason = ""
@@ -731,6 +725,21 @@ class KitConfirmBroker:
                 "writes the rule straight to settings.json. 'Deny' discards "
                 "it."
             )
+
+        return persist_pat, persist_kind, persist_disabled_reason
+
+    def _build_request_row(self, req: _ConfirmRequest, widgets):
+        # ---- 1. Classify the request and compute what (if anything) can
+        # be persisted. The "Allow + Permanent" button must be actionable
+        # when it makes sense, and CLEARLY explain why it is unavailable
+        # when it isn't. ----------------------------------------------
+        tool = req.tool_name
+        cmd = req.args.get("command", "") if tool == "bash" else ""
+        path_arg = req.args.get("path", "") if tool != "bash" else ""
+        rationale = (req.args.get("rationale", "")
+                     or req.args.get("description", "")).strip()
+
+        persist_pat, persist_kind, persist_disabled_reason = self.persistence_for(req)
 
         # ---- 2. Header: tool name + path/cmd snippet + rationale ----
         if tool == "bash":

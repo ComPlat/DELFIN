@@ -229,3 +229,29 @@ once, then deploy as above; then, as `pi`,
 `sudo bash ~delfin/delfin/src/scripts/pi/pi_harden_host.sh` and
 `deploy_pi.sh --landlock pi@<host>`, and the checklist "After the first
 boot".
+
+## SimpleX messenger: forum and session chats
+
+After installing the `agent,messenger` extras, provision with `pi_messenger.sh`
+and pair the phone once. In each desired TUI/dashboard session type `/sync`;
+new sessions stay off. Accept the session-group and forum invitations in SimpleX.
+`/sync off` disables that session again.
+
+Reply directly to a question/approval message using SimpleX's Reply gesture and
+`yes/no`, `ja/nein`, an offered option or a text answer. The same local request
+closes in TUI/dashboard. Late replies never approve the next action.
+
+`name NAME` names a chat/session; `status`, `update`, and `pending` request details.
+`forum on/off` controls participation, and `austausch on/off` in the forum controls
+explicit agent announcements. Only short notices are sent by default; choose
+`meldungen fragen` or `meldungen aus` for less. Attach files/images up to 8 MiB;
+retrieve explicitly prepared artifacts with `dateien` and `datei NAME`. Optional
+local voice transcription needs faster-whisper and `DELFIN_WHISPER_MODEL` pointing
+to an installed model; review its transcript before sending.
+
+See [setup, security boundaries and command reference](../../docs/design/messenger-simplex.md).
+
+Voice messages: `sudo bash scripts/pi/pi_messenger.sh --whisper` adds local speech
+recognition (pinned faster-whisper + faster-whisper-small, every file
+digest-checked; about 0.5 GB). A spoken "ja"/"nein" in reply to an approval
+decides it like the typed word; anything longer frees nothing.

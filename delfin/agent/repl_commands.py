@@ -138,6 +138,12 @@ def expand_at_references(text: str, workspace: Path) -> str:
 # The builtin handlers
 # ---------------------------------------------------------------------------
 
+def _sync(ctx, args: str) -> CommandResult:
+    from delfin.messenger.activation import configure
+    sid = str(ctx.session_id or getattr(ctx.engine, "session_id", "") or "")
+    return CommandResult(output=configure(sid, args, endpoint=""))
+
+
 def _status(ctx, _args: str) -> CommandResult:
     engine = ctx.engine
     try:
@@ -2018,6 +2024,7 @@ BUILTINS: dict[str, ReplCommand] = {
                     _keys),
         ReplCommand("/editor", "session", "Write the next prompt in "
                     "$VISUAL or $EDITOR", _editor, True),
+        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status", _sync, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",
