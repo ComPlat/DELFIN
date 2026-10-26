@@ -423,9 +423,12 @@ def setup_co2_from_delfin(job_dir: str | Path, species_delta: int) -> Path:
         main_cfg = OCCUPIER_parser(str(delfin_control_path))
         seq_bundle = resolve_sequences_for_delta(main_cfg, species_delta)
         for seq_key in ("even_seq", "odd_seq"):
-            entries = seq_bundle.get(seq_key) or []
-            if entries:
-                delfin_ctrl[seq_key] = json.dumps(entries)
+            # Write unconditionally: leaving the key out when the bundle is
+            # empty kept a stale configparser-quoted value alive in a
+            # previously written file (even_seq="[" observed 2026-10-25,
+            # CO2_coordination/CONTROL.txt:94) and the adduct OCCUPIER
+            # validator then rejected it as "must be a list of mappings".
+            delfin_ctrl[seq_key] = json.dumps(seq_bundle.get(seq_key) or [])
     except Exception as exc:  # noqa: BLE001
         print(f"[CO2 chain] Warning: could not resolve OCCUPIER sequences "
               f"for delta={species_delta}: {exc}")
