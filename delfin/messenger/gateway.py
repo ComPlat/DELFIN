@@ -37,12 +37,24 @@ def machine_label() -> str:
     return re.sub(r'[^A-Za-z0-9_-]+', '', os.environ.get('DELFIN_MESSENGER_LABEL', ''))[:24]
 
 
-def group_name(title: str, sid: str | None) -> str:
+def bot_name() -> str:
     machine = machine_label()
+    return f'DELFIN-{machine}' if machine else 'DELFIN'
+
+
+def group_name(title: str, sid: str | None) -> str:
     if sid is None:
-        return f'DELFIN Forum {machine}'.strip()
-    prefix = f'DELFIN-{machine}' if machine else 'DELFIN'
-    return f'{prefix} {title[:40]} {sid[:12]}'
+        return f'DELFIN Forum {machine_label()}'.strip()
+    return f'{bot_name()} {title[:40]} {sid[:12]}'
+
+
+#: What an approval would do, in plain words, by the request's flags. The
+#: agent's purpose line follows, labelled as its own; the command after it.
+_PLAIN = {
+    'shell': 'Was passiert: Ein Befehl wird auf {machine} ausgeführt.',
+    'write': 'Was passiert: Eine Datei wird geändert oder angelegt.',
+    'read': 'Was passiert: Eine Datei außerhalb des Arbeitsordners wird gelesen.',
+}
 
 
 def label(room: dict) -> str:
@@ -300,7 +312,13 @@ class Rooms:
         for item in items:
             kind = item.get('kind')
             name = '❓ Rückfrage' if kind == 'question' else '📋 Planfreigabe' if kind == 'plan' else '🔐 Freigabe nötig'
-            text = f"{name}\n\n{item.get('tool') or ''}\n{item.get('text') or ''}\n"
+            text = f"{name}\n\n"
+            plain = _PLAIN.get(item.get('action') or '')
+            if kind == 'confirm' and plain:
+                text += plain.format(machine=bot_name()) + '\n'
+            if item.get('purpose'):
+                text += f"Angabe des Agenten (ungeprüft): {item['purpose']}\n"
+            text += f"\n{item.get('tool') or ''}\n{item.get('text') or ''}\n"
             if kind == 'question':
                 text += '\nBitte direkt auf diese Nachricht antworten, mit deiner Auswahl oder eigenem Text.'
             else:

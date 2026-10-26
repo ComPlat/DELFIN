@@ -423,8 +423,13 @@ class Bridge:
                 # Never approve a truncated action; lasting rules require confirmation.
                 allowed = len(preview) <= 1400 and ((kind == "confirm" and "y" in keys) or
                                                    (kind == "plan" and bool(keys & {"d", "e"})))
+                flags = req.get("flags") or {}
+                what = ("shell" if flags.get("shell") else "write" if flags.get("write")
+                        else "read" if flags.get("outsideRead") else "")
                 items.append({"id": code, "kind": "question" if kind == "ask" else kind,
                               "sessionId": sid, "text": _truncate(preview, 1400),
+                              "action": what,
+                              "purpose": _truncate(self._redactor().text(str(req.get("purpose") or "")), 200),
                               "phoneApproval": allowed, "tool": req.get("tool", ""),
                               "options": self._redactor().value(req.get("options", [])),
                               "choices": req.get("choices", [])})
