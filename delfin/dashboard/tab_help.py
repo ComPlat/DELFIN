@@ -1,16 +1,19 @@
 """Help tab: a feature overview and a generated CONTROL-key reference.
 
-The tab has two halves:
+The tab is a two-level discovery surface:
 
-* **Features** — a curated overview of what DELFIN can do (the workflows and
-  modules), each with a short "what it does" and "which CONTROL keys switch it
-  on".  Curated text lives in ``_FEATURES`` below; it is documentation, not
-  behaviour, so a wrong line here can be fixed by editing the list.
-* **CONTROL keys** — generated from ``CONTROL_FIELD_SPECS`` (the same table
-  ``validate_control_config`` validates against), so the reference is always in
-  sync with the code: every key, its default, whether it is required, and its
-  ``help`` text (the same text ``KEY=?`` prints).  Keys without help text are
-  listed with an explicit "no explanation yet" instead of silently vanishing.
+* **Features** (subtab 1) — generalised DELFIN functions as an accordion:
+  one collapsed section per major capability (structure generation,
+  optimisation, redox workflows, excited states, thermodynamics, ...),
+  opening to the sub-functions, what they do, and the CONTROL keys that
+  switch them on.  A user who does not know the features yet sees the
+  big picture first, details on demand.
+* **CONTROL keys** (subtab 2) — the full, searchable reference generated
+  from ``CONTROL_FIELD_SPECS`` (the same table ``validate_control_config``
+  validates against), so it cannot drift from the code: every key, its
+  default, whether it is required, and its ``help`` text (the same text
+  ``KEY=?`` prints).  Grouped by key family; keys without help text would
+  be listed with an explicit marker instead of silently vanishing.
 
 The tab is read-only: it mutates nothing and reads no calculation state.
 """
@@ -21,104 +24,166 @@ from typing import Any
 
 import ipywidgets as W
 
-# ---------------------------------------------------------------------------
-# Curated feature overview
-# ---------------------------------------------------------------------------
 
-#: (feature, what it does, CONTROL keys that switch it on).  Order = display
-#: order.  Keep each entry short; the CONTROL-key reference below has details.
-_FEATURES: tuple[tuple[str, str, str], ...] = (
+# ---------------------------------------------------------------------------
+# Curated feature overview: generalised functions -> sub-functions
+# ---------------------------------------------------------------------------
+# (major function, one-line summary, [(sub-function, what it does, keys), ...])
+_FEATURE_GROUPS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] = (
     (
-        "Standard workflow (SPE / OPT / FREQ)",
-        "Reads a geometry or SMILES and runs single-point, optimization and "
-        "frequency jobs in order, then reports energies and thermochemistry "
-        "into DELFIN.txt and DELFIN_Data.json.",
-        "method, FUNCTIONAL, BASIS, charge, multiplicity_global_opt, PAL, "
-        "FREQUENCY_CALCULATION (or frequency_calculation), "
-        "CONSTRAINTS, SOLVENT",
+        "Structure input & generation",
+        "From a formula, a geometry file or a SMILES to 3D coordinates.",
+        (
+            ("Input file / SMILES",
+             "input.txt with a geometry, or SMILES= in CONTROL.txt; DELFIN never "
+             "overwrites your input.",
+             "SMILES, input_file"),
+            ("SMILES converter",
+             "Builds 3D coordinates from a SMILES: QUICK (one embedding, fast), "
+             "NORMAL (multi-seed embedding + force-field refinement), MANTA "
+             "(metal-complex ensemble), or the external builders ARCHITECTOR, "
+             "MOLSIMPLIFY, MACE.",
+             "smiles_converter, thdy_smiles_converter"),
+            ("MANTA structure funnel",
+             "Isomer-conformer ensemble of a metal complex: build, deduplicate, "
+             "screen (single points), optimise (xTB), refine the best (GOAT/CREST); "
+             "the winner becomes start.txt.",
+             "MANTA_SCREEN, MANTA_OPT, MANTA_REFINE, MANTA_QUALITY, MANTA_SEEDS, "
+             "MANTA_MAX_ISOMERS, MANTA_MULTIPLICITIES (legacy: GUPPY_*)"),
+            ("Explicit solvent shells",
+             "xTB ALPB solvation adds explicit solvent molecules to the geometry.",
+             "XTB_SOLVATOR, number_explicit_solv_molecules"),
+        ),
     ),
     (
-        "GUPPY (continuum solvation variants)",
-        "Legacy module that runs a grid of solvation / dispersion variants of "
-        "the same job and compares them.  Kept so archived CONTROL files still "
-        "validate; prefer the standard workflow with SOLVENT today.",
-        "GUPPY, GUPPY_run, GUPPY_solvent, GUPPY_functional",
+        "Preparation & optimisation",
+        "Cheap pre-treatment before the DFT level, then the real optimisation.",
+        (
+            ("Preoptimisation (xTB)",
+             "A quick xTB geometry optimisation before the DFT optimisation.",
+             "XTB_preOPT (XTB_OPT), thdy_preopt, hyperpol_xTB_preopt"),
+            ("Global conformer search",
+             "GOAT or CREST finds the global minimum / conformer ensemble.",
+             "global_optimizer, MANTA_REFINE, MANTA_REFINE_TOPK"),
+            ("Geometry optimisation & frequencies",
+             "DFT optimisation, optional frequency calculation per optimisation "
+             "(thermochemistry, Gibbs, imaginary-mode check).",
+             "geom_opt, freq_type, frequency_calculation, geom_opt_OCCUPIER, "
+             "multiplicity_global_opt"),
+            ("Imaginary-mode handling (IMAG)",
+             "Displaces along imaginary frequencies to reach the intended minimum; "
+             "noise floor and round limits are configurable.",
+             "IMAG, IMAG_scope, IMAG_option, IMAG_max_rounds, "
+             "allow_imaginary_freq, IMAG_sp_energy_window"),
+        ),
     ),
     (
-        "ESD (excited states / spectra)",
-        "Excited-state calculations and spectra (UV/Vis, fluorescence, "
-        "phosphorescence) with rate and energy reporting.",
-        "ESD, ESD_run, ESD_functional, ESD_basis",
+        "Method & environment",
+        "The quantum-chemical level everything runs at.",
+        (
+            ("Functional, basis set, relativistics",
+             "DFT functional, main/metal basis sets (relativistic variants "
+             "separately), RI approximations, SCF initial guess.",
+             "functional, main_basisset, metal_basisset, main_basisset_rel, "
+             "metal_basisset_rel, aux_jk, aux_jk_rel, ri_jkx, initial_guess, "
+             "relativity"),
+            ("Solvation",
+             "Implicit solvation model and solvent for every DFT job.",
+             "implicit_solvation_model, solvent"),
+            ("Parallelism & resources",
+             "Core budget, job parallelism and how ORCA is started on the node.",
+             "PAL, pal_jobs, orca_parallel_strategy"),
+            ("xTB settings",
+             "Which xTB Hamiltonian the pre-optimisation and xTB workflows use.",
+             "xTB_method"),
+        ),
     ),
     (
-        "IMAG (imaginary-frequency follow-up)",
-        "Detects imaginary frequencies after a Hessian and displaces along "
-        "them automatically to find the intended minimum or transition state.",
-        "IMAG, IMAG_run",
+        "Redox workflows",
+        "Redox potentials across charges: the classic DELFIN use case.",
+        (
+            ("classic",
+             "Plain SPE/OPT/FREQ chain over the requested redox steps.",
+             "method=classic, oxidation_steps, reduction_steps"),
+            ("manually",
+             "You define the chain via the step lists; DELFIN schedules it.",
+             "method=manually"),
+            ("OCCUPIER",
+             "Automatic occupancy search: candidate configurations per redox "
+             "state are generated, ranked (by electronic energy or Gibbs) and "
+             "the winner seeds the next step.",
+             "method=OCCUPIER, OCCUPIER_method, OCCUPIER_compare, "
+             "OWN_progressive_from, OWN_TREE_PURE_WINDOW, "
+             "approximate_spin_projection_APMethod"),
+            ("Redox potentials",
+             "Potentials from the computed states; several derivation methods.",
+             "calc_potential_method, properties_of_interest, "
+             "reorganisation_energy"),
+            ("CO2 coordination",
+             "How CO2 coordinates to the substrate: candidates built and ranked "
+             "across the redox states, on top of the OCCUPIER machinery.",
+             "co2_coordination, co2_species_delta"),
+        ),
     ),
     (
-        "OCCUPIER (adduct / coordination occupancy)",
-        "Screening of charge-adduct and coordination states: generates "
-        "candidate structures, ranks them, and reports which species is "
-        "favoured.  Comparison on FSPE or Gibbs (adds a frequency run).",
-        "OCCUPIER_method (auto|manually), OCCUPIER_compare "
-        "(FSPE|G), frequency_calculation_OCCUPIER (legacy), "
-        "OCCUPIER_generate, OCCUPIER_adducts",
+        "Excited states (ESD)",
+        "Photophysics and photochemistry from TD-DFT or delta-SCF.",
+        (
+            ("States & rates",
+             "Electronic states, then internal conversion, intersystem crossing "
+             "and emission rates between them.",
+             "ESD_modul, ESD_modus, ESD_T1_opt, states, ICs, ISCs, "
+             "emission_rates"),
+            ("TD-DFT settings",
+             "NRoots, Davidson space, TDA, spin-orbit coupling, extra keywords "
+             "for every TD-DFT job DELFIN writes.",
+             "TDDFT_nroots, TDDFT_maxdim, TDDFT_maxiter, TDDFT_TDA, TDDFT_SOC, "
+             "TDDFT_additions"),
+            ("xTB hyperpolarizability",
+             "First hyperpolarizability beta with the sTD2/sTDA xTB response "
+             "engine, static or at chosen wavelengths.",
+             "hyperpol_xTB, hyperpol_xTB_engine, hyperpol_xTB_wavelengths, "
+             "hyperpol_xTB_bfw, hyperpol_xTB_energy_window"),
+            ("xTB TADF screening",
+             "Singlet/triplet screening for thermally activated delayed "
+             "fluorescence.",
+             "tadf_xTB, tadf_xTB_excited_method, tadf_xTB_energy_window, "
+             "tadf_xTB_run_t1_opt"),
+        ),
     ),
     (
-        "CO2 coordination",
-        "Coordination of CO2 to a substrate: candidate structures and ranking, "
-        "often combined with the OCCUPIER machinery.",
-        "CO2_coordination, CO2_substrate, method=OCCUPIER",
+        "Thermodynamics",
+        "Stability constants from a Born-Haber cycle.",
+        (
+            ("log K computation",
+             "Gibbs energies of complex, ligands and displaced solvent give the "
+             "stability constant; an experimental value can be compared.",
+             "stability_constant, stability_constant_mode, stability_reaction, "
+             "n_explicit_solvent, logK_exp (aliases: thermodynamics, "
+             "thermodynamics_mode, thermodynamics_reaction)"),
+        ),
     ),
     (
-        "MANTA (structure generation funnel)",
-        "SMILES-to-3D funnel: screening, optimization and refinement stages "
-        "that turn input SMILES into a ranked set of 3D structures.",
-        "MANTA_SCREEN, MANTA_OPT, MANTA_REFINE, MANTA_REFINE_TOPK, "
-        "MANTA_SCREEN_KEEP, MANTA_QUALITY, MANTA_MULTIPLICITIES, "
-        "smiles_converter (QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE)",
-    ),
-    (
-        "Surface scans and relaxed scans",
-        "1D/nD relaxed surface scans along chosen coordinates, with energy "
-        "profiles in the output and follow-up TS searches.",
-        "RSS, SCAN",
-    ),
-    (
-        "MLP (machine-learned potentials)",
-        "Preoptimization and sampling with machine-learned potentials (e.g. "
-        "MACE) before or instead of DFT levels.",
-        "MLP, mlp_method",
-    ),
-    (
-        "SMILES converter",
-        "Builds 3D coordinates from SMILES with the configured converter "
-        "backend; placeholders in the value fall back to NORMAL.",
-        "smiles_converter, thdy_smiles_converter, sc_smiles_converter",
-    ),
-    (
-        "QMMM region splitting",
-        "Splits the structure into QM and MM regions with a ``$`` separator "
-        "line in the input file; the split is preserved for follow-up jobs.",
-        "(input file convention, no CONTROL key)",
-    ),
-    (
-        "Preoptimization",
-        "Cheap preoptimization (e.g. xTB) before the DFT optimization.",
-        "preopt, thdy_preopt",
-    ),
-    (
-        "Runs / unattended operation",
-        "Multi-run CONTROL files and unattended mode let one file drive many "
-        "systems; see docs/unattended_mode.md.",
-        "RUNS",
-    ),
-    (
-        "Agent tab",
-        "The DELFIN Agent tab: ask questions about calculations, errors, "
-        "methods and CONTROL keys in chat; read-only unless you approve.",
-        "(no CONTROL key)",
+        "Automation & operation",
+        "Driving many systems and reading the results.",
+        (
+            ("Multi-run CONTROL (RUNS)",
+             "One CONTROL file drives many systems; unattended mode runs without "
+             "interaction. See docs/unattended_mode.md.",
+             "RUNS"),
+            ("QMMM region splitting",
+             "A ``$`` separator line splits QM and MM regions; preserved for "
+             "follow-up jobs. No CONTROL key needed.",
+             "(input-file convention)"),
+            ("Outputs",
+             "DELFIN.txt (potentials), DELFIN_Data.json (structured data), "
+             "OCCUPIER.txt, delfin_run.log.",
+             "—"),
+            ("Agent tab",
+             "Ask questions about calculations, errors, methods and CONTROL "
+             "keys in chat; read-only unless you approve.",
+             "—"),
+        ),
     ),
 )
 
@@ -129,20 +194,32 @@ _FEATURES: tuple[tuple[str, str, str], ...] = (
 
 
 def _feature_block() -> W.DOMWidget:
-    parts: list[str] = [
-        "<h3 style='margin-top:0'>Features</h3>",
-        "<p style='color:#666'>What DELFIN can do, and which CONTROL.txt keys "
-        "switch it on.  Detailed key semantics: write <code>KEY=?</code> in "
-        "CONTROL.txt, or see the key reference below.</p>",
+    """The accordion of major functions with sub-function sections."""
+    header = W.HTML(
+        "<p style='color:#666'>What DELFIN can do, grouped by major function. "
+        "Open a section for the sub-functions and the CONTROL.txt keys that "
+        "switch them on.  Detailed key semantics: the <b>CONTROL keys</b> "
+        "subtab, or write <code>KEY=?</code> in CONTROL.txt.</p>"
+    )
+    children = []
+    for title, summary, subs in _FEATURE_GROUPS:
+        parts = [f"<p style='color:#666'>{summary}</p>"]
+        for sub, what, keys in subs:
+            parts.append(
+                "<div style='border-left:3px solid #4a86c8; padding:6px 12px; "
+                "margin:8px 0'>"
+                f"<b>{sub}</b><br>{what}<br>"
+                f"<span style='color:#666'><b>Keys:</b> {keys}</span></div>"
+            )
+        children.append(W.HTML("".join(parts)))
+    titles = [
+        f"<b>{title}</b> <span style='color:#888'>— {summary}</span>"
+        for title, summary, _ in _FEATURE_GROUPS
     ]
-    for name, what, keys in _FEATURES:
-        parts.append(
-            "<div style='border-left:3px solid #4a86c8; padding:6px 12px; "
-            "margin:10px 0'>"
-            f"<b>{name}</b><br>{what}<br>"
-            f"<span style='color:#666'><b>Keys:</b> {keys}</span></div>"
-        )
-    return W.HTML("".join(parts))
+    accordion = W.Accordion(children=children, titles=tuple(titles))
+    # Start collapsed except the first group, so the page opens compact.
+    accordion.selected_index = 0
+    return W.VBox([header, accordion])
 
 
 def _key_rows() -> list[tuple[str, str, str, str]]:
@@ -161,44 +238,109 @@ def _key_rows() -> list[tuple[str, str, str, str]]:
     return sorted(rows, key=lambda r: r[0].lower())
 
 
+def _group_of(name: str) -> str:
+    """Key family for grouping: the first MANTA_/GUPPY_/TDDFT_ prefix, else General."""
+    for prefix, label in (
+        ("GUPPY_", "GUPPY (legacy)"),
+        ("MANTA_", "MANTA"),
+        ("TDDFT_", "TD-DFT"),
+        ("hyperpol_xTB", "xTB hyperpolarizability"),
+        ("tadf_xTB", "xTB TADF"),
+        ("OCCUPIER_", "OCCUPIER"),
+        ("OWN_", "OCCUPIER"),
+        ("IMAG", "IMAG"),
+        ("stability_", "Thermodynamics"),
+        ("thdy_", "Thermodynamics"),
+        ("co2_", "CO2"),
+    ):
+        if name.startswith(prefix):
+            return label
+    return "General"
+
+
 def _key_reference_block() -> tuple[W.DOMWidget, W.DOMWidget, Any]:
-    """Searchable table of all CONTROL keys.  Returns (block, html, state)."""
-    state: dict[str, Any] = {"query": "", "rows": _key_rows()}
+    """Searchable key table, grouped by key family with per-group toggles."""
+    from html import escape as esc
+
+    state: dict[str, Any] = {"rows": _key_rows(), "query": ""}
+
+    head = (
+        "<table style='border-collapse:collapse; width:100%'>"
+        "<tr>"
+        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>Key</th>"
+        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>Default</th>"
+        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>Required</th>"
+        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>What it does</th>"
+        "</tr>"
+    )
 
     out = W.HTML()
 
-    def _render() -> None:
-        query = state["query"].strip().lower()
-        esc = lambda s: s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        head = (
-            "<table style='border-collapse:collapse; width:100%'>"
-            "<tr style='background:#eef'><th style='text-align:left; padding:4px 8px'>Key</th>"
-            "<th style='text-align:left; padding:4px 8px'>Default</th>"
-            "<th style='text-align:left; padding:4px 8px'>Required</th>"
-            "<th style='text-align:left; padding:4px 8px'>What it does</th></tr>"
+    groups: dict[str, list[tuple[str, str, str, str]]] = {}
+    for row in state["rows"]:
+        groups.setdefault(_group_of(row[0]), []).append(row)
+    group_names = sorted(groups)
+    # General first, the rest alphabetical.
+    group_names.remove("General") if "General" in group_names else None
+    order = ["General"] + group_names
+
+    group_toggles = W.HBox()
+    state["active_groups"] = set(order)
+
+    def _make_toggle(label: str, count: int) -> W.ToggleButton:
+        btn = W.ToggleButton(
+            value=True, description=f"{label} ({count})",
+            button_style="", layout=W.Layout(margin="0 4px 4px 0"),
         )
-        shown = 0
-        rows_html: list[str] = []
-        for name, default, required, help_text in state["rows"]:
-            if query and query not in name.lower() and query not in help_text.lower():
-                continue
-            shown += 1
-            style = "border-top:1px solid #ddd; padding:4px 8px; vertical-align:top"
-            rows_html.append(
-                "<tr>"
-                f"<td style='{style}'><code>{esc(name)}</code></td>"
-                f"<td style='{style}'>{esc(default)}</td>"
-                f"<td style='{style}'>{esc(required)}</td>"
-                f"<td style='{style}'>{help_text}</td>"
-                "</tr>"
-            )
+
+        def _on_toggle(change: Any) -> None:
+            if change["new"]:
+                state["active_groups"].add(label)
+            else:
+                state["active_groups"].discard(label)
+            _render()
+
+        btn.observe(_on_toggle, names="value")
+        return btn
+
+    group_toggles.children = tuple(
+        _make_toggle(g, len(groups[g])) for g in order
+    )
+
+    def _render() -> None:
+        query = state["query"].lower()
         total = len(state["rows"])
+        shown = 0
+        blocks: list[str] = []
+        for group in order:
+            if group not in state["active_groups"]:
+                continue
+            rows_html: list[str] = []
+            for name, default, required, help_text in groups[group]:
+                if query and query not in name.lower() and query not in help_text.lower():
+                    continue
+                shown += 1
+                style = "border-top:1px solid #ddd; padding:4px 8px; vertical-align:top"
+                rows_html.append(
+                    "<tr>"
+                    f"<td style='{style}'><code>{esc(name)}</code></td>"
+                    f"<td style='{style}'>{esc(default)}</td>"
+                    f"<td style='{style}'>{esc(required)}</td>"
+                    f"<td style='{style}'>{help_text}</td>"
+                    "</tr>"
+                )
+            if rows_html:
+                blocks.append(
+                    f"<tr><td colspan='4' style='padding:10px 0 2px; "
+                    f"color:#4a86c8'><b>{esc(group)}</b></td></tr>"
+                    + "".join(rows_html)
+                )
         if not shown:
-            rows_html.append(
+            blocks.append(
                 f"<tr><td colspan='4' style='padding:8px'>no key matches "
                 f"'{esc(query)}' (of {total} keys)</td></tr>"
             )
-        out.value = head + "".join(rows_html) + "</table>"
+        out.value = head + "".join(blocks) + "</table>"
         state["shown"] = shown
         state["total"] = total
 
@@ -230,9 +372,11 @@ def _key_reference_block() -> tuple[W.DOMWidget, W.DOMWidget, Any]:
                 "<code>CONTROL_FIELD_SPECS</code> — the same table the "
                 "validator checks your CONTROL.txt against, so it cannot drift "
                 "from the code.  The help column is the same text that "
-                "<code>KEY=?</code> prints.</p>"
+                "<code>KEY=?</code> prints.  Toggle a family below to hide it; "
+                "the search filters everything.</p>"
             ),
             W.HBox([search, counter]),
+            group_toggles,
             out,
         ]
     )
@@ -241,15 +385,17 @@ def _key_reference_block() -> tuple[W.DOMWidget, W.DOMWidget, Any]:
 
 def create_tab(ctx: Any):
     """Create the Help tab. Returns ``(widget, refs)``."""
-    feature = _feature_block()
-    keys_box, _keys_html, keys_state = _key_reference_block()
     header = W.HTML(
         "<h2 style='margin-top:0'>DELFIN Help</h2>"
         "<p>An overview of what DELFIN can do and which CONTROL.txt keys "
         "configure it.  Read-only: nothing here starts a calculation.</p>"
-        "<hr>"
     )
-    widget = W.VBox([header, feature, W.HTML("<hr>"), keys_box])
+    feature = _feature_block()
+    keys_box, _keys_html, keys_state = _key_reference_block()
+    tabs = W.Tab(children=[feature, keys_box])
+    tabs.set_title(0, "Features")
+    tabs.set_title(1, "CONTROL keys")
+    widget = W.VBox([header, tabs])
     return widget, {"help_key_state": keys_state}
 
 
@@ -261,4 +407,4 @@ except Exception:  # pragma: no cover
     pass
 
 
-__all__ = ["_FEATURES", "create_tab"]
+__all__ = ["_FEATURE_GROUPS", "create_tab"]

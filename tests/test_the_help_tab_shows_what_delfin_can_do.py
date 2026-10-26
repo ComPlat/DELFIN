@@ -1,9 +1,9 @@
 """The Help tab shows what DELFIN can do and every CONTROL key.
 
 The Help tab exists so a user who does not yet know DELFIN's features can
-discover them without already knowing the manual: a curated feature overview
-plus a CONTROL-key reference generated from ``CONTROL_FIELD_SPECS``, so it
-cannot drift from what the validator actually checks.
+discover them without already knowing the manual: generalised functions as
+an accordion of sub-functions, plus a CONTROL-key reference generated from
+``CONTROL_FIELD_SPECS`` so it cannot drift from what the validator checks.
 """
 
 
@@ -28,39 +28,46 @@ def test_the_tab_builds_with_a_minimal_ctx():
     assert 'help_key_state' in refs
 
 
-def test_every_control_key_appears_in_the_reference():
+def test_feature_groups_have_subfunctions_and_keys():
+    from delfin.dashboard import tab_help
+
+    assert tab_help._FEATURE_GROUPS, 'or the overview is empty'
+    for title, summary, subs in tab_help._FEATURE_GROUPS:
+        assert title and summary
+        assert subs, f'{title} has no sub-functions'
+        for sub, what, keys in subs:
+            assert sub and what, f'{sub} in {title} is incomplete'
+            assert keys, f'{sub} in {title} names no keys'
+
+
+def test_the_key_reference_covers_every_spec_key():
     from delfin.common.control_validator import CONTROL_FIELD_SPECS
     from delfin.dashboard import tab_help
 
-    rows = tab_help._key_rows()
-    names = {r[0] for r in rows}
-    for spec in CONTROL_FIELD_SPECS:
-        assert spec.name in names, f'{spec.name} missing from Help tab'
-
-
-def test_a_key_without_help_is_listed_with_a_marker_not_silently():
-    from delfin.dashboard import tab_help
-
-    rows = tab_help._key_rows()
-    with_help = [r for r in rows if 'no explanation yet' not in r[3]]
-    assert with_help, 'sanity: most keys have help text'
-    # any key lacking help keeps its row and says so in red
-    for name, _d, _r, text in rows:
-        assert text, name
-
-
-def test_the_search_filter_narrows_the_table():
-    from delfin.dashboard import tab_help
-
+    widget, refs = tab_help.create_tab(type('_Ctx', (), {})())
+    html = refs['help_key_state'] and ''
     box, out, state = tab_help._key_reference_block()
-    total = state['total']
-    assert total > 10, 'sanity: the reference is not empty'
+    rendered = out.value
+    for spec in CONTROL_FIELD_SPECS:
+        assert spec.name in rendered, (
+            f'{spec.name} is validated by CONTROL_FIELD_SPECS but missing '
+            'from the Help tab key reference'
+        )
 
-    state['query'] = 'MANTA'
-    state  # the render path is exercised via _render on observe; call directly
-    box  # noqa: B018 -- widget exists
-    html_after = out.value
-    assert html_after, 'table rendered'
-    # searching through the observable path:
-    tab_help._key_reference_block  # noqa: B018
-    assert 'MANTA' in html_after or state['query'] == ''
+
+def test_the_key_reference_groups_know_the_families():
+    from delfin.dashboard import tab_help
+
+    assert tab_help._group_of('MANTA_OPT') == 'MANTA'
+    assert tab_help._group_of('GUPPY_RUNS') == 'GUPPY (legacy)'
+    assert tab_help._group_of('OCCUPIER_compare') == 'OCCUPIER'
+    assert tab_help._group_of('co2_coordination') == 'CO2'
+    assert tab_help._group_of('functional') == 'General'
+
+
+def test_every_spec_key_has_a_help_text_now():
+    from delfin.common.control_validator import CONTROL_FIELD_SPECS
+
+    missing = [s.name for s in CONTROL_FIELD_SPECS
+               if not (s.help or '').strip()]
+    assert not missing, f'no explanation for: {missing}'
