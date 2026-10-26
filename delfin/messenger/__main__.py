@@ -18,6 +18,18 @@ from .bridge_client import BridgeClient, BridgeDown, default_socket_path
 from .gateway import Rooms
 
 
+def _show_qr(invitation: str) -> None:
+    """Draw the invitation for the phone's scanner; the link stays printed."""
+    import shutil
+    import subprocess
+    tool = shutil.which("qrencode")
+    if tool is None:
+        print("(a QR code needs qrencode: apt install qrencode)")
+        return
+    sys.stdout.flush()
+    subprocess.run([tool, "-t", "ansiutf8", invitation], check=False, timeout=10)
+
+
 def _pair() -> int:
     contact_id = store.paired_contact()
     if contact_id:
@@ -34,6 +46,7 @@ def _pair() -> int:
             if invitation:
                 print("scan this on the phone, then compare the security code:")
                 print(invitation)
+                _show_qr(invitation)
             print("waiting for the phone to connect ...")
             async for event in daemon.events():
                 new_id = simplex.new_contact_id(event)
