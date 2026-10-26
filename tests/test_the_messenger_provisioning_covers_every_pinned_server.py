@@ -52,6 +52,9 @@ def run_script(
     sha256: str = FAKE_SHA,
     args: list[str] | None = None,
     sha256_body: str = "",
+    os_release: str | None = None,
+    glibc: str = "2.39",
+    env_extra: dict | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the provisioner against stand-ins; returns the completed run."""
     fake = tmp_path / "fakebin"
@@ -78,6 +81,21 @@ def run_script(
     log("sha256sum", sha256_body or f"echo {sha256}")
     log("install", 'isdir=0; prev=""; last=""; for a in "$@"; do [ "$a" = "-d" ] && isdir=1; prev="$last"; last="$a"; done; if [ "$isdir" = 1 ]; then mkdir -p "$last"; elif [ -f "$prev" ]; then cp "$prev" "$last"; fi; echo "install $*"')
     log("systemctl", "echo ok")
+    log("getconf", f'echo "glibc {glibc}"')
+    # The interpreter a fresh gateway venv is made from: a venv's python is
+    # a copy of the stand-in, which answers the version and site checks.
+    base = fake / "python3.11-standin"
+    base.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "python $*" >> "{calls}"\n'
+        'case "$*" in\n'
+        '  *version_info*) exit 0 ;;\n'
+        f'  *purelib*) mkdir -p "{tmp_path}/site"; echo "{tmp_path}/site" ;;\n'
+        '  "-m venv "*) mkdir -p "$3/bin"; cp "$0" "$3/bin/python" ;;\n'
+        "esac\nexit 0\n", encoding="utf-8")
+    base.chmod(0o755)
+    service_home = tmp_path / "home-delfin"
+    service_home.mkdir(exist_ok=True)
 
     env = dict(
         os.environ,
@@ -88,10 +106,14 @@ def run_script(
         MESSENGER_UNIT_DIR=str(tmp_path / "units"),
         MESSENGER_PREFIX=str(tmp_path / "prefix"),
         MESSENGER_STATE_DIR=str(tmp_path / "state"),
+        MESSENGER_PYTHON=str(base),
+        MESSENGER_SERVICE_HOME=str(service_home),
+        **(env_extra or {}),
     )
-    # /etc/os-release stand-in for the Ubuntu detection.
-    os_release = tmp_path / "os-release"
-    os_release.write_text(f'VERSION_ID="{ubuntu_id}"\n', encoding="utf-8")
+    # /etc/os-release stand-in for the platform detection.
+    (tmp_path / "os-release").write_text(
+        os_release if os_release is not None else
+        f'ID=ubuntu\nVERSION_ID="{ubuntu_id}"\n', encoding="utf-8")
 
     argv = [sys.executable, str(SCRIPT)] if SCRIPT.name.endswith(".py") else [
         "bash", str(SCRIPT)
