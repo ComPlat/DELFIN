@@ -4,6 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ast
 import difflib
+import json as _json_mod
+
+
+def _json_loads(text):
+    """json.loads wrapper usable as a parser callable beside ast.literal_eval."""
+    return _json_mod.loads(text)
 import math
 import logging
 import re
@@ -2490,18 +2496,29 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                 if stripped.startswith(("[", '"[', "'[")):
                     candidate = stripped.strip('"').strip("'")
                     parsed = None
-                    attempts = [candidate, candidate.replace('\\"', '"')]
+                    # configparser may deliver the value with one OR two
+                    # levels of backslash-escaped quotes ("[{" or
+                    # "[{\"...\"}]" nested); try progressive un-escaping.
+                    attempts = [candidate]
+                    for _ in range(3):
+                        collapsed = attempts[-1].replace('\\"', '"')
+                        if collapsed != attempts[-1]:
+                            attempts.append(collapsed)
                     for attempt in attempts:
                         if parsed is not None:
                             break
-                        try:
-                            parsed = ast.literal_eval(attempt)
-                        except (ValueError, SyntaxError):
+                        for parser in (ast.literal_eval, _json_loads):
                             try:
-                                import json as _json
-                                parsed = _json.loads(attempt)
-                            except (ValueError, TypeError):
-                                pass
+                                candidate_parsed = parser(attempt)
+                            except (ValueError, SyntaxError, TypeError):
+                                continue
+                            # Only accept a real list of mappings; a
+                            # character-level split (e.g. 17 strings)
+                            # is a mis-parse, not the value.
+                            if (isinstance(candidate_parsed, list)
+                                    and all(isinstance(e, dict) for e in candidate_parsed or [{}])):
+                                parsed = candidate_parsed
+                                break
                     if isinstance(parsed, list):
                         config[seq_key] = parsed
                         raw_seq = parsed
