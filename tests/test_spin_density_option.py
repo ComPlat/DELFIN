@@ -133,8 +133,8 @@ def test_spin_density_passes_selected_grid_resolution(refs, monkeypatch, tmp_pat
 
 
 def test_spin_density_display_change_reruns_nothing(refs, monkeypatch, tmp_path):
-    """A pure display change (Update View) re-renders from the cached cube
-    and must not invoke orca_plot a second time."""
+    """A pure display change (Apply Display Settings) re-renders from the
+    cached cube and must not invoke orca_plot a second time."""
     _click(refs, 'open.out')
     # Simulate an existing spin display with a cube on disk.
     cube_path = tmp_path / 'calc' / 'job' / 'open.spindens.cube'
@@ -172,4 +172,52 @@ def test_spin_density_panel_defaults(refs):
     assert refs['calc_spin_density_mol_cb'].value is True
     assert refs['calc_spin_density_pos_color'].value == '#0000ff'
     assert refs['calc_spin_density_neg_color'].value == '#ff0000'
+    # The Apply button replaced "Update View".
+    assert refs['calc_spin_density_apply_btn'].description == (
+        'Apply Display Settings')
+    # The two sections exist and the generation box holds the grid.
+    gen_children = refs['calc_spin_density_generation_box'].children
+    assert refs['calc_spin_density_grid'] in gen_children
+    assert refs['calc_spin_density_btn'] in gen_children
+
+
+def test_spin_density_panel_sections_split_by_file_type(refs):
+    """An .out selection shows the Generation section, a spin density cube
+    click shows the Visualization section, and an ordinary cube shows
+    neither."""
+    _click(refs, 'open.out')
+    assert refs['calc_spin_density_panel'].layout.display == 'none'
+    refs['calc_options_dropdown'].value = 'Spin Density'
+    assert refs['calc_spin_density_panel'].layout.display == 'block'
+    assert refs['calc_spin_density_generation_box'].layout.display == 'block'
+    assert refs['calc_spin_density_settings'].layout.display == 'none'
+
+
+def test_spin_density_apply_creates_no_cube_and_reuses_cache(
+        refs, monkeypatch, tmp_path):
+    """Apply Display Settings must not touch orca_plot nor write a cube."""
+    _click(refs, 'open.out')
+    cube_path = tmp_path / 'calc' / 'job' / 'open.spindens.cube'
+    cube_path.write_text('dummy cube content\n', encoding='utf-8')
+    state = refs['xyz_batch_state']
+    state['spin_display'] = {'cube_path': str(cube_path)}
+    calls_before = len(refs['_orca_plot_calls'])
+    refs['calc_spin_density_isoval'].value = 0.01
+    refs['calc_spin_density_opacity'].value = 0.4
+    refs['calc_spin_density_neg_cb'].value = False
+    monkeypatch.setattr(
+        browser.shutil, 'which',
+        lambda name: '/fake/orca_plot' if name == 'orca_plot' else None)
+    refs['calc_spin_density_apply_btn'].click()
+    import time
+    for _ in range(50):
+        time.sleep(0.1)
+        if 'Display settings applied' in refs['calc_spin_density_status'].value:
+            break
+    assert len(refs['_orca_plot_calls']) == calls_before
+    assert cube_path.read_text() == 'dummy cube content\n'
+    spin_display = state['spin_display']
+    assert spin_display['isoval'] == 0.01
+    assert spin_display['opacity'] == 0.4
+    assert spin_display['show_neg'] is False
 

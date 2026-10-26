@@ -1629,6 +1629,13 @@ def create_tab(ctx):
     )
 
     # -- spin density widgets -----------------------------------------------
+    # The panel is split by what changes the computed data and what only
+    # changes the view:
+    #   "Spin Density Generation"    (.out files)  -> grid, "Plot Spin Density"
+    #   "Spin Density Visualization" (.cube files) -> isovalue, colors, ...
+    # A grid change is the only parameter that re-runs orca_plot (a new cube
+    # must be generated); every display parameter only changes how the
+    # already-generated cube is drawn.
     calc_spin_density_btn = widgets.Button(
         description='Plot Spin Density',
         button_style='primary',
@@ -1638,67 +1645,103 @@ def create_tab(ctx):
         value='',
         layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
-    # User-adjustable parameters. Grid resolution changes what orca_plot
-    # computes (a new cube must be generated); every display parameter only
-    # changes how the already-generated cube is drawn (no orca_plot re-run).
     calc_spin_density_grid = widgets.Dropdown(
         options=[40, 60, 80, 100, 120],
         value=80,
-        description='Grid:',
-        layout=widgets.Layout(width='120px'),
+        description='Grid Resolution:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(
+            width='240px', min_width='240px', height='28px', overflow='hidden',
+        ),
+    )
+    calc_spin_density_grid_note = widgets.HTML(
+        '<span style="color:#555; font-size:12px;">'
+        'Changing Grid Resolution requires regenerating the cube.</span>',
+        layout=widgets.Layout(width='100%', margin='0 0 0 8px'),
     )
     calc_spin_density_isoval = widgets.FloatText(
         value=0.005,
         description='Isovalue:',
-        layout=widgets.Layout(width='160px'),
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='170px', min_width='170px', height='28px'),
     )
     calc_spin_density_pos_cb = widgets.Checkbox(
-        value=True, description='Positive', indent=False,
-        layout=widgets.Layout(width='110px'),
+        value=True, description='Positive Density', indent=False,
+        layout=widgets.Layout(width='190px', height='28px', overflow='hidden'),
     )
     calc_spin_density_neg_cb = widgets.Checkbox(
-        value=True, description='Negative', indent=False,
-        layout=widgets.Layout(width='110px'),
+        value=True, description='Negative Density', indent=False,
+        layout=widgets.Layout(width='190px', height='28px',
+                              flex='0 0 auto', overflow='hidden'),
+    )
+    calc_spin_density_mol_cb = widgets.Checkbox(
+        value=True, description='Show Molecule', indent=False,
+        layout=widgets.Layout(width='160px', height='28px', overflow='hidden'),
     )
     calc_spin_density_opacity = widgets.FloatSlider(
         value=0.65, min=0.0, max=1.0, step=0.05,
         description='Opacity:',
+        style={'description_width': 'initial'},
+        readout=True, readout_format='.2f',
         continuous_update=False,
-        layout=widgets.Layout(width='220px'),
+        layout=widgets.Layout(width='250px', min_width='250px', height='28px'),
     )
     calc_spin_density_pos_color = widgets.ColorPicker(
-        value='#0000ff', description='Pos. color', concise=True,
-        layout=widgets.Layout(width='150px'),
+        value='#0000ff', description='Positive Color:', concise=True,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='210px', min_width='210px', height='28px'),
     )
     calc_spin_density_neg_color = widgets.ColorPicker(
-        value='#ff0000', description='Neg. color', concise=True,
-        layout=widgets.Layout(width='150px'),
+        value='#ff0000', description='Negative Color:', concise=True,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='210px', min_width='210px', height='28px'),
     )
-    calc_spin_density_mol_cb = widgets.Checkbox(
-        value=True, description='Show molecule', indent=False,
-        layout=widgets.Layout(width='160px'),
+    calc_spin_density_apply_btn = widgets.Button(
+        description='Apply Display Settings',
+        tooltip='Apply the display settings to the displayed spin density cube (no orca_plot run).',
+        layout=widgets.Layout(width='180px', min_width='180px', height='28px'),
     )
-    calc_spin_density_update_btn = widgets.Button(
-        description='Update View',
-        tooltip='Re-render the displayed cube with the current display settings (no orca_plot run).',
-        layout=widgets.Layout(width='120px', min_width='120px', height='26px'),
+    # Generation section: grid + plot button, shown for ORCA output files.
+    calc_spin_density_generation_box = widgets.VBox(
+        [
+            widgets.HTML('<b>Spin Density Generation</b>'),
+            calc_spin_density_grid,
+            calc_spin_density_grid_note,
+            calc_spin_density_btn,
+        ],
+        layout=widgets.Layout(width='100%', margin='0', padding='0'),
     )
+    # Visualization section: the display parameters, shown when a spin
+    # density cube is displayed.
     calc_spin_density_settings = widgets.VBox(
         [
-            widgets.HTML('<b>Spin Density Settings</b>'),
+            widgets.HTML('<b>Spin Density Visualization</b>'),
             widgets.HBox(
-                [calc_spin_density_grid, calc_spin_density_isoval],
-                layout=widgets.Layout(gap='8px', flex_flow='row wrap', width='100%'),
+                [calc_spin_density_isoval],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
             ),
             widgets.HBox(
                 [calc_spin_density_pos_cb, calc_spin_density_neg_cb,
                  calc_spin_density_mol_cb],
-                layout=widgets.Layout(gap='8px', flex_flow='row wrap', width='100%'),
+                layout=widgets.Layout(gap='16px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
             ),
             widgets.HBox(
-                [calc_spin_density_opacity, calc_spin_density_pos_color,
-                 calc_spin_density_neg_color, calc_spin_density_update_btn],
-                layout=widgets.Layout(gap='8px', flex_flow='row wrap', width='100%'),
+                [calc_spin_density_opacity],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_pos_color, calc_spin_density_neg_color],
+                layout=widgets.Layout(gap='16px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_apply_btn],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap',
+                                      align_items='center', width='100%',
+                                      margin='2px 0 0 0'),
             ),
         ],
         layout=widgets.Layout(width='100%'),
@@ -1709,10 +1752,7 @@ def create_tab(ctx):
             widgets.HTML(
                 '<span style="color:#555;">Generate the spin density (alpha-beta) cube via orca_plot and display in 3D viewer. Only available for open-shell (UKS/UHF) calculations.</span>'
             ),
-            widgets.HBox(
-                [calc_spin_density_btn],
-                layout=widgets.Layout(gap='8px', align_items='center'),
-            ),
+            calc_spin_density_generation_box,
             calc_spin_density_settings,
             calc_spin_density_status,
         ],
@@ -5048,7 +5088,16 @@ def create_tab(ctx):
             f"}}, 80);"
         )
 
-    def _calc_show_spin_density_panel(show):
+    def _calc_show_spin_density_panel(show, visualize=False):
+        """Show/hide the spin density panel. `visualize` selects the section:
+        False -> Generation (grid + plot button, for ORCA output files),
+        True  -> Visualization (display settings, for spin density cubes)."""
+        calc_spin_density_generation_box.layout.display = (
+            'none' if visualize else 'block'
+        )
+        calc_spin_density_settings.layout.display = (
+            'block' if visualize else 'none'
+        )
         if show:
             calc_spin_density_status.value = ''
             calc_spin_density_panel.layout.display = 'block'
@@ -5811,14 +5860,15 @@ def create_tab(ctx):
         calc_options_dropdown.value = '(Options)'
 
     def calc_on_spin_density_update_view(_button=None):
-        """Re-render the cached spin density cube with the current display
-        settings. Pure display change: orca_plot is NOT invoked and the cube
-        file is reused."""
+        """Apply the panel's display settings to the already displayed spin
+        density cube. Pure display change: orca_plot is NOT invoked and the
+        cube file is reused."""
         spin_display = state.get('spin_display') or {}
         if not spin_display.get('cube_path'):
             calc_spin_density_status.value = (
                 '<span style="color:#d32f2f;">No spin density cube displayed yet. '
-                'Generate one with "Plot Spin Density" first.</span>'
+                'Open a spin density cube (or generate one from an ORCA output '
+                'file) first.</span>'
             )
             return
         try:
@@ -5847,7 +5897,7 @@ def create_tab(ctx):
             '(no orca_plot run).</span>'
         )
 
-    calc_spin_density_update_btn.on_click(calc_on_spin_density_update_view)
+    calc_spin_density_apply_btn.on_click(calc_on_spin_density_update_view)
 
     def calc_on_xyz_batch_refresh(_button=None):
         _calc_refresh_xyz_batch_selector()
@@ -10059,8 +10109,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
-            _calc_show_spin_density_panel(False)
-            _calc_show_spin_density_panel(True)
+            _calc_show_spin_density_panel(True, visualize=False)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
@@ -13380,9 +13429,21 @@ def create_tab(ctx):
                     # If this cube is the spin density cube of the active
                     # spin display, use the panel's display settings; the
                     # hardcoded ±0.02 defaults only apply to other cubes.
+                    # A cube orca_plot wrote itself is named
+                    # <base>.spindens.cube, so the visualization controls
+                    # also survive a dashboard restart. Other cube files
+                    # are never classified as spin density.
                     spin_display = state.get('spin_display') or {}
-                    if spin_display.get('cube_path') != str(full_path):
+                    _is_spin_cube = (
+                        spin_display.get('cube_path') == str(full_path)
+                        or lower_name.endswith('.spindens.cube')
+                        or lower_name.endswith('.spindens.cub')
+                    )
+                    if not _is_spin_cube:
                         spin_display = {}
+                        _calc_show_spin_density_panel(False)
+                    else:
+                        _calc_show_spin_density_panel(True, visualize=True)
                     if spin_display:
                         def _cube_extra(view, raw, _sd=spin_display):
                             try:
@@ -16020,7 +16081,10 @@ def create_tab(ctx):
         'calc_spin_density_mol_cb': calc_spin_density_mol_cb,
         'calc_spin_density_pos_color': calc_spin_density_pos_color,
         'calc_spin_density_neg_color': calc_spin_density_neg_color,
-        'calc_spin_density_update_btn': calc_spin_density_update_btn,
+        'calc_spin_density_apply_btn': calc_spin_density_apply_btn,
+        'calc_spin_density_panel': calc_spin_density_panel,
+        'calc_spin_density_generation_box': calc_spin_density_generation_box,
+        'calc_spin_density_settings': calc_spin_density_settings,
         'calc_on_spin_density_update_view': calc_on_spin_density_update_view,
         'calc_download_targets': _calc_download_targets,
         'calc_update_download_btn': calc_update_download_btn,
