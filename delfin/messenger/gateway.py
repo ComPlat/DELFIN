@@ -333,6 +333,56 @@ class Rooms:
             return 'Antwort übernommen. Die Anfrage ist auch in TUI/Dashboard erledigt.'
         return reply.get('error') or 'Die Anfrage wurde nicht übernommen.'
 
+    #: Spoken words that decide an approval, after _spoken() normalised them.
+    _SPOKEN_DECISIONS = {'ja': 'ja', 'yes': 'yes', 'jawohl': 'ja',
+                         'nein': 'nein', 'no': 'no'}
+
+    @staticmethod
+    def _spoken(transcript):
+        """A transcript as one decision candidate: lower case, outer
+        whitespace and sentence punctuation dropped, inner runs of space
+        collapsed ("  Ja. " -> "ja")."""
+        import re
+        text = re.sub(r'\s+', ' ', str(transcript or '')).strip().lower()
+        return text.strip(' .,!?;:\u2026"\'\u201e\u201c')
+
+    async def voice(self, transcript, room, chat, quote_id=None):
+        """What a transcribed voice message does: what the same words typed
+        would do, never more.
+
+        Without a reply reference it is the session's next prompt. As a
+        reply to a question it is the answer. As a reply to an approval
+        only a transcript that is exactly a decision word or an offered
+        option's label answers it, through the same path as the typed
+        word; a lasting rule is never confirmed by voice. Anything else
+        frees nothing and says what was understood.
+        """
+        text = str(transcript or '').strip()
+        sid = room.get('session_id') if room else None
+        if quote_id is None:
+            if not sid or not text:
+                return '🎤 Nichts verstanden; nichts übergeben.'
+            result = await self.session(
+                sid, 'prompt', text='Sprachnachricht des Nutzers (Transkript):\n' + text)
+            return result.get('error') or '🎤 An die Sitzung übergeben:\n\n' + text
+        item = self._reply_targets.get((chat, str(quote_id)))
+        if item and item.get('kind') == 'question':
+            if not text:
+                return '🎤 Nichts verstanden; die Frage bleibt offen.'
+            return '🎤 ' + await self.reply(text, room, chat, quote_id)
+        if item and item.get('confirmChoice'):
+            return ('🎤 Dauerhafte Regeln werden nur per Text bestätigt; '
+                    'bitte yes oder no tippen. Nichts freigegeben.')
+        word = self._spoken(text)
+        labels = {str(o.get('label', '')).lower() for o in (item or {}).get('options', [])}
+        if item and (word in self._SPOKEN_DECISIONS or (word and word in labels)):
+            typed = self._SPOKEN_DECISIONS.get(word, word)
+            return f'🎤 Als „{typed}“ verstanden → ' + await self.reply(typed, room, chat, quote_id)
+        if not item:
+            return await self.reply(text or '?', room, chat, quote_id)
+        return (f'🎤 Verstanden: „{text}“ – keine eindeutige Antwort, nichts freigegeben. '
+                'Bitte nur „ja“ oder „nein“ sagen (oder tippen).')
+
     async def handle_file(self, message, room):
         from .media import MAX_FILE, CHUNK, filename, transcribe
         import base64
@@ -387,10 +437,8 @@ class Rooms:
                     transcript = await asyncio.to_thread(transcribe, path)
                     if not transcript:
                         raise ValueError('Keine Sprache erkannt.')
-                    await self.send(chat, '🎤 Verstanden als:\n\n' + transcript +
-                        '\n\nAuf diese Nachricht mit senden antworten, um den Text an diese Sitzung zu geben. Sprachaufnahmen erteilen keine Freigaben.',
-                        request={'sessionId': sid, 'kind': 'voice', 'id': secrets.token_hex(12),
-                                 'text': transcript, 'generation': status.get('generation')})
+                    await self.send(chat, await self.voice(
+                        transcript, room, chat, message.get('quote_id')))
                 except ValueError as exc:
                     await self.send(chat, str(exc) + ' Die Audiodatei wird als Anhang übergeben.')
                 else:

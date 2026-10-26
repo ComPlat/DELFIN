@@ -18,10 +18,22 @@ from __future__ import annotations
 
 import asyncio
 
-from delfin.messenger import store
+import pytest
 
-from test_the_messenger_gateway_only_serves_the_paired_phone import (  # noqa: F401
-    rig, message)
+from delfin.messenger import store
+from delfin.messenger.gateway import Rooms
+
+from test_the_messenger_gateway_only_serves_the_paired_phone import (
+    Bridge, Daemon)
+
+
+@pytest.fixture
+def rig(tmp_path, monkeypatch):
+    monkeypatch.setenv("DELFIN_MESSENGER_DIR", str(tmp_path))
+    store.save("7")
+    store.put_room("#10", "s1", "same title", owner="7", ready=True)
+    daemon, bridge = Daemon(), Bridge()
+    return Rooms(daemon, bridge), daemon, bridge
 
 
 CONFIRM = {"id": "c1", "sessionId": "s1", "kind": "confirm",
