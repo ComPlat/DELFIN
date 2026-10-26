@@ -7,6 +7,8 @@ recipient; names are presentation only.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import time
 from collections import deque
 
@@ -27,6 +29,20 @@ HELP = (
 )
 
 UPDATE = 'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.'
+
+
+def machine_label() -> str:
+    """Which installation this is, for chat names only (never for routing:
+    rooms are bound by chat and session ID). [A-Za-z0-9_-], 24 characters."""
+    return re.sub(r'[^A-Za-z0-9_-]+', '', os.environ.get('DELFIN_MESSENGER_LABEL', ''))[:24]
+
+
+def group_name(title: str, sid: str | None) -> str:
+    machine = machine_label()
+    if sid is None:
+        return f'DELFIN Forum {machine}'.strip()
+    prefix = f'DELFIN-{machine}' if machine else 'DELFIN'
+    return f'{prefix} {title[:40]} {sid[:12]}'
 
 
 def label(room: dict) -> str:
@@ -68,9 +84,9 @@ class Rooms:
                 if reply.get('error') or reply.get('messengerEnabled') is not True:
                     raise ValueError('Diese Sitzung muss zuerst in TUI/Dashboard mit /sync aktiviert werden.')
                 title = str(reply.get('title') or sid)
-                name = f'DELFIN {title[:40]} {sid[:12]}'
             else:
-                title, name = 'DELFIN Forum – aktivierte Sitzungen', 'DELFIN Forum'
+                title = 'DELFIN Forum – aktivierte Sitzungen'
+            name = group_name(title, sid)
             if existing and existing[1].get('ready'):
                 if sid is not None and existing[1]['title'] != title:
                     await self.daemon.rename_group(existing[0], name)
@@ -174,7 +190,7 @@ class Rooms:
                 if not reply.get('ok'):
                     return reply.get('error') or 'Name konnte nicht geändert werden.'
                 title = reply.get('title') or title
-            await self.daemon.rename_group(chat, title)
+            await self.daemon.rename_group(chat, group_name(title, room['session_id']))
             store.put_room(chat, room['session_id'], title, owner=self.owner, ready=True)
             return f'Name geändert: {title}. Die Sitzungszuordnung bleibt erhalten.'
         if command == 'austausch' and room and room['session_id'] is None:

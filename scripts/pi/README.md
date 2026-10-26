@@ -237,8 +237,11 @@ after a deploy:
 
 ```bash
 sudo apt install qrencode          # optional: the pairing link as a QR code
-sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair
+sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=Pi
 ```
+
+`--name=` labels the bot (`DELFIN-Pi`) and every chat, for a phone paired with
+several machines; the default is the host name.
 
 Scan the code with SimpleX on the phone and compare the security code. The
 script installs the pinned simplex-chat build (its daemon creates the bot

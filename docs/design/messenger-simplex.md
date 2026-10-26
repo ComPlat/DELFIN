@@ -149,7 +149,11 @@ profile, makes the gateway venv (Python 3.11 from `MESSENGER_PYTHON`, uv or
 `python3.11`; websockets with `--require-hashes`, DELFIN copied root-owned from
 the checkout the script lies in), writes the units and, with `--pair`, prints the
 invitation, as a QR code too when `qrencode` is installed. Scan it with SimpleX
-and compare the connection security code. Only that contact can complete pairing.
+and compare the connection security code. `--name=LABEL` names the installation
+(default: the short host name): the bot is `DELFIN-LABEL`, every session chat and
+the forum carry the label, so one phone paired with a Pi, a server and a login
+node tells them apart. The label is display only; rooms stay bound by chat and
+session ID. The bot profile takes its name on first start only. Only that contact can complete pairing.
 Without `--whisper` voice messages arrive as audio files; `--pair` can be given
 on a later run. After a DELFIN update, run the script again: it copies the new
 code and restarts daemon, bridge and gateway, never the agent service.

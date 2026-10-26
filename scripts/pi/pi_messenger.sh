@@ -2,8 +2,13 @@
 # ============================================================================
 # Provision the messenger gateway host: SimpleX daemon + DELFIN gateway.
 #
-#   sudo bash pi_messenger.sh [--whisper] [--pair] [--no-phone-sessions]
-#                             [--no-nftables] [--uninstall]
+#   sudo bash pi_messenger.sh [--whisper] [--pair] [--name=LABEL]
+#                             [--no-phone-sessions] [--no-nftables]
+#                             [--uninstall]
+#
+# --name=LABEL names this installation on the phone: the bot is
+# DELFIN-<LABEL>, every chat carries it (default: the short host name;
+# [A-Za-z0-9_-], 24 characters). The bot profile takes it on first start.
 #
 # Works on any Linux with systemd and glibc >= 2.34 the pinned releases
 # cover -- a Raspberry Pi (aarch64, Raspberry Pi OS or Ubuntu), a login
@@ -104,6 +109,8 @@ want_nftables=1
 want_whisper=0
 want_pair=0
 want_phone_sessions=1
+label="${MESSENGER_HOSTNAME:-$(hostname 2>/dev/null || true)}"
+label="${label%%.*}"
 for arg in "$@"; do
   case "$arg" in
     --uninstall) action=uninstall ;;
@@ -111,9 +118,13 @@ for arg in "$@"; do
     --whisper) want_whisper=1 ;;
     --pair) want_pair=1 ;;
     --no-phone-sessions) want_phone_sessions=0 ;;
+    --name=*) label="${arg#--name=}" ;;
     *) die "unknown argument: $arg" ;;
   esac
 done
+
+label="$(printf '%s' "${label}" | tr -cd 'A-Za-z0-9_-' | cut -c1-24)"
+BOT_NAME="DELFIN${label:+-${label}}"
 
 [ "$(id -u)" = "0" ] || die "run as root"
 
@@ -193,7 +204,7 @@ After=network.target
 [Service]
 User=${GW_USER}
 Group=${GW_USER}
-ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --chat-server-port ${API_PORT} --files-folder ${STATE_DIR} --auto-accept-files 0 --create-bot-display-name DELFIN --create-bot-allow-files
+ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --chat-server-port ${API_PORT} --files-folder ${STATE_DIR} --auto-accept-files 0 --create-bot-display-name ${BOT_NAME} --create-bot-allow-files
 Restart=on-failure
 RestartSec=5
 
@@ -241,6 +252,7 @@ Group=${GW_USER}
 Environment=DELFIN_MESSENGER_PORT=${API_PORT}
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
 Environment=DELFIN_MESSENGER_DIR=${STATE_DIR}/pairing
+Environment=DELFIN_MESSENGER_LABEL=${label}
 $(whisper_env)
 ExecStart=${PREFIX}/bin/venv/bin/python -m delfin.messenger run
 Restart=on-failure
