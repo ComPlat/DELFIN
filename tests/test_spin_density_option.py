@@ -104,6 +104,72 @@ def test_spin_density_starts_uks_job_without_running_orca_plot_inline(refs):
     lines = stdin_payload.decode().strip().split('\n')
     # Empirically verified against ORCA 6.1.1: 1 = enter plot type,
     # 3 = (scf) spin density, y = accept the default <base>.scfr density,
-    # 11 = generate the plot, 12 = exit.
-    assert lines == ['1', '3', 'y', '11', '12']
+    # 4 = set the grid interval count (panel default 80), 11 = generate
+    # the plot, 12 = exit.
+    assert lines == ['1', '3', 'y', '4', '80', '11', '12']
+
+
+def test_spin_density_passes_selected_grid_resolution(refs, monkeypatch, tmp_path):
+    _click(refs, 'open.out')
+    refs['calc_spin_density_grid'].value = 120
+    # A "successful" orca_plot that also creates a cube file, so the handler
+    # completes; the recording fake from the fixture stays in place.
+    job_dir = tmp_path / 'calc' / 'job'
+    calls = []
+    def _fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        (job_dir / 'open.spindens.cube').write_text('cube\n', encoding='utf-8')
+        return types.SimpleNamespace(returncode=0, stdout=b'', stderr=b'')
+    monkeypatch.setattr(browser.subprocess, 'run', _fake_run)
+    refs['calc_spin_density_btn'].click()
+    import time
+    for _ in range(50):
+        time.sleep(0.1)
+        if refs['calc_spin_density_btn'].disabled is False:
+            break
+    payload = calls[0][1]['input'].decode().strip().split('\n')
+    # Menu 4 = grid interval count; the selected 120 must reach orca_plot.
+    assert payload == ['1', '3', 'y', '4', '120', '11', '12']
+
+
+def test_spin_density_display_change_reruns_nothing(refs, monkeypatch, tmp_path):
+    """A pure display change (Update View) re-renders from the cached cube
+    and must not invoke orca_plot a second time."""
+    _click(refs, 'open.out')
+    # Simulate an existing spin display with a cube on disk.
+    cube_path = tmp_path / 'calc' / 'job' / 'open.spindens.cube'
+    cube_path.write_text('dummy cube content\n', encoding='utf-8')
+    state = refs['xyz_batch_state']
+    state['spin_display'] = {
+        'cube_path': str(cube_path),
+        'isoval': 0.005,
+        'opacity': 0.65,
+        'show_pos': True,
+        'show_neg': True,
+        'show_mol': True,
+        'pos_color': '#0000ff',
+        'neg_color': '#ff0000',
+    }
+    calls_before = len(refs['_orca_plot_calls'])
+    monkeypatch.setattr(
+        browser.shutil, 'which',
+        lambda name: '/fake/orca_plot' if name == 'orca_plot' else None)
+    refs['calc_on_spin_density_update_view']()
+    # No new orca_plot invocation.
+    assert len(refs['_orca_plot_calls']) == calls_before
+    # The display settings were applied from the panel widgets.
+    spin_display = state['spin_display']
+    assert spin_display['isoval'] == refs['calc_spin_density_isoval'].value
+    assert spin_display['opacity'] == refs['calc_spin_density_opacity'].value
+
+
+def test_spin_density_panel_defaults(refs):
+    assert refs['calc_spin_density_grid'].value == 80
+    assert refs['calc_spin_density_isoval'].value == 0.005
+    assert refs['calc_spin_density_opacity'].value == 0.65
+    assert refs['calc_spin_density_pos_cb'].value is True
+    assert refs['calc_spin_density_neg_cb'].value is True
+    assert refs['calc_spin_density_mol_cb'].value is True
+    assert refs['calc_spin_density_pos_color'].value == '#0000ff'
+    assert refs['calc_spin_density_neg_color'].value == '#ff0000'
 

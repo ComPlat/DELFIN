@@ -236,6 +236,10 @@ def create_tab(ctx):
         'xyz_workflow_source_path': None,
         'xyz_batch_path': '',
         'xyz_batch_marked_paths': [],
+        # Spin density panel parameters. 'spin_display' holds the current
+        # display settings and the path of the cube they were rendered from,
+        # so the viewer can re-render without re-running orca_plot.
+        'spin_display': None,
         'delete_current': False,
         'table_col_defs': [
             {'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'},
@@ -1634,13 +1638,82 @@ def create_tab(ctx):
         value='',
         layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    # User-adjustable parameters. Grid resolution changes what orca_plot
+    # computes (a new cube must be generated); every display parameter only
+    # changes how the already-generated cube is drawn (no orca_plot re-run).
+    calc_spin_density_grid = widgets.Dropdown(
+        options=[40, 60, 80, 100, 120],
+        value=80,
+        description='Grid:',
+        layout=widgets.Layout(width='120px'),
+    )
+    calc_spin_density_isoval = widgets.FloatText(
+        value=0.005,
+        description='Isovalue:',
+        layout=widgets.Layout(width='160px'),
+    )
+    calc_spin_density_pos_cb = widgets.Checkbox(
+        value=True, description='Positive', indent=False,
+        layout=widgets.Layout(width='110px'),
+    )
+    calc_spin_density_neg_cb = widgets.Checkbox(
+        value=True, description='Negative', indent=False,
+        layout=widgets.Layout(width='110px'),
+    )
+    calc_spin_density_opacity = widgets.FloatSlider(
+        value=0.65, min=0.0, max=1.0, step=0.05,
+        description='Opacity:',
+        continuous_update=False,
+        layout=widgets.Layout(width='220px'),
+    )
+    calc_spin_density_pos_color = widgets.ColorPicker(
+        value='#0000ff', description='Pos. color', concise=True,
+        layout=widgets.Layout(width='150px'),
+    )
+    calc_spin_density_neg_color = widgets.ColorPicker(
+        value='#ff0000', description='Neg. color', concise=True,
+        layout=widgets.Layout(width='150px'),
+    )
+    calc_spin_density_mol_cb = widgets.Checkbox(
+        value=True, description='Show molecule', indent=False,
+        layout=widgets.Layout(width='160px'),
+    )
+    calc_spin_density_update_btn = widgets.Button(
+        description='Update View',
+        tooltip='Re-render the displayed cube with the current display settings (no orca_plot run).',
+        layout=widgets.Layout(width='120px', min_width='120px', height='26px'),
+    )
+    calc_spin_density_settings = widgets.VBox(
+        [
+            widgets.HTML('<b>Spin Density Settings</b>'),
+            widgets.HBox(
+                [calc_spin_density_grid, calc_spin_density_isoval],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_pos_cb, calc_spin_density_neg_cb,
+                 calc_spin_density_mol_cb],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_opacity, calc_spin_density_pos_color,
+                 calc_spin_density_neg_color, calc_spin_density_update_btn],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap', width='100%'),
+            ),
+        ],
+        layout=widgets.Layout(width='100%'),
+    )
     calc_spin_density_panel = widgets.VBox(
         [
             widgets.HTML('<b>Spin Density</b>'),
             widgets.HTML(
                 '<span style="color:#555;">Generate the spin density (alpha-beta) cube via orca_plot and display in 3D viewer. Only available for open-shell (UKS/UHF) calculations.</span>'
             ),
-            calc_spin_density_btn,
+            widgets.HBox(
+                [calc_spin_density_btn],
+                layout=widgets.Layout(gap='8px', align_items='center'),
+            ),
+            calc_spin_density_settings,
             calc_spin_density_status,
         ],
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
@@ -4219,7 +4292,7 @@ def create_tab(ctx):
         with calc_mol_viewer:
             display(HTML(html))
 
-    def _render_3dmol(data, fmt='xyz', extra_fn=None):
+    def _render_3dmol(data, fmt='xyz', extra_fn=None, hide_molecule=False):
         """Render a 3D molecule via JS with correct initial sizing."""
         import json
         profile = get_viewer_profile()
@@ -4239,13 +4312,53 @@ def create_tab(ctx):
         viewer_config_js = profile['viewer_config_js']
 
         volumetric_js = ""
+        # Spin density display settings (see calc_on_spin_density): when a
+        # spin density render is active, the isovalue/opacity/colors come
+        # from the panel instead of the hardcoded cube defaults. Pure display
+        # changes re-render from the cached cube via this path; orca_plot is
+        # never invoked for them.
+        spin_display = state.get('spin_display') or {}
+        spin_iso = 0.02
+        spin_opacity = 0.85
+        spin_pos_color = '#0026ff'
+        spin_neg_color = '#b00010'
+        spin_active = False
+        if spin_display:
+            spin_active = True
+            try:
+                spin_iso = float(spin_display.get('isoval', 0.02))
+            except (TypeError, ValueError):
+                spin_iso = 0.02
+            try:
+                spin_opacity = float(spin_display.get('opacity', 0.85))
+            except (TypeError, ValueError):
+                spin_opacity = 0.85
+            spin_pos_color = spin_display.get('pos_color') or '#0026ff'
+            spin_neg_color = spin_display.get('neg_color') or '#b00010'
         if fmt == 'cube':
-            volumetric_js = (
-                "viewer.addVolumetricData(molData,'cube',"
-                "{isoval:0.02,color:'#0026ff',opacity:0.85});"
-                "viewer.addVolumetricData(molData,'cube',"
-                "{isoval:-0.02,color:'#b00010',opacity:0.85});"
-            )
+            if spin_active:
+                pos_js = neg_js = ''
+                if spin_display.get('show_pos', True):
+                    pos_js = (
+                        "viewer.addVolumetricData(molData,'cube',"
+                        f"{{isoval:{spin_iso},color:'{spin_pos_color}',opacity:{spin_opacity}}});"
+                    )
+                if spin_display.get('show_neg', True):
+                    neg_js = (
+                        "viewer.addVolumetricData(molData,'cube',"
+                        f"{{isoval:-{spin_iso},color:'{spin_neg_color}',opacity:{spin_opacity}}});"
+                    )
+                volumetric_js = pos_js + neg_js
+            else:
+                volumetric_js = (
+                    "viewer.addVolumetricData(molData,'cube',"
+                    "{isoval:0.02,color:'#0026ff',opacity:0.85});"
+                    "viewer.addVolumetricData(molData,'cube',"
+                    "{isoval:-0.02,color:'#b00010',opacity:0.85});"
+                )
+        # "Show molecule" off: render the cube surface alone (empty style).
+        if hide_molecule:
+            style_js = '{}'
 
         html = f"""
         <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
@@ -5601,12 +5714,17 @@ def create_tab(ctx):
                 # "Is this the one you want (y/n)?" and confirms the default
                 # density name <base>.scfr). Sequence:
                 #   1 = enter plot type, 3 = spin density, y = accept the
-                #   default density file, 11 = generate the plot, 12 = exit.
+                #   default density file, then the grid interval, then
+                #   11 = generate the plot, 12 = exit. Menu item 4 sets the
+                #   number of grid intervals (same interaction the MO Plot
+                #   branch uses with its hardcoded 70, see the
+                #   f"1\n1\n2\n{mo_idx}...4\n70\n..." sequence above).
+                grid_value = calc_spin_density_grid.value
                 spin_type_candidates = [3]
                 generated = []
                 failures = []
                 for spin_type in spin_type_candidates:
-                    orca_input = f"1\n{spin_type}\ny\n11\n12\n"
+                    orca_input = f"1\n{spin_type}\ny\n4\n{grid_value}\n11\n12\n"
                     try:
                         result = subprocess.run(
                             [orca_plot_exe, gbw_path.name, '-i'],
@@ -5650,8 +5768,29 @@ def create_tab(ctx):
                     calc_spin_density_status.value = (
                         '<span style="color:#2e7d32;">'
                         f'Generated spin density cube(s): {_html.escape(shown)}'
-                        ' — click the file in the list to view it in 3D.</span>'
+                        ' — displaying it now.</span>'
                     )
+                    # Record the cube and the current panel display settings
+                    # so the viewer renders it with them, and re-rendering on
+                    # a pure display change needs no orca_plot re-run.
+                    state['spin_display'] = {
+                        'cube_path': str(generated[-1].resolve()),
+                        'isoval': calc_spin_density_isoval.value,
+                        'opacity': calc_spin_density_opacity.value,
+                        'show_pos': calc_spin_density_pos_cb.value,
+                        'show_neg': calc_spin_density_neg_cb.value,
+                        'show_mol': calc_spin_density_mol_cb.value,
+                        'pos_color': calc_spin_density_pos_color.value,
+                        'neg_color': calc_spin_density_neg_color.value,
+                    }
+                    try:
+                        content = generated[-1].read_text()
+                        _render_3dmol(content, fmt='cube')
+                    except Exception as exc:
+                        calc_spin_density_status.value = (
+                            f'<span style="color:#d32f2f;">'
+                            f'Cube generated but display failed: {_html.escape(str(exc))}</span>'
+                        )
                 else:
                     failure_text = '; '.join(failures[:2]) if failures else 'No spin density cube was generated.'
                     if failures and len(failures) > 2:
@@ -5670,6 +5809,45 @@ def create_tab(ctx):
 
         threading.Thread(target=_run_spin_density, daemon=True).start()
         calc_options_dropdown.value = '(Options)'
+
+    def calc_on_spin_density_update_view(_button=None):
+        """Re-render the cached spin density cube with the current display
+        settings. Pure display change: orca_plot is NOT invoked and the cube
+        file is reused."""
+        spin_display = state.get('spin_display') or {}
+        if not spin_display.get('cube_path'):
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">No spin density cube displayed yet. '
+                'Generate one with "Plot Spin Density" first.</span>'
+            )
+            return
+        try:
+            cube_path = Path(spin_display['cube_path'])
+            content = cube_path.read_text()
+        except Exception as exc:
+            calc_spin_density_status.value = (
+                f'<span style="color:#d32f2f;">'
+                f'Cannot read cube file {_html.escape(spin_display["cube_path"])}: '
+                f'{_html.escape(str(exc))}</span>'
+            )
+            return
+        state['spin_display'] = {
+            'cube_path': spin_display['cube_path'],
+            'isoval': calc_spin_density_isoval.value,
+            'opacity': calc_spin_density_opacity.value,
+            'show_pos': calc_spin_density_pos_cb.value,
+            'show_neg': calc_spin_density_neg_cb.value,
+            'show_mol': calc_spin_density_mol_cb.value,
+            'pos_color': calc_spin_density_pos_color.value,
+            'neg_color': calc_spin_density_neg_color.value,
+        }
+        _render_3dmol(content, fmt='cube')
+        calc_spin_density_status.value = (
+            '<span style="color:#2e7d32;">View updated from the existing cube '
+            '(no orca_plot run).</span>'
+        )
+
+    calc_spin_density_update_btn.on_click(calc_on_spin_density_update_view)
 
     def calc_on_xyz_batch_refresh(_button=None):
         _calc_refresh_xyz_batch_selector()
@@ -13199,10 +13377,42 @@ def create_tab(ctx):
                 else:
                     content = full_path.read_text()
                     state['file_content'] = ''
-                    def _cube_extra(view, raw):
-                        view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
-                        view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
-                    _render_3dmol(content, fmt='cube', extra_fn=_cube_extra)
+                    # If this cube is the spin density cube of the active
+                    # spin display, use the panel's display settings; the
+                    # hardcoded ±0.02 defaults only apply to other cubes.
+                    spin_display = state.get('spin_display') or {}
+                    if spin_display.get('cube_path') != str(full_path):
+                        spin_display = {}
+                    if spin_display:
+                        def _cube_extra(view, raw, _sd=spin_display):
+                            try:
+                                iso = float(_sd.get('isoval', 0.02))
+                            except (TypeError, ValueError):
+                                iso = 0.02
+                            try:
+                                opa = float(_sd.get('opacity', 0.85))
+                            except (TypeError, ValueError):
+                                opa = 0.85
+                            if _sd.get('show_pos', True):
+                                view.addVolumetricData(
+                                    raw, 'cube',
+                                    {'isoval': iso,
+                                     'color': _sd.get('pos_color') or '#0026ff',
+                                     'opacity': opa})
+                            if _sd.get('show_neg', True):
+                                view.addVolumetricData(
+                                    raw, 'cube',
+                                    {'isoval': -iso,
+                                     'color': _sd.get('neg_color') or '#b00010',
+                                     'opacity': opa})
+                        spin_hide_mol = not spin_display.get('show_mol', True)
+                    else:
+                        def _cube_extra(view, raw):
+                            view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
+                            view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
+                        spin_hide_mol = False
+                    _render_3dmol(content, fmt='cube', extra_fn=_cube_extra,
+                                  hide_molecule=spin_hide_mol)
                 # Trigger dynamic resize after volumetric data is loaded
                 _run_js(
                     f"setTimeout(function(){{"
@@ -15802,6 +16012,16 @@ def create_tab(ctx):
         # Spin density (exposed for tests: fire the button, read the status)
         'calc_spin_density_btn': calc_spin_density_btn,
         'calc_spin_density_status': calc_spin_density_status,
+        'calc_spin_density_grid': calc_spin_density_grid,
+        'calc_spin_density_isoval': calc_spin_density_isoval,
+        'calc_spin_density_opacity': calc_spin_density_opacity,
+        'calc_spin_density_pos_cb': calc_spin_density_pos_cb,
+        'calc_spin_density_neg_cb': calc_spin_density_neg_cb,
+        'calc_spin_density_mol_cb': calc_spin_density_mol_cb,
+        'calc_spin_density_pos_color': calc_spin_density_pos_color,
+        'calc_spin_density_neg_color': calc_spin_density_neg_color,
+        'calc_spin_density_update_btn': calc_spin_density_update_btn,
+        'calc_on_spin_density_update_view': calc_on_spin_density_update_view,
         'calc_download_targets': _calc_download_targets,
         'calc_update_download_btn': calc_update_download_btn,
         # Delete (exposed for blocking only — agent must NOT click)
