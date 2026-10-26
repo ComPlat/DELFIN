@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ast
 import difflib
 import math
 import logging
@@ -2477,7 +2478,34 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     # ensure electron sequences have expected structure if present
     for seq_key in ("even_seq", "odd_seq"):
         if seq_key in config:
-            _validate_sequence_list(config[seq_key], seq_key)
+            raw_seq = config[seq_key]
+            # A configparser round-trip can leave the value as a quoted
+            # string even though the writer emitted a bare list literal
+            # (observed 2026-10-26: adduct_occupier/CONTROL.txt:28 carried
+            # even_seq="[]" after the value had travelled through a
+            # read/write cycle). Accept that state: strip the outer quotes
+            # and parse the list literal instead of failing validation.
+            if isinstance(raw_seq, str):
+                stripped = raw_seq.strip()
+                if stripped.startswith(("[", '"[', "'[")):
+                    candidate = stripped.strip('"').strip("'")
+                    parsed = None
+                    attempts = [candidate, candidate.replace('\\"', '"')]
+                    for attempt in attempts:
+                        if parsed is not None:
+                            break
+                        try:
+                            parsed = ast.literal_eval(attempt)
+                        except (ValueError, SyntaxError):
+                            try:
+                                import json as _json
+                                parsed = _json.loads(attempt)
+                            except (ValueError, TypeError):
+                                pass
+                    if isinstance(parsed, list):
+                        config[seq_key] = parsed
+                        raw_seq = parsed
+            _validate_sequence_list(raw_seq, seq_key)
 
     blocks = config.get("_occupier_sequence_blocks")
     if blocks is not None:
