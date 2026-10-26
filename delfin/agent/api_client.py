@@ -8430,6 +8430,8 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # The account key and the pins beside it (trust_store): DELFIN's own
     # processes outside agent sessions read them, no agent route does.
     "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
+    "messenger_sessions", "messenger_sessions/**",
+    "**/messenger_sessions", "**/messenger_sessions/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always

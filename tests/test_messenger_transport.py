@@ -102,3 +102,55 @@ def test_simplex_commands_use_documented_string_syntax():
         sent = next(s for s in commands if s.startswith('/_send'))
         assert json.loads(sent.split(' json ', 1)[1])[0]['msgContent']['text'] == 'hello'
     asyncio.run(run())
+
+
+def test_simplex_reply_retains_original_message_id():
+    from delfin.messenger.simplex import messages_of
+    event = received()
+    event['chatItems'][0]['chatItem']['quotedItem'] = {'itemId': 123}
+    assert messages_of(event)[0]['quote_id'] == '123'
+
+
+def test_simplex_media_events_preserve_sender_and_completion():
+    from delfin.messenger.simplex import messages_of
+    event = received()
+    wrapped = event['chatItems'][0]
+    wrapped['chatItem']['content']['msgContent'] = {'type': 'image', 'text': 'look'}
+    wrapped['chatItem']['file'] = {'fileId': 1, 'fileSize': 100, 'fileName': 'a.png',
+                                  'fileStatus': {'type': 'rcvInvitation'}}
+    message = messages_of(event)[0]
+    assert message['sender'] == '7' and message['media_kind'] == 'image'
+    assert not message['complete']
+    complete = messages_of({'type': 'rcvFileComplete', 'chatItem': wrapped})[0]
+    assert complete['complete'] and complete['file']['fileId'] == 1
+
+
+def test_file_and_group_rename_use_pinned_simplex_api():
+    async def run():
+        daemon = Daemon()
+        commands = []
+        async def command(text):
+            commands.append(text)
+            return {}
+        daemon.command = command
+        await daemon.rename_group('#10', 'Research')
+        await daemon.receive_file(42, '/tmp/file.png')
+        await daemon.send_file('#10', '/tmp/result.pdf', 'Report')
+        assert commands[0].startswith('/_group_profile #10 ')
+        assert commands[1] == '/freceive 42 encrypt=off /tmp/file.png'
+        body = json.loads(commands[2].split(' json ')[1])
+        assert body[0]['fileSource']['filePath'] == '/tmp/result.pdf'
+        assert body[0]['msgContent']['type'] == 'file'
+    asyncio.run(run())
+
+
+def test_xftp_is_accepted_only_after_its_description_arrives():
+    from delfin.messenger.simplex import messages_of
+    event = received()
+    wrapped = event['chatItems'][0]
+    wrapped['chatItem']['content']['msgContent'] = {'type': 'file', 'text': ''}
+    wrapped['chatItem']['file'] = {'fileId': 1, 'fileSize': 100, 'fileName': 'a.pdf',
+                                  'fileProtocol': 'xftp', 'fileStatus': {'type': 'rcvInvitation'}}
+    assert messages_of(event)[0]['await_description']
+    ready = messages_of({'type': 'rcvFileDescrReady', 'chatItem': wrapped})[0]
+    assert not ready['await_description'] and not ready['complete']

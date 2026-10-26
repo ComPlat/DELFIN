@@ -14,6 +14,7 @@ class Daemon:
         self.invited = []
     async def send_chat(self, chat, text):
         self.sent.append((chat, text))
+        return {"chatItems": [{"chatItem": {"meta": {"itemId": len(self.sent)}}}]}
     async def create_group(self, title):
         self.groups.append(title)
         return '#' + str(100 + len(self.groups))
@@ -26,16 +27,21 @@ class Bridge:
         self.calls = []
         self.missing = set()
         self.pending = {}
+        self.active = {"s1", "s2", "s3"}
+        self.reads = []
     def ask(self, command):
-        self.calls.append(command)
+        if command.get("action") not in {None, "status", "pending"}:
+            self.calls.append(command)
+        else:
+            self.reads.append(command)
         if command['cmd'] == 'sessions':
-            return {'sessions': [{'id': sid, 'name': 'same title', 'state': 'idle'} for sid in ['s1', 's2']]}
+            return {'sessions': [{'id': sid, 'name': 'same title', 'state': 'idle', 'messengerEnabled': sid in self.active} for sid in ['s1', 's2']]}
         sid = command['session']
         if sid in self.missing:
             return {'error': 'Sitzung nicht verfügbar'}
         action = command['action']
         if action == 'status':
-            return {'ok': True, 'title': 'same title', 'state': 'idle', 'answer': 'short result'}
+            return {'ok': True, 'title': 'same title', 'state': 'idle', 'answer': 'short result', 'messengerEnabled': sid in self.active}
         if action == 'pending':
             return {'ok': True, 'items': self.pending.get(sid, [])}
         return {'ok': True, 'accepted': True}
@@ -103,7 +109,6 @@ def test_status_and_update_stay_in_the_room(rig):
     asyncio.run(rooms.handle(message(text='/status')))
     asyncio.run(rooms.handle(message(text='/update', mid='2')))
     assert bridge.calls == [
-        {'cmd': 'session', 'session': 's1', 'action': 'status'},
         {'cmd': 'session', 'session': 's1', 'action': 'update', 'text': UPDATE}]
 
 
@@ -138,20 +143,20 @@ def test_missing_session_never_creates_or_uses_another(rig):
     bridge.missing.add('s1')
     asyncio.run(rooms.handle(message()))
     assert len(bridge.calls) == 1
-    assert 'nicht verfügbar' in daemon.sent[-1][1]
+    assert not daemon.sent
 
 
 def test_notifications_go_to_own_room_and_forum_only(rig):
     rooms, daemon, bridge = rig
-    bridge.pending['s1'] = [{'id': 'abc', 'kind': 'confirm', 'text': 'run calculation', 'phoneApproval': True}]
+    bridge.pending['s1'] = [{'id': 'abc', 'kind': 'confirm', 'text': 'run calculation', 'phoneApproval': True, 'sessionId': 's1', 'options': [{'key': 'y', 'label': 'yes'}, {'key': 'n', 'label': 'no'}]}]
     asyncio.run(rooms.refresh())
     s1 = [(chat, text) for chat, text in daemon.sent if '· s1]' in text]
     assert {chat for chat, _ in s1} == {'#10', '#30'}
-    assert any('/approve abc' in text for _, text in s1)
+    assert any('yes/ja' in text for _, text in s1)
     count = len(daemon.sent)
     asyncio.run(rooms.refresh())
     assert len(daemon.sent) == count
-    assert all(r['cmd'] == 'session' and r['action'] in {'status', 'pending'} for r in bridge.calls)
+    assert not bridge.calls
 
 
 def test_setup_is_idempotent_and_new_room_is_fixed(rig):
@@ -178,7 +183,7 @@ def test_limits_and_no_automatic_answer_to_a_pending_question(rig):
     asyncio.run(rooms.handle(message(text='x' * 4097)))
     assert not bridge.calls
     for i in range(20):
-        asyncio.run(rooms.handle(message(text='yes', mid=str(i))))
+        asyncio.run(rooms.handle(message(text='calculate', mid=str(i))))
     assert len(bridge.calls) == 15
     assert all(r['action'] == 'prompt' for r in bridge.calls)
 
@@ -227,3 +232,146 @@ def test_pairing_rejects_an_unidentified_invitation(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.simplex, 'Daemon', InvalidDaemon)
     assert cli._pair() == 1
     assert store.paired_contact() is None
+
+
+def test_sync_only_connects_explicitly_enabled_sessions(rig):
+    rooms, daemon, bridge = rig
+    bridge.active.clear()
+    store.forget_room('#10')
+    store.forget_room('#20')
+    store.forget_room('#30')
+    asyncio.run(rooms.sync())
+    assert not daemon.groups
+    bridge.active.add('s2')
+    asyncio.run(rooms.sync())
+    assert {r['session_id'] for r in store.rooms().values()} == {None, 's2'}
+
+
+def test_disabled_room_cannot_receive_commands_notifications_or_broadcasts(rig):
+    rooms, daemon, bridge = rig
+    bridge.active.remove('s1')
+    asyncio.run(rooms.handle(message('#10', 'calculate')))
+    assert not bridge.calls and not daemon.sent
+    asyncio.run(rooms.handle(message('#30', 'calculate', mid='2')))
+    assert [r['session'] for r in bridge.calls] == ['s2']
+    asyncio.run(rooms.refresh())
+    assert not any(chat == '#10' for chat, _ in daemon.sent)
+
+
+def test_reply_yes_uses_the_quoted_request_without_slash_or_code(rig):
+    rooms, daemon, bridge = rig
+    item = {'id': 'abc', 'sessionId': 's1', 'kind': 'confirm', 'text': 'Run tests?',
+            'phoneApproval': True, 'options': [{'key': 'y', 'label': 'yes'}, {'key': 'n', 'label': 'no'}]}
+    bridge.pending['s1'] = [item]
+    asyncio.run(rooms.refresh())
+    quoted = next(mid for (chat, mid), value in rooms._reply_targets.items() if chat == '#10' and value['id'] == 'abc')
+    msg = message(text='yes')
+    msg['quote_id'] = quoted
+    asyncio.run(rooms.handle(msg))
+    assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'decide',
+                             'id': 'abc', 'choice': 'y', 'persist': False}]
+    assert 'TUI/Dashboard erledigt' in daemon.sent[-1][1]
+
+
+def test_unquoted_yes_and_wrong_quote_cannot_approve(rig):
+    rooms, _, bridge = rig
+    asyncio.run(rooms.handle(message(text='yes')))
+    msg = message(text='yes', mid='2')
+    msg['quote_id'] = 'other-message'
+    asyncio.run(rooms.handle(msg))
+    assert not bridge.calls
+
+
+def test_plain_question_answer_is_bound_to_its_message(rig):
+    rooms, _, bridge = rig
+    asyncio.run(rooms.send_request('#10', store.rooms()['#10'],
+        {'id': 'question-code', 'sessionId': 's1', 'kind': 'question', 'text': 'Solvent?'}))
+    msg = message(text='DMF')
+    msg['quote_id'] = next(mid for chat, mid in rooms._reply_targets if chat == '#10')
+    asyncio.run(rooms.handle(msg))
+    assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'answer', 'id': 'question-code', 'text': 'DMF'}]
+
+
+def test_forum_and_notifications_can_be_disabled_independently(rig):
+    rooms, daemon, bridge = rig
+    asyncio.run(rooms.handle(message(text='forum off')))
+    asyncio.run(rooms.handle(message('#30', 'calculate', mid='2')))
+    assert [r['session'] for r in bridge.calls] == ['s2']
+    asyncio.run(rooms.handle(message(text='meldungen aus', mid='3')))
+    daemon.sent.clear()
+    asyncio.run(rooms.refresh())
+    assert all(chat != '#10' for chat, _ in daemon.sent)
+    asyncio.run(rooms.handle(message('#30', 'forum off', mid='4')))
+    bridge.calls.clear()
+    asyncio.run(rooms.handle(message('#30', 'calculate', mid='5')))
+    assert bridge.calls == []
+
+
+def test_agent_announcements_are_opt_in_and_never_replayed(rig):
+    rooms, daemon, bridge = rig
+    ask = bridge.ask
+    def answer(command):
+        if command.get('action') == 'announcement':
+            return {'text': 'Ready', 'id': 'unique'} if command['session'] == 's1' else {'text': ''}
+        return ask(command)
+    bridge.ask = answer
+    asyncio.run(rooms.refresh())
+    assert bridge.calls == []
+    asyncio.run(rooms.handle(message('#30', 'austausch on')))
+    asyncio.run(rooms.refresh())
+    assert len(bridge.calls) == 1
+    assert bridge.calls[0]['session'] == 's2'
+    assert 'keine Nutzeranweisung oder Freigabe' in bridge.calls[0]['text']
+    asyncio.run(rooms.refresh())
+    assert len(bridge.calls) == 1
+
+
+def test_expired_quote_never_approves_the_next_request(rig):
+    rooms, daemon, bridge = rig
+    original = {'id': 'old', 'sessionId': 's1', 'kind': 'confirm', 'text': 'First',
+                'phoneApproval': True, 'options': [{'key': 'y'}, {'key': 'n'}]}
+    bridge.pending['s1'] = [original]
+    async def run():
+        await rooms.refresh()
+        old_mid = next(mid for (chat, mid), item in rooms._reply_targets.items() if item['id'] == 'old')
+        bridge.pending['s1'] = [{**original, 'id': 'new', 'text': 'Second'}]
+        await rooms.refresh()
+        await rooms.handle({**message(text='yes', mid='new-message'), 'quote_id': old_mid})
+    asyncio.run(run())
+    assert bridge.calls == []
+    assert 'nicht mehr zugeordnet' in daemon.sent[-1][1]
+
+
+def test_voice_transcript_is_reviewed_and_never_answers_a_permission(rig):
+    rooms, _, bridge = rig
+    async def run():
+        await rooms.send('#10', 'Transcript: yes', request={
+            'id': 'voice', 'sessionId': 's1', 'kind': 'voice', 'text': 'yes', 'generation': None})
+        mid = next(mid for chat, mid in rooms._reply_targets if chat == '#10')
+        await rooms.handle({**message(text='yes', mid='voice-yes'), 'quote_id': mid})
+        assert bridge.calls == []
+        await rooms.handle({**message(text='senden', mid='voice-send'), 'quote_id': mid})
+        assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'prompt', 'text': 'Sprachnachricht des Nutzers (Transkript):\nyes'}]
+    asyncio.run(run())
+
+
+def test_permanent_permission_needs_second_message_reply(rig):
+    rooms, _, bridge = rig
+    base = bridge.ask
+    def ask(command):
+        if command.get('action') == 'decide' and not command.get('persist'):
+            bridge.calls.append(command)
+            return {'confirmationRequired': True}
+        return base(command)
+    bridge.ask = ask
+    async def run():
+        await rooms.send_request('#10', store.rooms()['#10'], {'id': 'rule', 'sessionId': 's1',
+            'kind': 'confirm', 'text': 'echo hi', 'phoneApproval': True,
+            'options': [{'key': 'y', 'label': 'Once'}, {'key': 'A', 'label': 'Always', 'detail': 'echo hi'}]})
+        mid = next(iter(rooms._reply_targets))[1]
+        await rooms.handle({**message(text='Always'), 'quote_id': mid})
+        assert not bridge.calls[-1]['persist']
+        confirmation = next(mid for (chat, mid), item in rooms._reply_targets.items() if item.get('confirmChoice'))
+        await rooms.handle({**message(text='yes', mid='second'), 'quote_id': confirmation})
+        assert bridge.calls[-1]['persist'] and bridge.calls[-1]['choice'] == 'A'
+    asyncio.run(run())

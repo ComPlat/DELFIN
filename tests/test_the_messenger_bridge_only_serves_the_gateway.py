@@ -7,11 +7,9 @@ are answered, only redacted and cut output leaves.
   redacted;
 * a secret value in a session title or a question's text never reaches
   the line out;
-* ``answer`` refuses a confirm (an approval) and an unknown id; a real
-  question's answer reaches the service's attention.answer;
+* unscoped answers are refused, even for questions;
 * an oversized line is refused; a line that is not JSON gets one error;
-* ``stop`` shuts the service down; ``prompt`` without a named session
-  reuses the one "phone" session, creating it once.
+* legacy mutations cannot bypass per-session activation or shut down the service.
 """
 
 from __future__ import annotations
@@ -212,53 +210,20 @@ def test_status_and_sessions_are_cut_and_redacted(rig):
         c.close()
 
 
-def test_answer_refuses_an_approval_and_an_unknown_id(rig):
+def test_legacy_mutations_cannot_bypass_session_opt_in(rig):
     c = rig.conn()
     try:
-        reply = c.ask({"cmd": "answer", "id": "c1", "text": "yes"})
-        assert reply.get("ok") is not True
-        assert "approval" in reply["error"] or "never" in reply["error"]
-        # The service's attention.answer was never asked for the confirm.
-        assert not any(m == "attention.answer" and p.get("id") == "c1"
-                       for m, p in rig.service.asked)
-        reply = c.ask({"cmd": "answer", "id": "nope", "text": "hi"})
-        assert reply.get("ok") is not True
-        assert "no pending item" in reply["error"]
-        # A question goes through.
-        reply = c.ask({"cmd": "answer", "id": "q1", "text": "DMF"})
-        assert reply.get("ok") is True
-        assert ("attention.answer", {"id": "q1", "text": "DMF"}) in rig.service.asked
-    finally:
-        c.close()
-
-
-def test_prompt_reuses_the_phone_session(rig):
-    c = rig.conn()
-    try:
-        reply = c.ask({"cmd": "prompt", "text": "start the benzene run"})
-        assert reply.get("ok") is True
-        assert reply["session"] == "phone-1"
-        first = [p for m, p in rig.service.asked if m == "session.create"]
-        reply = c.ask({"cmd": "prompt", "text": "again"})
-        second = [p for m, p in rig.service.asked if m == "session.create"]
-        assert len(first) == len(second) == 1, "the phone session is created once"
-        # The second prompt went to the same session.
-        prompts = [p for m, p in rig.service.asked if m == "session.prompt"]
-        assert all(p["sessionId"] == "phone-1" for p in prompts)
-        # An unknown named session is refused.
-        reply = c.ask({"cmd": "prompt", "session": "ghost", "text": "hi"})
-        assert reply.get("ok") is not True
-    finally:
-        c.close()
-
-
-def test_stop_shuts_the_service(rig):
-    c = rig.conn()
-    try:
-        reply = c.ask({"cmd": "stop"})
-        assert reply.get("ok") is True
-        assert reply["stopping"] is True
-        assert rig.service.asked[-1][0] == "service.shutdown"
+        commands = [
+            {'cmd': 'answer', 'id': 'q1', 'text': 'DMF'},
+            {'cmd': 'answer', 'id': 'c1', 'text': 'yes'},
+            {'cmd': 'prompt', 'text': 'create a phone session'},
+            {'cmd': 'prompt', 'session': 's1', 'text': 'run'},
+            {'cmd': 'stop'},
+        ]
+        for command in commands:
+            assert 'error' in c.ask(command)
+        assert not any(method in {'attention.answer', 'session.create', 'session.prompt', 'service.shutdown'}
+                       for method, _ in rig.service.asked)
     finally:
         c.close()
 
@@ -339,11 +304,11 @@ def test_idle_gateway_receives_service_events(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
-def test_named_prompt_resolves_title_to_session_id(rig):
+def test_named_prompt_cannot_redirect_by_mutable_title(rig):
     c = rig.conn()
     try:
-        assert c.ask({'cmd': 'prompt', 'session': 'calc 1', 'text': 'run'})['ok']
-        assert rig.service.asked[-1][1]['sessionId'] == 's1'
+        assert 'error' in c.ask({'cmd': 'prompt', 'session': 'calc 1', 'text': 'run'})
+        assert not any(m == 'session.prompt' for m, _ in rig.service.asked)
     finally:
         c.close()
 

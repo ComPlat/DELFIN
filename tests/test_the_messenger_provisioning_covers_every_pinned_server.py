@@ -207,7 +207,8 @@ def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
     gateway = (tmp_path / 'units/delfin-messenger-gateway.service').read_text()
     bridge = (tmp_path / 'units/delfin-messenger-bridge.service').read_text()
     daemon = (tmp_path / 'units/simplex-chat-daemon.service').read_text()
-    assert f'--server-port {DEFAULT_PORT}' in daemon
+    assert f'--chat-server-port {DEFAULT_PORT}' in daemon
+    assert '--files-folder ' in daemon and '--auto-accept-files 0' in daemon
     assert f'Environment=DELFIN_MESSENGER_PORT={DEFAULT_PORT}' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in bridge

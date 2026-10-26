@@ -83,7 +83,18 @@ def put_room(chat: str, session_id: str | None, title: str, *, owner: str,
             raise ValueError('a chat cannot be rebound to another session')
         if any(r['session_id'] == session_id and key != chat for key, r in bindings.items()):
             raise ValueError('session already has a chat')
-        bindings[chat] = {'session_id': session_id, 'title': title, 'ready': ready}
+        bindings[chat] = {**(old or {}), 'session_id': session_id, 'title': title, 'ready': ready}
+        _write(data)
+
+
+def configure_room(chat: str, *, owner: str, **settings) -> None:
+    if set(settings) - {'forum', 'notifications', 'relay'}:
+        raise ValueError('unknown room setting')
+    with _locked():
+        data = load()
+        if data.get('contact_id') != owner or chat not in data.get('rooms', {}):
+            raise ValueError('pairing or room changed')
+        data['rooms'][chat].update(settings)
         _write(data)
 
 

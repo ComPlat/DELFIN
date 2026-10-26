@@ -1013,6 +1013,7 @@ _HOME_SECRET_DIRS = (
     # The account key and the MCP pins (trust_store): read by DELFIN's
     # own processes, never by a command an agent runs.
     ".delfin/trust_store",
+    ".delfin/messenger_sessions",
 )
 
 
@@ -1035,6 +1036,12 @@ def runtime_masked_dirs() -> list[str]:
         d = _ts.ensure_store_dir()
         if d is not None and str(d.resolve()) not in out:
             out.append(str(d.resolve()))
+    except Exception:
+        pass
+    try:
+        from delfin.messenger import activation
+        activation._DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        out.append(str(activation._DIR.resolve()))
     except Exception:
         pass
     return out

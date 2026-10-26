@@ -48,7 +48,7 @@ STATE_DIR="${MESSENGER_STATE_DIR:-/var/lib/delfin-messenger}"
 SERVICE_USER="${MESSENGER_SERVICE_USER:-delfin}"
 BRIDGE_PYTHON="${MESSENGER_BRIDGE_PYTHON:-${PREFIX}/bin/venv/bin/python}"
 BRIDGE_SOCKET="/run/delfin-messenger-bridge/messenger.sock"
-API_PORT="5227"          # simplex-chat daemon local API (--server-port)
+API_PORT="5227"          # simplex-chat daemon local API (--chat-server-port)
 NFT_TABLE="delfin_messenger"
 
 say() { printf '[messenger] %s\n' "$*" >&2; }
@@ -135,7 +135,7 @@ After=network.target
 [Service]
 User=${GW_USER}
 Group=${GW_USER}
-ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --server-port ${API_PORT}
+ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --chat-server-port ${API_PORT} --files-folder ${STATE_DIR} --auto-accept-files 0
 Restart=on-failure
 RestartSec=5
 

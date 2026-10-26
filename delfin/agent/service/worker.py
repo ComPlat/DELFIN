@@ -1428,6 +1428,11 @@ class Worker:
         text = str(params.get("text") or "").strip()
         if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
+        if text.split()[0].lower() == "/sync":
+            from delfin.messenger.activation import configure
+            output = configure(self.emitter.session_id, text[5:].strip(), endpoint="")
+            self.emitter.emit("notice", text=output)
+            return {"accepted": True}
         how = str(params.get("how") or "queue")
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")

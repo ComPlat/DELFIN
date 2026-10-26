@@ -10,7 +10,11 @@ from delfin.agent.service.supervisor import Supervisor
 
 
 @pytest.fixture
-def scoped():
+def scoped(tmp_path, monkeypatch):
+    from delfin.messenger import activation
+    monkeypatch.setattr(activation, "_DIR", tmp_path / "activation")
+    activation.configure("s1")
+    activation.configure("s2")
     redactor = Redactor()
     redactor._known = ['SECRET-CREDENTIAL']
     redactor._loaded = float('inf')
@@ -116,7 +120,7 @@ def test_unknown_session_does_not_fall_back(scoped):
     bridge, _, calls = scoped
     reply = asyncio.run(bridge._cmd_session({'session': 'same name', 'action': 'prompt', 'text': 'run'}))
     assert 'error' in reply
-    assert [m for m, _ in calls] == ['sessions.list']
+    assert not calls
 
 
 def test_pending_read_does_not_attach_wake_or_replay():
@@ -133,6 +137,8 @@ def test_phone_decision_resolves_a_real_worker_request(tmp_path, prompt, action,
         sid = service.session(client, mode='default')
         client.request('session.prompt', {'sessionId': sid, 'text': prompt})
         client.wait_for(lambda e: e.get('type') == 'permission.asked' and e.get('session') == sid)
+        from delfin.messenger.activation import configure
+        configure(sid)
         bridge = Bridge(allowed_uid=1, service_path=service.socket)
         async def run():
             pending = await bridge._run_command({'cmd': 'session', 'session': sid, 'action': 'pending'})
@@ -150,3 +156,48 @@ def test_phone_decision_resolves_a_real_worker_request(tmp_path, prompt, action,
         finally:
             if bridge._service is not None:
                 bridge._service.close()
+
+
+@pytest.mark.parametrize('off_on', [False, True])
+def test_disabled_or_reenabled_session_refuses_old_approval(scoped, off_on):
+    from delfin.messenger.activation import configure
+    bridge, _, calls = scoped
+    async def run():
+        code = await code_for(bridge)
+        configure('s1', 'off')
+        if off_on:
+            configure('s1')
+        assert 'error' in await bridge._cmd_session({'session': 's1', 'action': 'approve', 'id': code})
+    asyncio.run(run())
+    assert not any(m == 'permission.reply' for m, _ in calls)
+
+
+def test_permanent_choice_requires_explicit_confirmation(scoped):
+    bridge, _, calls = scoped
+    async def run():
+        code = await code_for(bridge)
+        params = {'session': 's1', 'action': 'decide', 'id': code, 'choice': 'A'}
+        assert (await bridge._cmd_session(params))['confirmationRequired']
+        assert not any(m == 'permission.reply' for m, _ in calls)
+        assert (await bridge._cmd_session({**params, 'persist': True}))['ok']
+    asyncio.run(run())
+    assert [p for m, p in calls if m == 'permission.reply'] == [
+        {'sessionId': 's1', 'requestId': 'p123-1', 'choice': 'A', 'persist': True}]
+
+
+def test_sync_is_immediate_even_while_tui_waits_for_permission(tmp_path, monkeypatch):
+    from tui_service import ServiceProcess
+    from delfin.messenger import activation
+    with ServiceProcess(tmp_path) as service:
+        monkeypatch.setattr(activation, '_DIR', service.scratch / '.delfin' / 'messenger_sessions')
+        client = service.client()
+        sid = service.session(client, mode='default')
+        assert not activation.enabled(sid)
+        client.request('session.prompt', {'sessionId': sid, 'text': 'bash'})
+        event, _ = client.wait_for(lambda e: e.get('type') == 'permission.asked')
+        client.request('session.prompt', {'sessionId': sid, 'text': '/sync'})
+        assert activation.enabled(sid)
+        client.request('session.prompt', {'sessionId': sid, 'text': '/sync off'})
+        assert not activation.enabled(sid)
+        assert client.request('session.pending', {'sessionId': sid})['pending']
+        client.request('permission.reply', {'sessionId': sid, 'requestId': event['requestId'], 'choice': 'n'})

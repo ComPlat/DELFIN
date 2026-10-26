@@ -1,56 +1,109 @@
-# SimpleX rooms for DELFIN
+# SimpleX: private session chats and optional forum
 
-The phone has a **DELFIN Forum** and a **separate private group per session**.
-Each group contains the bot and the paired human. DELFIN labels every outgoing
-message with the session title and stable session ID; the agents do not need
-separate SimpleX accounts. A group ID is permanently bound to a session ID.
-Renaming a session never changes its recipient, and a missing session never
-falls back to another agent. The original direct contact is for setup only.
+Pair the phone once. Then type `/sync` in each desired TUI or dashboard session.
+New sessions default to **off**. `/sync off` immediately stops phone routing for
+that session; `/sync status` reports its setting. The setting is kept by session
+ID, not by title. A resumed dashboard needs `/sync` to connect its live tab again.
+An activated service session remains addressable while its worker is available.
+The background gateway discovers enabled sessions and invites the paired user to
+one private group per session, plus DELFIN Forum. Accept the SimpleX invitations.
+Phone `sync` refreshes invitations; it cannot activate another session.
 
-## What reaches the phone
+## Everyday use
 
-Short results, failures, questions and pending approval previews. No transcript,
-model reasoning, tool log or file attachment is forwarded. `status` reads a short
-service summary without asking the model. `update` sends a request for a brief
-progress report into the current turn. Reports are redacted and length-limited.
+Ordinary text in a session chat addresses exactly that session. Several sessions
+can run concurrently. Every notification includes the name and stable session ID.
+`name Research` renames the session and its SimpleX group without changing routing.
+A name in the forum changes the forum title. Renaming is not a recipient switch.
 
-## Phone commands
+Commands below are plain text; a leading slash is optional:
 
-- `/sessions`: session IDs, titles and state.
-- `/sync`: create the forum and individual chats for sessions on this service.
-  Accept the group invitations in SimpleX. Repeat to include new sessions.
-- `/chat SESSION_ID`: create the chat for one existing local session.
-- `/forum`: create just the shared forum.
-- In an individual chat, ordinary text goes only to that session.
-- In the forum, ordinary text goes to every connected session, once each.
-  The confirmation lists each recipient, including failures. Agent output is
-  never automatically sent as a prompt to other agents.
-- `/status`, `/update`, `/pending`: one session in its chat; all connected
-  sessions in the forum, with labels.
-- `/stop`: cancel the current turn in the chat's session; in the forum, cancel
-  the current turns of connected sessions. This does not shut down the service.
-- `/answer CODE text`: answer the exact question in its individual chat.
-- `/approve CODE`, `/deny CODE`: decide the exact request in its individual chat.
-  There is no collective approval command in the forum.
+| Text | Effect |
+| --- | --- |
+| `status` | Current short state, without asking the model |
+| `update` | Ask the agent for a brief progress report |
+| `pending` | Show currently open questions and approvals |
+| `stop` | Cancel the current turn |
+| `sessions` | List locally enabled sessions |
+| `name NAME` | Name this session/chat |
+| `forum on` / `forum off` | Join/leave forum routing; in the forum itself, enable/disable it globally |
+| `meldungen kurz` | Questions, approvals and brief completion/error messages (default) |
+| `meldungen fragen` | Only questions and approvals automatically |
+| `meldungen aus` | No automatic notifications; `status` and `pending` still work |
+| `dateien` | List files explicitly made available by this session |
+| `datei NAME` | Download one of those files |
+| `austausch on` / `austausch off` | In the forum: enable/disable explicit agent announcements (default off) |
 
-Free text never implicitly answers a question or grants an approval. `@name`
-redirection is rejected: use the intended session's chat.
+No complete transcript, reasoning, tool log or automatic file dump is sent.
+An individual room can remain enabled while its forum participation is disabled.
+Forum text addresses enabled participants only, with a delivery result for each.
+`stop` in the forum cancels their current turns, not the service itself.
 
-## Approvals
+## Questions and approvals
 
-The service's `session.pending` endpoint reads live requests without attaching,
-waking a worker or fetching its history. The bridge issues a random code bound
-to the session, request ID and complete request description. It expires after
-10 minutes and is consumed before a decision is forwarded. Replaced, resolved,
-wrong-session and previously used requests are refused. Bridge restarts
-invalidate codes: `/pending` obtains fresh ones.
+Use SimpleX's **Reply** gesture on the concrete request, then type `yes`/`ja`,
+`no`/`nein`, an offered option key or its full label. For a question, reply with
+your selection or free text. No slash command or code is required. A bare `yes`
+without a reply reference never approves anything. Images/audio are not approvals.
 
-Decisions go through the existing `permission.reply` and ProtocolBroker. A
-confirmation may be allowed once or denied; a plan may be approved into default
-mode or rejected. Permanent allow rules, accept-edits mode and blanket approvals
-are not exposed. A preview too long for the phone cannot be approved there;
-use the dashboard for the complete action. Questions use the broker's text
-answer path, never its approval choice path.
+The message shows the session, action/plan/question and the actual local options.
+A yes selects the normal approval (for TUI plans, default mode); alternative modes
+must be selected explicitly. Dashboard plans offer their existing execute option.
+Permanent rules require another reply to a separate confirmation message. The
+complete concrete preview must fit within 1400 characters for phone approval;
+longer previews remain available locally and can still be denied remotely.
+
+Internally each outgoing request message maps to an exact session/request ID,
+complete request fingerprint and activation generation. Codes expire after ten
+minutes and are consumed before dispatch. Changed, resolved, expired or replaced
+requests cannot apply to a later request. Disabling/re-enabling a session invalidates
+previous requests. After a gateway restart use `pending` to get current messages.
+There is no forum-wide approval. Compatibility `/approve CODE`, `/deny CODE` and
+`/answer CODE text` paths retain the same binding checks.
+
+Answers go through the existing service `permission.reply`/ProtocolBroker, or the
+live dashboard's existing confirmation, question and plan handlers. That clears
+the local pending request and wakes its waiting thread. A concurrent later answer
+is rejected. Timeout/continuation behavior is the existing broker's behavior;
+phone expiry does not grant the blocked action or resolve a different request.
+
+## Images, files and voice
+
+Attach images/documents/files in the intended session chat. The paired sender,
+room, session activation and transfer generation are checked. Files are limited
+to 8 MiB, four simultaneous transfers and 100 stored incoming files per session.
+The gateway cache is capped at 100 entries and expires files after 24 hours.
+Transfers cross the gateway/service user boundary in bounded chunks with a digest.
+
+Incoming files are stored under the session workspace in
+`.delfin-messenger/<session hash>/inbox`. Files are data, never automatically
+executed. The agent receives the path and can use existing `view_image`,
+`read_document` or `read_file` tools under its normal permissions. Image analysis
+requires a vision-capable model. Downloads come only from the corresponding
+`outbox`: ask the agent to prepare the desired artifact, then use `dateien` and
+`datei NAME`. Images can also be downloaded as file attachments. Symlink,
+hardlink, device, directory and traversal downloads are rejected. Files are sent
+as binary data on explicit request, not automatically redacted like text summaries.
+
+Voice transcription is optional and local. Install `faster-whisper` in the gateway
+environment and set `DELFIN_WHISPER_MODEL` to an already installed local model
+directory readable by the hardened gateway service (for example under
+`/opt/delfin-messenger/models`). No model download or external speech API is invoked.
+A separate process has a 120-second deadline. The transcript is shown for review;
+reply `senden` to submit it as an ordinary prompt. It cannot answer an approval.
+Without working transcription, the recording is delivered as an audio attachment
+with an explanation; the agent is not assumed to understand audio automatically.
+
+## Explicit agent announcements
+
+Normal agent output is never fed into another agent. With `austausch on` in the
+forum, a participating agent can explicitly publish a short UTF-8 `forum.txt` in
+its own outbox (maximum 1400 bytes). The gateway shares it with forum participants
+as **another agent's information**, never a user command or permission decision.
+The source session is named. Content fingerprints prevent repeat delivery, and
+limits of one announcement per source per minute and ten per gateway per hour
+bound automated chatter. The gateway does not request replies or relay transcripts.
+Turn this off with `austausch off`, or remove a session with `forum off`.
 
 ## Setup
 
@@ -59,45 +112,40 @@ Install DELFIN with `pip install ".[agent,messenger]"` into
 The agent service must run on the same host as user `delfin`, or set
 `MESSENGER_SERVICE_USER` and optionally `MESSENGER_BRIDGE_PYTHON` when provisioning.
 Restart the agent service after upgrading: the bridge needs `session.pending`.
+The daemon and gateway use port 5227. The bridge runs as the agent-service user
+with group `delfin-gw`; its 0660 socket is under `/run/delfin-messenger-bridge`
+(0750). The service runtime directory stays private.
 
-The provisioner gives daemon and gateway port 5227. The bridge unit runs as the
-agent-service user with group `delfin-gw`; its 0660 socket lives in the separate
-0750 directory `/run/delfin-messenger-bridge`. The service's own runtime directory
-stays private. The bridge uses the host's `/tmp` to reach the service socket.
-
-Create a SimpleX bot profile in the daemon database before pairing. Then:
+Create a SimpleX bot profile in the daemon database, then pair:
 
 ```sh
 sudo -u delfin-gw env DELFIN_MESSENGER_DIR=/var/lib/delfin-messenger/pairing /opt/delfin-messenger/bin/venv/bin/python -m delfin.messenger pair
 ```
 
-Open the one-time link in the phone app and compare the connection security code.
-Only the connection belonging to that invitation may complete pairing. Send
-`/sync` to the paired bot to get the forum and session invitations. Alternatively,
-use `python -m delfin.messenger forum` or `connect SESSION_ID` with the same user
-and environment. There is no dashboard/TUI connection button yet; these commands
-also work from a terminal.
+Open the one-time phone link and compare the connection security code. Only its
+contact can complete pairing. Activate desired sessions locally with `/sync`.
+The direct contact remains a setup channel. `revoke` with the same environment
+removes routing authorization immediately; already dispatched commands are not
+undone. `status` lists stored chat bindings.
 
-`revoke` with the same environment immediately removes routing authorization;
-commands already dispatched are not undone. `status` lists the stored chat
-bindings. Old single-contact pairing files remain valid, but free text in the
-old direct chat no longer dispatches tasks: create session rooms first.
+## Security and validation
 
-## Delivery and validation
+Only the paired human's received messages are accepted, including inside groups.
+Other members, sent-message echoes and unbound rooms cannot command sessions.
+UID and agent-process checks protect local sockets. The activation store is
+excluded from agent file tools and shell sandboxes. Room IDs cannot be rebound to
+another session. Rate/size limits and persistent incoming message IDs prevent
+replay across gateway restarts. Dispatch is at most once; after a connection
+failure, check `status` before retrying. Partial broadcasts are reported.
 
-Only messages from the paired contact are accepted, including inside groups.
-Sent-message echoes, other group members and unbound groups cannot command
-agents. Rate/size limits and persistent message IDs prevent replay after a
-restart. Dispatch is at most once: after a connection failure, check `/status`
-before repeating a command; partially delivered broadcasts are not retried
-silently. Revocation is checked before each broadcast recipient and notification.
-
-SimpleX v7.0.3 uses textual commands inside the WebSocket `cmd` field. Group,
-message and invitation formats follow the pinned upstream references:
+Wire commands and envelopes follow pinned SimpleX v7.0.3 primary references:
 [commands](https://github.com/simplex-chat/simplex-chat/blob/v7.0.3/bots/api/COMMANDS.md),
-[types](https://github.com/simplex-chat/simplex-chat/blob/v7.0.3/bots/api/TYPES.md).
+[types](https://github.com/simplex-chat/simplex-chat/blob/v7.0.3/bots/api/TYPES.md),
+[events](https://github.com/simplex-chat/simplex-chat/blob/v7.0.3/bots/api/EVENTS.md).
 
-Automated tests use simulated SimpleX traffic, actual local sockets and a real
-DELFIN service/approval broker with a fake model. A live SimpleX daemon and phone
-acceptance test remain necessary; provisioning and deployment are not performed
-by these tests.
+Automated tests cover simulated SimpleX traffic, actual local sockets, the real
+DELFIN service/approval broker with a fake model, dashboard gate resolution,
+activation, stale replies and file isolation. A live SimpleX daemon/phone test,
+real media transfers and an installed speech model remain deployment acceptance
+checks. These tests do not provision or deploy services or certify compliance
+with a particular external security standard.

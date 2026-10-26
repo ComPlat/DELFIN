@@ -127,6 +127,16 @@ class Daemon:
         messages = [{"msgContent": {"type": "text", "text": text}, "mentions": {}}]
         return await self.command(f"/_send {chat} json " + json.dumps(messages, ensure_ascii=False))
 
+    async def receive_file(self, file_id, path):
+        return await self.command(f"/freceive {int(file_id)} encrypt=off {path}")
+
+    async def send_file(self, chat, path, caption=''):
+        if chat[:1] not in {'@', '#'} or not chat[1:].isdigit():
+            raise ValueError('invalid chat reference')
+        messages = [{'fileSource': {'filePath': str(path)},
+                     'msgContent': {'type': 'file', 'text': caption}, 'mentions': {}}]
+        return await self.command(f'/_send {chat} json ' + json.dumps(messages))
+
     async def create_group(self, title: str) -> str:
         profile = {"displayName": title, "fullName": title}
         reply = await self.command(f"/_group {await self.user_id()} " + json.dumps(profile))
@@ -134,6 +144,10 @@ class Daemon:
 
     async def invite(self, chat: str, contact_id: str) -> None:
         await self.command(f"/_add #{int(chat[1:])} {int(contact_id)} member")
+
+    async def rename_group(self, chat: str, title: str) -> None:
+        await self.command(f"/_group_profile #{int(chat[1:])} " +
+                           json.dumps({'displayName': title, 'fullName': title}))
 
     async def pending_invitation(self) -> str | None:
         reply = await self.command(f"/_connect {await self.user_id()}")
@@ -170,18 +184,20 @@ def new_contact_id(event: dict) -> str | None:
 
 
 def messages_of(event: dict) -> list[dict]:
-    """Only received text messages, preserving chat, sender and stable item ID."""
-    if event.get("type") != "newChatItems":
+    """Received messages/file completions, preserving sender, chat and item ID."""
+    complete = event.get('type') == 'rcvFileComplete'
+    if event.get("type") not in {"newChatItems", "rcvFileDescrReady"} and not complete:
         return []
     messages = []
-    for wrapped in event.get("chatItems") or []:
+    wrappers = event.get('chatItems') or [] if event.get('type') == 'newChatItems' else [event.get('chatItem') or {}]
+    for wrapped in wrappers:
         info = wrapped.get("chatInfo") or {}
         item = wrapped.get("chatItem") or {}
         direction = item.get("chatDir") or {}
         content = item.get("content") or {}
         msg = content.get("msgContent") or {}
         meta = item.get("meta") or {}
-        if content.get("type") != "rcvMsgContent" or msg.get("type") != "text":
+        if content.get("type") != "rcvMsgContent" or msg.get("type") not in {"text", "image", "file", "voice", "video"}:
             continue
         if meta.get("itemDeleted") or meta.get("itemId") is None:
             continue
@@ -198,8 +214,20 @@ def messages_of(event: dict) -> list[dict]:
         else:
             continue
         if sender:
-            messages.append({"chat": chat, "sender": sender, "text": str(msg.get("text") or ""),
-                             "id": str(meta["itemId"])})
+            message = {"chat": chat, "sender": sender, "text": str(msg.get("text") or ""),
+                             "id": str(meta["itemId"])}
+            if msg.get('type') != 'text' and item.get('file'):
+                message['file'] = item['file']
+                message['media_kind'] = msg['type']
+                message['await_description'] = (item['file'].get('fileProtocol') == 'xftp' and
+                                                event.get('type') == 'newChatItems')
+                message['complete'] = complete or (item['file'].get('fileStatus') or {}).get('type') == 'rcvComplete'
+            elif complete:
+                continue
+            quote = (item.get("quotedItem") or {}).get("itemId")
+            if quote is not None:
+                message["quote_id"] = str(quote)
+            messages.append(message)
     return messages
 
 

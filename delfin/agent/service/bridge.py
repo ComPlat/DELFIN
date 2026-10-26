@@ -8,25 +8,24 @@ not what a client claims, but what the process that connected runs as.
 What the gateway may do is a fixed set of JSON-line commands; everything
 that goes out runs through the service's
 :class:`~delfin.agent.service.redact.Redactor` and is cut to a length limit,
-so a credential never reaches the phone and an event never becomes a
-megabyte. The bridge itself connects to the service's own socket
+so summaries mask credentials and events stay bounded. Explicit file downloads
+are binary artifacts from the session outbox; their contents are not text-redacted. The bridge itself connects to the service's own socket
 (``agent.sock``) as a window client (``client="delfin-tui"``-like name) --
 a process that is not an agent child, so it may act; the supervisor's own
 agent-detection and cage stay untouched. Scoped room commands use exact session IDs. A phone decision consumes a
 short-lived code bound to the live request and goes through permission.reply;
-only one-shot confirmation or a plan's default mode is allowed. No permanent
-allow rule or accept-edits mode can be selected from the messenger.
+the offered local choices are preserved, with a second confirmation for lasting
+rules. Sessions must be explicitly enabled locally; unscoped mutations are refused.
 
 Commands (one JSON object per line, both ways):
     {"cmd": "status"}                     -> the service's status (trimmed)
     {"cmd": "sessions"}                   -> the session roster (trimmed)
     {"cmd": "pending"}                    -> what needs the user (questions,
                                              approvals named but not granted)
-    {"cmd": "answer", "id", "text"}       -> answer a parked question
+    {"cmd": "answer", "id", "text"}       -> refused; use a scoped reply
     {"cmd": "prompt", "session", "text"}  -> send a task line to a session
-                                             (creates the phone session
-                                             on first use)
-    {"cmd": "stop"}                       -> stop the whole agent service
+                                             (exact enabled ID required)
+    {"cmd": "stop"}                       -> refused; use scoped stop
 Outgoing events (one JSON object per line):
     {"event": "session", ...}   a session's summary changed
     {"event": "attention", ...} what needs the user changed
@@ -44,6 +43,7 @@ import sys
 from pathlib import Path
 
 from . import rundir
+from delfin.messenger import activation
 
 #: Who may connect. On the Pi the gateway runs as the user ``delfin-gw``;
 #: overridable here so the tests run under the test runner's uid.
@@ -59,7 +59,7 @@ MAX_LINE_BYTES = 8_192
 
 #: Commands the gateway may send, and what each takes.
 COMMANDS = {
-    "session": {"session": "string", "action": "string", "text": "string?", "id": "string?"},
+    "session": {"session": "string", "action": "string", "text": "string?", "id": "string?", "choice": "string?", "persist": "boolean?"},
     "status": {},
     "sessions": {},
     "pending": {},
@@ -158,7 +158,6 @@ class Bridge:
         self._subscribers: dict[asyncio.StreamWriter, object] = {}
         self._service: object | None = None
         self._pump_task: object | None = None
-        self._phone_session: str | None = None
         self._issued: dict[str, tuple] = {}
 
     # -- the service side ---------------------------------------------------------------
@@ -322,6 +321,8 @@ class Bridge:
                 continue
             if value is None:
                 return f"missing {key}"
+            if kind.startswith("boolean") and not isinstance(value, bool):
+                return f"{key} must be a boolean"
             if kind.startswith("string") and not isinstance(value, str):
                 return f"{key} must be a string"
         extra = set(params) - {k.split("?")[0] for k in spec}
@@ -335,19 +336,46 @@ class Bridge:
         return self._service
 
     async def _request(self, method: str, params: dict | None = None) -> dict:
-        return await asyncio.to_thread(self._client().request, method, params or {})
+        params = params or {}
+        sid = params.get("sessionId")
+        if sid and activation.record(sid).get("endpoint"):
+            return await asyncio.to_thread(activation.ask_dashboard, sid, method, params)
+        reply = await asyncio.to_thread(self._client().request, method, params)
+        if method == "sessions.list":
+            for record in activation.records():
+                if not record.get("endpoint"):
+                    continue
+                try:
+                    status = await asyncio.to_thread(activation.ask_dashboard, record["session_id"], "session.status", {})
+                    if not status.get("error"):
+                        reply.setdefault("sessions", []).append(status)
+                except (OSError, ValueError):
+                    pass
+        return reply
 
     async def _cmd_session(self, params: dict) -> dict:
         """Room commands require an exact, local session ID; never fall back."""
         sid = params["session"]
+        if not activation.enabled(sid):
+            return {"error": "SimpleX ist für diese Sitzung ausgeschaltet. In TUI/Dashboard mit /sync aktivieren."}
+        generation = activation.record(sid).get("generation")
         listing = await self._request("sessions.list")
+        if not activation.enabled(sid) or activation.record(sid).get("generation") != generation:
+            return {"error": "SimpleX-Aktivierung wurde geändert. Anfrage nicht ausgeführt."}
         row = next((r for r in listing.get("sessions", [])
                     if str(r.get("sessionId") or r.get("id") or "") == sid), None)
         if row is None:
             return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
         action = params["action"]
+        if action in {'files', 'announcement'} or action.startswith(('upload.', 'download.')):
+            from delfin.messenger.media import Exchange
+            if not hasattr(self, '_media'):
+                self._media = Exchange()
+            return self._media.command(sid, activation.record(sid).get('generation'),
+                row.get('workspace'), action, token=params.get('id', ''), text=params.get('text', ''))
         if action == "status":
             return {"ok": True, "state": row.get("state"), "title": row.get("title"), "sessionId": sid,
+                    "messengerEnabled": True, "generation": activation.record(sid).get("generation"),
                     "activity": _truncate(self._redactor().text(str(row.get("activity") or ""))),
                     "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 1000)}
         if action == "pending":
@@ -359,28 +387,33 @@ class Bridge:
                 rid, kind = str(req.get("requestId") or ""), req.get("kind")
                 preview = self._redactor().text(str(req.get("question") or req.get("preview") or ""))
                 if kind == "ask" and req.get("choices"):
-                    preview += "\n" + self._redactor().text(" / ".join(map(str, req["choices"])))
-                fingerprint = json.dumps(req, sort_keys=True)
+                    details = req.get("choiceDetails") or []
+                    choices = [str(choice) + (": " + str(details[i]) if i < len(details) and details[i] else "")
+                               for i, choice in enumerate(req["choices"])]
+                    preview += "\n" + self._redactor().text("\n".join(choices))
+                fingerprint = json.dumps([activation.record(sid).get("generation"), req], sort_keys=True)
                 code = next((k for k, v in self._issued.items() if v[:3] == (sid, rid, fingerprint)), None)
                 if code is None:
                     code = secrets.token_hex(4)
                     self._issued[code] = (sid, rid, fingerprint, now)
                 keys = {o.get("key") for o in req.get("options", [])}
-                # Never approve a truncated action or a lasting permission change.
+                # Never approve a truncated action; lasting rules require confirmation.
                 allowed = len(preview) <= 1400 and ((kind == "confirm" and "y" in keys) or
-                                                   (kind == "plan" and "d" in keys))
+                                                   (kind == "plan" and bool(keys & {"d", "e"})))
                 items.append({"id": code, "kind": "question" if kind == "ask" else kind,
                               "sessionId": sid, "text": _truncate(preview, 1400),
-                              "phoneApproval": allowed, "tool": req.get("tool", "")})
+                              "phoneApproval": allowed, "tool": req.get("tool", ""),
+                              "options": self._redactor().value(req.get("options", [])),
+                              "choices": req.get("choices", [])})
             return {"ok": True, "items": items}
-        if action in {"answer", "approve", "deny"}:
+        if action in {"answer", "approve", "deny", "decide"}:
             code = str(params.get("id") or "")
             issued = self._issued.get(code)
             if issued is None or issued[0] != sid or time.monotonic() - issued[3] >= 600:
                 return {"error": "Anfrage abgelaufen oder gehört zu einer anderen Sitzung. pending erneut aufrufen."}
             live = await self._request("session.pending", {"sessionId": sid})
             req = next((r for r in live.get("pending", []) if r.get("requestId") == issued[1]), None)
-            if req is None or json.dumps(req, sort_keys=True) != issued[2]:
+            if req is None or json.dumps([activation.record(sid).get("generation"), req], sort_keys=True) != issued[2]:
                 self._issued.pop(code, None)
                 return {"error": "Anfrage nicht mehr offen oder geändert."}
             kind = req.get("kind")
@@ -389,14 +422,19 @@ class Bridge:
                 reply_params["text"] = str(params.get("text") or "")
                 if not reply_params["text"].strip():
                     return {"error": "Leere Antwort."}
-            elif action in {"approve", "deny"} and kind in {"confirm", "plan"}:
-                choice = "n" if action == "deny" else "d" if kind == "plan" else "y"
+            elif action in {"approve", "deny", "decide"} and kind in {"confirm", "plan"}:
+                choice = params.get("choice", "") if action == "decide" else "n" if action == "deny" else "d" if kind == "plan" else "y"
                 if choice not in {o.get("key") for o in req.get("options", [])}:
                     return {"error": "Diese Entscheidung ist für die Anfrage nicht verfügbar."}
                 preview = self._redactor().text(str(req.get("preview") or ""))
-                if action == "approve" and len(preview) > 1400:
+                if choice != "n" and len(preview) > 1400:
                     return {"error": "Aktion zu lang für die Handyansicht. Bitte am Dashboard freigeben."}
-                reply_params.update(choice=choice, persist=False)
+                if choice == "?":
+                    return {"error": "Bitte eine der angezeigten Optionen auswählen."}
+                # Lasting rules need an explicit second reply to a new message.
+                if choice in {"A", "k", "p"} and not params.get("persist"):
+                    return {"ok": False, "confirmationRequired": True, "id": code, "choice": choice}
+                reply_params.update(choice=choice, persist=bool(params.get("persist", False)))
             else:
                 return {"error": "Antwort und Freigabe dürfen nicht verwechselt werden."}
             # Consume before awaiting: concurrent replies cannot apply this code twice.
@@ -408,11 +446,28 @@ class Bridge:
             text = str(params.get("text") or "").strip()
             if not text:
                 return {"error": "Leerer Auftrag."}
+            if row.get('workspace'):
+                from delfin.messenger.media import directory
+                with directory(row['workspace'], sid, 'outbox') as (_, outbox):
+                    text += ('\n\n[Messenger: Dateien/Bilder nur auf ausdrücklichen Wunsch des Nutzers '
+                             'für den Download in ' + str(outbox) + ' bereitstellen. '
+                             'Keine Geheimnisse oder Zugangsdaten exportieren. Den Dateinamen nennen; '
+                             'der Nutzer ruft ihn mit datei NAME ab. Kein kompletter Chat-Export. '
+                             'Für eine ausdrückliche kurze Mitteilung an andere Agenten kannst du forum.txt '
+                             'dort ablegen (max. 1400 UTF-8-Bytes). Nur bei vom Nutzer eingeschaltetem '
+                             'Austausch wird sie weitergegeben. Keine automatischen Antworten auf fremde Mitteilungen.]')
             reply = await self._request("session.prompt", {"sessionId": sid, "text": text, "how": "steer" if action == "update" else "queue"})
             return {"ok": True, "sessionId": sid, **reply}
         if action == "stop":
             reply = await self._request("session.cancel", {"sessionId": sid})
             return {"ok": True, **reply}
+        if action == "rename":
+            from .protocol import clean_title
+            title = clean_title(params.get("text"))
+            if not title:
+                return {"error": "Bitte einen Namen angeben."}
+            reply = await self._request("session.setTitle", {"sessionId": sid, "title": title})
+            return {"ok": not reply.get("error"), **reply}
         return {"error": "Unbekannter Sitzungsbefehl."}
 
     async def _cmd_status(self, _params: dict) -> dict:
@@ -436,6 +491,7 @@ class Bridge:
                 "id": str(row.get("sessionId") or row.get("id") or ""),
                 "name": self._redactor().text(_truncate(str(row.get("title") or row.get("name") or ""))),
                 "state": str(row.get("state") or ""),
+                "messengerEnabled": activation.enabled(str(row.get("sessionId") or row.get("id") or "")),
                 "elsewhere": bool(row.get("host")) if row in (reply.get("elsewhere") or []) else False,
             })
         return {"ok": True, "sessions": rows}
@@ -458,76 +514,17 @@ class Bridge:
             })
         return {"ok": True, "items": items}
 
-    async def _cmd_answer(self, params: dict) -> dict:
-        # Questions only. attention.answer refuses a confirm/plan itself;
-        # we refuse it here already, so the refusal is not an accident.
-        item_id = str(params.get("id") or "")
-        text = str(params.get("text") or "")
-        if not item_id or not text:
-            return {"error": "answer needs id and text"}
-        listing = await self._request("attention.list")
-        kinds = {str(it.get("id") or ""): str(it.get("kind") or "")
-                 for it in listing.get("items") or []}
-        kind = kinds.get(item_id)
-        if kind is None:
-            return {"error": f"no pending item {item_id!r}"}
-        if kind != "question":
-            return {"error": "approvals are never answered from the phone; "
-                             "approve at the dashboard or terminal"}
-        reply = await self._request("attention.answer", {"id": item_id, "text": text})
-        if not reply.get("ok"):
-            return {"error": str(reply.get("error") or "the answer was not taken")}
-        return {"ok": True}
+    async def _cmd_answer(self, _params: dict) -> dict:
+        return {"error": "Use a session-scoped question or approval reply."}
 
     async def _cmd_prompt(self, params: dict) -> dict:
-        text = str(params.get("text") or "").strip()
-        if not text:
-            return {"error": "a task needs some text"}
-        session = str(params.get("session") or "").strip()
-        if session and session != "phone":
-            known = await self._known_session(session)
-            if not known:
-                return {"error": f"no session {session!r}"}
-            session = known
-        else:
-            session = await self._ensure_phone_session()
-        reply = await self._request("session.prompt",
-                                    {"sessionId": session, "text": text,
-                                     "how": "queue"})
-        return {"ok": True, "session": session,
-                "accepted": bool(reply.get("accepted")),
-                "queued": bool(reply.get("queued"))}
-
-    async def _known_session(self, name_or_id: str) -> str | None:
-        try:
-            reply = await self._request("sessions.list")
-        except Exception:
-            return None
-        rows = (reply.get("sessions") or []) + (reply.get("elsewhere") or [])
-        for row in rows:
-            if name_or_id in (str(row.get("sessionId") or row.get("id") or ""), str(row.get("title") or "")):
-                return str(row.get("sessionId") or row.get("id") or "")
-        return None
-
-    async def _ensure_phone_session(self) -> str:
-        if self._phone_session:
-            # Still there? A stopped service or an ended session would
-            # make prompts vanish; the list is the truth.
-            if await self._known_session(self._phone_session):
-                return self._phone_session
-            self._phone_session = None
-        # Named session, created once, reused. The cwd is the service's
-        # HOME -- the gateway picks none.
-        reply = await self._request(
-            "session.create",
-            {"cwd": str(Path.home()), "title": "phone", "name": "phone"})
-        self._phone_session = str(reply.get("sessionId") or "")
-        return self._phone_session
+        sid = str(params.get('session') or '')
+        if not sid:
+            return {'error': 'An explicitly activated session ID is required.'}
+        return await self._cmd_session({'session': sid, 'action': 'prompt', 'text': params['text']})
 
     async def _cmd_stop(self, _params: dict) -> dict:
-        reply = await self._request("service.shutdown")
-        return {"ok": True, "stopping": bool(reply.get("stopping")),
-                "sessions": int(reply.get("sessions") or 0)}
+        return {'error': 'Use session-scoped stop; the phone cannot shut down the entire service.'}
 
 
 def main(argv: list[str] | None = None) -> int:

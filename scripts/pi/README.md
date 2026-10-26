@@ -232,14 +232,21 @@ boot".
 
 ## SimpleX messenger: forum and session chats
 
-After installing the `agent,messenger` extras into the gateway environment,
-provision with `pi_messenger.sh`. Pair the phone, then send `/sync` to the bot:
-it invites you to **DELFIN Forum** and one private group per local session.
-Accept these invitations in SimpleX. Repeat `/sync` to add new sessions.
+After installing the `agent,messenger` extras, provision with `pi_messenger.sh`
+and pair the phone once. In each desired TUI/dashboard session type `/sync`;
+new sessions stay off. Accept the session-group and forum invitations in SimpleX.
+`/sync off` disables that session again.
 
-A session chat addresses exactly that session. The forum addresses all connected
-sessions. `/status` reads the current state, `/update` requests a short progress
-report, and `/pending` shows questions and approvals. Only summaries and requests
-are sent, not the full conversation. Use `/answer CODE text`, `/approve CODE` or
-`/deny CODE` in the relevant session chat. Approvals are single-use and expire;
-there is no forum-wide approval. See [setup and command reference](../../docs/design/messenger-simplex.md).
+Reply directly to a question/approval message using SimpleX's Reply gesture and
+`yes/no`, `ja/nein`, an offered option or a text answer. The same local request
+closes in TUI/dashboard. Late replies never approve the next action.
+
+`name NAME` names a chat/session; `status`, `update`, and `pending` request details.
+`forum on/off` controls participation, and `austausch on/off` in the forum controls
+explicit agent announcements. Only short notices are sent by default; choose
+`meldungen fragen` or `meldungen aus` for less. Attach files/images up to 8 MiB;
+retrieve explicitly prepared artifacts with `dateien` and `datei NAME`. Optional
+local voice transcription needs faster-whisper and `DELFIN_WHISPER_MODEL` pointing
+to an installed model; review its transcript before sending.
+
+See [setup, security boundaries and command reference](../../docs/design/messenger-simplex.md).
