@@ -82,18 +82,24 @@ class TestFolderLookup:
     def test_missing_folder_rc1_trap(self, tmp_path):
         assert _mod_trap.main(["prog", str(tmp_path)]) == 1
 
-    def test_start_xyz_fallback_used(self, tmp_path):
-        # No xtbopt.xyz, one xyz present: the fallback picks the xyz —
+    def test_start_xyz_fallback_used(self, tmp_path, monkeypatch):
+        # No xtbopt.xyz, one xyz present: the fallback picks the xyz --
         # the engine must not silently read a nonexistent start.xyz.
+        # xtb is a stand-in that records the structure it was handed and
+        # leaves no result: the test is about which file is read, and must
+        # not depend on an xtb being installed (a scheduled CI run without
+        # one ended in SystemExit 3 from the resolver).
         d = tmp_path / "xtb" / "butanone"
         d.mkdir(parents=True)
-        (d / "opt1.xyz").write_text("13\nbutanone\nC 0 0 0\n")
-        assert _mod_min.main(["prog", str(tmp_path), "butanone"]) in (0, 1)
-        # The failure (if any) must come from the physics, not from
-        # "no xyz" — i.e. rc must not be the missing-file code with this
-        # xyz present.
-        assert _mod_min.main(["prog", str(tmp_path), "butanone"]) != 1 or \
-            (d / "xtbopt.xyz").is_file() is False
+        start = "13\nbutanone\nC 0 0 0\n"
+        (d / "opt1.xyz").write_text(start)
+        seen = tmp_path / "seen.xyz"
+        fake = tmp_path / "xtb-standin"
+        fake.write_text(f"#!/bin/sh\ncat \"$1\" > '{seen}'\nexit 1\n")
+        fake.chmod(0o755)
+        monkeypatch.setattr(_mod_min, "_xtb", lambda: str(fake))
+        assert _mod_min.main(["prog", str(tmp_path), "butanone"]) == 1
+        assert seen.read_text() == start
 
     def test_workspace_is_resolved_not_created(self, tmp_path):
         # A nonexistent workspace path must be refused, not mkdir'd.
