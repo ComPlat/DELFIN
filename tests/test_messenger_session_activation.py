@@ -131,9 +131,15 @@ def test_replaced_dashboard_question_rejects_old_phone_answer():
 
 
 def test_activation_store_is_hidden_from_agent_files_and_shells(tmp_path, monkeypatch):
-    from delfin.agent import sandbox, api_client
+    # Masked as a home secret in every cage (like the trust store), not as
+    # a runtime directory: a workspace that contains ~/.delfin keeps its
+    # write root under Landlock.
+    from delfin.agent import boundaries, sandbox, api_client
     monkeypatch.setattr(activation, '_DIR', tmp_path / 'messenger_sessions')
-    assert str(activation._DIR.resolve()) in sandbox.runtime_masked_dirs()
+    assert '.delfin/messenger_sessions' in sandbox._HOME_SECRET_DIRS
+    assert '.delfin/messenger_sessions' in boundaries.MASKED_HOME_ENTRIES
+    assert str(activation._DIR.resolve()) not in sandbox.runtime_masked_dirs()
+    assert not activation._DIR.exists()
     import fnmatch
     assert any(fnmatch.fnmatch('messenger_sessions/a.json', glob)
                for glob in api_client._DEFAULT_PATH_DENY_GLOBS)
