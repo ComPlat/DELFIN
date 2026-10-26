@@ -365,15 +365,19 @@ install_units() {
     say "no gateway venv under ${PREFIX}/bin/venv -- skipping the gateway unit (install DELFIN for ${GW_USER} first, then re-run)"
   fi
   systemctl daemon-reload
-  systemctl enable --now simplex-chat-daemon.service
+  # A re-run after an update brings new code or unit lines: restart what
+  # serves the phone. The agent service is only enabled -- a restart would
+  # end the sessions running in it.
   if [ -f "${UNIT_DIR}/delfin-agent-service.service" ]; then
     systemctl enable --now delfin-agent-service.service
   fi
-  if [ -f "${UNIT_DIR}/delfin-messenger-bridge.service" ]; then
-    systemctl enable --now delfin-messenger-bridge.service
-  fi
-  [ -f "${UNIT_DIR}/delfin-messenger-gateway.service" ] \
-    && systemctl enable --now delfin-messenger-gateway.service || true
+  local unit
+  for unit in simplex-chat-daemon delfin-messenger-bridge delfin-messenger-gateway; do
+    if [ -f "${UNIT_DIR}/${unit}.service" ]; then
+      systemctl enable "${unit}.service"
+      systemctl restart "${unit}.service"
+    fi
+  done
   say "units installed and started"
 }
 
