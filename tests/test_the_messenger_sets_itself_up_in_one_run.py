@@ -119,3 +119,21 @@ def test_the_agent_service_runs_as_its_own_unit(tmp_path):
 def test_uninstall_removes_the_new_unit_too():
     text = SCRIPT.read_text()
     assert "rm -f \"${UNIT_DIR}/delfin-agent-service.service\"" in text
+
+
+def test_a_second_run_restarts_what_it_changed_but_not_the_sessions(tmp_path):
+    # Re-running after an update copies new code and may change a unit
+    # (the daemon's bot-profile flags): daemon, bridge and gateway restart;
+    # the agent service is only enabled, its running sessions stay.
+    home = tmp_path / "home-delfin"
+    venv = home / "delfin/.venv/bin/python"
+    venv.parent.mkdir(parents=True)
+    venv.write_text("#!/bin/sh\nexit 0\n")
+    venv.chmod(0o755)
+    assert run_script(tmp_path).returncode == 0
+    calls = (tmp_path / "calls.log").read_text()
+    for unit in ("simplex-chat-daemon", "delfin-messenger-bridge",
+                 "delfin-messenger-gateway"):
+        assert f"systemctl restart {unit}.service" in calls, unit
+    assert "systemctl restart delfin-agent-service.service" not in calls
+    assert "systemctl enable --now delfin-agent-service.service" in calls
