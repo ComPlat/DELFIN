@@ -111,7 +111,7 @@ dependencies = [
     "voila>=0.5.6,<0.6",
     "jupyter-server>=2.20.0,<3",
     "tornado>=6.5.9,<7",
-    "Pillow>=10,<13",
+    "Pillow>=13,<14",
     # PyMuPDF (the PDF viewer) is the [pdf] extra below, not a core
     # dependency: it is AGPL-3.0, stronger copyleft than DELFIN's own
     # licence.
