@@ -26,6 +26,10 @@ Commands (one JSON object per line, both ways):
     {"cmd": "prompt", "session", "text"}  -> send a task line to a session
                                              (exact enabled ID required)
     {"cmd": "stop"}                       -> refused; use scoped stop
+    {"cmd": "create", "name"?}            -> start a session in its own folder
+                                             under DELFIN_MESSENGER_WORKSPACES,
+                                             permission profile "default",
+                                             enabled for the messenger
 Outgoing events (one JSON object per line):
     {"event": "session", ...}   a session's summary changed
     {"event": "attention", ...} what needs the user changed
@@ -57,6 +61,14 @@ SOCKET_NAME = "messenger.sock"
 #: A command or an event line is never larger than this.
 MAX_LINE_BYTES = 8_192
 
+#: The folder root of sessions started from the phone. Unset: the host does
+#: not allow it. The phone names a session; the folder is root/<name>.
+WORKSPACES_ENV = "DELFIN_MESSENGER_WORKSPACES"
+
+#: Phone-started sessions per window of CREATE_WINDOW_S.
+CREATE_LIMIT = 3
+CREATE_WINDOW_S = 600.0
+
 #: Commands the gateway may send, and what each takes.
 COMMANDS = {
     "session": {"session": "string", "action": "string", "text": "string?", "id": "string?", "choice": "string?", "persist": "boolean?"},
@@ -66,6 +78,7 @@ COMMANDS = {
     "answer": {"id": "string", "text": "string"},
     "prompt": {"session": "string?", "text": "string"},
     "stop": {},
+    "create": {"name": "string?"},
 }
 
 
@@ -168,6 +181,7 @@ class Bridge:
         self._service: object | None = None
         self._pump_task: object | None = None
         self._issued: dict[str, tuple] = {}
+        self._created: list[float] = []
 
     # -- the service side ---------------------------------------------------------------
 
@@ -534,6 +548,45 @@ class Bridge:
 
     async def _cmd_stop(self, _params: dict) -> dict:
         return {'error': 'Use session-scoped stop; the phone cannot shut down the entire service.'}
+
+    async def _cmd_create(self, params: dict) -> dict:
+        """A new session in root/<name>, asking before it acts.
+
+        The phone supplies a name only. The folder is one level under the
+        configured root (a name keeps [A-Za-z0-9._-], no leading dot, at
+        most 40 characters; an existing entry is reused only when it is a
+        real directory, never a symlink). The permission profile is
+        "default" whatever the user's configured one is, and the session is
+        enabled for the messenger, so its chat follows without /sync.
+        """
+        import re
+        from .protocol import clean_title
+        root = os.environ.get(WORKSPACES_ENV, "").strip()
+        if not root or not os.path.isabs(root) or not os.path.isdir(root):
+            return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
+        now = time.monotonic()
+        self._created = [t for t in self._created if now - t < CREATE_WINDOW_S]
+        if len(self._created) >= CREATE_LIMIT:
+            return {"error": "Höchstens drei neue Sitzungen in zehn Minuten. Bitte später erneut."}
+        title = clean_title(params.get("name")) or ""
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-.")[:40].strip("-.")
+        if not slug:
+            slug = "handy-" + time.strftime("%Y%m%d-%H%M%S")
+        folder = os.path.join(root, slug)
+        if os.path.lexists(folder):
+            if os.path.islink(folder) or not os.path.isdir(folder):
+                return {"error": f"{slug} gibt es dort schon und ist kein normaler Ordner."}
+        else:
+            os.mkdir(folder, 0o700)
+        self._created.append(now)
+        reply = await self._request("session.create", {
+            "cwd": folder, "title": title or slug, "permissionMode": "default",
+            "attach": False})
+        sid = str(reply.get("sessionId") or "")
+        if not sid:
+            return {"error": "Sitzung wurde nicht gestartet."}
+        activation.configure(sid)
+        return {"ok": True, "sessionId": sid, "title": title or slug, "folder": slug}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -22,7 +22,8 @@ HELP = (
     'name NAME – Sitzung und Chat benennen; forum on/off – Forumteilnahme; meldungen kurz/fragen/aus.\n'
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
-    'sync aktualisiert nur bereits in TUI/Dashboard aktivierte Sitzungen.'
+    'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'sync aktualisiert die aktivierten Sitzungen.'
 )
 
 UPDATE = 'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.'
@@ -197,6 +198,8 @@ class Rooms:
         if command == 'sync':
             await self.sync()
             return 'Aktivierte Sitzungen abgeglichen. Neue Sitzungen zuerst dort mit /sync aktivieren.'
+        if command in {'neu', 'new'}:
+            return await self.start_session(rest)
         if command == 'chat' and rest.strip():
             if rest.strip() not in self._active:
                 return 'Zuerst in der gewünschten TUI-/Dashboard-Sitzung /sync eingeben.'
@@ -258,6 +261,22 @@ class Rooms:
                 result = 'Zustellung unklar: Verbindung unterbrochen. Vor erneutem Senden /status prüfen.'
             results.append(f'[{label(target)}]\n{result}')
         return '\n\n'.join(results)
+
+    async def start_session(self, rest):
+        """`neu NAME[: task]`: a session in a folder of its own, its chat, and
+        the task as its first prompt. The host chooses folder and profile."""
+        name, colon, task = rest.partition(':')
+        reply = await self.ask({'cmd': 'create', 'name': name.strip()})
+        if not reply.get('ok'):
+            return reply.get('error') or 'Sitzung wurde nicht gestartet.'
+        sid = reply['sessionId']
+        await self.active_sessions()
+        await self.ensure_room(sid)
+        text = f"Neue Sitzung {reply.get('title') or sid} gestartet (Ordner {reply.get('folder')}). Einladung zum Chat liegt in SimpleX; sie fragt vor Befehlen."
+        if colon and task.strip():
+            sent = await self.session(sid, 'prompt', text=task.strip())
+            text += '\n' + (sent.get('error') or 'Auftrag übergeben.')
+        return text
 
     @staticmethod
     def pending_text(items):
