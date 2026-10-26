@@ -347,6 +347,7 @@ export interface PermissionAskedEvent {
   "multiSelect"?: boolean | null
   "suggestion"?: string | null
   "readDir"?: string | null
+  "purpose"?: string | null
   "type": "permission.asked"
   "session": string
   "ts": number
