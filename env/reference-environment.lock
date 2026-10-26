@@ -102,8 +102,8 @@ pexpect==4.9.0
 pillow==11.1.0
 plotly==6.7.0
 pluggy==1.6.0
-polars==1.38.0
-polars-runtime-32==1.38.0
+polars==1.38.1
+polars-runtime-32==1.38.1
 pox==0.3.7
 ppft==1.7.8
 prompt_toolkit==3.0.52
