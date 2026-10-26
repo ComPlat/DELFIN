@@ -31,6 +31,11 @@ def refs(tmp_path, monkeypatch):
         'FINAL SINGLE POINT ENERGY -1.0\n', encoding='utf-8')
     # Matching wavefunction file so _calc_mo_find_gbw finds it.
     (job / 'open.gbw').write_bytes(b'\x00' * 16)
+    # A spin density cube and an ordinary (MO) cube, present from the
+    # start so the file listing includes them.
+    (job / 'conf_00.spindens.cube').write_text('atoms and cube data\n',
+                                               encoding='utf-8')
+    (job / 'orbitals.cube').write_text('mo cube\n', encoding='utf-8')
 
     ctx = DashboardContext(
         calc_dir=calc,
@@ -66,6 +71,11 @@ def _click(refs, name):
     label = _label_for(refs, name)
     refs['calc_open_input'].value = label
     refs['calc_file_list'].value = (label,)
+
+
+def _path_join(job_dir, name):
+    from pathlib import Path
+    return Path(str(job_dir)) / name
 
 
 def _status_text(refs):
@@ -221,3 +231,55 @@ def test_spin_density_apply_creates_no_cube_and_reuses_cache(
     assert spin_display['opacity'] == 0.4
     assert spin_display['show_neg'] is False
 
+
+
+def _refresh_listing(refs):
+    """Re-trigger the path observer so the file listing is rebuilt."""
+    value = refs['calc_path_input'].value
+    refs['calc_path_input'].value = value + '/x'
+    refs['calc_path_input'].value = value
+
+
+def test_opening_existing_spin_density_cube_initializes_display(refs, tmp_path):
+    """Open a .spindens.cube directly, WITHOUT ever running Plot Spin
+    Density in this session: the cube path must be initialized, Apply
+    must work immediately, and orca_plot must not run."""
+    job = str(tmp_path / 'calc' / 'job')
+    cube = _path_join(job, 'conf_00.spindens.cube')
+    _click(refs, 'conf_00.spindens.cube')
+    display_state = refs['xyz_batch_state']['spin_display']
+    assert display_state is not None
+    assert display_state['cube_path'] == str(cube)
+    # Defaults mirrored into the panel.
+    assert refs['calc_spin_density_isoval'].value == 0.005
+    assert refs['calc_spin_density_opacity'].value == 0.65
+    # Visualization section visible, generation hidden.
+    assert refs['calc_spin_density_panel'].layout.display == 'block'
+    assert refs['calc_spin_density_settings'].layout.display == 'block'
+    assert refs['calc_spin_density_generation_box'].layout.display == 'none'
+    # Apply right after opening: settings applied, no orca_plot run.
+    calls_before = list(refs['_orca_plot_calls'])
+    refs['calc_spin_density_apply_btn'].click()
+    assert refs['xyz_batch_state']['spin_display']['isoval'] == 0.005
+    assert refs['_orca_plot_calls'] == calls_before
+    # Cube file untouched.
+    assert cube.read_text(encoding='utf-8') == 'atoms and cube data\n'
+
+
+def test_apply_uses_chosen_isoval(refs, tmp_path):
+    """A changed isovalue reaches the rendered state on Apply."""
+    job = str(tmp_path / 'calc' / 'job')
+    cube = _path_join(job, 'conf_00.spindens.cube')
+    _click(refs, 'conf_00.spindens.cube')
+    refs['calc_spin_density_isoval'].value = 0.01
+    refs['calc_spin_density_pos_cb'].value = False
+    refs['calc_spin_density_mol_cb'].value = False
+    refs['calc_spin_density_apply_btn'].click()
+    state = refs['xyz_batch_state']['spin_display']
+    assert state['isoval'] == 0.01
+    assert state['show_pos'] is False
+    assert state['show_mol'] is False
+    # A normal cube must never pick these settings up.
+    other = _path_join(str(tmp_path / 'calc' / 'job'), 'orbitals.cube')
+    _click(refs, 'orbitals.cube')
+    assert refs['xyz_batch_state']['spin_display'] is None

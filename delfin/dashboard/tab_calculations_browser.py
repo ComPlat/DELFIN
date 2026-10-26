@@ -1689,12 +1689,14 @@ def create_tab(ctx):
     calc_spin_density_pos_color = widgets.ColorPicker(
         value='#0000ff', description='Positive Color:', concise=True,
         style={'description_width': 'initial'},
-        layout=widgets.Layout(width='210px', min_width='210px', height='28px'),
+        # No fixed height: the browser adds a scrollbar to the widget
+        # body when the fixed height is smaller than its content.
+        layout=widgets.Layout(width='210px', min_width='210px'),
     )
     calc_spin_density_neg_color = widgets.ColorPicker(
         value='#ff0000', description='Negative Color:', concise=True,
         style={'description_width': 'initial'},
-        layout=widgets.Layout(width='210px', min_width='210px', height='28px'),
+        layout=widgets.Layout(width='210px', min_width='210px'),
     )
     calc_spin_density_apply_btn = widgets.Button(
         description='Apply Display Settings',
@@ -4332,7 +4334,7 @@ def create_tab(ctx):
         with calc_mol_viewer:
             display(HTML(html))
 
-    def _render_3dmol(data, fmt='xyz', extra_fn=None, hide_molecule=False):
+    def _render_3dmol(data, fmt='xyz', hide_molecule=False):
         """Render a 3D molecule via JS with correct initial sizing."""
         import json
         profile = get_viewer_profile()
@@ -5101,6 +5103,21 @@ def create_tab(ctx):
         if show:
             calc_spin_density_status.value = ''
             calc_spin_density_panel.layout.display = 'block'
+            # The hint under the grid dropdown describes generation; when
+            # the visualization section is shown, describe that instead.
+            if visualize:
+                calc_spin_density_grid_note.value = (
+                    '<span style="color:#555; font-size:12px;">'
+                    'Adjust how the loaded spin density cube is drawn. '
+                    'Apply Display Settings re-renders it without running '
+                    'orca_plot.</span>'
+                )
+            else:
+                calc_spin_density_grid_note.value = (
+                    '<span style="color:#555; font-size:12px;">'
+                    'Changing Grid Resolution requires regenerating the '
+                    'cube.</span>'
+                )
         else:
             calc_spin_density_panel.layout.display = 'none'
         _run_js(
@@ -5891,7 +5908,8 @@ def create_tab(ctx):
             'pos_color': calc_spin_density_pos_color.value,
             'neg_color': calc_spin_density_neg_color.value,
         }
-        _render_3dmol(content, fmt='cube')
+        _render_3dmol(content, fmt='cube',
+                      hide_molecule=not calc_spin_density_mol_cb.value)
         calc_spin_density_status.value = (
             '<span style="color:#2e7d32;">View updated from the existing cube '
             '(no orca_plot run).</span>'
@@ -13441,39 +13459,49 @@ def create_tab(ctx):
                     )
                     if not _is_spin_cube:
                         spin_display = {}
+                        state['spin_display'] = None
                         _calc_show_spin_density_panel(False)
                     else:
+                        # Make the opened cube the active spin display so
+                        # Apply works immediately; keep settings that were
+                        # made for this very file, otherwise the defaults.
+                        if spin_display.get('cube_path') != str(full_path):
+                            spin_display = {
+                                'cube_path': str(full_path),
+                                'isoval': 0.005,
+                                'opacity': 0.65,
+                                'show_pos': True,
+                                'show_neg': True,
+                                'show_mol': True,
+                                'pos_color': '#0000ff',
+                                'neg_color': '#ff0000',
+                            }
+                        state['spin_display'] = dict(spin_display)
+                        # Mirror the stored settings into the panel widgets.
+                        try:
+                            calc_spin_density_isoval.value = float(
+                                spin_display.get('isoval', 0.005))
+                            calc_spin_density_opacity.value = float(
+                                spin_display.get('opacity', 0.65))
+                            calc_spin_density_pos_cb.value = bool(
+                                spin_display.get('show_pos', True))
+                            calc_spin_density_neg_cb.value = bool(
+                                spin_display.get('show_neg', True))
+                            calc_spin_density_mol_cb.value = bool(
+                                spin_display.get('show_mol', True))
+                            calc_spin_density_pos_color.value = (
+                                spin_display.get('pos_color') or '#0000ff')
+                            calc_spin_density_neg_color.value = (
+                                spin_display.get('neg_color') or '#ff0000')
+                        except (TypeError, ValueError):
+                            pass
                         _calc_show_spin_density_panel(True, visualize=True)
-                    if spin_display:
-                        def _cube_extra(view, raw, _sd=spin_display):
-                            try:
-                                iso = float(_sd.get('isoval', 0.02))
-                            except (TypeError, ValueError):
-                                iso = 0.02
-                            try:
-                                opa = float(_sd.get('opacity', 0.85))
-                            except (TypeError, ValueError):
-                                opa = 0.85
-                            if _sd.get('show_pos', True):
-                                view.addVolumetricData(
-                                    raw, 'cube',
-                                    {'isoval': iso,
-                                     'color': _sd.get('pos_color') or '#0026ff',
-                                     'opacity': opa})
-                            if _sd.get('show_neg', True):
-                                view.addVolumetricData(
-                                    raw, 'cube',
-                                    {'isoval': -iso,
-                                     'color': _sd.get('neg_color') or '#b00010',
-                                     'opacity': opa})
-                        spin_hide_mol = not spin_display.get('show_mol', True)
-                    else:
-                        def _cube_extra(view, raw):
-                            view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
-                            view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
-                        spin_hide_mol = False
-                    _render_3dmol(content, fmt='cube', extra_fn=_cube_extra,
-                                  hide_molecule=spin_hide_mol)
+                    # The spin display settings are applied inside
+                    # _render_3dmol (volumetric_js); the old extra_fn path
+                    # was never consumed there and is removed.
+                    _render_3dmol(content, fmt='cube',
+                                  hide_molecule=not spin_display.get(
+                                      'show_mol', True))
                 # Trigger dynamic resize after volumetric data is loaded
                 _run_js(
                     f"setTimeout(function(){{"
