@@ -60,7 +60,7 @@ KINDS = frozenset({
     "requirement", "recommendation", "default", "incompatibility", "error-pattern",
     "keyword", "limit", "procedure", "check",
 })
-SOURCE_TYPES = frozenset({"manual", "paper", "orca-message", "archive"})
+SOURCE_TYPES = frozenset({"manual", "paper", "orca-message", "orca-run", "archive"})
 STATUSES = frozenset({"proposed", "verified", "rejected"})
 SEVERITIES = frozenset({"error", "warning", "info"})
 
@@ -85,7 +85,9 @@ def _keywords() -> tuple[set[str], set[str], set[str]]:
     global _CATALOG
     if _CATALOG is None:
         _CATALOG = _catalog()
-    kws = {k.lower() for k in _CATALOG.get("keywords", [])}
+    # OPI's catalog, and the words ORCA's own parser accepted (the catalog
+    # does not list every keyword ORCA knows: FIC-NEVPT2, RI-NEVPT2, ...).
+    kws = {k.lower() for k in [*_CATALOG.get("keywords", []), *_CATALOG.get("orca_parser", [])]}
     solvents = {s.lower().replace(" ", "") for s in _CATALOG.get("solvents", [])}
     aliases = {k.lower() for k in (_CATALOG.get("aliases") or {})}
     return kws, solvents, aliases
@@ -124,9 +126,9 @@ def validate(card: Any) -> list[str]:
         out.append("orca: a version range such as '>=6.0' or '>=6.0,<7'")
     if "severity" in card and card["severity"] not in SEVERITIES:
         out.append(f"severity is one of {sorted(SEVERITIES)}")
-    for kw in card.get("keywords") or []:
+    for kw in _named_keywords(card):
         if not known_keyword(kw):
-            out.append(f"keyword {kw!r} is not one ORCA knows (OPI catalog)")
+            out.append(f"keyword {kw!r} is not one ORCA knows (OPI catalog, ORCA's parser)")
     sources = card.get("sources")
     if not isinstance(sources, list) or not sources:
         out.append("sources: at least one source")
@@ -145,6 +147,27 @@ def validate(card: Any) -> list[str]:
     return out
 
 
+_BANG = re.compile(r"!\s*([A-Za-z0-9][A-Za-z0-9+\-()/*,_.']*)")
+
+
+def _named_keywords(card: dict) -> list[str]:
+    """Every keyword a card names: its ``keywords``, those of its advice
+    (``recommend.keywords``, ``avoid``) and every ``!Keyword`` in its text --
+    a keyword advised only in prose is checked like a listed one."""
+    names = [str(k) for k in card.get("keywords") or []]
+    rec = card.get("recommend")
+    if isinstance(rec, dict):
+        names += [str(k) for k in rec.get("keywords") or []]
+    texts = [str(card.get("statement") or "")]
+    for item in card.get("avoid") or []:
+        texts.append(str(item))
+    if isinstance(rec, dict):
+        texts += [str(v) for v in rec.values() if isinstance(v, str)]
+    for text in texts:
+        names += [m.rstrip(".,;:") for m in _BANG.findall(text)]
+    return list(dict.fromkeys(n for n in names if n))
+
+
 def _source_problems(src: Any) -> list[str]:
     if not isinstance(src, dict):
         return ["a source is an object"]
@@ -161,6 +184,10 @@ def _source_problems(src: Any) -> list[str]:
         return out
     if kind == "paper":
         return [] if _DOI.match(str(src.get("doi") or "")) else ["a paper source names its doi (10.xxxx/...)"]
+    if kind == "orca-run":
+        out = [f"an ORCA run source names its {f}" for f in ("version", "input", "output")
+               if not str(src.get(f) or "").strip()]
+        return out
     if kind == "orca-message":
         return [] if len(str(src.get("text") or "")) >= 8 else ["an ORCA message source quotes the message"]
     count = src.get("count")
