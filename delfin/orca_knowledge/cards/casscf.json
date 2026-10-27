@@ -1,0 +1,1005 @@
+[
+ {
+  "id": "casscf.active-space.mandatory",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "A CASSCF calculation always requires the number of active electrons (nel) and active orbitals (norb) in the %casscf block; this is the minimal mandatory input.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "every CASSCF run"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3 Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.mult.nroots-lists",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "For state-averaged CASSCF over several multiplicities, multiplicities are given as a comma-separated list (mult 1,3) and nroots as a matching list (nroots 4,2): each multiplicity block needs its own number of roots.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "state-averaged CASSCF over more than one multiplicity"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3 Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.usesym.irrep-mandatory",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "If symmetry handling is enabled (UseSym), each multiplicity block in a CASSCF input must have an irreducible representation assigned via the irrep list; the irrep numbers are printed in the ORCA output.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "UseSym"
+  ],
+  "when": {
+   "context": "any CASSCF run with UseSym (one irrep entry per multiplicity block, also for a single block)"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3 Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Statement correct, but 'when' restricts it to several multiplicity blocks; the manual requires an irrep for EVERY block with UseSym, including a single-multiplicity run (e.g. irrep 0 with mult 1).",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.state-average.default-weights",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "For multi-root and multi-multiplicity CASSCF inputs the program by default chooses equal weights between multiplicity blocks, and roots within one block also have equal weight; a custom weighting scheme for blocks and roots can be defined by the user.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "several roots and/or multiplicities are requested"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3 Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.converger.default-superci-pt",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "The default CASSCF orbital optimizer is the perturbative SuperCI (SuperCI_PT), a first-order method; the restricted-step augmented Hessian TRAH is available as a more robust second-order one-step alternative.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "TRAH"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1 Orbital optimization"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.trah.needs-aux-basis",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "TRAH-CASSCF processes most integrals through the RI approximation in an AO direct strategy and therefore requires an auxiliary basis of /C type (e.g. def2-SVP/C) together with the !TRAH simple-input keyword.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "TRAH",
+   "def2-SVP/C"
+  ],
+  "when": {
+   "context": "running TRAH-CASSCF"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.2 Robust Convergence with TRAH-CASSCF"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.no-autotrah",
+  "topic": "casscf",
+  "kind": "limit",
+  "statement": "In contrast to the SCF program there is no AutoTRAH feature for CASSCF: the !TRAH keyword must be given explicitly if the second-order TRAH optimizer is wanted.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "TRAH"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.2 Robust Convergence with TRAH-CASSCF"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.trah.natorbs-default",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "With TRAH-CASSCF the natural-orbital representation of the active orbitals (ActConstraints Natural / NatOrbs) is the default and should be employed in general; localized active orbitals (LocOrbs) perform best for spin-coupled systems.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "TRAH-CASSCF"
+  },
+  "recommend": {
+   "ActConstraints": "Natural (NatOrbs) by default; LocOrbs for spin-coupled systems"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.2 Robust Convergence with TRAH-CASSCF"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.superci-pt.no-level-shift",
+  "topic": "casscf",
+  "kind": "incompatibility",
+  "statement": "For the default SuperCI_PT converger level shifts are not needed and highly discouraged; apart from GradScaling the other damping techniques do not apply to SuperCI_PT. MaxRot (default 0.2) and DThresh (default 1e-6) are the SuperCI_PT-specific knobs.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "orbstep/switchstep = SuperCI_PT (default)"
+  },
+  "avoid": [
+   "static level shifts (ShiftUp/ShiftDn) with SuperCI_PT"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1 Orbital optimization"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.convergence.try-trah-first",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "In case of convergence problems with the default CASSCF settings, first inspect the guess/active orbitals and try !TRAH (needs a /C auxiliary basis); alternatively %casscf orbstep SuperCI / switchstep DIIS with a large static level shift (ShiftUp/ShiftDn 2.0 Eh) often leads to immediate success but typically requires more iterations. Increasing MaxIter alone usually does not help. The optional convergence keywords should only be used facing severe convergence difficulties.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "TRAH"
+  ],
+  "when": {
+   "context": "CASSCF SCF convergence problems"
+  },
+  "recommend": {
+   "first action": "add !TRAH (with a /C auxiliary basis)"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1 Orbital optimization"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Statement correct, but keywords KDIIS and SOSCF are simple-input SCF converger keywords; in CASSCF these are orbstep/switchstep values inside %casscf. Tagging them invites an agent to add !KDIIS/!SOSCF, which does not change the CASSCF converger. Also the manual notes many convergence problems are solved by a better guess, and that raising MaxIter usually does not help.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.diis.exactly-occupied-orbitals",
+  "topic": "casscf",
+  "kind": "limit",
+  "statement": "In contrast to SuperCI_PT, the %casscf orbstep/switchstep convergers SuperCI, DIIS and KDIIS can struggle with active orbitals that have occupations of exactly 2.0 or 0.0.",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "when": {
+   "context": "active space contains formally doubly occupied or empty active orbitals and SuperCI/DIIS/KDIIS is used"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1 Orbital optimization"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Statement correct; keywords KDIIS/SOSCF are SCF simple-input keywords and SOSCF is not even part of the statement. The CASSCF convergers are selected via %casscf orbstep/switchstep, not simple input.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.level-shift.most-important-lever",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "For the orbstep SuperCI / switchstep DIIS combination the level shift is the single most important lever to control convergence and to protect the active space composition. By default ORCA shifts dynamically to keep a minimum subspace separation (MinShift); static shifts are set with ShiftUp (virtual) and ShiftDn (internal), e.g. 2.0 Eh. Level shifts are discouraged for the default SuperCI_PT converger.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "orbstep SuperCI with switchstep DIIS, convergence or active-space drift problems"
+  },
+  "recommend": {
+   "level shift": "large static shift (2 Eh) if the default dynamic shifting fails"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1 Orbital optimization"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Text gives MinShift 0.6 only as an example value; the stated default is dynamic level shifting guaranteeing a separation of MinShift, the numeric default is not given. Also the lever statement is specific to the SuperCI+DIIS combination and the static shifts are ShiftUp (virtuals) / ShiftDn (internals).",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.subspace-gaps.check-output",
+  "topic": "casscf",
+  "kind": "check",
+  "statement": "The CASSCF output prints the energy separation of the orbital subspaces as 'Ext-Act' and 'Act-Int'; ideally both should be positive and larger than 0.2 Eh, which helps the program preserve the active space composition. Negative or tiny values signal a risk of active-space drift.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "checking CASSCF output for active-space stability"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1 Orbital optimization"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.ora-message.actconstraints-abort",
+  "topic": "casscf",
+  "kind": "error-pattern",
+  "statement": "The message 'Failed to constrain active orbitals due to rotations' (printed with Rot(p,q) OVL=... lines) means an active orbital has rotated out of the active space and ORCA aborts, storing the last valid orbital set. If it recurs with the same orbitals, inspect the rotating partner orbitals - it may signal an unbalanced active space that should be extended; changing the level shift or lowering SwitchConv often protects the active space; for parameter scans (e.g. a rotating double bond in CAS(2,2)) disable the check with ActConstraints 0.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "CASSCF aborts during the orbital update"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1.2 Monitoring the active space"
+   },
+   {
+    "type": "orca-message",
+    "text": "Failed to constrain active orbitals due to rotations"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.actconstraints.default-behavior",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "ActConstraints is enabled by default after the first 3 macro-iterations; the program picks the best choice per optimizer (1 = maximize overlap + sanity check, default for DIIS; 2 = natural orbitals every iteration, default for SuperCI). 3 makes canonical orbitals, 4 localizes, 0 disables checks and changes.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "any CASSCF orbital optimization"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1.2 Monitoring the active space"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.resetfreq.noise",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "CASSCF convergence can be disturbed by numerical noise from the incremental Fock build; enforcing more frequent full Fock matrix formation with ResetFreq 1 can help. Similarly the active-Fock density approximation (SwitchDens, default starting value 1e-2, auto-reduced) can be switched off by setting SwitchDens to 0 for an exact build.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "slow or oscillating convergence in the final CASSCF iterations"
+  },
+  "recommend": {
+   "ResetFreq": "1",
+   "SwitchDens": "0 (exact build) if instability persists"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.1.1 Incremental Fock"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.cisolver.defaults",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "The default CASSCF CI solver is CSFCI (CSF-based, partial formula tape). ACCCI is CSF-based with a faster algorithm for multi-root calculations; ICE gives approximate full-CI results via ICE/CIPSI; DMRGCI interfaces the BLOCK program. The formula tape grows large beyond several hundred thousand CSFs, limiting CSFCI/ACCCI active spaces.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "choosing the CI solver for a CASSCF calculation"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.5 CI Solvers (CSFCI, ACCCI, ..., ICE)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.ice-cissolver.large-spaces",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "Active spaces of roughly 10-40 orbitals should be feasible with DMRG or ICE; both return approximate full-CI results. For ICE the coupling-coefficient computation is by default repeated every macro-iteration; generate a coupling-coefficient library (cclib) once and reuse it for all ICE calculations.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "active space too large for the default CSFCI solver"
+  },
+  "recommend": {
+   "CIStep": "ICE or DMRGCI; build a cclib once for repeated ICE runs"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.5 CI Solvers (CSFCI, ACCCI, ..., ICE)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.dmrg.split-localized-orbitals",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "For CASSCF with CIStep DMRGCI it is highly recommended to start from split-localized orbitals; any starting orbitals in a gbw file can be localized with the orca_loc program. DMRG is not invariant to active-space rotations, so ORCA by default runs an automatic Fiedler ordering procedure.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "DMRG-CASSCF calculations"
+  },
+  "recommend": {
+   "start orbitals": "split-localized (e.g. via orca_loc)"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.5 CI Solvers / DMRG"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.ormas.overwrites-active-space",
+  "topic": "casscf",
+  "kind": "incompatibility",
+  "statement": "A refs ORMAS(nel: m1 min1 max1 / m2 min2 max2 / ...) mask overwrites the standard %casscf nel/norb values; up to 25 subspaces can be defined, each as norb nelmin nelmax. A refs RAS(Nel: NRAS1 MaxHoles / NRAS2 / NRAS3 MaxParticles) mask partitions the active space into RAS1, RAS2 and RAS3; with RAS, nel and norb remain mandatory and must match the mask. For RAS/ORMAS the orbital optimization omits active-active rotations, so energies depend on the active-orbital canonicalization (ActOrbs/ActConstraints).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "using ORMAS or RAS active-space definitions inside %casscf"
+  },
+  "avoid": [
+   "relying on nel/norb together with an ORMAS mask (they are overridden)",
+   "omitting nel/norb with a RAS mask"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.8 Occupation Restricted Multiple Active Spaces (ORMAS)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "ORMAS part is correct, but the card lumps RAS in; for a RAS(...) mask the manual marks nel/norb as mandatory, so the 'avoid relying on nel/norb' reading must not spread to RAS. Also note the ORMAS/RAS orbital-optimization caveat (no active-active rotations, energy depends on canonicalization).",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.rasci-xas.core-hole-constraints",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "For RASCI X-ray absorption (core-excited) calculations the RAS3 space is usually set empty: to generate a single core hole the maximum number of holes in RAS1 must be set to 1 and the maximum number of particles in RAS3 must be 0, e.g. refs RAS(11:3 1/5/0 0).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "core-excited (XAS) RASCI calculations in the CASSCF module"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.18 Core Excited Spectra: CAS-CI/RAS-CI XAS/RIXS"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.guess.inspect-orbitals",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "The initial guess and the selection of the active orbitals are crucial for any CASSCF calculation; the default !PModel guess does not always provide good starting orbitals or the correct active space. Always inspect the orbitals before starting the orbital optimization. Natural orbitals of a simple correlated calculation (e.g. MP2 natural orbitals) often indicate which orbitals to include; AVAS offers a user-friendly targeted guess but overwrites nel/norb given in %casscf; for lanthanides/actinides the fragment guess is particularly successful.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "PModel"
+  ],
+  "when": {
+   "context": "setting up any CASSCF calculation"
+  },
+  "recommend": {
+   "workflow": "generate guess (PModel / AVAS / fragment guess), inspect orbitals, then optimize"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.6 Guess: Natural Orbitals Example"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Content correct, but keyword TightSCF has nothing to do with the guess statement (spurious trigger). Missing a load-bearing warning from the AVAS section: AVAS overwrites nel/norb in %casscf, so an agent using AVAS must read the active space back from the output.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.geometry.previously-converged-orbitals",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "In multi-geometry CASSCF runs (e.g. %paras scans) ORCA reads the converged CASSCF orbitals of the previous geometry step to ensure a smooth potential energy surface; for bond-dissociation scans, scanning from the outside (dissociated) to the inside with the PModel guess is the recommended procedure. Because orbitals are carried forward, an active-space change at one point propagates to all later points: check the active-orbital character along the scan; if the active-orbital composition legitimately changes (e.g. torsion of a double bond), ActConstraints 0 may be needed.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "CASSCF bond-distance scans and other multi-geometry runs"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.9 Example: Breaking Chemical Bonds"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "The manual states the orbital hand-over for the multi-geometry scan in 3.13.9, not for geometry optimizations generally, and the outside-to-inside advice is specific to bond-dissociation scans. Expert caveat missing: carrying orbitals from step to step can propagate an active-space swap along the whole scan; the active space must be checked at the steps, and ActConstraints may abort scans where the active-orbital composition changes (3.13.3.1.2).",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.state-averaged.gradients",
+  "topic": "casscf",
+  "kind": "limit",
+  "statement": "Analytic CASSCF gradients are implemented only for fully variational solutions, i.e. orbitals optimized for a single state. State-averaged CASSCF is not fully variational, so a geometry optimization on an SA-CASSCF state requires numerical gradients, with the target state selected by imult/iroot (counting from zero) in %casscf. Optimizing the orbitals for a single excited state (weights 0,...,1) is possible but risks root flipping when states cross during the orbital optimization.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "CASSCF geometry optimization of an excited state"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.12 Example: Geometry Optimization"
+   },
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.4 Keywords (imult/iroot)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "The decisive fact is in 3.13.12: analytic CASSCF gradients are implemented only for fully variational (single-state) solutions. The card's 'orbitals must be optimized for the state of interest' reads as an instruction to run state-specific excited-state CASSCF, which is prone to root flipping; SA-CASSCF optimizations need numerical gradients with imult/iroot selecting the state.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.rijcosx.grid-accuracy",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "!RIJCOSX implies TrafoStep RI and requires both a /C (AuxC) and a /J (AuxJ) auxiliary basis; it speeds up each CASSCF iteration and is well suited to large systems, but with a floppy numerical grid the accuracy and the convergence behaviour of CASSCF deteriorate: tighten the integral cut-offs and the grid for large calculations. !RIJK (with a /JK basis) is more accurate and robust for CASSCF and can be run in conventional (conv) mode, where a single, sufficiently large auxiliary basis must cover both the Fock matrices and the gradient/Hessian integrals; in direct mode an additional AuxC basis can be set.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJCOSX",
+   "RIJK",
+   "def2/J",
+   "def2/JK",
+   "AutoAux"
+  ],
+  "when": {
+   "context": "large CASSCF calculations with RIJK/RIJCOSX"
+  },
+  "recommend": {
+   "grid": "tightened grid and integral cut-offs; RIJK if accuracy is critical"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.3 Using the RI Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "RIJCOSX speeds up each iteration (no four-index integrals), not convergence; the card also omits that RIJCOSX implies TrafoStep RI and needs BOTH a /J (AuxJ) and a /C (AuxC) auxiliary basis.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.trafostep.ri-aux-basis",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "The RI approximation of the CASSCF orbital gradient/Hessian integrals is enabled with TrafoStep RI inside %casscf and requires an auxiliary basis (/C or the more accurate /JK type) in the AuxC slot; /J-type auxiliary basis sets are not sufficient. If no suitable auxiliary basis set is available, AutoAux can be used.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "def2-SVP/C",
+   "def2/JK",
+   "AutoAux"
+  ],
+  "when": {
+   "context": "speeding up CASSCF via TrafoStep RI"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.3.3 Using the RI Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.nevpt2.variants",
+  "topic": "nevpt2",
+  "kind": "keyword",
+  "statement": "Simple-input keywords (Table 3.46), all requiring a %casscf block: NEVPT2 = SC-NEVPT2 (strongly contracted); RI-NEVPT2 = SC-NEVPT2 with the RI approximation; FIC-NEVPT2 = fully internally contracted NEVPT2 (aka PC-NEVPT2); DLPNO-NEVPT2 = FIC-NEVPT2 in the DLPNO framework. Equivalently the method can be chosen inside %casscf with PTMethod (e.g. PTMethod SC_NEVPT2).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "NEVPT2",
+   "SC-NEVPT2",
+   "DLPNO-NEVPT2"
+  ],
+  "when": {
+   "context": "adding dynamic correlation on top of CASSCF with NEVPT2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.4 Keywords (Table 3.46)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Second sentence is contradicted by Table 3.46: FIC-NEVPT2, RI-NEVPT2 and RI-DCD-CAS(2) ARE simple-input keywords. RI-NEVPT2 is SC-NEVPT2 with RI, not a separate variant. (The OPI keyword catalog lacks these names, which is a catalog gap, not evidence they do not exist.) All these keywords still require a %casscf block.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.caspt2.fic",
+  "topic": "caspt2",
+  "kind": "keyword",
+  "statement": "Simple-input keywords, all requiring a %casscf block: CASPT2 = FIC-CASPT2; RI-CASPT2 = FIC-CASPT2 with the RI approximation; CASPT2K = FIC-CASPT2-K (revised zeroth-order Hamiltonian); RI-CASPT2K = FIC-CASPT2-K with RI. In %casscf the same is chosen with PTMethod FIC_CASPT2 / FIC_CASPT2K; level shifts (CASPT2_ishift, CASPT2_rshift, CASPT2_IPEAshift) go in PTSettings.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CASPT2",
+   "CASPT2K"
+  ],
+  "when": {
+   "context": "adding dynamic correlation on top of CASSCF with CASPT2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.4 Keywords (Table 3.46)"
+   },
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17 CASPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "'RI-CASPT2 ... no separate simple-input keyword' is contradicted by Table 3.46 (RI-CASPT2 is listed). CASPT2K described vaguely; the CASPT2 page defines it as FIC-CASPT2-K (revised H0), with RI-CASPT2K also existing.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.dcd-cas2.ri",
+  "topic": "casscf",
+  "kind": "keyword",
+  "statement": "DCD-CAS(2) (2nd order Dynamic Correlation Dressed CAS) and RI-DCD-CAS(2) (with the RI approximation) are simple-input keywords (Table 3.46) for post-CASSCF dynamic correlation; like all CASSCF simple-input keywords they require a %casscf block defining the active space and states.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "dynamic correlation dressed CAS calculations"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.4 Keywords (Table 3.46)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Existence is correct, but the central claim ('selected at block level, not as simple-input keywords') is contradicted by Table 3.46, which lists DCD-CAS(2) and RI-DCD-CAS(2) as simple-input keywords.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.convergence-defaults.first",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "statement": "Please always try the default CASSCF convergence settings before tweaking the convergence manually; ideally the defaults or !TRAH should be enough.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "TRAH"
+  ],
+  "when": {
+   "context": "any CASSCF calculation with convergence problems"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.4 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.densities.default-and-keep",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "By default only the state-averaged density (.scfp) and spin density (.scfr) are stored in the density container (.densities); with the simple-input keyword !KeepDens (manual spelling; the OPI catalog also lists KeepDensity) ORCA stores all computed densities (state-specific Tdens-CAS, QD-NEVPT2 and QDPT/SOC densities) for post-processing with orca_plot.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "KEEPDENSITY"
+  ],
+  "when": {
+   "context": "post-processing CASSCF/QD-NEVPT2 state-specific or SOC densities"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.14 CASSCF Densities"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "The manual's keyword is !KeepDens, not KeepDensity (KeepDensity appears in no manual page; it passes only because the OPI catalog lists it). Statement and keywords should give the manual spelling.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.densities.mo-substring-intermediates",
+  "topic": "casscf",
+  "kind": "check",
+  "statement": "In the density container list of a CASSCF/QD-NEVPT2 calculation, densities whose prefix contains the 'MO' substring (e.g. Tdens-CASQDSOCMO) are intermediates and should be ignored when picking densities for analysis.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "selecting densities from a CASSCF/QDPT .densities file"
+  },
+  "avoid": [
+   "using densities with 'MO' in the name as final state densities"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.14 CASSCF Densities"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Content correct, but kind 'error-pattern' is wrong: there is no error or ORCA message, it is an output-reading check.",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.soc.printlevel",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "The CASSCF program does NOT print the spin-orbit coupling matrix by default; to obtain SOC matrix elements at the CASSCF/NEVPT2 level, set PrintLevel in the rel sub-block to at least 2 (with DoSOC true).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "requesting SOCMEs from a CASSCF or NEVPT2 calculation"
+  },
+  "severity": "warning",
+  "recommend": {
+   "rel.PrintLevel": ">= 2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.15 CASSCF Properties"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.ssc.aux-basis-required",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "Spin-spin couplings in the CASSCF module (rel DoSSC true, available since ORCA 4.1) require the definition of an auxiliary basis set, because the calculation is only implemented in conjunction with RI integrals.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "computing spin-spin couplings in %casscf rel"
+  },
+  "severity": "error",
+  "recommend": {
+   "basis": "auxiliary basis (/C type) must be supplied"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.15 CASSCF Properties"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.fermi-contact.a-reliability",
+  "topic": "casscf",
+  "kind": "limit",
+  "statement": "The Fermi contact contribution to the hyperfine A tensor from CASSCF is not reliable when the spin density is dominated by spin polarization, which is a dynamic correlation effect.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "EPR hyperfine couplings from CASSCF with spin-polarization-dominated spin density"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.15 CASSCF Properties"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.susceptibility.nfields",
+  "topic": "casscf",
+  "kind": "requirement",
+  "statement": "For user-defined magnetic fields in the CASSCF susceptibility tensor calculation (rel dosusceptibility true, fields given as vectors in Gauss via susctensor_magfields[i]), the number of user-defined fields must be specified with susctensor_nfields.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "susceptibility tensors at non-zero magnetic fields in %casscf rel"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.15 CASSCF Properties"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.ailft.lftcase-overrides-actorbs",
+  "topic": "casscf",
+  "kind": "incompatibility",
+  "statement": "In the CASSCF AILFT module the LFTCase keyword (e.g. LFTCase 3d, 4f, 1s3d, 2p3d) overwrites the ActOrbs keyword (e.g. ActOrbs dOrbs); LFTCase provides the utility that simplifies the 2-shell AILFT input.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "ab-initio ligand field theory calculations within CASSCF"
+  },
+  "avoid": [
+   "setting both LFTCase and ActOrbs and expecting ActOrbs to be honored"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.16 1- and 2-shell Abinitio Ligand Field Theory (AILFT)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.esailft.extended-active-space",
+  "topic": "casscf",
+  "kind": "limit",
+  "statement": "The original 1- and 2-shell AILFT recipes require the CASCI/effective Hamiltonian matrix to have the same dimension as the LFT Hamiltonian, so the active space cannot be enlarged beyond the d/f-shell to include extra static correlation; since ORCA 6.1 the Extended Space AILFT (ESAILFT) removes this limitation by projecting the ab-initio Hamiltonian of an extended active space onto the 1-shell AILFT problem without introducing new parameters.",
+  "orca": ">=6.1,<7",
+  "when": {
+   "context": "AILFT on extended active spaces beyond the pure d- or f-shell"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.17 Extended Space Ab initio Ligand Field Theory (ESAILFT)"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.symmetry.frozen-irreps",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "When symmetry is used in CASSCF, the irrep occupations and the irreps of the active orbitals are frozen to what they are upon entering the CASSCF program; the CI can be run separately per irreducible representation, which allows a more controlled calculation of electronic states.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "UseSym"
+  ],
+  "when": {
+   "context": "CASSCF with symmetry enabled"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.8 Example: Symmetry"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.guess.moread-from-gbw",
+  "topic": "casscf",
+  "kind": "procedure",
+  "statement": "To start a CASSCF calculation from previously computed orbitals, use !MOREAD together with %moinp \"file.gbw\" (e.g. DFT orbitals for an excited-state CAS, or converged CASSCF orbitals with !NOITER for property-only runs). Always verify that the final converged orbitals have the desired character.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "MOREAD",
+   "NoIter"
+  ],
+  "when": {
+   "context": "CASSCF from a prior SCF/DFT or previous CASSCF run"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.10 Example: Excited States"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "verified_by": "reviewer-casscf"
+ },
+ {
+  "id": "casscf.xas-valence-two-step",
+  "topic": "casscf",
+  "kind": "procedure",
+  "statement": "CAS-CI/RAS-CI XAS and RIXS core-excited spectra require two steps: (1) optimize the valence active space in an SA-CASSCF calculation including valence excited states in the range of roughly 6-15 eV; (2) read those orbitals, rotate the relevant core orbitals into the active space (%scf rotate) and solve the CASCI/RASCI(+NEVPT2) problem saturated with singly core-excited configurations WITHOUT re-optimizing the orbitals (manual example: maxiter 1 in %casscf), with the frozen core switched off (%method FrozenCore FC_NONE).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "core-excited XAS/RIXS simulations (e.g. metal L-edge) via the CASSCF module"
+  },
+  "recommend": {
+   "valence SA-CASSCF": "include valence excited states ~6-15 eV before rotating core orbitals in"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/CASSCF.html",
+    "section": "3.13.18 Core Excited Spectra: CAS-CI/RAS-CI XAS/RIXS"
+   }
+  ],
+  "status": "verified",
+  "author": "p02",
+  "review_note": "Two-step protocol correct, but the second step must NOT re-optimize the orbitals (the manual example runs the CAS-CI step with maxiter 1 in %casscf and FrozenCore FC_NONE); an orbital optimization after rotating the core orbitals into the active space would rotate them back out / collapse the core hole. Also 'metal L-edge' is the example, the protocol is for core-excited XAS/RIXS generally.",
+  "verified_by": "reviewer-casscf"
+ }
+]

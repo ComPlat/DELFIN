@@ -16,7 +16,6 @@ ALIASES = {
     "xtb0": "contents/modelchemistries/semiempirical.html",
     "xtb1": "contents/modelchemistries/semiempirical.html",
     "xtb2": "contents/modelchemistries/semiempirical.html",
-    "alpb": "contents/modelchemistries/semiempirical.html",
 }
 
 
@@ -30,9 +29,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"OPI {found} is installed; the catalog is written from {OPI_VERSION}",
                   file=sys.stderr)
             return 1
+        old = json.loads(KEYWORDS_FILE.read_text()) if KEYWORDS_FILE.is_file() else {}
         KEYWORDS_FILE.write_text(json.dumps({
             "opi": found, "keywords": keywords_from_opi(),
-            "solvents": solvents_from_opi(), "aliases": ALIASES}, indent=0) + "\n")
+            "solvents": solvents_from_opi(), "aliases": ALIASES,
+            # Accepted by ORCA's own parser, not listed by OPI (kept as measured).
+            "orca_parser": old.get("orca_parser", []),
+            "orca_parser_version": old.get("orca_parser_version", "")}, indent=0) + "\n")
         print(f"wrote {KEYWORDS_FILE}")
         return 0
     if args[:1] == ["check"]:
