@@ -27,8 +27,46 @@ HELP = (
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
     'sync aktualisiert die aktivierten Sitzungen.'
 )
+
+SCHEDULE_HELP = (
+    'Zeitpläne – hier verwalten und Ergebnisse erhalten:\n'
+    'pläne – alle anzeigen\n'
+    'neu ZEIT AUFGABE – vorschlagen, z. B. neu täglich 07:30 Fasse die Jobs zusammen\n'
+    'ok N – bestätigen; erst danach läuft er\n'
+    'pause N · weiter N · jetzt N · löschen N · zeige N\n'
+    'Zeiten: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5 · tz=Europe/Berlin\n'
+    'Im Chat einer Sitzung: plan ZEIT AUFGABE – läuft im Ordner dieser Sitzung.'
+)
+
+#: How a run ended, as the phone is told (schedules.finished / record_run).
+_RUN_WORDS = {
+    'done': ('✅', 'fertig'),
+    'failed': ('❌', 'fehlgeschlagen'),
+    'timeout': ('⏱', 'nach Zeitlimit gestoppt'),
+    'waiting': ('⏳', 'wartet auf eine Freigabe: in der TUI öffnen (delfin-agent tui)'),
+    'missed': ('⏭', 'verpasst (Rechner oder Agent-Dienst war aus)'),
+    'budget': ('💶', 'Tageslimit erreicht, heute nicht mehr'),
+    'unconfirmed': ('⚠', 'nicht bestätigt, nicht gelaufen'),
+    'interrupted': ('⚠', 'unterbrochen'),
+}
+
+#: A schedule's state in the listing (bridge._schedule_view).
+_STATE_WORDS = {
+    'active': 'aktiv', 'paused': 'pausiert', 'unconfirmed': 'wartet auf ok',
+    'running': 'läuft gerade', 'elsewhere': 'anderer Rechner',
+}
+
+#: The schedules chat's commands and what they ask the bridge.
+_SCHEDULE_ACTIONS = {
+    'ok': 'ok', 'bestätigen': 'ok', 'confirm': 'ok',
+    'pause': 'pause', 'weiter': 'resume', 'resume': 'resume',
+    'jetzt': 'run', 'run': 'run', 'now': 'run',
+    'löschen': 'delete', 'loeschen': 'delete', 'delete': 'delete',
+    'zeige': 'show', 'show': 'show',
+}
 
 UPDATE = 'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.'
 
@@ -109,6 +147,8 @@ class Rooms:
         self._reply_targets = {}
         self._incoming_files = {}
         self._announced = deque()
+        #: Schedule number -> the check the phone was last shown for it.
+        self._checks = {}
 
     def paired(self):
         return bool(self.owner) and store.paired_contact() == self.owner
@@ -172,7 +212,8 @@ class Rooms:
     async def send(self, chat, text, *, request=None):
         if not self.paired():
             return
-        if chat != '@' + self.owner and not store.rooms().get(chat, {}).get('ready'):
+        if (chat != '@' + self.owner and chat != store.schedules_room()
+                and not store.rooms().get(chat, {}).get('ready')):
             return
         room = store.rooms().get(chat)
         if room and room['session_id']:
@@ -197,7 +238,8 @@ class Rooms:
         chat = message['chat']
         room = store.rooms().get(chat)
         direct = chat == '@' + self.owner
-        if not direct and (not room or not room.get('ready')):
+        timed = chat == store.schedules_room()
+        if not direct and not timed and (not room or not room.get('ready')):
             return
         if message.get('file'):
             await self.handle_file(message, room)
@@ -212,6 +254,9 @@ class Rooms:
         if not store.claim_message(chat, message['id']):
             return
         try:
+            if timed:
+                await self.send(chat, await self.schedule_command(text))
+                return
             await self.active_sessions()
             if room and room['session_id'] and room['session_id'] not in self._active:
                 return
@@ -267,6 +312,21 @@ class Rooms:
         if command == 'sync':
             await self.sync()
             return t('Aktivierte Sitzungen abgeglichen. Neue Sitzungen zuerst dort mit /sync aktivieren.')
+        if command in {'zeitpläne', 'zeitplaene', 'pläne', 'plaene', 'schedules', 'plans'}:
+            await self.ensure_schedules_room()
+            return t('Einladung zum Chat „Zeitpläne“ liegt in SimpleX. Dort: pläne, neu, ok, pause, jetzt, löschen.')
+        if command in {'plan', 'zeitplan', 'schedule'} and room and room['session_id'] and rest.strip():
+            # "plan the next step" is a message for the agent: only a line
+            # that starts with a time is a schedule.
+            reply = await self.ask({'cmd': 'schedule', 'action': 'new',
+                                    'session': room['session_id'], 'text': rest.strip()})
+            if reply.get('ok'):
+                self._checks[str(reply['id'])] = reply.get('check')
+                chat = await self.ensure_schedules_room()
+                await self.send(chat, self.proposal_text(reply))
+                return t('Vorschlag #{id} liegt im Chat „Zeitpläne“: dort mit ok {id} bestätigen.').format(id=reply['id'])
+            if reply.get('code') != 'when':
+                return reply.get('error') or t('Zeitplan wurde nicht angelegt.')
         if command in {'neu', 'new'}:
             return await self.start_session(rest)
         if command == 'chat' and rest.strip():
@@ -331,6 +391,117 @@ class Rooms:
                 result = t('Zustellung unklar: Verbindung unterbrochen. Vor erneutem Senden /status prüfen.')
             results.append(f'[{label(target)}]\n{result}')
         return '\n\n'.join(results)
+
+    # -- the user's schedules -------------------------------------------------------
+
+    async def ensure_schedules_room(self):
+        async with self._setup:
+            if not self.paired():
+                raise Refused(t('Handy wurde entkoppelt.'))
+            chat = store.schedules_room()
+            if chat:
+                return chat
+            chat = await self.daemon.create_group(
+                f"{bot_name()} · {t('Zeitpläne')}"[:NAME_LIMIT].rstrip())
+            await self.daemon.invite(chat, self.owner)
+            store.set_schedules_room(chat, owner=self.owner)
+            return chat
+
+    @staticmethod
+    def proposal_text(reply, *, again=False):
+        text = t('Vorschlag #{id}: {when} ({tz}), nächster Lauf {next}\n'
+                 'Aufgabe: {task}\nOrdner: {folder} · höchstens {run} $ je Lauf, {day} $ am Tag, {minutes} min\n'
+                 'Läuft erst nach deiner Bestätigung: ok {id}').format(
+            id=reply.get('id'), when=reply.get('when'), tz=reply.get('tz'),
+            next=reply.get('next'), task=reply.get('task'), folder=reply.get('folder'),
+            run=reply.get('runUsd'), day=reply.get('dayUsd'), minutes=reply.get('minutes'))
+        if again:
+            text = t('Bitte zuerst prüfen, dann erneut ok senden.') + '\n\n' + text
+        return text
+
+    async def schedule_command(self, text):
+        """A line in the schedules chat."""
+        word, _, rest = text.strip().partition(' ')
+        command = word.lower().lstrip('/')
+        number = rest.strip().lstrip('#')
+        if command in {'hilfe', 'help', '?'}:
+            return t(SCHEDULE_HELP)
+        if command in {'pläne', 'plaene', 'liste', 'list', 'plans', 'schedules', 'zeitpläne', 'status', ''}:
+            reply = await self.ask({'cmd': 'schedules'})
+            if reply.get('error'):
+                return reply['error']
+            lines = [t('#{id} {when} · nächster Lauf {next} · {state}\n   {task}').format(
+                id=row['id'], when=row['when'], next=row['next'],
+                state=t(_STATE_WORDS.get(row.get('state'), row.get('state') or '')),
+                task=row['task']) for row in reply.get('schedules') or []]
+            return '\n'.join(lines) or t('Noch keine Zeitpläne. neu täglich 07:30 AUFGABE schlägt einen vor.')
+        if command in {'neu', 'new'}:
+            if not rest.strip():
+                return t(SCHEDULE_HELP)
+            reply = await self.ask({'cmd': 'schedule', 'action': 'new', 'text': rest.strip()})
+            if not reply.get('ok'):
+                return reply.get('error') or t('Zeitplan wurde nicht angelegt.')
+            self._checks[str(reply['id'])] = reply.get('check')
+            return self.proposal_text(reply)
+        action = _SCHEDULE_ACTIONS.get(command)
+        if action is None or not number.isdigit():
+            return t('Unbekannt. hilfe zeigt die Befehle für Zeitpläne.')
+        request = {'cmd': 'schedule', 'action': action, 'id': number}
+        if action == 'ok' and self._checks.get(number):
+            request['check'] = self._checks[number]
+        reply = await self.ask(request)
+        if reply.get('error'):
+            return reply['error']
+        if reply.get('check'):
+            self._checks[number] = reply['check']
+        if action == 'ok':
+            if reply.get('confirmationRequired'):
+                return self.proposal_text(reply, again=True)
+            self._checks.pop(number, None)
+            return t('#{id} bestätigt. Nächster Lauf: {next}.').format(id=number, next=reply.get('next'))
+        if action == 'show':
+            return self.proposal_text(reply) if not reply.get('confirmed') else t(
+                '#{id}: {when} ({tz}), nächster Lauf {next}\nAufgabe: {task}\nOrdner: {folder}').format(
+                id=number, when=reply.get('when'), tz=reply.get('tz'), next=reply.get('next'),
+                task=reply.get('task'), folder=reply.get('folder'))
+        return {
+            'pause': t('#{id} pausiert.'),
+            'resume': t('#{id} läuft wieder. Nächster Lauf: {next}.'),
+            'run': t('#{id} startet in Kürze. Das Ergebnis kommt hierher.'),
+            'delete': t('#{id} gelöscht.'),
+        }[action].format(id=number, next=reply.get('next'))
+
+    @staticmethod
+    def run_text(run):
+        icon, word = _RUN_WORDS.get(run.get('status'), ('•', run.get('status') or ''))
+        head = f"{icon} #{run.get('id')} {run.get('when')} · {t(word)}"
+        if run.get('costUsd'):
+            head += f" · {float(run['costUsd']):.2f} $"
+        body = run.get('text') if run.get('status') in {'done', 'failed', 'timeout'} else ''
+        return head + (f"\n{run.get('task')}\n\n{body}" if body else f"\n{run.get('task')}")
+
+    async def schedule_news(self):
+        """Each run once, in the schedules chat, as its ``notify`` says. The
+        first look learns where the record stands and reports no backlog."""
+        if not self.paired():
+            return
+        seq = store.schedule_seq()
+        reply = await self.ask({'cmd': 'schedules', **({'after': str(seq)} if seq is not None else {})})
+        if reply.get('error'):
+            return
+        if seq is None:
+            store.set_schedule_seq(int(reply.get('head', reply.get('last')) or 0), owner=self.owner)
+            return
+        runs = reply.get('runs') or []
+        wanted = [r for r in runs if r.get('notify') == 'always'
+                  or (r.get('notify') == 'errors' and r.get('status') != 'done')]
+        chat = store.schedules_room()
+        if wanted and not chat:
+            chat = await self.ensure_schedules_room()
+        for run in runs:
+            if run in wanted and self.paired():
+                await self.send(chat, self.run_text(run))
+            store.set_schedule_seq(int(run['seq']), owner=self.owner)
 
     async def start_session(self, rest):
         """`neu NAME[: task]`: a session in a folder of its own, its chat, and
@@ -715,15 +886,16 @@ class Rooms:
         async def notifications():
             last = ''
             while self.paired():
-                try:
-                    await self.refresh()
-                    last = ''
-                except Exception as exc:
-                    # Retried in 5 s; logged once per distinct failure.
-                    seen = f'{type(exc).__name__}: {str(exc)[:300]}'
-                    if seen != last:
-                        print(f'[gateway] notifications: {seen}', file=sys.stderr, flush=True)
-                        last = seen
+                for step in (self.refresh, self.schedule_news):
+                    try:
+                        await step()
+                        last = '' if step == self.refresh else last
+                    except Exception as exc:
+                        # Retried in 5 s; logged once per distinct failure.
+                        seen = f'{step.__name__}: {type(exc).__name__}: {str(exc)[:300]}'
+                        if seen != last:
+                            print(f'[gateway] notifications: {seen}', file=sys.stderr, flush=True)
+                            last = seen
                 await asyncio.sleep(5)
         task = asyncio.create_task(notifications())
         media_tasks = set()
