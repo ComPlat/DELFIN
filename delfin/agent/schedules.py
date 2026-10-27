@@ -72,6 +72,8 @@ _DIR = Path.home() / ".delfin" / "user_schedules"
 
 #: The shortest interval: every run is an agent turn.
 MIN_INTERVAL_S = 300
+#: How often a watcher looks by default (watch_checks.WATCH_EVERY_S).
+WATCH_EVERY_S = 60
 #: A missed run later than this is skipped, not made up.
 CATCH_UP_S = 6 * 3600.0
 #: Defaults a schedule starts with; each is changeable per schedule.
@@ -252,6 +254,10 @@ def split_when(text: str) -> tuple[dict, str]:
     raw = str(text or "").strip()
     tokens = raw.split()
     tz: str | None = None
+    if tokens and tokens[0].lower() in ("wenn", "when", "sobald", "once", "nach", "after"):
+        # A watcher: an event, not a time (watch_checks).
+        from . import watch_checks
+        return watch_checks.split(raw)
     # A cron line: five fields of digits, *, /, - and commas.
     if len(tokens) >= 5 and all(_CRON_FIELD.match(t) for t in tokens[:5]):
         spec = _cron(tokens[:5])
@@ -443,7 +449,8 @@ def _clock_times(spec: dict) -> list[tuple[int, int]]:
 def next_fire(spec: dict, after: float, tz_name: str) -> float:
     """The first run strictly after ``after`` (epoch seconds), in
     ``tz_name`` unless the spec names its own zone."""
-    if spec["kind"] == "every":
+    if spec["kind"] in ("every", "watch"):
+        # A watcher's "next" is its next look.
         return float(after) + int(spec["every"])
     tzi = zone(spec.get("tz") or tz_name)
     start = datetime.fromtimestamp(after, tzi).date()
@@ -597,13 +604,16 @@ def add(text: str, *, workspace: str, created_by: str, confirm: bool,
     for a proposal, which waits for the user."""
     spec, task = split_when(text)
     task = task.strip()
-    if not task:
+    if not task and spec["kind"] != "watch":
         raise ScheduleError("the task is missing after the time", "task")
     if len(task) > MAX_TASK:
         raise ScheduleError(f"the task is longer than {MAX_TASK} characters", "task")
     ws = Path(str(workspace or "")).expanduser()
     if not ws.is_absolute() or not ws.is_dir():
         raise ScheduleError(f"no such folder: {workspace}", "workspace")
+    if spec["kind"] == "watch":
+        from . import watch_checks
+        watch_checks.validate_paths(spec, str(ws))
     if notify not in NOTIFY:
         raise ScheduleError(f"notify is one of {', '.join(NOTIFY)}", "budget")
     run_usd, day_usd = float(budget_run_usd), float(budget_day_usd)
@@ -625,7 +635,10 @@ def add(text: str, *, workspace: str, created_by: str, confirm: bool,
         "paused": False, "next_fire_at": first, "last_fired_at": 0.0,
         "last_status": "", "last_session": "", "running": "",
         "run_requested": False, "spent": {}, "confirmed_sha": "",
+        "kind": spec["kind"],
     }
+    if spec["kind"] == "watch":
+        entry.update(watch_state=None, watch_done=False, trigger_note="")
     if confirm:
         entry["confirmed_sha"] = _seal(entry)
     with _locked():
@@ -701,7 +714,66 @@ def active_here(host: str | None = None) -> bool:
     stays up for it."""
     host = host or _hostname()
     return any(e.get("host") == host and e["confirmed"] and not e.get("paused")
-               for e in entries())
+               and not e.get("watch_done") for e in entries())
+
+
+def watches_to_check(host: str, now: float | None = None) -> list[dict]:
+    """The watchers of ``host`` to look at now; their next look is set at
+    once. Confirmed, not paused, not running, not done, not already
+    asked to run."""
+    now = time.time() if now is None else now
+    out: list[dict] = []
+    with _locked():
+        data = _read()
+        for key, e in data["entries"].items():
+            if (not isinstance(e, dict) or e.get("kind") != "watch" or e.get("host") != host
+                    or e.get("paused") or e.get("running") or e.get("watch_done")
+                    or e.get("run_requested") or now < float(e.get("next_fire_at") or 0)
+                    or not confirmed(e)):
+                continue
+            try:
+                e["next_fire_at"] = now + int(_spec(e)["every"])
+            except ScheduleError:
+                continue
+            out.append({**e, "id": int(key)})
+        if out:
+            _write(data)
+    return out
+
+
+def watch_seen(entry_id: int | str, *, state: str | None, fired: bool, note: str = "",
+               now: float | None = None) -> dict:
+    """What a look found. Fired with a task: the run is asked for, the note
+    goes into its prompt, and a change is not looked at again for
+    MIN_INTERVAL_S (each run is an agent turn). Fired without a task: the
+    event is only reported. "done" and "appears" fire once."""
+    now = time.time() if now is None else now
+
+    def apply(e: dict) -> None:
+        e["watch_state"] = state
+        if not fired:
+            return
+        spec = _spec(e)
+        if spec["event"] in ("done", "appears"):
+            e["watch_done"] = True
+        if e.get("task"):
+            e["run_requested"] = True
+            e["trigger_note"] = str(note)[:2000]
+            if spec["event"] == "changes":
+                e["next_fire_at"] = max(float(e.get("next_fire_at") or 0), now + MIN_INTERVAL_S)
+    entry = _change(entry_id, apply)
+    if fired and not entry.get("task"):
+        record_run(entry, status="triggered", text=note, now=now)
+    return entry
+
+
+def watch_failed(entry_id: int | str, reason: str) -> None:
+    """A watcher that cannot work here is paused, and that is reported."""
+    try:
+        entry = _change(entry_id, lambda e: e.update(paused=True))
+    except ScheduleError:
+        return
+    record_run(entry, status="failed", text=f"the watcher is paused: {reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -738,8 +810,9 @@ def take_due(host: str, now: float | None = None) -> list[dict]:
                 continue
             asked = bool(entry.get("run_requested"))
             at = float(entry.get("next_fire_at") or 0)
-            if not asked and now < at:
-                continue
+            watcher = entry.get("kind") == "watch"
+            if not asked and (now < at or watcher):
+                continue                    # a watcher runs when its event asks
             if not confirmed(entry):
                 if asked:
                     entry["run_requested"] = False
@@ -750,8 +823,9 @@ def take_due(host: str, now: float | None = None) -> list[dict]:
                 continue
             try:
                 spec = _spec(entry)
-                entry["next_fire_at"] = next_fire(spec, now, entry["tz"]) \
-                    if spec["kind"] != "every" else now + spec["every"]
+                if not watcher:
+                    entry["next_fire_at"] = next_fire(spec, now, entry["tz"]) \
+                        if spec["kind"] != "every" else now + spec["every"]
             except ScheduleError as exc:
                 entry["paused"] = True
                 changed = True
@@ -772,6 +846,8 @@ def take_due(host: str, now: float | None = None) -> list[dict]:
             entry["running"] = "starting"
             entry["last_fired_at"] = now
             due.append({**entry, "id": int(key)})
+            if watcher:
+                entry["trigger_note"] = ""
         if changed:
             _write(data)
     for entry, status, why in skipped:
@@ -872,6 +948,8 @@ def last_seq() -> int:
 
 def describe_next(entry: dict, now: float | None = None) -> str:
     """The next run as the schedule's own wall clock shows it."""
+    if entry.get("watch_done"):
+        return "done"
     ts = float(entry.get("next_fire_at") or 0)
     if not ts:
         return "-"
@@ -884,5 +962,6 @@ __all__ = [
     "pause", "resume", "request_run", "delete", "active_here", "take_due",
     "started", "finished", "release_all", "record_run", "runs", "last_seq",
     "fingerprint", "confirmed", "spent_today", "describe_next",
-    "MIN_INTERVAL_S", "CATCH_UP_S", "EXAMPLES",
+    "MIN_INTERVAL_S", "CATCH_UP_S", "EXAMPLES", "watches_to_check", "watch_seen",
+    "watch_failed", "WATCH_EVERY_S",
 ]

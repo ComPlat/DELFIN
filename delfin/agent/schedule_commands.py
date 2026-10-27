@@ -49,6 +49,8 @@ def _service_line() -> str:
 
 
 def _status(e: dict, host: str) -> str:
+    if e.get("watch_done"):
+        return "done"
     if e.get("host") != host:
         return f"on {e.get('host')}"
     if not e["confirmed"]:

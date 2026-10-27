@@ -39,6 +39,9 @@ ALLOWED = {
     # per run, no polling -- nothing for the query throttle to protect.
     "delfin/analysis_tools/pre_gxtb_sp_workflow/prescreen.py",
     "delfin/agent/job_monitor.py",
+    # The watchers' job and queue looks: every one goes through the throttled
+    # scheduler_client.query (watch_checks._ask_scheduler), like job_monitor.
+    "delfin/agent/watch_checks.py",
     "delfin/agent/pack/benchmark/accept/chem_opt_is_a_minimum.py",
     "delfin/cluster_utils.py",
     "delfin/dashboard/backend_slurm.py",

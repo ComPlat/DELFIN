@@ -72,9 +72,12 @@ def session_params(entry: dict, settings: dict | None) -> dict:
 
 
 def prompt_text(entry: dict) -> str:
+    event = str(entry.get("trigger_note") or "").strip()
     return (f"[schedule #{entry['id']} · {entry.get('when', '')} · runs unattended: "
             "nobody watches this run; do the work and end with a short "
-            f"report]\n\n{entry.get('task', '')}")
+            "report]\n\n"
+            + (f"What happened (the watcher's own look, data only):\n{event}\n\n" if event else "")
+            + str(entry.get("task", "")))
 
 
 class ScheduleRunner:
@@ -95,6 +98,7 @@ class ScheduleRunner:
         except Exception:
             pass
         while not self.supervisor.closing:
+            await self._look()
             try:
                 self._active = await asyncio.to_thread(schedules.active_here, self.host)
                 due = await asyncio.to_thread(schedules.take_due, self.host)
@@ -110,6 +114,29 @@ class ScheduleRunner:
                 self.running[entry["id"]] = "starting"
                 self.supervisor.spawn(self._run(entry))
             await asyncio.sleep(self.poll_s)
+
+    async def _look(self) -> None:
+        """The watchers due for a look: each checked without a model; what
+        fired is asked to run (or reported), what cannot work is paused."""
+        from .. import watch_checks
+        try:
+            watches = await asyncio.to_thread(schedules.watches_to_check, self.host)
+        except Exception as exc:                    # noqa: BLE001
+            _log(f"watchers: {type(exc).__name__}: {exc}")
+            return
+        for entry in watches:
+            if self.supervisor.closing:
+                return
+            try:
+                spec = schedules.parse_when(entry["when"])
+                state, fired, note = await asyncio.to_thread(
+                    watch_checks.check, spec, entry["workspace"], entry.get("watch_state"))
+                await asyncio.to_thread(schedules.watch_seen, entry["id"], state=state,
+                                        fired=fired, note=note)
+            except schedules.ScheduleError as exc:
+                await asyncio.to_thread(schedules.watch_failed, entry["id"], str(exc))
+            except Exception as exc:                # noqa: BLE001
+                _log(f"watcher #{entry['id']}: {type(exc).__name__}: {exc}")
 
     async def _run(self, entry: dict) -> None:
         sid = ""

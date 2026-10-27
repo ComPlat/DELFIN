@@ -288,4 +288,8 @@ opens the chat "<machine> · Zeitpläne"; there `neu alle 2h <task>` proposes on
 `plan täglich 07:30 <task>` proposes one in that session's folder. Every run is
 reported there. Asked "every day at 7:30 ...", the agent proposes one; it runs
 only after your `ok`. Ceilings: $1 and 30 min a run, $2 a day per schedule.
+Watchers start a task on an event instead of a time: `neu wenn datei
+out.txt erscheint <task>`, `wenn job 123 fertig`, `wenn datei calc.log sich
+ändert`, `wenn ausgabe "squeue -u NAME" sich ändert`; without a task only a
+report.
 See [schedules](../../docs/design/schedules.md).
