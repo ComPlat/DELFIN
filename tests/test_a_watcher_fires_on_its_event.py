@@ -128,8 +128,10 @@ def test_a_change_fires_after_the_first_look(ws):
     assert fired
 
 
-def test_a_process_that_ends_fires(ws):
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+def test_a_process_that_ends_fires(ws, tmp_path):
+    from conftest import child_env
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                            env=child_env(tmp_path))
     try:
         spec = _spec(f"when pid {proc.pid} exits")
         state, fired, _ = watch_checks.check(spec, str(ws), None)
