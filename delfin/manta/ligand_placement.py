@@ -1610,6 +1610,19 @@ def _align_and_orient_ligands(
             _chelate_plane_w = float(os.environ.get("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_W", "5") or 5.0)
         except ValueError:
             _chelate_plane_w = 5.0
+        # Planar (conjugated) chelate rings only: every interior ring atom aromatic or carrying a double
+        # bond.  An sp3 backbone (en, CH(Me)-NMe2 metallacycles) puckers as an envelope -- not constrained.
+        try:
+            _chelate_plane_tol = float(os.environ.get("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TOL", "") or _CHELATE_PLANE_TOL_DEG)
+        except ValueError:
+            _chelate_plane_tol = _CHELATE_PLANE_TOL_DEG
+
+        def _sp2_graph_atom(k):
+            a = mol.GetAtomWithIdx(k)
+            if a.GetIsAromatic():
+                return True
+            return any(b.GetBondTypeAsDouble() >= 1.5 for b in a.GetBonds()
+                       if b.GetOtherAtom(a).GetSymbol() not in _METAL_SET)
         # ===== THE LONE-PAIR TERM WAS NEVER ON (DELFIN_FFFREE_ORIENT_LP_WEIGHT=<w>, default 0 = off) =====
         #
         # The score below has a lone-pair term for monodentate donors (_lp_penalty_for_frag: angle
@@ -1813,7 +1826,7 @@ def _align_and_orient_ligands(
                 path = [b]
                 while prev[path[-1]] is not None:
                     path.append(prev[path[-1]])
-                if len(path) >= 3:
+                if len(path) >= 3 and all(_sp2_graph_atom(k) for k in path[1:-1]):
                     out = sorted({path[1], path[-2]})
             _ring_nb_cache[key] = out
             return out
@@ -2001,7 +2014,7 @@ def _align_and_orient_ligands(
                         if f is None:
                             _scored = []
                             break
-                        ex = math.radians(max(0.0, f - _CHELATE_PLANE_TOL_DEG))
+                        ex = math.radians(max(0.0, f - _chelate_plane_tol))
                         _scored.append((_sc(c) + _chelate_plane_w * ex * ex, c))
                     if _scored:
                         best_score = float("inf")
@@ -2017,7 +2030,7 @@ def _align_and_orient_ligands(
                         (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
                     _folds = [_chelate_fold(donors, c) for _a, c in _cands]
                     _fold_ok = [c for (_a, c), f in zip(_cands, _folds)
-                                if f is not None and f <= _CHELATE_PLANE_TOL_DEG]
+                                if f is not None and f <= _chelate_plane_tol]
                 if _fold_ok:
                     best_score = float("inf")
                     for candidate in _fold_ok:
