@@ -26,6 +26,34 @@ The time is kept in its zone: 07:30 stays 07:30 across summer and winter time.
 A time inside the skipped hour runs once that day, an hour later; one inside the
 repeated hour runs once.
 
+## Watchers: when something happens
+
+Instead of a time, an event; the task after it runs when it happens, and
+without a task the event is only reported:
+
+    wenn job 123456 fertig Fasse die Ergebnisse zusammen   (Slurm: squeue, then sacct)
+    when pid 4711 exits
+    wenn datei out/result.xyz erscheint Werte sie aus
+    when file calc.log changes every 2 min Prüfe auf SCF-Fehler
+    wenn ausgabe "squeue -u max" sich ändert
+
+* The agent service looks every 60 s (`alle|every N min`, at least 30 s)
+  without a model; only the event starts a run, its prompt naming what was
+  seen. "fertig", "endet", "erscheint" fire once (then the watcher is listed
+  as done); "ändert sich" fires on every change, the first look only learns
+  the state, and with a task at most once per 5 minutes.
+* A command is one of a fixed set of reading commands (squeue, sacct, sinfo,
+  qstat, bjobs, df, free, uptime, nvidia-smi, ls, tail, head, wc, grep, du,
+  stat, cat, find, checksums), split without a shell, run with a clean
+  environment (no credential variables), in the folder, for at most 20 s;
+  options that read or write a file of their own choosing (`grep -f`,
+  `find -exec`, ...) are refused.
+* Every path -- the watched file, a command's file argument -- must lie in
+  the schedule's folder, links resolved, when it is made and at every look;
+  a watcher that cannot work is paused and that is reported. Commands without
+  paths may not carry a `/`. So a watcher, from whichever surface, can neither
+  change anything nor read past its folder.
+
 ## Managing
 
 `/schedule` (or `delfin-agent schedule`) lists them with the next run, and:
