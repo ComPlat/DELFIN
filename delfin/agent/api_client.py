@@ -12399,10 +12399,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "cron_create",
             "description": (
-                "Create a recurring invocation on a fixed ``every_seconds`` "
-                "interval. Survives restarts. With ``at`` (a time of day: "
-                "'täglich 07:30', 'mo-fr 18:00', a cron line) it is only "
-                "proposed: the user confirms it."
+                "Recurring run every every_seconds; or ``at`` "
+                "('daily 07:30', cron): proposed to the user."
             ),
             "parameters": {
                 "type": "object",
