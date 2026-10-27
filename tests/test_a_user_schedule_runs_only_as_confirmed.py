@@ -122,7 +122,7 @@ def test_a_missed_run_is_made_up_once_or_skipped_with_a_record(store):
 
 
 def test_the_days_ceiling_stops_more_runs_that_day(store):
-    entry = _add(store, budget_run_usd=1.0, budget_day_usd=2.0)
+    _add(store, budget_run_usd=1.0, budget_day_usd=2.0)
     due = schedules.take_due("here", now=T0 + 3600)
     schedules.finished(due[0], status="done", cost=2.0, now=T0 + 3650)
     assert schedules.take_due("here", now=T0 + 7200) == []
