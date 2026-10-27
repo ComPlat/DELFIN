@@ -207,8 +207,9 @@ EVENTS: dict[str, dict[str, str]] = {
                          # bash tool requires one), masked; the model's
                          # statement, not a check of the command.
                          "purpose": "string?",
-                         # A shell request's command, masked: what a
-                         # window puts in the prompt to change it (key c).
+                         # A shell request's command, for a window to put
+                         # in the prompt to change (key c); absent when it
+                         # holds a secret the preview masks.
                          "command": "string?"},
     # by: client | outside | expired | abort
     "permission.resolved": {"requestId": "string", "decision": "string",

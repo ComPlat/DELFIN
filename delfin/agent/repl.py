@@ -2421,7 +2421,11 @@ class TerminalAgent:
     def _change_command(self, req, raw) -> bool:
         """Key c: the command, editable on one line; enter runs that
         version once instead (``TerminalConfirmBroker.change``), esc on an
-        empty line goes back to the options. True when answered."""
+        empty line goes back to the options. True when answered. A
+        command holding a secret starts from an empty line
+        (``terminal_confirm.editable_command``)."""
+        from . import terminal_confirm as tc
+
         if raw is None or not getattr(raw, "active", False):
             self.transcript.chrome(self.transcript.theme.dim(
                 "  changing a command needs the terminal's keys"))
@@ -2430,7 +2434,7 @@ class TerminalAgent:
             "  change the command, enter runs your version once "
             "(esc clears, esc again goes back):"))
         while True:
-            got = self._read_answer(raw, set(), initial=req.command,
+            got = self._read_answer(raw, set(), initial=tc.editable_command(req),
                                     stop=lambda: getattr(req, "resolved", False))
             if not isinstance(got, tuple):
                 if getattr(req, "resolved", False):

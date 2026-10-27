@@ -248,13 +248,18 @@ def test_the_terminal_dialog_edits_the_command_on_one_line(tmp_path, monkeypatch
                            "$ rm -r results/old") is True
 
 
-def test_a_window_gets_the_command_to_change_with_secrets_masked(broker):
+def test_a_window_gets_the_command_to_change_unless_it_holds_a_secret(broker):
+    plain = tc.ConfirmRequest(kind=tc.CONFIRM, tool="bash",
+                              args={"command": "rm -r results"}, preview="$ rm -r results")
+    assert broker.describe(plain)["command"] == "rm -r results"
     key = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6"
     req = tc.ConfirmRequest(kind=tc.CONFIRM, tool="bash",
                             args={"command": f"curl -H 'Authorization: Bearer {key}' x"},
                             preview="$ curl ...")
     fields = broker.describe(req)
-    assert fields["command"].startswith("curl -H")
-    assert key not in fields["command"]
+    # Neither the secret nor its mask is offered to edit (the mask would run).
+    assert "command" not in fields
+    assert key not in str(fields)
+    assert "c" in {o["key"] for o in fields["options"]}
     write = tc.ConfirmRequest(kind=tc.CONFIRM, tool="write_file", args={"path": "a"}, preview="+x")
     assert "command" not in broker.describe(write)

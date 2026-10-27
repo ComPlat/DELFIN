@@ -90,6 +90,21 @@ CHANGE_GRANT_S = 600.0
 CHANGE_MAX_CHARS = 4000
 
 
+def editable_command(req: "ConfirmRequest") -> str:
+    """The command a dialog offers to change, or "" when it carries
+    something the preview masks: a secret is neither shown to be edited
+    nor replaced by its mask (which would then run). The user types the
+    whole command then."""
+    if req.kind != CONFIRM or not req.is_shell or not req.command:
+        return ""
+    try:
+        from .cli_approve import redact_preview
+        masked = redact_preview(req.command)
+    except Exception:
+        return ""
+    return req.command if masked == req.command else ""
+
+
 def checked_change(req: "ConfirmRequest", command: str) -> str:
     """``command`` as the user's change of ``req``, or ValueError.
 
@@ -546,13 +561,13 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
             Option("n", "no", "refused, and the model is told not to retry")]
 
     if req.is_shell and req.command:
-        opts.append(Option("c", "change the command",
-                           "your version runs instead, once, exactly as typed"))
         opts.append(Option("A", "always this exact command",
                            "persisted, globally, for every future session"))
         if suggestion and suggestion != _exact_pattern(req.command):
             opts.append(Option("k", "always commands like this",
                                f"persists {suggestion}"))
+        opts.append(Option("c", "change the command",
+                           "your version runs instead, once, exactly as typed"))
     if req.is_outside_read and read_dir_for(req):
         opts.append(Option("R", "always read here",
                            f"{read_dir_for(req)} readable (never writable) "
