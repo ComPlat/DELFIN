@@ -35,8 +35,13 @@ def _service(tmp_path, *, idle_exit: float = 120.0) -> ServiceProcess:
 def store(monkeypatch):
     """Point this process at the service's store: set per test below."""
     def at(svc: ServiceProcess) -> Path:
+        from delfin.agent import trust_store
         path = svc.scratch / ".delfin" / "user_schedules"
         monkeypatch.setattr(schedules, "_DIR", path)
+        # The service's account key: it checks the confirmations made here.
+        monkeypatch.setattr(trust_store, "store_dir",
+                            lambda: svc.scratch / ".delfin" / "trust_store")
+        trust_store.forget_cached_keys()
         return path
     return at
 
