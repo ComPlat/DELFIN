@@ -217,24 +217,60 @@ def _run(argv: list[str], cwd: str) -> str:
     return ((done.stdout or "") + (done.stderr or ""))[:OUTPUT_LIMIT]
 
 
+#: Asked through the throttled scheduler client (delfin.scheduler_client),
+#: never directly: a cluster's operators count every scheduler query.
+_SCHEDULER = frozenset({"squeue", "sacct", "sinfo", "sshare", "sprio", "scontrol"})
+_ENDED = ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
+          "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE")
+
+
+def _ask_scheduler(argv: list[str], cwd: str):
+    """The scheduler's answer, through its throttle: the output, None when
+    the command failed, or ``scheduler_client.THROTTLED`` (not asked now)."""
+    import shutil
+    from delfin import scheduler_client
+    if shutil.which(argv[0]) is None:
+        raise ScheduleError(f"{argv[0]} is not installed on this host", "command")
+
+    def runner(cmd):
+        try:
+            done = subprocess.run(list(cmd), cwd=cwd, env=_command_env(),
+                                  stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, errors="replace", timeout=COMMAND_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return done.stdout if done.returncode == 0 else None
+    return scheduler_client.query(scheduler_client.kind_of_argv(argv), argv, runner=runner)
+
+
+def _job(target: str, workspace: str, previous: str | None) -> tuple[str, bool, str]:
+    from delfin import scheduler_client
+    queued = _ask_scheduler(["squeue", "-h", "-j", target, "-o", "%T"], workspace)
+    if queued is scheduler_client.THROTTLED:
+        return previous or "unknown", False, ""
+    listed = [line.strip() for line in str(queued or "").splitlines() if line.strip()]
+    if listed:
+        return listed[0], False, ""
+    # Not listed, or squeue failed (an id the queue has forgotten, or the
+    # controller did not answer): the accounting says which.
+    try:
+        final = _ask_scheduler(["sacct", "-n", "-X", "-j", target, "-o", "State"], workspace)
+    except ScheduleError:
+        final = None
+    states = str(final or "").split() if final is not scheduler_client.THROTTLED else []
+    state = states[0] if states else ""
+    if queued is None and not any(state.startswith(e) for e in _ENDED):
+        return previous or "unknown", False, ""      # nobody could say it ended
+    return "gone", True, f"job {target} has finished ({state or 'no longer in the queue'})"
+
+
 def check(spec: dict, workspace: str, previous: str | None) -> tuple[str, bool, str]:
     """One look: ``(state, fired, note)``. Raises ScheduleError when the
     watcher cannot work here (a path that left the folder, a command that
     is missing)."""
     what, target = spec["what"], spec["target"]
     if what == "job":
-        out = _run(["squeue", "-h", "-j", target, "-o", "%T"], workspace).strip()
-        listed = [line.strip() for line in out.splitlines()
-                  if line.strip() and "invalid job id" not in line.lower()
-                  and "error" not in line.lower()]
-        if listed:
-            return listed[0], False, ""
-        try:
-            final = _run(["sacct", "-n", "-X", "-j", target, "-o", "State"], workspace).split()
-        except ScheduleError:
-            final = []
-        how = final[0] if final else "no longer in the queue"
-        return "gone", True, f"job {target} has finished ({how})"
+        return _job(target, workspace, previous)
     if what == "pid":
         try:
             os.kill(int(target), 0)
@@ -259,7 +295,14 @@ def check(spec: dict, workspace: str, previous: str | None) -> tuple[str, bool, 
     argv = command_argv(target)
     if argv[0] in PATH_COMMANDS:
         _command_paths(argv, workspace)
-    out = _run(argv, workspace)
+    if argv[0] in _SCHEDULER:
+        from delfin import scheduler_client
+        answer = _ask_scheduler(argv, workspace)
+        if answer is scheduler_client.THROTTLED:
+            return previous or "", False, ""
+        out = str(answer or "")[:OUTPUT_LIMIT]
+    else:
+        out = _run(argv, workspace)
     state = hashlib.sha256(out.encode("utf-8", "replace")).hexdigest()
     if previous is None or previous == state:
         return state, False, ""
