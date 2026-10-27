@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from delfin import review as rv
+from delfin import review_team as rt
 
 try:
     import ipywidgets as widgets
@@ -644,11 +645,29 @@ class ReviewPanel:
         self._prefill_categories(raw)
         findings = self.findings_input.value.strip() or None
         wanted = _split_categories(self.categories_input.value)
+        name, files, team = self.name_input.value, None, ''
         try:
+            # A set shared out to a team (assignment.json): only this
+            # reviewer's share, under the name as the assignment spells it.
+            found = rt.find_assignment(raw) if Path(raw).expanduser().is_dir() else None
+            if found is not None:
+                assignment = rt.load_assignment(found)
+                rater = rt.find_rater(assignment, name)
+                if rater is None:
+                    who = (f'"{name.strip()}" is not' if name.strip()
+                           else 'Enter your name first: it is not')
+                    self._say(f'{who} among the reviewers in {found}. Use your name as given '
+                              'there, or ask whoever shares out the set to add you '
+                              '(delfin review assign).', error=True)
+                    return None
+                name, files = rater, rt.rater_order(assignment, rater)
+                n_shared = len(assignment.get('shared', []))
+                team = (f'Your share: {len(files)} structures of {assignment.get("files_total", "?")}'
+                        f' ({n_shared} rated by everyone)')
             session = rv.ReviewSession.open(
-                raw, name=self.name_input.value, blind=self.blind_cb.value,
+                raw, name=name, blind=self.blind_cb.value,
                 seed=int(self.seed_input.value or 0), findings_path=findings,
-                default_categories=wanted or None)
+                default_categories=wanted or None, files=files)
         except (OSError, ValueError) as exc:
             self._say(f'Cannot open {raw}: {exc}', error=True)
             return None
@@ -679,6 +698,8 @@ class ReviewPanel:
         self.saved_html.value = ''
         self.refresh(full=True)
         msg = f'Review file: {session.review_path}'
+        if team:
+            msg = f'{team}  |  {msg}'
         if session.warnings:
             msg += '  |  ' + '; '.join(session.warnings)
         self._say(msg)
@@ -1152,7 +1173,10 @@ class ReviewPanel:
         self._busy = True
         try:
             present = {f.file for f in s.frames}
-            files = [f for f in s.data['files'] if f in present]
+            if s.assigned is not None:
+                files = list(dict.fromkeys(f.file for f in s.frames))
+            else:
+                files = [f for f in s.data['files'] if f in present]
             single = not s.blind and all(
                 s.data['files'][f].get('n_frames', 0) <= 1 for f in files)
             self.files_box.layout.display = 'none' if s.blind else ''
