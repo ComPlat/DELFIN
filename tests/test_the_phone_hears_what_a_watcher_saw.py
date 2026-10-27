@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from delfin.agent import schedules
 from delfin.agent.service.bridge import Bridge
 from delfin.messenger import gateway, lang
