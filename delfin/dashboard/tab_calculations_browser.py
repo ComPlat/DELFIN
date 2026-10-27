@@ -1873,10 +1873,51 @@ def create_tab(ctx):
     # it costs nothing to carry; filled, it is the reason the viewer is open.
     calc_fukui_panel_container.add_class('delfin-structure-fs-member')
     calc_fukui_panel_container.add_class('delfin-structure-fs-panel')
+    # DELFIN_PRE_GXTB_SP_GUI_V1: controls
+    calc_prescreen_btn = widgets.Button(
+        description='Pre-g-xTB + DFT-SP', button_style='info',
+        tooltip='Start g-xTB optimizations and ORCA single-points for ALL GOAT frames',
+        layout=widgets.Layout(width='185px'),
+    )
+    calc_prescreen_submit_cb = widgets.Checkbox(
+        value=True, description='Submit SLURM jobs', indent=False,
+        tooltip='When checked, clicking Pre-g-xTB + DFT-SP submits the full arrays',
+        layout=widgets.Layout(width='170px'),
+    )
+    calc_prescreen_charge = widgets.IntText(
+        value=0, description='Charge',
+        layout=widgets.Layout(width='135px'),
+    )
+    calc_prescreen_mult = widgets.BoundedIntText(
+        value=1, min=1, max=20, description='Multiplicity',
+        layout=widgets.Layout(width='165px'),
+    )
+    calc_prescreen_refresh_btn = widgets.Button(
+        description='Load SP ranking', disabled=False,
+        tooltip='Check the finished run and load the SP-sorted g-xTB geometries into the viewer',
+        layout=widgets.Layout(width='150px'),
+    )
+    calc_prescreen_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='auto'),
+    )
+    calc_prescreen_controls = widgets.HBox(
+        [calc_prescreen_submit_cb, calc_prescreen_charge,
+         calc_prescreen_mult, calc_prescreen_refresh_btn],
+        layout=widgets.Layout(width='100%', align_items='center',
+                              flex_flow='row wrap', gap='8px'),
+    )
+
+    calc_prescreen_toolbar = widgets.VBox([
+        widgets.HBox([calc_prescreen_btn], layout=widgets.Layout(gap='8px')),
+        calc_prescreen_controls,
+        calc_prescreen_status,
+    ], layout=widgets.Layout(display='none', width='100%', margin='5px 0', gap='6px'))
+
     calc_mol_container = widgets.VBox(
         [
             calc_mol_header,
             calc_rmsd_controls,
+            calc_prescreen_toolbar,
             calc_mol_view_row,
             calc_fukui_panel_container,
         ],
@@ -6574,6 +6615,8 @@ def create_tab(ctx):
         calc_pdf_container.layout.display = 'none'
         show_mol = calc_view_toggle.value
         if show_mol:
+            selected_goat = str(state.get('selected_file_path') or '').lower().endswith('finalensemble.xyz')
+            calc_prescreen_toolbar.layout.display = 'flex' if selected_goat else 'none'
             calc_mol_container.layout.display = 'block'
             calc_content_area.layout.display = 'none'
             calc_edit_area.layout.display = 'none'
@@ -10195,6 +10238,198 @@ def create_tab(ctx):
             _calc_preselect_show(False)
             _calc_show_xyz_batch_panel(False)
             calc_content_area.layout.display = 'block'
+
+    # DELFIN_PRE_GXTB_SP_GUI_V1: callbacks
+    def _calc_on_prescreen_click(_button=None):
+        """Start standalone pre-screen on all frames of the selected GOAT ensemble."""
+        source = state.get('selected_file_path')
+        if source is None or not Path(source).is_file():
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Open a GOAT finalensemble.xyz first.</span>'
+            )
+            return
+        source = Path(source).resolve()
+        if not source.name.lower().endswith('finalensemble.xyz'):
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Select a GOAT finalensemble.xyz file, '
+                'not a representative/single-frame XYZ.</span>'
+            )
+            return
+        if state.get('prescreen_running'):
+            return
+        workflow_cli = (
+            Path(__file__).resolve().parents[1]
+            / 'analysis_tools' / 'pre_gxtb_sp_workflow' / 'prescreen.py'
+        )
+        if not workflow_cli.is_file():
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Pre-screening backend missing: '
+                f'{_html.escape(str(workflow_cli))}</span>'
+            )
+            return
+
+        charge = int(calc_prescreen_charge.value)
+        multiplicity = int(calc_prescreen_mult.value)
+        submit_jobs = bool(calc_prescreen_submit_cb.value)
+        cmd = [
+            sys.executable, str(workflow_cli), 'prepare', '--ensemble', str(source),
+            '--charge', str(charge), '--multiplicity', str(multiplicity),
+        ]
+        if submit_jobs:
+            cmd.append('--submit')
+
+        state['prescreen_running'] = True
+        calc_prescreen_btn.disabled = True
+        calc_prescreen_status.value = (
+            '<span style="color:#1565c0;">Preparing all GOAT frames'
+            + (' and submitting the parallel SLURM arrays...' if submit_jobs
+               else ' (no jobs submitted)...')
+            + '</span>'
+        )
+
+        def _prescreen_worker():
+            try:
+                p = subprocess.run(
+                    cmd, text=True, capture_output=True, timeout=240,
+                    check=False,
+                )
+                stdout = p.stdout or ''
+                stderr = p.stderr or ''
+                match = re.search(r'^Prepared\s+(\d+)\s+conformers\s+at\s+(.+)$',
+                                  stdout, re.M)
+                if match:
+                    run = Path(match.group(2).strip())
+                    state['prescreen_last_run'] = str(run)
+                    calc_prescreen_refresh_btn.disabled = False
+                if p.returncode != 0:
+                    details = (stdout + '\n' + stderr).strip()[-1100:]
+                    raise RuntimeError(details or f'Exit code {p.returncode}')
+                if match is None:
+                    raise RuntimeError('Workflow did not return a run directory')
+                count = int(match.group(1))
+                job_info = ''
+                submission = run / 'submission.json'
+                if submission.is_file():
+                    try:
+                        ids = json.loads(submission.read_text())
+                        job_info = (
+                            f" | SLURM g-xTB={ids.get('gxtb_array')}, "
+                            f"DFT-SP={ids.get('sp_array')}, "
+                            f"report={ids.get('collect_job')}"
+                        )
+                    except (ValueError, OSError):
+                        pass
+                verb = 'Submitted' if submit_jobs else 'Prepared only'
+                calc_prescreen_status.value = (
+                    '<span style="color:#2e7d32;">'
+                    f'{verb}: {count} conformers{_html.escape(job_info)}. '
+                    f'Run: <code>{_html.escape(str(run))}</code>. '
+                    'After completion press <b>Load SP ranking</b>.'
+                    '</span>'
+                )
+                calc_list_directory()
+            except Exception as exc:
+                calc_prescreen_status.value = (
+                    '<span style="color:#c62828;">Pre-screening failed: '
+                    f'{_html.escape(str(exc)[:1200])}</span>'
+                )
+            finally:
+                state['prescreen_running'] = False
+                calc_prescreen_btn.disabled = False
+
+        threading.Thread(target=_prescreen_worker, daemon=True).start()
+
+    def _calc_on_prescreen_refresh_click(_button=None):
+        """Show complete SP results, and navigate them in the existing XYZ viewer."""
+        run_str = state.get('prescreen_last_run')
+        # Runs may take hours. Recover a prior session's run from the
+        # selected GOAT ensemble, instead of requiring the notebook to stay open.
+        if not run_str:
+            selected = state.get('selected_file_path')
+            if selected is not None:
+                source = Path(selected).resolve()
+                if source.is_file() and source.name.lower().endswith('finalensemble.xyz'):
+                    matches = []
+                    for candidate in source.parent.glob('pre_gxtb_sp_*'):
+                        config = candidate / 'settings.json'
+                        if not config.is_file():
+                            continue
+                        try:
+                            settings = json.loads(config.read_text())
+                            if Path(settings.get('input', '')).resolve() == source:
+                                matches.append(candidate)
+                        except (ValueError, OSError, TypeError):
+                            continue
+                    if matches:
+                        run_str = str(max(matches, key=lambda x: x.stat().st_mtime))
+                        state['prescreen_last_run'] = run_str
+        if not run_str:
+            calc_prescreen_status.value = (
+                'No matching pre-screening run found for the selected finalensemble.xyz.'
+            )
+            return
+        run = Path(run_str)
+        summary_path = run / 'results' / 'summary.json'
+        if not summary_path.is_file():
+            calc_prescreen_status.value = (
+                f'Waiting for result collection. Run: <code>{_html.escape(str(run))}</code>'
+            )
+            return
+        try:
+            summary = json.loads(summary_path.read_text())
+            n = int(summary['frames'])
+            valid = int(summary['sp_valid'])
+            gvalid = int(summary['gxtb_valid'])
+            if valid != n or gvalid != n:
+                calc_prescreen_status.value = (
+                    '<span style="color:#a86800;">'
+                    f'Screening incomplete: g-xTB {gvalid}/{n}, SP {valid}/{n}. '
+                    'See results/per_conformer_status.csv and SLURM logs. '
+                    f'<code>{_html.escape(str(run))}</code></span>'
+                )
+                return
+            xyz_path = run / 'results' / 'gxtb_geometries_sorted_by_dft_sp.xyz'
+            csv_path = run / 'results' / 'single_point_energies.csv'
+            import csv as _csv
+            with csv_path.open(newline='') as f:
+                rows = list(_csv.DictReader(f))
+            if len(rows) != n:
+                raise ValueError('SP energy CSV does not contain every conformer')
+            frames = parse_xyz_frames(xyz_path.read_text(encoding='utf-8'))
+            if len(frames) != n:
+                raise ValueError('Ranked XYZ has wrong frame count')
+            # Same viewer path used by the existing conformer-clustering button.
+            state['xyz_frames'].clear()
+            state['xyz_frames'].extend(frames)
+            state['xyz_current_frame'][0] = 0
+            state['traj_viewer_ready'] = False
+            calc_xyz_controls.layout.display = 'flex'
+            calc_coord_controls.layout.display = 'none'
+            calc_mol_container.layout.display = 'block'
+            calc_mol_view_row.layout.display = ''
+            _set_view_toggle(True, False)
+            calc_update_xyz_viewer(initial_load=True)
+            calc_file_info.value = (
+                f'<b>{n} SP-sorted g-xTB geometries</b> | '
+                f'{_html.escape(xyz_path.name)}'
+            )
+            top = ', '.join(
+                f"#{r['sp_rank']} GOAT {r['goat_index']} "
+                f"({float(r['delta_kcal_mol']):.3f} kcal/mol)"
+                for r in rows[:min(8, n)]
+            )
+            calc_prescreen_status.value = (
+                '<span style="color:#2e7d32;">'
+                f'COMPLETE: {n}/{n}. Leading SP candidates: {_html.escape(top)}. '
+                f'Results: <code>{_html.escape(str(run / "results"))}</code>'
+                '</span>'
+            )
+            calc_list_directory()
+        except Exception as exc:
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Could not load SP results: '
+                f'{_html.escape(str(exc)[:800])}</span>'
+            )
 
     def calc_on_override_start(button):
         selected_option = calc_options_dropdown.value
@@ -14074,6 +14309,8 @@ def create_tab(ctx):
     calc_recalc_btn.on_click(calc_on_recalc_click)
     calc_submit_recalc_btn.on_click(calc_on_submit_recalc)
     calc_submit_xyz_workflow_btn.on_click(_calc_submit_xyz_browser_workflow)
+    calc_prescreen_btn.on_click(_calc_on_prescreen_click)
+    calc_prescreen_refresh_btn.on_click(_calc_on_prescreen_refresh_click)
     calc_delete_btn.on_click(calc_on_delete_click)
     calc_delete_yes_btn.on_click(calc_on_delete_yes)
     calc_delete_no_btn.on_click(calc_on_delete_no)
@@ -16063,6 +16300,9 @@ def create_tab(ctx):
         'calc_ssh_transfer_btn': calc_ssh_transfer_btn,
         # Visualization & report
         'calc_view_toggle': calc_view_toggle,
+        'calc_prescreen_btn': calc_prescreen_btn,
+        'calc_prescreen_refresh_btn': calc_prescreen_refresh_btn,
+        'calc_prescreen_toolbar': calc_prescreen_toolbar,
         'calc_view_png_btn': calc_view_png_btn,
         'calc_view_fullscreen_btn': calc_view_fullscreen_btn,
         'calc_xyz_png_btn': calc_xyz_png_btn,

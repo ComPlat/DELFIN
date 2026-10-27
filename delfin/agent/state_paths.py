@@ -642,6 +642,7 @@ def workspace_state_dir(workspace: Any) -> Path:
 
 #: ``(module, attribute, relative path under the redirected home)``.
 USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
+    ("delfin.messenger.activation", "_DIR", "messenger_sessions"),
     ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
     # `delfin-agent pause <session>` flags. A test's flag would pause a real
     # session of the same name.

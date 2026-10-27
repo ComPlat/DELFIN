@@ -60,7 +60,7 @@ class StreamEvent:
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
                  "cost_usd", "tool_name", "tool_input", "tool_output",
                  "cached_tokens", "output_truncated", "output_chars",
-                 "output_notes")
+                 "output_notes", "seen_text")
 
     def __init__(
         self,
@@ -77,6 +77,7 @@ class StreamEvent:
         output_truncated: bool = False,
         output_chars: int = 0,
         output_notes: str = "",
+        seen_text: str = "",
     ):
         self.type = type
         self.text = text
@@ -110,6 +111,13 @@ class StreamEvent:
         self.output_truncated = output_truncated
         self.output_chars = output_chars
         self.output_notes = output_notes
+        # * ``seen_text`` — the result as the model was given it (after the
+        #   context cut, before the data fence). The evidence pool is filled
+        #   from it: filled from the preview, a figure past character 2000
+        #   of a result the model saw whole was flagged as unsupported.
+        #   Empty where a backend passes the result through whole, and
+        #   never written to a trace.
+        self.seen_text = seen_text
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +137,17 @@ class _BaseClient:
     #: was asked for: ``create_client`` returns an OpenAIClient for
     #: provider kit/ollama/openai whatever ``backend`` says.
     supplies_session_id: bool = False
+
+    def preset_session_id(self, session_id: str) -> bool:
+        """Take ``session_id`` as the id of the conversation not begun yet.
+
+        For a backend that announces its id: one that can be told the id
+        up front answers True, and the session has its id before the
+        first turn -- the service's log and presence are keyed by it from
+        the start. False (the default): the id stays "" until the stream
+        announces it.
+        """
+        return False
 
     def stream_message(
         self,
@@ -259,6 +278,9 @@ class CLIClient(_BaseClient):
             )
         self._proc: subprocess.Popen | None = None
         self._session_id: str = ""
+        #: The id a new conversation is started under (``--session-id``)
+        #: until the CLI has announced it; from then on it is resumed.
+        self._new_session_id: str = ""
         # DELFIN's file gate in front of the CLI's own tools (cli_gate):
         # the same read/write boundary, and the same dialog, as every
         # other backend. One token per client; the relay carries the
@@ -357,7 +379,10 @@ class CLIClient(_BaseClient):
         if self.effort in ("low", "medium", "high", "xhigh", "max"):
             cmd.extend(["--effort", self.effort])
 
-        if session_id:
+        if session_id and session_id == self._new_session_id:
+            # Nothing to resume yet: the conversation begins under this id.
+            cmd.extend(["--session-id", session_id])
+        elif session_id:
             cmd.extend(["--resume", session_id])
 
         self._proc = subprocess.Popen(
@@ -465,6 +490,7 @@ class CLIClient(_BaseClient):
                 sid = data.get("session_id", "")
                 if sid:
                     self._session_id = sid
+                    self._new_session_id = ""
                     yield StreamEvent(type="session_init", text=sid)
 
             elif dtype == "stream_event":
@@ -734,6 +760,15 @@ class CLIClient(_BaseClient):
             except Exception:
                 pass
             self._proc = None
+
+    def preset_session_id(self, session_id: str) -> bool:
+        """A new conversation is started with ``--session-id``. Not while
+        one is live (a running process, an announced id): that one goes on
+        under the id it has."""
+        if self._session_id or (self._proc is not None and self._proc.poll() is None):
+            return False
+        self._new_session_id = session_id
+        return True
 
     @property
     def session_id(self) -> str:
@@ -3796,7 +3831,9 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
 # Keeping them out by default avoids surprising "agent runs xtb on user
 # files" behaviour for non-DELFIN projects.
 _DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
-    r"^\s*xtb\s+\S+\.xyz\b",          # read-only xtb invocation
+    # An xtb run is a calculation: calc_policy decides it by its setup and
+    # its cores, not by its spelling (an `xtb <file>.xyz` pattern here let
+    # `-P 64` and an odd electron count run unasked).
     # The read-only subcommands of delfin-agent and delfin, by name; every
     # acting one is asked (classification above _DEFAULT_BASH_AUTO_ALLOW).
     *_delfin_cli_read_only_patterns(r"delfin-agent", r"delfin"),
@@ -6197,6 +6234,110 @@ def _run_github_push(plan: dict, run_cwd, env: dict,
     return subprocess.CompletedProcess(plan["argv"], code, out, err)
 
 
+def _github_pr_plan(cmd: str, run_cwd) -> Optional[dict]:
+    """A noninteractive PR create, with no shell or checkout code near gh's login.
+
+    Deliberately accepts only inline text and the current branch. In particular,
+    no editor, browser, template/body file, API command or implicit push runs
+    with credentials. All permission gates must have run before execution.
+    """
+    if any(c in cmd for c in ("`", "$", "\n", "\r")):
+        return None
+    push = None
+    if cmd.lstrip().startswith("git push "):
+        first, sep, cmd = cmd.partition("&&")
+        if not sep:
+            return None
+        push = _github_push_plan(first.strip(), run_cwd)
+        if push is None or push["filter"] or push["merge_stderr"]:
+            return None
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None
+    if tokens[:3] != ["gh", "pr", "create"]:
+        return None
+    options = {}
+    flags = set()
+    i = 3
+    while i < len(tokens):
+        key = tokens[i]
+        if key in ("--fill", "--draft") and key not in flags:
+            flags.add(key)
+            i += 1
+        elif key in ("--base", "--head", "--title", "--body", "--repo"):
+            if key in options or i + 1 >= len(tokens):
+                return None
+            options[key] = tokens[i + 1]
+            i += 2
+        else:
+            return None
+    gh = shutil.which("gh")
+    if not gh or _checkout_configures_transport(run_cwd):
+        return None
+    url = (push["url"] if push else
+           _git_out(run_cwd, "remote", "get-url", "--push", "origin")) or ""
+    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:)"
+                         r"([A-Za-z0-9._-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?", url)
+    if not match:
+        return None
+    repo = match.group(1)
+    if options.get("--repo", repo) != repo:
+        return None
+    head = _git_out(run_cwd, "symbolic-ref", "--short", "HEAD") or ""
+    base = options.get("--base", "")
+    # An explicit head prevents gh from pushing or forking interactively.
+    if (not head or options.get("--head", head) != head or not base
+            or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", base)
+            or ".." in base or head.startswith("-")):
+        return None
+    title, body = options.get("--title"), options.get("--body")
+    if "--fill" in flags and (title is None or body is None):
+        base_ref = "refs/remotes/origin/" + base
+        if not _git_out(run_cwd, "rev-parse", "--verify", base_ref):
+            base_ref = "refs/heads/" + base
+        commits = _git_out(run_cwd, "log", "--reverse", "--format=%s%n%n%b",
+                           base_ref + "..HEAD", "--")
+        if not commits:
+            return None
+        title = title if title is not None else commits.splitlines()[0]
+        body = body if body is not None else commits
+    if not title or body is None:
+        return None
+    argv = [gh, "pr", "create", "--repo", repo, "--head", head,
+            "--base", base, "--title", title, "--body", body]
+    if "--draft" in flags:
+        argv.append("--draft")
+    return {"push": push, "argv": argv, "repo": repo}
+
+
+def _run_github_pr(plan: dict, run_cwd, env: dict, timeout: int):
+    """Execute only vetted argv, preserving && failure and the shared deadline."""
+    import tempfile
+    start = time.monotonic()
+    out, err = "", ""
+    if plan["push"] is not None:
+        proc = _run_github_push(plan["push"], run_cwd, env, timeout)
+        if proc.returncode:
+            return proc
+        out, err = proc.stdout or "", proc.stderr or ""
+    remaining = timeout - (time.monotonic() - start)
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(plan["argv"], timeout)
+    gh_env = {k: v for k, v in env.items() if not k.startswith("GIT_")}
+    gh_env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1",
+                  GH_PAGER="cat", GH_BROWSER="false", GH_EDITOR="false")
+    # gh must never discover the agent-writable checkout's config or hooks.
+    with tempfile.TemporaryDirectory(prefix="delfin-pr-") as empty:
+        proc = subprocess.run(plan["argv"], cwd=empty, env=gh_env,
+                              capture_output=True, text=True, timeout=remaining,
+                              stdin=subprocess.DEVNULL, start_new_session=True,
+                              check=False)
+    return subprocess.CompletedProcess(plan["argv"], proc.returncode,
+                                       out + (proc.stdout or ""),
+                                       err + (proc.stderr or ""))
+
+
 def _message_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -7622,6 +7763,124 @@ def _artifact_path_inside(base: str, perms) -> str:
         return ""
 
 
+def _calculation_verdict(perms, cmd: str, args: dict,
+                         wall_limit_s: Optional[float]):
+    """calc_policy's verdict for a bash command, or None on any failure.
+
+    The command's other segments must pass the gate's own auto-allow test,
+    so a calculation cannot carry an unrelated command past the dialog.
+    A failure of the check itself admits nothing: None falls through to
+    the gate's ordinary path.
+    """
+    try:
+        from . import calc_policy
+        cwd_arg = str((args or {}).get("cwd") or "").strip()
+        ws = Path(str(getattr(perms, "workspace", ".") or "."))
+        cwd = Path(cwd_arg) if cwd_arg else ws
+        if not cwd.is_absolute():
+            cwd = ws / cwd
+        return calc_policy.judge_command(
+            _split_shell_segments(cmd), cwd, perms._segment_auto_allowed,
+            tool_wall_s=wall_limit_s)
+    except Exception:
+        return None
+
+
+def _unasked_cpu_set() -> Optional[list]:
+    """The CPUs a command nobody approved is bound to, or None."""
+    try:
+        from . import calc_policy
+        return calc_policy.unasked_cpu_set()
+    except Exception:
+        return None
+
+
+def _unasked_share(argv: list) -> list:
+    """``argv`` bound to the CPUs a command nobody approved may use.
+
+    On a login node, LOGIN_LOCAL_CORES CPUs (calc_policy.unasked_cpu_set):
+    the gate reads a command's text, and `python3 run.py` that starts a
+    16-core ORCA reads as `python3`. The binding holds for whatever the
+    command starts. Elsewhere, and on any failure, ``argv`` unchanged.
+    """
+    try:
+        from . import calc_policy
+        return calc_policy.bound_argv(argv, _unasked_cpu_set())
+    except Exception:
+        return list(argv)
+
+
+def _with_calculation_note(result: str, notes: list) -> str:
+    """The run's JSON result, naming the calculation the gate let start.
+
+    The model reads it and can tell the user what runs where; the same
+    line is in the security-event panel. A result that is not a JSON
+    object is returned unchanged.
+    """
+    if not notes:
+        return result
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    data["calculation_check"] = ("started without a dialog, setup and "
+                                 "resources checked: " + "; ".join(notes))
+    return json.dumps(data)
+
+
+def _mcp_calculation_verdict(base: str, args: dict):
+    """calc_policy's verdict for an ops tool that starts a calculation.
+
+    ``submit_calculation`` (ORCA and DELFIN mode), ``run_orca_input`` and a
+    plain ``pipeline_run`` on a CONTROL.txt are checked; every other tool
+    (a recalc, --define, extra arguments, the other workflow runners) is
+    not, and returns None: the dialog stays. So does
+    delfin-tools ``run_application``/``submit_application``: an
+    application's ``inputs`` are its own schema, which carries no charge,
+    spin or geometry this check could read.
+    """
+    try:
+        from . import calc_policy
+        a = args or {}
+        if base == "submit_calculation" and str(a.get("mode") or "delfin") \
+                == "orca":
+            return calc_policy.judge_orca_submission(
+                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                int(a.get("maxcore") or 6000),
+                str(a.get("time_limit") or "12:00:00"))
+        if base == "run_orca_input" and a.get("input_file"):
+            return calc_policy.judge_orca_run(Path(str(a["input_file"])))
+        if base == "submit_calculation" and str(a.get("mode") or "delfin") \
+                == "delfin":
+            return calc_policy.judge_delfin_submission(
+                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                int(a.get("maxcore") or 6000),
+                str(a.get("time_limit") or "12:00:00"))
+        if base == "pipeline_run":
+            control = Path(str(a.get("control_file") or "CONTROL.txt"))
+            if (a.get("define") or a.get("extra_args") or a.get("overwrite")
+                    or control.name != "CONTROL.txt"):
+                return None
+            return calc_policy.judge_delfin_run(control.parent if str(
+                control.parent) not in ("", ".") else Path.cwd())
+    except Exception:
+        return None
+    return None
+
+
+def _is_honoured_dry_run(name: str, arguments) -> bool:
+    """True when ``check_only`` on this call is a dry run its executor runs.
+
+    Only the native ``apply_patch`` has one (``git apply --check``). On any
+    other tool, and on every MCP tool, the flag is an argument the executor
+    may ignore -- an MCP server drops a key its schema does not name and
+    performs the call -- so it decides nothing.
+    """
+    return name == "apply_patch" and bool((arguments or {}).get("check_only"))
+
+
 def _bare_tool_name(name: str) -> str:
     """A namespaced ``mcp__server__tool`` reduced to its tool name.
 
@@ -8171,6 +8430,8 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # The account key and the pins beside it (trust_store): DELFIN's own
     # processes outside agent sessions read them, no agent route does.
     "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
+    "messenger_sessions", "messenger_sessions/**",
+    "**/messenger_sessions", "**/messenger_sessions/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -8930,7 +9191,19 @@ def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
     if (not ok and isinstance(away, dict) and token
             and _DocToolExecutor._confirm_timed_out(perms)):
         away[kind] = token
+    elif not ok and token:
+        _note_refusal_in_turn(perms)
     return ok
+
+
+def _note_refusal_in_turn(perms) -> None:
+    """The user said no in this turn (_confirm_widening reads it)."""
+    try:
+        token = getattr(perms, "turn_token", 0)
+        if token:
+            perms.approval_refused_turn = token
+    except Exception:
+        pass
 
 
 def _not_asked_again_note() -> str:
@@ -9002,6 +9275,12 @@ class KitToolPermissions:
     # sub-agent receives through dataclasses.replace stays its own.
     # remember() stores it as the note's ``read_before``.
     turn_untrusted_sources: tuple[str, ...] = ()
+    # The engine turn the tool calls belong to, as an opaque key the
+    # engine renews at every turn start (AgentEngine.stream_response).
+    # The step journal (step_journal.auto_start) opens its next turn
+    # number when the key changes; empty means "continue the current
+    # one", the behaviour of a caller that has no turns.
+    step_turn_key: str = ""
     # The swarm run this agent belongs to (swarm_memory): set by the
     # orchestrator through DELFIN_SWARM_RUN, or at the first delegation
     # (subagents._derive_perms), and copied to every child by the
@@ -9197,6 +9476,10 @@ class KitToolPermissions:
     #: mapped to the turn_token it expired in (_ask_confirm). Shared by
     #: reference with sub-agents (dataclasses.replace) like denied_actions.
     approval_away: dict = field(default_factory=dict)
+    #: The turn_token of the turn in which the user last refused a dialog
+    #: (_ask_confirm, the widening dialogs): a request to widen the agent's
+    #: own permissions right after a refusal is not asked (_confirm_widening).
+    approval_refused_turn: int = 0
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -10685,9 +10968,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show an .xyz (multi-frame too) or .cube file as a rotatable "
-                "3D viewer in the chat; isovalue is the cube's isosurface "
-                "(default 0.02)."
+                "Show .xyz (multi-frame too) or .cube in 3D, .smi/.mol/.sdf "
+                "as a structural formula, in the chat; isovalue: cube "
+                "isosurface (default 0.02)."
             ),
             "parameters": {
                 "type": "object",
@@ -16446,6 +16729,49 @@ def _syntax_regression_note(path: Path, before: str, after: str) -> str:
             "it parsed before this edit.")
 
 
+def _diagnostics_note(path: Path, workspace, old_text: "Optional[str]") -> str:
+    """LSP1: language diagnostics for the file AS IT NOW STANDS, minus
+    the findings its PRE-EDIT text already had. Appended to a successful
+    edit/write result the way _syntax_regression_note is — reported,
+    never refused. Computed from ``old_text`` already in hand at the
+    call site (the write path journals it right after via
+    _capture_change); the undo journal is NOT read back.
+
+    No try/except here on purpose: check_detailed is contractually
+    never-raises, and a broad catch would only hide a wiring bug
+    (wave-17 lesson 5). A missing tool surfaces as the one-line
+    "diagnostics unavailable" note ONCE per session (the flag lives in
+    diagnostics.py), then the block stays silent."""
+    result = _diag_check_detailed(path, workspace, old_text)
+    lines = []
+    for d in result.diagnostics:
+        sev = d.severity
+        if d.line > 0:
+            loc = f"{d.line}:{d.column}" if d.column else str(d.line)
+        else:
+            # A tool without location info (degenerate shapes, s15 note):
+            # no invented "0:" prefix.
+            loc = "-"
+        lines.append(f"  {loc} {d.code} [{sev}] {d.message}")
+    if not lines:
+        if result.note:
+            # The once-per-session "diagnostics unavailable: <why>" line:
+            # without this the first edit would consume the note and
+            # nobody would ever see it (operator ruling v2, 2026-10-18).
+            return f"\n\nDiagnostics after this edit: {result.note}"
+        return ""
+    body = "\n".join(lines)
+    return f"\n\nDiagnostics after this edit:\n{body}"
+
+
+def _diag_check_detailed(path: Path, workspace, old_text: "Optional[str]"):
+    """Import + call check_detailed once, so the wiring has exactly one
+    place that names diagnostics.py. ImportError here is a wiring bug a
+    test must see, not something to swallow."""
+    from . import diagnostics as _diag
+    return _diag.check_detailed(path, workspace, old_text=old_text)
+
+
 def _language_hint_for_write(path: Path, text: str,
                              inserted: Optional[list] = None) -> str:
     """Advisory note for a successful write/edit whose new code carries
@@ -17116,7 +17442,7 @@ class _DocToolExecutor:
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
-                and not bool((arguments or {}).get("check_only"))):
+                and not _is_honoured_dry_run(name, arguments)):
             # Plan mode, deny-by-default. One gate covering everything the
             # per-family refusals had not been remembered into -- future
             # agent turns, worktrees that widen the live permissions,
@@ -17126,7 +17452,8 @@ class _DocToolExecutor:
             # It sits AFTER the role check on purpose: a role that can
             # NEVER use a tool should be told that, not told it is merely
             # the wrong mode. The more permanent reason is more useful.
-            # A check_only call is a dry run and stays allowed.
+            # A check_only call stays allowed where the executor performs
+            # the dry run (_is_honoured_dry_run).
             _record_gate_refusal("plan_mode", name, "")
             result = json.dumps({"error": _plan_mode_refusal(
                 _bare_tool_name(name))})
@@ -17158,8 +17485,37 @@ class _DocToolExecutor:
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
         else:
-            result = self._dispatch_under_rules(
-                name, arguments, permissions, rule_hit)
+            # DR1 step journal: the call is about to RUN for real (past
+            # every refusal). One bracket, start before / finish after,
+            # per the package ruling. auto_start/auto_finish promise
+            # never to raise (step_journal.py:233), so this hook has no
+            # broad except-wrap: a wiring bug (ImportError, renamed
+            # function) fails a test instead of silently turning the
+            # journal off (wave-17 lesson 5). The only guarded path is
+            # the dispatch itself: a raising dispatch closes the bracket
+            # as failed so the step cannot read as open forever, and the
+            # exception is re-raised unchanged.
+            from . import step_journal as _step_journal
+            _sid = str(getattr(permissions, "task_session_id", "") or "")
+            _dr1_step = None
+            if _sid:
+                _dr1_step = _step_journal.auto_start(
+                    _sid, tool=name, arguments=arguments,
+                    turn_key=str(getattr(permissions, "step_turn_key", "")
+                                 or "") or None)
+            try:
+                result = self._dispatch_under_rules(
+                    name, arguments, permissions, rule_hit)
+            except Exception:
+                if _dr1_step is not None:
+                    _step_journal.auto_finish(
+                        _sid, _dr1_step, ok=False, result="raised")
+                raise
+            if _dr1_step is not None:
+                _step_journal.auto_finish(
+                    _sid, _dr1_step,
+                    ok=not str(result).startswith('{"error"'),
+                    result=result)
 
         # Track mtime after a successful read so the write tools can verify
         # the file hasn't changed since the agent last read it. read_document
@@ -17598,12 +17954,16 @@ class _DocToolExecutor:
             # command, cwd, deny-list, secret scanner, and auto-allow
             # check are identical; only the execution model differs.
             _caged: list = []
+            _calc_notes: list = []
+            _approved: list = []     # filled by the gate on a human yes
             if permissions is not None:
-                gate_name = "bash" if name == "bash_background" else name
-                gate_err = self._run_permission_gate(
-                    gate_name, arguments, permissions,
-                    **({"caged_admission": _caged} if gate_name == "bash"
-                       else {}))
+                if name in ("bash", "bash_background"):
+                    gate_err = self._gate_bash_call(name, arguments,
+                                                    permissions, _caged,
+                                                    _calc_notes, _approved)
+                else:
+                    gate_err = self._run_permission_gate(
+                        name, arguments, permissions)
                 if gate_err is not None:
                     return json.dumps({"error": gate_err})
             # The network tools and run_tests only needed the gate; their
@@ -17619,12 +17979,20 @@ class _DocToolExecutor:
                 if _caged:
                     return self._execute_bash(arguments, permissions,
                                               caged_unasked=True)
-                return self._execute_bash(arguments, permissions)
+                return _with_calculation_note(
+                    self._execute_bash(arguments, permissions,
+                                       **({"approved": True} if _approved
+                                          else {})),
+                    _calc_notes)
             if name == "bash_background":
                 if _caged:
                     return self._execute_bash_background(
                         arguments, permissions, caged_unasked=True)
-                return self._execute_bash_background(arguments, permissions)
+                return _with_calculation_note(
+                    self._execute_bash_background(
+                        arguments, permissions,
+                        **({"approved": True} if _approved else {})),
+                    _calc_notes)
 
         # Document writes. The per-path write gate runs inside the
         # executors: edit_sheet gates the file it edits, fill_pdf_form
@@ -21120,6 +21488,20 @@ class _DocToolExecutor:
         # auto-accepted edit waits for the user too. No model call.
         if int(state.get("refusals") or 0) >= _CLASSIFIER_REFUSALS_PER_TURN:
             _record_security_event("classifier_refuse", base, shown)
+            if perms.confirm_callback is None:
+                # AM1 unattended mode: nobody can be asked, so the lock
+                # does not wait for a person who is not there. The policy
+                # (unattended_policy.decide) says pause: one fire-and-
+                # forget operator message, then stop the turn cleanly.
+                _record_security_event(
+                    "unattended_pause", base, shown)
+                return (
+                    f"'{base}' ({shown}) was not run: three actions were "
+                    "refused in this turn. Unattended mode: the session "
+                    "is PAUSED — queue ONE session_message to 'operator' "
+                    "with the three refusals and their reasons, then end "
+                    "your turn. Do not wait for an answer; do not retry "
+                    "any refused action in another spelling.")
             return (
                 f"'{base}' ({shown}) was not run: three actions were "
                 "refused in this turn, so nothing but reading runs until "
@@ -21204,6 +21586,9 @@ class _DocToolExecutor:
             "task": task,
             "recent_user": earlier,
             "recent_calls": list(state["calls"][-6:]),
+            # Where the command runs: the routine shapes that look at the
+            # tree (an existing branch, GT1) look there, not in the cwd.
+            "workspace": str(getattr(perms, "workspace", "") or ""),
         }
         state["calls"].append({"tool": base, "args": shown})
         failed: list = []
@@ -21446,9 +21831,43 @@ class _DocToolExecutor:
         except Exception:
             return None
 
+    def _gate_bash_call(self, name: str, args: dict,
+                        perms: "KitToolPermissions",
+                        caged_admission: Optional[list] = None,
+                        calc_notes: Optional[list] = None,
+                        approval_seen: Optional[list] = None,
+                        ) -> Optional[str]:
+        """The bash gate for ``bash`` and ``bash_background``.
+
+        The two share the gate; they differ in the wall-time limit the run
+        will have, which calc_policy needs for a local calculation on a
+        login node: the foreground tool's timeout (capped at
+        ``bash_max_timeout_s``) or the background job's ``timeout_s``
+        (capped at bash_jobs' 24 h).
+        """
+        try:
+            if name == "bash_background":
+                from .bash_jobs import _DEFAULT_BG_TIMEOUT_S as _bg_cap
+                wall = min(float(args.get("timeout_s") or _bg_cap),
+                           float(_bg_cap))
+            else:
+                wall = float(max(1, min(
+                    int(args.get("timeout_s", perms.bash_timeout_s)
+                        or perms.bash_timeout_s),
+                    perms.bash_max_timeout_s)))
+        except (TypeError, ValueError):
+            wall = None
+        return self._run_permission_gate(
+            "bash", args, perms, caged_admission=caged_admission,
+            wall_limit_s=wall, calc_notes=calc_notes,
+            approval_seen=approval_seen)
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions",
         *, caged_admission: Optional[list] = None,
+        wall_limit_s: Optional[float] = None,
+        calc_notes: Optional[list] = None,
+        approval_seen: Optional[list] = None,
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None.
 
@@ -22214,6 +22633,32 @@ class _DocToolExecutor:
                     "read_only_shape", "bash",
                     f"{_ros_shape}: {cmd[:80]}", blocked=False)
                 return self._classifier_second_opinion(perms, name, args, mode)
+            # A calculation (xtb, crest, orca, sbatch): calc_policy checks
+            # its setup and its resources on this host. Passed, it starts
+            # without a dialog and is named in the security-event panel;
+            # failed, it stays off the caged admission and the dialog (or
+            # the refusal when nobody can be asked) states the reason. An
+            # ask or deny rule of the user's keeps it in the dialog, and an
+            # upload the egress scan flagged is never admitted here.
+            _calc = _calculation_verdict(perms, cmd, args, wall_limit_s)
+            _calc_reason = ""
+            if _calc is not None and _calc.calculation:
+                _calc_rule = _permission_rule_hit(perms, "bash",
+                                                  {"command": cmd})
+                if _calc_rule is not None and _calc_rule[0] == "deny":
+                    return _refuse_by_rule("bash", _calc_rule[1])
+                if (_calc.admit and _calc_rule is None and egress is None
+                        and not _approved_here):
+                    _record_security_event(
+                        "calculation_admitted", "bash",
+                        _calc.summary[:200], blocked=False)
+                    verdict = self._classifier_second_opinion(
+                        perms, name, args, mode)
+                    if verdict is None and calc_notes is not None:
+                        calc_notes.append(_calc.summary)
+                    return verdict
+                if not _calc.admit:
+                    _calc_reason = _calc.reason
             # Off the list, but held by the cage: writes confined to the
             # session's roots with the protected files read-only, no process
             # outside visible, network through the egress policy. Every tier
@@ -22230,6 +22675,7 @@ class _DocToolExecutor:
                 return _refuse_by_rule("bash", _caged_rule[1])
             _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
+                    and not _calc_reason
                     and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
@@ -22270,6 +22716,8 @@ class _DocToolExecutor:
             if _approved_here:
                 # Asked above, with the whole command shown, after every
                 # hard tier and the publish readiness check.
+                if approval_seen is not None:
+                    approval_seen.append(True)
                 return None
             # An allow rule of the user's (permission_rules) answers the
             # dialog below -- and the head-less refusal after it, which is
@@ -22295,11 +22743,15 @@ class _DocToolExecutor:
                 # there, never asked as a read.
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
+                if _calc_reason:
+                    preview += f"\nNot started unasked: {_calc_reason}"
                 try:
                     ok = bool(_ask_confirm(perms, "bash", {"command": cmd}, preview))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if ok:
+                    if approval_seen is not None:
+                        approval_seen.append(True)
                     return None
                 # Timeout is ABSENCE, not refusal — the two need different
                 # guidance (a "user denied, never retry" after every
@@ -22332,6 +22784,14 @@ class _DocToolExecutor:
             # refusal is recorded where an unattended run's owner looks.
             if getattr(perms, "unisolated_fallback", False):
                 return self._unisolated_fallback_verdict(perms, name, args)
+            if _calc_reason:
+                _record_gate_refusal("calculation_not_checked", "bash",
+                                     _calc_reason[:300])
+                return (
+                    f"bash: the calculation '{cmd[:120]}' was not started: "
+                    f"{_calc_reason}. Fix the setup or the resources and run "
+                    "it again, or tell the user what you want to run and "
+                    "why and let them approve it.")
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
             # user the exact command and let them add an allow_pattern or switch
@@ -22612,8 +23072,7 @@ class _DocToolExecutor:
         # parse_orca_output, which is the investigation plan mode is for.
         if perms is not None and getattr(perms, "mode", "") == "plan":
             if (_bare_tool_name(name) not in _PLAN_READONLY_MCP_TOOLS
-                    and not _plan_mode_admits_for_delegate(name, perms)
-                    and not bool((args or {}).get("check_only"))):
+                    and not _plan_mode_admits_for_delegate(name, perms)):
                 _record_security_event("plan_mode_mcp", name, "", blocked=True)
                 # Same wording as the native gate, for the same reason:
                 # the check is a name against a list and the message may
@@ -22757,11 +23216,6 @@ class _DocToolExecutor:
         bypassPermissions through because that profile's promise is that it
         asks nothing.
         """
-        # A dry run changes nothing, so there is nothing to decide — the
-        # same exemption the plan-mode and native checks make.
-        if bool((args or {}).get("check_only")):
-            return None
-
         executes_code = base in _MCP_CODE_EXEC_TOOL_BASES
 
         # Arguments a code-writing tool cannot be allowed to carry, checked
@@ -22794,11 +23248,32 @@ class _DocToolExecutor:
             # Nobody is asked here; the second opinion is the one look.
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
+        # A calculation the ops server starts: the same check as the bash
+        # gate's (calc_policy). Passed, it runs without a dialog; failed,
+        # the dialog or the refusal below states the reason. A deny or ask
+        # rule naming the tool keeps it in the dialog.
+        calc_reason = ""
+        calc = _mcp_calculation_verdict(base, args or {})
+        if calc is not None and calc.calculation:
+            rule = _permission_rule_hit(perms, name, args or {})
+            if calc.admit and rule is None:
+                _record_security_event("calculation_admitted", name,
+                                       calc.summary[:200], blocked=False)
+                return self._classifier_second_opinion(
+                    perms, name, args or {}, mode)
+            if not calc.admit:
+                calc_reason = calc.reason
         # An allow rule of the user's naming this tool answers the question
         # below (and its head-less refusal); the second opinion still looks.
         if _rule_answers(perms, "tool", name):
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
+        if perms.confirm_callback is None and calc_reason:
+            _record_security_event("mcp_side_effect", name, base, blocked=True)
+            return (f"'{name}' {what} and was not started unasked: "
+                    f"{calc_reason}. Fix the setup or the resources and call "
+                    "it again, or tell the user what you want to run and why "
+                    "and let them approve it.")
         if perms.confirm_callback is None:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
             return (
@@ -22809,6 +23284,8 @@ class _DocToolExecutor:
                 "the Perms mode chip."
             )
         preview = f"{name}\n" + _preview_args(args)
+        if calc_reason:
+            preview += f"\nNot started unasked: {calc_reason}"
         try:
             ok = bool(_ask_confirm(perms, name, args or {}, preview))
         except Exception as exc:
@@ -23061,7 +23538,8 @@ class _DocToolExecutor:
         lang_hint = _language_hint_for_write(resolved, content)
         shape_note = ("\n\nNOTE: " + " ".join(write_notes)) if write_notes else ""
         return (f"File {action}: {disp}\n\n{diff}"
-                f"{test_hint}{lang_hint}{shape_note}")
+                f"{test_hint}{lang_hint}{shape_note}"
+                f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text if existed else None)}")
 
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -23144,6 +23622,7 @@ class _DocToolExecutor:
                         f"{fm.strategy}{indent_note} — old_string did not "
                         f"match exactly; whitespace-tolerant fallback found "
                         f"a unique match):\n\n{diff}{lang_hint}"
+                        f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
                         f"{_syntax_regression_note(resolved, old_text, new_text)}"
                     )
         if count == 0 or (count > 1 and not replace_all):
@@ -23188,6 +23667,7 @@ class _DocToolExecutor:
         return (
             f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n"
             f"{diff}{test_hint}{lang_hint}"
+            f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
             f"{_syntax_regression_note(resolved, old_text, new_text)}"
         )
 
@@ -23302,6 +23782,7 @@ class _DocToolExecutor:
             f"Multi-edited {disp} "
             f"({len(edits)} edit(s), {total} replacement(s) total"
             f"{fuzzy_note}):\n\n{diff}{test_hint}{lang_hint}"
+            f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
             f"{_syntax_regression_note(resolved, old_text, text)}"
         )
 
@@ -23482,17 +23963,36 @@ class _DocToolExecutor:
                 "remember_permission needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
-        try:
-            ok = bool(perms.confirm_callback(
-                "remember_permission",
-                {"kind": kind, "value": value, "scope": scope,
-                 "rationale": rationale},
-                preview,
-            ))
-        except Exception as exc:
-            return json.dumps({"error": f"confirm_callback raised: {exc}"})
-        if not ok:
-            return json.dumps({"status": "denied", "kind": kind, "value": value})
+        call_args = {"kind": kind, "value": value, "scope": scope,
+                     "rationale": rationale}
+        if kind == "deny_pattern":
+            # Narrows what the agent may do: one ordinary question.
+            try:
+                ok = bool(perms.confirm_callback(
+                    "remember_permission", call_args, preview))
+            except Exception as exc:
+                return json.dumps({"error": f"confirm_callback raised: {exc}"})
+            if not ok:
+                return json.dumps({"status": "denied", "kind": kind, "value": value})
+        else:
+            where = ("in every project" if scope == "user"
+                     else f"in {perms.workspace}")
+            plain = {
+                "allow_pattern": (
+                    f"Shell commands matching {value} will run WITHOUT asking "
+                    f"you, {where}, in this and every later session."),
+                "extra_dir": (
+                    f"The agent may WRITE in {value} and everything below it, "
+                    f"{where}, in this and every later session."),
+                "default_mode": (
+                    f"Every later session starts in mode '{value}'"
+                    + (", in which the agent acts WITHOUT asking you."
+                       if value in ("bypassPermissions", "all_free") else ".")),
+            }[kind]
+            refused = self._confirm_widening(
+                perms, "remember_permission", call_args, preview, plain)
+            if refused is not None:
+                return refused
 
         # Apply the change to disk and to the live permissions.
         try:
@@ -23536,6 +24036,51 @@ class _DocToolExecutor:
             "scope": scope,
             "path": scope_path,
         })
+
+    def _confirm_widening(self, perms: "KitToolPermissions", tool: str,
+                          args: dict, preview: str, plain: str) -> Optional[str]:
+        """Ask twice, plainly, before the agent's own permissions widen.
+
+        Input: the call (an allow pattern, a workspace root, a starting
+        mode, a bundle of them) and ``plain``, what a yes means in words a
+        person who does not read regexes understands. Output: None when the
+        user said yes twice, else the tool's answer (refused or denied).
+
+        The model writes both the rule and the rationale the user reads,
+        and one y made it permanent for every later session. Measured
+        2026-10-23: refused a write, a model answered with
+        remember_permission_bundle -- a workspace root under /tmp and ten
+        auto-allow patterns into the user's settings. So: the question says
+        in its first line that the agent asks for more rights, permanently;
+        a second question asks again; and right after the user refused
+        something in this turn it is not asked at all.
+        """
+        token = getattr(perms, "turn_token", 0)
+        if token and getattr(perms, "approval_refused_turn", 0) == token:
+            _record_security_event("widening_after_refusal", tool,
+                                   plain[:120], blocked=True)
+            return json.dumps({"error": (
+                f"{tool} is refused: the user said no to something in this "
+                "turn, and a request for more permissions right after a no "
+                "is not put to them. Do not try another route to the same "
+                "permission. Tell the user what you need and why; they can "
+                "grant it themselves.")})
+        first = (f"{_WIDENING_BANNER}\n{plain}\n"
+                 "The agent wrote the reason below itself. If you are not "
+                 f"sure, answer no.\n\n{preview}")
+        second = (f"{_WIDENING_AGAIN}\n{plain}\n"
+                  "Answer yes only if you asked for this yourself.")
+        try:
+            for text, extra in ((first, {}), (second, {"confirm": "again"})):
+                if not bool(perms.confirm_callback(tool, {**args, **extra}, text)):
+                    if not self._confirm_timed_out(perms):
+                        _note_refusal_in_turn(perms)
+                    _record_security_event("denied_by_user", tool, plain[:120])
+                    return json.dumps({"status": "denied", "tool": tool,
+                                       "meaning": plain})
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        return None
 
     # Bundle profiles: name -> list of allow-pattern templates. The
     # placeholder ``{dir_re}`` is replaced with a regex-escaped form of the
@@ -23671,19 +24216,16 @@ class _DocToolExecutor:
                 "remember_permission_bundle needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
-        try:
-            ok = bool(perms.confirm_callback(
-                "remember_permission_bundle",
-                {"profile": profile, "directory": str(dir_path),
-                 "scope": scope, "rationale": rationale,
-                 "patterns": patterns},
-                preview,
-            ))
-        except Exception as exc:
-            return json.dumps({"error": f"confirm_callback raised: {exc}"})
-        if not ok:
-            return json.dumps({"status": "denied", "profile": profile,
-                               "directory": str(dir_path)})
+        refused = self._confirm_widening(
+            perms, "remember_permission_bundle",
+            {"profile": profile, "directory": str(dir_path),
+             "scope": scope, "rationale": rationale, "patterns": patterns},
+            preview,
+            (f"The agent may WRITE in {dir_path} and run {len(patterns)} kinds "
+             "of commands there WITHOUT asking you, in this and every later "
+             "session."))
+        if refused is not None:
+            return refused
 
         # Apply atomically. If the directory step or any pattern fails,
         # roll back what we already wrote so the user isn't left with a
@@ -24212,6 +24754,7 @@ class _DocToolExecutor:
     def _hand_suite_to_background(
         self, cmd: str, run_cwd, arguments: dict,
         perms: "KitToolPermissions", caged_unasked: bool,
+        approved: bool = False,
     ) -> Optional[str]:
         """Start a whole-suite pytest run as a watched background job.
 
@@ -24239,7 +24782,8 @@ class _DocToolExecutor:
             return None
         args = {k: v for k, v in (arguments or {}).items() if k != "timeout_s"}
         raw = self._execute_bash_background(
-            args, perms, caged_unasked=caged_unasked)
+            args, perms, caged_unasked=caged_unasked,
+            **({"approved": True} if approved else {}))
         try:
             out = json.loads(raw)
         except Exception:
@@ -24303,7 +24847,7 @@ class _DocToolExecutor:
 
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions",
-        caged_unasked: bool = False,
+        caged_unasked: bool = False, approved: bool = False,
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
@@ -24371,8 +24915,11 @@ class _DocToolExecutor:
         # refusal argv instead of the command, which is a refusal too.
         if _GATE_DRY_RUN.get():
             try:
-                _would = ([] if _is_git_push(cmd)
-                          and _github_push_plan(cmd, run_cwd) is not None
+                _broker = ((_is_git_push(cmd)
+                            and _github_push_plan(cmd, run_cwd) is not None)
+                           or (not caged_unasked and _is_gh_pr_create(cmd)
+                               and _github_pr_plan(cmd, run_cwd) is not None))
+                _would = ([] if _broker
                           else _bash_isolation_argv(cmd, run_cwd, perms))
             except Exception:
                 _would = []
@@ -24384,7 +24931,8 @@ class _DocToolExecutor:
         # a command that already ran into the ceiling this turn is not
         # waited out again under another prefix (long_runs).
         _handed = self._hand_suite_to_background(
-            cmd, run_cwd, arguments, perms, caged_unasked)
+            cmd, run_cwd, arguments, perms, caged_unasked,
+            **({"approved": True} if approved else {}))
         if _handed is not None:
             return _handed
         _again = self._timed_out_again(cmd, perms)
@@ -24433,9 +24981,18 @@ class _DocToolExecutor:
         _snap = self._shell_snapshot(perms)
 
         t0 = time.monotonic()
+        _pr = None
         try:
+            _pr = (_github_pr_plan(cmd, run_cwd)
+                   if not caged_unasked and _is_gh_pr_create(cmd) else None)
             _push = _github_push_plan(cmd, run_cwd) if _is_git_push(cmd) else None
-            if _push is not None:
+            if _pr is not None:
+                _record_security_event(
+                    "isolation", "bash",
+                    f"GitHub PR create for {_pr['repo']} used the credential broker "
+                    "(fixed argv, explicit head, no checkout code)", blocked=False)
+                proc = _run_github_pr(_pr, run_cwd, env, timeout)
+            elif _push is not None:
                 _record_security_event(
                     "isolation", "bash",
                     f"git push to {_push['url']} ran outside the process cage "
@@ -24452,6 +25009,8 @@ class _DocToolExecutor:
                              if not caged_unasked
                              else _bash_isolation_argv(cmd, run_cwd, perms,
                                                        caged_unasked=True))
+                if not approved:
+                    _run_argv = _unasked_share(_run_argv)
                 proc = _contained.run(
                     _run_argv,
                     cwd=str(run_cwd),
@@ -24464,6 +25023,13 @@ class _DocToolExecutor:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
             self._note_timed_out(cmd, perms, timeout)
+            if _pr is not None:
+                return json.dumps({
+                    "error": "GitHub publishing timed out. The push or PR creation "
+                             "may already have succeeded; check the remote branch "
+                             "and open PRs before retrying.",
+                    "command": cmd[:200], "description": description,
+                })
             if _is_push:
                 return json.dumps({
                     "error": (
@@ -24564,7 +25130,7 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
-        if _push is None:
+        if _push is None and _pr is None:
             _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
                                            proc.stderr or "")
             if _wrap_err:
@@ -24574,7 +25140,7 @@ class _DocToolExecutor:
                     "Commands off the auto-allow list are asked about for "
                     "the rest of this session; tell the user if they need "
                     "this one.")
-        if _push is None and proc.returncode != 0:
+        if _push is None and _pr is None and proc.returncode != 0:
             self._detach_at_held_branch(
                 cmd, proc, payload, run_cwd, perms, env, timeout,
                 caged_unasked)
@@ -24697,7 +25263,7 @@ class _DocToolExecutor:
 
     def _execute_bash_background(
         self, arguments: dict, perms: "KitToolPermissions",
-        caged_unasked: bool = False,
+        caged_unasked: bool = False, approved: bool = False,
     ) -> str:
         """Start a long-running shell command in the background.
 
@@ -24777,6 +25343,9 @@ class _DocToolExecutor:
                 if not caged_unasked
                 else _bash_isolation_argv(cmd, run_cwd, perms,
                                           caged_unasked=True),
+                # A job nobody approved keeps to its share of a login
+                # node; the registry binds the argv (_unasked_cpu_set).
+                cpu_set=None if approved else _unasked_cpu_set(),
                 **({"session_id": _job_sid} if _job_sid else {}),
                 on_finish=_journal_job_changes,
             )
@@ -28397,6 +28966,21 @@ def _scrubbed_bash_env() -> dict:
     # 10-14). Fail instead; nothing here adds a credential.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
+    # A thread cap unless the user's environment sets one: an OpenMP
+    # program started without it takes every core the host has (measured:
+    # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
+    # on a cluster login node are everyone's cores. Inside a Slurm
+    # allocation the cap is the allocation, on a login node the local limit
+    # calc_policy admits (2), elsewhere at most four. A job
+    # submitted from here inherits it unless its script sets its own.
+    try:
+        from . import calc_policy as _cp
+        _cap = str(_cp.default_threads(_cp.host_kind(env), env))
+    except Exception:
+        _cap = str(max(1, min(4, os.cpu_count() or 1)))
+    for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                  "OPENBLAS_NUM_THREADS"):
+        env.setdefault(_name, _cap)
     _editor = any(k.startswith("VSCODE_GIT_") for k in env)
     for k in [k for k in env if k.startswith("VSCODE_GIT_")]:
         env.pop(k, None)
@@ -32609,6 +33193,7 @@ class OpenAIClient(_BaseClient):
                     # The cut is judged on the result itself, before the
                     # fence adds its lines.
                     _cut_len = len(context_result)
+                    _seen_text = context_result
                     if _fence_this:
                         context_result = _fence_output_tool_result(
                             fn_name, context_result)
@@ -32649,6 +33234,7 @@ class OpenAIClient(_BaseClient):
                                           or _tool_cut),
                         output_chars=len(_redacted),
                         output_notes=_result_notes,
+                        seen_text=_seen_text,
                     )
                     # Thrash detector: prepend a one-time progress nudge when a
                     # low-progress loop (repeated cleanup, same-file rewrites) is
@@ -33820,6 +34406,12 @@ class CodexCLIClient(_BaseClient):
 # Factory
 # ---------------------------------------------------------------------------
 
+#: The first line of every question that widens the agent's own permissions
+#: (_confirm_widening); the front ends mark lines starting with "⚠".
+_WIDENING_BANNER = "⚠ THE AGENT ASKS FOR MORE RIGHTS — PERMANENTLY"
+_WIDENING_AGAIN = "⚠ CONFIRM AGAIN — THIS IS PERMANENT"
+
+
 def _map_kit_permission_mode(permission_mode: str) -> str:
     """Map dashboard CLI-permission strings to KitToolPermissions modes.
 
@@ -34007,6 +34599,10 @@ def _kit_sandbox(
     return kit_perms
 
 
+class BackendRefused(ValueError):
+    """The managed policy does not allow this backend (create_client)."""
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -34047,6 +34643,12 @@ def create_client(
     extra_dirs : list[str], optional
         Extra writable directories for the CLI (``--add-dir``).
     """
+    # The administrator's floor, before any client exists: a backend the
+    # managed policy refuses is never built (managed_policy.backend_refusal).
+    from . import managed_policy as _mp
+    _refused = _mp.backend_refusal(backend, provider)
+    if _refused:
+        raise BackendRefused(_refused)
     if provider == "kit":
         from .credentials import load_credential as _load_cred
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")

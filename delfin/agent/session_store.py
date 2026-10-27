@@ -725,6 +725,16 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
     )
     if partial:
         note += "\n\n" + partial
+    # The step journal says which call was in flight when the process
+    # died: a started step without a recorded result may or may not have
+    # run. Best-effort, like the note itself.
+    try:
+        from . import step_journal
+        steps = step_journal.render_resume_note(session_id)
+    except Exception:
+        steps = None
+    if steps:
+        note += "\n\n" + steps
     return note
 
 
@@ -1475,10 +1485,13 @@ def touch_heartbeat(session_id: str) -> bool:
 def delete_session(session_id: str) -> bool:
     """Delete a session file. Returns True if deleted."""
     filepath = _SESSIONS_DIR / f"{session_id}.json"
-    # Companion files (writer lock, mid-turn checkpoint, elided store) go
-    # with it so a deleted session can't leave orphan sidecars behind.
+    # Companion files (writer lock, mid-turn checkpoint, elided store, the
+    # step journal and its rotated file) go with it so a deleted session
+    # can't leave orphan sidecars behind.
+    from . import step_journal
     for side in (_lock_path(session_id), _turn_checkpoint_path(session_id),
-                 elided_store_path(session_id)):
+                 elided_store_path(session_id),
+                 *step_journal.journal_files(session_id)):
         try:
             side.unlink()
         except OSError:

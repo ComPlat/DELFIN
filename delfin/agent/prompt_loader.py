@@ -1391,10 +1391,10 @@ class PromptLoader:
         while end < len(lines) and not lines[end].lstrip().startswith("- "):
             end += 1
         replacement = (
-            f"- **Answer in {name}** -- this session's language, set by its\n"
-            f"  first message; a later message in another language does not\n"
-            f"  change it. What goes INTO code stays English regardless:\n"
-            f"  comments, docstrings, identifiers, log and error strings.\n"
+            f"- **Answer in {name}** -- the language of the user's latest\n"
+            f"  message that says one, in one language per answer. What goes\n"
+            f"  INTO code stays English regardless: comments, docstrings,\n"
+            f"  identifiers, log and error strings.\n"
         )
         return "".join(lines[:start]) + replacement + "".join(lines[end:])
 
@@ -1419,9 +1419,9 @@ class PromptLoader:
         name = _LANGUAGE_RULE_NAMES.get(str(session_language or ""), "")
         if name:
             rules = [
-                (f"Communicate with the user in {name} — this session's "
-                 f"language, set by its first message. Code, commits, and "
-                 f"artifacts in English.")
+                (f"Communicate with the user in {name} — the language of "
+                 f"their latest message that says one; one language per "
+                 f"answer. Code, commits, and artifacts in English.")
                 if r.startswith("Communicate with the user in") else r
                 for r in rules
             ]

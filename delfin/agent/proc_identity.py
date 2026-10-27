@@ -97,6 +97,15 @@ def alive(pid, proc_start: str = "", host: str = "") -> Optional[bool]:
         return True
     except OSError:
         return None
+    # An exited child retains its PID until the parent waits for it. kill(0)
+    # and its start time still succeed, but it can no longer serve a port.
+    # A proxy process cannot reap a preview launched by a separate kernel.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        if stat[stat.rindex(")") + 1:].split()[0] in {"Z", "X", "x"}:
+            return False
+    except (OSError, IndexError, ValueError):
+        pass  # No readable procfs: retain the portable identity check below.
     # The number is in use -- by the same process, or by whatever the
     # system handed it to next.
     written = str(proc_start or "")

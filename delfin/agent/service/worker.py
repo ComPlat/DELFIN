@@ -1064,6 +1064,14 @@ class Worker:
         self.fake = fake
         self.save = save
         sid = str(getattr(engine, "session_id", "") or "")
+        if not sid:
+            # A backend that announces its id only on the stream and cannot
+            # be told one up front (engine._fresh_session_id): the session
+            # still needs an address and a log before its first turn. The
+            # engine's own id is left alone -- the backend resumes by the
+            # id it announces.
+            import uuid
+            sid = uuid.uuid4().hex
         self.notices = list(notices)
         #: What the session was started to look into (session.create's
         #: brief), put in front of the first prompt that reaches the model.
@@ -1128,7 +1136,11 @@ class Worker:
     def _bind_broker(self, key: str) -> None:
         bind = getattr(self.engine, "set_kit_confirm_callback", None)
         if callable(bind) and bind(self.broker.callback):
-            perms = self.engine.kit_permissions
+            perms = getattr(self.engine, "kit_permissions", None)
+            if perms is None:
+                # The Claude CLI backend: its file gate took the callback,
+                # and there is no permissions object to give the rest to.
+                return
             perms.ask_user_callback = self.broker.ask_user
             perms.plan_approval_callback = self.broker.approve_plan
             perms.presence_key = key
@@ -1416,6 +1428,11 @@ class Worker:
         text = str(params.get("text") or "").strip()
         if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
+        if text.split()[0].lower() == "/sync":
+            from delfin.messenger.activation import configure
+            output = configure(self.emitter.session_id, text[5:].strip(), endpoint="")
+            self.emitter.emit("notice", text=output)
+            return {"accepted": True}
         how = str(params.get("how") or "queue")
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")
