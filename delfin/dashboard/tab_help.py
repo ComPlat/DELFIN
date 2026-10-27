@@ -193,32 +193,60 @@ _FEATURE_GROUPS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] =
 # ---------------------------------------------------------------------------
 
 
-def _feature_block() -> W.DOMWidget:
-    """The accordion of major functions with sub-function sections."""
+def _feature_block(on_open_key) -> W.DOMWidget:
+    """The accordion of major functions with sub-function sections.
+
+    ``on_open_key(name)`` is called when a key name is clicked: the tab
+    switches to the CONTROL-keys subtab and filters to that key.
+    """
+    from html import escape as esc
+
     header = W.HTML(
         "<p style='color:#666'>What DELFIN can do, grouped by major function. "
         "Open a section for the sub-functions and the CONTROL.txt keys that "
-        "switch them on.  Detailed key semantics: the <b>CONTROL keys</b> "
-        "subtab, or write <code>KEY=?</code> in CONTROL.txt.</p>"
+        "switch them on.  Key names are clickable: they open the "
+        "<b>CONTROL keys</b> subtab filtered to that key.  In CONTROL.txt, "
+        "write <code>KEY=?</code> for the same explanation.</p>"
     )
     children = []
+    # Help text per key, for hover tooltips on the key buttons.
+    help_of = {row[0]: row[3] for row in _key_rows()}
     for title, summary, subs in _FEATURE_GROUPS:
-        parts = [f"<p style='color:#666'>{summary}</p>"]
+        group_parts = [W.HTML(f"<p style='color:#666'>{summary}</p>")]
         for sub, what, keys in subs:
-            parts.append(
-                "<div style='border-left:3px solid #4a86c8; padding:6px 12px; "
-                "margin:8px 0'>"
-                f"<b>{sub}</b><br>{what}<br>"
-                f"<span style='color:#666'><b>Keys:</b> {keys}</span></div>"
-            )
-        children.append(W.HTML("".join(parts)))
-    titles = [
-        f"<b>{title}</b> <span style='color:#888'>— {summary}</span>"
-        for title, summary, _ in _FEATURE_GROUPS
-    ]
+            key_names = [k.strip() for k in keys.split(",") if k.strip()]
+            buttons = []
+            for k in key_names:
+                btn = W.Button(
+                    description=k, button_style="",
+                    style=W.ButtonStyle(
+                        text_color="#4a86c8", font_weight="normal",
+                        padding="0", background="none",
+                    ),
+                    tooltip=help_of.get(k, k),
+                    layout=W.Layout(margin="0 4px 0 0", padding="0"),
+                )
+                btn.on_click(lambda _b, name=k: on_open_key(name))
+                buttons.append(btn)
+            group_parts.append(W.VBox([
+                W.HTML(
+                    "<div style='border-left:3px solid #4a86c8; "
+                    "padding:6px 12px; margin:8px 0'>"
+                    f"<b>{esc(sub)}</b><br>{esc(what)}</div>"
+                ),
+                W.HBox(
+                    [W.HTML("<span style='color:#666'><b>Keys:</b></span>")]
+                    + buttons
+                ),
+            ]))
+        children.append(W.VBox(group_parts))
+    # Accordion titles are PLAIN TEXT (ipywidgets renders them verbatim,
+    # not as HTML) -- the screenshot showed literal <b>/<span> tags.
+    titles = [f"{title} — {summary}" for title, summary, _ in _FEATURE_GROUPS]
     accordion = W.Accordion(children=children, titles=tuple(titles))
     # Start collapsed except the first group, so the page opens compact.
     accordion.selected_index = 0
+
     return W.VBox([header, accordion])
 
 
@@ -323,7 +351,8 @@ def _key_reference_block() -> tuple[W.DOMWidget, W.DOMWidget, Any]:
                 style = "border-top:1px solid #ddd; padding:4px 8px; vertical-align:top"
                 rows_html.append(
                     "<tr>"
-                    f"<td style='{style}'><code>{esc(name)}</code></td>"
+                    f"<td style='{style}'><code title='{esc(help_text, quote=True)}'>"
+                    f"{esc(name)}</code></td>"
                     f"<td style='{style}'>{esc(default)}</td>"
                     f"<td style='{style}'>{esc(required)}</td>"
                     f"<td style='{style}'>{help_text}</td>"
@@ -364,6 +393,12 @@ def _key_reference_block() -> tuple[W.DOMWidget, W.DOMWidget, Any]:
     search.observe(_on_search, names="value")
     _on_search({"new": ""})
 
+    def rerender() -> None:
+        """Re-filter the table (used when the Features subtab opens a key)."""
+        search.value = state["query"]
+
+    state["rerender"] = rerender
+
     box = W.VBox(
         [
             W.HTML(
@@ -390,9 +425,17 @@ def create_tab(ctx: Any):
         "<p>An overview of what DELFIN can do and which CONTROL.txt keys "
         "configure it.  Read-only: nothing here starts a calculation.</p>"
     )
-    feature = _feature_block()
     keys_box, _keys_html, keys_state = _key_reference_block()
-    tabs = W.Tab(children=[feature, keys_box])
+    tabs = W.Tab()
+
+    def _open_key(name: str) -> None:
+        """A key button was clicked: show the key subtab, filtered to it."""
+        keys_state["query"] = name
+        keys_state["rerender"]()
+        tabs.selected_index = 1
+
+    feature = _feature_block(_open_key)
+    tabs.children = [feature, keys_box]
     tabs.set_title(0, "Features")
     tabs.set_title(1, "CONTROL keys")
     widget = W.VBox([header, tabs])
