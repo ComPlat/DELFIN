@@ -4,6 +4,7 @@ import base64
 import html as _html
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -4408,14 +4409,22 @@ def create_tab(ctx):
         spin_active = False
         if spin_display:
             spin_active = True
+            # The values are written into the script as numbers: the
+            # isovalue as a +/- pair by its magnitude (a negative entry
+            # would render as "--x"), a non-finite one as the default.
             try:
-                spin_iso = float(spin_display.get('isoval', 0.02))
+                spin_iso = abs(float(spin_display.get('isoval', 0.005)))
             except (TypeError, ValueError):
-                spin_iso = 0.02
+                spin_iso = 0.005
+            if not math.isfinite(spin_iso) or spin_iso == 0:
+                spin_iso = 0.005
             try:
-                spin_opacity = float(spin_display.get('opacity', 0.85))
+                spin_opacity = float(spin_display.get('opacity', 0.65))
             except (TypeError, ValueError):
-                spin_opacity = 0.85
+                spin_opacity = 0.65
+            if not math.isfinite(spin_opacity):
+                spin_opacity = 0.65
+            spin_opacity = min(max(spin_opacity, 0.0), 1.0)
             spin_pos_color = spin_display.get('pos_color') or '#0026ff'
             spin_neg_color = spin_display.get('neg_color') or '#b00010'
         if fmt == 'cube':
@@ -5789,6 +5798,13 @@ def create_tab(ctx):
             '<span style="color:#1976d2;">Generating spin density cube ...</span>'
         )
 
+        def _cube_stamp(path):
+            try:
+                st = path.stat()
+            except OSError:
+                return None
+            return (st.st_mtime_ns, st.st_size)
+
         def _run_spin_density():
             created_temp_files = []
             env = os.environ.copy()
@@ -5828,6 +5844,7 @@ def create_tab(ctx):
                 #   f"1\n1\n2\n{mo_idx}...4\n70\n..." sequence above).
                 grid_value = calc_spin_density_grid.value
                 spin_type_candidates = [3]
+                cubes_before = {p: _cube_stamp(p) for p in gbw_dir.glob('*.cube')}
                 generated = []
                 failures = []
                 for spin_type in spin_type_candidates:
@@ -5850,7 +5867,13 @@ def create_tab(ctx):
                         failures.append(f'spin type {spin_type}: {exc}')
                         continue
 
-                    cubes = sorted(gbw_dir.glob('*.cube'), key=lambda p: p.stat().st_mtime_ns)
+                    # Only a cube this run wrote or rewrote counts; an older
+                    # one in the folder (an MO plot) is not the spin density.
+                    cubes = sorted(
+                        (p for p in gbw_dir.glob('*.cube')
+                         if _cube_stamp(p) != cubes_before.get(p)),
+                        key=lambda p: (p.name.lower().endswith('.spindens.cube'),
+                                       p.stat().st_mtime_ns))
                     nonempty = [p for p in cubes if p.stat().st_size > 44]
                     if nonempty:
                         generated.append(nonempty[-1])
@@ -5892,7 +5915,8 @@ def create_tab(ctx):
                     }
                     try:
                         content = generated[-1].read_text()
-                        _render_3dmol(content, fmt='cube')
+                        _render_3dmol(content, fmt='cube',
+                                      hide_molecule=not calc_spin_density_mol_cb.value)
                     except Exception as exc:
                         calc_spin_density_status.value = (
                             f'<span style="color:#d32f2f;">'
