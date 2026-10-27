@@ -281,3 +281,26 @@ def test_submit_without_gh_pushes_the_branch_and_says_how_to_open_the_pull_reque
     assert res["pushed_to"] == "origin" and res["pr"] is None
     assert "open a pull request" in res["next"]
     assert res["branch"] in _git(origin, "branch", "--list").stdout
+
+
+def test_a_published_set_is_assigned_from_its_archive(tmp_path):
+    set_dir = _published(tmp_path)
+    assert rt.structure_files(set_dir) == [f"T{k:04d}.xyz" for k in range(1, 9)]
+    assert rv.main(["assign", str(set_dir), "Ann,Ben", "--overlap", "2", "--seed", "3",
+                    "--test-fraction", "0.25", "--set", "demo"]) == 0
+    a = rt.load_assignment(set_dir / rt.ASSIGNMENT_NAME)
+    assert a["set"] == "demo" and len(a["split"]["test"]) == 2
+    assert len(a["raters"]["Ann"]) == len(a["raters"]["Ben"]) == 3
+    dest = tmp_path / "mine"
+    rt.unpack(set_dir, dest)
+    assert rt.load_assignment(dest / rt.ASSIGNMENT_NAME) == a
+
+
+def test_a_group_never_straddles_the_test_split(team_dir):
+    groups = {f"T{k:04d}.xyz": f"g{(k - 1) // 2}" for k in range(1, 41)}   # pairs
+    a, _ = rt.assign(team_dir, ["Ann"], overlap=0, seed=13, test_fraction=0.3, groups=groups)
+    test = set(a["split"]["test"])
+    assert a["split"]["grouped"] and 12 <= len(test) <= 13
+    for k in range(1, 41, 2):
+        pair = {f"T{k:04d}.xyz", f"T{k + 1:04d}.xyz"}
+        assert pair <= test or not pair & test

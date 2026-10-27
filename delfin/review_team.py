@@ -66,8 +66,13 @@ COMMANDS = ('assign', 'merge', 'unpack', 'submit')
 # ---------------------------------------------------------------------------
 
 def structure_files(folder) -> list[str]:
-    """The ``*.xyz`` file names of *folder*, in name order (the order of the Review tab)."""
-    return sorted(p.name for p in Path(folder).glob('*.xyz') if p.is_file())
+    """The ``*.xyz`` file names of *folder*, in name order (the order of the Review tab);
+    for a published set (only ``structures.xyz.gz``) the names it unpacks to."""
+    folder = Path(folder).expanduser()
+    names = sorted(p.name for p in folder.glob('*.xyz') if p.is_file())
+    if not names and (folder / SET_ARCHIVE_NAME).is_file():
+        names = sorted(f'{ident}.xyz' for ident, _ in archive_frames(folder))
+    return names
 
 
 def find_assignment(folder) -> Path | None:
@@ -103,14 +108,16 @@ def _file_stem(name: str) -> str:
     return rv.default_review_path(Path('.'), name).name
 
 
-def rated_files(folder, name: str) -> set[str]:
-    """The files *name* has rated so far in ``<folder>/review_<name>.json``."""
-    path = rv.default_review_path(Path(folder), name)
-    try:
-        data = rv.load_review(path)
-    except (OSError, ValueError):
-        return set()
-    return {fname for fname, _, _, stale in rv.iter_records(data) if not stale}
+def rated_files(folder, name: str, *more) -> set[str]:
+    """The files *name* has rated so far in ``review_<name>.json`` in *folder* (and *more* folders)."""
+    out: set[str] = set()
+    for where in (folder, *more):
+        try:
+            data = rv.load_review(rv.default_review_path(Path(where), name))
+        except (OSError, ValueError):
+            continue
+        out |= {fname for fname, _, _, stale in rv.iter_records(data) if not stale}
+    return out
 
 
 def _shuffled(files: Sequence[str], seed) -> list[str]:
@@ -123,11 +130,15 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
            block: int | None = None, seed: int | None = None,
            test_fraction: float | None = None,
            existing: dict[str, Any] | None = None,
-           set_name: str | None = None) -> tuple[dict[str, Any], list[str]]:
+           set_name: str | None = None,
+           groups: dict[str, str] | None = None,
+           ratings: Sequence = ()) -> tuple[dict[str, Any], list[str]]:
     """Share the structures of *folder* out to *raters*; returns (assignment, messages).
 
     With *existing*, the reviewers there and their files stay as they are
-    and only the new names get files, from those nobody has yet.
+    and only the new names get files, from those nobody has yet.  *groups*
+    (file -> group) keeps the files of one group in one part of the test
+    split, e.g. a molecule shown twice; the groups themselves are not stored.
     """
     folder = Path(folder).expanduser()
     files = structure_files(folder)
@@ -166,9 +177,18 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
                 raise ValueError('test fraction must lie between 0 and 1')
             split_seed = f'{seed}:split'
             n_test = round(frac * len(files))
+            group_of = {f: str((groups or {}).get(f, f)) for f in files}
+            members: dict[str, list[str]] = {}
+            for f in files:
+                members.setdefault(group_of[f], []).append(f)
+            test: list[str] = []
+            for g in _shuffled(list(members), split_seed):
+                if len(test) >= n_test:
+                    break
+                test += members[g]
             data['split'] = {'seed': split_seed, 'test_fraction': frac,
-                             'test': sorted(_shuffled(files, split_seed)[:n_test],
-                                            key=place.get)}
+                             'grouped': bool(groups),
+                             'test': sorted(test, key=place.get)}
     if set_name:
         data['set'] = set_name
     raters_now: dict[str, list[str]] = data['raters']
@@ -191,7 +211,8 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
         if per < 0:
             raise ValueError('block must be 0 or more')
         for name in new:
-            own = [f for f in pool if f in rated_files(folder, name) and f not in taken]
+            done = rated_files(folder, name, *ratings)
+            own = [f for f in pool if f in done and f not in taken]
             taken.update(own)
             fresh = [f for f in pool if f not in taken][:max(0, per - len(own))]
             taken.update(fresh)
@@ -383,6 +404,26 @@ def format_agreement(result: dict[str, Any] | None) -> str:
 # A published set: unpacking it, and sending the ratings back
 # ---------------------------------------------------------------------------
 
+def archive_frames(set_dir) -> list[tuple[str, str]]:
+    """(id, frame text) of every frame in ``<set_dir>/structures.xyz.gz``; the id is the comment line."""
+    archive = Path(set_dir).expanduser() / SET_ARCHIVE_NAME
+    with gzip.open(archive, 'rt', encoding='utf-8') as handle:
+        lines = handle.read().splitlines(keepends=True)
+    blocks: list[tuple[str, str]] = []
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip():
+            i += 1
+            continue
+        n = int(lines[i].split()[0])
+        ident = lines[i + 1].strip()
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+', ident):
+            raise ValueError(f'{archive}: frame {len(blocks) + 1} has no plain id ({ident!r})')
+        blocks.append((ident, ''.join(lines[i:i + 2 + n])))
+        i += 2 + n
+    return blocks
+
+
 def unpack(set_dir, dest) -> tuple[int, int]:
     """Write the frames of ``<set_dir>/structures.xyz.gz`` as ``<dest>/<id>.xyz``
     (the id is the comment line), next to the set's ``kategorien.txt`` and
@@ -390,22 +431,7 @@ def unpack(set_dir, dest) -> tuple[int, int]:
     with other content is an error, so a review in progress is never altered.
     """
     set_dir, dest = Path(set_dir).expanduser(), Path(dest).expanduser()
-    archive = set_dir / SET_ARCHIVE_NAME
-    text = gzip.open(archive, 'rt', encoding='utf-8').read()
-    blocks: list[tuple[str, str]] = []
-    lines = text.splitlines(keepends=True)
-    i = 0
-    while i < len(lines):
-        if not lines[i].strip():
-            i += 1
-            continue
-        n = int(lines[i].split()[0])
-        block = ''.join(lines[i:i + 2 + n])
-        ident = lines[i + 1].strip()
-        if not re.fullmatch(r'[A-Za-z0-9_.-]+', ident):
-            raise ValueError(f'{archive}: frame {len(blocks) + 1} has no plain id ({ident!r})')
-        blocks.append((ident, block))
-        i += 2 + n
+    blocks = archive_frames(set_dir)
     dest.mkdir(parents=True, exist_ok=True)
     wanted = [(f'{ident}.xyz', block) for ident, block in blocks]
     for extra in (rv.CATEGORY_FILE_NAME, ASSIGNMENT_NAME):
@@ -601,10 +627,16 @@ def add_parsers(sub) -> None:
     a.add_argument('--test-fraction', type=float, default=None,
                    help='mark this fraction of the files as a held-out test part '
                         '(new assignment only)')
+    a.add_argument('--ratings', action='append', default=[],
+                   help='further folder(s) with review_<name>.json (e.g. ratings/<set>): '
+                        'what a new reviewer rated there stays theirs')
+    a.add_argument('--groups', default=None,
+                   help='JSON {file: group}: files of one group stay in one part of the '
+                        'test split (e.g. a structure shown twice)')
     a.add_argument('--set', dest='set_name', default=None, help='name of the set')
     a.add_argument('--out', default=None,
                    help='where to write (default: assignment.json in the folder, or the '
-                        'one found there or above)')
+                        'one found there or above); an existing file there is extended')
     a.add_argument('--new', action='store_true',
                    help='ignore an existing assignment.json and draw a new one')
     m = sub.add_parser('merge', help='All review_<name>.json of a folder in one CSV, '
@@ -612,7 +644,8 @@ def add_parsers(sub) -> None:
     m.add_argument('folder', help='the folder with the structures (and assignment.json)')
     m.add_argument('--ratings', action='append', default=[],
                    help='further folder(s) with review_<name>.json (e.g. ratings/<set>)')
-    m.add_argument('--csv', default=None, help='CSV to write (default: <folder>/review_merged.csv)')
+    m.add_argument('--csv', default=None,
+                   help='CSV to write (default: review_merged_<folder name>.csv here)')
     m.add_argument('--split', choices=('all', 'calibration', 'test'), default='all',
                    help='only the rows of this part of the split')
     m.add_argument('--no-csv', action='store_true', help='only print the agreement')
@@ -662,11 +695,18 @@ def run(args) -> int:
 
 def _run_assign(args) -> int:
     folder = Path(args.folder).expanduser()
-    found = None if args.new else find_assignment(folder)
+    if args.new:
+        found = None
+    elif args.out and Path(args.out).is_file():
+        found = Path(args.out)           # extend the assignment kept elsewhere
+    else:
+        found = find_assignment(folder)
     existing = load_assignment(found) if found else None
     data, msgs = assign(folder, _names(args.raters), overlap=args.overlap, block=args.block,
                         seed=args.seed, test_fraction=args.test_fraction,
-                        existing=existing, set_name=args.set_name)
+                        existing=existing, set_name=args.set_name, ratings=args.ratings,
+                        groups=(json.loads(Path(args.groups).read_text(encoding='utf-8'))
+                                if args.groups else None))
     out = Path(args.out) if args.out else (found or folder / ASSIGNMENT_NAME)
     write_assignment(out, data)
     print('\n'.join(msgs))
@@ -687,7 +727,7 @@ def _run_merge(args) -> int:
         return 1
     print(f'{len(reviews)} review file(s): {", ".join(sorted(reviews))}')
     if not args.no_csv:
-        out = Path(args.csv) if args.csv else folder / 'review_merged.csv'
+        out = Path(args.csv) if args.csv else Path(f'review_merged_{folder.resolve().name}.csv')
         n = write_merged_csv(reviews, out, assignment, args.split)
         print(f'{n} rows written: {out}')
     shared = assignment.get('shared') if assignment else None
