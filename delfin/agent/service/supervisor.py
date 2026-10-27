@@ -984,6 +984,23 @@ class Supervisor:
         if self.closing:
             raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
         resume = str(params.get("resume") or "")
+        if params.get("continue") and not resume and not params.get("fork"):
+            # The folder's latest session may be one this service runs or
+            # keeps asleep (its window closed). One session, one worker: it
+            # is resumed by id, which attaches below instead of starting a
+            # second worker that would find the session's lock taken.
+            latest = await asyncio.to_thread(past_sessions, str(cwd), "", 1)
+            known = str(latest[0]["sessionId"]) if latest else ""
+            if known and (known in self.sessions or known in self.dormant
+                          or known in self._waking):
+                resume = known
+                if known in self.sessions:
+                    session = await self._awake(client, known)
+                    if params.get("attach", True) and not client.closed:
+                        session.subscribers[client] = session.seen_seq
+                    return {"sessionId": session.id, "session": session.info,
+                            "state": session.state, "pending": list(session.pending.values()),
+                            "events": session.replay(0)[1:]}
         if resume and (resume in self.dormant or resume in self._waking):
             # Woken by the resume picker, as an attach wakes it: with the
             # settings it had. What the answer carries is its replay.
