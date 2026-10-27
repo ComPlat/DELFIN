@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from delfin import review as rv
+from delfin.agent import safe_git
 
 ASSIGNMENT_NAME = 'assignment.json'
 SET_ARCHIVE_NAME = 'structures.xyz.gz'
@@ -557,9 +558,11 @@ def unpack(set_dir, dest) -> tuple[int, int]:
     return written, same
 
 
-def _git(repo, *args, check=True) -> subprocess.CompletedProcess:
-    return subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True,
-                          check=check)
+def _git(repo, *args, check=True, timeout=300.0) -> subprocess.CompletedProcess:
+    res = safe_git.run(list(args), repo, timeout=timeout)
+    if check and res.returncode:
+        raise subprocess.CalledProcessError(res.returncode, res.args, res.stdout, res.stderr)
+    return res
 
 
 def _token(folder: Path, name: str) -> str:
