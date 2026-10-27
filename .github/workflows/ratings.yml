@@ -1,0 +1,119 @@
+name: Ratings check
+
+# A helper's pull request into ratings/ -- the ratings of one reviewer
+# (`delfin review submit`, ratings/<set>/review_<name>.json) or a
+# reservation (`delfin review claim`, ratings/<set>/claims/<name>.json),
+# the first time with the owner file of the name
+# (ratings/<set>/owners/<name>.json, the GitHub account the name belongs to)
+# -- changes exactly that. This workflow checks it: the shape of the file,
+# the set and its version, the structures and categories it names, the atoms
+# it marks, that the name inside is the name of the file, the token rule,
+# and that a name already bound to a GitHub account is used only by that
+# account (the login of the pull request's author, from the event).
+#
+# Why pull_request_target: a pull request from a fork gets a read-only token
+# under `pull_request`, so the auto-merge job below could not run for the
+# helpers it is meant for. Under pull_request_target the workflow runs the
+# BASE commit's files with the base repository's token, so it never checks
+# out or runs anything of the pull request: the job checks out the base
+# commit (the rules in delfin/review_check.py), fetches the pull request's
+# commits as git objects only (refs/pull/<n>/head, never checked out), and
+# the checker reads them with `git show` / `git diff --name-status`, which
+# run no program the pull request could name (delfin/agent/safe_git.py).
+# The check job has `contents: read` only; write permissions are given to
+# the two small jobs that need them, which check out nothing.
+#
+# Automatic merge (prepared, takes effect only with the repository settings
+# below): a valid pull request of a known account -- the name is bound to a
+# GitHub account on main already and the author is that account -- gets
+# `gh pr merge --auto --squash`. The first pull request under a new name
+# (it adds the owner file) is never merged automatically: it gets the
+# comment "first contribution, maintainer review", and a maintainer merges
+# it, which binds the name. Needed in the repository: Settings > General >
+# "Allow auto-merge" on, and a ruleset or branch protection on main that
+# requires status checks (at least "ratings pull request"); without
+# required checks `--auto` has nothing to wait for and GitHub refuses it.
+# Merges done with GITHUB_TOKEN start no further workflow runs.
+#
+# A pull request that changes no rating, claim or owner file (e.g.
+# ratings/README.md) is not a helper's: the check says so and passes, and
+# the ordinary review applies.
+on:
+  pull_request_target:
+    paths:
+      - "ratings/**"
+
+concurrency:
+  group: ratings-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  check:
+    name: ratings pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      valid: ${{ steps.check.outputs.valid }}
+      first: ${{ steps.check.outputs.first }}
+      automerge: ${{ steps.check.outputs.automerge }}
+    steps:
+      - name: Checkout the base (the rules that run)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Fetch the pull request as objects (never checked out)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --quiet --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
+
+      - name: Check the pull request
+        id: check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: python -m delfin.review_check --repo . --base "$BASE_SHA" --head "$HEAD_SHA" --author "$AUTHOR"
+
+  automerge:
+    name: auto-merge a known reviewer
+    needs: check
+    if: needs.check.outputs.automerge == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge when the required checks pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+  first:
+    name: first contribution
+    needs: check
+    if: needs.check.outputs.first == 'true' && needs.check.outputs.valid == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Ask for a maintainer review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr comment "$PR_URL" --body "first contribution, maintainer review: this pull request binds a reviewer's name to its GitHub account (owners file). The checks pass; a maintainer merges it, later pull requests of this account under this name can merge by themselves."

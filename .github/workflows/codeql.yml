@@ -44,12 +44,17 @@ jobs:
       fail-fast: false
       matrix:
         # "actions" reads .github/workflows itself. The workflows here are
-        # currently clean — no third-party actions, no pull_request_target,
-        # github.event_name only in if: conditions, contents: read everywhere
-        # — and the point of scanning them is that the next workflow somebody
-        # adds is held to the same line. A workflow runs with a token against
-        # this repository, so an injected expression in a run: block reaches
-        # further than most of the Python does.
+        # kept clean — no third-party actions, github.event_name only in if:
+        # conditions, contents: read everywhere — and the point of scanning
+        # them is that the next workflow somebody adds is held to the same
+        # line. One reviewed exception: ratings.yml runs on
+        # pull_request_target (so a helper's pull request from a fork can be
+        # merged automatically); it runs only the base commit's files, reads
+        # the pull request as git objects without checking it out, and gives
+        # write permissions only to two jobs that check out nothing. A
+        # workflow runs with a token against this repository, so an injected
+        # expression in a run: block reaches further than most of the Python
+        # does.
         #
         # "javascript-typescript" is the terminal window (tui/src, TypeScript
         # that ships in the sdist and the wheel and runs with the user's
