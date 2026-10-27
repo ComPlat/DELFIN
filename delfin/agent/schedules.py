@@ -29,9 +29,12 @@ Semantics.
   the home directory is shared by every login node, and each runs its own
   agent service.
 * A schedule runs only when the user confirmed exactly its content: the
-  hash of what it does, where and when (``fingerprint``) is recorded at
-  confirmation, and a change made since -- by anyone, through any route --
-  withdraws it. One the user writes is confirmed by writing it; one the
+  hash of what it does, where and when (``fingerprint``) is signed at
+  confirmation with the account key (``trust_store``, HMAC; no process
+  carrying the agent-session marker gets that key), and a change made
+  since -- by anyone, through any route -- withdraws it. Where no account
+  key can be had at all (a refused key file), the plain hash stands in,
+  so the user's schedules still run. One the user writes is confirmed by writing it; one the
   agent proposes waits for ``/schedule ok N`` or the phone's ``ok N``.
 * A missed run (the host was off) is made up once if it is less than
   ``CATCH_UP_S`` late, and skipped with a record otherwise; missed runs are
@@ -63,7 +66,7 @@ import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Iterator
 
 _DIR = Path.home() / ".delfin" / "user_schedules"
 
@@ -518,8 +521,33 @@ def fingerprint(entry: dict) -> str:
     return hashlib.sha256(json.dumps(keep, ensure_ascii=False).encode()).hexdigest()
 
 
+_MAC_PURPOSE = "user_schedules"
+
+
+def _seal(entry: dict) -> str:
+    """The confirmation of ``entry`` as it is now. Refused inside an agent
+    session: only the user confirms."""
+    from . import trust_store
+    from .approval_guard import inside_agent_session
+    if inside_agent_session():
+        raise ScheduleError("refused inside an agent session: only the user "
+                            "confirms a schedule", "unknown")
+    tag = trust_store.mac(_MAC_PURPOSE, fingerprint(entry).encode())
+    return tag or "sha:" + fingerprint(entry)
+
+
 def confirmed(entry: dict) -> bool:
-    return bool(entry.get("confirmed_sha")) and entry["confirmed_sha"] == fingerprint(entry)
+    """Whether the user confirmed exactly this content: the HMAC under the
+    account key, or -- only where there is no account key at all -- the
+    plain hash."""
+    tag = str(entry.get("confirmed_sha") or "")
+    if not tag:
+        return False
+    from . import trust_store
+    if tag.startswith("sha:"):
+        return (tag == "sha:" + fingerprint(entry)
+                and trust_store.account_key(create=True) is None)
+    return trust_store.check_mac(_MAC_PURPOSE, fingerprint(entry).encode(), tag) is True
 
 
 def _spec(entry: dict) -> dict:
@@ -599,7 +627,7 @@ def add(text: str, *, workspace: str, created_by: str, confirm: bool,
         "run_requested": False, "spent": {}, "confirmed_sha": "",
     }
     if confirm:
-        entry["confirmed_sha"] = fingerprint(entry)
+        entry["confirmed_sha"] = _seal(entry)
     with _locked():
         data = _read()
         new_id = int(data.get("next_id") or 1)
@@ -608,7 +636,7 @@ def add(text: str, *, workspace: str, created_by: str, confirm: bool,
         data["entries"][str(new_id)] = entry
         data["next_id"] = new_id + 1
         _write(data)
-    return {**entry, "id": new_id, "confirmed": confirm}
+    return {**entry, "id": new_id, "confirmed": confirmed(entry)}
 
 
 def _change(entry_id: int | str, fn) -> dict:
@@ -633,7 +661,7 @@ def confirm(entry_id: int | str, *, expect: str = "",
         if expect and expect != sha:
             raise ScheduleError("the schedule changed since it was shown; "
                                 "look at it again", "unknown")
-        entry["confirmed_sha"] = sha
+        entry["confirmed_sha"] = _seal(entry)
         moment = time.time() if now is None else now
         if float(entry.get("next_fire_at") or 0) < moment:
             entry["next_fire_at"] = next_fire(_spec(entry), moment, entry["tz"])
