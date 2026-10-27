@@ -219,3 +219,14 @@ def test_an_unconfirmed_watcher_is_not_looked_at(ws):
     schedules.add("wenn datei a.txt erscheint x", workspace=str(ws),
                   created_by="agent", confirm=False, now=1000.0)
     assert schedules.watches_to_check("here", now=10 ** 10) == []
+
+
+@pytest.mark.parametrize("command", [
+    "du --files0-from=/etc/x", "wc --files0-from=list", "ls --directory=/etc",
+    "grep --include=/etc/x pat", "find . -fprint out",
+])
+def test_an_option_cannot_carry_a_path_out_or_read_a_list(ws, command):
+    with pytest.raises(schedules.ScheduleError) as info:
+        schedules.add(f'wenn ausgabe "{command}" sich ändert', workspace=str(ws),
+                      created_by="t", confirm=True)
+    assert info.value.code in ("command", "path")
