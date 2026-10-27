@@ -2493,7 +2493,12 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             # fragment lists and parse the rebuilt literal.
             if (isinstance(raw_seq, list) and raw_seq
                     and all(isinstance(e, str) for e in raw_seq)):
-                joined = "".join(raw_seq).strip()
+                # The configparser comma-split tore the literal apart at
+                # every ',' (observed: 18 fragments from the stage file,
+                # e.g. '"[{\"index\": 1' + '\"m\": 2'), so joining with ""
+                # loses the separators. Join with ', ' to rebuild the
+                # original one-line literal.
+                joined = ", ".join(f.strip() for f in raw_seq).strip()
                 if joined.startswith("[") and joined.rstrip().endswith("]"):
                     attempts = [joined]
                     for _ in range(3):
@@ -2508,6 +2513,22 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                                 rebuilt = _json_loads(attempt)
                             except (ValueError, TypeError):
                                 continue
+                        # The un-escaped form often parses as a STRING
+                        # ("[{...}]" -> str) whose content is the real
+                        # literal; unwrap one level and re-parse.
+                        if isinstance(rebuilt, str):
+                            inner = rebuilt.strip()
+                            if inner.startswith("[") and inner.rstrip().endswith("]"):
+                                try:
+                                    inner_parsed = ast.literal_eval(inner)
+                                except (ValueError, SyntaxError):
+                                    try:
+                                        inner_parsed = _json_loads(inner)
+                                    except (ValueError, TypeError):
+                                        continue
+                                if isinstance(inner_parsed, list) and all(
+                                        isinstance(e, dict) for e in inner_parsed or [{}]):
+                                    rebuilt = inner_parsed
                         if isinstance(rebuilt, list) and all(
                                 isinstance(e, dict) for e in rebuilt or [{}]):
                             config[seq_key] = rebuilt
