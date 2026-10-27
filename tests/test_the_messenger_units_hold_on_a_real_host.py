@@ -28,8 +28,7 @@ HARDEN = Path(__file__).resolve().parents[1] / "scripts" / "pi" / "pi_harden_hos
 
 
 def _run(tmp_path, args=None):
-    done = run_script(tmp_path, args=args,
-                      env_extra={"MESSENGER_ETC_DIR": str(tmp_path / "etc")})
+    done = run_script(tmp_path, args=args)
     assert done.returncode == 0, done.stderr
     return {p.name: p.read_text() for p in (tmp_path / "units").glob("*.service")}
 
@@ -65,9 +64,13 @@ def test_without_nftables_the_daemon_loads_no_rule(tmp_path):
     assert not (tmp_path / "etc" / "messenger.nft").exists()
 
 
-def test_the_host_firewall_keeps_the_messenger_rule_when_it_reloads():
-    text = HARDEN.read_text()
-    assert "/etc/delfin-messenger/messenger.nft" in text
+def test_the_host_firewall_keeps_the_messenger_rule_when_it_reloads(tmp_path):
+    assert 'include "/etc/delfin-messenger/*.nft"' in HARDEN.read_text()
+    conf = tmp_path / "nftables.conf"
+    conf.write_text("flush ruleset\n")
+    _run(tmp_path)
+    _run(tmp_path)                       # a second run adds no second line
+    assert conf.read_text().count(f'include "{tmp_path / "etc"}/*.nft"') == 1
 
 
 def test_english_phone_texts_are_one_flag_away(tmp_path):

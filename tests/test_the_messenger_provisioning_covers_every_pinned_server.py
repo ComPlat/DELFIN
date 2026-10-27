@@ -109,6 +109,8 @@ def run_script(
         MESSENGER_STATE_DIR=str(tmp_path / "state"),
         MESSENGER_PYTHON=str(base),
         MESSENGER_SERVICE_HOME=str(service_home),
+        MESSENGER_ETC_DIR=str(tmp_path / "etc"),
+        MESSENGER_NFTABLES_CONF=str(tmp_path / "nftables.conf"),
         **(env_extra or {}),
     )
     # /etc/os-release stand-in for the platform detection.
@@ -232,8 +234,10 @@ def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
     assert f'Environment=DELFIN_MESSENGER_PORT={DEFAULT_PORT}' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in gateway
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in bridge
-    assert 'RuntimeDirectoryMode=0750' in bridge
-    assert 'Group=delfin-gw' in bridge
+    # The socket directory is the gateway's (setgid delfin-gw), the process
+    # keeps the service user's group (test_the_messenger_units_hold_on_a_real_host).
+    assert 'RuntimeDirectoryMode=2750' in bridge
+    assert 'ExecStartPre=+/bin/chgrp delfin-gw /run/delfin-messenger-bridge' in bridge
     assert 'DELFIN_MESSENGER_PEER_UID=' in bridge
     assert f'DELFIN_MESSENGER_DIR={tmp_path}/state/pairing' in gateway
     assert 'PrivateTmp=no' in bridge
