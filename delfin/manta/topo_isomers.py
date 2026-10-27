@@ -75,6 +75,7 @@ from delfin.manta.isomer_labels import (
     _find_bridging_donors,
     _label_from_canonical_form,
 )
+from delfin.manta.interpenetration import u5_trace as _u5_trace, u5_trace_enabled as _u5_trace_on
 from delfin.manta.ligand_placement import (
     _align_and_orient_ligands,
     _build_multimetal_scaffold,
@@ -2508,6 +2509,11 @@ def _generate_topological_isomers(
                 if not xyz_opt:
                     xyz_opt = xyz_pre
                 _legconf_trace("UFF", xyz_opt, mol, "b%d" % idx)
+                if _u5_trace_on():
+                    _u5_x = "b%d %s ci=%d pm=%s" % (idx, _label_from_canonical_form(cf) or gn, _ci,
+                                                    "".join(str(_q) for _q in pm))
+                    _u5_trace("PRE", xyz_pre, mol, _METAL_SET, donor_indices, _u5_x)
+                    _u5_trace("UFF", xyz_opt, mol, _METAL_SET, donor_indices, _u5_x)
                 _tr_mcx(xyz_opt, "BATCH_POST_UFF")
                 # Post-UFF polish: project sp2 3-coordinate atoms onto
                 # their neighbours' plane to remove residual
@@ -2610,6 +2616,7 @@ def _generate_topological_isomers(
                 if _cidx and _cidx > 0:
                     lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
                 _legconf_trace("EMIT", xyz, mol, "b%d %s" % (_batch_i, lbl))
+                _u5_trace("EMIT", xyz, mol, _METAL_SET, donor_indices, "b%d %s" % (_batch_i, lbl))
                 results.append((xyz, lbl))
                 if not _is_pref_extra:
                     # record the BASE (non-recovery) fingerprint so a later recovery that collapses onto
