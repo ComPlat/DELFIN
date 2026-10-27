@@ -345,7 +345,7 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     with _geometry_file_lock:
         xyz_path = _here(xyz_file)
         if not xyz_path.exists():
-            if from_index == 1:
+            if from_index in (0, 1):
                 alt_path = _here("input0.xyz")
                 if alt_path.exists():
                     logger.warning("Primary geometry '%s' missing; falling back to '%s'.", xyz_path, alt_path)
@@ -833,7 +833,7 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
             # (FileNotFoundError input0.xyz, from_index=0, job v14 2026-10-27).
             xyz_path = resolve_path(base / xyz_file)
             if not xyz_path.exists():
-                if from_index == 1:
+                if from_index in (0, 1):
                     # Some workflows maintain only input0.xyz; fall back gracefully.
                     alt_path = resolve_path(base / "input0.xyz")
                     if alt_path.exists():
