@@ -247,14 +247,15 @@ first start. `--lang=en` sends every phone text in English (default German).
 The script waits for the SimpleX daemon, then prints the QR code and, last,
 the link (on a phone's terminal: copy the link and paste it in SimpleX under
 + > paste link). Once the phone connects it prints the security code -- compare
-it on the phone under the contact > Verify security code -- and the bot says
-hello in SimpleX. The script installs the pinned simplex-chat build (its daemon creates the bot
+it on the phone under the contact > Verify security code -- the bot says
+hello in SimpleX and invites you to the forum for all agents. The script installs the pinned simplex-chat build (its daemon creates the bot
 profile), the gateway venv (hashed), the units including the agent service, and
 with `--whisper` local speech recognition (pinned faster-whisper-small, every
 file digest-checked, about 0.5 GB). After a DELFIN update run it again.
 
 Then, as `delfin`, in a project folder: `delfin-agent tui` and `/sync` in the
-session; accept the group invitation on the phone. The group is named after
+session; within a few seconds the gateway creates the session's chat and
+invites you, nothing to type on the phone. The group is named after
 machine and session (an untitled session after its folder). A closed TUI
 leaves its session running: `delfin-agent tui --continue` in the same folder
 joins it again.

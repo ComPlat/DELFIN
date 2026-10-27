@@ -71,6 +71,14 @@ def _pair() -> int:
                         print("security code: compare it on the phone (the contact > "
                               "Verify security code); this daemon did not report it")
                     await daemon.send_text(new_id, t("Verbunden mit {bot} \u2713").format(bot=bot_name()))
+                    # The forum for all agents from the start, through the
+                    # gateway's own path: only the paired contact is invited.
+                    try:
+                        await Rooms(daemon).ensure_room()
+                        print("forum created: accept its invitation on the phone")
+                    except Exception as exc:
+                        print(f"forum not created now ({type(exc).__name__}); "
+                              "the gateway creates it with the first /sync")
                     return 0
         return 1
 
