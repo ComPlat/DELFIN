@@ -59,8 +59,11 @@ def test_a_proposal_waits_for_the_users_ok(store):
     entry = _add(store, confirm=False)
     assert not entry["confirmed"]
     assert schedules.take_due("here", now=T0 + 10 * 3600) == []
-    schedules.confirm(entry["id"], expect=schedules.fingerprint(schedules.get(entry["id"])))
-    assert [d["id"] for d in schedules.take_due("here", now=T0 + 10 * 3600 + 1)] == [entry["id"]]
+    # Confirmed after its first time went by: it looks ahead from then.
+    done = schedules.confirm(entry["id"], now=T0 + 10 * 3600,
+                             expect=schedules.fingerprint(schedules.get(entry["id"])))
+    assert done["next_fire_at"] == T0 + 11 * 3600
+    assert [d["id"] for d in schedules.take_due("here", now=T0 + 11 * 3600)] == [entry["id"]]
 
 
 def test_a_change_after_the_confirmation_withdraws_it(store):
