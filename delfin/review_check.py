@@ -3,12 +3,14 @@
 Helpers send their ratings (``delfin review submit``) and their reservations
 (``delfin review claim``) as pull requests that add or change exactly one
 file: ``ratings/<set>/review_<name>.json`` or
-``ratings/<set>/claims/<name>.json``.  :func:`check_pull_request` reads the
-change from git (base and head commits, nothing from the working tree) and
-says whether it is such a pull request and whether it holds:
+``ratings/<set>/claims/<name>.json`` -- the first time under a name also
+``ratings/<set>/owners/<name>.json``, which binds the name to the GitHub
+account of the pull request.  :func:`check_pull_request` reads the change
+from git (base and head commits, nothing from the working tree) and says
+whether it is such a pull request and whether it holds:
 
-* exactly one file is added or changed, nothing deleted or renamed, and no
-  other path is touched;
+* exactly one rating or claim file is added or changed (and at most its
+  owner file added), nothing deleted or renamed, no other path touched;
 * the file is valid JSON of the right shape: the set exists under
   ``review_sets/<set>/`` on the base, the set version matches its
   ``assignment.json``, every structure named is in the set, every category is
@@ -17,16 +19,22 @@ says whether it is such a pull request and whether it holds:
 * the token rule: a file that already exists on the base is replaced only by
   the same reviewer (the same token), so nobody overwrites someone else's
   file by mistake;
+* the account rule: a name bound on the base comes only from its account
+  (the author's login, ``--author``); an unbound name must be bound by this
+  pull request, to the author's account; an owner file on the base never
+  changes;
 * a claim reserves no more than one block (``self_block``) and is dated
   today or earlier.
 
-A pull request that touches no rating or claim file is not a helper's and is
-left to the ordinary review (``helper`` is False, nothing fails).  The check
-itself runs from the base commit (``.github/workflows/ratings.yml``), so a
-pull request cannot change the rules it is checked by.  Whether a pull
-request that passes is merged automatically is a separate decision.
+The result says ``first`` for the pull request that binds a name (a
+maintainer reviews it) and ``automerge`` for a valid one from the account a
+name is bound to.  A pull request that touches no rating, claim or owner file
+is not a helper's and is left to the ordinary review (``helper`` is False,
+nothing fails).  The check runs from the base commit
+(``.github/workflows/ratings.yml``), so a pull request cannot change the
+rules it is checked by.
 
-``python -m delfin.review_check --repo <checkout> --base <sha> --head <sha>``
+``python -m delfin.review_check --repo <checkout> --base <sha> --head <sha> --author <login>``
 """
 
 from __future__ import annotations
@@ -48,6 +56,9 @@ from delfin.agent import safe_git
 
 RATING_RE = re.compile(r'ratings/(?P<set>[A-Za-z0-9_.-]+)/review_(?P<name>[A-Za-z0-9_.-]+)\.json')
 CLAIM_RE = re.compile(r'ratings/(?P<set>[A-Za-z0-9_.-]+)/claims/(?P<name>[A-Za-z0-9_.-]+)\.json')
+OWNER_RE = re.compile(r'ratings/(?P<set>[A-Za-z0-9_.-]+)/owners/(?P<name>[A-Za-z0-9_.-]+)\.json')
+# A GitHub login: letters, digits and single hyphens, at most 39 characters.
+LOGIN_RE = re.compile(r'[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}')
 MAX_BYTES = 30_000_000
 MAX_CREDIT = 80
 
@@ -256,21 +267,59 @@ def check_claim(data, name: str, the_set: dict[str, Any], base: dict | None, *,
     return bad
 
 
-def check_pull_request(repo, base: str, head: str, *,
+def _load_json(raw: bytes | None):
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def check_owner(data, name: str, set_name: str, author: str | None) -> list[str]:
+    """What is wrong with a new ``owners/<name>.json`` (empty when nothing)."""
+    if not isinstance(data, dict):
+        return ['the owner file is not a JSON object']
+    bad: list[str] = []
+    who, login = data.get('name'), data.get('login')
+    if not isinstance(who, str) or _stem(who) != name:
+        bad.append(f'the owner file names {who!r}, not {name}')
+    if data.get('set') != set_name:
+        bad.append(f'the owner file names the set {data.get("set")!r}, it lies in {set_name}')
+    if not isinstance(login, str) or not LOGIN_RE.fullmatch(login):
+        bad.append(f'the owner file holds no GitHub login ({login!r})')
+    elif author and login.casefold() != author.casefold():
+        bad.append(f'the owner file binds the name to {login}, but the pull request comes '
+                   f'from {author}')
+    return bad
+
+
+def check_pull_request(repo, base: str, head: str, *, author: str | None = None,
                        now: datetime | None = None) -> dict[str, Any]:
-    """``{'helper': bool, 'path', 'kind', 'problems': [...], 'changes'}`` of a pull request."""
+    """``{'helper', 'path', 'kind', 'problems', 'changes', 'owner', 'first',
+    'known', 'automerge'}`` of a pull request.
+
+    *author* is the GitHub login the pull request comes from.  The first pull
+    request of a name adds ``ratings/<set>/owners/<name>.json`` with that
+    login (``first``); later ones must come from the same account (``known``
+    when it does).  ``automerge`` is true only for a valid pull request of a
+    known account."""
     changes = pr_changes(repo, base, head)
     ours = [(s, p) for s, p in changes if RATING_RE.fullmatch(p) or CLAIM_RE.fullmatch(p)]
-    out: dict[str, Any] = {'helper': bool(ours), 'path': None, 'kind': None, 'problems': [],
-                           'changes': changes}
-    if not ours:
+    owners = [(s, p) for s, p in changes if OWNER_RE.fullmatch(p)]
+    out: dict[str, Any] = {'helper': bool(ours or owners), 'path': None, 'kind': None,
+                           'problems': [], 'changes': changes, 'owner': None,
+                           'first': False, 'known': False, 'automerge': False}
+    if not out['helper']:
         return out
-    if len(changes) != 1:
+    other = [p for s, p in changes if (s, p) not in ours and (s, p) not in owners]
+    if len(ours) != 1 or other or len(owners) > 1:
         out['problems'].append(
-            f"a helper's pull request changes exactly one file; this one changes "
-            f'{len(changes)}: ' + ', '.join(p for _, p in changes[:10]))
+            "a helper's pull request changes exactly one rating or claim file (the first "
+            f'time also its owner file); this one changes {len(changes)}: '
+            + ', '.join(p for _, p in changes[:10]))
         return out
-    status, path = changes[0]
+    status, path = ours[0]
     out['path'] = path
     if status not in ('A', 'M'):
         out['problems'].append(f'{path} is {"deleted" if status == "D" else "changed in kind"}; '
@@ -278,6 +327,10 @@ def check_pull_request(repo, base: str, head: str, *,
         return out
     match = RATING_RE.fullmatch(path) or CLAIM_RE.fullmatch(path)
     out['kind'] = 'claim' if CLAIM_RE.fullmatch(path) else 'review'
+    owner_rel = f'ratings/{match["set"]}/owners/{match["name"]}.json'
+    if owners and owners[0][1] != owner_rel:
+        out['problems'].append(f'the owner file {owners[0][1]} is not that of {path}')
+        return out
     raw = _git_blob(repo, head, path)
     if raw is None:
         out['problems'].append(f'{path} cannot be read at {head}')
@@ -290,11 +343,7 @@ def check_pull_request(repo, base: str, head: str, *,
     except (UnicodeDecodeError, ValueError) as exc:
         out['problems'].append(f'{path} is not valid JSON: {exc}')
         return out
-    before = _git_blob(repo, base, path)
-    try:
-        old = json.loads(before.decode('utf-8')) if before is not None else None
-    except (UnicodeDecodeError, ValueError):
-        old = None
+    old = _load_json(_git_blob(repo, base, path))
     try:
         the_set = base_set(lambda p: _git_blob(repo, base, p), match['set'])
     except (Problem, ValueError, OSError) as exc:
@@ -304,15 +353,49 @@ def check_pull_request(repo, base: str, head: str, *,
         out['problems'] += check_claim(data, match['name'], the_set, old, now=now)
     else:
         out['problems'] += check_review(data, match['name'], the_set, old)
+    # The GitHub account the name belongs to.
+    bound = _load_json(_git_blob(repo, base, owner_rel))
+    if bound is not None:
+        login = str(bound.get('login') or '') if isinstance(bound, dict) else ''
+        out['owner'] = login
+        if owners:
+            out['problems'].append(f'{owner_rel} is on the base already; a pull request may '
+                                   'not change it')
+        elif author and login.casefold() != author.casefold():
+            out['problems'].append(f'the name {match["name"]} belongs to the GitHub account '
+                                   f'{login}; this pull request comes from {author}')
+        else:
+            out['known'] = bool(author)
+    elif owners:
+        out['first'] = True
+        if owners[0][0] != 'A':
+            out['problems'].append(f'{owner_rel} is not added')
+        else:
+            new = _load_json(_git_blob(repo, head, owner_rel))
+            out['problems'] += check_owner(new, match['name'], match['set'], author)
+            out['owner'] = (new or {}).get('login') if isinstance(new, dict) else None
+    else:
+        out['first'] = True
+        out['problems'].append(
+            f'first pull request of the name {match["name"]}: it must add {owner_rel} with '
+            'your GitHub login ("delfin review submit" does it, or give --github <login>)')
+    out['automerge'] = out['known'] and not out['problems']
     return out
 
 
 def format_check(res: dict[str, Any]) -> str:
     if not res['helper']:
-        return ("Not a helper's pull request (no ratings/<set>/review_<name>.json or "
-                'claims/<name>.json changed): left to the ordinary review.')
+        return ("Not a helper's pull request (no ratings/<set>/review_<name>.json, "
+                'claims/<name>.json or owners/<name>.json changed): left to the ordinary review.')
     if not res['problems']:
-        return f"Helper's pull request ({res['kind']}): {res['path']} -- all checks pass."
+        if res['known']:
+            who = f'from {res["owner"]}, the account the name belongs to; may merge by itself'
+        elif res['first']:
+            who = (f'first contribution under this name (binds it to {res["owner"]}): '
+                   'maintainer review')
+        else:
+            who = 'account not checked'
+        return f"Helper's pull request ({res['kind']}): {res['path']} -- all checks pass; {who}."
     lines = [f"Helper's pull request {res['path'] or ''}: {len(res['problems'])} problem(s)"]
     lines += [f'- {p}' for p in res['problems'][:50]]
     if len(res['problems']) > 50:
@@ -326,18 +409,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument('--repo', default='.', help='the checkout with both commits')
     ap.add_argument('--base', required=True, help='the base commit (e.g. the target branch)')
     ap.add_argument('--head', required=True, help='the pull request commit')
+    ap.add_argument('--author', default=None,
+                    help='the GitHub login the pull request comes from (the workflow passes '
+                         'github.event.pull_request.user.login)')
     args = ap.parse_args(list(argv) if argv is not None else None)
     try:
-        res = check_pull_request(Path(args.repo), args.base, args.head)
+        res = check_pull_request(Path(args.repo), args.base, args.head,
+                                 author=(args.author or '').strip() or None)
     except Problem as exc:
         print(f'review_check: {exc}')
         return 2
     text = format_check(res)
     print(text)
     ok = res['helper'] and not res['problems']
-    for var, body in (('GITHUB_STEP_SUMMARY', text + '\n'),
-                      ('GITHUB_OUTPUT', f'helper={"true" if res["helper"] else "false"}\n'
-                                        f'valid={"true" if ok else "false"}\n')):
+
+    def flag(v):
+        return 'true' if v else 'false'
+
+    outputs = (f'helper={flag(res["helper"])}\nvalid={flag(ok)}\n'
+               f'known={flag(res["known"])}\nfirst={flag(res["first"])}\n'
+               f'automerge={flag(res["automerge"])}\n')
+    for var, body in (('GITHUB_STEP_SUMMARY', text + '\n'), ('GITHUB_OUTPUT', outputs)):
         target = os.environ.get(var)
         if target:
             with open(target, 'a', encoding='utf-8') as handle:

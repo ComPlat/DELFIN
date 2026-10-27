@@ -182,8 +182,17 @@ once beforehand). The pull request adds only your own file, so reviewers
 never overwrite each other. You can submit again later; the new file
 replaces your earlier one.
 
-Without `gh` or GitHub access: the command says what is left to do, or
-simply send the file `review_<your name>.json` to the coordinator.
+**Your name belongs to your GitHub account.** The first pull request under
+a name (a `submit` or a `claim`) also adds
+`ratings/kalib_2026_10/owners/<your name>.json` with the GitHub account it
+comes from (the one `gh` is logged in with, or `--github <login>`). A
+maintainer looks at that first pull request and merges it; from then on
+pull requests under this name are accepted only from that account, and
+they can be merged automatically.
+
+Without `gh` or GitHub access: the command says what is left to do (give
+`--github <your login>` so that the owner file is added), or simply send
+the file `review_<your name>.json` to the coordinator.
 
 ## For the coordinator
 
@@ -263,15 +272,38 @@ holds no test structure.
 every pull request that touches `ratings/**` and calls
 `delfin/review_check.py` from the base commit (so a pull request cannot
 change its own rules). A helper's pull request (it changes a
-`review_<name>.json` or a `claims/<name>.json`) passes when it changes
-exactly that one file, the file is valid (set and set version, structures
-of the set, categories of `kategorien.txt`, atoms within the structure, the
-name inside equal to the file name, a claim of at most one block dated
-today or earlier) and a file already on `main` keeps its token (nobody
-overwrites another reviewer's file by mistake). Other pull requests are
-left to the ordinary review. Nothing merges by itself; merging passing
-helpers' pull requests automatically would be a separate decision (a
-ruleset requiring this check for `ratings/**`, and auto-merge).
+`review_<name>.json` or a `claims/<name>.json`, the first time with
+`owners/<name>.json`) passes when it changes exactly that, the file is
+valid (set and set version, structures of the set, categories of
+`kategorien.txt`, atoms within the structure, the name inside equal to the
+file name, a claim of at most one block dated today or earlier), a file
+already on `main` keeps its token, and the account rule holds: a name whose
+owner file is on `main` is used only by that GitHub account (the author of
+the pull request), a new name is bound by its first pull request to the
+author's account, and an owner file on `main` never changes. Other pull
+requests are left to the ordinary review.
+
+**Automatic merging** (prepared): a valid pull request from the account a
+name is bound to gets `gh pr merge --auto --squash`; the first pull request
+of a new name gets the comment "first contribution, maintainer review" and
+is merged by a maintainer, which binds the name. The workflow runs on
+`pull_request_target` so that this works for pull requests from forks: it
+checks out only the base commit, reads the pull request as git objects
+without checking it out, and only the two small jobs that merge or comment
+have write permissions (they check out nothing). It takes effect only with
+two repository settings: Settings > General > **Allow auto-merge**, and a
+ruleset (or branch protection) on `main` that requires status checks,
+including **ratings pull request**. Without them nothing merges by itself.
+
+**Identical structures and the split.** Structures that are geometrically
+the same (shown twice on purpose, or built alike) are kept in one part of
+the test split: `new-set` and `assign` find them (the same search as the
+self-consistency) and join them with `--groups`. For a set drawn before
+this, `assign <set> --regroup-split` moves every group that straddles the
+split wholly into the part that holds most of it, records the change with
+date, reason and counts in `split.changes`, and leaves the shared structures
+and the named blocks as they are; do it only before any rating, and note it
+in the set's README.
 
 ## Adding a review set
 
@@ -286,6 +318,7 @@ review_sets/<set>/
 ratings/<set>/
   review_<name>.json  one file per reviewer (delfin review submit)
   claims/<name>.json  one file per reservation (delfin review claim)
+  owners/<name>.json  the GitHub account a name belongs to (added by its first pull request)
 ```
 
 Make the public part with `new-set` from a multi-frame XYZ file in which
@@ -301,13 +334,15 @@ the categories, `assignment.json` with the test part drawn now, and a
 must be plain, unique ids. Options: `--seed`, `--test-fraction` (default
 0.2), `--overlap` (default 50), `--self-block` (default 500), `--redundancy`
 (default 0.15), `--groups` (JSON `{id: group}`: a group, e.g. a structure
-shown twice, stays in one part of the split). Blinding (rotating, sorting
+shown twice, stays in one part of the split; geometrically identical
+structures are kept together anyway). Blinding (rotating, sorting
 atoms, hiding the source) is not done by `new-set`; it is done before, on
 the private side.
 
 `assignment.json` holds: `version` (of the format), `seed`, `files_total`,
 `shared` (the files everyone rates), `raters` (blocks of named reviewers),
-`split` (`seed`, `test_fraction`, `grouped`, `test`: the test files),
+`split` (`seed`, `test_fraction`, `grouped`, `identical_kept_together`, `test`:
+the test files, `changes`: dated corrections made before any rating),
 `self_block`, `redundancy`, `set`, `set_version` (a hash of the frames;
 every review and claim names it), `created` and `updated`.
 

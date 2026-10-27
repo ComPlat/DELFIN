@@ -44,6 +44,16 @@ back until the ratings are in.
 twice stays in one part) was set aside as the test part. Ratings of the test
 part are never used to tune anything; they only measure the tuned result.
 
+*Change of 27.10.2026, before any rating was sent back:* the original split
+kept every structure shown twice in one part, but not the structures that
+are geometrically identical for another reason (the same molecule built
+alike under different entries). 14 groups of such identical structures
+straddled the two parts; each was moved wholly into the part that held most
+of it (ties decided by the test size and the seed). 14 structures moved: 6
+into the test part, 8 into calibration; the test part now holds 997 of the
+4996 structures. Nothing else changed: the 50 structures everyone rates and
+the named block are as before (`split.changes` in `assignment.json`).
+
 Ratings come back as `ratings/kalib_2026_10/review_<name>.json`
 (`delfin review submit`, optionally with `--credit "<name to be listed>"`),
 reservations as `ratings/kalib_2026_10/claims/<name>.json`. Every such pull

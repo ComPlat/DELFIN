@@ -84,6 +84,7 @@ SCHEMA_VERSION = 1
 UPSTREAM = 'ComPlat/DELFIN'
 RATINGS_DIR = 'ratings'
 CLAIMS_DIR = 'claims'
+OWNERS_DIR = 'owners'
 CLAIM_DAYS = 28
 DEFAULT_REDUNDANCY = 0.15
 DEFAULT_TEST_FRACTION = 0.2
@@ -340,6 +341,99 @@ def _coverage_mark(cover: dict[str, int]) -> str:
     return 'sha256:' + hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def identical_groups(folder, groups: dict[str, str] | None = None) -> tuple[dict[str, str], int]:
+    """``({file: group}, joined)``: the *groups* given (file -> group), joined
+    with the structures that are geometrically the same
+    (:func:`delfin.review_stats.find_repeats`: shown twice, or built alike);
+    *joined* counts the pairs found.  A group is named by the smallest name
+    among its members' own groups, so without identical structures the
+    groups are those given."""
+    from delfin import review_stats as rs
+    files = structure_files(folder)
+    label = {f: str((groups or {}).get(f, f)) for f in files}
+    parent = {f: f for f in files}
+
+    def root(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def join(a, b):
+        ra, rb = root(a), root(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    first: dict[str, str] = {}
+    for f in files:
+        if label[f] in first:
+            join(first[label[f]], f)
+        else:
+            first[label[f]] = f
+    pairs = [(a, b) for a, b in rs.find_repeats(set_frames(folder)) if a in parent and b in parent]
+    for a, b in pairs:
+        join(a, b)
+    name: dict[str, str] = {}
+    for f in files:
+        r = root(f)
+        name[r] = min(name.get(r, label[f]), label[f])
+    return {f: name[root(f)] for f in files}, len(pairs)
+
+
+def regroup_split(folder, data: dict[str, Any], *, groups: dict[str, str] | None = None,
+                  reason: str = 'structures that are geometrically the same kept in one part',
+                  date: str | None = None) -> list[str]:
+    """Move every group (:func:`identical_groups`) that straddles the test split
+    wholly into one part, changing as little as possible: into the part that
+    holds most of it, on a tie into the one that keeps the test part nearest
+    its size (then by the seed).  Records the change with its date, reason
+    and counts (not the files) in ``split.changes``.  For a correction made
+    before any rating; returns messages."""
+    split = data.get('split')
+    if not split:
+        raise ValueError('the assignment has no test split')
+    files = structure_files(folder)
+    place = {f: i for i, f in enumerate(files)}
+    group_of, joined = identical_groups(folder, groups)
+    members: dict[str, list[str]] = {}
+    for f in files:
+        members.setdefault(group_of[f], []).append(f)
+    test = set(split.get('test', []))
+    target = round(float(split['test_fraction']) * len(files))
+    crossing = [m for m in members.values() if 0 < sum(f in test for f in m) < len(m)]
+    crossing.sort(key=lambda m: m[0])
+    random.Random(f'{split.get("seed", "")}:regroup').shuffle(crossing)
+    coin = random.Random(f'{split.get("seed", "")}:regroup:tie')
+    to_test = to_cal = 0
+    for m in crossing:
+        k_t = sum(f in test for f in m)
+        k_c = len(m) - k_t
+        if k_t != k_c:
+            into_test = k_t > k_c
+        elif len(test) != target:
+            into_test = len(test) < target
+        else:
+            into_test = coin.random() < 0.5
+        if into_test:
+            to_test += k_c
+            test |= set(m)
+        else:
+            to_cal += k_t
+            test -= set(m)
+    msgs = [f'{len(crossing)} group(s) of identical structures straddled the split; '
+            f'{to_test} structure(s) moved to the test part, {to_cal} to calibration; '
+            f'test part now {len(test)} of {len(files)}']
+    if crossing:
+        split['test'] = sorted(test, key=place.get)
+        split['grouped'] = True
+        split['identical_kept_together'] = joined
+        split.setdefault('changes', []).append({
+            'date': date or datetime.now(timezone.utc).date().isoformat(), 'reason': reason,
+            'groups': len(crossing), 'moved_to_test': to_test, 'moved_to_calibration': to_cal,
+            'test_size': len(test)})
+    return msgs
+
+
 def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
            block: int | None = None, seed: int | None = None,
            test_fraction: float | None = None,
@@ -349,16 +443,20 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
            ratings: Sequence = (),
            self_block: int | None = None,
            redundancy: float | None = None,
-           now: datetime | None = None) -> tuple[dict[str, Any], list[str]]:
+           now: datetime | None = None,
+           regroup: bool = False) -> tuple[dict[str, Any], list[str]]:
     """Share the structures of *folder* out to *raters*; returns (assignment, messages).
 
     With *existing*, the reviewers there and their files stay as they are
     and only the new names get files, the least rated and reserved first
     (:func:`draw_block`; *ratings* = further folders with review files and
     ``claims/``).  *groups* (file -> group) keeps the files of one group in
-    one part of the test split, e.g. a molecule shown twice; the groups
-    themselves are not stored.  *redundancy* is the share of the set meant
-    for two or three reviewers (default 0.15).
+    one part of the test split; structures that are geometrically the same
+    are kept together by themselves (:func:`identical_groups`); the groups
+    are not stored.  *redundancy* is the share of the set meant for two or
+    three reviewers (default 0.15).  *regroup* (an existing assignment, before
+    any rating) moves groups that straddle its split into one part
+    (:func:`regroup_split`).
     """
     folder = Path(folder).expanduser()
     files = structure_files(folder)
@@ -382,6 +480,8 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
                              'that cannot change once given out')
         if test_fraction is not None and 'split' not in data:
             raise ValueError('a test split can only be drawn with a new assignment')
+        if regroup:
+            msgs += regroup_split(folder, data, groups=groups)
     else:
         seed = int(seed) if seed is not None else secrets.randbelow(2**31 - 1) + 1
         overlap = DEFAULT_OVERLAP if overlap is None else int(overlap)
@@ -397,7 +497,9 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
                 raise ValueError('test fraction must lie between 0 and 1')
             split_seed = f'{seed}:split'
             n_test = round(frac * len(files))
-            group_of = {f: str((groups or {}).get(f, f)) for f in files}
+            # Structures that are geometrically the same (shown twice, or built
+            # alike) stay in one part, with the groups given.
+            group_of, joined = identical_groups(folder, groups)
             members: dict[str, list[str]] = {}
             for f in files:
                 members.setdefault(group_of[f], []).append(f)
@@ -407,7 +509,8 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
                     break
                 test += members[g]
             data['split'] = {'seed': split_seed, 'test_fraction': frac,
-                             'grouped': bool(groups),
+                             'grouped': bool(groups) or bool(joined),
+                             'identical_kept_together': joined,
                              'test': sorted(test, key=place.get)}
     if set_name:
         data['set'] = set_name
@@ -1305,14 +1408,32 @@ def _repo_top(repo) -> Path:
     return Path(top.stdout.strip())
 
 
+def _gh_login(run) -> str:
+    """The GitHub account gh is logged in with ('' when unknown)."""
+    if shutil.which('gh') is None:
+        return ''
+    res = run(['gh', 'api', 'user', '-q', '.login'])
+    return res.stdout.strip() if res.returncode == 0 else ''
+
+
+def owner_path(set_name: str, stem: str) -> str:
+    """Where the GitHub account a reviewer's name belongs to is kept."""
+    return f'{RATINGS_DIR}/{set_name}/{OWNERS_DIR}/{stem}.json'
+
+
 def _send(repo: Path, rel: str, data: dict[str, Any], *, token: str, name: str,
           branch: str, message: tuple[str, str], title: str, body: str,
           token_of, remote: str, base: str, upstream: str, push: bool, fetch: bool,
-          run) -> dict[str, Any]:
-    """Commit *data* as *rel* alone on a new *branch* from ``<remote>/<base>``,
-    push it and open a pull request (to a fork without write access).  A file
-    of that name already on *base* is replaced only when ``token_of`` reads
-    this reviewer's *token* from it."""
+          run, set_name: str, stem: str, login: str | None = None) -> dict[str, Any]:
+    """Commit *data* as *rel* on a new *branch* from ``<remote>/<base>``, push it
+    and open a pull request (to a fork without write access).  A file of that
+    name already on *base* is replaced only when ``token_of`` reads this
+    reviewer's *token* from it.
+
+    The first pull request of a name also adds ``ratings/<set>/owners/<name>.json``
+    with the GitHub account it comes from (*login*, else the one ``gh`` is
+    logged in with when pushing): from then on the check accepts pull
+    requests for this name only from that account.  Nothing else changes."""
     if fetch:
         res = _git(repo, 'fetch', remote, base, check=False)
         if res.returncode:
@@ -1327,31 +1448,51 @@ def _send(repo: Path, rel: str, data: dict[str, Any], *, token: str, name: str,
         if theirs and theirs != token:
             raise ValueError(f'{rel} on {base} was sent by another reviewer named "{name}"; '
                              'pick a name of your own')
-    stem, k = branch, 1
+    login = (login or '').strip() or (_gh_login(run) if push else '')
+    owner_rel = owner_path(set_name, stem)
+    files = {rel: data}
+    bound = _git(repo, 'show', f'{start}:{owner_rel}', check=False)
+    note = ''
+    if bound.returncode == 0:
+        try:
+            who = str(json.loads(bound.stdout).get('login') or '')
+        except (ValueError, AttributeError):
+            who = ''
+        if login and who and who.casefold() != login.casefold():
+            raise ValueError(f'the name "{name}" belongs to the GitHub account {who}; '
+                             'pick a name of your own')
+    elif login:
+        files[owner_rel] = {'version': SCHEMA_VERSION, 'set': set_name, 'name': name,
+                            'login': login, 'since': _now()}
+    else:
+        note = (f' First contribution under this name: the check asks for {owner_rel} '
+                'with your GitHub account; send again with --github <your login>.')
+    stem_branch, k = branch, 1
     while _git(repo, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}',
                check=False).returncode == 0:
         k += 1
-        branch = f'{stem}-{k}'
+        branch = f'{stem_branch}-{k}'
     tmp = Path(tempfile.mkdtemp(prefix='delfin-submit-'))
     work = tmp / 'wt'
     try:
         _git(repo, 'worktree', 'add', '--quiet', '-b', branch, str(work), start)
-        target = work / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        rv.write_json_atomic(target, data)
-        _git(work, 'add', '--', rel)
+        for path, content in files.items():
+            target = work / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            rv.write_json_atomic(target, content)
+            _git(work, 'add', '--', path)
         changed = _git(work, 'diff', '--cached', '--name-only').stdout.split()
-        if changed != [rel]:
-            raise RuntimeError(f'the commit would touch {changed}, not only {rel}')
+        if sorted(changed) != sorted(files):
+            raise RuntimeError(f'the commit would touch {changed}, not only {sorted(files)}')
         _git(work, 'commit', '--quiet', '-m', message[0], '-m', message[1])
     finally:
         _git(repo, 'worktree', 'remove', '--force', str(work), check=False)
         shutil.rmtree(tmp, ignore_errors=True)
     out: dict[str, Any] = {'branch': branch, 'path': rel, 'pushed_to': None, 'pr': None,
-                           'next': ''}
+                           'next': '', 'owner': owner_rel if owner_rel in files else None}
     if not push:
         out['next'] = (f'not pushed; push with: git -C {repo} push {remote} {branch}, '
-                       f'then open a pull request into {upstream} {base}')
+                       f'then open a pull request into {upstream} {base}.' + note)
         return out
     has_gh = shutil.which('gh') is not None
     head_owner = ''
@@ -1380,7 +1521,7 @@ def _send(repo: Path, rel: str, data: dict[str, Any], *, token: str, name: str,
     out['pushed_to'] = push_remote
     if not has_gh:
         out['next'] = (f'pushed {branch} to {push_remote}; open a pull request into '
-                       f'{upstream} {base} on GitHub (gh is not installed)')
+                       f'{upstream} {base} on GitHub (gh is not installed).' + note)
         return out
     head = f'{head_owner}:{branch}' if head_owner else branch
     pr = run(['gh', 'pr', 'create', '--repo', upstream, '--base', base, '--head', head,
@@ -1389,6 +1530,7 @@ def _send(repo: Path, rel: str, data: dict[str, Any], *, token: str, name: str,
         out['next'] = f'pushed {branch}; gh pr create failed: {pr.stderr.strip()}'
     else:
         out['pr'] = pr.stdout.strip()
+        out['next'] = note.strip()
     return out
 
 
@@ -1412,7 +1554,7 @@ def _stamp() -> str:
 def submit(folder, name: str, *, repo=None, set_name: str | None = None,
            remote: str = 'origin', base: str = 'main', upstream: str = UPSTREAM,
            push: bool = True, fetch: bool = True, runner=None,
-           credit: str | None = None) -> dict[str, Any]:
+           credit: str | None = None, github: str | None = None) -> dict[str, Any]:
     """Add ``<folder>/review_<name>.json`` as ``ratings/<set>/review_<name>.json`` in a
     commit of its own on a new branch from ``<remote>/<base>``, push it and open a
     pull request (to a fork when the account cannot push to *upstream*).
@@ -1420,7 +1562,9 @@ def submit(folder, name: str, *, repo=None, set_name: str | None = None,
     The commit adds or changes only that one file, and a file of that name
     already on *base* is replaced only when it carries this reviewer's token.
     *credit* (a name to be listed under, or ``''`` for none) is stored in the
-    file as ``credit``.  Returns what was done: ``branch``, ``path``,
+    file as ``credit``.  *github* is the account the name is bound to on its
+    first pull request (default: the one ``gh`` is logged in with).  Returns
+    what was done: ``branch``, ``path``,
     ``pushed_to``, ``pr`` and ``next`` (what to do by hand when something
     could not be done here).
     """
@@ -1463,9 +1607,11 @@ def submit(folder, name: str, *, repo=None, set_name: str | None = None,
                          f'{rated} rated frames; adds only {rel}.'),
                 title=f'Ratings of {name} for the review set {set_name}',
                 body=(f'Adds {rel} ({rated} rated frames), written by the Review tab and sent '
-                      'with "delfin review submit". Only this one file changes.'),
+                      'with "delfin review submit". Only this file changes (the first time also '
+                      'the owner file of the name, with the GitHub account).'),
                 token_of=lambda d: (d.get('submitted') or {}).get('token', ''),
-                remote=remote, base=base, upstream=upstream, push=push, fetch=fetch, run=run)
+                remote=remote, base=base, upstream=upstream, push=push, fetch=fetch, run=run,
+                set_name=set_name, stem=stem, login=github)
     out['rated'] = rated
     return out
 
@@ -1480,7 +1626,8 @@ def _clean_credit(text: str) -> str:
 
 def claim(folder, name: str, *, repo=None, set_name: str | None = None,
           remote: str = 'origin', base: str = 'main', upstream: str = UPSTREAM,
-          push: bool = True, fetch: bool = True, runner=None) -> dict[str, Any]:
+          push: bool = True, fetch: bool = True, runner=None,
+          github: str | None = None) -> dict[str, Any]:
     """Reserve the block a helper draws for themselves, at once, for everyone.
 
     Draws (or reads back) the block of :func:`self_share`, keeps it in
@@ -1526,9 +1673,11 @@ def claim(folder, name: str, *, repo=None, set_name: str | None = None,
                          f'{rel}.'),
                 title=f'Claim of {name} on {len(own["files"])} structures of {set_name}',
                 body=(f'Adds {rel}: reserves {len(own["files"])} structures for {name} for '
-                      f'{CLAIM_DAYS} days ("delfin review claim"). Only this one file changes.'),
+                      f'{CLAIM_DAYS} days ("delfin review claim"). Only this file changes (the '
+                      'first time also the owner file of the name).'),
                 token_of=lambda d: d.get('token', ''),
-                remote=remote, base=base, upstream=upstream, push=push, fetch=fetch, run=run)
+                remote=remote, base=base, upstream=upstream, push=push, fetch=fetch, run=run,
+                set_name=set_name, stem=stem, login=github)
     out['files'] = len(own['files'])
     return out
 
@@ -1553,6 +1702,9 @@ def _send_args(p) -> None:
     p.add_argument('--base', default='main')
     p.add_argument('--upstream', default=UPSTREAM)
     p.add_argument('--no-push', action='store_true', help='only commit on a local branch')
+    p.add_argument('--github', default=None,
+                   help='your GitHub login (default: the one gh is logged in with); the first '
+                        'pull request of a name binds the name to it')
 
 
 def add_parsers(sub) -> None:
@@ -1587,6 +1739,9 @@ def add_parsers(sub) -> None:
     a.add_argument('--out', default=None,
                    help='where to write (default: assignment.json in the folder, or the '
                         'one found there or above); an existing file there is extended')
+    a.add_argument('--regroup-split', action='store_true',
+                   help='before any rating only: move groups of geometrically identical '
+                        'structures (and --groups) that straddle the test split into one part')
     a.add_argument('--new', action='store_true',
                    help='ignore an existing assignment.json and draw a new one')
     m = sub.add_parser('merge', help='All review_<name>.json of a folder in one CSV, the '
@@ -1680,7 +1835,8 @@ def run(args) -> int:
             return 0
         if args.cmd in ('submit', 'claim'):
             kw = dict(repo=args.repo, set_name=args.set_name, remote=args.remote,
-                      base=args.base, upstream=args.upstream, push=not args.no_push)
+                      base=args.base, upstream=args.upstream, push=not args.no_push,
+                      github=args.github)
             if args.cmd == 'submit':
                 res = submit(args.folder, args.name, credit=args.credit, **kw)
                 _print_sent(res, f'{res["rated"]} rated')
@@ -1723,6 +1879,7 @@ def _run_assign(args) -> int:
                         seed=args.seed, test_fraction=args.test_fraction,
                         existing=existing, set_name=args.set_name, ratings=args.ratings,
                         self_block=args.self_block, redundancy=args.redundancy,
+                        regroup=args.regroup_split,
                         groups=(json.loads(Path(args.groups).read_text(encoding='utf-8'))
                                 if args.groups else None))
     out = Path(args.out) if args.out else (found or folder / ASSIGNMENT_NAME)

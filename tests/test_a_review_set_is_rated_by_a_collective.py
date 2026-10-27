@@ -29,7 +29,7 @@ NOW = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
 
 def _water(stem: str, k: int = 0) -> str:
     return (f"3\n{stem}\n"
-            f"O 0.000 0.000 {0.117 + 0.001 * k:.3f}\n"
+            f"O 0.000 0.000 {0.117 + 0.05 * k:.3f}\n"  # far enough apart: never identical
             "H 0.000 0.757 -0.467\nH 0.000 -0.757 -0.467\n")
 
 
@@ -367,26 +367,32 @@ def _published_repo(tmp_path, n=8):
     return repo, set_dir, a
 
 
-def _pr_check(repo, branch, base="origin/main"):
-    return rc.check_pull_request(repo, base, branch, now=NOW)
+def _pr_check(repo, branch, base="origin/main", author="zoe-gh"):
+    return rc.check_pull_request(repo, base, branch, author=author, now=NOW)
 
 
 def test_claim_reserves_the_block_in_a_pull_request_of_its_own(tmp_path):
     repo, set_dir, a = _published_repo(tmp_path)
     dest = tmp_path / "mine"
     rt.unpack_for(set_dir, dest, None)
-    res = rt.claim(dest, "Zoe", repo=repo, push=False)
+    res = rt.claim(dest, "Zoe", repo=repo, push=False, github="zoe-gh")
     assert res["path"] == "ratings/demo/claims/Zoe.json" and res["files"] == 3
-    assert _g(repo, "show", "--name-only", "--format=", res["branch"]).split() == [res["path"]]
+    assert res["owner"] == "ratings/demo/owners/Zoe.json"
+    assert sorted(_g(repo, "show", "--name-only", "--format=", res["branch"]).split()) == \
+        sorted([res["path"], res["owner"]])
     sent = json.loads(_g(repo, "show", f"{res['branch']}:{res['path']}"))
     own = rv.load_review(dest / "review_Zoe.json")["assignment"]
     assert sent["files"] == own["files"] and sent["set"] == "demo" and sent["days"] == 28
     assert sent["set_version"] == a["set_version"] and sent["token"]
-    assert _pr_check(repo, res["branch"])["problems"] == []
+    bound = json.loads(_g(repo, "show", f"{res['branch']}:{res['owner']}"))
+    assert bound["login"] == "zoe-gh" and bound["name"] == "Zoe"
+    first = _pr_check(repo, res["branch"])
+    assert first["problems"] == [] and first["first"] and not first["automerge"]
     # Claiming again keeps the block (a new date, the same files).
     again = rt.claim(dest, "Zoe", repo=repo, push=False)
     assert json.loads(_g(repo, "show", f"{again['branch']}:{again['path']}"))["files"] == \
         own["files"]
+    assert again["owner"] is None and "--github" in again["next"]
     a2 = rt.load_assignment(dest / rt.ASSIGNMENT_NAME)
     a2["raters"]["Max"] = ["T0001.xyz"]
     rt.write_assignment(dest / rt.ASSIGNMENT_NAME, a2)
@@ -394,18 +400,23 @@ def test_claim_reserves_the_block_in_a_pull_request_of_its_own(tmp_path):
         rt.claim(dest, "max", repo=repo, push=False)
 
 
-def test_a_helpers_pull_request_is_checked(tmp_path):
+def test_a_helpers_pull_request_is_checked(tmp_path, monkeypatch):
     repo, set_dir, a = _published_repo(tmp_path)
     dest = tmp_path / "mine"
     rt.unpack_for(set_dir, dest, "Zoe")
     own = rv.load_review(dest / "review_Zoe.json")["assignment"]["files"]
     _rate(dest, "Zoe", [(own[0], "block", ["H"]), (own[1], "pass", [])])
-    res = rt.submit(dest, "Zoe", repo=repo, push=False, credit="Zoe Q.")
+    res = rt.submit(dest, "Zoe", repo=repo, push=False, credit="Zoe Q.", github="zoe-gh")
     ok = _pr_check(repo, res["branch"])
     assert ok["helper"] and ok["kind"] == "review" and ok["problems"] == [], ok
+    assert ok["first"] and not ok["known"] and not ok["automerge"]
+    assert "maintainer review" in rc.format_check(ok)
     sent = json.loads(_g(repo, "show", f"{res['branch']}:{res['path']}"))
     assert sent["credit"] == "Zoe Q." and sent["submitted"]["set_version"] == a["set_version"]
     assert rv.load_review(dest / "review_Zoe.json")["credit"] == "Zoe Q."      # kept here too
+    # The first pull request binds the name to the account it comes from.
+    assert "comes from mallory" in " ".join(_pr_check(repo, res["branch"], author="mallory")
+                                            ["problems"])
 
     def branch_with(name, files, delete=()):
         work = tmp_path / f"wt_{name}"
@@ -419,60 +430,171 @@ def test_a_helpers_pull_request_is_checked(tmp_path):
         _g(work, "commit", "--quiet", "-m", name)
         return name
 
-    def problems(name, files, **kw):
-        return " | ".join(_pr_check(repo, branch_with(name, files, **kw))["problems"])
+    def problems(name, files, author="zoe-gh", **kw):
+        return " | ".join(_pr_check(repo, branch_with(name, files, **kw), author=author)
+                          ["problems"])
 
     rel = "ratings/demo/review_Zoe.json"
+    orel = "ratings/demo/owners/Zoe.json"
+    owner = {"version": 1, "set": "demo", "name": "Zoe", "login": "zoe-gh", "since": "x"}
     bad = json.loads(json.dumps(sent))
     bad["reviews"][own[0]]["0"]["categories"] = ["NOPE"]
     bad["reviews"][own[0]]["0"]["atoms"] = [0, 7]
     bad["reviews"]["T9999.xyz"] = {"0": {"verdict": "pass"}}
-    text = problems("b1", {rel: bad})
+    text = problems("b1", {rel: bad, orel: owner})
     assert "NOPE" in text and "atoms outside 0..2" in text and "T9999.xyz is not in the set" in text
     assert "is not the name of the file" in problems("b2", {"ratings/demo/review_Yan.json": sent})
-    assert "exactly one file" in problems("b3", {rel: sent, "delfin/x.py": "x = 1\n"})
-    assert "exactly one file" in problems("b4", {rel: sent, "ratings/demo/review_Q.json": sent})
+    assert "exactly one" in problems("b3", {rel: sent, orel: owner, "delfin/x.py": "x = 1\n"})
+    assert "exactly one" in problems("b4", {rel: sent, "ratings/demo/review_Q.json": sent})
     old = dict(sent, submitted=dict(sent["submitted"], set_version="sha256:0"))
-    assert "set version" in problems("b5", {rel: old})
-    assert "credit" in problems("b6", {rel: dict(sent, credit="x" * 81)})
+    assert "set version" in problems("b5", {rel: old, orel: owner})
+    assert "credit" in problems("b6", {rel: dict(sent, credit="x" * 81), orel: owner})
     assert "not valid JSON" in problems("b7", {rel: "{"})
-    # Not a helper's pull request: no rating or claim file; left to the ordinary review.
+    assert "must add ratings/demo/owners/Zoe.json" in problems("b7b", {rel: sent})
+    assert "not that of" in problems("b7c", {rel: sent, "ratings/demo/owners/Yan.json": owner})
+    assert "no GitHub login" in problems("b7d", {rel: sent, orel: dict(owner, login="a b")})
+    # Not a helper's pull request: no rating, claim or owner file.
     other = _pr_check(repo, branch_with("b8", {"ratings/README.md": "more\n"}))
     assert not other["helper"] and other["problems"] == []
-    # The token rule: once Zoe's file is on main, only Zoe may replace it.
+    # Once Zoe's file and owner file are on main: only Zoe's token, only her account.
     _g(repo, "push", "--quiet", "origin", f"{res['branch']}:main")
     _g(repo, "fetch", "--quiet", "origin")
     stolen = dict(sent, submitted=dict(sent["submitted"], token="another"))
     assert "another reviewer" in problems("b9", {rel: stolen})
-    assert problems("b10", {rel: dict(sent, credit="")}) == ""
+    again = branch_with("b10", {rel: dict(sent, credit="")})
+    known = _pr_check(repo, again)
+    assert known["problems"] == [] and known["known"] and known["automerge"]
+    assert "belongs to the GitHub account zoe-gh" in \
+        " ".join(_pr_check(repo, again, author="mallory")["problems"])
+    assert "may not change it" in problems("b12", {rel: sent, orel: dict(owner, login="mallory")},
+                                           author="mallory")
     assert "deleted" in problems("b11", {}, delete=[rel])
-    # Claims: a valid one; then too large, from the future, another length.
+    # Claims: a valid first one; then too large, from the future, another length.
     claim = {"version": 1, "set": "demo", "set_version": a["set_version"], "name": "Yan",
              "files": own, "date": NOW.isoformat(), "days": 28, "token": "t"}
     crel = "ratings/demo/claims/Yan.json"
-    assert problems("c1", {crel: claim}) == ""
+    yan = dict(owner, name="Yan", login="yan-gh")
+    assert problems("c1", {crel: claim, "ratings/demo/owners/Yan.json": yan},
+                    author="yan-gh") == ""
     files = rt.structure_files(set_dir)
     text = problems("c2", {crel: dict(claim, files=files, days=90,
-                                       date=(NOW + timedelta(days=9)).isoformat())})
+                                       date=(NOW + timedelta(days=9)).isoformat())},
+                    author="yan-gh")
     assert "more than one block" in text and "future" in text and "28 days" in text
-    assert rc.main(["--repo", str(repo), "--base", "origin/main", "--head", "c1"]) == 0
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert rc.main(["--repo", str(repo), "--base", "origin/main", "--head", "b10",
+                    "--author", "zoe-gh"]) == 0
     assert rc.main(["--repo", str(repo), "--base", "origin/main", "--head", "b1"]) == 1
+    text = out.read_text()
+    assert "automerge=true" in text and "valid=true" in text and "valid=false" in text
 
 
-def test_the_workflow_runs_the_check_from_the_base_on_ratings_pull_requests():
+def test_the_workflow_checks_from_the_base_and_merges_only_known_accounts():
     import yaml
     root = Path(__file__).resolve().parents[1]
     wf = yaml.safe_load((root / ".github" / "workflows" / "ratings.yml").read_text())
     on = wf.get("on") or wf.get(True)
-    assert on["pull_request"]["paths"] == ["ratings/**"]
-    assert wf["permissions"] == {"contents": "read"}
-    steps = wf["jobs"]["check"]["steps"]
-    base, pr = steps[0]["with"], steps[1]["with"]
-    assert base["ref"] == "${{ github.event.pull_request.base.sha }}" and base["path"] == "base"
-    assert pr["path"] == "pr"
+    assert list(on) == ["pull_request_target"]
+    assert on["pull_request_target"]["paths"] == ["ratings/**"]
+    assert wf["permissions"] == {}
+    jobs = wf["jobs"]
+    check = jobs["check"]
+    assert check["permissions"] == {"contents": "read"}
+    steps = check["steps"]
+    assert steps[0]["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
+    assert steps[0]["with"]["persist-credentials"] is False
+    # Only one checkout, of the base; the pull request is fetched as objects.
+    assert sum("actions/checkout" in str(s.get("uses", "")) for s in steps) == 1
+    fetch = next(s for s in steps if "git fetch" in s.get("run", ""))
+    assert "refs/pull/${PR_NUMBER}/head" in fetch["run"] and "checkout" not in fetch["run"]
     run = steps[-1]
-    assert run["working-directory"] == "base" and "-m delfin.review_check" in run["run"]
-    assert "--repo ../pr" in run["run"] and "gh pr merge" not in run["run"]
+    assert "-m delfin.review_check" in run["run"] and '--author "$AUTHOR"' in run["run"]
+    assert run["env"]["AUTHOR"] == "${{ github.event.pull_request.user.login }}"
+    for name in ("automerge", "first"):
+        job = jobs[name]
+        assert job["needs"] == "check"
+        assert not any("uses" in s for s in job["steps"])           # nothing checked out
+        assert all("${{" not in s["run"] for s in job["steps"])      # event data via env only
+    assert jobs["automerge"]["if"] == "needs.check.outputs.automerge == 'true'"
+    assert jobs["automerge"]["permissions"] == {"contents": "write", "pull-requests": "write"}
+    assert "gh pr merge --auto --squash" in jobs["automerge"]["steps"][0]["run"]
+    assert jobs["first"]["permissions"] == {"pull-requests": "write"}
+    assert "first contribution, maintainer review" in jobs["first"]["steps"][0]["run"]
+
+
+# ------------------------------------------------------------------ identical structures
+def _chiral_xyz(ident, seed, mirror=False):
+    elems, xyz = _chiral()
+    if mirror:
+        xyz = xyz * np.array([-1, 1, 1])
+    xyz = _turn(xyz, seed)
+    rows = "".join(f"{e} {x:.6f} {y:.6f} {z:.6f}\n" for e, (x, y, z) in zip(elems, xyz))
+    return f"{len(elems)}\n{ident}\n{rows}"
+
+
+def _with_identical(folder: Path) -> list[set[str]]:
+    """Waters T0001..T0020 and three copies (turned) of one chiral molecule,
+    plus its mirror image, which is another structure."""
+    _set(folder, 20)
+    for k, ident in enumerate(("T0021", "T0022", "T0023")):
+        (folder / f"{ident}.xyz").write_text(_chiral_xyz(ident, k))
+    (folder / "T0024.xyz").write_text(_chiral_xyz("T0024", 9, mirror=True))
+    return [{"T0021.xyz", "T0022.xyz", "T0023.xyz"}]
+
+
+def test_identical_structures_stay_in_one_part_of_the_split(tmp_path):
+    folder = tmp_path / "set"
+    groups = _with_identical(folder)
+    group_of, joined = rt.identical_groups(folder)
+    assert joined == 3 and len({group_of[f] for f in groups[0]}) == 1
+    assert group_of["T0024.xyz"] == "T0024.xyz"                       # the mirror image is not
+    for seed in range(12):
+        a, _ = rt.assign(folder, [], overlap=0, seed=seed, test_fraction=0.3)
+        test = set(a["split"]["test"])
+        assert groups[0] <= test or not groups[0] & test
+        assert a["split"]["identical_kept_together"] == 3
+
+
+def test_a_split_that_straddles_is_corrected_with_a_dated_record(tmp_path):
+    folder = tmp_path / "set"
+    groups = _with_identical(folder)
+    a, _ = rt.assign(folder, ["Max"], overlap=2, block=4, seed=3, test_fraction=0.25)
+    # As drawn before identical structures were kept together: one in each part.
+    test = (set(a["split"]["test"]) - groups[0]) | {"T0021.xyz"}
+    a["split"]["test"] = sorted(test)
+    before = json.loads(json.dumps(a))
+    b, msgs = rt.assign(folder, [], existing=a, regroup=True)
+    new = set(b["split"]["test"])
+    assert groups[0] <= new or not groups[0] & new
+    assert len(new ^ test) == 1                                     # the minority moved
+    change = b["split"]["changes"][-1]
+    assert change["groups"] == 1 and change["moved_to_test"] + change["moved_to_calibration"] == 1
+    assert change["test_size"] == len(new) and change["date"] and change["reason"]
+    assert "T0021" not in json.dumps(change)                         # counts, no names
+    assert b["shared"] == before["shared"] and b["raters"] == before["raters"]
+    assert any("1 group(s)" in m for m in msgs)
+    c, _ = rt.assign(folder, [], existing=b, regroup=True)
+    assert c["split"]["test"] == b["split"]["test"] and len(c["split"]["changes"]) == 1
+    rt.write_assignment(folder / rt.ASSIGNMENT_NAME, a)
+    assert rv.main(["assign", str(folder), "--regroup-split"]) == 0
+    assert rt.load_assignment(folder / rt.ASSIGNMENT_NAME)["split"]["test"] == b["split"]["test"]
+
+
+def test_a_new_set_keeps_identical_structures_together(tmp_path):
+    folder = tmp_path / "frames"
+    groups = _with_identical(folder)
+    src = tmp_path / "all.xyz"
+    src.write_text("".join((folder / f).read_text() for f in rt.structure_files(folder)))
+    cats = tmp_path / "kategorien.txt"
+    cats.write_text("H\n")
+    out = tmp_path / "review_sets" / "twins"
+    rt.new_set(src, out, cats, seed=4, test_fraction=0.3, overlap=0)
+    a = rt.load_assignment(out / rt.ASSIGNMENT_NAME)
+    test = set(a["split"]["test"])
+    assert groups[0] <= test or not groups[0] & test
+    assert a["split"]["identical_kept_together"] == 3 and a["split"]["grouped"]
 
 
 # ------------------------------------------------------------------ a new set

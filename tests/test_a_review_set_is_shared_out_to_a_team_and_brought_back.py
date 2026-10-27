@@ -19,7 +19,7 @@ from delfin import review_team as rt
 
 def _water(stem: str, k: int = 0) -> str:
     return (f"3\n{stem}\n"
-            f"O 0.000 0.000 {0.117 + 0.001 * k:.3f}\n"
+            f"O 0.000 0.000 {0.117 + 0.05 * k:.3f}\n"  # far enough apart: never identical
             "H 0.000 0.757 -0.467\nH 0.000 -0.757 -0.467\n")
 
 
