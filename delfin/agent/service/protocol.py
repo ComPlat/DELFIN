@@ -72,7 +72,8 @@ REQUESTS: dict[str, dict[str, str]] = {
     # (A, k) need; without it they approve once.
     "permission.reply": {"requestId": "string", "choice": "string?",
                          "answers": "[string]?", "reason": "string?",
-                         "persist": "boolean?", "text": "string?"},
+                         "persist": "boolean?", "text": "string?",
+                         "command": "string?"},
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort

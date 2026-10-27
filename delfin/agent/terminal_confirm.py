@@ -81,6 +81,37 @@ _GUARD_MARKER = "[SELF-MODIFICATION GUARD]"
 _CALC_MARKER = "[CALC EDIT]"
 _OUTSIDE_MARKER = "[OUTSIDE-WORKSPACE READ]"
 
+#: How long a command the user changed in a dialog stays approved for the
+#: model's next call with it: once, exactly as written. Long enough for a
+#: slow model round, short enough that a forgotten grant does not wait
+#: for a later turn.
+CHANGE_GRANT_S = 600.0
+#: The longest changed command accepted (a bridge line is 8 KiB).
+CHANGE_MAX_CHARS = 4000
+
+
+def checked_change(req: "ConfirmRequest", command: str) -> str:
+    """``command`` as the user's change of ``req``, or ValueError.
+
+    A change answers a shell approval with a command of its own. It must
+    be one: not empty, not the command as asked (that is "y"), at most
+    CHANGE_MAX_CHARS, and free of control characters other than newline
+    and tab -- an escape sequence would show the user one command and
+    run another.
+    """
+    if req.kind != CONFIRM or not req.is_shell or not req.command:
+        raise ValueError("only a shell command can be changed")
+    text = str(command or "")
+    if not text.strip():
+        raise ValueError("the changed command is empty")
+    if len(text) > CHANGE_MAX_CHARS:
+        raise ValueError(f"the changed command is longer than {CHANGE_MAX_CHARS} characters")
+    if any(ord(ch) < 32 and ch not in "\n\t" or ord(ch) == 127 for ch in text):
+        raise ValueError("the changed command contains control characters")
+    if text.strip() == req.command.strip():
+        raise ValueError("the command is unchanged; answer y to run it")
+    return text.strip()
+
 
 @dataclass(frozen=True)
 class Option:
@@ -515,6 +546,8 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
             Option("n", "no", "refused, and the model is told not to retry")]
 
     if req.is_shell and req.command:
+        opts.append(Option("c", "change the command",
+                           "your version runs instead, once, exactly as typed"))
         opts.append(Option("A", "always this exact command",
                            "persisted, globally, for every future session"))
         if suggestion and suggestion != _exact_pattern(req.command):
@@ -685,6 +718,11 @@ class TerminalConfirmBroker:
         # across the turn worker, subagents and background jobs, and a
         # reason from one thread's refusal must not land on another's.
         self._refusal_reason = threading.local()
+        # Per thread, like the reason: the command a refusal changed to.
+        self._changed_to = threading.local()
+        # Commands the user changed a dialog to: (tool, command, until).
+        # Each answers the next plain question for exactly that call once.
+        self._changed: list[tuple[str, str, float]] = []
         self.aborted = False
         # Where the wait for the person is marked: an activity.Activity,
         # a callable returning one, or None. The REPL binds the engine's.
@@ -713,8 +751,70 @@ class TerminalConfirmBroker:
     def last_refusal_reason(self, value: str) -> None:
         self._refusal_reason.value = str(value or "")
 
+    @property
+    def last_changed_to(self) -> str:
+        """The command THIS thread's last dialog was changed to, or "".
+        Set and cleared like last_refusal_reason; the gate reads it to
+        tell the model which command to run instead."""
+        return str(getattr(self._changed_to, "value", "") or "")
+
+    @last_changed_to.setter
+    def last_changed_to(self, value: str) -> None:
+        self._changed_to.value = str(value or "")
+
+    # -- a changed command --------------------------------------------------
+    def change(self, req: ConfirmRequest, command: str) -> bool:
+        """Refuse ``req`` as asked and approve ``command`` once instead.
+
+        Raises ValueError for a change ``checked_change`` refuses; nothing
+        is applied then. Returns False when the request ended some other
+        way first, and then no grant stays behind.
+        """
+        text = checked_change(req, command)
+        entry = (str(req.tool), text, time.monotonic() + CHANGE_GRANT_S)
+        req.changed_to = text
+        with self._lock:
+            self._changed.append(entry)
+        if self.resolve(req, False):
+            return True
+        with self._lock:
+            if entry in self._changed:
+                self._changed.remove(entry)
+        req.changed_to = ""
+        return False
+
+    def _take_change(self, tool_name: str, args: dict, preview: str) -> bool:
+        """Spend the grant for exactly this call, if there is one.
+
+        Only a plain question is answered: a preview with a guard,
+        calculation, outside-read or widening marker asks for more than
+        the dialog the user changed, and is asked as usual.
+        """
+        probe = ConfirmRequest(kind=CONFIRM, tool=str(tool_name or ""),
+                               args=dict(args or {}), preview=str(preview or ""))
+        if (not probe.is_shell or probe.is_protected or probe.is_outside_read
+                or any(line.startswith("\u26a0") for line in probe.preview.splitlines())):
+            return False
+        now = time.monotonic()
+        with self._lock:
+            self._changed = [g for g in self._changed if g[2] > now]
+            for grant in self._changed:
+                if grant[0] == probe.tool and grant[1] == probe.command:
+                    self._changed.remove(grant)
+                    return True
+        return False
+
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
+        if self._take_change(tool_name, args, preview):
+            self.last_timed_out = False
+            self.last_refusal_reason = ""
+            self.last_changed_to = ""
+            req = ConfirmRequest(kind=CONFIRM, tool=str(tool_name or ""),
+                                 args=dict(args or {}), preview=str(preview or ""))
+            req.decision, req.resolved = True, True
+            self._audit_dialog(req, by="changed")
+            return True
         with _activity.awaiting_person(self.activity, _activity.APPROVAL):
             req = self._enqueue(ConfirmRequest(
                 kind=CONFIRM, tool=str(tool_name or ""),
@@ -766,7 +866,9 @@ class TerminalConfirmBroker:
         # from none, whatever the last one carried -- also when it was
         # resolved before waiting, by an abort.
         self.last_refusal_reason = ""
+        self.last_changed_to = ""
         if req.resolved:
+            self.last_changed_to = self._changed_for(req)
             return req.decision
         import time as _time
         deadline = (_time.monotonic() + self.timeout_s) if self.timeout_s else None
@@ -810,8 +912,16 @@ class TerminalConfirmBroker:
                 req.published = None
             else:
                 self.last_timed_out = False
+        self.last_changed_to = self._changed_for(req)
         self._audit_dialog(req, by="expired" if req.expired else "terminal")
         return req.decision
+
+    @staticmethod
+    def _changed_for(req: ConfirmRequest) -> str:
+        """The command ``req`` was changed to, when it was refused for it."""
+        if req.decision is False and not req.expired:
+            return str(getattr(req, "changed_to", "") or "")
+        return ""
 
     def _audit_dialog(self, req: ConfirmRequest, *, by: str) -> None:
         """One audit record per dialog a person had to answer.
