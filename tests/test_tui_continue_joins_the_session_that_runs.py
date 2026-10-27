@@ -11,6 +11,8 @@ same id, no second worker -- as a resume of a sleeping session does.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from tui_service import ServiceProcess, turn
@@ -31,6 +33,11 @@ def test_continue_attaches_to_the_running_session_of_the_folder(service):
     turn(first, sid, "hello")
     first.close()
     window = service.client()
+    # The worker saves after the turn's end event: wait until it is listed.
+    deadline = time.monotonic() + 30
+    while not window.request("sessions.past", {"workspace": str(service.workspace())})["sessions"]:
+        assert time.monotonic() < deadline, "the session was never saved"
+        time.sleep(0.05)
     joined = window.request("session.create", {
         "cwd": str(service.workspace()), "continue": True, "fake": True,
         "fakeDelay": 0.003}, timeout=60)
