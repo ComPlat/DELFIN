@@ -246,3 +246,15 @@ def test_the_terminal_dialog_edits_the_command_on_one_line(tmp_path, monkeypatch
     assert req.resolved and req.decision is False
     assert broker.callback("bash", {"command": "rm -r results/old"},
                            "$ rm -r results/old") is True
+
+
+def test_a_window_gets_the_command_to_change_with_secrets_masked(broker):
+    key = "sk-" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6"
+    req = tc.ConfirmRequest(kind=tc.CONFIRM, tool="bash",
+                            args={"command": f"curl -H 'Authorization: Bearer {key}' x"},
+                            preview="$ curl ...")
+    fields = broker.describe(req)
+    assert fields["command"].startswith("curl -H")
+    assert key not in fields["command"]
+    write = tc.ConfirmRequest(kind=tc.CONFIRM, tool="write_file", args={"path": "a"}, preview="+x")
+    assert "command" not in broker.describe(write)
