@@ -285,7 +285,8 @@ and each key means what it means there.
   question that is not `multiSelect`.
 - An unknown or already-resolved `requestId` is refused with code -32002.
 - `c` answers a shell request with the user's own `command` (the event's
-  `command` field is the masked command to start from). The request is
+  `command` field is the command to start from; absent when it holds a
+  secret the preview masks). The request is
   refused as asked; the model reads the changed command and is told to run
   it. Its next call with exactly that command and tool is approved once,
   within 600 s, and only as a plain question: a guard, calculation,
@@ -293,6 +294,11 @@ and each key means what it means there.
   before the question still runs. An empty, unchanged, control-character
   or over-4000-character command is refused (-32602); so is `command`
   with any other key. `permission.resolved` then says `changed`.
+  The same rules hold on every surface (`terminal_confirm.checked_change`,
+  `ChangeGrants`): the REPL (key `c`), this protocol, the phone
+  (`ändern: …`), the dashboard's approval row (Change…) and the CLI
+  backend's hook, whose question carries the command and whose answer
+  carries the change.
 - `A` and `k` save a rule that is global and permanent. The REPL asks a
   second time before saving it; here the second yes is `persist: true`.
   Without it the command is approved just this once, and `message` says so.
