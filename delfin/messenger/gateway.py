@@ -327,6 +327,9 @@ class Rooms:
                         text += f"\n{option['key']}: {option.get('label', '')} — {option.get('detail', '')}"
                 if not item.get('phoneApproval'):
                     text += '\nVollständige Aktion am Dashboard prüfen; Handyfreigabe nicht verfügbar.'
+                if any(o.get('key') == 'c' for o in item.get('options', [])):
+                    text += ('\nBefehl ändern: mit „ändern: NEUER BEFEHL“ antworten (getippt). '
+                             'Dein Befehl läuft dann einmal, genau so.')
                 text += '\nGilt nur für diese Anfrage. Erledigte oder abgelaufene Anfragen können nichts mehr freigeben.\nZum Entscheiden auf diese Nachricht antworten: yes/ja, no/nein oder die angezeigte Option.'
             lines.append(text)
         return '\n\n'.join(lines) or 'Nichts offen.'
@@ -364,6 +367,15 @@ class Rooms:
             else:
                 options = item.get('options', [])
                 keys = {o.get('key') for o in options}
+                changed = self._changed_command(text) if 'c' in keys else None
+                if changed is not None:
+                    if isinstance(changed, tuple):
+                        return changed[0]
+                    reply = await self.session(sid, 'decide', id=item['id'], choice='c', command=changed)
+                    if reply.get('ok'):
+                        self._reply_targets = {k: v for k, v in self._reply_targets.items() if v['id'] != item['id']}
+                        return 'Befehl geändert. Er läuft einmal, genau so:\n' + changed
+                    return reply.get('error') or 'Die Änderung wurde nicht übernommen.'
                 if normalized in {'yes', 'ja'}:
                     choice = 'y' if 'y' in keys else 'd' if 'd' in keys else 'e'
                 elif normalized in {'no', 'nein'}:
@@ -385,6 +397,35 @@ class Rooms:
             self._reply_targets = {k: v for k, v in self._reply_targets.items() if v['id'] != item['id']}
             return 'Antwort übernommen. Die Anfrage ist auch in TUI/Dashboard erledigt.'
         return reply.get('error') or 'Die Anfrage wurde nicht übernommen.'
+
+    #: What autocorrect makes of shell quotes and dashes; a changed command
+    #: carrying one is refused rather than run with the wrong characters.
+    _TYPOGRAPHIC = '\u201c\u201d\u201e\u2018\u2019\u201a\u2013\u2014\u2026\u00ab\u00bb'
+    _CHANGE_HINT = ('Befehl ändern: mit „ändern: NEUER BEFEHL“ antworten, getippt. '
+                    'Nichts geändert, die Anfrage bleibt offen.')
+
+    @classmethod
+    def _changed_command(cls, text):
+        """A typed reply as a changed command: the command, a (hint,) when it
+        names a change without a usable command, or None when it is none."""
+        import re
+        raw = str(text or '').strip()
+        match = re.match(r'(?is)^(?:ändern|aendern|change|c)\s*:(.*)$', raw)
+        if not match:
+            if raw.lower() in {'c', 'ändern', 'aendern', 'change', 'change the command'}:
+                return (cls._CHANGE_HINT,)
+            return None
+        command = match.group(1).strip()
+        for fence in ('```', '`'):
+            if len(command) > 2 * len(fence) and command.startswith(fence) and command.endswith(fence):
+                command = command[len(fence):-len(fence)].strip()
+                break
+        if not command:
+            return (cls._CHANGE_HINT,)
+        if any(ch in cls._TYPOGRAPHIC for ch in command):
+            return ('Der Befehl enthält typografische Anführungszeichen oder Striche '
+                    '(Autokorrektur?). ' + cls._CHANGE_HINT,)
+        return command
 
     #: Spoken words that decide an approval, after _spoken() normalised them.
     _SPOKEN_DECISIONS = {'ja': 'ja', 'yes': 'yes', 'jawohl': 'ja',
