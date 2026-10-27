@@ -109,6 +109,8 @@ SCHEDULE_ERRORS = {
     "workspace": "Der Ordner fehlt.",
     "unknown": "Zeitplan nicht gefunden. pläne zeigt die aktuellen.",
     "budget": "Ungültige Grenzen.",
+    "command": "Ein Watcher führt nur lesende Befehle aus: squeue, sacct, sinfo, ls, tail, head, wc, grep, du, df und ähnliche.",
+    "path": "Pfade müssen im Ordner des Zeitplans liegen.",
 }
 
 
@@ -638,7 +640,9 @@ class Bridge:
     def _schedule_view(self, e: dict) -> dict:
         from delfin.agent import schedules
         red = self._redactor()
-        if e.get("host") != rundir.hostname():
+        if e.get("watch_done"):
+            state = "done"
+        elif e.get("host") != rundir.hostname():
             state = "elsewhere"
         elif not e["confirmed"]:
             state = "unconfirmed"

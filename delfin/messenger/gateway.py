@@ -38,6 +38,8 @@ SCHEDULE_HELP = (
     'ok N – bestätigen; erst danach läuft er\n'
     'pause N · weiter N · jetzt N · löschen N · zeige N\n'
     'Zeiten: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5 · tz=Europe/Berlin\n'
+    'Wenn-dann: wenn job 123 fertig · wenn datei out.txt erscheint · wenn datei calc.log sich ändert · '
+    'wenn ausgabe "squeue -u NAME" sich ändert – ohne Aufgabe nur eine Meldung.\n'
     'Im Chat einer Sitzung: plan ZEIT AUFGABE – läuft im Ordner dieser Sitzung.'
 )
 
@@ -51,12 +53,13 @@ _RUN_WORDS = {
     'budget': ('💶', 'Tageslimit erreicht, heute nicht mehr'),
     'unconfirmed': ('⚠', 'nicht bestätigt, nicht gelaufen'),
     'interrupted': ('⚠', 'unterbrochen'),
+    'triggered': ('🔔', 'ausgelöst'),
 }
 
 #: A schedule's state in the listing (bridge._schedule_view).
 _STATE_WORDS = {
     'active': 'aktiv', 'paused': 'pausiert', 'unconfirmed': 'wartet auf ok',
-    'running': 'läuft gerade', 'elsewhere': 'anderer Rechner',
+    'running': 'läuft gerade', 'elsewhere': 'anderer Rechner', 'done': 'erledigt',
 }
 
 #: The schedules chat's commands and what they ask the bridge.
@@ -477,7 +480,7 @@ class Rooms:
         head = f"{icon} #{run.get('id')} {run.get('when')} · {t(word)}"
         if run.get('costUsd'):
             head += f" · {float(run['costUsd']):.2f} $"
-        body = run.get('text') if run.get('status') in {'done', 'failed', 'timeout'} else ''
+        body = run.get('text') if run.get('status') in {'done', 'failed', 'timeout', 'triggered'} else ''
         return head + (f"\n{run.get('task')}\n\n{body}" if body else f"\n{run.get('task')}")
 
     async def schedule_news(self):

@@ -244,6 +244,8 @@ EN = {
     'ok N – bestätigen; erst danach läuft er\n'
     'pause N · weiter N · jetzt N · löschen N · zeige N\n'
     'Zeiten: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5 · tz=Europe/Berlin\n'
+    'Wenn-dann: wenn job 123 fertig · wenn datei out.txt erscheint · wenn datei calc.log sich ändert · '
+    'wenn ausgabe "squeue -u NAME" sich ändert – ohne Aufgabe nur eine Meldung.\n'
     'Im Chat einer Sitzung: plan ZEIT AUFGABE – läuft im Ordner dieser Sitzung.':
     'Schedules – manage them and get their results here:\n'
     'list – show all\n'
@@ -251,6 +253,8 @@ EN = {
     'ok N – confirm; it runs only after that\n'
     'pause N · resume N · now N · delete N · show N\n'
     'Times: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5 · tz=Europe/Berlin\n'
+    'When-then: when job 123 done · when file out.txt appears · when file calc.log changes · '
+    'when output "squeue -u NAME" changes – without a task, only a report.\n'
     'In a session chat: schedule WHEN TASK – runs in that session\'s folder.',
     'Zeitpläne': 'Schedules',
     'fertig': 'done',
@@ -262,6 +266,10 @@ EN = {
     'Tageslimit erreicht, heute nicht mehr': "today's limit reached, no more runs today",
     'nicht bestätigt, nicht gelaufen': 'not confirmed, did not run',
     'unterbrochen': 'interrupted',
+    'ausgelöst': 'triggered', 'erledigt': 'done',
+    'Ein Watcher führt nur lesende Befehle aus: squeue, sacct, sinfo, ls, tail, head, wc, grep, du, df und ähnliche.':
+    'A watcher runs only reading commands: squeue, sacct, sinfo, ls, tail, head, wc, grep, du, df and the like.',
+    'Pfade müssen im Ordner des Zeitplans liegen.': "Paths must lie inside the schedule's folder.",
     'aktiv': 'active', 'pausiert': 'paused', 'wartet auf ok': 'waits for ok',
     'läuft gerade': 'running', 'anderer Rechner': 'other host',
     'Einladung zum Chat „Zeitpläne“ liegt in SimpleX. Dort: pläne, neu, ok, pause, jetzt, löschen.':
