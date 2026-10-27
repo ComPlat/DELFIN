@@ -6,6 +6,7 @@ statement is the original text, only the imports below are new.
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
@@ -1575,6 +1576,22 @@ def _align_and_orient_ligands(
         # spin still relieves clash; finer angles (+-10, +-20 deg) are offered so it has room to.
         # Off -> byte-identical.
         _chelate_lp = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_LP", 0) == 1
+        # ===== THE LONE-PAIR TERM WAS NEVER ON (DELFIN_FFFREE_ORIENT_LP_WEIGHT=<w>, default 0 = off) =====
+        #
+        # The score below has a lone-pair term for monodentate donors (_lp_penalty_for_frag: angle
+        # between the donor's anti-bisector lone pair and D->M, 15 deg dead band, quadratic), and the
+        # spin search already offers the 50 % / 90 % lone-pair tilts -- but its weight ``lp_weight`` is
+        # 0.0 at every call site (topo_isomers x2, chelate_templates), so a tilt is only ever taken when
+        # it happens to relieve clash.  The eye reads the result as a linear M-D-X at sp3 donors
+        # (donor_local_geom_linear: FOJVIL methanol O 391 of 453 frames) and as pyramidal sp2 donors.
+        # With the switch the term counts with weight w (dimension A^2 per rad^2, same scale as the
+        # clash overlaps; with w = 5 a 30 deg excess over the dead band costs 1.4 A^2).
+        # Off (unset / 0) -> byte-identical.
+        if lp_weight == 0.0:
+            try:
+                lp_weight = max(0.0, float(os.environ.get("DELFIN_FFFREE_ORIENT_LP_WEIGHT", "0") or 0.0))
+            except ValueError:
+                lp_weight = 0.0
         # Per-fragment heavy atom list + donor list.
         frag_info: List[dict] = []
         for frag in fragments:

@@ -69,3 +69,21 @@ def test_chelate_lp_keeps_lone_pairs_on_the_metal(monkeypatch, carry):
     for d in donors[:2]:
         assert np.allclose(Y[d], X[d])
         assert _lp_angle(mol, Y, metal, d) <= max(15.0, _lp_angle(mol, X, metal, d)) + 1e-6
+
+
+def test_lp_weight_off_is_byte_identical(monkeypatch):
+    mol, X, metal, donors = _phen_zn_nh3()
+    monkeypatch.delenv("DELFIN_FFFREE_ORIENT_LP_WEIGHT", raising=False)
+    ref = _run(mol, X, metal, donors)
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_LP_WEIGHT", "0")
+    assert np.array_equal(ref, _run(mol, X, metal, donors))
+
+
+def test_lp_weight_does_not_misalign_the_monodentate(monkeypatch):
+    mol, X, metal, donors = _phen_zn_nh3()
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", "1")
+    monkeypatch.delenv("DELFIN_FFFREE_ORIENT_LP_WEIGHT", raising=False)
+    a0 = _lp_angle(mol, _run(mol, X, metal, donors), metal, donors[2])
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_LP_WEIGHT", "5")
+    a1 = _lp_angle(mol, _run(mol, X, metal, donors), metal, donors[2])
+    assert a1 <= max(a0, 15.0) + 1e-6
