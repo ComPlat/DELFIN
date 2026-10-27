@@ -32,12 +32,30 @@ delfin review unpack review_sets/kalib_2026_10 ~/review_kalib_2026_10 --name <yo
 `~/review_kalib_2026_10` now holds one `.xyz` file per structure, the
 category list (`kategorien.txt`) and the shares given out so far
 (`assignment.json`). If your name is listed there, that is your share.
-Otherwise a block of 500 structures nobody has yet is drawn for you, from
-your name (the same name always gets the same block), and kept in your own
-`review_<your name>.json`. Pick a name nobody else in the project uses, and
-keep it. Running `unpack` again never touches your ratings. (Without
-`--name` the block is drawn the first time you open the folder in the
-Review tab.)
+Otherwise a block of 500 structures is drawn for you and kept in your own
+`review_<your name>.json`. The draw looks at everything already sent back
+(`ratings/kalib_2026_10/` in your clone, hence the `git pull`): structures
+nobody has rated or reserved come first. About 15 % of every block are
+structures that one or two other reviewers also get, spread over the whole
+set, so that everybody's ratings can be compared with many others'. Only
+when every structure has been rated once do blocks consist of second
+ratings. Pick a name nobody else in the project uses, and keep it. Running
+`unpack` again never touches your ratings or your block. (Without `--name`
+the block is drawn the first time you open the folder in the Review tab.)
+
+**Reserve your block** (recommended, takes a minute): until your ratings
+come back, nobody else knows which structures you have. So tell them:
+
+```bash
+delfin review claim ~/review_kalib_2026_10 --name <your name>
+```
+
+This opens a small pull request that adds only
+`ratings/kalib_2026_10/claims/<your name>.json` (your block, the date and the
+set version). Once it is merged, blocks drawn by others leave your
+structures out. A reservation runs out after 28 days from its date; the
+structures you have not rated by then are given out again. Run `claim`
+again to renew it (same block, new date).
 
 ## 2. Open your share in the Review tab
 
@@ -149,7 +167,12 @@ From your clone, in a terminal:
 
 ```bash
 delfin review submit ~/review_kalib_2026_10 --name <your name>
+delfin review submit ~/review_kalib_2026_10 --name <your name> --credit "Ada Lovelace"   # to be listed
 ```
+
+With `--credit`, the name you give is stored in your file (field `credit`)
+and listed among the contributors of the set (`delfin review status`);
+`--credit ""` removes it again. Without it nothing is listed.
 
 This copies your `review_<your name>.json` to
 `ratings/kalib_2026_10/review_<your name>.json` in a commit of its own on a
@@ -165,25 +188,136 @@ simply send the file `review_<your name>.json` to the coordinator.
 ## For the coordinator
 
 ```bash
-delfin review assign review_sets/kalib_2026_10 Anna Ben --ratings ratings/kalib_2026_10   # reserve blocks (optional), then commit
-delfin review merge  review_sets/kalib_2026_10 --ratings ratings/kalib_2026_10            # CSV + agreement
-delfin review merge  review_sets/kalib_2026_10 --ratings ratings/kalib_2026_10 --split calibration
+delfin review status review_sets/kalib_2026_10                         # how far the set is
+delfin review merge  review_sets/kalib_2026_10                         # CSVs, agreement, reliability
+delfin review merge  review_sets/kalib_2026_10 --split calibration     # only the calibration part
+delfin review assign review_sets/kalib_2026_10 Anna Ben                # reserve blocks (optional), then commit
 ```
 
-Nobody has to be added before helping: a name not in `assignment.json`
-draws its own block (`self_block`, 500) in its review file, so helpers'
-pull requests never touch a common file. `assign` is only needed to reserve
-blocks for named reviewers: it keeps every share already given out and gives
-new names only structures nobody has yet (`--block`, default 500), and it
-leaves out the self-drawn blocks it finds in `--ratings`. The shared
-structures (`--overlap`, default 50) and the test part are fixed when the
-assignment is first drawn. Two self-drawn blocks may overlap; those frames
-are simply rated twice.
+For a folder `review_sets/<set>` of the clone, all of them read
+`ratings/<set>/` (review files and `claims/`) by themselves; `--ratings`
+adds further folders.
 
-`merge` writes one CSV with every rating of every reviewer (columns `rater`,
-`shared`, `share` = shared / own / extra, `split`) and prints Cohen's kappa
-(two reviewers) or Fleiss' kappa (more; the number of reviewers may differ
-per frame) with the share of frames on which all agree and the number of
-frames, for ok/defect and for every category, on every frame rated by two or
-more. Ratings of the **test** part are a pre-registered hold-out: never use
-them to tune anything.
+**Who gets what.** Nobody has to be added before helping: a name not in
+`assignment.json` draws its own block (`self_block`, 500) into its review
+file, so helpers' pull requests never touch a common file. Every draw (a
+helper's, and `assign` for named reviewers) counts what it can see: every
+rating sent back, every block drawn into a review file and every claim not
+older than 28 days. Structures with nobody first; a share of each block
+(`redundancy` in `assignment.json`, default 0.15) goes to the structures
+meant for two or three reviewers: that share of the set, drawn once with
+the seed and spread over the whole set (two thirds of it for two reviewers,
+one third for three), preferring those that already have a reviewer, so
+every reviewer overlaps with many others (an incomplete block design). The
+50 structures everyone rates stay as they are. Second ratings of the rest
+are drawn only when everything has one. The draw depends only on the seed,
+the name and the ratings and claims it sees, so it can be reproduced; a
+self-drawn block records what it saw (`drawn_from`). The shared structures
+(`--overlap`) and the test part are fixed when the assignment is first
+drawn; `--redundancy` can be changed later and applies to blocks drawn from
+then on.
+
+**`status`** prints how many structures are rated 0, 1, 2 or 3+ times, the
+progress of the calibration and the test part, the reservations (named,
+self-drawn and claimed; active or expired), the reviewers, Krippendorff's
+alpha for ok/defect with its interval, the self-consistency on structures
+shown twice (below), and the contributors who asked to be listed
+(`credit`).
+
+**`merge`** writes three CSVs and prints the statistics, all on the part
+given by `--split` (default `all`):
+
+* `review_merged_<set>.csv` -- every rating of every reviewer (columns
+  `rater`, `shared`, `share` = shared / own / extra, `split`).
+* Cohen's kappa (two reviewers) or Fleiss' kappa (more) and the share of
+  frames on which all agree, for ok/defect and every category.
+* Krippendorff's alpha (nominal; any number of reviewers per structure,
+  missing ratings allowed) for ok/defect and every category, with a 95 %
+  bootstrap interval over the structures (`--bootstrap`, default 1000
+  draws, seeded).
+* The Dawid-Skene model, fitted by EM, for ok/defect and every category:
+  the sensitivity and specificity of every reviewer (printed for ok/defect,
+  all in `review_merged_<set>_raters.csv`) and, per structure, the
+  probability of a defect and of every category, which weighs reliable
+  reviewers more than a majority vote does
+  (`review_merged_<set>_consensus.csv`, column `consensus` = block when the
+  probability is 0.5 or more).
+* Self-consistency: how often a reviewer gives the same verdict to the same
+  structure shown twice. The pairs are found from the geometry of the set
+  (the same atoms, the same coordinates after a proper rotation; a mirror
+  image does not count); only counts are printed. `--repeats <file>` gives
+  them from a private list instead (JSON `{file: group}` or pairs).
+* Controls: which structures are experimental crystal structures is never
+  part of a public set, so nothing public reports on them. `--controls
+  <private key>` (JSON `{file: true}` or a CSV with `id`/`file` and `source`
+  or `control`) prints, for those structures only, how many each reviewer
+  passed and the mean consensus probability of a defect. Keep that output
+  out of the repository.
+
+Ratings of the **test** part are a pre-registered hold-out: never use them
+to tune anything. With `--split calibration` nothing of the test part enters
+any number or file: the model is fitted without it and the consensus CSV
+holds no test structure.
+
+**Checking helpers' pull requests.** `.github/workflows/ratings.yml` runs on
+every pull request that touches `ratings/**` and calls
+`delfin/review_check.py` from the base commit (so a pull request cannot
+change its own rules). A helper's pull request (it changes a
+`review_<name>.json` or a `claims/<name>.json`) passes when it changes
+exactly that one file, the file is valid (set and set version, structures
+of the set, categories of `kategorien.txt`, atoms within the structure, the
+name inside equal to the file name, a claim of at most one block dated
+today or earlier) and a file already on `main` keeps its token (nobody
+overwrites another reviewer's file by mistake). Other pull requests are
+left to the ordinary review. Nothing merges by itself; merging passing
+helpers' pull requests automatically would be a separate decision (a
+ruleset requiring this check for `ratings/**`, and auto-merge).
+
+## Adding a review set
+
+A set lives in `review_sets/<set>/`, its ratings in `ratings/<set>/`:
+
+```
+review_sets/<set>/
+  structures.xyz.gz   all structures, one XYZ frame each, the comment line only the id
+  kategorien.txt      the defect categories, one per line, in the order of the keys
+  assignment.json     the shares, the test part and the parameters of the draw
+  README.md           what the set is, where the structures come from, their licences
+ratings/<set>/
+  review_<name>.json  one file per reviewer (delfin review submit)
+  claims/<name>.json  one file per reservation (delfin review claim)
+```
+
+Make the public part with `new-set` from a multi-frame XYZ file in which
+every frame is one structure:
+
+```bash
+delfin review new-set all.xyz review_sets/<set> --categories kategorien.txt --renumber
+```
+
+It writes the archive (reproducibly, the same input gives the same bytes),
+the categories, `assignment.json` with the test part drawn now, and a
+`README.md` with TODOs to fill in. Without `--renumber` the comment lines
+must be plain, unique ids. Options: `--seed`, `--test-fraction` (default
+0.2), `--overlap` (default 50), `--self-block` (default 500), `--redundancy`
+(default 0.15), `--groups` (JSON `{id: group}`: a group, e.g. a structure
+shown twice, stays in one part of the split). Blinding (rotating, sorting
+atoms, hiding the source) is not done by `new-set`; it is done before, on
+the private side.
+
+`assignment.json` holds: `version` (of the format), `seed`, `files_total`,
+`shared` (the files everyone rates), `raters` (blocks of named reviewers),
+`split` (`seed`, `test_fraction`, `grouped`, `test`: the test files),
+`self_block`, `redundancy`, `set`, `set_version` (a hash of the frames;
+every review and claim names it), `created` and `updated`.
+
+Two rules are not negotiable:
+
+* **No data of the Cambridge Structural Database (CSD)** in a set, its
+  README or its ratings: no coordinates, no refcodes, nothing derived from
+  them. Experimental structures come from open sources such as the
+  Crystallography Open Database (CC0); name the source and the licence in
+  the README.
+* **The test part is fixed before anything is rated** (`new-set` draws it at
+  once) and never changes afterwards. Its ratings only measure; they never
+  tune.

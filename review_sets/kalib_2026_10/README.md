@@ -10,15 +10,23 @@ structure builder should fix next. How to take part:
   is only the structure's id (`T0001` ...). `delfin review unpack` writes
   them as single files.
 * `kategorien.txt` -- the 18 defect categories the Review tab offers.
-* `assignment.json` -- the 50 structures everyone rates, the test part, and
-  blocks reserved for named reviewers (`delfin review assign`).
+* `assignment.json` -- the 50 structures everyone rates, the test part,
+  blocks reserved for named reviewers (`delfin review assign`), the
+  parameters of the draw (seed, block of 500, redundancy 0.15) and the set
+  version.
 
 **Just pick your name.** Anyone can help without being added:
+`git pull`, then
 `delfin review unpack review_sets/kalib_2026_10 <folder> --name <your name>`
 (or the first opening in the Review tab) draws a block of 500 structures
-nobody is assigned, from your name, plus the 50 everyone rates. The block is
-kept in your own `review_<name>.json`, so contributions never edit a common
-file.
+plus the 50 everyone rates. Structures nobody has rated or reserved come
+first; about 15 % of every block are structures meant for two or three
+reviewers, spread over the set, so that every reviewer's ratings overlap
+with many others'. The block is kept in your own `review_<name>.json`, so
+contributions never edit a common file. `delfin review claim <folder> --name
+<your name>` reserves it for 28 days (a pull request that adds only
+`ratings/kalib_2026_10/claims/<name>.json`). `delfin review status
+review_sets/kalib_2026_10` shows how far the set is.
 
 **What is in it.** Structures built by MANTA (several program versions)
 mixed with experimental crystal structures from the Crystallography Open
@@ -37,4 +45,6 @@ twice stays in one part) was set aside as the test part. Ratings of the test
 part are never used to tune anything; they only measure the tuned result.
 
 Ratings come back as `ratings/kalib_2026_10/review_<name>.json`
-(`delfin review submit`).
+(`delfin review submit`, optionally with `--credit "<name to be listed>"`),
+reservations as `ratings/kalib_2026_10/claims/<name>.json`. Every such pull
+request is checked automatically (`.github/workflows/ratings.yml`).
