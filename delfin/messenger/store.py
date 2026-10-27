@@ -98,6 +98,37 @@ def configure_room(chat: str, *, owner: str, **settings) -> None:
         _write(data)
 
 
+def schedules_room() -> str | None:
+    """The chat the schedules are managed and reported in; None before it
+    is opened. A new pairing starts without one (``save``)."""
+    return str(load().get('schedules_room') or '') or None
+
+
+def set_schedules_room(chat: str, *, owner: str) -> None:
+    with _locked():
+        data = load()
+        if data.get('contact_id') != owner:
+            raise ValueError('pairing changed')
+        data['schedules_room'] = chat
+        _write(data)
+
+
+def schedule_seq() -> int | None:
+    """The last schedule run reported to the phone; None before the first
+    look (which starts at the newest, without a backlog)."""
+    value = load().get('schedule_seq')
+    return value if isinstance(value, int) else None
+
+
+def set_schedule_seq(seq: int, *, owner: str) -> None:
+    with _locked():
+        data = load()
+        if data.get('contact_id') != owner:
+            raise ValueError('pairing changed')
+        data['schedule_seq'] = int(seq)
+        _write(data)
+
+
 def forget_room(chat: str) -> None:
     with _locked():
         data = load()

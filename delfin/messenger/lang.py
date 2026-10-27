@@ -35,6 +35,7 @@ EN = {
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
     'sync aktualisiert die aktivierten Sitzungen.':
     'Enable SimpleX in each session you want with /sync; /sync off turns it off there.\n'
     'Session chat: text goes to this enabled session only. Forum: to all enabled sessions.\n'
@@ -46,6 +47,7 @@ EN = {
     'files – files made available; file NAME – download one.\n'
     'In the forum: exchange on/off – share explicit agent announcements (off by default).\n'
     'new NAME – start a session in a folder of its own; new NAME: task – with a first task.\n'
+    'schedules – open the schedules chat; in a session chat: schedule WHEN TASK.\n'
     'sync refreshes the enabled sessions.',
     'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.':
     'Please give me a short progress report: done, in progress, obstacles, next step. At most five sentences.',
@@ -234,4 +236,80 @@ EN = {
     'Antwort und Freigabe dürfen nicht verwechselt werden.': 'An answer and an approval must not be confused.',
     'Höchstens drei neue Sitzungen in zehn Minuten. Bitte später erneut.':
     'At most three new sessions in ten minutes. Please try again later.',
+
+    # -- the user's schedules -------------------------------------------------------
+    'Zeitpläne – hier verwalten und Ergebnisse erhalten:\n'
+    'pläne – alle anzeigen\n'
+    'neu ZEIT AUFGABE – vorschlagen, z. B. neu täglich 07:30 Fasse die Jobs zusammen\n'
+    'ok N – bestätigen; erst danach läuft er\n'
+    'pause N · weiter N · jetzt N · löschen N · zeige N\n'
+    'Zeiten: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5 · tz=Europe/Berlin\n'
+    'Im Chat einer Sitzung: plan ZEIT AUFGABE – läuft im Ordner dieser Sitzung.':
+    'Schedules – manage them and get their results here:\n'
+    'list – show all\n'
+    'new WHEN TASK – propose one, e.g. new daily 07:30 Summarise the jobs\n'
+    'ok N – confirm; it runs only after that\n'
+    'pause N · resume N · now N · delete N · show N\n'
+    'Times: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5 · tz=Europe/Berlin\n'
+    'In a session chat: schedule WHEN TASK – runs in that session\'s folder.',
+    'Zeitpläne': 'Schedules',
+    'fertig': 'done',
+    'fehlgeschlagen': 'failed',
+    'nach Zeitlimit gestoppt': 'stopped at its time limit',
+    'wartet auf eine Freigabe: in der TUI öffnen (delfin-agent tui)':
+    'waits for an approval: open it in the TUI (delfin-agent tui)',
+    'verpasst (Rechner oder Agent-Dienst war aus)': 'missed (the host or the agent service was off)',
+    'Tageslimit erreicht, heute nicht mehr': "today's limit reached, no more runs today",
+    'nicht bestätigt, nicht gelaufen': 'not confirmed, did not run',
+    'unterbrochen': 'interrupted',
+    'aktiv': 'active', 'pausiert': 'paused', 'wartet auf ok': 'waits for ok',
+    'läuft gerade': 'running', 'anderer Rechner': 'other host',
+    'Einladung zum Chat „Zeitpläne“ liegt in SimpleX. Dort: pläne, neu, ok, pause, jetzt, löschen.':
+    'The invitation to the "Schedules" chat is in SimpleX. There: list, new, ok, pause, now, delete.',
+    'Zeitplan wurde nicht angelegt.': 'The schedule was not made.',
+    'Vorschlag #{id} liegt im Chat „Zeitpläne“: dort mit ok {id} bestätigen.':
+    'Proposal #{id} is in the "Schedules" chat: confirm it there with ok {id}.',
+    'Vorschlag #{id}: {when} ({tz}), nächster Lauf {next}\n'
+    'Aufgabe: {task}\nOrdner: {folder} · höchstens {run} $ je Lauf, {day} $ am Tag, {minutes} min\n'
+    'Läuft erst nach deiner Bestätigung: ok {id}':
+    'Proposal #{id}: {when} ({tz}), next run {next}\n'
+    'Task: {task}\nFolder: {folder} · at most {run} $ a run, {day} $ a day, {minutes} min\n'
+    'Runs only after you confirm: ok {id}',
+    'Bitte zuerst prüfen, dann erneut ok senden.': 'Please check it first, then send ok again.',
+    '#{id} {when} · nächster Lauf {next} · {state}\n   {task}':
+    '#{id} {when} · next run {next} · {state}\n   {task}',
+    'Noch keine Zeitpläne. neu täglich 07:30 AUFGABE schlägt einen vor.':
+    'No schedules yet. new daily 07:30 TASK proposes one.',
+    'Unbekannt. hilfe zeigt die Befehle für Zeitpläne.': 'Unknown. help shows the schedule commands.',
+    '#{id} bestätigt. Nächster Lauf: {next}.': '#{id} confirmed. Next run: {next}.',
+    '#{id}: {when} ({tz}), nächster Lauf {next}\nAufgabe: {task}\nOrdner: {folder}':
+    '#{id}: {when} ({tz}), next run {next}\nTask: {task}\nFolder: {folder}',
+    '#{id} pausiert.': '#{id} paused.',
+    '#{id} läuft wieder. Nächster Lauf: {next}.': '#{id} resumed. Next run: {next}.',
+    '#{id} startet in Kürze. Das Ergebnis kommt hierher.': '#{id} starts shortly. The result comes here.',
+    '#{id} gelöscht.': '#{id} deleted.',
+    # The bridge's refusals (bridge.SCHEDULE_ERRORS and _cmd_schedule).
+    'Zeit nicht verstanden. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5':
+    'Time not understood. Examples: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5',
+    'Uhrzeit fehlt oder ist ungültig. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5':
+    'The time of day is missing or invalid. Examples: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5',
+    'Der kürzeste Abstand ist 5 Minuten.': 'The shortest interval is 5 minutes.',
+    'Unbekannte Zeitzone, z. B. tz=Europe/Berlin.': 'Unknown time zone; e.g. tz=Europe/Berlin.',
+    'Dieser Zeitplan würde nie laufen.': 'This schedule would never run.',
+    'Nach der Zeit fehlt die Aufgabe.': 'The task is missing after the time.',
+    'Der Ordner fehlt.': 'The folder is missing.',
+    'Zeitplan nicht gefunden. pläne zeigt die aktuellen.': 'Schedule not found. list shows the current ones.',
+    'Ungültige Grenzen.': 'Invalid limits.',
+    'Dieser Zeitplan gehört zu einem anderen Rechner und läuft nur dort.':
+    'This schedule belongs to another host and runs only there.',
+    'Noch nicht bestätigt: zuerst ok mit seiner Nummer senden.':
+    'Not confirmed yet: send ok with its number first.',
+    'Unbekannter Zeitplan-Befehl.': 'Unknown schedule command.',
+    'Zeitpläne aus diesem Chat brauchen einen Handy-Ordner auf dem Rechner. '
+    'Im Sitzungs-Chat mit plan ZEIT AUFGABE anlegen oder in der TUI mit /schedule add.':
+    'Schedules from this chat need a phone folder on the host. '
+    'Make one in a session chat with schedule WHEN TASK, or in the TUI with /schedule add.',
+    'Der Ordner für Zeitpläne ist kein normaler Ordner.': 'The folder for schedules is not a plain folder.',
+    'Höchstens fünf neue Zeitpläne in zehn Minuten. Bitte später erneut.':
+    'At most five new schedules in ten minutes. Please try again later.',
 }

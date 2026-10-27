@@ -30,6 +30,12 @@ Commands (one JSON object per line, both ways):
                                              under DELFIN_MESSENGER_WORKSPACES,
                                              permission profile "default",
                                              enabled for the messenger
+    {"cmd": "schedules", "after"?}        -> the user's schedules and the runs
+                                             recorded after ``after``
+    {"cmd": "schedule", "action", "id"?, "text"?, "session"?, "check"?}
+                                          -> new (a proposal), ok (with the
+                                             check it was shown), show, pause,
+                                             resume, delete, run
 Outgoing events (one JSON object per line):
     {"event": "session", ...}   a session's summary changed
     {"event": "attention", ...} what needs the user changed
@@ -79,6 +85,30 @@ COMMANDS = {
     "prompt": {"session": "string?", "text": "string"},
     "stop": {},
     "create": {"name": "string?"},
+    "schedules": {"after": "string?"},
+    "schedule": {"action": "string", "id": "string?", "text": "string?",
+                 "session": "string?", "check": "string?"},
+}
+
+#: Schedules made from the phone per window of CREATE_WINDOW_S.
+SCHEDULE_LIMIT = 5
+
+#: The folder (under DELFIN_MESSENGER_WORKSPACES) a schedule made in the
+#: phone's schedules chat runs in.
+SCHEDULE_FOLDER = "zeitplaene"
+
+#: Why a schedule was refused, in the phone's words (schedules.ScheduleError
+#: codes); the phone translates these whole.
+SCHEDULE_ERRORS = {
+    "when": "Zeit nicht verstanden. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5",
+    "time": "Uhrzeit fehlt oder ist ungültig. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5",
+    "interval": "Der kürzeste Abstand ist 5 Minuten.",
+    "zone": "Unbekannte Zeitzone, z. B. tz=Europe/Berlin.",
+    "never": "Dieser Zeitplan würde nie laufen.",
+    "task": "Nach der Zeit fehlt die Aufgabe.",
+    "workspace": "Der Ordner fehlt.",
+    "unknown": "Zeitplan nicht gefunden. pläne zeigt die aktuellen.",
+    "budget": "Ungültige Grenzen.",
 }
 
 
@@ -601,6 +631,136 @@ class Bridge:
             return {"error": "Sitzung wurde nicht gestartet."}
         activation.configure(sid)
         return {"ok": True, "sessionId": sid, "title": title or slug, "folder": slug}
+
+
+    # -- the user's schedules ---------------------------------------------------------
+
+    def _schedule_view(self, e: dict) -> dict:
+        from delfin.agent import schedules
+        red = self._redactor()
+        if e.get("host") != rundir.hostname():
+            state = "elsewhere"
+        elif not e["confirmed"]:
+            state = "unconfirmed"
+        elif e.get("paused"):
+            state = "paused"
+        elif e.get("running"):
+            state = "running"
+        else:
+            state = "active"
+        return {"id": e["id"], "when": _truncate(str(e["when"]), 80), "tz": str(e["tz"]),
+                "next": schedules.describe_next(e),
+                "task": red.text(_truncate(str(e["task"]), 300)),
+                "folder": red.text(_truncate(Path(str(e["workspace"])).name, 60)),
+                "host": _truncate(str(e.get("host") or ""), 60), "state": state,
+                "lastStatus": str(e.get("last_status") or ""),
+                "confirmed": bool(e["confirmed"]), "check": schedules.fingerprint(e),
+                "runUsd": e.get("budget_run_usd"), "dayUsd": e.get("budget_day_usd"),
+                "minutes": e.get("max_minutes")}
+
+    async def _cmd_schedules(self, params: dict) -> dict:
+        """The schedules (cut) and the runs after ``after``, within one line."""
+        from delfin.agent import schedules
+        try:
+            after = int(params.get("after") or 0)
+        except ValueError:
+            after = 0
+        red = self._redactor()
+        rows = [self._schedule_view(e) for e in schedules.entries()][:20]
+        for row in rows:
+            row["task"] = _truncate(row["task"], 100)
+            row.pop("check", None)
+        runs = [{"seq": r["seq"], "id": r["id"], "status": r["status"],
+                 "text": red.text(_truncate(str(r.get("text") or ""), 1500)),
+                 "costUsd": r.get("costUsd") or 0.0,
+                 "task": red.text(_truncate(str(r.get("task") or ""), 120)),
+                 "when": _truncate(str(r.get("when") or ""), 80),
+                 "notify": r.get("notify") or "always"}
+                for r in schedules.runs(after, limit=10)]
+        head = schedules.last_seq()
+        reply = {"ok": True, "host": rundir.hostname(), "schedules": rows,
+                 "runs": runs, "head": head}
+        # One line holds at most MAX_LINE_BYTES: later runs wait for the
+        # next look, which asks after the last one sent.
+        while len(json.dumps(reply, ensure_ascii=False).encode()) > MAX_LINE_BYTES - 512 and runs:
+            runs.pop()
+        while len(json.dumps(reply, ensure_ascii=False).encode()) > MAX_LINE_BYTES - 512 and rows:
+            rows.pop()
+        reply["last"] = runs[-1]["seq"] if runs else (after if after else head)
+        return reply
+
+    async def _cmd_schedule(self, params: dict) -> dict:
+        """Make (as a proposal), confirm and manage a schedule by number.
+
+        The folder is the host's: a session's own (exact enabled ID) or
+        the phone folder; the phone never names one. ``ok`` confirms only
+        the content whose check the phone was shown."""
+        from delfin.agent import schedules
+        action = str(params.get("action") or "")
+        try:
+            if action == "new":
+                return await self._schedule_new(params)
+            entry = schedules.get(str(params.get("id") or ""))
+            if action == "show":
+                return {"ok": True, **self._schedule_view(entry)}
+            if action == "ok":
+                check = str(params.get("check") or "")
+                if entry["confirmed"]:
+                    return {"ok": True, **self._schedule_view(entry)}
+                if not check or check != schedules.fingerprint(entry):
+                    return {"ok": False, "confirmationRequired": True,
+                            **self._schedule_view(entry)}
+                return {"ok": True, **self._schedule_view(
+                    schedules.confirm(entry["id"], expect=check))}
+            if action == "pause":
+                return {"ok": True, **self._schedule_view(schedules.pause(entry["id"]))}
+            if action == "resume":
+                return {"ok": True, **self._schedule_view(schedules.resume(entry["id"]))}
+            if action == "delete":
+                schedules.delete(entry["id"])
+                return {"ok": True, "id": entry["id"]}
+            if action == "run":
+                if entry.get("host") != rundir.hostname():
+                    return {"error": "Dieser Zeitplan gehört zu einem anderen Rechner und läuft nur dort."}
+                if not entry["confirmed"]:
+                    return {"error": "Noch nicht bestätigt: zuerst ok mit seiner Nummer senden."}
+                return {"ok": True, **self._schedule_view(schedules.request_run(entry["id"]))}
+            return {"error": "Unbekannter Zeitplan-Befehl."}
+        except schedules.ScheduleError as exc:
+            return {"error": SCHEDULE_ERRORS.get(exc.code, SCHEDULE_ERRORS["when"]),
+                    "code": exc.code}
+
+    async def _schedule_new(self, params: dict) -> dict:
+        from delfin.agent import schedules
+        sid = str(params.get("session") or "")
+        if sid:
+            if not activation.enabled(sid):
+                return {"error": "SimpleX ist für diese Sitzung ausgeschaltet. In TUI/Dashboard mit /sync aktivieren."}
+            listing = await self._request("sessions.list")
+            row = next((r for r in listing.get("sessions", [])
+                        if str(r.get("sessionId") or r.get("id") or "") == sid), None)
+            folder = str((row or {}).get("workspace") or "")
+            if not folder:
+                return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+        else:
+            root = os.environ.get(WORKSPACES_ENV, "").strip()
+            if not root or not os.path.isabs(root) or not os.path.isdir(root):
+                return {"error": "Zeitpläne aus diesem Chat brauchen einen Handy-Ordner auf dem Rechner. "
+                                 "Im Sitzungs-Chat mit plan ZEIT AUFGABE anlegen oder in der TUI mit /schedule add."}
+            folder = os.path.join(root, SCHEDULE_FOLDER)
+            if os.path.lexists(folder):
+                if os.path.islink(folder) or not os.path.isdir(folder):
+                    return {"error": "Der Ordner für Zeitpläne ist kein normaler Ordner."}
+            else:
+                os.mkdir(folder, 0o700)
+        now = time.monotonic()
+        made = [t for t in getattr(self, "_schedules_made", []) if now - t < CREATE_WINDOW_S]
+        if len(made) >= SCHEDULE_LIMIT:
+            return {"error": "Höchstens fünf neue Zeitpläne in zehn Minuten. Bitte später erneut."}
+        entry = schedules.add(str(params.get("text") or ""), workspace=folder,
+                              created_by="phone", confirm=False)
+        self._schedules_made = [*made, now]
+        return {"ok": True, **self._schedule_view(entry)}
 
 
 def main(argv: list[str] | None = None) -> int:

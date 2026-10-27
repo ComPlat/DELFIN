@@ -5265,6 +5265,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug.set_defaults(func=cmd_bug, bug_action="ls")
 
+    # schedule -- the user's own schedules, run by the agent service
+    user_sched = sub.add_parser(
+        "schedule",
+        help="Your schedules (run by the agent service): list | add <when> <task> | "
+             "show | ok | pause | resume | delete | run | log | autostart")
+    user_sched.add_argument("words", nargs=argparse.REMAINDER,
+                            help="e.g. add täglich 07:30 --cwd ~/proj Fasse die Jobs zusammen")
+
+    def _cmd_user_schedule(args):
+        from .schedule_commands import cli_main
+        return cli_main(list(args.words or []))
+    user_sched.set_defaults(func=_cmd_user_schedule)
+
     # scheduler — headless executor for schedule_wakeup / cron entries
     sched = sub.add_parser(
         "scheduler",
