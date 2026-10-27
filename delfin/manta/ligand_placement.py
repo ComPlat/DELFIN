@@ -1778,6 +1778,38 @@ def _align_and_orient_ligands(
                 worst = max(worst, math.degrees(math.acos(c)) - tol_deg)
             return worst
 
+        _ring_nb_cache: Dict[tuple, list] = {}
+
+        def _chelate_ring_neighbours(donors):
+            """The chelate-ring atoms next to the two donors: second and second-to-last atom of the
+            shortest non-metal heavy-atom path D1 -> D2 (one shared atom for a 4-ring chelate).  Exocyclic
+            substituents (N-methyls, aryl on an imine N) are not part of the ring plane."""
+            key = tuple(donors)
+            if key in _ring_nb_cache:
+                return _ring_nb_cache[key]
+            a, b = donors
+            prev = {a: None}
+            queue = [a]
+            while queue and b not in prev:
+                nxt = []
+                for x in queue:
+                    for nb in mol.GetAtomWithIdx(x).GetNeighbors():
+                        j = nb.GetIdx()
+                        if j in prev or nb.GetSymbol() in _METAL_SET or nb.GetAtomicNum() <= 1:
+                            continue
+                        prev[j] = x
+                        nxt.append(j)
+                queue = nxt
+            out = []
+            if b in prev:
+                path = [b]
+                while prev[path[-1]] is not None:
+                    path.append(prev[path[-1]])
+                if len(path) >= 3:
+                    out = sorted({path[1], path[-2]})
+            _ring_nb_cache[key] = out
+            return out
+
         def _chelate_fold(donors, frag_pts):
             """DELFIN_FFFREE_ORIENT_CHELATE_PLANE: fold (deg) of a bidentate about its donor-donor axis --
             180 minus the angle, seen down the axis, between the metal and the mean of the donors' heavy
@@ -1790,15 +1822,10 @@ def _align_and_orient_ligands(
                 return None
             u = u / un
             mid = 0.5 * (d1 + d2)
-            xs = []
-            for d_idx in donors:
-                for nb in mol.GetAtomWithIdx(d_idx).GetNeighbors():
-                    j = nb.GetIdx()
-                    if nb.GetSymbol() in _METAL_SET or nb.GetAtomicNum() <= 1 or j in donors:
-                        continue
-                    xs.append(_np.asarray(frag_pts[j]) if j in frag_pts else pts[j])
-            if not xs:
+            ring_nb = _chelate_ring_neighbours(donors)
+            if not ring_nb:
                 return None
+            xs = [_np.asarray(frag_pts[j]) if j in frag_pts else pts[j] for j in ring_nb]
             xv = _np.mean(xs, axis=0) - mid
             mv = m_pos - mid
             xv = xv - float(_np.dot(xv, u)) * u
