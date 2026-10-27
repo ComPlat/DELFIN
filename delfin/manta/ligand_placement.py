@@ -32,6 +32,31 @@ logger = get_logger("delfin.smiles_converter")
 # DELFIN_FFFREE_ORIENT_CHELATE_PLANE: largest admissible fold (deg) of a bidentate about its D...D axis.
 _CHELATE_PLANE_TOL_DEG = 20.0
 
+_CHELATE_FOLD_TABLE_CACHE: Dict[str, Dict[Tuple[int, int], float]] = {}
+
+
+def _load_chelate_fold_table() -> Dict[Tuple[int, int], float]:
+    """DELFIN_FFFREE_ORIENT_CHELATE_PLANE=3: {(ring_size, conjugated): fold window deg} from the local
+    table named by DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE (crystal-derived, therefore never shipped:
+    the values come from the user's licensed structure database).  Missing / unreadable -> {}."""
+    path = os.environ.get("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE", "") or ""
+    if not path:
+        return {}
+    if path in _CHELATE_FOLD_TABLE_CACHE:
+        return _CHELATE_FOLD_TABLE_CACHE[path]
+    tab: Dict[Tuple[int, int], float] = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 3 or ln.lstrip().startswith("#"):
+                    continue
+                tab[(int(p[0]), int(p[1]))] = float(p[2])
+    except (OSError, ValueError):
+        tab = {}
+    _CHELATE_FOLD_TABLE_CACHE[path] = tab
+    return tab
+
 
 def _build_multimetal_scaffold(
     mol,
@@ -1602,7 +1627,11 @@ def _align_and_orient_ligands(
         # (5 deg grid) with fold <= 20 deg (crystal envelope folds of 5/6-ring chelates); among those the
         # clash score chooses.  Replaces the CHELATE_LP modes for bidentates when on.  Off -> byte-identical.
         _chelate_plane_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", 0)
-        _chelate_plane = _chelate_plane_mode == 1
+        _chelate_plane = _chelate_plane_mode in (1, 3)
+        # =3: the fold window per chelate-ring class (ring size incl. M, conjugated) is read from a local
+        # crystal table (DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE, rows "ring_size conj tol_deg [n]"; the
+        # window is the p95 of the crystal fold of that class).  No table or class -> no constraint.
+        _chelate_fold_table = _load_chelate_fold_table() if _chelate_plane_mode == 3 else {}
         # =2: the fold is a cost (weight DELFIN_FFFREE_ORIENT_CHELATE_PLANE_W, A^2 per rad^2, default 5)
         # instead of a wall -- a crowded sphere may still fold a chelate when the clash is worse.
         _chelate_plane_soft = _chelate_plane_mode == 2
@@ -1800,6 +1829,7 @@ def _align_and_orient_ligands(
             return worst
 
         _ring_nb_cache: Dict[tuple, list] = {}
+        _ring_tol_cache: Dict[tuple, Optional[float]] = {}
 
         def _chelate_ring_neighbours(donors):
             """The chelate-ring atoms next to the two donors: second and second-to-last atom of the
@@ -1822,13 +1852,23 @@ def _align_and_orient_ligands(
                         nxt.append(j)
                 queue = nxt
             out = []
+            _tol = None
             if b in prev:
                 path = [b]
                 while prev[path[-1]] is not None:
                     path.append(prev[path[-1]])
-                if len(path) >= 3 and all(_sp2_graph_atom(k) for k in path[1:-1]):
-                    out = sorted({path[1], path[-2]})
+                if len(path) >= 3:
+                    _conj = all(_sp2_graph_atom(k) for k in path[1:-1])
+                    if _chelate_plane_mode == 3:
+                        # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=3: crystal fold window per ring class
+                        _tol = _chelate_fold_table.get((len(path) + 1, int(_conj)))
+                        if _tol is not None:
+                            out = sorted({path[1], path[-2]})
+                    elif _conj:
+                        out = sorted({path[1], path[-2]})
+                        _tol = _chelate_plane_tol
             _ring_nb_cache[key] = out
+            _ring_tol_cache[key] = _tol
             return out
 
         def _chelate_fold(donors, frag_pts):
@@ -2014,7 +2054,7 @@ def _align_and_orient_ligands(
                         if f is None:
                             _scored = []
                             break
-                        ex = math.radians(max(0.0, f - _chelate_plane_tol))
+                        ex = math.radians(max(0.0, f - (_ring_tol_cache.get(tuple(donors)) or _chelate_plane_tol)))
                         _scored.append((_sc(c) + _chelate_plane_w * ex * ex, c))
                     if _scored:
                         best_score = float("inf")
@@ -2030,7 +2070,7 @@ def _align_and_orient_ligands(
                         (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
                     _folds = [_chelate_fold(donors, c) for _a, c in _cands]
                     _fold_ok = [c for (_a, c), f in zip(_cands, _folds)
-                                if f is not None and f <= _chelate_plane_tol]
+                                if f is not None and f <= (_ring_tol_cache.get(tuple(donors)) or _chelate_plane_tol)]
                 if _fold_ok:
                     best_score = float("inf")
                     for candidate in _fold_ok:

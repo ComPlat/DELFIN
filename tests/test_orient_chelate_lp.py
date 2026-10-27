@@ -133,3 +133,29 @@ def test_chelate_plane_off_is_byte_identical(monkeypatch):
     ref = _run(mol, X, metal, donors)
     monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", "0")
     assert np.array_equal(ref, _run(mol, X, metal, donors))
+
+
+@pytest.mark.parametrize("deg", [50.0, 120.0])
+def test_chelate_plane_table_window(monkeypatch, tmp_path, deg):
+    tab = tmp_path / "fold.tsv"
+    tab.write_text("# test table\n5\t1\t12.5\t100\n")
+    mol, X, metal, donors = _phen_zn_nh3()
+    X = _spun(mol, X, metal, donors, deg)
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", "1")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", "3")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE", str(tab))
+    Y = _run(mol, X, metal, donors)
+    assert _fold(mol, Y, metal, donors[:2]) <= 12.5 + 1e-6
+
+
+def test_chelate_plane_table_missing_class_is_unconstrained(monkeypatch, tmp_path):
+    tab = tmp_path / "fold.tsv"
+    tab.write_text("6\t1\t40.0\t100\n")
+    mol, X, metal, donors = _phen_zn_nh3()
+    X = _spun(mol, X, metal, donors, 50.0)
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", "1")
+    monkeypatch.delenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", raising=False)
+    ref = _run(mol, X, metal, donors)
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", "3")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE", str(tab))
+    assert np.array_equal(ref, _run(mol, X, metal, donors))
