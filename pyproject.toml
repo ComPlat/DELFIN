@@ -394,6 +394,8 @@ include = ["delfin*"]
 "delfin.dashboard" = ["static/*.js", "static/*.txt"]
 "delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
 "delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
+# The ORCA knowledge cards and the keyword catalog of the pinned OPI.
+"delfin.orca_knowledge" = ["*.json", "cards/*.json"]
 "delfin.notebooks" = ["*.ipynb"]
 "delfin.manta" = ["*.md"]
 "delfin.voila_assets" = ["login_templates/*.html"]
