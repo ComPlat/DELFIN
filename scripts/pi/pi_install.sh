@@ -21,8 +21,10 @@ UV="$HOME/.local/bin/uv"
 SKIP_DEPS_RE='^pymol-open-source'
 # Every extra pyproject.toml defines, minus these (so new extras arrive on
 # the Pi by themselves): ai-retro (aizynthfinder pins rdkit<2023, conflicts
-# with DELFIN's rdkit>=2023.3), orca (QM, out of scope), pymol (built below).
-SKIP_EXTRAS="${DELFIN_PI_SKIP_EXTRAS:-ai-retro orca pymol}"
+# with DELFIN's rdkit>=2023.3), pymol (built below). The orca extra (OPI,
+# pure Python) is installed: the Pi builds and checks ORCA inputs and reads
+# results with the same OPI as every other host, even where ORCA does not run.
+SKIP_EXTRAS="${DELFIN_PI_SKIP_EXTRAS:-ai-retro pymol}"
 # Not in any extra, but a doctor check wants an OCR engine (tesseract via apt).
 EXTRA_PIP="pytesseract"
 DELFIN_GIT_URL="${DELFIN_GIT_URL:-https://github.com/ComPlat/DELFIN.git}"
