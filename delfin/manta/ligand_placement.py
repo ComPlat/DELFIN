@@ -1557,6 +1557,24 @@ def _align_and_orient_ligands(
         # rotation grid, same tilts, same passes -- only the angle choice now sees the whole fragment.
         # Off (or CARRY_H off) -> byte-identical (the heavy-only score).
         _score_h = _carry_h and _delfin_env_int("DELFIN_FFFREE_ORIENT_SCORE_H", 0) == 1
+        # ===== A CHELATE SPIN MUST NOT TURN THE DONOR LONE PAIRS OFF THE METAL (DELFIN_FFFREE_ORIENT_CHELATE_LP) =====
+        #
+        # THE DEFECT (27.10.2026, after ORIENT_SCORE_H).  A bidentate is spun about its donor-donor axis
+        # to the angle of least clash.  Both donors stay on their vertices, but every angle other than 0
+        # tilts the chelate plane against the metal: the lone pair of each sp2 / sp3 donor (anti-bisector
+        # of its non-metal neighbours) no longer points at M, and the eye reads the donor as pyramidal
+        # (pyramidal_sp2 on the coordinated N, Walsh 18 deg; SUNLOE imine N, CACDER, XUVQAI, LATFEU).
+        # Measured on the 15 systems with the largest pyramidal_sp2 rise: frames with a pyramidal donor
+        # of a BIDENTATE ligand 94 / 1 006 (9.3 %) in mlt8_lenU -> 428 / 2 325 (18.4 %) with the four
+        # fixes + SCORE_H, tri- and higher dentates 11.6 % -> 16.0 %.  Without ORIENT_CARRY_H the spun
+        # frames died at the gate (their H were torn off); now they live and carry the tilt.
+        #
+        # THE FIX.  A chelate spin is admissible only if it does not misalign any donor lone pair beyond
+        # max(15 deg, the unspun placement): excess = max over the two donors (with >= 2 non-metal
+        # neighbours, so the lone pair is defined) of (angle(LP, D->M) - 15 deg)+.  Within that cone the
+        # spin still relieves clash; finer angles (+-10, +-20 deg) are offered so it has room to.
+        # Off -> byte-identical.
+        _chelate_lp = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_LP", 0) == 1
         # Per-fragment heavy atom list + donor list.
         frag_info: List[dict] = []
         for frag in fragments:
@@ -1688,6 +1706,33 @@ def _align_and_orient_ligands(
                 if ov.size:
                     score += float(_np.sum(ov * ov))
             return score
+
+        def _chelate_lp_excess(donors, frag_pts, tol_deg=15.0):
+            """DELFIN_FFFREE_ORIENT_CHELATE_LP: the largest lone-pair misalignment beyond tol_deg (deg) over
+            the donors with >= 2 non-metal neighbours; LP = anti-bisector of the unit vectors D->neighbour
+            (positions from frag_pts when the neighbour moves, else pts)."""
+            worst = 0.0
+            for d_idx in donors:
+                nbrs = [nb.GetIdx() for nb in mol.GetAtomWithIdx(d_idx).GetNeighbors()
+                        if nb.GetSymbol() not in _METAL_SET]
+                if len(nbrs) < 2:
+                    continue
+                d_pos = pts[d_idx]
+                lp = _np.zeros(3)
+                for nb_idx in nbrs:
+                    p = _np.asarray(frag_pts[nb_idx]) if nb_idx in frag_pts else pts[nb_idx]
+                    v = p - d_pos
+                    vn = float(_np.linalg.norm(v))
+                    if vn > 1e-8:
+                        lp += v / vn
+                ln = float(_np.linalg.norm(lp))
+                dm = m_pos - d_pos
+                dn = float(_np.linalg.norm(dm))
+                if ln < 1e-6 or dn < 1e-6:
+                    continue
+                c = max(-1.0, min(1.0, float(_np.dot(-lp / ln, dm / dn))))
+                worst = max(worst, math.degrees(math.acos(c)) - tol_deg)
+            return worst
 
         def _lp_penalty_for_frag(donors, frag_pts):
             """LP-M misalignment penalty for a monodentate donor.
@@ -1829,6 +1874,19 @@ def _align_and_orient_ligands(
                     }
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
+                if _chelate_lp and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_LP: only spins inside the lone-pair cone.
+                    _ex0 = _chelate_lp_excess(donors, atom_pts)
+                    _angles = [step * k for k in range(1, n_rot)] + [10.0, -10.0, 20.0, -20.0]
+                    for angle in _angles:
+                        candidate = _rotate_about(axis, pivot, angle, atom_pts)
+                        if _chelate_lp_excess(donors, candidate) > _ex0 + 1e-9:
+                            continue
+                        s = _sc(candidate)
+                        if s < best_score - 1e-6:
+                            best_score = s
+                            best_pts = candidate
+                    base_sets = []
                 for base in base_sets:
                     s0 = _sc(base)
                     if s0 < best_score - 1e-6:
