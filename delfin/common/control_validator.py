@@ -2499,7 +2499,9 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                 # loses the separators. Join with ', ' to rebuild the
                 # original one-line literal.
                 joined = ", ".join(f.strip() for f in raw_seq).strip()
-                if joined.startswith("[") and joined.rstrip().endswith("]"):
+                # The fragments may carry the outer configparser quotes, so
+                # the joined text can start with '"' rather than '['.
+                if joined.startswith(("[", '"[', "'[")):
                     attempts = [joined]
                     for _ in range(3):
                         collapsed = attempts[-1].replace('\\"', '"')
@@ -2532,6 +2534,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                         if isinstance(rebuilt, list) and all(
                                 isinstance(e, dict) for e in rebuilt or [{}]):
                             config[seq_key] = rebuilt
+                            validated[seq_key] = rebuilt
                             raw_seq = rebuilt
                             break
             # A configparser round-trip can leave the value as a quoted
@@ -2570,6 +2573,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                                 break
                     if isinstance(parsed, list):
                         config[seq_key] = parsed
+                        validated[seq_key] = parsed
                         raw_seq = parsed
             _validate_sequence_list(raw_seq, seq_key)
 
