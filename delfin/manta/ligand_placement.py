@@ -29,6 +29,9 @@ from delfin.manta._ring_snap_length import (
 
 logger = get_logger("delfin.smiles_converter")
 
+# DELFIN_FFFREE_ORIENT_CHELATE_PLANE: largest admissible fold (deg) of a bidentate about its D...D axis.
+_CHELATE_PLANE_TOL_DEG = 20.0
+
 
 def _build_multimetal_scaffold(
     mol,
@@ -1582,6 +1585,23 @@ def _align_and_orient_ligands(
         # Off -> byte-identical.
         _chelate_lp_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_LP", 0)
         _chelate_lp = _chelate_lp_mode == 1
+        # ===== THE CHELATE RING HOLDS THE METAL (DELFIN_FFFREE_ORIENT_CHELATE_PLANE, default OFF) =====
+        #
+        # THE DEFECT.  Two donors fix a bidentate only up to its spin about the donor-donor axis, and the
+        # two-point Procrustes fit leaves that spin to the SVD, i.e. arbitrary; the flip test then only
+        # compares theta with theta+180, and the clash spin is free on the full circle.  Every spin other
+        # than the planar one folds the chelate ring about the D...D axis: the donors' lone pairs leave the
+        # metal (pyramidal_sp2 on the donor N) and the ring atoms swing towards it (probe E_extraX: bank
+        # TETBUP pyridine-2-selenolate C 2.45-2.52 A from Mo, MIMMAY nitrate N 2.27-2.32 A from Cd, KANRID
+        # salicylaldimine C 2.27 A from Cu; E_extraX 865 -> 1 528 frames bank, 402 -> 812 dev300 -- on
+        # the frames ORIENT_CARRY_H made survivable, TETBUP 1/69 -> 63/196).
+        #
+        # THE FIX.  fold = 180 deg minus the angle, seen down the D...D axis, between the metal and the
+        # mean of the donors' heavy non-metal neighbours (0 = metal in the ring plane, backbone opposite).
+        # A spin changes the fold one to one, so the planar spin always exists.  Admissible are the spins
+        # (5 deg grid) with fold <= 20 deg (crystal envelope folds of 5/6-ring chelates); among those the
+        # clash score chooses.  Replaces the CHELATE_LP modes for bidentates when on.  Off -> byte-identical.
+        _chelate_plane = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", 0) == 1
         # ===== THE LONE-PAIR TERM WAS NEVER ON (DELFIN_FFFREE_ORIENT_LP_WEIGHT=<w>, default 0 = off) =====
         #
         # The score below has a lone-pair term for monodentate donors (_lp_penalty_for_frag: angle
@@ -1757,6 +1777,37 @@ def _align_and_orient_ligands(
                 worst = max(worst, math.degrees(math.acos(c)) - tol_deg)
             return worst
 
+        def _chelate_fold(donors, frag_pts):
+            """DELFIN_FFFREE_ORIENT_CHELATE_PLANE: fold (deg) of a bidentate about its donor-donor axis --
+            180 minus the angle, seen down the axis, between the metal and the mean of the donors' heavy
+            non-metal neighbours.  0 = metal in the chelate plane on the side opposite the backbone.
+            A spin about the axis changes the fold one to one.  None when degenerate."""
+            d1, d2 = pts[donors[0]], pts[donors[1]]
+            u = d2 - d1
+            un = float(_np.linalg.norm(u))
+            if un < 1e-8:
+                return None
+            u = u / un
+            mid = 0.5 * (d1 + d2)
+            xs = []
+            for d_idx in donors:
+                for nb in mol.GetAtomWithIdx(d_idx).GetNeighbors():
+                    j = nb.GetIdx()
+                    if nb.GetSymbol() in _METAL_SET or nb.GetAtomicNum() <= 1 or j in donors:
+                        continue
+                    xs.append(_np.asarray(frag_pts[j]) if j in frag_pts else pts[j])
+            if not xs:
+                return None
+            xv = _np.mean(xs, axis=0) - mid
+            mv = m_pos - mid
+            xv = xv - float(_np.dot(xv, u)) * u
+            mv = mv - float(_np.dot(mv, u)) * u
+            xn, mn = float(_np.linalg.norm(xv)), float(_np.linalg.norm(mv))
+            if xn < 1e-6 or mn < 1e-6:
+                return None
+            c = max(-1.0, min(1.0, float(_np.dot(xv, mv)) / (xn * mn)))
+            return 180.0 - math.degrees(math.acos(c))
+
         def _lp_penalty_for_frag(donors, frag_pts):
             """LP-M misalignment penalty for a monodentate donor.
 
@@ -1897,7 +1948,23 @@ def _align_and_orient_ligands(
                     }
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
-                if _chelate_lp_mode == 2 and len(donors) == 2:
+                _fold_ok = None
+                if _chelate_plane and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_PLANE: the chelate ring holds the metal.
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _folds = [_chelate_fold(donors, c) for _a, c in _cands]
+                    _fold_ok = [c for (_a, c), f in zip(_cands, _folds)
+                                if f is not None and f <= _CHELATE_PLANE_TOL_DEG]
+                if _fold_ok:
+                    best_score = float("inf")
+                    for candidate in _fold_ok:
+                        s = _sc(candidate)
+                        if s < best_score - 1e-6:
+                            best_score = s
+                            best_pts = candidate
+                    base_sets = []
+                elif _chelate_lp_mode == 2 and len(donors) == 2:
                     # DELFIN_FFFREE_ORIENT_CHELATE_LP=2: the lone pairs fix the chelate spin.
                     # Two donors fix a chelate up to a spin about their axis; the Procrustes fit leaves
                     # that spin to the template.  Admissible are the spins with the smallest excess on a

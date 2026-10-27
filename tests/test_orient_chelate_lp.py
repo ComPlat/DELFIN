@@ -87,3 +87,49 @@ def test_lp_weight_does_not_misalign_the_monodentate(monkeypatch):
     monkeypatch.setenv("DELFIN_FFFREE_ORIENT_LP_WEIGHT", "5")
     a1 = _lp_angle(mol, _run(mol, X, metal, donors), metal, donors[2])
     assert a1 <= max(a0, 15.0) + 1e-6
+
+
+def _fold(mol, X, metal, donors):
+    d1, d2 = X[donors[0]], X[donors[1]]
+    u = (d2 - d1) / np.linalg.norm(d2 - d1)
+    mid = 0.5 * (d1 + d2)
+    xs = [X[nb.GetIdx()] for d in donors for nb in mol.GetAtomWithIdx(d).GetNeighbors()
+          if nb.GetAtomicNum() > 1 and nb.GetAtomicNum() != 30]
+    xv, mv = np.mean(xs, axis=0) - mid, X[metal] - mid
+    xv, mv = xv - np.dot(xv, u) * u, mv - np.dot(mv, u) * u
+    return 180.0 - math.degrees(math.acos(np.dot(xv, mv) / np.linalg.norm(xv) / np.linalg.norm(mv)))
+
+
+def _spun(mol, X, metal, donors, deg):
+    """The phen spun by deg about its N...N axis (folded chelate)."""
+    d1, d2 = X[donors[0]], X[donors[1]]
+    u = (d2 - d1) / np.linalg.norm(d2 - d1)
+    mid = 0.5 * (d1 + d2)
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    Y = X.copy()
+    n_phen = donors[2]
+    for i in range(n_phen):
+        v = X[i] - mid
+        Y[i] = mid + v * c + np.cross(u, v) * s + u * np.dot(u, v) * (1 - c)
+    return Y
+
+
+@pytest.mark.parametrize("deg", [0.0, 50.0, 120.0])
+def test_chelate_plane_unfolds_the_chelate(monkeypatch, deg):
+    mol, X, metal, donors = _phen_zn_nh3()
+    X = _spun(mol, X, metal, donors, deg)
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", "1")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", "1")
+    Y = _run(mol, X, metal, donors)
+    assert _fold(mol, Y, metal, donors[:2]) <= 20.0 + 1e-6
+    for d in donors:
+        assert np.allclose(Y[d], X[d])
+
+
+def test_chelate_plane_off_is_byte_identical(monkeypatch):
+    mol, X, metal, donors = _phen_zn_nh3()
+    X = _spun(mol, X, metal, donors, 50.0)
+    monkeypatch.delenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", raising=False)
+    ref = _run(mol, X, metal, donors)
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", "0")
+    assert np.array_equal(ref, _run(mol, X, metal, donors))
