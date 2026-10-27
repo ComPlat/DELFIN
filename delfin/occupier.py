@@ -332,7 +332,7 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     written (a FoB input landed in the job's own folder, the stage keeping
     the old one).
     """
-    xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
+    xyz_file = "input.xyz" if from_index in (0, 1) else f"input{from_index}.xyz"
     base = Path(work_dir) if work_dir is not None else None
 
     def _here(name):
@@ -821,7 +821,13 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
           - per-atom NewGTO "metal_basisset" for metals (always),
           - optional per-atom NewGTO for the first coordination sphere.
         """
-        xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
+        # from_index 0 and 1 both mean "the initial geometry": the FoB
+        # sequence profiles carry "from": 0 and _resolve_primary_source
+        # passes it through, so the string selection must map 0 to
+        # input.xyz as well (v16, 2026-10-27: from=0 built input0.xyz,
+        # a file no step writes, and even the fallback looked for the
+        # same missing file).
+        xyz_file = "input.xyz" if from_index in (0, 1) else f"input{from_index}.xyz"
 
         # Thread-safe file reading to prevent race conditions when multiple FoBs
         # access input0.xyz simultaneously
