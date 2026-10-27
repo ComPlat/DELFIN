@@ -272,3 +272,20 @@ never approve the next action. `status`, `update`, `pending`, `stop`, `name NAME
 images up to 8 MiB.
 
 See [setup, security boundaries and command reference](../../docs/design/messenger-simplex.md).
+
+## Schedules
+
+The agent service runs your schedules (a task at set times) as sessions:
+
+```bash
+delfin-agent schedule add täglich 07:30 --cwd ~/proj Fasse die Jobs zusammen
+delfin-agent schedule            # list, with the next run
+```
+
+In a session: `/schedule add mo-fr 18:00 <task>`. On the phone: `zeitpläne`
+opens the chat "<machine> · Zeitpläne"; there `neu alle 2h <task>` proposes one
+(in `~/DELFIN-Handy/zeitplaene`) and `ok N` starts it; in a session's chat
+`plan täglich 07:30 <task>` proposes one in that session's folder. Every run is
+reported there. Asked "every day at 7:30 ...", the agent proposes one; it runs
+only after your `ok`. Ceilings: $1 and 30 min a run, $2 a day per schedule.
+See [schedules](../../docs/design/schedules.md).
