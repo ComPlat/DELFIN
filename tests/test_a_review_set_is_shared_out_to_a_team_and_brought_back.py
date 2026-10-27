@@ -8,7 +8,6 @@ from __future__ import annotations
 import csv
 import gzip
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -242,7 +241,6 @@ def _git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git needed")
 def test_submit_commits_only_the_own_review_file_on_a_new_branch(tmp_path):
     origin = tmp_path / "origin.git"
     _git(tmp_path, "init", "--quiet", "--bare", "-b", "main", str(origin))
@@ -279,7 +277,6 @@ def test_submit_commits_only_the_own_review_file_on_a_new_branch(tmp_path):
     assert rt.submit(folder, "Ann", repo=repo, push=False)["rated"] == 2
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git needed")
 def test_submit_without_gh_pushes_the_branch_and_says_how_to_open_the_pull_request(
         tmp_path, monkeypatch):
     origin = tmp_path / "origin.git"
