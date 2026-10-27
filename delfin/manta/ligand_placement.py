@@ -1613,6 +1613,7 @@ def _align_and_orient_ligands(
         # With the switch the term counts with weight w (dimension A^2 per rad^2, same scale as the
         # clash overlaps; with w = 5 a 30 deg excess over the dead band costs 1.4 A^2).
         # Off (unset / 0) -> byte-identical.
+        _lp_two_nb_only = lp_weight == 0.0   # env-weighted term: anti-bisector donors only (see below)
         if lp_weight == 0.0:
             try:
                 lp_weight = max(0.0, float(os.environ.get("DELFIN_FFFREE_ORIENT_LP_WEIGHT", "0") or 0.0))
@@ -1827,6 +1828,11 @@ def _align_and_orient_ligands(
             nbrs = [nb.GetIdx() for nb in d_atom.GetNeighbors()
                     if nb.GetSymbol() not in _METAL_SET]
             if not nbrs:
+                return 0.0
+            if len(nbrs) < 2 and lp_weight > 0.0 and _lp_two_nb_only:
+                # DELFIN_FFFREE_ORIENT_LP_WEIGHT: a single-neighbour donor (carboxylate / phenolate O,
+                # thiolate S) has no anti-bisector lone pair -- the term would drive M-O-C to 180 deg
+                # (measured: VOYWUD carboxylates pushed into each other, the TPR frame lost).
                 return 0.0
             d_pos = pts[d_idx]
             lp = _np.zeros(3)
