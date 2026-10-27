@@ -71,7 +71,7 @@ CREATE_WINDOW_S = 600.0
 
 #: Commands the gateway may send, and what each takes.
 COMMANDS = {
-    "session": {"session": "string", "action": "string", "text": "string?", "id": "string?", "choice": "string?", "persist": "boolean?"},
+    "session": {"session": "string", "action": "string", "text": "string?", "id": "string?", "choice": "string?", "persist": "boolean?", "command": "string?"},
     "status": {},
     "sessions": {},
     "pending": {},
@@ -462,7 +462,12 @@ class Bridge:
                 # Lasting rules need an explicit second reply to a new message.
                 if choice in {"A", "k", "p"} and not params.get("persist"):
                     return {"ok": False, "confirmationRequired": True, "id": code, "choice": choice}
-                reply_params.update(choice=choice, persist=bool(params.get("persist", False)))
+                # A changed command goes with choice c only, and c only with one.
+                command = str(params.get("command") or "")
+                if (choice == "c") != bool(command.strip()):
+                    return {"error": "Befehl ändern: mit „ändern: NEUER BEFEHL“ antworten."}
+                reply_params.update(choice=choice, persist=bool(params.get("persist", False)),
+                                    **({"command": command} if choice == "c" else {}))
             else:
                 return {"error": "Antwort und Freigabe dürfen nicht verwechselt werden."}
             # Consume before awaiting: concurrent replies cannot apply this code twice.

@@ -726,7 +726,8 @@ export function App(props: AppProps): JSX.Element {
   setFullPreviewKey(props.keymap.label("details") || props.keymap.label("expand"))
   const approval = createApprovalUi({ reply, say, lastKey: () => typingAt,
                                       pauseMs: props.answerPauseMs, clickPauseMs: props.clickPauseMs,
-                                      release: (text) => composer.insert(text) })
+                                      release: (text) => composer.insert(text),
+                                      prefill: (text) => composer.insert(text) })
   // The question's own state starts when it appears (its typeahead pause
   // counts from then), and ends with it.
   createEffect(() => {

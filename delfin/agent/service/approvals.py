@@ -177,6 +177,11 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         }
         if suggestion:
             fields["suggestion"] = suggestion
+        editable = tc.editable_command(req)
+        if editable:
+            # What key c puts in the prompt to change; absent when the
+            # command holds a secret (tc.editable_command).
+            fields["command"] = editable
         purpose = _purpose(req)
         if purpose:
             fields["purpose"] = purpose
@@ -242,6 +247,8 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                 decision.get("answers") else "dismissed"
         if by == "expired":
             word = "expired"
+        elif getattr(req, "changed_to", ""):
+            word = "changed"
         with self._ids_lock:
             if self._by_id.pop(rid, None) is None:
                 return            # already announced
@@ -260,12 +267,16 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
     def answer(self, request_id: str, *, choice: str = "",
                answers: list[str] | None = None,
                reason: str = "", persist: bool = False,
-               text: str = "") -> tuple[bool, str]:
+               text: str = "", command: str = "") -> tuple[bool, str]:
         """Apply a window's answer the way the REPL applies a key.
 
         ``text`` is a line typed for a question (ask): resolved as the
         REPL's dialog resolves a typed line (``typed_answer``). Any other
         request refuses it -- typed text is never an approval.
+
+        ``command`` is the user's own version of a shell command, and only
+        with ``choice`` "c" (``TerminalConfirmBroker.change``): the command
+        as asked is refused, this one approved once, exactly as written.
 
         Returns ``(landed, message)``: ``landed`` is False only when the
         request ended some other way in the meantime (answered from
@@ -283,13 +294,17 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
             return self._apply(req, choice=str(choice or ""),
                                answers=list(answers or []),
                                reason=str(reason or ""),
-                               persist=bool(persist), text=str(text or ""))
+                               persist=bool(persist), text=str(text or ""),
+                               command=str(command or ""))
         finally:
             self._answered_by.value = ""
 
     def _apply(self, req: tc.ConfirmRequest, *, choice: str,
                answers: list[str], reason: str,
-               persist: bool = False, text: str = "") -> tuple[bool, str]:
+               persist: bool = False, text: str = "",
+               command: str = "") -> tuple[bool, str]:
+        if command and choice != "c":
+            raise InvalidAnswer("a changed command goes with the key 'c' only")
         if req.kind == tc.ASK:
             # Answered with labels; no answers at all is Esc: dismissed.
             if choice:
@@ -346,6 +361,14 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
             return True, "plan rejected"
 
         # CONFIRM: the keys of TerminalAgent._answer_request.
+        if choice == "c":
+            try:
+                landed = self.change(req, command)
+            except ValueError as exc:
+                raise InvalidAnswer(str(exc)) from None
+            if not landed:
+                return False, "the request ended before this answer arrived"
+            return True, "changed: your command runs next, once, exactly as typed"
         if choice == "y":
             return self.resolve(req, True), "approved"
         if choice == "n":

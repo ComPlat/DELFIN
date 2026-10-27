@@ -72,7 +72,8 @@ REQUESTS: dict[str, dict[str, str]] = {
     # (A, k) need; without it they approve once.
     "permission.reply": {"requestId": "string", "choice": "string?",
                          "answers": "[string]?", "reason": "string?",
-                         "persist": "boolean?", "text": "string?"},
+                         "persist": "boolean?", "text": "string?",
+                         "command": "string?"},
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort
@@ -205,7 +206,11 @@ EVENTS: dict[str, dict[str, str]] = {
                          # The tool call's own one-line description (the
                          # bash tool requires one), masked; the model's
                          # statement, not a check of the command.
-                         "purpose": "string?"},
+                         "purpose": "string?",
+                         # A shell request's command, for a window to put
+                         # in the prompt to change (key c); absent when it
+                         # holds a secret the preview masks.
+                         "command": "string?"},
     # by: client | outside | expired | abort
     "permission.resolved": {"requestId": "string", "decision": "string",
                             "by": "string"},

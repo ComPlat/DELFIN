@@ -21000,8 +21000,25 @@ class _DocToolExecutor:
         nothing more, and the reason arrived -- if at all -- as a message
         after the turn that needed it.
         """
+        changed = cls._changed_to(perms)
+        if changed:
+            return (" The user did not drop the task: they changed the command. "
+                    "Run the changed command below next, exactly as written and "
+                    "with the same tool; it is approved once as written, and any "
+                    "other change is asked again.\nChanged command:\n" + changed)
         why = cls._refusal_reason(perms)
         return f" The user said why: {why}" if why else ""
+
+    @staticmethod
+    def _changed_to(perms: "KitToolPermissions") -> str:
+        """The command the user changed THIS refusal's dialog to, or ""
+        (``TerminalConfirmBroker.last_changed_to``; read like the reason)."""
+        try:
+            return str(getattr(
+                getattr(perms.confirm_callback, "__self__", None),
+                "last_changed_to", "") or "")
+        except Exception:
+            return ""
 
     @staticmethod
     def _refuse_write(perms: "KitToolPermissions", path: str, name: str,
@@ -21107,6 +21124,8 @@ class _DocToolExecutor:
             _self = getattr(perms.confirm_callback, "__self__", None)
             if _self is not None:
                 _self.last_refusal_reason = ""
+                if hasattr(_self, "last_changed_to"):
+                    _self.last_changed_to = ""
         except Exception:
             pass
 
