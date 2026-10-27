@@ -1014,6 +1014,9 @@ _HOME_SECRET_DIRS = (
     # own processes, never by a command an agent runs.
     ".delfin/trust_store",
     ".delfin/messenger_sessions",
+    # The user's schedules (delfin.agent.schedules): what runs unattended
+    # is the user's to write and confirm, never an agent's.
+    ".delfin/user_schedules",
 )
 
 

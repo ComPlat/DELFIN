@@ -623,15 +623,20 @@ def _change(entry_id: int | str, fn) -> dict:
         return {**entry, "id": int(key), "confirmed": confirmed(entry)}
 
 
-def confirm(entry_id: int | str, *, expect: str = "") -> dict:
+def confirm(entry_id: int | str, *, expect: str = "",
+            now: float | None = None) -> dict:
     """The user confirms this content. ``expect``: the fingerprint the user
-    was shown; a different one (changed since) is refused."""
+    was shown; a different one (changed since) is refused. A first time
+    that went by while it waited is not made up: it looks ahead."""
     def apply(entry: dict) -> None:
         sha = fingerprint(entry)
         if expect and expect != sha:
             raise ScheduleError("the schedule changed since it was shown; "
                                 "look at it again", "unknown")
         entry["confirmed_sha"] = sha
+        moment = time.time() if now is None else now
+        if float(entry.get("next_fire_at") or 0) < moment:
+            entry["next_fire_at"] = next_fire(_spec(entry), moment, entry["tz"])
     return _change(entry_id, apply)
 
 
