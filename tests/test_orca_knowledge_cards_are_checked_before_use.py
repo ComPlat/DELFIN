@@ -106,3 +106,25 @@ def test_the_shipped_cards_are_valid_unique_and_only_verified_ones_are_used(tmp_
     assert {c["id"] for c in ok.cards(include_unverified=True)} == {"a.one", "a.two"}
     (tmp_path / "y.json").write_text(json.dumps([copy.deepcopy(good)]))
     assert any("duplicate" in p for p in ok.check_store())
+
+
+def test_a_keyword_inside_a_recommendation_or_the_text_is_checked_too():
+    # Found in the first review: a card advised "!NoSplitRIJK" only in its
+    # text; the keyword list was clean, the advice was not.
+    problems = ok.validate(_card(statement=(
+        "To opt out of the split RI-J algorithm use !NoSplitRIJK in the input line.")))
+    assert any("NOSPLITRIJK" in p.upper() for p in problems)
+    problems = ok.validate(_card(recommend={"keywords": ["TightSCF", "SuperTightSCFX"]}))
+    assert any("SUPERTIGHTSCFX" in p.upper() for p in problems)
+    problems = ok.validate(_card(avoid=["!VerySlowConv", "!NoSuchKeyword"]))
+    assert any("NOSUCHKEYWORD" in p.upper() for p in problems)
+    assert ok.validate(_card(statement="Use !SlowConv together with !TightSCF for open-shell metals."
+                             " It damps the first iterations.")) == []
+
+
+def test_a_run_of_orca_is_a_source():
+    card = _card(sources=[{"type": "orca-run", "version": "6.1.1",
+                           "input": "! HF def2-SVP", "output": "INITIAL GUESS: MODEL POTENTIAL"}])
+    assert ok.validate(card) == []
+    bad = _card(sources=[{"type": "orca-run", "version": "6.1.1", "input": "! HF def2-SVP"}])
+    assert any("output" in p for p in ok.validate(bad))
