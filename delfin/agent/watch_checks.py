@@ -71,6 +71,8 @@ REFUSED_OPTIONS = {
     "find": ("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprintf",
              "-fls", "-fprint0"),
     "sacct": ("--output-file",),
+    "du": ("--files0-from", "-X", "--exclude-from"),
+    "wc": ("--files0-from",),
     "squeue": (),
 }
 
@@ -172,6 +174,16 @@ def _path_args(argv: list[str]) -> list[str]:
     return args
 
 
+def _command_paths(argv: list[str], workspace: str) -> None:
+    """A file-reading command's paths, and the values of its options
+    (``--opt=VALUE``), lie in ``workspace``."""
+    for arg in _path_args(argv):
+        _inside(workspace, arg)
+    for arg in argv[1:]:
+        if arg.startswith("-") and "=" in arg:
+            _inside(workspace, arg.split("=", 1)[1])
+
+
 def validate_paths(spec: dict, workspace: str) -> None:
     """Every path the watcher would touch lies in ``workspace``."""
     if spec.get("kind") != "watch":
@@ -181,8 +193,7 @@ def validate_paths(spec: dict, workspace: str) -> None:
     elif spec["what"] == "output":
         argv = command_argv(spec["target"])
         if argv[0] in PATH_COMMANDS:
-            for arg in _path_args(argv):
-                _inside(workspace, arg)
+            _command_paths(argv, workspace)
 
 
 def _command_env() -> dict[str, str]:
@@ -247,8 +258,7 @@ def check(spec: dict, workspace: str, previous: str | None) -> tuple[str, bool, 
         return state, True, f"{target} changed (size {size})"
     argv = command_argv(target)
     if argv[0] in PATH_COMMANDS:
-        for arg in _path_args(argv):
-            _inside(workspace, arg)
+        _command_paths(argv, workspace)
     out = _run(argv, workspace)
     state = hashlib.sha256(out.encode("utf-8", "replace")).hexdigest()
     if previous is None or previous == state:
