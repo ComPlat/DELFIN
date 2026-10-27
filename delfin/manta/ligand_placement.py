@@ -1601,7 +1601,15 @@ def _align_and_orient_ligands(
         # A spin changes the fold one to one, so the planar spin always exists.  Admissible are the spins
         # (5 deg grid) with fold <= 20 deg (crystal envelope folds of 5/6-ring chelates); among those the
         # clash score chooses.  Replaces the CHELATE_LP modes for bidentates when on.  Off -> byte-identical.
-        _chelate_plane = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", 0) == 1
+        _chelate_plane_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", 0)
+        _chelate_plane = _chelate_plane_mode == 1
+        # =2: the fold is a cost (weight DELFIN_FFFREE_ORIENT_CHELATE_PLANE_W, A^2 per rad^2, default 5)
+        # instead of a wall -- a crowded sphere may still fold a chelate when the clash is worse.
+        _chelate_plane_soft = _chelate_plane_mode == 2
+        try:
+            _chelate_plane_w = float(os.environ.get("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_W", "5") or 5.0)
+        except ValueError:
+            _chelate_plane_w = 5.0
         # ===== THE LONE-PAIR TERM WAS NEVER ON (DELFIN_FFFREE_ORIENT_LP_WEIGHT=<w>, default 0 = off) =====
         #
         # The score below has a lone-pair term for monodentate donors (_lp_penalty_for_frag: angle
@@ -1982,6 +1990,27 @@ def _align_and_orient_ligands(
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
                 _fold_ok = None
+                if _chelate_plane_soft and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=2: the fold is a cost, not a wall --
+                    # clash + W x ((fold - 20 deg)+ in rad)^2 over the full 5 deg spin grid.
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _scored = []
+                    for _a, c in _cands:
+                        f = _chelate_fold(donors, c)
+                        if f is None:
+                            _scored = []
+                            break
+                        ex = math.radians(max(0.0, f - _CHELATE_PLANE_TOL_DEG))
+                        _scored.append((_sc(c) + _chelate_plane_w * ex * ex, c))
+                    if _scored:
+                        best_score = float("inf")
+                        for s, candidate in _scored:
+                            if s < best_score - 1e-6:
+                                best_score = s
+                                best_pts = candidate
+                        base_sets = []
+                        _fold_ok = []
                 if _chelate_plane and len(donors) == 2:
                     # DELFIN_FFFREE_ORIENT_CHELATE_PLANE: the chelate ring holds the metal.
                     _cands = [(0.0, atom_pts)] + [

@@ -114,12 +114,12 @@ def _spun(mol, X, metal, donors, deg):
     return Y
 
 
-@pytest.mark.parametrize("deg", [0.0, 50.0, 120.0])
-def test_chelate_plane_unfolds_the_chelate(monkeypatch, deg):
+@pytest.mark.parametrize("deg,mode", [(0.0, "1"), (50.0, "1"), (120.0, "1"), (50.0, "2"), (120.0, "2")])
+def test_chelate_plane_unfolds_the_chelate(monkeypatch, deg, mode):
     mol, X, metal, donors = _phen_zn_nh3()
     X = _spun(mol, X, metal, donors, deg)
     monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", "1")
-    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", "1")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", mode)
     Y = _run(mol, X, metal, donors)
     assert _fold(mol, Y, metal, donors[:2]) <= 20.0 + 1e-6
     for d in donors:
