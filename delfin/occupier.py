@@ -826,11 +826,16 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         # Thread-safe file reading to prevent race conditions when multiple FoBs
         # access input0.xyz simultaneously
         with _geometry_file_lock:
-            xyz_path = resolve_path(xyz_file)
+            # Anchor to the OCCUPIER work dir (run_OCCUPIER's `base`), not the
+            # process CWD: the adduct FoB search runs with
+            # work_dir=.../adduct_occupier, but this lookup resolved against
+            # the CWD (CO2_coordination/), where no geometry exists
+            # (FileNotFoundError input0.xyz, from_index=0, job v14 2026-10-27).
+            xyz_path = resolve_path(base / xyz_file)
             if not xyz_path.exists():
                 if from_index == 1:
                     # Some workflows maintain only input0.xyz; fall back gracefully.
-                    alt_path = resolve_path("input0.xyz")
+                    alt_path = resolve_path(base / "input0.xyz")
                     if alt_path.exists():
                         logger.warning(
                             "Primary geometry '%s' missing; falling back to '%s'.",
