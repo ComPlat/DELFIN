@@ -3,12 +3,14 @@
 # Provision the messenger gateway host: SimpleX daemon + DELFIN gateway.
 #
 #   sudo bash pi_messenger.sh [--whisper] [--pair] [--name=LABEL]
-#                             [--no-phone-sessions] [--no-nftables]
-#                             [--uninstall]
+#                             [--lang=de|en] [--no-phone-sessions]
+#                             [--no-nftables] [--uninstall]
 #
 # --name=LABEL names this installation on the phone: the bot is
 # DELFIN-<LABEL>, every chat carries it (default: the short host name;
 # [A-Za-z0-9_-], 24 characters). The bot profile takes it on first start.
+#
+# --lang=en sets the texts the phone receives to English (default: de).
 #
 # Works on any Linux with systemd and glibc >= 2.34 the pinned releases
 # cover -- a Raspberry Pi (aarch64, Raspberry Pi OS or Ubuntu), a login
@@ -38,8 +40,11 @@
 #     whose DELFIN service runs as another user, the gateway must run in
 #     that user's own service instead; see README "Messenger");
 #   - an nftables rule letting only `meta skuid delfin-gw` reach the
-#     daemon's local API port (skipped with --no-nftables, e.g. when the
-#     host's firewall is managed elsewhere);
+#     daemon's local API port, stored in /etc/delfin-messenger/messenger.nft
+#     and loaded by the daemon unit before every start (the daemon does not
+#     start without it; a reboot or a host ruleset reload cannot leave the
+#     port open); skipped with --no-nftables, e.g. when the host's firewall
+#     is managed elsewhere;
 #   - with --whisper: local speech recognition for voice messages --
 #     faster-whisper in a venv of its own (${PREFIX}/whisper-venv; it needs
 #     numpy 2, DELFIN keeps numpy below 2), installed --require-hashes
@@ -71,6 +76,10 @@ GW_USER="delfin-gw"
 UNIT_DIR="${MESSENGER_UNIT_DIR:-/etc/systemd/system}"
 PREFIX="${MESSENGER_PREFIX:-/opt/delfin-messenger}"
 STATE_DIR="${MESSENGER_STATE_DIR:-/var/lib/delfin-messenger}"
+ETC_DIR="${MESSENGER_ETC_DIR:-/etc/delfin-messenger}"
+NFT_FILE="${ETC_DIR}/messenger.nft"
+NFT_CONF="${MESSENGER_NFTABLES_CONF:-/etc/nftables.conf}"
+NFT_BIN=""
 SERVICE_USER="${MESSENGER_SERVICE_USER:-delfin}"
 SERVICE_HOME="${MESSENGER_SERVICE_HOME:-$(getent passwd "${SERVICE_USER}" 2>/dev/null | cut -d: -f6)}"
 # The bridge and the agent service run the service user's own DELFIN (the
@@ -109,6 +118,7 @@ want_nftables=1
 want_whisper=0
 want_pair=0
 want_phone_sessions=1
+lang=de
 label="${MESSENGER_HOSTNAME:-$(hostname 2>/dev/null || true)}"
 label="${label%%.*}"
 for arg in "$@"; do
@@ -119,6 +129,7 @@ for arg in "$@"; do
     --pair) want_pair=1 ;;
     --no-phone-sessions) want_phone_sessions=0 ;;
     --name=*) label="${arg#--name=}" ;;
+    --lang=de|--lang=en) lang="${arg#--lang=}" ;;
     *) die "unknown argument: $arg" ;;
   esac
 done
@@ -199,11 +210,13 @@ daemon_unit() {
   cat <<EOF
 [Unit]
 Description=SimpleX chat daemon (local API for the DELFIN messenger gateway)
-After=network.target
+After=network.target$(nft_after)
+$(nft_part_of)
 
 [Service]
 User=${GW_USER}
 Group=${GW_USER}
+$(nft_start_line)
 ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --chat-server-port ${API_PORT} --files-folder ${STATE_DIR} --auto-accept-files 0 --create-bot-display-name ${BOT_NAME} --create-bot-allow-files
 Restart=on-failure
 RestartSec=5
@@ -231,6 +244,22 @@ WantedBy=multi-user.target
 EOF
 }
 
+# The port rule before every daemon start, as root ("+"); a failed load
+# fails the start. PartOf: a restart of the host firewall (which flushes
+# the ruleset) restarts the daemon, and with it the rule.
+nft_after() {
+  [ "${want_nftables}" = 1 ] && printf ' nftables.service'
+  return 0
+}
+nft_part_of() {
+  [ "${want_nftables}" = 1 ] && printf 'PartOf=nftables.service\n'
+  return 0
+}
+nft_start_line() {
+  [ "${want_nftables}" = 1 ] && printf 'ExecStartPre=+%s -f %s\n' "${NFT_BIN}" "${NFT_FILE}"
+  return 0
+}
+
 whisper_env() {
   # Only a model that install_whisper verified and an interpreter for it.
   if [ -f "${WHISPER_DIR}/model.bin" ] && [ -x "${WHISPER_VENV}/bin/python" ]; then
@@ -253,6 +282,7 @@ Environment=DELFIN_MESSENGER_PORT=${API_PORT}
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
 Environment=DELFIN_MESSENGER_DIR=${STATE_DIR}/pairing
 Environment=DELFIN_MESSENGER_LABEL=${label}
+Environment=DELFIN_MESSENGER_LANG=${lang}
 $(whisper_env)
 ExecStart=${PREFIX}/bin/venv/bin/python -m delfin.messenger run
 Restart=on-failure
@@ -319,9 +349,15 @@ Wants=delfin-agent-service.service
 
 [Service]
 User=${SERVICE_USER}
-Group=${GW_USER}
+# The service user's own group: the agent service lets a client act only
+# when it can read the client's /proc/<pid>/environ, which Linux allows
+# only with uid and gid equal. The socket's directory carries delfin-gw
+# instead (setgid, so the socket inherits it): the gateway reaches the
+# socket, nothing else of this process.
 RuntimeDirectory=delfin-messenger-bridge
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=2750
+ExecStartPre=+/bin/chgrp ${GW_USER} /run/delfin-messenger-bridge
+ExecStartPre=+/bin/chmod 2750 /run/delfin-messenger-bridge
 Environment=DELFIN_MESSENGER_PEER_UID=$(id -u "${GW_USER}")
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
 $(phone_env)
@@ -372,6 +408,9 @@ install_units() {
       install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_USER}" "${PHONE_ROOT}"
     fi
     bridge_unit > "${UNIT_DIR}/delfin-messenger-bridge.service"
+    # The same group change made by hand as a drop-in is now the unit's own.
+    rm -f "${UNIT_DIR}/delfin-messenger-bridge.service.d/group.conf"
+    rmdir "${UNIT_DIR}/delfin-messenger-bridge.service.d" 2>/dev/null || true
     gateway_unit > "${UNIT_DIR}/delfin-messenger-gateway.service"
   else
     say "no gateway venv under ${PREFIX}/bin/venv -- skipping the gateway unit (install DELFIN for ${GW_USER} first, then re-run)"
@@ -395,10 +434,14 @@ install_units() {
 
 # --- nftables ---------------------------------------------------------------
 install_nftables() {
-  command -v nft >/dev/null 2>&1 || { say "nft not found -- skipping the port rule"; return 0; }
-  # One table, one chain, idempotent: recreated on each run.
-  nft delete table inet ${NFT_TABLE} 2>/dev/null || true
-  nft -f - <<EOF
+  # One table, one chain, idempotent: the file creates the table, deletes
+  # it and defines it again, so every load leaves exactly this rule.
+  install -d -m 0755 -o root -g root "${ETC_DIR}"
+  cat > "${NFT_FILE}.new" <<EOF
+# Written by scripts/pi/pi_messenger.sh; loaded by simplex-chat-daemon.service
+# before every start. Only ${GW_USER} reaches the daemon's local API.
+table inet ${NFT_TABLE}
+delete table inet ${NFT_TABLE}
 table inet ${NFT_TABLE} {
   chain output {
     type filter hook output priority 0;
@@ -407,7 +450,15 @@ table inet ${NFT_TABLE} {
   }
 }
 EOF
-  say "nftables: ${API_PORT} open only to ${GW_USER}"
+  chmod 0644 "${NFT_FILE}.new"
+  mv -f "${NFT_FILE}.new" "${NFT_FILE}"
+  "${NFT_BIN}" -f "${NFT_FILE}" || die "the port rule did not load (${NFT_FILE})"
+  # The host ruleset begins with "flush ruleset": it includes this file, so
+  # a reload of it keeps the rule (pi_harden_host.sh writes the same line).
+  if [ -f "${NFT_CONF}" ] && ! grep -qF "${ETC_DIR}/*.nft" "${NFT_CONF}"; then
+    printf '\n# The messenger port rule (pi_messenger.sh).\ninclude "%s/*.nft"\n' "${ETC_DIR}" >> "${NFT_CONF}"
+  fi
+  say "nftables: ${API_PORT} open only to ${GW_USER} (${NFT_FILE})"
 }
 
 # --- uninstall --------------------------------------------------------------
@@ -422,6 +473,7 @@ uninstall() {
   rm -f "${UNIT_DIR}/simplex-chat-daemon.service"
   systemctl daemon-reload
   nft delete table inet ${NFT_TABLE} 2>/dev/null || true
+  rm -f "${NFT_FILE}"
   say "units, nftables table and state left in place: ${STATE_DIR} (delete it by hand if wanted)"
 }
 
@@ -471,7 +523,8 @@ install_gateway_venv() {
 pair_phone() {
   # Prints the invitation and waits for the phone; refuses when paired.
   runuser -u "${GW_USER}" -- env DELFIN_MESSENGER_DIR="${STATE_DIR}/pairing" \
-    DELFIN_MESSENGER_PORT="${API_PORT}" "${PREFIX}/bin/venv/bin/python" -m delfin.messenger pair \
+    DELFIN_MESSENGER_PORT="${API_PORT}" DELFIN_MESSENGER_LABEL="${label}" \
+    DELFIN_MESSENGER_LANG="${lang}" "${PREFIX}/bin/venv/bin/python" -m delfin.messenger pair \
     || say "not paired now (already paired? revoke first: docs/design/messenger-simplex.md)"
 }
 
@@ -522,7 +575,11 @@ case "${action}" in
     else
       fetch_binary "${PREFIX}/bin/simplex-chat"
     fi
-    [ "${want_nftables}" = 1 ] && install_nftables
+    if [ "${want_nftables}" = 1 ]; then
+      NFT_BIN="$(command -v nft 2>/dev/null || true)"
+      [ -n "${NFT_BIN}" ] || die "nft not found: install nftables, or pass --no-nftables when the host's firewall keeps other users off port ${API_PORT}"
+      install_nftables
+    fi
     install_gateway_venv
     [ "${want_whisper}" = 1 ] && install_whisper
     install_units
