@@ -16,7 +16,8 @@ Output: names within the limit that say machine and session; a refused
 name retried once with the daemon's own ``validName``; the reason in the
 log and, in words, on the phone; pairing that waits for the daemon, prints
 the link last (a phone screen shows the end of the output), shows the
-security code and says hello over the new contact.
+security code, says hello over the new contact and opens the forum for
+all agents, so it is there before the first session is enabled.
 """
 from __future__ import annotations
 
@@ -209,6 +210,11 @@ def test_pairing_waits_prints_the_link_last_shows_the_code_and_says_hello(
             return "12345 67890"
         async def send_text(self, contact_id, text):
             said["hello"] = (contact_id, text)
+        async def create_group(self, title):
+            said.setdefault("groups", []).append(title)
+            return "#4"
+        async def invite(self, chat, contact_id):
+            said["invited"] = (chat, contact_id)
 
     monkeypatch.setattr(cli.simplex, "Daemon", Daemon)
     assert cli._pair() == 0
@@ -218,3 +224,7 @@ def test_pairing_waits_prints_the_link_last_shows_the_code_and_says_hello(
     assert "12345 67890" in out
     assert said["hello"][0] == "3"
     assert store.paired_contact() == "3"
+    # The forum for all agents is there from the start, the phone invited.
+    assert said["groups"] and said["groups"][0].startswith("DELFIN Forum")
+    assert said["invited"] == ("#4", "3")
+    assert [r["session_id"] for r in store.rooms().values()] == [None]
