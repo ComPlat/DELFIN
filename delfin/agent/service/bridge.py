@@ -213,8 +213,10 @@ class Bridge:
                 pass
         server = await asyncio.start_unix_server(self._client_task, path=str(path))
         os.chmod(path, 0o660)
-        # The provisioned unit runs with the gateway group, so the socket
-        # inherits that group without opening the private service directory.
+        # The provisioned unit makes the socket's directory setgid delfin-gw
+        # (pi_messenger.sh), so the socket takes that group while this
+        # process keeps the service user's own: the service reads a window's
+        # environment only with uid and gid equal, and lets it act only then.
         self._socket_path = path
 
         self._loop = asyncio.get_running_loop()
@@ -398,6 +400,8 @@ class Bridge:
                 row.get('workspace'), action, token=params.get('id', ''), text=params.get('text', ''))
         if action == "status":
             return {"ok": True, "state": row.get("state"), "title": row.get("title"), "sessionId": sid,
+                    # The folder's name only, for naming an untitled session's chat.
+                    "folder": _truncate(self._redactor().text(Path(str(row.get("workspace") or "")).name), 60),
                     "messengerEnabled": True, "generation": activation.record(sid).get("generation"),
                     "activity": _truncate(self._redactor().text(str(row.get("activity") or ""))),
                     "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 1000)}
