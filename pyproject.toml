@@ -209,8 +209,11 @@ analysis = [
 # property file's JSON WITHOUT its energies and without a word, so
 # get_final_energy() returns None for an energy that exists. DELFIN's
 # text parser stays the reader of record; OPI is the structured witness.
+# One exact version everywhere (tests/test_opi_is_the_same_everywhere.py):
+# an input another OPI would build differently is another calculation.
+# delfin.doctor.OPI_VERSION names the same version.
 orca = [
-    "orca-pi>=2,<3",
+    "orca-pi==2.0.0",
 ]
 ai-foundation = [
     "transformers",
