@@ -58,7 +58,7 @@ def test_session_chat_and_forum_carry_the_label(rooms):
     room, daemon = rooms("Pi")
     asyncio.run(room.ensure_room("s-new"))
     asyncio.run(room.ensure_room())
-    assert daemon.groups[0].startswith("DELFIN-Pi Butan ")
+    assert daemon.groups[0].startswith("DELFIN-Pi · Butan")
     assert daemon.groups[1] == "DELFIN Forum Pi"
 
 
@@ -66,7 +66,7 @@ def test_without_a_label_the_names_are_as_before(rooms):
     room, daemon = rooms(None)
     asyncio.run(room.ensure_room("s-new"))
     asyncio.run(room.ensure_room())
-    assert daemon.groups[0].startswith("DELFIN Butan ")
+    assert daemon.groups[0].startswith("DELFIN · Butan")
     assert daemon.groups[1] == "DELFIN Forum"
 
 
@@ -75,7 +75,7 @@ def test_a_renamed_session_keeps_the_machine_in_its_chat_name(rooms):
     chat = asyncio.run(room.ensure_room("s-new"))
     out = asyncio.run(room.dispatch("name Konformere", store.rooms()[chat], chat=chat))
     assert "Konformere" in out
-    assert daemon.renamed[-1][1].startswith("DELFIN-Pi Konformere")
+    assert daemon.renamed[-1][1].startswith("DELFIN-Pi · Konformere")
 
 
 def _units(tmp_path):

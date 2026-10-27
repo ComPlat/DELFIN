@@ -221,6 +221,8 @@ def test_pairing_rejects_an_unidentified_invitation(tmp_path, monkeypatch):
     from delfin.messenger import __main__ as cli
     monkeypatch.setenv('DELFIN_MESSENGER_DIR', str(tmp_path))
     class InvalidDaemon:
+        def __init__(self, *args, **kwargs):
+            pass
         async def __aenter__(self):
             return self
         async def __aexit__(self, *args):

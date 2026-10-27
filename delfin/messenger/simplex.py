@@ -36,18 +36,56 @@ def ws_url(port: int | None = None) -> str:
     return f"ws://127.0.0.1:{port or daemon_port()}"
 
 
-class Daemon:
-    """One connection to the daemon, as JSON over WebSocket."""
+class SimplexError(RuntimeError):
+    """A command the daemon refused (``chatCmdError``): ``reason`` is the
+    error's type as the daemon names it (``invalidDisplayName``, ...),
+    ``error`` its whole ``chatError`` object."""
 
-    def __init__(self, port: int | None = None):
+    def __init__(self, reason: str, error: dict | None = None):
+        super().__init__(f"SimpleX rejected the command: {reason}")
+        self.reason = reason
+        self.error = error or {}
+
+
+def _refusal(reply: dict) -> SimplexError:
+    error = reply.get("chatError") if isinstance(reply.get("chatError"), dict) else {}
+    detail = error.get("errorType") if isinstance(error.get("errorType"), dict) else {}
+    reason = str(detail.get("type") or error.get("type") or "unknown")
+    return SimplexError(reason, error)
+
+
+def _valid_name(exc: SimplexError, wanted: str) -> str:
+    """The name the daemon offers instead of a refused display name, or ""."""
+    detail = exc.error.get("errorType") if isinstance(exc.error.get("errorType"), dict) else {}
+    valid = str(detail.get("validName") or "") if exc.reason == "invalidDisplayName" else ""
+    return valid if valid and valid != wanted else ""
+
+
+class Daemon:
+    """One connection to the daemon, as JSON over WebSocket.
+
+    ``wait`` seconds: how long a refused connection is retried. A daemon
+    whose unit was just started does not listen yet (measured: pairing right
+    after ``systemctl restart`` was refused)."""
+
+    def __init__(self, port: int | None = None, wait: float = 0.0):
         self.url = ws_url(port)
+        self.wait = max(0.0, float(wait))
         self._ws = None
         self._corr_id = 0
         self._pending = {}
         self._events = asyncio.Queue()
 
     async def __aenter__(self) -> "Daemon":
-        self._ws = await websockets.connect(self.url)
+        deadline = asyncio.get_running_loop().time() + self.wait
+        while True:
+            try:
+                self._ws = await websockets.connect(self.url)
+                break
+            except OSError:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise
+                await asyncio.sleep(0.5)
         self._reader = asyncio.create_task(self._read())
         return self
 
@@ -68,7 +106,7 @@ class Daemon:
             await self._ws.send(json.dumps(payload))
             reply = await asyncio.wait_for(future, 30)
             if reply.get("type") == "chatCmdError":
-                raise RuntimeError("SimpleX rejected the command")
+                raise _refusal(reply)
             return reply
         finally:
             self._pending.pop(corr, None)
@@ -138,16 +176,48 @@ class Daemon:
         return await self.command(f'/_send {chat} json ' + json.dumps(messages))
 
     async def create_group(self, title: str) -> str:
-        profile = {"displayName": title, "fullName": title}
-        reply = await self.command(f"/_group {await self.user_id()} " + json.dumps(profile))
+        """A new group; a name the daemon refuses is retried once with the
+        ``validName`` it offers (v7.0.3: display names end at 50 characters)."""
+        try:
+            reply = await self._new_group(title)
+        except SimplexError as exc:
+            valid = _valid_name(exc, title)
+            if not valid:
+                raise
+            reply = await self._new_group(valid)
         return "#" + str(int(reply["groupInfo"]["groupId"]))
+
+    async def _new_group(self, title: str) -> dict:
+        profile = {"displayName": title, "fullName": title}
+        return await self.command(f"/_group {await self.user_id()} " + json.dumps(profile))
 
     async def invite(self, chat: str, contact_id: str) -> None:
         await self.command(f"/_add #{int(chat[1:])} {int(contact_id)} member")
 
     async def rename_group(self, chat: str, title: str) -> None:
+        try:
+            await self._group_profile(chat, title)
+        except SimplexError as exc:
+            valid = _valid_name(exc, title)
+            if not valid:
+                raise
+            await self._group_profile(chat, valid)
+
+    async def _group_profile(self, chat: str, title: str) -> None:
         await self.command(f"/_group_profile #{int(chat[1:])} " +
                            json.dumps({'displayName': title, 'fullName': title}))
+
+    async def contact_code(self, contact_id: str) -> str | None:
+        """The connection's security code, as the phone shows it under
+        "Verify security code"; None when the daemon does not say.
+        ``/_get code`` is the chat core's command (APIGetContactCode); the
+        bot API reference of v7.0.3 does not list it, so it is best effort."""
+        try:
+            reply = await self.command(f"/_get code @{int(contact_id)}")
+        except (SimplexError, asyncio.TimeoutError):
+            return None
+        code = reply.get("connectionCode")
+        return str(code) if isinstance(code, str) and code else None
 
     async def pending_invitation(self) -> str | None:
         reply = await self.command(f"/_connect {await self.user_id()}")
