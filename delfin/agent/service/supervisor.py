@@ -301,6 +301,9 @@ class Session:
         #: budget: what an attach replays (see ``replay``).
         self.recent = eventlog.RecentEvents(REPLAY_BUDGET_BYTES)
         self.done = asyncio.get_running_loop().create_future()
+        #: Called with every event, in the service's loop (a schedule's run
+        #: follows its session this way: schedule_runner).
+        self.listeners: list = []
 
     # -- talking to the worker ------------------------------------------------------
     async def request(self, method: str, params: dict | None = None,
@@ -425,6 +428,11 @@ class Session:
     def on_event(self, message: dict, event: dict) -> None:
         self.last_activity = time.time()
         changed = self.apply(event)
+        for listener in list(self.listeners):
+            try:
+                listener(event)
+            except Exception:
+                pass
         seq = event.get("seq")
         if isinstance(seq, int) and seq > self.seen_seq:
             self.seen_seq = seq
@@ -657,6 +665,9 @@ class Supervisor:
         self._attention_at = 0.0
         self._attention_titles = attention_feed.Titles()
         self._attention_lock = asyncio.Lock()
+        #: The user's schedules of this host, run as sessions here.
+        from .schedule_runner import ScheduleRunner
+        self.schedules = ScheduleRunner(self)
 
     def spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -687,12 +698,14 @@ class Supervisor:
         os.chmod(path, 0o600)
         idle = self.spawn(self._watch_idle())
         attention = self.spawn(self._watch_attention())
+        timed = self.spawn(self.schedules.run())
         try:
             await self.stopping.wait()
         finally:
             self.closing = True
             idle.cancel()
             attention.cancel()
+            timed.cancel()
             self.server.close()
             # Said before anything closes: a window leaves (or, for a
             # restart, reconnects) instead of starting a new service.
@@ -1033,6 +1046,13 @@ class Supervisor:
                           ("fake", "--fake")):
             if params.get(key):
                 args.append(flag)
+        if params.get("unattended"):
+            # A user schedule's run (schedule_runner): chat's ceilings.
+            args.append("--unattended")
+        for key, flag in (("maxBudgetUsd", "--max-budget-usd"),
+                          ("maxRunSeconds", "--max-run-seconds")):
+            if params.get(key):
+                args += [flag, str(float(params[key]))]
         if params.get("fake") and params.get("fakeDelay") is not None:
             args += ["--fake-delay", str(float(params["fakeDelay"]))]
         if params.get("fake") and params.get("fakeSave"):
@@ -1393,7 +1413,7 @@ class Supervisor:
         while True:
             await asyncio.sleep(tick)
             self._sleep_unused()
-            if self.sessions or self.starting or self.clients:
+            if self.sessions or self.starting or self.clients or self.schedules.keeps_up():
                 continue
             # Dormant sessions keep nothing running: they wait in the roster.
             if time.monotonic() - self.quiet_since >= self.idle_exit_s:
