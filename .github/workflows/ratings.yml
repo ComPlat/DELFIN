@@ -1,0 +1,71 @@
+name: Ratings check
+
+# A helper's pull request into ratings/ -- the ratings of one reviewer
+# (`delfin review submit`, ratings/<set>/review_<name>.json) or a
+# reservation (`delfin review claim`, ratings/<set>/claims/<name>.json) --
+# changes exactly one file. This workflow checks that, and the file itself:
+# its shape, the set and its version, the structures and categories it
+# names, the atoms it marks, that the name inside is the name of the file,
+# and that a file already on the base is replaced only by the same reviewer
+# (token). The rules are delfin/review_check.py, run from the BASE commit
+# (the first checkout), so a pull request cannot change the rules it is
+# checked by; the pull request is only read, through git, from the second
+# checkout. Nothing is installed: the checker needs only the standard
+# library.
+#
+# A pull request that changes no rating or claim file (e.g. ratings/README.md)
+# is not a helper's: the check says so and passes, and the ordinary review
+# applies. This is not a required check and nothing here merges: whether a
+# helper's pull request that passes may be merged automatically (a ruleset
+# that requires this check for ratings/** and "gh pr merge --auto") is a
+# decision of the maintainers. The step output `valid` is true exactly for a
+# helper's pull request that passes.
+on:
+  pull_request:
+    paths:
+      - "ratings/**"
+
+concurrency:
+  group: ratings-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ratings pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout the base (the rules that run)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Checkout the pull request (only read through git)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Check the pull request
+        id: check
+        # From inside the base checkout, so `delfin` is the base's package.
+        working-directory: base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git -C ../pr cat-file -e "$BASE_SHA^{commit}" 2>/dev/null \
+            || git -C ../pr fetch --quiet --no-tags origin "$BASE_SHA"
+          python -m delfin.review_check --repo ../pr --base "$BASE_SHA" --head "$HEAD_SHA"
