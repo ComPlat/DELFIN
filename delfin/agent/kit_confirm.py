@@ -916,11 +916,12 @@ class KitConfirmBroker:
         # not close). Show only buttons that really act and dismiss the row.
         _can_persist = bool(persist_pat) and self._persist_callback is not None
         _buttons = [approve] + ([approve_persist] if _can_persist else []) + [deny]
-        extra = self._change_controls(req, widgets, _buttons)
+        # The decision buttons stay the last row; Change… sits above them.
+        extra = self._change_controls(req, widgets)
         return widgets.VBox(
             [header,
-             persist_status,
-             widgets.HBox(_buttons)] + extra,
+             persist_status] + extra + [
+             widgets.HBox(_buttons)],
             layout=widgets.Layout(
                 border="1px solid #ccc",
                 padding="6px",
@@ -928,13 +929,13 @@ class KitConfirmBroker:
             ),
         )
 
-    def _change_controls(self, req: _ConfirmRequest, widgets, buttons: list) -> list:
+    def _change_controls(self, req: _ConfirmRequest, widgets) -> list:
         """"Change…" for a shell request: the command in a field to edit,
         and "Run changed command", which answers with it (``change``).
 
-        Appends the button to ``buttons`` and returns the rows to add (the
-        hidden editor and its status line), or [] for any other request.
-        Not offered on a widening question, which a change never answers.
+        Returns the row to add above the decision buttons (Change…, the
+        hidden editor, its status line), or [] for any other request. Not
+        offered on a widening question, which a change never answers.
         """
         from . import terminal_confirm as _tc
         probe = _tc.ConfirmRequest(kind=_tc.CONFIRM, tool=req.tool_name,
@@ -970,8 +971,7 @@ class KitConfirmBroker:
 
         change.on_click(_open)
         run.on_click(_run)
-        buttons.append(change)
-        return [editor, status]
+        return [widgets.VBox([change, editor, status])]
 
     def _set_toast(self, msg: str) -> None:
         """Show a one-line status message in the panel (best-effort)."""

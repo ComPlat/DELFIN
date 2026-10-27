@@ -127,7 +127,12 @@ def test_a_change_that_is_no_command_leaves_the_request_open(broker, text):
     t, out = _ask(broker, "rm -r results")
     req, row, _ = _change_in_row(broker, text)
     assert req in broker._pending and req.decision is None
-    status = [w.value for w in row.children if isinstance(w, widgets.HTML)]
+    def htmls(box):
+        for child in getattr(box, "children", ()):
+            if isinstance(child, widgets.HTML):
+                yield child.value
+            yield from htmls(child)
+    status = list(htmls(row))
     assert any("not run" in v for v in status), status
     broker.resolve(req, False)
     t.join(5)
