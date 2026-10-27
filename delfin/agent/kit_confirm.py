@@ -57,6 +57,9 @@ class _ConfirmRequest:
     #: Expired by three answers without the code, not by absence: the
     #: window does not go "away" for it.
     code_spent: bool = False
+    #: The command the user changed this request to ("Change…"), refused
+    #: as asked for it; "" otherwise.
+    changed_to: str = ""
 
 
 class KitConfirmBroker:
@@ -85,6 +88,11 @@ class KitConfirmBroker:
         # off ``__self__`` by the gate, so it stays an attribute and
         # keeps its name; only its storage moved.
         self._timed_out = threading.local()
+        # The command THIS thread's last dialog was changed to, and the
+        # changes approved once (terminal_confirm.ChangeGrants).
+        self._changed_to = threading.local()
+        from .terminal_confirm import ChangeGrants
+        self._changed = ChangeGrants()
         #: The session this broker belongs to, stamped on every request
         #: it parks in the inbox. Set by whoever builds the broker; "" is
         #: honest about not knowing rather than claiming someone else's.
@@ -165,6 +173,36 @@ class KitConfirmBroker:
     @last_timed_out.setter
     def last_timed_out(self, value: bool) -> None:
         self._timed_out.value = bool(value)
+
+    @property
+    def last_changed_to(self) -> str:
+        """The command THIS thread's last dialog was changed to, or "";
+        the gate reads it to tell the model what to run instead."""
+        return str(getattr(self._changed_to, "value", "") or "")
+
+    @last_changed_to.setter
+    def last_changed_to(self, value: str) -> None:
+        self._changed_to.value = str(value or "")
+
+    def change(self, req: "_ConfirmRequest", command: str) -> bool:
+        """Refuse ``req`` as asked and approve ``command`` once instead,
+        as ``TerminalConfirmBroker.change`` does. Raises ValueError for a
+        change ``terminal_confirm.checked_change`` refuses (nothing is
+        applied); False when the request was already decided."""
+        from . import terminal_confirm as _tc
+        text = _tc.checked_change(
+            _tc.ConfirmRequest(kind=_tc.CONFIRM, tool=req.tool_name,
+                               args=dict(req.args), preview=req.preview),
+            command)
+        entry = self._changed.add(req.tool_name, text)
+        with self._lock:
+            undecided = req.decision is None
+            if undecided:
+                req.changed_to = text
+        if undecided and self.resolve(req, False):
+            return True
+        self._changed.discard(entry)
+        return False
 
     #: How often the wait looks in the room for an answer left there.
     #: One second: the file is a stat and, at most, one small read, and
@@ -288,6 +326,13 @@ class KitConfirmBroker:
         followed activity for its whole length.
         """
         from .activity import APPROVAL, awaiting_person
+        self.last_changed_to = ""
+        if self._changed.take(tool_name, args, preview):
+            from .terminal_confirm import audit_changed_run
+            self.last_timed_out = False
+            audit_changed_run(tool_name, args,
+                              session_id=str(getattr(self, "session_id", "") or ""))
+            return True
         with awaiting_person(getattr(self, "_activity_source", None),
                              APPROVAL):
             return self._ask(tool_name, args, preview)
@@ -388,6 +433,8 @@ class KitConfirmBroker:
                 # Somebody answered: they are back.
                 self._away_since = None
             timed_out = self.last_timed_out
+            if req.decision is False and not timed_out and req.changed_to:
+                self.last_changed_to = req.changed_to
 
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
@@ -869,9 +916,11 @@ class KitConfirmBroker:
         # not close). Show only buttons that really act and dismiss the row.
         _can_persist = bool(persist_pat) and self._persist_callback is not None
         _buttons = [approve] + ([approve_persist] if _can_persist else []) + [deny]
+        # The decision buttons stay the last row; Change… sits above them.
+        extra = self._change_controls(req, widgets)
         return widgets.VBox(
             [header,
-             persist_status,
+             persist_status] + extra + [
              widgets.HBox(_buttons)],
             layout=widgets.Layout(
                 border="1px solid #ccc",
@@ -879,6 +928,50 @@ class KitConfirmBroker:
                 margin="2px 0",
             ),
         )
+
+    def _change_controls(self, req: _ConfirmRequest, widgets) -> list:
+        """"Change…" for a shell request: the command in a field to edit,
+        and "Run changed command", which answers with it (``change``).
+
+        Returns the row to add above the decision buttons (Change…, the
+        hidden editor, its status line), or [] for any other request. Not
+        offered on a widening question, which a change never answers.
+        """
+        from . import terminal_confirm as _tc
+        probe = _tc.ConfirmRequest(kind=_tc.CONFIRM, tool=req.tool_name,
+                                   args=dict(req.args), preview=req.preview)
+        if not probe.is_shell or not probe.command or req.preview.startswith("\u26a0"):
+            return []
+        change = widgets.Button(
+            description="Change…",
+            tooltip="Edit the command; your version runs instead, once, "
+                    "exactly as typed. Every check still applies to it.")
+        field = widgets.Textarea(
+            value=_tc.editable_command(probe),
+            placeholder="the command to run instead (type it in full)",
+            layout=widgets.Layout(width="100%", height="64px"))
+        run = widgets.Button(description="Run changed command", button_style="warning",
+                             tooltip="Refuse the command as asked and run this one once.")
+        status = widgets.HTML(value="")
+        editor = widgets.VBox([field, run], layout=widgets.Layout(display="none"))
+
+        def _open(_b):
+            editor.layout.display = "flex"
+
+        def _run(_b):
+            try:
+                landed = self.change(req, field.value)
+            except ValueError as exc:
+                status.value = (f'<div style="font-size:11px; color:#b91c1c;">'
+                                f'not run: {_html_escape(str(exc))}</div>')
+                return
+            status.value = ("" if landed else
+                            '<div style="font-size:11px; color:#6b7280;">'
+                            'this request was already decided</div>')
+
+        change.on_click(_open)
+        run.on_click(_run)
+        return [widgets.VBox([change, editor, status])]
 
     def _set_toast(self, msg: str) -> None:
         """Show a one-line status message in the panel (best-effort)."""

@@ -441,6 +441,9 @@ class Relay:
         from . import file_confirm
         rid = str(record.get("id") or "")
         args = {"path": record.get("path", "")} if record.get("path") else {}
+        if record.get("command"):
+            # So the dialog can offer to change it, and a grant can match it.
+            args["command"] = str(record.get("command"))
         try:
             ok = bool(self.callback(record.get("tool", ""), args,
                                     record.get("preview", "")))
@@ -451,8 +454,9 @@ class Relay:
             return
         reason = "" if ok else str(getattr(owner, "last_refusal_reason", "")
                                    or "")
+        changed = "" if ok else str(getattr(owner, "last_changed_to", "") or "")
         file_confirm._write_answer(rid, ok, by="delfin-cli-gate",
-                                   reason=reason)
+                                   reason=reason, changed_to=changed)
 
 
 if __name__ == "__main__":

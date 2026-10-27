@@ -105,6 +105,71 @@ def editable_command(req: "ConfirmRequest") -> str:
     return req.command if masked == req.command else ""
 
 
+class ChangeGrants:
+    """Commands the user changed a dialog to, each approved once.
+
+    One per broker (so per session): a grant answers the next PLAIN
+    question for exactly that tool and command, within CHANGE_GRANT_S,
+    and is spent by it. A preview with a guard, calculation, outside-read
+    or widening marker asks for more than the dialog the user changed, and
+    is asked as usual. Shared by the terminal's and the dashboard's broker
+    so the two cannot come to disagree about what a change permits.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._grants: list[tuple[str, str, float]] = []
+
+    def __len__(self) -> int:
+        now = time.monotonic()
+        with self._lock:
+            return sum(1 for g in self._grants if g[2] > now)
+
+    def add(self, tool: str, command: str) -> tuple[str, str, float]:
+        entry = (str(tool), str(command), time.monotonic() + CHANGE_GRANT_S)
+        with self._lock:
+            self._grants.append(entry)
+        return entry
+
+    def discard(self, entry: tuple[str, str, float]) -> None:
+        with self._lock:
+            if entry in self._grants:
+                self._grants.remove(entry)
+
+    def take(self, tool_name: str, args: dict, preview: str) -> bool:
+        """Spend the grant for exactly this call, if there is one."""
+        probe = ConfirmRequest(kind=CONFIRM, tool=str(tool_name or ""),
+                               args=dict(args or {}), preview=str(preview or ""))
+        if (not probe.is_shell or probe.is_protected or probe.is_outside_read
+                or any(line.startswith("\u26a0") for line in probe.preview.splitlines())):
+            return False
+        now = time.monotonic()
+        with self._lock:
+            self._grants = [g for g in self._grants if g[2] > now]
+            for grant in self._grants:
+                if grant[0] == probe.tool and grant[1] == probe.command:
+                    self._grants.remove(grant)
+                    return True
+        return False
+
+
+def audit_changed_run(tool: str, args: dict, *, session_id: str = "",
+                      session_key: str = "") -> None:
+    """The dialog record of a changed command run without a new question
+    (by=changed). Never raises."""
+    try:
+        from . import audit_log as _audit
+        subject = str((args or {}).get("command") or "")
+        _audit.append({
+            "subject": " ".join(subject.split())[:200], "reason": "",
+            "event": "dialog", "session_id": session_id,
+            "session_key": session_key, "tool": str(tool or ""),
+            "answer": "approved", "by": "changed",
+        })
+    except Exception:
+        pass
+
+
 def checked_change(req: "ConfirmRequest", command: str) -> str:
     """``command`` as the user's change of ``req``, or ValueError.
 
@@ -735,9 +800,8 @@ class TerminalConfirmBroker:
         self._refusal_reason = threading.local()
         # Per thread, like the reason: the command a refusal changed to.
         self._changed_to = threading.local()
-        # Commands the user changed a dialog to: (tool, command, until).
-        # Each answers the next plain question for exactly that call once.
-        self._changed: list[tuple[str, str, float]] = []
+        # Commands the user changed a dialog to (ChangeGrants).
+        self._changed = ChangeGrants()
         self.aborted = False
         # Where the wait for the person is marked: an activity.Activity,
         # a callable returning one, or None. The REPL binds the engine's.
@@ -786,49 +850,22 @@ class TerminalConfirmBroker:
         way first, and then no grant stays behind.
         """
         text = checked_change(req, command)
-        entry = (str(req.tool), text, time.monotonic() + CHANGE_GRANT_S)
         req.changed_to = text
-        with self._lock:
-            self._changed.append(entry)
+        entry = self._changed.add(req.tool, text)
         if self.resolve(req, False):
             return True
-        with self._lock:
-            if entry in self._changed:
-                self._changed.remove(entry)
+        self._changed.discard(entry)
         req.changed_to = ""
-        return False
-
-    def _take_change(self, tool_name: str, args: dict, preview: str) -> bool:
-        """Spend the grant for exactly this call, if there is one.
-
-        Only a plain question is answered: a preview with a guard,
-        calculation, outside-read or widening marker asks for more than
-        the dialog the user changed, and is asked as usual.
-        """
-        probe = ConfirmRequest(kind=CONFIRM, tool=str(tool_name or ""),
-                               args=dict(args or {}), preview=str(preview or ""))
-        if (not probe.is_shell or probe.is_protected or probe.is_outside_read
-                or any(line.startswith("\u26a0") for line in probe.preview.splitlines())):
-            return False
-        now = time.monotonic()
-        with self._lock:
-            self._changed = [g for g in self._changed if g[2] > now]
-            for grant in self._changed:
-                if grant[0] == probe.tool and grant[1] == probe.command:
-                    self._changed.remove(grant)
-                    return True
         return False
 
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
-        if self._take_change(tool_name, args, preview):
+        if self._changed.take(tool_name, args, preview):
             self.last_timed_out = False
             self.last_refusal_reason = ""
             self.last_changed_to = ""
-            req = ConfirmRequest(kind=CONFIRM, tool=str(tool_name or ""),
-                                 args=dict(args or {}), preview=str(preview or ""))
-            req.decision, req.resolved = True, True
-            self._audit_dialog(req, by="changed")
+            audit_changed_run(tool_name, args, session_id=self.session_id,
+                              session_key=self.session_key)
             return True
         with _activity.awaiting_person(self.activity, _activity.APPROVAL):
             req = self._enqueue(ConfirmRequest(
