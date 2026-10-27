@@ -1570,12 +1570,18 @@ def _align_and_orient_ligands(
         # fixes + SCORE_H, tri- and higher dentates 11.6 % -> 16.0 %.  Without ORIENT_CARRY_H the spun
         # frames died at the gate (their H were torn off); now they live and carry the tilt.
         #
-        # THE FIX.  A chelate spin is admissible only if it does not misalign any donor lone pair beyond
-        # max(15 deg, the unspun placement): excess = max over the two donors (with >= 2 non-metal
-        # neighbours, so the lone pair is defined) of (angle(LP, D->M) - 15 deg)+.  Within that cone the
-        # spin still relieves clash; finer angles (+-10, +-20 deg) are offered so it has room to.
+        # THE FIX.  excess = max over the two donors (with >= 2 non-metal neighbours, so the lone pair is
+        # defined) of (angle(LP, D->M) - 15 deg)+.
+        #   =1: a spin is admissible only if its excess is not above the unspun placement's (15 systems:
+        #       pyramidal_sp2 frames 1 150 -> 880, hard 1 639 -> 1 465; but the unspun placement is
+        #       itself arbitrary, see =2).
+        #   =2: two donors fix a chelate only up to the spin about their axis and the Procrustes fit
+        #       leaves that spin to the template; the lone pairs are what fix it.  Admissible are the
+        #       spins with the smallest excess on a 5 deg grid (all inside the 15 deg cone when it is
+        #       reachable); among those the clash score chooses.
         # Off -> byte-identical.
-        _chelate_lp = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_LP", 0) == 1
+        _chelate_lp_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_LP", 0)
+        _chelate_lp = _chelate_lp_mode == 1
         # ===== THE LONE-PAIR TERM WAS NEVER ON (DELFIN_FFFREE_ORIENT_LP_WEIGHT=<w>, default 0 = off) =====
         #
         # The score below has a lone-pair term for monodentate donors (_lp_penalty_for_frag: angle
@@ -1891,8 +1897,27 @@ def _align_and_orient_ligands(
                     }
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
-                if _chelate_lp and len(donors) == 2:
-                    # DELFIN_FFFREE_ORIENT_CHELATE_LP: only spins inside the lone-pair cone.
+                if _chelate_lp_mode == 2 and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_LP=2: the lone pairs fix the chelate spin.
+                    # Two donors fix a chelate up to a spin about their axis; the Procrustes fit leaves
+                    # that spin to the template.  Admissible are the spins with the smallest excess on a
+                    # 5 deg grid (all inside the 15 deg cone when it is reachable); among those the
+                    # clash score chooses.
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _exs = [_chelate_lp_excess(donors, c) for _a, c in _cands]
+                    _exmin = min(_exs)
+                    best_score = float("inf")
+                    for (_a, candidate), _ex in zip(_cands, _exs):
+                        if _ex > _exmin + 1e-9:
+                            continue
+                        s = _sc(candidate)
+                        if s < best_score - 1e-6:
+                            best_score = s
+                            best_pts = candidate
+                    base_sets = []
+                elif _chelate_lp and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_LP=1: only spins not worse than the unspun cone.
                     _ex0 = _chelate_lp_excess(donors, atom_pts)
                     _angles = [step * k for k in range(1, n_rot)] + [10.0, -10.0, 20.0, -20.0]
                     for angle in _angles:

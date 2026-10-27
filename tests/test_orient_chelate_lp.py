@@ -60,11 +60,11 @@ def test_chelate_lp_off_is_byte_identical(monkeypatch):
     assert np.array_equal(ref, _run(mol, X, metal, donors))
 
 
-@pytest.mark.parametrize("carry", ["0", "1"])
-def test_chelate_lp_keeps_lone_pairs_on_the_metal(monkeypatch, carry):
+@pytest.mark.parametrize("carry,mode", [("0", "1"), ("1", "1"), ("0", "2"), ("1", "2")])
+def test_chelate_lp_keeps_lone_pairs_on_the_metal(monkeypatch, carry, mode):
     mol, X, metal, donors = _phen_zn_nh3()
     monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", carry)
-    monkeypatch.setenv(FLAG, "1")
+    monkeypatch.setenv(FLAG, mode)
     Y = _run(mol, X, metal, donors)
     for d in donors[:2]:
         assert np.allclose(Y[d], X[d])
