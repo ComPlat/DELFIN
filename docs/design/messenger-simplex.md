@@ -52,6 +52,11 @@ spoken decision word in reply counts like the typed one (see below).
 The message shows the session, action/plan/question and the actual local options.
 A yes selects the normal approval (for TUI plans, default mode); alternative modes
 must be selected explicitly. Dashboard plans offer their existing execute option.
+A shell command can be changed before it runs: reply `ändern: NEW COMMAND`
+(also `change:` or `c:`, optionally in backticks), typed only. The message shows
+the command back exactly as it will run; it runs once, as typed, and still passes
+every check a command passes. A command with typographic quotes or dashes
+(autocorrect) is refused with a hint.
 Permanent rules require another reply to a separate confirmation message. The
 complete concrete preview must fit within 1400 characters for phone approval;
 longer previews remain available locally and can still be denied remotely.

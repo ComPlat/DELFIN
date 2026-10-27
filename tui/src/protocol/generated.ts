@@ -48,6 +48,7 @@ export interface PermissionReplyParams {
   "reason"?: string | null
   "persist"?: boolean | null
   "text"?: string | null
+  "command"?: string | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
@@ -348,6 +349,7 @@ export interface PermissionAskedEvent {
   "suggestion"?: string | null
   "readDir"?: string | null
   "purpose"?: string | null
+  "command"?: string | null
   "type": "permission.asked"
   "session": string
   "ts": number

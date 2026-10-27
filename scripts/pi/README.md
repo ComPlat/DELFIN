@@ -253,7 +253,9 @@ On the phone, `neu NAME` (or `neu NAME: task`) starts a session in
 `~/DELFIN-Handy/NAME` and invites you to its chat; it asks before commands and
 edits. A session started at the computer joins with `/sync` there. Reply to a
 question/approval with SimpleX's Reply gesture and `ja/nein`, an offered option or
-a text answer -- spoken or typed; a spoken sentence frees nothing. Late replies
+a text answer -- spoken or typed; a spoken sentence frees nothing. A shell
+command can be changed before it runs: reply `ändern: NEW COMMAND` (typed only);
+your version runs once, exactly as typed. Late replies
 never approve the next action. `status`, `update`, `pending`, `stop`, `name NAME`,
 `dateien`, `datei NAME`, `forum on/off`, `meldungen kurz/fragen/aus`; files and
 images up to 8 MiB.

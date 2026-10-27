@@ -206,7 +206,10 @@ EVENTS: dict[str, dict[str, str]] = {
                          # The tool call's own one-line description (the
                          # bash tool requires one), masked; the model's
                          # statement, not a check of the command.
-                         "purpose": "string?"},
+                         "purpose": "string?",
+                         # A shell request's command, masked: what a
+                         # window puts in the prompt to change it (key c).
+                         "command": "string?"},
     # by: client | outside | expired | abort
     "permission.resolved": {"requestId": "string", "decision": "string",
                             "by": "string"},

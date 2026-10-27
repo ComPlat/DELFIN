@@ -177,6 +177,10 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         }
         if suggestion:
             fields["suggestion"] = suggestion
+        if req.kind == tc.CONFIRM and req.is_shell and req.command:
+            # What key c puts in the prompt to change: masked like the
+            # preview, so a secret is never shown to be edited.
+            fields["command"] = _preview(tc.ConfirmRequest(kind=req.kind, preview=req.command))
         purpose = _purpose(req)
         if purpose:
             fields["purpose"] = purpose
