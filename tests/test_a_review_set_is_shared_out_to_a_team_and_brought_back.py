@@ -19,7 +19,7 @@ from delfin import review_team as rt
 
 def _water(stem: str, k: int = 0) -> str:
     return (f"3\n{stem}\n"
-            f"O 0.000 0.000 {0.117 + 0.001 * k:.3f}\n"
+            f"O 0.000 0.000 {0.117 + 0.05 * k:.3f}\n"  # far enough apart: never identical
             "H 0.000 0.757 -0.467\nH 0.000 -0.757 -0.467\n")
 
 
@@ -37,8 +37,8 @@ def team_dir(tmp_path: Path) -> Path:
 
 # ------------------------------------------------------------------ assignment
 def test_shares_are_disjoint_the_overlap_shared_and_the_draw_repeatable(team_dir):
-    a, _ = rt.assign(team_dir, ["Ann", "Ben", "Cem"], overlap=4, seed=11)
-    b, _ = rt.assign(team_dir, ["Ann", "Ben", "Cem"], overlap=4, seed=11)
+    a, _ = rt.assign(team_dir, ["Ann", "Ben", "Cem"], overlap=4, seed=11, redundancy=0)
+    b, _ = rt.assign(team_dir, ["Ann", "Ben", "Cem"], overlap=4, seed=11, redundancy=0)
     assert {k: v for k, v in a.items() if k not in ("created", "updated")} == \
         {k: v for k, v in b.items() if k not in ("created", "updated")}
     assert a["files_total"] == 40 and len(a["shared"]) == 4 and a["seed"] == 11
@@ -56,7 +56,7 @@ def test_overlap_zero_and_a_block_leave_the_rest_for_later(team_dir):
 
 
 def test_a_reviewer_added_later_changes_nobody_elses_share(team_dir):
-    a, _ = rt.assign(team_dir, ["Ann"], overlap=4, block=10, seed=5)
+    a, _ = rt.assign(team_dir, ["Ann"], overlap=4, block=10, seed=5, redundancy=0)
     before = json.loads(json.dumps(a))
     b, msgs = rt.assign(team_dir, ["Ann", "Ben"], block=10, existing=a)
     assert b["raters"]["Ann"] == before["raters"]["Ann"] and b["shared"] == before["shared"]
@@ -73,7 +73,7 @@ def test_what_a_reviewer_already_rated_stays_theirs(team_dir):
     s.rate("pass")
     s.go_to_file("T0031.xyz")
     s.rate("block", ["X"])
-    a, _ = rt.assign(team_dir, ["Ann", "Ben"], overlap=0, block=5, seed=2)
+    a, _ = rt.assign(team_dir, ["Ann", "Ben"], overlap=0, block=5, seed=2, redundancy=0)
     assert {"T0007.xyz", "T0031.xyz"} <= set(a["raters"]["Ben"])
     assert len(a["raters"]["Ben"]) == 5
     assert not {"T0007.xyz", "T0031.xyz"} & set(a["raters"]["Ann"])
@@ -113,7 +113,7 @@ def _panel(where: Path, name: str):
 
 
 def test_the_tab_shows_only_the_reviewers_share(team_dir):
-    a, _ = rt.assign(team_dir, ["Ann", "Ben"], overlap=4, block=8, seed=6)
+    a, _ = rt.assign(team_dir, ["Ann", "Ben"], overlap=4, block=8, seed=6, redundancy=0)
     rt.write_assignment(team_dir.parent / rt.ASSIGNMENT_NAME, a)  # next to kategorien.txt
     panel, s = _panel(team_dir, "ann")
     assert s is not None, panel.status_html.value
@@ -132,7 +132,8 @@ def test_the_tab_shows_only_the_reviewers_share(team_dir):
 
 
 def test_a_new_name_draws_its_own_block_and_keeps_it(team_dir):
-    a, _ = rt.assign(team_dir, ["Ann"], overlap=2, block=3, seed=6, self_block=5)
+    a, _ = rt.assign(team_dir, ["Ann"], overlap=2, block=3, seed=6, self_block=5,
+                     redundancy=0)
     rt.write_assignment(team_dir / rt.ASSIGNMENT_NAME, a)
     panel, s = _panel(team_dir, "")
     assert s is None and "enter your name first" in panel.status_html.value
@@ -371,10 +372,12 @@ def test_unpack_with_a_new_name_draws_the_block_into_the_review_file(tmp_path):
     assert rv.load_review(dest / "review_Zoe.json")["assignment"] == own and len(s) == 8
 
 
-def test_nothing_left_to_draw_says_so(team_dir):
-    a, _ = rt.assign(team_dir, ["Ann"], overlap=0, block=40, seed=6)
+def test_when_nothing_is_free_a_new_block_holds_second_ratings(team_dir):
+    a, _ = rt.assign(team_dir, ["Ann"], overlap=0, block=40, seed=6, self_block=10)
     rt.write_assignment(team_dir / rt.ASSIGNMENT_NAME, a)
     panel, s = _panel(team_dir, "Zoe")
-    assert s is None and "Nothing is left" in panel.status_html.value
+    assert s is not None, panel.status_html.value
+    own = rv.load_review(team_dir / "review_Zoe.json")["assignment"]["files"]
+    assert len(own) == 10 and set(own) <= set(a["raters"]["Ann"])
     assert rv.main(["assign", str(team_dir), "Ben", "--block", "0"]) == 0
-    assert rt.load_assignment(team_dir / rt.ASSIGNMENT_NAME)["self_block"] == rt.DEFAULT_BLOCK
+    assert rt.load_assignment(team_dir / rt.ASSIGNMENT_NAME)["self_block"] == 10  # kept
