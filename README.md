@@ -201,6 +201,10 @@ delfin-voila                 # starts on 127.0.0.1:8866
 
 `delfin-voila` prints a URL containing an access token. The token cannot be switched off: the dashboard, its files and its kernels all require it (only the server's own static assets, such as the login page's, are served without it); see the dashboard section of [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md#the-dashboard-server). Open that URL, go to **Submit Job**, paste a SMILES or load an XYZ, choose the workflow settings, and submit. **Job Status** follows the queue; **Calculations** browses the results.
 
+**Review** rates structures by eye, frame by frame (pass or block, defect categories, the atoms of each defect). A set can be shared out to a team of reviewers and brought back together with `delfin review assign | unpack | submit | merge`; how to take part: [docs/REVIEW_TEAM_GUIDE.md](docs/REVIEW_TEAM_GUIDE.md) (with a [video](docs/review_team_guide.webm)).
+
+![Rating one structure in the Review tab](docs/review_team_guide.gif)
+
 ### The command line
 
 A working directory needs two files:
