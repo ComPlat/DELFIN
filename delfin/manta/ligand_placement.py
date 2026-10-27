@@ -19,6 +19,7 @@ from delfin.manta.ml_tables import (
     _METAL_SET,
     _get_ml_bond_length,
 )
+from delfin.manta.interpenetration import BONDI_VDW as _ORIENT_BONDI_VDW
 from delfin.manta._ring_snap_length import (
     ride_hydrogens as _rs_ride,
     ring_scale_restoring_lengths as _rs_scale,
@@ -1535,6 +1536,27 @@ def _align_and_orient_ligands(
         # chooses the angle is unchanged (heavy atoms only), so the switch changes no choice -- it only
         # stops leaving the hydrogens behind.  Off -> byte-identical (moving set = heavy non-donors).
         _carry_h = _delfin_env_int("DELFIN_FFFREE_ORIENT_CARRY_H", 0) == 1
+        # ===== THE SCORE SEES THE HYDROGENS IT MOVES (DELFIN_FFFREE_ORIENT_SCORE_H, default OFF) =====
+        #
+        # THE DEFECT (Ursache 5, 27.10.2026).  Under ORIENT_CARRY_H the spin / tilt moves the hydrogens
+        # with their fragment, but the score that picks the angle still reads the heavy non-donors
+        # against the heavy atoms of the other fragments only (C...C allowed down to 1.3 x rcov sum =
+        # 1.98 A).  The chosen orientation therefore parks methyl / isopropyl / aryl H of one ligand on
+        # the H of the next: traced on the legacy batch of 7 dev300 systems (DELFIN_U5_TRACE), 126 of
+        # 635 emitted frames carry an inter-ligand contact below 0.55 x vdW sum (H...H 0.61-1.32 A) or
+        # a crushed bond, and 107 of them are the UNRELAXED placement itself -- the UFF step is a no-op
+        # for unparameterised metals (energy marker > 1e9, CG skipped for determinism, DIZQIM Mo) or is
+        # reverted because it broke the topology gate (AGOXIE).  Nothing after the placement repairs
+        # the clash; the frame is born with it.  Without CARRY_H these frames died at the gate (their
+        # H were torn off), so the fix that rightly keeps the molecule whole made the blind score visible.
+        #
+        # THE FIX.  When the hydrogens ride with the fragment, the score counts them: every moving atom
+        # (heavy non-donor and carried H) against every non-metal atom of the other fragments (heavy and
+        # H).  Heavy-heavy pairs keep their old threshold; a pair with an H is penalised below 0.75 x the
+        # Bondi vdW sum (H...H 1.80 A, C...H 2.18 A; the crystal floor of H...H is about 1.7-1.8 A).  Same
+        # rotation grid, same tilts, same passes -- only the angle choice now sees the whole fragment.
+        # Off (or CARRY_H off) -> byte-identical (the heavy-only score).
+        _score_h = _carry_h and _delfin_env_int("DELFIN_FFFREE_ORIENT_SCORE_H", 0) == 1
         # Per-fragment heavy atom list + donor list.
         frag_info: List[dict] = []
         for frag in fragments:
@@ -1624,6 +1646,47 @@ def _align_and_orient_ligands(
                         thr = 1.3 * (ri + other_rcov[k])
                         if d < thr:
                             score += (thr - d) ** 2
+            return score
+
+        # DELFIN_FFFREE_ORIENT_SCORE_H: H-inclusive clash score (see the block at _score_h).
+        _all_nm = [i for i in range(n_atoms)
+                   if mol.GetAtomWithIdx(i).GetSymbol() not in _METAL_SET] if _score_h else []
+        _is_h = {i: mol.GetAtomWithIdx(i).GetAtomicNum() == 1 for i in _all_nm}
+        _vdw = {i: _ORIENT_BONDI_VDW.get(mol.GetAtomWithIdx(i).GetSymbol(), 1.80) for i in _all_nm}
+
+        def _clash_for_frag_h(own, frag_pts):
+            """Penalty of this fragment's moving atoms (heavy non-donors + carried H) against every
+            non-metal atom of the other fragments (heavy + H) and the metal.  Heavy-heavy pairs keep the
+            old 1.3 x rcov threshold, pairs with an H use 0.75 x the Bondi vdW sum."""
+            score = 0.0
+            other = [j for j in _all_nm if j not in own]
+            if other:
+                o_pts = pts[other]
+                o_h = _np.array([_is_h[j] for j in other])
+                o_rc = _np.array([r_cov[j] for j in other])
+                o_vdw = _np.array([_vdw[j] for j in other])
+            m_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+            for i in sorted(frag_pts):
+                p = _np.asarray(frag_pts[i], dtype=float)
+                d = float(_np.linalg.norm(p - m_pos))
+                try:
+                    ml_ref = float(_get_ml_bond_length(m_sym, mol.GetAtomWithIdx(i).GetSymbol()))
+                except Exception:
+                    ml_ref = 2.2
+                thr_m = max(1.20, 0.80 * ml_ref)
+                if d < thr_m:
+                    score += 5.0 * (thr_m - d) ** 2
+                if not other:
+                    continue
+                dist = _np.linalg.norm(o_pts - p, axis=1)
+                if _is_h[i]:
+                    thr = 0.75 * (_vdw[i] + o_vdw)
+                else:
+                    thr = _np.where(o_h, 0.75 * (_vdw[i] + o_vdw), 1.3 * (r_cov[i] + o_rc))
+                ov = thr - dist
+                ov = ov[ov > 0.0]
+                if ov.size:
+                    score += float(_np.sum(ov * ov))
             return score
 
         def _lp_penalty_for_frag(donors, frag_pts):
@@ -1740,8 +1803,15 @@ def _align_and_orient_ligands(
                 else:
                     def _hv(_p):
                         return _p
+                if _score_h:
+                    # DELFIN_FFFREE_ORIENT_SCORE_H: score every moving atom, H included.
+                    def _sc(_p, _own=frozenset(heavy) | frozenset(info["hyd"]), _d=donors):
+                        return _clash_for_frag_h(_own, _p) + _lp_penalty_for_frag(_d, _p)
+                else:
+                    def _sc(_p, _h=heavy, _d=donors):
+                        return _frag_score(_h, _d, _hv(_p))
                 atom_pts = {i: tuple(pts[i]) for i in moving}
-                best_score = _frag_score(heavy, donors, _hv(atom_pts))
+                best_score = _sc(atom_pts)
                 best_pts = atom_pts
                 # Multi-level tilt: 50% + 90% of the ideal LP->M correction.
                 # Combined with the no-tilt base gives three starting points
@@ -1760,14 +1830,14 @@ def _align_and_orient_ligands(
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
                 for base in base_sets:
-                    s0 = _frag_score(heavy, donors, _hv(base))
+                    s0 = _sc(base)
                     if s0 < best_score - 1e-6:
                         best_score = s0
                         best_pts = base
                     for k in range(1, n_rot):
                         angle = step * k
                         candidate = _rotate_about(axis, pivot, angle, base)
-                        s = _frag_score(heavy, donors, _hv(candidate))
+                        s = _sc(candidate)
                         if s < best_score - 1e-6:
                             best_score = s
                             best_pts = candidate
