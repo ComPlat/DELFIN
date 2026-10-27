@@ -10,8 +10,15 @@ structure builder should fix next. How to take part:
   is only the structure's id (`T0001` ...). `delfin review unpack` writes
   them as single files.
 * `kategorien.txt` -- the 18 defect categories the Review tab offers.
-* `assignment.json` -- who rates what (`delfin review assign`): the share of
-  every reviewer, the 50 structures everyone rates, and the test part.
+* `assignment.json` -- the 50 structures everyone rates, the test part, and
+  blocks reserved for named reviewers (`delfin review assign`).
+
+**Just pick your name.** Anyone can help without being added:
+`delfin review unpack review_sets/kalib_2026_10 <folder> --name <your name>`
+(or the first opening in the Review tab) draws a block of 500 structures
+nobody is assigned, from your name, plus the 50 everyone rates. The block is
+kept in your own `review_<name>.json`, so contributions never edit a common
+file.
 
 **What is in it.** Structures built by MANTA (several program versions)
 mixed with experimental crystal structures from the Crystallography Open

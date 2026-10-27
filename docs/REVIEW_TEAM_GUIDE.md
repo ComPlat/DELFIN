@@ -7,10 +7,11 @@ chemist could accept it (**Pass**) or whether something is wrong
 well an automatic checker sees defects, and to find what the structure
 builder should fix next.
 
-Several people share the work: each of you gets a share of your own, plus a
-small number of structures that *everyone* rates (so we can measure how much
-reviewers agree). You do not need to know which ones those are. Each rating is
-saved the moment you give it, and you can stop and continue at any time.
+Anyone can help, without asking first: **just pick your name**. Several
+people share the work: each of you gets a block of 500 structures of your own,
+plus 50 that *everyone* rates (so we can measure how much reviewers agree).
+You do not need to know which ones those are. Each rating is saved the moment
+you give it, and you can stop and continue at any time.
 
 A video walk-through is in [review_team_guide.webm](review_team_guide.webm).
 
@@ -25,29 +26,31 @@ into a folder of your own:
 ```bash
 cd DELFIN                                    # your clone
 git pull                                     # the newest assignment
-delfin review unpack review_sets/kalib_2026_10 ~/review_kalib_2026_10
+delfin review unpack review_sets/kalib_2026_10 ~/review_kalib_2026_10 --name <your name>
 ```
 
 `~/review_kalib_2026_10` now holds one `.xyz` file per structure, the
-category list (`kategorien.txt`) and the share of every reviewer
-(`assignment.json`). Your name must be in `assignment.json`; if it is not,
-ask the coordinator to add you (`delfin review assign`), `git pull` and run
-the `unpack` line again (it never touches your ratings).
+category list (`kategorien.txt`) and the shares given out so far
+(`assignment.json`). If your name is listed there, that is your share.
+Otherwise a block of 500 structures nobody has yet is drawn for you, from
+your name (the same name always gets the same block), and kept in your own
+`review_<your name>.json`. Pick a name nobody else in the project uses, and
+keep it. Running `unpack` again never touches your ratings. (Without
+`--name` the block is drawn the first time you open the folder in the
+Review tab.)
 
 ## 2. Open your share in the Review tab
 
 1. Start the dashboard: `delfin-voila` (it prints a link with an access
    token; open it in the browser) and go to the tab **Review**.
 2. Under **Open a review**: put the folder (`~/review_kalib_2026_10`) into
-   **Open**, and your **Name** exactly as in `assignment.json` (always the
-   same name when you come back).
+   **Open**, and your **Name** (always the same name when you come back).
 3. **Categories** fills itself from `kategorien.txt` when the folder is
    opened: 18 entries, `H` first and `SYMMETRIE` last. Leave **Blinded**
    unticked.
 4. Press **Open**. The status line says *Your share: N structures*; the
    counter on the right, *x / N rated*, the file list and **Next unrated**
-   cover only your share. A name that is not in the assignment is refused with
-   a message.
+   cover only your share.
 
 ## 3. Rate a structure
 
@@ -162,17 +165,25 @@ simply send the file `review_<your name>.json` to the coordinator.
 ## For the coordinator
 
 ```bash
-delfin review assign review_sets/kalib_2026_10 Anna Ben --block 500 --ratings ratings/kalib_2026_10   # add reviewers, then commit
+delfin review assign review_sets/kalib_2026_10 Anna Ben --ratings ratings/kalib_2026_10   # reserve blocks (optional), then commit
 delfin review merge  review_sets/kalib_2026_10 --ratings ratings/kalib_2026_10            # CSV + agreement
 delfin review merge  review_sets/kalib_2026_10 --ratings ratings/kalib_2026_10 --split calibration
 ```
 
-`assign` keeps every share already given out and gives new reviewers only
-structures nobody has yet (by default the rest split evenly, with `--block N`
-N each). The shared structures (`--overlap`, default 50) and the test part
-are fixed when the assignment is first drawn. `merge` writes one CSV with
-every rating of every reviewer (columns `rater`, `shared`, `split`) and
-prints Cohen's kappa (two reviewers) or Fleiss' kappa (more) with the share
-of frames on which all agree and the number of frames, for ok/defect and for
-every category, on the shared structures. Ratings of the **test** part are a
-pre-registered hold-out: never use them to tune anything.
+Nobody has to be added before helping: a name not in `assignment.json`
+draws its own block (`self_block`, 500) in its review file, so helpers'
+pull requests never touch a common file. `assign` is only needed to reserve
+blocks for named reviewers: it keeps every share already given out and gives
+new names only structures nobody has yet (`--block`, default 500), and it
+leaves out the self-drawn blocks it finds in `--ratings`. The shared
+structures (`--overlap`, default 50) and the test part are fixed when the
+assignment is first drawn. Two self-drawn blocks may overlap; those frames
+are simply rated twice.
+
+`merge` writes one CSV with every rating of every reviewer (columns `rater`,
+`shared`, `share` = shared / own / extra, `split`) and prints Cohen's kappa
+(two reviewers) or Fleiss' kappa (more; the number of reviewers may differ
+per frame) with the share of frames on which all agree and the number of
+frames, for ok/defect and for every category, on every frame rated by two or
+more. Ratings of the **test** part are a pre-registered hold-out: never use
+them to tune anything.

@@ -645,29 +645,33 @@ class ReviewPanel:
         self._prefill_categories(raw)
         findings = self.findings_input.value.strip() or None
         wanted = _split_categories(self.categories_input.value)
-        name, files, team = self.name_input.value, None, ''
+        name, files, team, own = self.name_input.value, None, '', None
         try:
             # A set shared out to a team (assignment.json): only this
-            # reviewer's share, under the name as the assignment spells it.
+            # reviewer's share, under the name as the assignment spells it; a
+            # name not in it draws a block of its own (kept in its review file).
             found = rt.find_assignment(raw) if Path(raw).expanduser().is_dir() else None
             if found is not None:
-                assignment = rt.load_assignment(found)
-                rater = rt.find_rater(assignment, name)
-                if rater is None:
-                    who = (f'"{name.strip()}" is not' if name.strip()
-                           else 'Enter your name first: it is not')
-                    self._say(f'{who} among the reviewers in {found}. Use your name as given '
-                              'there, or ask whoever shares out the set to add you '
-                              '(delfin review assign).', error=True)
+                if not name.strip():
+                    self._say(f'This set is shared out ({found}): enter your name first. '
+                              'A name not listed there gets a block of its own.', error=True)
                     return None
-                name, files = rater, rt.rater_order(assignment, rater)
+                assignment = rt.load_assignment(found)
+                name, files, own = rt.share_of(raw, assignment, name)
                 n_shared = len(assignment.get('shared', []))
                 team = (f'Your share: {len(files)} structures of {assignment.get("files_total", "?")}'
-                        f' ({n_shared} rated by everyone)')
+                        f' ({n_shared} rated by everyone'
+                        + (', your block drawn for you' if own is not None else '') + ')')
             session = rv.ReviewSession.open(
                 raw, name=name, blind=self.blind_cb.value,
                 seed=int(self.seed_input.value or 0), findings_path=findings,
                 default_categories=wanted or None, files=files)
+            if own is not None and not files:
+                self._say('Nothing is left to draw a block from in this set: every '
+                          'structure is assigned. Ask the coordinator.', error=True)
+                return None
+            if own is not None:
+                session.data['assignment'] = own
         except (OSError, ValueError) as exc:
             self._say(f'Cannot open {raw}: {exc}', error=True)
             return None

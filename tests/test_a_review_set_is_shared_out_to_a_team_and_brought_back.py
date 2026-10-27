@@ -132,14 +132,32 @@ def test_the_tab_shows_only_the_reviewers_share(team_dir):
     assert set(rv.load_review(s.review_path)["reviews"]) == set(a["shared"] + a["raters"]["Ann"])
 
 
-def test_an_unknown_name_gets_a_clear_message(team_dir):
-    a, _ = rt.assign(team_dir, ["Ann"], overlap=2, block=3, seed=6)
+def test_a_new_name_draws_its_own_block_and_keeps_it(team_dir):
+    a, _ = rt.assign(team_dir, ["Ann"], overlap=2, block=3, seed=6, self_block=5)
     rt.write_assignment(team_dir / rt.ASSIGNMENT_NAME, a)
-    panel, s = _panel(team_dir, "Zoe")
-    assert s is None and "Zoe" in panel.status_html.value
-    assert "not among the reviewers" in panel.status_html.value
     panel, s = _panel(team_dir, "")
-    assert s is None and "Enter your name" in panel.status_html.value
+    assert s is None and "enter your name first" in panel.status_html.value
+    panel, s = _panel(team_dir, "Zoe")
+    assert s is not None, panel.status_html.value
+    assert "Your share: 7 structures" in panel.status_html.value
+    assert "drawn for you" in panel.status_html.value
+    stored = rv.load_review(team_dir / "review_Zoe.json")["assignment"]
+    assert stored["self"] and len(stored["files"]) == 5 and stored["name"] == "Zoe"
+    mine = set(stored["files"])
+    assert not mine & (set(a["shared"]) | set(a["raters"]["Ann"]))
+    assert {f.file for f in s.frames} == mine | set(a["shared"])
+    assert "0 / 7 rated" in panel.progress_html.value
+    # The same name draws the same block, also on another machine ...
+    other = _set(team_dir.parent / "copy", 40)
+    assert rt.self_share(other, a, "Zoe")["files"] == stored["files"]
+    # ... and keeps it although the assignment changes later.
+    b, _ = rt.assign(team_dir, ["Cem"], block=30, existing=a)
+    rt.write_assignment(team_dir / rt.ASSIGNMENT_NAME, b)
+    panel, s = _panel(team_dir, "Zoe")
+    assert set(rv.load_review(team_dir / "review_Zoe.json")["assignment"]["files"]) == mine
+    assert {f.file for f in s.frames} == mine | set(a["shared"])
+    # The coordinator does not give a self-drawn block out again where it can be seen.
+    assert not mine & set(b["raters"]["Cem"])
 
 
 def test_without_an_assignment_the_tab_shows_the_whole_folder(team_dir):
@@ -286,7 +304,7 @@ def test_submit_without_gh_pushes_the_branch_and_says_how_to_open_the_pull_reque
 def test_a_published_set_is_assigned_from_its_archive(tmp_path):
     set_dir = _published(tmp_path)
     assert rt.structure_files(set_dir) == [f"T{k:04d}.xyz" for k in range(1, 9)]
-    assert rv.main(["assign", str(set_dir), "Ann,Ben", "--overlap", "2", "--seed", "3",
+    assert rv.main(["assign", str(set_dir), "Ann,Ben", "--overlap", "2", "--seed", "3", "--block", "3",
                     "--test-fraction", "0.25", "--set", "demo"]) == 0
     a = rt.load_assignment(set_dir / rt.ASSIGNMENT_NAME)
     assert a["set"] == "demo" and len(a["split"]["test"]) == 2
@@ -304,3 +322,62 @@ def test_a_group_never_straddles_the_test_split(team_dir):
     for k in range(1, 41, 2):
         pair = {f"T{k:04d}.xyz", f"T{k + 1:04d}.xyz"}
         assert pair <= test or not pair & test
+
+
+
+def test_overlapping_self_drawn_blocks_count_for_the_agreement(team_dir, tmp_path):
+    a, _ = rt.assign(team_dir, ["Ann"], overlap=0, block=4, seed=2, self_block=30)
+    rt.write_assignment(team_dir / rt.ASSIGNMENT_NAME, a)
+    zoe = rt.self_share(team_dir, a, "Zoe")["files"]
+    yan = rt.self_share(team_dir, a, "Yan")["files"]
+    both = sorted(set(zoe) & set(yan))
+    assert len(both) >= 2                                           # 30 of 36 each
+    only_zoe = sorted(set(zoe) - set(yan))[0]
+    _rate(team_dir, "Zoe", [(both[0], "block", ["H"]), (both[1], "pass", []), (only_zoe, "pass", [])])
+    _rate(team_dir, "Yan", [(both[0], "block", ["H"]), (both[1], "block", ["TOPO"])])
+    for n, f in (("Zoe", zoe), ("Yan", yan)):
+        path = team_dir / f"review_{n}.json"
+        d = rv.load_review(path)
+        d["assignment"] = rt.self_share(team_dir, a, n)
+        rv.write_json_atomic(path, d)
+    res = rt.agreement(rt.collect_reviews(team_dir))
+    assert res["method"] == "Cohen" and res["frames"] == 2 and res["raters"] == ["Yan", "Zoe"]
+    assert res["verdict"]["agreement"] == pytest.approx(0.5)
+    out = tmp_path / "m.csv"
+    rt.write_merged_csv(rt.collect_reviews(team_dir), out, a)
+    rows = {(r["rater"], r["file"]): r["share"] for r in csv.DictReader(out.open())}
+    assert rows[("Zoe", only_zoe)] == "own" and rows[("Yan", both[0])] == "own"
+
+
+def test_fleiss_with_a_varying_number_of_raters():
+    assert rt.fleiss_kappa([3, 0, 2], [3, 3, 3]) == pytest.approx(rt.fleiss_kappa([3, 0, 2], 3))
+    # items: 2 of 2 yes, 0 of 3 yes, 1 of 2 yes
+    p = 3 / 7
+    pbar = (1 + 1 + 0) / 3
+    pe = p * p + (1 - p) ** 2
+    assert rt.fleiss_kappa([2, 0, 1], [2, 3, 2]) == pytest.approx((pbar - pe) / (1 - pe))
+    assert rt.fleiss_kappa([1], [1]) is None
+
+
+def test_unpack_with_a_new_name_draws_the_block_into_the_review_file(tmp_path):
+    set_dir = _published(tmp_path)
+    a, _ = rt.assign(set_dir, ["Ann"], overlap=2, block=2, seed=3, self_block=3)
+    rt.write_assignment(set_dir / rt.ASSIGNMENT_NAME, a)
+    dest = tmp_path / "mine"
+    assert rv.main(["unpack", str(set_dir), str(dest), "--name", "Zoe"]) == 0
+    own = rv.load_review(dest / "review_Zoe.json")["assignment"]
+    assert len(own["files"]) == 3 and not set(own["files"]) & set(a["shared"] + a["raters"]["Ann"])
+    assert rt.unpack_for(set_dir, dest, "Zoe")[2].startswith("Zoe: a block of 3")
+    assert rt.unpack_for(set_dir, dest, "ann")[2] == "Ann: your share is 4 structures"
+    assert not (dest / "review_ann.json").exists() and not (dest / "review_Ann.json").exists()
+    s = rv.ReviewSession.open(dest, name="Zoe")
+    assert rv.load_review(dest / "review_Zoe.json")["assignment"] == own and len(s) == 8
+
+
+def test_nothing_left_to_draw_says_so(team_dir):
+    a, _ = rt.assign(team_dir, ["Ann"], overlap=0, block=40, seed=6)
+    rt.write_assignment(team_dir / rt.ASSIGNMENT_NAME, a)
+    panel, s = _panel(team_dir, "Zoe")
+    assert s is None and "Nothing is left" in panel.status_html.value
+    assert rv.main(["assign", str(team_dir), "Ben", "--block", "0"]) == 0
+    assert rt.load_assignment(team_dir / rt.ASSIGNMENT_NAME)["self_block"] == rt.DEFAULT_BLOCK

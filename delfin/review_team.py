@@ -22,10 +22,15 @@ above, like ``kategorien.txt``)::
 * :func:`rater_order` is the order the Review tab shows a reviewer: the
   shared files mixed among as many of their own, then the rest of their own
   in file order, so the shared ones are rated early but do not stand out.
-* :func:`agreement` measures, on the shared structures, how well the
-  reviewers agree: Cohen's kappa for two, Fleiss' kappa for more, for the
-  verdict (pass/block) and for every category, with the share of frames on
-  which all agree and the number of frames.  :func:`write_merged_csv` writes
+* :func:`self_share` lets anyone help without being added first: a name not
+  in the assignment draws a block of its own (``self_block``, default 500)
+  from the unassigned files, by the seed and the name, kept in its own
+  ``review_<name>.json`` rather than in ``assignment.json``.
+* :func:`agreement` measures how well the reviewers agree on every frame two
+  or more of them rated (the shared ones, and overlapping blocks): Cohen's
+  kappa for two, Fleiss' kappa for more, for the verdict (pass/block) and for
+  every category, with the share of frames on which all agree and the number
+  of frames.  :func:`write_merged_csv` writes
   every rating of every reviewer in one CSV.
 * :func:`unpack` writes the structures of a published set
   (``structures.xyz.gz``, one frame per structure) as single files, and
@@ -55,6 +60,7 @@ from delfin import review as rv
 ASSIGNMENT_NAME = 'assignment.json'
 SET_ARCHIVE_NAME = 'structures.xyz.gz'
 DEFAULT_OVERLAP = 50
+DEFAULT_BLOCK = 500
 SCHEMA_VERSION = 1
 UPSTREAM = 'ComPlat/DELFIN'
 RATINGS_DIR = 'ratings'
@@ -132,7 +138,8 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
            existing: dict[str, Any] | None = None,
            set_name: str | None = None,
            groups: dict[str, str] | None = None,
-           ratings: Sequence = ()) -> tuple[dict[str, Any], list[str]]:
+           ratings: Sequence = (),
+           self_block: int | None = None) -> tuple[dict[str, Any], list[str]]:
     """Share the structures of *folder* out to *raters*; returns (assignment, messages).
 
     With *existing*, the reviewers there and their files stay as they are
@@ -191,6 +198,10 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
                              'test': sorted(test, key=place.get)}
     if set_name:
         data['set'] = set_name
+    if self_block is not None:
+        data['self_block'] = int(self_block)
+    else:
+        data.setdefault('self_block', DEFAULT_BLOCK)
     raters_now: dict[str, list[str]] = data['raters']
     stems = {_file_stem(n).lower(): n for n in raters_now}
     new: list[str] = []
@@ -205,6 +216,11 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
         new.append(name)
     shared = set(data['shared'])
     taken = shared | {f for v in raters_now.values() for f in v}
+    # Blocks reviewers drew for themselves (kept in their review files) are not
+    # given out again where those files can be seen.
+    for review in collect_reviews(folder, *ratings).values():
+        own = (review.get('assignment') or {}).get('files') or []
+        taken |= {f for f in own if f in place}
     pool = [f for f in _shuffled(files, data['seed']) if f not in taken]
     if new:
         per = int(block) if block is not None else len(pool) // len(new)
@@ -226,6 +242,15 @@ def assign(folder, raters: Iterable[str], *, overlap: int | None = None,
     return data, msgs
 
 
+def _mixed_order(shared: Sequence[str], own: Sequence[str], seed) -> list[str]:
+    own = list(own)
+    mine = set(own)
+    shared = [f for f in shared if f not in mine]
+    head = shared + own[:len(shared)]
+    random.Random(seed).shuffle(head)
+    return head + own[len(shared):]
+
+
 def rater_order(assignment: dict[str, Any], name: str) -> list[str]:
     """The files the reviewer *name* sees, in the order shown.
 
@@ -237,12 +262,52 @@ def rater_order(assignment: dict[str, Any], name: str) -> list[str]:
     rater = find_rater(assignment, name)
     if rater is None:
         raise KeyError(name)
-    own = list(assignment['raters'][rater])
-    mine = set(own)
-    shared = [f for f in assignment.get('shared', []) if f not in mine]
-    head = shared + own[:len(shared)]
-    random.Random(f'{assignment.get("seed", 0)}:{rater}').shuffle(head)
-    return head + own[len(shared):]
+    return _mixed_order(assignment.get('shared', []), assignment['raters'][rater],
+                        f'{assignment.get("seed", 0)}:{rater}')
+
+
+def self_share(folder, assignment: dict[str, Any], name: str,
+               size: int | None = None) -> dict[str, Any]:
+    """The block a reviewer not in the assignment draws for themselves.
+
+    Anyone can help without being added first: a new name gets ``self_block``
+    (default 500) of the files nobody is assigned, drawn with the seed and the
+    name, so the same name always gets the same block.  The block is kept in
+    the reviewer's own ``review_<name>.json`` (key ``assignment``), not in
+    ``assignment.json``, so helpers never edit a common file; once drawn it is
+    read from there and stays, whatever the assignment does later.  Two
+    helpers may draw overlapping blocks; those frames are simply rated twice.
+    """
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('a name is needed')
+    folder = Path(folder).expanduser()
+    try:
+        stored = rv.load_review(rv.default_review_path(folder, name)).get('assignment')
+    except (OSError, ValueError):
+        stored = None
+    if isinstance(stored, dict) and stored.get('files'):
+        return stored
+    files = structure_files(folder)
+    place = {f: i for i, f in enumerate(files)}
+    shared = [f for f in assignment.get('shared', []) if f in place]
+    taken = set(shared) | {f for v in (assignment.get('raters') or {}).values() for f in v}
+    size = int(size if size is not None else assignment.get('self_block', DEFAULT_BLOCK))
+    seed = f'{assignment.get("seed", 0)}:self:{name}'
+    block = [f for f in _shuffled(files, seed) if f not in taken][:size]
+    return {'self': True, 'name': name, 'seed': seed, 'size': size,
+            'files': sorted(block, key=place.get), 'shared': shared, 'drawn': _now()}
+
+
+def share_of(folder, assignment: dict[str, Any], name: str):
+    """(name, files in the order shown, self-drawn block or None) of a reviewer."""
+    rater = find_rater(assignment, name)
+    if rater is not None:
+        return rater, rater_order(assignment, rater), None
+    own = self_share(folder, assignment, name)
+    order = _mixed_order(own.get('shared', assignment.get('shared', [])), own['files'],
+                         f'{assignment.get("seed", 0)}:{own["name"]}')
+    return own['name'], order, own
 
 
 def write_assignment(path, data: dict[str, Any]) -> Path:
@@ -274,23 +339,29 @@ def current_ratings(data: dict[str, Any]) -> dict[tuple[str, int], dict[str, Any
     return {(f, i): rec for f, i, rec, stale in rv.iter_records(data) if not stale}
 
 
-MERGED_FIELDS = ('rater',) + rv.CSV_FIELDS + ('stale', 'shared', 'split')
+MERGED_FIELDS = ('rater',) + rv.CSV_FIELDS + ('stale', 'shared', 'share', 'split')
 
 
 def merged_rows(reviews: dict[str, dict[str, Any]],
                 assignment: dict[str, Any] | None = None, split: str = 'all'):
     """Every row of every reviewer (:func:`delfin.review.csv_rows`), with the
-    reviewer, whether the file is shared, and its part of the split."""
+    reviewer, whether the file is shared, whose share it is (``shared``,
+    ``own`` -- assigned or self-drawn -- or ``extra``), and its part of the split."""
     shared = set((assignment or {}).get('shared', []))
     test = set(((assignment or {}).get('split') or {}).get('test', []))
     has_split = bool((assignment or {}).get('split'))
     for name in sorted(reviews):
+        rater = find_rater(assignment or {}, name)
+        own = set((assignment or {}).get('raters', {}).get(rater, []) if rater else
+                  (reviews[name].get('assignment') or {}).get('files') or [])
         for row in rv.csv_rows(reviews[name]):
             part = ('test' if row['file'] in test else 'calibration') if has_split else ''
             if split != 'all' and part != split:
                 continue
+            share = ('shared' if row['file'] in shared else
+                     'own' if row['file'] in own else 'extra')
             yield {'rater': name, **row, 'shared': 'yes' if row['file'] in shared else '',
-                   'split': part}
+                   'share': share, 'split': part}
 
 
 def write_merged_csv(reviews, path, assignment=None, split: str = 'all') -> int:
@@ -316,72 +387,80 @@ def cohen_kappa(a: Sequence[bool], b: Sequence[bool]) -> float | None:
     return None if pe >= 1 else (po - pe) / (1 - pe)
 
 
-def fleiss_kappa(counts: Sequence[int], raters: int) -> float | None:
-    """Fleiss' kappa on a yes/no question: *counts* = yes-votes per item out of *raters*."""
-    N, m = len(counts), int(raters)
-    if not N or m < 2:
+def fleiss_kappa(counts: Sequence[int], raters) -> float | None:
+    """Fleiss' kappa on a yes/no question: *counts* = yes-votes per item out of
+    *raters* (one number for all items, or one per item when the number of
+    raters varies; every item needs two or more)."""
+    N = len(counts)
+    m = [int(raters)] * N if isinstance(raters, int) else [int(r) for r in raters]
+    if not N or len(m) != N or min(m) < 2:
         return None
-    p_items = [(k * k + (m - k) * (m - k) - m) / (m * (m - 1)) for k in counts]
+    p_items = [(k * k + (n - k) * (n - k) - n) / (n * (n - 1)) for k, n in zip(counts, m)]
     p_bar = sum(p_items) / N
-    p = sum(counts) / (N * m)
+    p = sum(counts) / sum(m)
     pe = p * p + (1 - p) * (1 - p)
     return None if pe >= 1 else (p_bar - pe) / (1 - pe)
 
 
-def _measure(votes: list[list[bool]]) -> dict[str, Any]:
-    """Agreement of one yes/no question; *votes* = one list per item, one vote per rater."""
+def _measure(votes: list[list[bool]], cohen: bool) -> dict[str, Any]:
+    """Agreement of one yes/no question; *votes* = one list per item, one vote per
+    rater who rated it (in a fixed rater order for Cohen's two)."""
     n = len(votes)
-    m = len(votes[0]) if votes else 0
-    if m == 2:
+    if cohen:
         kappa = cohen_kappa([v[0] for v in votes], [v[1] for v in votes])
     else:
-        kappa = fleiss_kappa([sum(v) for v in votes], m)
+        kappa = fleiss_kappa([sum(v) for v in votes], [len(v) for v in votes])
     return {'kappa': kappa, 'agreement': (sum(len(set(v)) == 1 for v in votes) / n) if n else None,
             'n': n, 'yes': sum(sum(v) for v in votes)}
 
 
 def agreement(reviews: dict[str, dict[str, Any]],
               items: Iterable[str] | None = None) -> dict[str, Any] | None:
-    """How well the reviewers agree on the frames of the files *items* (all
-    files rated by two or more when None), counting only frames every
-    reviewer who rated any of them has rated.  None with fewer than two."""
+    """How well the reviewers agree, on every frame two or more of them rated
+    (only frames of the files *items* when given): the shared structures, and
+    any a reviewer rated besides, such as overlapping self-drawn blocks.
+    Cohen's kappa when all these frames are rated by the same two reviewers,
+    else Fleiss' kappa (the number of reviewers may differ per frame).  None
+    when no frame was rated twice."""
     rated = {name: current_ratings(data) for name, data in reviews.items()}
-    if items is None:
-        seen: dict[str, int] = {}
-        for recs in rated.values():
-            for f in {f for f, _ in recs}:
-                seen[f] = seen.get(f, 0) + 1
-        wanted = {f for f, k in seen.items() if k >= 2}
-    else:
-        wanted = set(items)
-    names = sorted(n for n, recs in rated.items() if any(f in wanted for f, _ in recs))
-    if len(names) < 2:
+    wanted = None if items is None else set(items)
+    by_key: dict[tuple[str, int], list[str]] = {}
+    for name in sorted(rated):
+        for k in rated[name]:
+            if wanted is None or k[0] in wanted:
+                by_key.setdefault(k, []).append(name)
+    keys = sorted(k for k, who in by_key.items() if len(who) >= 2)
+    if not keys:
         return None
-    keys = sorted(set.intersection(*({k for k in rated[n] if k[0] in wanted} for n in names)))
+    names = sorted({n for k in keys for n in by_key[k]})
+    cohen = len(names) == 2
     cats: list[str] = []
     for n in names:
         for c in reviews[n].get('categories') or []:
             if c not in cats:
                 cats.append(c)
-    for n in names:
-        for k in keys:
+    for k in keys:
+        for n in by_key[k]:
             for c in rated[n][k].get('categories') or []:
                 if c not in cats:
                     cats.append(c)
-    out = {'raters': names, 'method': 'Cohen' if len(names) == 2 else 'Fleiss',
-           'frames': len(keys),
-           'verdict': _measure([[rated[n][k]['verdict'] == 'block' for n in names] for k in keys]),
-           'unsure': sum(rv.is_unsure(rated[n][k].get('note', '')) for n in names for k in keys),
+    out = {'raters': names, 'method': 'Cohen' if cohen else 'Fleiss',
+           'frames': len(keys), 'votes': sum(len(by_key[k]) for k in keys),
+           'verdict': _measure([[rated[n][k]['verdict'] == 'block' for n in by_key[k]]
+                                for k in keys], cohen),
+           'unsure': sum(rv.is_unsure(rated[n][k].get('note', ''))
+                         for k in keys for n in by_key[k]),
            'categories': {}}
     for c in cats:
         out['categories'][c] = _measure(
-            [[c in (rated[n][k].get('categories') or []) for n in names] for k in keys])
+            [[c in (rated[n][k].get('categories') or []) for n in by_key[k]] for k in keys],
+            cohen)
     return out
 
 
 def format_agreement(result: dict[str, Any] | None) -> str:
     if not result:
-        return 'Agreement: fewer than two reviewers rated the shared structures.'
+        return 'Agreement: no frame has been rated by two reviewers yet.'
 
     def fmt(m):
         kappa = 'n/a' if m['kappa'] is None else f'{m["kappa"]:.3f}'
@@ -390,7 +469,8 @@ def format_agreement(result: dict[str, Any] | None) -> str:
 
     width = max([len('ok/defect')] + [len(c) for c in result['categories']])
     lines = [f'Agreement of {len(result["raters"])} reviewers ({result["method"]} kappa) '
-             f'on {result["frames"]} frames rated by all: {", ".join(result["raters"])}',
+             f'on {result["frames"]} frames rated by two or more ({result["votes"]} votes): '
+             f'{", ".join(result["raters"])}',
              f'{"question".ljust(width)}    kappa  all agree      n    yes',
              f'{"ok/defect".ljust(width)}  {fmt(result["verdict"])}']
     for c, m in result['categories'].items():
@@ -422,6 +502,29 @@ def archive_frames(set_dir) -> list[tuple[str, str]]:
         blocks.append((ident, ''.join(lines[i:i + 2 + n])))
         i += 2 + n
     return blocks
+
+
+def unpack_for(set_dir, dest, name: str | None = None) -> tuple[int, int, str]:
+    """:func:`unpack`, then, for *name*, their share: an assigned one is only
+    reported; a new name draws its block (:func:`self_share`) into
+    ``review_<name>.json`` at once.  Returns (written, unchanged, message)."""
+    written, same = unpack(set_dir, dest)
+    msg = ''
+    found = find_assignment(dest)
+    if name and found:
+        assignment = load_assignment(found)
+        rater, order, own = share_of(dest, assignment, name)
+        if own is not None:
+            path = rv.default_review_path(Path(dest).expanduser(), rater)
+            data = rv.load_review(path)
+            if data.get('assignment') != own:
+                data['assignment'] = own
+                rv.write_json_atomic(path, data)
+            msg = (f'{rater}: a block of {len(own["files"])} drawn for you, plus '
+                   f'{len(assignment.get("shared", []))} everyone rates (kept in {path.name})')
+        else:
+            msg = f'{rater}: your share is {len(order)} structures'
+    return written, same, msg
 
 
 def unpack(set_dir, dest) -> tuple[int, int]:
@@ -490,10 +593,9 @@ def submit(folder, name: str, *, repo=None, set_name: str | None = None,
     found = find_assignment(folder)
     assignment = load_assignment(found) if found else None
     if assignment is not None:
-        rater = find_rater(assignment, name)
-        if rater is None:
-            raise ValueError(f'"{name}" is not in {found}')
-        name = rater
+        # An assigned name as the assignment spells it; any other name is a
+        # helper who drew a block of their own.
+        name = find_rater(assignment, name) or name.strip()
     source = rv.default_review_path(folder, name)
     if not source.is_file():
         raise FileNotFoundError(f'no review file {source}: rate in the Review tab first, '
@@ -620,9 +722,12 @@ def add_parsers(sub) -> None:
     a.add_argument('--overlap', type=int, default=None,
                    help=f'structures every reviewer rates, for the agreement '
                         f'(new assignment only; default {DEFAULT_OVERLAP}, 0 allowed)')
-    a.add_argument('--block', type=int, default=None,
-                   help='own structures per new reviewer (default: the unassigned ones '
-                        'split evenly; the rest stays for reviewers added later)')
+    a.add_argument('--block', type=int, default=DEFAULT_BLOCK,
+                   help=f'own structures per new reviewer (default {DEFAULT_BLOCK}); '
+                        f'the rest stays for later')
+    a.add_argument('--self-block', type=int, default=None,
+                   help=f'the block a name not in the assignment draws for itself '
+                        f'(default {DEFAULT_BLOCK}; kept when extending)')
     a.add_argument('--seed', type=int, default=None, help='seed of a new assignment')
     a.add_argument('--test-fraction', type=float, default=None,
                    help='mark this fraction of the files as a held-out test part '
@@ -653,6 +758,8 @@ def add_parsers(sub) -> None:
                                       'files into a folder to open in the Review tab')
     u.add_argument('set_dir', help='e.g. review_sets/kalib_2026_10')
     u.add_argument('dest', help='an empty folder, e.g. ~/review_kalib_2026_10')
+    u.add_argument('--name', default=None,
+                   help='your name: a name not in assignment.json draws its own block')
     s = sub.add_parser('submit', help='Send your review_<name>.json back as a pull request')
     s.add_argument('folder', help='the folder you rated in')
     s.add_argument('--name', required=True, help='your name, as in the Review tab')
@@ -672,9 +779,11 @@ def run(args) -> int:
         if args.cmd == 'merge':
             return _run_merge(args)
         if args.cmd == 'unpack':
-            written, same = unpack(args.set_dir, args.dest)
+            written, same, msg = unpack_for(args.set_dir, args.dest, args.name)
             print(f'{written} file(s) written, {same} unchanged in {args.dest}; '
                   'open this folder in the Review tab')
+            if msg:
+                print(msg)
             return 0
         if args.cmd == 'submit':
             res = submit(args.folder, args.name, repo=args.repo, set_name=args.set_name,
@@ -705,6 +814,7 @@ def _run_assign(args) -> int:
     data, msgs = assign(folder, _names(args.raters), overlap=args.overlap, block=args.block,
                         seed=args.seed, test_fraction=args.test_fraction,
                         existing=existing, set_name=args.set_name, ratings=args.ratings,
+                        self_block=args.self_block,
                         groups=(json.loads(Path(args.groups).read_text(encoding='utf-8'))
                                 if args.groups else None))
     out = Path(args.out) if args.out else (found or folder / ASSIGNMENT_NAME)
@@ -730,14 +840,14 @@ def _run_merge(args) -> int:
         out = Path(args.csv) if args.csv else Path(f'review_merged_{folder.resolve().name}.csv')
         n = write_merged_csv(reviews, out, assignment, args.split)
         print(f'{n} rows written: {out}')
-    shared = assignment.get('shared') if assignment else None
-    print(format_agreement(agreement(reviews, shared if shared else None)))
+    print(format_agreement(agreement(reviews)))
     return 0
 
 
 __all__ = [
     'ASSIGNMENT_NAME', 'DEFAULT_OVERLAP', 'agreement', 'assign', 'cohen_kappa',
     'collect_reviews', 'find_assignment', 'find_rater', 'fleiss_kappa', 'format_agreement',
+    'self_share', 'share_of', 'unpack_for',
     'load_assignment', 'merged_rows', 'rater_order', 'structure_files', 'submit', 'unpack',
     'write_assignment', 'write_merged_csv',
 ]
