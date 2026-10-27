@@ -142,6 +142,10 @@ def test_a_process_that_ends_fires(ws):
 
 
 def _fake_slurm(tmp_path, monkeypatch, queued: bool):
+    # The scheduler is asked through the throttled client
+    # (delfin.scheduler_client): a new look is a new answer only past its gate.
+    from delfin import scheduler_client
+    scheduler_client.reset()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     (bin_dir / "squeue").write_text(
@@ -230,3 +234,14 @@ def test_an_option_cannot_carry_a_path_out_or_read_a_list(ws, command):
         schedules.add(f'wenn ausgabe "{command}" sich ändert', workspace=str(ws),
                       created_by="t", confirm=True)
     assert info.value.code in ("command", "path")
+
+
+def test_a_job_watcher_asks_the_scheduler_through_its_throttle(ws, tmp_path, monkeypatch):
+    from delfin import scheduler_client
+    _fake_slurm(tmp_path, monkeypatch, queued=True)
+    spec = _spec("wenn job 123 fertig")
+    watch_checks.check(spec, str(ws), None)
+    asked = scheduler_client.default_client.queries_run
+    # Again at once: the throttle answers, the scheduler is not asked.
+    _, fired, _ = watch_checks.check(spec, str(ws), "RUNNING")
+    assert not fired and scheduler_client.default_client.queries_run == asked
