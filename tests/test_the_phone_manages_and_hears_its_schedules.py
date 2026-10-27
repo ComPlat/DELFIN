@@ -290,3 +290,12 @@ def test_each_run_is_reported_once_as_its_schedule_says(phone):
     Rooms(daemon, bridge)
     asyncio.run(Rooms(daemon, bridge).schedule_news())
     assert len(daemon.sent) == count
+
+
+def test_every_schedule_text_the_phone_can_get_has_an_english_entry():
+    from delfin.agent.service import bridge as bridge_mod
+    from delfin.messenger import gateway, lang
+    texts = [gateway.SCHEDULE_HELP, *bridge_mod.SCHEDULE_ERRORS.values(),
+             *(word for _, word in gateway._RUN_WORDS.values()),
+             *gateway._STATE_WORDS.values()]
+    assert [x[:50] for x in texts if x not in lang.EN] == []
