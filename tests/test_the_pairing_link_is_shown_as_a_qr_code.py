@@ -17,6 +17,9 @@ from delfin.messenger import __main__ as cli
 class _Daemon:
     invitation_id = "conn-1"
 
+    def __init__(self, *args, **kwargs):
+        pass
+
     async def __aenter__(self):
         return self
 
@@ -32,6 +35,12 @@ class _Daemon:
     async def events(self):
         yield {"type": "contactConnected",
                "contact": {"contactId": 9, "activeConn": {"connId": "conn-1"}}}
+
+    async def contact_code(self, contact_id):
+        return None
+
+    async def send_text(self, contact_id, text):
+        pass
 
 
 def _pair(tmp_path, monkeypatch, with_qrencode):
