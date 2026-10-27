@@ -15,7 +15,12 @@ import sys
 
 from . import simplex, store
 from .bridge_client import BridgeClient, BridgeDown, default_socket_path
-from .gateway import Rooms
+from .gateway import Rooms, bot_name
+from .lang import t
+
+#: How long a just started daemon is given to listen. Pairing right after
+#: the unit's start was refused on a Pi 5 (ConnectionRefusedError).
+DAEMON_WAIT_S = 60.0
 
 
 def _show_qr(invitation: str) -> None:
@@ -37,16 +42,18 @@ def _pair() -> int:
         return 1
 
     async def run() -> int:
-        async with simplex.Daemon() as daemon:
+        async with simplex.Daemon(wait=DAEMON_WAIT_S) as daemon:
             await daemon.subscribe()
             invitation = await daemon.pending_invitation()
             if not invitation or getattr(daemon, "invitation_id", None) is None:
                 print("No valid pairing invitation received.", file=sys.stderr)
                 return 1
-            if invitation:
-                print("scan this on the phone, then compare the security code:")
-                print(invitation)
-                _show_qr(invitation)
+            # The link last: a phone's terminal shows the end of the output,
+            # and a QR code is taller than its screen.
+            _show_qr(invitation)
+            print("Scan the code with SimpleX, or copy this link into SimpleX "
+                  "(+ > paste link):")
+            print(invitation)
             print("waiting for the phone to connect ...")
             async for event in daemon.events():
                 new_id = simplex.new_contact_id(event)
@@ -56,6 +63,22 @@ def _pair() -> int:
                         continue
                     store.save(new_id)
                     print(f"paired: contact {new_id}")
+                    code = await daemon.contact_code(new_id)
+                    if code:
+                        print("security code (on the phone: the contact > "
+                              f"Verify security code; both must match):\n  {code}")
+                    else:
+                        print("security code: compare it on the phone (the contact > "
+                              "Verify security code); this daemon did not report it")
+                    await daemon.send_text(new_id, t("Verbunden mit {bot} \u2713").format(bot=bot_name()))
+                    # The forum for all agents from the start, through the
+                    # gateway's own path: only the paired contact is invited.
+                    try:
+                        await Rooms(daemon).ensure_room()
+                        print("forum created: accept its invitation on the phone")
+                    except Exception as exc:
+                        print(f"forum not created now ({type(exc).__name__}); "
+                              "the gateway creates it with the first /sync")
                     return 0
         return 1
 
@@ -70,7 +93,7 @@ def _run() -> int:
         return 1
 
     async def run() -> int:
-        async with simplex.Daemon() as daemon:
+        async with simplex.Daemon(wait=DAEMON_WAIT_S) as daemon:
             print(f"serving as the phone's agent (contact {contact_id})")
             await Rooms(daemon).run()
         return 0
@@ -109,7 +132,7 @@ def _setup(session_id: str | None = None) -> int:
         print("Pair the phone first.", file=sys.stderr)
         return 1
     async def run():
-        async with simplex.Daemon() as daemon:
+        async with simplex.Daemon(wait=DAEMON_WAIT_S) as daemon:
             rooms = Rooms(daemon)
             if session_id:
                 await rooms.ensure_room(session_id)
