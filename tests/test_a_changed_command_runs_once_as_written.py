@@ -194,3 +194,55 @@ def test_a_change_never_passes_a_check_that_runs_before_the_question(broker, tmp
     _ask_and_change(broker, "some-unlisted-command -x", "rm -rf /")
     err = A._doc_executor._run_permission_gate("bash", {"command": "rm -rf /"}, perms)
     assert err, "a hard-refused command must stay refused after a change"
+
+
+class _Keys:
+    """The terminal's reader: hands out the chunks given, then silence."""
+
+    active = True
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def read_ready(self, timeout):
+        return self._chunks.pop(0) if self._chunks else ""
+
+
+class _Engine:
+    token_usage = {"input": 0, "output": 0}
+
+    def get_status(self):
+        return {}
+
+    def request_stop(self):
+        pass
+
+
+def test_the_terminal_dialog_edits_the_command_on_one_line(tmp_path, monkeypatch):
+    import io
+
+    from delfin.agent import repl
+    from delfin.agent import repl_render as rr
+    monkeypatch.setattr(tc, "_PENDING_DIR", tmp_path / "pending")
+    broker = tc.TerminalConfirmBroker(timeout_s=5.0)
+    agent = repl.TerminalAgent(_Engine(), out=io.StringIO(), err=io.StringIO(),
+                               broker=broker)
+    agent.transcript.theme = rr.Theme(enabled=False)
+    req = tc.ConfirmRequest(kind=tc.CONFIRM, tool="bash",
+                            args={"command": "rm -r results"},
+                            preview="$ rm -r results")
+    # c, the prefilled line edited (one character off, "/old" on), enter.
+    # The dialog reads on until it is answered: run it beside the test,
+    # and refuse the request if the keys never answered it.
+    t = threading.Thread(target=agent._answer_request,
+                         args=(req, _Keys(["c", "\x7f", "s/old", "\r"])),
+                         daemon=True)
+    t.start()
+    t.join(5)
+    if t.is_alive():
+        broker.resolve(req, False)
+        t.join(5)
+    assert getattr(req, "changed_to", "") == "rm -r results/old"
+    assert req.resolved and req.decision is False
+    assert broker.callback("bash", {"command": "rm -r results/old"},
+                           "$ rm -r results/old") is True
