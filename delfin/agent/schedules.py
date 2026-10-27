@@ -141,10 +141,10 @@ def local_zone() -> str:
     except OSError:
         pass
     for name in candidates:
-        if name and "/" in name and _known_zone(name):
-            return name
         if name in ("UTC", "Etc/UTC"):
             return "UTC"
+        if name and "/" in name and _known_zone(name):
+            return name
     return "UTC"
 
 

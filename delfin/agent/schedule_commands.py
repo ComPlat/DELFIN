@@ -245,13 +245,7 @@ def cli_main(argv: list[str] | None = None) -> int:
 
     text = handle(" ".join(words), workspace=workspace, created_by="cli", ask=ask)
     print(text)
-    if sub in ("add", "new", "run", "now", "resume") and not text.startswith("schedule"):
-        try:
-            from .service import launcher
-            launcher.ensure_service()
-        except Exception as exc:                    # noqa: BLE001
-            print(f"note: the agent service did not start: {exc}", file=sys.stderr)
-    return 1 if text.startswith("schedule") else 0
+    return 1 if text.startswith(("schedule:", "schedule failed")) else 0
 
 
 __all__ = ["handle", "listing", "show", "cli_main", "USAGE"]

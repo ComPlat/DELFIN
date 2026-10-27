@@ -12400,7 +12400,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "cron_create",
             "description": (
                 "Create a recurring invocation on a fixed ``every_seconds`` "
-                "interval (no cron expressions). Survives restarts."
+                "interval. Survives restarts. With ``at`` (a time of day: "
+                "'täglich 07:30', 'mo-fr 18:00', a cron line) it is only "
+                "proposed: the user confirms it."
             ),
             "parameters": {
                 "type": "object",
@@ -12408,6 +12410,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "every_seconds": {
                         "type": "integer",
                         "minimum": 60,
+                    },
+                    "at": {
+                        "type": "string",
                     },
                     "prompt": {
                         "type": "string",
@@ -12419,7 +12424,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "boolean",
                     },
                 },
-                "required": ["every_seconds", "prompt"],
+                "required": ["prompt"],
             },
         },
     },
@@ -26516,6 +26521,8 @@ class _DocToolExecutor:
                     "id": ent.id,
                     "fires_at_epoch": ent.next_fire_at,
                 })
+            if name == "cron_create" and str(arguments.get("at", "") or "").strip():
+                return _propose_user_schedule(arguments, _ws)
             if name == "cron_create":
                 ent = sch.schedule_interval(
                     every_seconds=int(arguments.get("every_seconds", 0)),
@@ -30341,6 +30348,44 @@ def _test_run_argv(argv: list[str], perms, report_dir) -> list[str]:
     import shlex
     return _bash_isolation_argv(shlex.join(argv), perms.workspace, perms,
                                 extra_write=(report_dir,))
+
+
+#: Proposals waiting for the user at once; more are refused.
+_MAX_OPEN_PROPOSALS = 5
+
+
+def _propose_user_schedule(arguments: dict, workspace: str) -> str:
+    """``cron_create`` with ``at``: a user schedule PROPOSED, not made.
+
+    Input: ``at`` (the time as the user would write it), ``prompt`` (the
+    task), the session's workspace. Output: the proposal's number and how
+    the user confirms it. It never runs before the user's ``ok``
+    (``schedules.take_due`` checks the confirmation hash), and at most
+    ``_MAX_OPEN_PROPOSALS`` wait at once."""
+    from . import schedules
+    task = str(arguments.get("prompt", "") or "").strip()
+    when = str(arguments.get("at", "") or "").strip()
+    if not task:
+        return json.dumps({"error": "prompt is required: it is the task the schedule runs"})
+    try:
+        open_ones = [e for e in schedules.entries()
+                     if not e["confirmed"] and e.get("created_by") == "agent"]
+        if len(open_ones) >= _MAX_OPEN_PROPOSALS:
+            return json.dumps({"error": (
+                f"{len(open_ones)} proposals already wait for the user's ok; "
+                "ask them to confirm or delete those first")})
+        spec = schedules.parse_when(when)
+        entry = schedules.add(f"{spec['text']} {task}", workspace=workspace or os.getcwd(),
+                              created_by="agent", confirm=False)
+    except schedules.ScheduleError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({
+        "status": "proposed", "id": entry["id"], "when": entry["when"],
+        "tz": entry["tz"], "next": schedules.describe_next(entry),
+        "note": (f"Not active until the user confirms it: `/schedule ok {entry['id']}` "
+                 f"in a session, `delfin-agent schedule ok {entry['id']}`, or "
+                 f"`ok {entry['id']}` in the phone's schedules chat. Tell the user."),
+    })
 
 
 def _schedule_is_mine(sch: Any, entry_id: str, session_id: str) -> bool:
