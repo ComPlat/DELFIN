@@ -153,8 +153,14 @@ It installs the pinned simplex-chat build and lets its daemon create the bot
 profile, makes the gateway venv (Python 3.11 from `MESSENGER_PYTHON`, uv or
 `python3.11`; websockets with `--require-hashes`, DELFIN copied root-owned from
 the checkout the script lies in), writes the units and, with `--pair`, prints the
-invitation, as a QR code too when `qrencode` is installed. Scan it with SimpleX
-and compare the connection security code. `--name=LABEL` names the installation
+invitation, as a QR code too when `qrencode` is installed, the link last (a
+phone's terminal shows the end of the output). It waits up to 60 s for a daemon
+still starting. Scan the code or paste the link in SimpleX; once the phone
+connects, the script prints the security code (the chat core's `/_get code`,
+best effort) to compare on the phone, and the bot sends a first message.
+`--lang=en` sets every phone text to English (`DELFIN_MESSENGER_LANG`);
+commands are understood in both languages (`notify short/questions/off`,
+`exchange on/off`, `new`, `files`, `change:` beside the German words). `--name=LABEL` names the installation
 (default: the short host name): the bot is `DELFIN-LABEL`, every session chat and
 the forum carry the label, so one phone paired with a Pi, a server and a login
 node tells them apart. The label is display only; rooms stay bound by chat and
@@ -168,9 +174,13 @@ another), as its own unit `delfin-agent-service` when that user has the DELFIN
 venv `~/delfin/.venv` (the Pi layout; `MESSENGER_BRIDGE_PYTHON` names another
 interpreter). The bridge uses the same interpreter. A service a terminal started
 first is used as it is; the unit takes over when it ends. The daemon and
-gateway use port 5227. The bridge runs as the agent-service user with group
-`delfin-gw`; its 0660 socket is under `/run/delfin-messenger-bridge` (0750), and
-the service user's home is its one writable path. The service runtime directory
+gateway use port 5227. The bridge runs as the agent-service user with that user's own
+group: the agent service lets a client act only when it can read the client's
+`/proc/<pid>/environ`, which Linux allows only with uid and gid equal (with group
+`delfin-gw` every phone command was refused, -32003). Its 0660 socket is under
+`/run/delfin-messenger-bridge`, set to group `delfin-gw` and setgid (2750) by
+the unit as root, so the gateway reaches the socket and nothing else; the service
+user's home is the bridge's one writable path. The service runtime directory
 stays private. Activate desired sessions locally with `/sync`.
 The direct contact remains a setup channel. `revoke` with the same environment
 removes routing authorization immediately; already dispatched commands are not
@@ -180,7 +190,15 @@ undone. `status` lists stored chat bindings.
 
 Only the paired human's received messages are accepted, including inside groups.
 Other members, sent-message echoes and unbound rooms cannot command sessions.
-UID and agent-process checks protect local sockets. The activation store is
+UID and agent-process checks protect local sockets. The daemon's API port is
+kept for `delfin-gw` by an nftables rule stored in
+`/etc/delfin-messenger/messenger.nft`: the daemon unit loads it before every
+start (as root, and does not start if it fails), and the host ruleset includes
+it, so neither a reboot nor a reload of `/etc/nftables.conf` (which begins with
+`flush ruleset`) leaves the port open to the agent's user. Group names stay
+within the daemon's 50-character limit; a name it refuses is retried once with
+the `validName` it offers. A failed command is logged with its reason
+(`journalctl -u delfin-messenger-gateway`) and told on the phone in words. The activation store is
 excluded from agent file tools and shell sandboxes. Room IDs cannot be rebound to
 another session. Rate/size limits and persistent incoming message IDs prevent
 replay across gateway restarts. Dispatch is at most once; after a connection

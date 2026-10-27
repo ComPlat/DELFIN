@@ -233,7 +233,7 @@ boot".
 ## SimpleX messenger: forum and session chats
 
 Set up in one run on the Pi (or any Linux with systemd and glibc >= 2.34),
-after a deploy:
+after a deploy, as the admin user (`pi`; the agent user has no sudo):
 
 ```bash
 sudo apt install qrencode          # optional: the pairing link as a QR code
@@ -241,13 +241,23 @@ sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=
 ```
 
 `--name=` labels the bot (`DELFIN-Pi`) and every chat, for a phone paired with
-several machines; the default is the host name.
+several machines; the default is the host name. The bot keeps the name of its
+first start. `--lang=en` sends every phone text in English (default German).
 
-Scan the code with SimpleX on the phone and compare the security code. The
-script installs the pinned simplex-chat build (its daemon creates the bot
+The script waits for the SimpleX daemon, then prints the QR code and, last,
+the link (on a phone's terminal: copy the link and paste it in SimpleX under
++ > paste link). Once the phone connects it prints the security code -- compare
+it on the phone under the contact > Verify security code -- and the bot says
+hello in SimpleX. The script installs the pinned simplex-chat build (its daemon creates the bot
 profile), the gateway venv (hashed), the units including the agent service, and
 with `--whisper` local speech recognition (pinned faster-whisper-small, every
 file digest-checked, about 0.5 GB). After a DELFIN update run it again.
+
+Then, as `delfin`, in a project folder: `delfin-agent tui` and `/sync` in the
+session; accept the group invitation on the phone. The group is named after
+machine and session (an untitled session after its folder). A closed TUI
+leaves its session running: `delfin-agent tui --continue` in the same folder
+joins it again.
 
 On the phone, `neu NAME` (or `neu NAME: task`) starts a session in
 `~/DELFIN-Handy/NAME` and invites you to its chat; it asks before commands and
