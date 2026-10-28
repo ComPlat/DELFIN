@@ -2255,6 +2255,54 @@ def _align_and_orient_ligands(
                     if not _moved:
                         break
 
+        # ===== A DONOR'S HYDROGENS FACE AWAY FROM THE METAL (DELFIN_FFFREE_ORIENT_DONOR_H, default OFF) =====
+        #
+        # THE DEFECT.  A donor with hydrogens and ONE heavy neighbour (NH2-R, OH-R, SH-R) keeps the torsion
+        # of its H about the R-D bond from the metal-free (isolated or whole-template) conformer; nothing
+        # turns its lone pair to the metal.  The eye reads h_axis_H_proximal_via_donor (an H of the donor
+        # closer to M than the donor itself: dev300 270 -> 649 frames, HIDNUH methyl-carbazate NH2 alone
+        # 159 frames) and donor_local_geom_linear.  The fix rotates only that donor's H about the R-D axis
+        # (10 deg grid) to the angle whose lone pair (anti-bisector of all D neighbours) points best at M;
+        # no heavy atom moves.  Needs ORIENT_CARRY_H (the H positions must be real).  Off -> byte-identical.
+        if _carry_h and _delfin_env_int("DELFIN_FFFREE_ORIENT_DONOR_H", 0) == 1:
+            for d_idx in donor_atom_indices:
+                d_atom = mol.GetAtomWithIdx(d_idx)
+                if d_atom.GetSymbol() not in ("N", "O", "S", "P", "Se", "As"):
+                    continue
+                hs = [nb.GetIdx() for nb in d_atom.GetNeighbors() if nb.GetAtomicNum() == 1]
+                hv = [nb.GetIdx() for nb in d_atom.GetNeighbors()
+                      if nb.GetAtomicNum() > 1 and nb.GetSymbol() not in _METAL_SET]
+                if not hs or len(hv) != 1:
+                    continue
+                dpos = pts[d_idx]
+                dm = m_pos - dpos
+                dmn = float(_np.linalg.norm(dm))
+                if dmn < 1e-6:
+                    continue
+                dm = dm / dmn
+                ax = dpos - pts[hv[0]]
+                cur = {h: tuple(pts[h]) for h in hs}
+
+                def _lp_cos(hp, _hv=hv[0], _dpos=dpos, _dm=dm):
+                    lp = _np.zeros(3)
+                    for p in [pts[_hv]] + [_np.asarray(v) for v in hp.values()]:
+                        v = _np.asarray(p) - _dpos
+                        vn = float(_np.linalg.norm(v))
+                        if vn > 1e-8:
+                            lp -= v / vn
+                    ln = float(_np.linalg.norm(lp))
+                    return float(_np.dot(lp / ln, _dm)) if ln > 1e-8 else -1.0
+
+                best_c, best_p = _lp_cos(cur), None
+                for k in range(1, 36):
+                    cand = _rotate_about(ax, dpos, 10.0 * k, cur)
+                    c = _lp_cos(cand)
+                    if c > best_c + 1e-9:
+                        best_c, best_p = c, cand
+                if best_p is not None:
+                    for h, p in best_p.items():
+                        pts[h] = _np.array(p, dtype=float)
+
         # Write back.
         if is_list:
             for i in range(n_atoms):
