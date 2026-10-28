@@ -1628,10 +1628,14 @@ def _align_and_orient_ligands(
         # clash score chooses.  Replaces the CHELATE_LP modes for bidentates when on.  Off -> byte-identical.
         _chelate_plane_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", 0)
         _chelate_plane = _chelate_plane_mode in (1, 3)
+        # =4: table window as =3, but the spin is chosen lexicographically -- first no non-donor heavy atom
+        # inside the verifier metal shell (1.05 x (rcov_M + rcov_X), the same test _verify_topology_from_graph
+        # rejects), then fold inside the crystal window (excess beyond it as tie order), then clash.
+        _chelate_plane_lex = _chelate_plane_mode == 4
         # =3: the fold window per chelate-ring class (ring size incl. M, conjugated) is read from a local
         # crystal table (DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE, rows "ring_size conj tol_deg [n]"; the
         # window is the p95 of the crystal fold of that class).  No table or class -> no constraint.
-        _chelate_fold_table = _load_chelate_fold_table() if _chelate_plane_mode == 3 else {}
+        _chelate_fold_table = _load_chelate_fold_table() if _chelate_plane_mode in (3, 4) else {}
         # =2: the fold is a cost (weight DELFIN_FFFREE_ORIENT_CHELATE_PLANE_W, A^2 per rad^2, default 5)
         # instead of a wall -- a crowded sphere may still fold a chelate when the clash is worse.
         _chelate_plane_soft = _chelate_plane_mode == 2
@@ -1859,7 +1863,7 @@ def _align_and_orient_ligands(
                     path.append(prev[path[-1]])
                 if len(path) >= 3:
                     _conj = all(_sp2_graph_atom(k) for k in path[1:-1])
-                    if _chelate_plane_mode == 3:
+                    if _chelate_plane_mode in (3, 4):
                         # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=3: crystal fold window per ring class
                         _tol = _chelate_fold_table.get((len(path) + 1, int(_conj)))
                         if _tol is not None:
@@ -1870,6 +1874,20 @@ def _align_and_orient_ligands(
             _ring_nb_cache[key] = out
             _ring_tol_cache[key] = _tol
             return out
+
+        def _metal_shell_intruders(frag_pts):
+            """DELFIN_FFFREE_ORIENT_CHELATE_PLANE=4: moving atoms (non-donors, H included) closer to the
+            metal than 1.05 x (rcov_M + rcov_X) -- the phantom-bond test of _verify_topology_from_graph."""
+            m_rc = _COVALENT_RADII.get(mol.GetAtomWithIdx(metal_idx).GetSymbol())
+            if m_rc is None:
+                return 0
+            n = 0
+            for i, p in frag_pts.items():
+                if i in donor_set:
+                    continue
+                if float(_np.linalg.norm(_np.asarray(p) - m_pos)) < 1.05 * (m_rc + r_cov[i]):
+                    n += 1
+            return n
 
         def _chelate_fold(donors, frag_pts):
             """DELFIN_FFFREE_ORIENT_CHELATE_PLANE: fold (deg) of a bidentate about its donor-donor axis --
@@ -2043,6 +2061,28 @@ def _align_and_orient_ligands(
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
                 _fold_ok = None
+                if _chelate_plane_lex and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=4: (metal-shell intruders, fold excess, clash).
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _best_key = None
+                    for _a, c in _cands:
+                        f = _chelate_fold(donors, c)
+                        if f is None:
+                            _best_key = None
+                            break
+                        _tl = _ring_tol_cache.get(tuple(donors))
+                        _ex = max(0.0, f - _tl) if _tl is not None else 0.0
+                        _key = (_metal_shell_intruders(c), round(_ex, 6), _sc(c))
+                        if _best_key is None or _key < _best_key:
+                            _best_key = _key
+                            best_pts = c
+                    if _best_key is not None:
+                        best_score = _best_key[2]
+                        base_sets = []
+                        _fold_ok = []
+                    else:
+                        best_pts = atom_pts
                 if _chelate_plane_soft and len(donors) == 2:
                     # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=2: the fold is a cost, not a wall --
                     # clash + W x ((fold - 20 deg)+ in rad)^2 over the full 5 deg spin grid.
