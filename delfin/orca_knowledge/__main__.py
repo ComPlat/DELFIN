@@ -42,7 +42,19 @@ def main(argv: list[str] | None = None) -> int:
         problems = check_store()
         print("\n".join(problems) or "all cards valid")
         return 1 if problems else 0
-    print("usage: python -m delfin.orca_knowledge refresh-keywords | check", file=sys.stderr)
+    if args[:1] == ["probe"]:
+        from . import probe as probe_mod
+        words = args[1:]
+        if not words:
+            print("usage: python -m delfin.orca_knowledge probe KEYWORD [KEYWORD...]",
+                  file=sys.stderr)
+            return 2
+        results, rc = probe_mod.probe_all(words)
+        for word, result in zip(words, results):
+            print(f"{word}: {result}")
+        return rc
+    print("usage: python -m delfin.orca_knowledge refresh-keywords | check | probe KEYWORD [KEYWORD...]",
+          file=sys.stderr)
     return 2
 
 
