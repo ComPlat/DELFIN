@@ -215,6 +215,15 @@ def _legconf_census(tag: str, mol, results) -> None:
         os.write(2, ("[LEGCONF_CENSUS] %s failed %s\n" % (tag, str(_lc_exc)[:60])).encode())
 
 
+def _u5_vwhy(kind: str, m_sym: str, x_sym: str, x_idx: int, d: float) -> None:
+    """DELFIN_U5_TRACE=1 (output only): which metal-sphere test of rule 1 fired, on which atom."""
+    if os.environ.get("DELFIN_U5_TRACE", "0") == "1":
+        try:
+            os.write(2, ("[U5V] rule1 %s %s-%s%d %.2f\n" % (kind, m_sym, x_sym, x_idx, d)).encode())
+        except Exception:
+            pass
+
+
 def _u5_vfail(rule: int) -> bool:
     """DELFIN_U5_TRACE=1 (output only): name the rule of _verify_topology_from_graph that rejected a
     frame (its source line in this file at 27.10.2026); always returns False."""
@@ -351,7 +360,7 @@ def _verify_topology_from_graph(
                     _is_bonded = o_idx in smiles_nbr_ids
                     if _is_bonded:
                         if _d > _BONDED_MAX_FRAC * _cov_sum:
-                            _violation = True
+                            _violation = True; _u5_vwhy("long", m_sym, other.GetSymbol(), o_idx, _d)
                             break
                         # Lower bound: reject collapsed M-L bonds
                         # (ratio < 0.70 vs the table ideal).  Use the
@@ -363,7 +372,7 @@ def _verify_topology_from_graph(
                         except Exception:
                             _ml_ideal = 0.0
                         if _ml_ideal > 0 and _d < _BONDED_MIN_IDEAL_FRAC * _ml_ideal:
-                            _violation = True
+                            _violation = True; _u5_vwhy("short", m_sym, other.GetSymbol(), o_idx, _d)
                             break
                     else:
                         if o_idx in _phantom_exempt:
@@ -371,7 +380,7 @@ def _verify_topology_from_graph(
                             # close contact (NHC, naphthyridine, salen).
                             continue
                         if _d < _PHANTOM_MIN_FRAC * _cov_sum:
-                            _violation = True
+                            _violation = True; _u5_vwhy("phantom", m_sym, other.GetSymbol(), o_idx, _d)
                             break
                 if _violation:
                     return _u5_vfail(366)
