@@ -3682,6 +3682,14 @@ def _smiles_to_xyz_isomers_impl(
     # Default-OFF byte-id (DELFIN_FFFREE_AROM_BOND_LENGTH).
     _legconf_census('before:_apply_arom_bond_length_if_enabled:L3660', mol, results)
     results = _apply_arom_bond_length_if_enabled(mol, results, _dual_parse_done)
+    # DELFIN_FFFREE_OXO_RESONANCE (default off): degenerate terminal groups (nitrate, carboxylate, sulfate, ...)
+    # get their resonance length -- the legacy-path twin of DELFIN_FFFREE_MESOMERY_SEAT (manta/_oxo_resonance.py).
+    if os.environ.get("DELFIN_FFFREE_OXO_RESONANCE", "0") == "1" and not _dual_parse_done:
+        try:
+            from delfin.manta._oxo_resonance import resonance_results as _oxo_rr
+            results = _oxo_rr(mol, results)
+        except Exception:
+            pass
 
     _legconf_census('before:L3686:L3686', mol, results)
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
