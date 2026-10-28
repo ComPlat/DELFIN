@@ -33,3 +33,15 @@ def test_flag_changes_only_the_reference(monkeypatch):
     monkeypatch.setenv("DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ", "1")
     assert not _frag_xyz_compressed(m, fl, X)
     assert _frag_xyz_compressed(m, fl, X * 0.8)
+
+
+def test_stretched_flag(monkeypatch):
+    m, X = _pyrrolide()
+    fl = list(range(m.GetNumAtoms()))
+    monkeypatch.delenv("DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ", raising=False)
+    monkeypatch.delenv("DELFIN_FFFREE_TEMPLATE_STRETCHED", raising=False)
+    Y = X * 1.35                      # ring bonds ~1.82 A
+    assert not _frag_xyz_compressed(m, fl, Y)
+    monkeypatch.setenv("DELFIN_FFFREE_TEMPLATE_STRETCHED", "1")
+    assert _frag_xyz_compressed(m, fl, Y)
+    assert not _frag_xyz_compressed(m, fl, X)

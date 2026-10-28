@@ -234,6 +234,7 @@ def _frag_xyz_collapsed(mol, frag_list, frag_xyz, vol_min: float = 0.40) -> bool
 # collapsed: a chelate fragment goes through the same isolated re-embed (accepted only when the new
 # geometry is neither collapsed nor compressed), a monodentate fragment is re-embedded alone with ETKDG.
 _COMPRESSED_FACTOR = 0.88
+_STRETCHED_FACTOR = 1.15
 
 
 def template_compressed_reseat_enabled() -> bool:
@@ -293,6 +294,11 @@ def _frag_xyz_compressed(mol, frag_list, frag_xyz, factor: float = _COMPRESSED_F
         # one (11 -> 4 frames, crystal isomer lost).  Real pyrazolate C-N is ~1.34 A = 0.91 x 1.47.
         _conj_ref = os.environ.get("DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ", "0") == "1"
         _conj_bonds = _conjugated_ring_single_bonds(mol) if _conj_ref else None
+        # DELFIN_FFFREE_TEMPLATE_STRETCHED (default off): a bond LONGER than 1.15 x its reference counts
+        # as a distorted template too.  Measured: OPEVEN / QISKEK nitrate kappa2 4-ring -- the whole-complex
+        # ETKDG stretches the coordinated N-O single bonds to 1.89-2.14 A (real 1.27); the frame keeps
+        # them (ligspec_nitrate bad_bond_len), the isolated nitrate embeds correctly.
+        _stretch_chk = os.environ.get("DELFIN_FFFREE_TEMPLATE_STRETCHED", "0") == "1"
         row = {a: k for k, a in enumerate(frag_list)}
         for b in mol.GetBonds():
             i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
@@ -309,8 +315,11 @@ def _frag_xyz_compressed(mol, frag_list, frag_xyz, factor: float = _COMPRESSED_F
                 _bt = Chem.BondType.AROMATIC   # DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ
             ref = (pt.GetRcovalent(a1.GetAtomicNum()) + pt.GetRcovalent(a2.GetAtomicNum())) \
                 * scale.get(_bt, 1.0)
-            if float(np.linalg.norm(frag_xyz[row[i]] - frag_xyz[row[j]])) < factor * ref:
+            _dd = float(np.linalg.norm(frag_xyz[row[i]] - frag_xyz[row[j]]))
+            if _dd < factor * ref:
                 return True
+            if _stretch_chk and _dd > _STRETCHED_FACTOR * ref:
+                return True    # DELFIN_FFFREE_TEMPLATE_STRETCHED
         return False
     except Exception:
         return False
