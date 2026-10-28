@@ -248,8 +248,9 @@ def _conjugated_ring_single_bonds(mol):
     try:
         from rdkit.Chem import rdmolops
         m = Chem.Mol(mol)
-        rdmolops.FastFindRings(m)
-        rings = m.GetRingInfo().BondRings()
+        m.UpdatePropertyCache(strict=False)
+        rings = [tuple(m.GetBondBetweenAtoms(int(r[k]), int(r[(k + 1) % len(r)])).GetIdx()
+                       for k in range(len(r))) for r in Chem.GetSymmSSSR(m)]
     except Exception:
         return set()
 
