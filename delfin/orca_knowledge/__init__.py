@@ -42,6 +42,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .checks import applies, check_graph, findings  # noqa: F401  (re-exported)
+
 CARDS_DIR = Path(__file__).with_name("cards")
 KEYWORDS_FILE = Path(__file__).with_name("opi_keywords.json")
 
@@ -55,6 +57,32 @@ TOPICS = frozenset({
     "transition-state", "irc", "neb", "scan", "conformers", "goat", "docker", "solvator",
     "md", "qmmm", "embedding", "broken-symmetry", "spin", "compound", "workflow",
     "error", "performance",
+    # essential elements
+    "counterpoise", "gcp", "fragments", "cpscf", "field", "frozen-core",
+    "integrals", "coordinates", "numerical-gradients",
+    # solvation models (Section 2.13, distinct models)
+    "cpcm", "smd", "cosmors",
+    # model chemistries
+    "rpa", "adft", "casdft", "dcd-cas", "fci", "wavefunction-types", "mrcc",
+    "mreom", "mm", "3c",
+    # population and decomposition analyses (Section 5)
+    "population", "nbo", "nocv", "eda", "led", "hfld", "adld", "fod",
+    # vibrations and bandshapes
+    "vibrations", "vpt2", "asa",
+    # further property types
+    "electric-properties", "deltascf", "xas", "xes", "mcd", "dichroism",
+    "moessbauer", "spin-orbit", "aniso", "magprop",
+    # excited-state methods not covered above
+    "steom", "rocis", "mcrpa", "ops", "ihfsmr", "casscf-resp",
+    # structure and reactivity beyond opt/TS/IRC/NEB
+    "conical-intersections", "mecp", "dock",
+    # multiscale
+    "fmm", "crystal-qmmm",
+    # utilities, workflows, environment
+    "plots", "orca-2json", "property-file", "utilities", "opi",
+    "installation", "gui", "troubleshooting",
+    # ab initio molecular dynamics
+    "aimd",
 })
 KINDS = frozenset({
     "requirement", "recommendation", "default", "incompatibility", "error-pattern",
@@ -144,10 +172,32 @@ def validate(card: Any) -> list[str]:
         verifier = str(card.get("verified_by") or "").strip()
         if not verifier or verifier == str(card.get("author") or "").strip():
             out.append("verified_by: a verifier other than the author")
+    out += _v2_problems(card)
     return out
 
 
-_BANG = re.compile(r"!\s*([A-Za-z0-9][A-Za-z0-9+\-()/*,_.']*)")
+def _v2_problems(card: dict) -> list[str]:
+    """v2 fields (all optional): ``applies``, ``check``, ``relations``."""
+    from .checks import (check_problems, condition_problems,
+                         relations_problems)
+    out: list[str] = []
+    if "applies" in card:
+        out += condition_problems(card["applies"], known_keyword)
+    if "check" in card:
+        out += check_problems(card["check"], known_keyword)
+    if "relations" in card:
+        out += relations_problems(card["relations"])
+    return out
+
+
+# A keyword marker is "!" at the start of the text or after whitespace or
+# "(" -- never after a letter (so "WARNING!" is no marker). Quoted text is
+# checked like any other: an input line quoted in a card is advice too.
+# The keyword itself stops at whitespace, trailing punctuation (".,;:")
+# and an unbalanced closing ")" (so "(see !TightSCF)" yields TightSCF,
+# not "TightSCF)").
+_BANG = re.compile(r"(?:^|(?<=[\s(\"']))!\s*([A-Za-z0-9][A-Za-z0-9+\-*/(),_.']*)")
+_TRAILING = re.compile(r"[.,;:\"']+$")
 
 
 def _named_keywords(card: dict) -> list[str]:
@@ -164,7 +214,19 @@ def _named_keywords(card: dict) -> list[str]:
     if isinstance(rec, dict):
         texts += [str(v) for v in rec.values() if isinstance(v, str)]
     for text in texts:
-        names += [m.rstrip(".,;:") for m in _BANG.findall(text)]
+        for m in _BANG.finditer(text):
+            token = m.group(1)
+            # Trailing punctuation and an unbalanced closing ")" are not part
+            # of the keyword: "(see !TightSCF)." names TightSCF.
+            while True:
+                stripped = _TRAILING.sub("", token)
+                if stripped.endswith(")") and stripped.count(")") > stripped.count("("):
+                    stripped = stripped[:-1]
+                if stripped == token:
+                    break
+                token = stripped
+            if token:
+                names.append(token)
     return list(dict.fromkeys(n for n in names if n))
 
 
@@ -268,4 +330,5 @@ def solvents_from_opi() -> list[str]:
 
 
 __all__ = ["validate", "cards", "check_store", "known_keyword", "keywords_from_opi",
-           "solvents_from_opi", "TOPICS", "KINDS", "CARDS_DIR", "KEYWORDS_FILE"]
+           "solvents_from_opi", "TOPICS", "KINDS", "CARDS_DIR", "KEYWORDS_FILE",
+           "applies", "findings", "check_graph"]

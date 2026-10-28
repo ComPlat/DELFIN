@@ -128,3 +128,28 @@ def test_a_run_of_orca_is_a_source():
     assert ok.validate(card) == []
     bad = _card(sources=[{"type": "orca-run", "version": "6.1.1", "input": "! HF def2-SVP"}])
     assert any("output" in p for p in ok.validate(bad))
+
+
+def test_an_exclamation_after_a_word_or_in_a_message_is_not_a_marker():
+    # "WARNING!" and quoted ORCA output must not be read as naming keywords.
+    card = _card(statement=(
+        'ORCA prints "WARNING! SCF NOT CONVERGED" and "ERROR! FATAL ERROR! 1" '
+        "before it stops; quoted lines say nothing about inputs."))
+    assert ok.validate(card) == []
+    # "(see !TightSCF)" names a real keyword; the ")" must not be captured.
+    card = _card(statement="Use SlowConv, see !TightSCF for the pairing; the "
+                           "closing parenthesis must stay out of the keyword.")
+    assert ok.validate(card) == []
+
+
+def test_a_real_marker_is_read_even_in_parentheses_or_a_list():
+    # "! B3LYP def2-SVP" names two keywords; parentheses and lists keep them.
+    card = _card(statement="Run the geometry as ! B3LYP def2-SVP (see manual) "
+                           "and note !SlowConv helps, but !ZZZNOTREAL is not "
+                           "a keyword ORCA knows.")
+    problems = ok.validate(card)
+    assert any("ZZZNOTREAL" in p.upper() for p in problems)
+    # the same statement with only real keywords passes
+    card = _card(statement="Run the geometry as ! B3LYP def2-SVP (see manual) "
+                           "and note !SlowConv helps; every name here is real.")
+    assert ok.validate(card) == []
