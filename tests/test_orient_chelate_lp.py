@@ -172,3 +172,39 @@ def test_chelate_plane_lexicographic_window(monkeypatch, tmp_path, deg):
     monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE", str(tab))
     Y = _run(mol, X, metal, donors)
     assert _fold(mol, Y, metal, donors[:2]) <= 12.5 + 1e-6
+
+
+def _md(X, metal, donors):
+    return [float(np.linalg.norm(X[d] - X[metal])) for d in donors]
+
+
+def test_swing_off_is_byte_identical(monkeypatch, tmp_path):
+    mol, X, metal, donors = _phen_zn_nh3()
+    monkeypatch.delenv("DELFIN_FFFREE_ORIENT_SWING", raising=False)
+    ref = _run(mol, X, metal, donors)
+    tab = tmp_path / "sw.tsv"
+    tab.write_text("3\t8.0\t10.0\t100\n")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_SWING", "0")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_SWING_TABLE", str(tab))
+    assert np.array_equal(ref, _run(mol, X, metal, donors))
+
+
+def test_swing_keeps_md_and_bound(monkeypatch, tmp_path):
+    mol, X, metal, donors = _tbuo_like()
+    tab = tmp_path / "sw.tsv"
+    tab.write_text("2\t6.0\t8.0\t100\n")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_CARRY_H", "1")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_SCORE_H", "1")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_SWING", "1")
+    monkeypatch.setenv("DELFIN_FFFREE_ORIENT_SWING_TABLE", str(tab))
+    Y = _run(mol, X, metal, donors)
+    assert np.allclose(_md(Y, metal, donors), _md(X, metal, donors), atol=1e-6)
+    for d in donors:
+        u, v = X[d] - X[metal], Y[d] - Y[metal]
+        ang = math.degrees(math.acos(np.dot(u, v) / np.linalg.norm(u) / np.linalg.norm(v)))
+        assert ang <= 6.0 + 1e-6
+
+
+def _tbuo_like():
+    from test_orient_score_h import _tbuo_pair
+    return _tbuo_pair()

@@ -58,6 +58,31 @@ def _load_chelate_fold_table() -> Dict[Tuple[int, int], float]:
     return tab
 
 
+_SWING_TABLE_CACHE: Dict[str, Dict[int, float]] = {}
+
+
+def _load_swing_table() -> Dict[int, float]:
+    """DELFIN_FFFREE_ORIENT_SWING: {CN: per-donor bending window deg (p90 column)} from the local crystal
+    table DELFIN_FFFREE_ORIENT_SWING_TABLE (rows "cn p90 p95 n"; licensed-database derived, never shipped)."""
+    path = os.environ.get("DELFIN_FFFREE_ORIENT_SWING_TABLE", "") or ""
+    if not path:
+        return {}
+    if path in _SWING_TABLE_CACHE:
+        return _SWING_TABLE_CACHE[path]
+    tab: Dict[int, float] = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 2 or ln.lstrip().startswith("#"):
+                    continue
+                tab[int(p[0])] = float(p[1])
+    except (OSError, ValueError):
+        tab = {}
+    _SWING_TABLE_CACHE[path] = tab
+    return tab
+
+
 def _build_multimetal_scaffold(
     mol,
     metal_indices: List[int],
@@ -1626,6 +1651,8 @@ def _align_and_orient_ligands(
         # A spin changes the fold one to one, so the planar spin always exists.  Admissible are the spins
         # (5 deg grid) with fold <= 20 deg (crystal envelope folds of 5/6-ring chelates); among those the
         # clash score chooses.  Replaces the CHELATE_LP modes for bidentates when on.  Off -> byte-identical.
+        # DELFIN_FFFREE_ORIENT_SWING: rigid fragment rotations about the metal (see the block after the passes).
+        _swing_on = _delfin_env_int("DELFIN_FFFREE_ORIENT_SWING", 0) == 1
         _chelate_plane_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", 0)
         _chelate_plane = _chelate_plane_mode in (1, 3)
         # =4: table window as =3, but the spin is chosen lexicographically -- first no non-donor heavy atom
@@ -2169,6 +2196,64 @@ def _align_and_orient_ligands(
                     changed = True
             if not changed:
                 break
+
+        # ===== THE POLYHEDRON MAY BEND (DELFIN_FFFREE_ORIENT_SWING, default OFF) =====
+        #
+        # THE MISSING FREEDOM.  The donors sit exactly on the ideal vertices and the only moves above are
+        # spins about axes THROUGH a donor; when the fragments still overlap there is no move left except
+        # folding a chelate (which the chelate-plane window now forbids, as the crystal does).  A real
+        # crystal bends the polyhedron instead.  A rigid rotation of a WHOLE fragment (donors, backbone,
+        # its hydrogens) about an axis through the METAL keeps every M-D length, the chelate fold and the
+        # donor lone-pair alignment exactly and changes only the donor directions.  Admissible while every
+        # donor stays within the crystal bending window of its CN (per-donor angle to the aligned ideal
+        # vertex, p90 of the local crystal table DELFIN_FFFREE_ORIENT_SWING_TABLE, rows "cn p90 p95 n";
+        # no table / CN -> no swing).  Accepted only if the clash score falls.  Off -> byte-identical.
+        if _swing_on and frag_info:
+            _sw_bound = _load_swing_table().get(len(donor_atom_indices))
+            if _sw_bound:
+                _v0 = {}
+                for d_idx in donor_atom_indices:
+                    v = pts[d_idx] - m_pos
+                    vn = float(_np.linalg.norm(v))
+                    if vn > 1e-8:
+                        _v0[d_idx] = v / vn
+                _axes = [_np.array(a, dtype=float) for a in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+                for _pass in range(3):
+                    _moved = False
+                    order = range(frag_count) if _pass % 2 == 0 else range(frag_count - 1, -1, -1)
+                    for idx in order:
+                        info = frag_info[idx]
+                        donors = info["donors"]
+                        if not donors or any(d not in _v0 for d in donors):
+                            continue
+                        allm = list(info["heavy"]) + list(info["hyd"])
+                        cur = {i: tuple(pts[i]) for i in allm}
+                        _own = frozenset(allm)
+                        best_s = _clash_for_frag_h(_own, cur) if _score_h else _clash_for_frag(
+                            info["heavy"], {i: cur[i] for i in info["heavy"]})
+                        best_c = None
+                        for ax in _axes:
+                            for ang in (2.5, -2.5, 5.0, -5.0):
+                                cand = _rotate_about(ax, m_pos, ang, cur)
+                                ok = True
+                                for d in donors:
+                                    v = _np.asarray(cand[d]) - m_pos
+                                    c = float(_np.dot(v / float(_np.linalg.norm(v)), _v0[d]))
+                                    if math.degrees(math.acos(max(-1.0, min(1.0, c)))) > _sw_bound:
+                                        ok = False
+                                        break
+                                if not ok:
+                                    continue
+                                s = _clash_for_frag_h(_own, cand) if _score_h else _clash_for_frag(
+                                    info["heavy"], {i: cand[i] for i in info["heavy"]})
+                                if s < best_s - 1e-6:
+                                    best_s, best_c = s, cand
+                        if best_c is not None:
+                            for i, p in best_c.items():
+                                pts[i] = _np.array(p, dtype=float)
+                            _moved = True
+                    if not _moved:
+                        break
 
         # Write back.
         if is_list:
