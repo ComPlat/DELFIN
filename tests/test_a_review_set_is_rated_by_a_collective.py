@@ -24,7 +24,10 @@ from delfin import review_stats as rs
 from delfin import review_team as rt
 from delfin.agent import safe_git
 
-NOW = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
+# The real clock, not a fixed day: rt.claim() dates a claim with the real
+# time, and check_pull_request() refuses one more than a day after `now` --
+# a fixed 2026-10-27 made the claim test fail from 2026-10-28 on.
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def _water(stem: str, k: int = 0) -> str:
