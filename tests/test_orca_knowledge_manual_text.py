@@ -112,6 +112,7 @@ def test_convert_page_reports_relative_path(tmp_path: Path):
 
 
 def test_cli_converts_every_page(tmp_path: Path):
+    from conftest import child_env
     src = tmp_path / "manual"
     (src / "contents" / "sub").mkdir(parents=True)
     (src / "contents" / "a.html").write_text(PAGE, encoding="utf-8")
@@ -121,7 +122,7 @@ def test_cli_converts_every_page(tmp_path: Path):
     result = subprocess.run(
         [sys.executable, "-m", "delfin.orca_knowledge.manual_text",
          str(src), str(dst), "--version", "6.1"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=child_env(tmp_path),
     )
     assert result.returncode == 0, result.stderr
     a = (dst / "contents" / "a.txt").read_text(encoding="utf-8")
