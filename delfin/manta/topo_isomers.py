@@ -1513,6 +1513,35 @@ def _build_topology_xyz_from_template(
                     Vt[-1, :] *= -1
                     R = Vt.T @ U.T
                 transformed = (frag_xyz - src_center) @ R.T + tgt_center
+                # ===== THE TEMPLATE'S OWN METAL FIXES THE CHELATE SPIN (DELFIN_FFFREE_PROCRUSTES_METAL_SPIN) =====
+                # Two donors fix a rigid fragment only up to a spin about their axis; the SVD of a rank-1
+                # cross-covariance picks that spin arbitrarily.  The template knows it: it was embedded WITH
+                # the metal (orig is metal-centred, the metal at 0).  Spin the fitted fragment about the D...D
+                # axis so the template's metal lands as close as possible to the real metal (origin): the
+                # chelate plane, the donor lone pairs and the side the backbone points to are the template's
+                # (AGICOJ: the arbitrary spin put an N-methyl 2.1 A from Pd and the frame died at the
+                # verifier).  Donor positions are unchanged.  Off -> byte-identical.
+                if (len(src) == 2 and os.environ.get("DELFIN_FFFREE_PROCRUSTES_METAL_SPIN", "0") == "1"
+                        and frag_xyz.shape == orig[frag_list, :].shape
+                        and np.array_equal(frag_xyz, orig[frag_list, :])):   # template fragment only
+                    try:
+                        _m_t = (np.zeros(3) - src_center) @ R.T + tgt_center
+                        _ax = tgt[1] - tgt[0]
+                        _axn = float(np.linalg.norm(_ax))
+                        if _axn > 1e-8:
+                            _u = _ax / _axn
+                            _piv = 0.5 * (tgt[0] + tgt[1])
+                            _a = _m_t - _piv
+                            _a = _a - float(np.dot(_a, _u)) * _u
+                            _b = -_piv - float(np.dot(-_piv, _u)) * _u
+                            if float(np.linalg.norm(_a)) > 1e-6 and float(np.linalg.norm(_b)) > 1e-6:
+                                _th = math.atan2(float(np.dot(np.cross(_a, _b), _u)), float(np.dot(_a, _b)))
+                                _c, _s = math.cos(_th), math.sin(_th)
+                                _v = transformed - _piv
+                                transformed = (_v * _c + np.cross(_u, _v) * _s
+                                               + np.outer(_v @ _u, _u) * (1.0 - _c)) + _piv
+                    except Exception:
+                        pass
 
                 # Bidentate/multidentate fragments can be mirrored around the
                 # donor-donor axis, yielding two plausible orientations with
