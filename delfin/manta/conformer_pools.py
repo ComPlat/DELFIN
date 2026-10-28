@@ -241,6 +241,41 @@ def template_compressed_reseat_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_TEMPLATE_COMPRESSED_RESEAT", "0") == "1"
 
 
+def _conjugated_ring_single_bonds(mol):
+    """DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ: indices of SINGLE bonds inside 5/6-rings whose every atom is
+    aromatic, carries a non-metal double bond, or is an N/O/S/Se with at most three non-metal neighbours and
+    no double bond (a lone pair in the pi system).  Works on unsanitised mols (own ring search)."""
+    try:
+        from rdkit.Chem import rdmolops
+        m = Chem.Mol(mol)
+        rdmolops.FastFindRings(m)
+        rings = m.GetRingInfo().BondRings()
+    except Exception:
+        return set()
+
+    def _pi(a):
+        if a.GetIsAromatic():
+            return True
+        nm = [bd for bd in a.GetBonds() if bd.GetOtherAtom(a).GetSymbol() not in _METAL_SET]
+        if any(bd.GetBondTypeAsDouble() >= 1.5 for bd in nm):
+            return True
+        return a.GetSymbol() in ("N", "O", "S", "Se") and len(nm) <= 3
+
+    out = set()
+    for br in rings:
+        if len(br) not in (5, 6):
+            continue
+        atoms = set()
+        for bi in br:
+            bd = m.GetBondWithIdx(bi)
+            atoms.update((bd.GetBeginAtomIdx(), bd.GetEndAtomIdx()))
+        if any(m.GetAtomWithIdx(k).GetSymbol() in _METAL_SET for k in atoms):
+            continue
+        if all(_pi(m.GetAtomWithIdx(k)) for k in atoms):
+            out.update(bi for bi in br if m.GetBondWithIdx(bi).GetBondType() == Chem.BondType.SINGLE)
+    return out
+
+
 def _frag_xyz_compressed(mol, frag_list, frag_xyz, factor: float = _COMPRESSED_FACTOR) -> bool:
     """True if one covalent bond inside the fragment (``frag_xyz`` rows in ``frag_list`` order) is
     shorter than ``factor`` x its bond-order-aware covalent reference."""
@@ -249,6 +284,14 @@ def _frag_xyz_compressed(mol, frag_list, frag_xyz, factor: float = _COMPRESSED_F
         pt = Chem.GetPeriodicTable()
         scale = {Chem.BondType.SINGLE: 1.0, Chem.BondType.DOUBLE: 0.87,
                  Chem.BondType.TRIPLE: 0.78, Chem.BondType.AROMATIC: 0.91}
+        # DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ (default off): a Kekule SINGLE bond inside a conjugated
+        # 5/6-ring (every ring atom aromatic, double-bonded, or an N/O/S/Se lone-pair atom) is a delocalised
+        # bond; its reference is the aromatic one.  Measured: KIVKIJ (Co tris-pyrazolylborate) -- the
+        # pyrazolate C-N(-) of the template, 1.25 A, read against the single-bond 1.47 A, flagged every
+        # template "compressed"; the isolated re-seat then replaced ALL template conformers by the same
+        # one (11 -> 4 frames, crystal isomer lost).  Real pyrazolate C-N is ~1.34 A = 0.91 x 1.47.
+        _conj_ref = os.environ.get("DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ", "0") == "1"
+        _conj_bonds = _conjugated_ring_single_bonds(mol) if _conj_ref else None
         row = {a: k for k, a in enumerate(frag_list)}
         for b in mol.GetBonds():
             i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
@@ -259,8 +302,12 @@ def _frag_xyz_compressed(mol, frag_list, frag_xyz, factor: float = _COMPRESSED_F
                 continue
             if a1.GetSymbol() in _METAL_SET or a2.GetSymbol() in _METAL_SET:
                 continue
+            _bt = b.GetBondType()
+            if _conj_ref and _bt == Chem.BondType.SINGLE and _conj_bonds is not None \
+                    and b.GetIdx() in _conj_bonds:
+                _bt = Chem.BondType.AROMATIC   # DELFIN_FFFREE_TEMPLATE_COMPRESSED_CONJ
             ref = (pt.GetRcovalent(a1.GetAtomicNum()) + pt.GetRcovalent(a2.GetAtomicNum())) \
-                * scale.get(b.GetBondType(), 1.0)
+                * scale.get(_bt, 1.0)
             if float(np.linalg.norm(frag_xyz[row[i]] - frag_xyz[row[j]])) < factor * ref:
                 return True
         return False
