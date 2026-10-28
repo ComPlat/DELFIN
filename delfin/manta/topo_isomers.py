@@ -215,6 +215,17 @@ def _legconf_census(tag: str, mol, results) -> None:
         os.write(2, ("[LEGCONF_CENSUS] %s failed %s\n" % (tag, str(_lc_exc)[:60])).encode())
 
 
+def _u5_vfail(rule: int) -> bool:
+    """DELFIN_U5_TRACE=1 (output only): name the rule of _verify_topology_from_graph that rejected a
+    frame (its source line in this file at 27.10.2026); always returns False."""
+    if os.environ.get("DELFIN_U5_TRACE", "0") == "1":
+        try:
+            os.write(2, ("[U5V] verify-fail rule L%d\n" % rule).encode())
+        except Exception:
+            pass
+    return False
+
+
 def _verify_topology_from_graph(
     xyz_delfin: str,
     mol_template,
@@ -363,7 +374,7 @@ def _verify_topology_from_graph(
                             _violation = True
                             break
                 if _violation:
-                    return False
+                    return _u5_vfail(366)
         except Exception:
             pass
 
@@ -393,7 +404,7 @@ def _verify_topology_from_graph(
                     r2 = _COVALENT_RADII.get(s2)
                     ideal = (r1 + r2 + 0.3) if r1 and r2 else 2.5
                 if d < 0.70 * ideal or d > 1.80 * ideal:
-                    return False
+                    return _u5_vfail(396)
             elif is_metal_1 or is_metal_2:
                 # Metal-ligand bonds are already validated by the
                 # graph-invariance rule above; bridging donors sit at
@@ -418,16 +429,16 @@ def _verify_topology_from_graph(
             else:
                 if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
                     if d > 1.8:
-                        return False
+                        return _u5_vfail(421)
                 else:
                     if d > 2.4:
-                        return False
+                        return _u5_vfail(424)
 
         for d_idx, metal_entries in bridging_donor_bonds.items():
             for _m_idx, _m_sym, d, ideal in metal_entries:
                 ratio = d / ideal
                 if ratio < 0.55 or ratio > 3.00:
-                    return False
+                    return _u5_vfail(430)
 
         # Rule 2+3: No collapsed heavy atoms or hydrogens.
         heavy_indices = [
@@ -440,7 +451,7 @@ def _verify_topology_from_graph(
                 xj, yj, zj = coords[heavy_indices[j]]
                 dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
                 if dsq < 0.49:  # 0.7²
-                    return False
+                    return _u5_vfail(443)
 
         # Rule 10: Inter-ligand phantom-bond.  Every pair of non-metal
         # atoms that are NOT bonded in the SMILES graph must sit
@@ -491,7 +502,7 @@ def _verify_topology_from_graph(
                         else _HEAVY_FRAC
                     )
                     if _d < _frac * (_ri + _rj):
-                        return False
+                        return _u5_vfail(494)
         except Exception:
             pass
 
@@ -556,7 +567,7 @@ def _verify_topology_from_graph(
                         _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
                         deviations = _np.abs(centered @ vh[-1])
                         if deviations.max() > planar_tol:
-                            return False
+                            return _u5_vfail(559)
                     except Exception:
                         pass
         except Exception:
@@ -659,7 +670,7 @@ def _verify_topology_from_graph(
                             thresh = DELFIN_RULE5_INTERFRAG_COV_FACT * (ri + rj)
                         dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
                         if dsq < thresh * thresh:
-                            return False
+                            return _u5_vfail(662)
         except Exception:
             pass
 
@@ -685,7 +696,7 @@ def _verify_topology_from_graph(
                         or _b.GetBondTypeAsDouble() >= 1.5
                     ):
                         return True
-                return False
+                return _u5_vfail(688)
 
             metal_idxs = [
                 a.GetIdx() for a in mol_template.GetAtoms()
@@ -738,7 +749,7 @@ def _verify_topology_from_graph(
                         _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
                         dev = float(_np.abs(centered @ vh[-1]).max())
                         if dev > DELFIN_RULE6_METALLACYCLE_MAX_DEV:
-                            return False
+                            return _u5_vfail(741)
         except Exception:
             pass
 
@@ -845,7 +856,7 @@ def _verify_topology_from_graph(
                         cos_a = max(-1.0, min(1.0, cos_a))
                         angle_deg = math.degrees(math.acos(cos_a))
                         if angle_deg < DELFIN_RULE7_SP_MIN_ANGLE_DEG:
-                            return False
+                            return _u5_vfail(848)
                     continue
 
                 # sp² — exactly 3 heavy neighbours (metal counted) AND
@@ -891,7 +902,7 @@ def _verify_topology_from_graph(
                             else DELFIN_RULE7_SP2_OOP_MAX
                         )
                         if dev > oop_budget:
-                            return False
+                            return _u5_vfail(894)
                     angle_pairs = ((na, nb), (na, nc), (nb, nc))
                     for p, q in angle_pairs:
                         vp = _np.array(coords[p]) - a_pos
@@ -907,7 +918,7 @@ def _verify_topology_from_graph(
                             ang < DELFIN_RULE7_SP2_ANGLE_MIN
                             or ang > DELFIN_RULE7_SP2_ANGLE_MAX
                         ):
-                            return False
+                            return _u5_vfail(910)
                     continue
 
                 # sp³ — 4 heavy organic neighbours, no π bonds.
@@ -932,14 +943,14 @@ def _verify_topology_from_graph(
                             if ang < min_angle:
                                 min_angle = ang
                     if min_angle < DELFIN_RULE7_SP3_MIN_ANGLE_DEG:
-                        return False
+                        return _u5_vfail(935)
                     continue
         except Exception:
             pass
 
         return True
     except Exception:
-        return False
+        return _u5_vfail(942)
 
 
 def _build_topology_xyz(
