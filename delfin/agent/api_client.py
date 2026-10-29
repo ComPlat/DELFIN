@@ -28965,12 +28965,18 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     argv += net_args
     # The session scratch dir: writable, and TMPDIR points at it (the
     # helper maps the in-cage path; it equals the host path here).
+    # landlock_exec.main keeps the LAST --tmpdir (tmpdir = value, which it
+    # also adds to the write roots), so there must be exactly ONE --tmpdir
+    # and it must be the scratch dir; the private tmp dir stays a write
+    # root of its own (--write) so its non-scratch uses still work, but is
+    # no longer the TMPDIR target.
     try:
         scratch = _session_scratch_dir()
         argv += ["--write", scratch, "--tmpdir", scratch]
     except Exception:
         scratch = None
-    argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
+    argv += ["--write", _private_tmp_dir(), "--strict",
+             "1" if strict else "0", "--"]
     return argv + plain
 
 
