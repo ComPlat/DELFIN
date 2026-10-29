@@ -1707,6 +1707,32 @@ _SYSTEM_INFO_FILES: frozenset[str] = frozenset({
 })
 
 
+#: Programs that hand the REST of their words to another program to run.
+#: The first non-option, non-`NAME=value` word is the REAL command word,
+#: and its path must not be scanned as a read -- executing a program is
+#: not reading it. Each value lists the option spellings that take a
+#: SEPARATE value (skipped together with that value while the wrapper's
+#: options are walked); a flag or a self-contained `-n5`/`--x=5` needs no
+#: entry. `timeout` is the one with two leading positionals (DURATION
+#: then COMMAND); every other wrapper's first bare word is its program.
+#:
+#: The wrappers' own operands that ARE files (``env -C /dir``) are not
+#: touched here: only the command-word index is skipped, so the wrapper's
+#: file-like operands and every following argument are still scanned.
+_COMMAND_WORD_WRAPPERS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "-P",
+                      "--default-signal", "--block-signal", "--list-signal"}),
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata",
+                         "-p", "--pid"}),
+    "taskset": frozenset({"-c", "--cpu-list"}),
+    "nohup": frozenset(),
+    "setsid": frozenset(),
+    "command": frozenset(),
+}
+
+
 def _home_expanded(word: str) -> str:
     home = str(Path.home())
     for spelling in ("${HOME}", "$HOME"):
@@ -1828,6 +1854,62 @@ def _script_argument_index(prog: str, args: list) -> Optional[int]:
     return None
 
 
+def _executed_command_index(prog: str, args: list) -> Optional[int]:
+    """Index in *args* of the program the wrapper `prog` delegates to.
+
+    A delegating wrapper (``env``, ``timeout``, ``nice``, …) hands the
+    rest of its words to another program to run. That inner program is
+    a simple command's command word: its PATH must not be scanned as a
+    read -- executing a program is not reading it (2026-10-29: a venv
+    interpreter run under ``env X=1`` was asked about as an
+    outside-workspace read). Returns the index of that word so the caller
+    can skip exactly it, leaving every sibling argument -- the wrapper's
+    own operands and the program's following arguments -- scanned as
+    before. ``--`` ends the wrapper's options. ``timeout`` has a leading
+    DURATION positional before its COMMAND, so its program is the second
+    bare word; every other wrapper's first bare word is the program.
+    Returns None when `prog` is not a delegation wrapper, or when no bare
+    word occupies the command-word slot (a wrapper with only options or
+    only a duration leaves nothing to skip).
+    """
+    value_opts = _COMMAND_WORD_WRAPPERS.get(prog)
+    if value_opts is None:
+        return None
+    # How many bare words precede the program: timeout's DURATION, and
+    # taskset's MASK unless -c/--cpu-list gave the CPU list as an option
+    # value. taskset -p works on an existing pid and runs no program.
+    leading = 1 if prog == "timeout" else 0
+    if prog == "taskset":
+        if any(a in ("-p", "--pid") or (a.startswith("-") and not a.startswith("--")
+                                        and "p" in a[1:]) for a in args):
+            return None
+        if not any(a in ("-c", "--cpu-list") or a.startswith("--cpu-list=")
+                   for a in args):
+            leading = 1
+    positional = 0
+    skip = False
+    options_done = False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if not options_done and a == "--":
+            options_done = True     # every later word is positional
+            continue
+        if not options_done and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            continue               # env's NAME=value, not the program
+        if options_done or not a.startswith("-"):
+            if positional == leading:
+                return i
+            positional += 1
+            continue               # the DURATION or MASK, not yet the program
+        opt = a.split("=", 1)[0]
+        if opt in value_opts and "=" not in a:
+            skip = True            # the option takes a separate value
+        # a value-less flag, or a self-contained -n5 / --x=5: nothing to skip
+    return None
+
+
 def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                         _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
@@ -1924,6 +2006,21 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 out.extend(_bash_outside_reads(
                     args[i + 1], here, _depth + 1))
             return
+        # `env -S "STRING"` (--split-string) splits STRING into a new command
+        # line, like `sh -c`: judge that line, with the words after it.
+        if prog == "env" and _depth < 3:
+            for i, a in enumerate(args):
+                split = None
+                if a in ("-S", "--split-string") and i + 1 < len(args):
+                    split, tail = args[i + 1], args[i + 2:]
+                elif a.startswith("--split-string="):
+                    split, tail = a.split("=", 1)[1], args[i + 1:]
+                elif a.startswith("-S") and len(a) > 2:
+                    split, tail = a[2:], args[i + 1:]
+                if split is not None:
+                    line = " ".join([split] + [shlex.quote(t) for t in tail])
+                    out.extend(_bash_outside_reads(line, here, _depth + 1))
+                    return
         # Input redirection reads, whatever the program.
         for i, a in enumerate(args):
             if a == "<" and i + 1 < len(args):
@@ -1933,13 +2030,17 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
         if prog in _BASH_NO_FILE_PROGRAMS:
             return
         script_at = _script_argument_index(prog, args)
+        # A delegating wrapper's program word (env X=1 prog, timeout 20
+        # prog, nice prog) is the command word of a simple command: its
+        # path is not a read, whatever position the shell resolved it to.
+        cmd_at = _executed_command_index(prog, args)
         skip_next = False
         for i, a in enumerate(args):
             if skip_next:
                 skip_next = False
                 continue
-            if i == script_at:
-                continue    # the program's script or pattern, not a file
+            if i == script_at or i == cmd_at:
+                continue    # the program's script/pattern or command word, not a file
             if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
                 skip_next = True    # the redirection's own target
                 continue
@@ -20778,7 +20879,8 @@ class _DocToolExecutor:
         return None
 
     def _check_read_access(
-        self, perms: "KitToolPermissions", path: Path, label: str = ""
+        self, perms: "KitToolPermissions", path: Path, label: str = "",
+        command: str = "",
     ) -> Optional[str]:
         """Gate read-style tools (read_file, grep_file).
 
@@ -20918,10 +21020,20 @@ class _DocToolExecutor:
         _grant_dir = resolved if _is_dir else resolved.parent
         _grantable = _is_grantable_read_dir(_grant_dir)
         _what = "directory" if _is_dir else "file"
+        # A shell command's read names the command too: the path alone does
+        # not say what the yes lets run. Masked like a tool result, cut to
+        # 400 characters.
+        _cmd_line = ""
+        if command:
+            _shown = _redact_tool_result(str(command))
+            if len(_shown) > 400:
+                _shown = _shown[:400] + " …"
+            _cmd_line = f"It is read by this shell command:\n  {_shown}\n\n"
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
             f"The agent wants to read a {_what} outside the allowed roots:\n"
             f"  {resolved}\n\n"
+            + _cmd_line
             + (("Approving allows READING this file and other files in\n"
                 if not _is_dir else
                 "Approving allows READING the files in\n")
@@ -24391,7 +24503,7 @@ class _DocToolExecutor:
                         "not make the write run. Grant the directory via "
                         "--add-dir / extra_workspace_dirs to make it work."
                     )})
-                err = self._check_read_access(perms, path)
+                err = self._check_read_access(perms, path, command=cmd)
                 if err is not None:
                     return json.dumps({"error": (
                         f"blocked: this command would print '{target}'. {err}"

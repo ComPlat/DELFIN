@@ -48,6 +48,20 @@ _ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull}
 
 
+def test_menu_can_close_before_branch_discovery_finishes(monkeypatch, tmp_path):
+    monkeypatch.setattr(HU, "load_prefs", lambda: {})
+    panel = BranchPanel("", gh=None, synchronous=True)
+    queued = []
+    monkeypatch.setattr(panel, "_run", queued.append)
+    panel.branch_btn.click()
+    assert panel.pop.layout.display != "none"
+    assert queued == [panel.refresh]
+    panel.branch_btn.click()
+    assert panel.pop.layout.display == "none"
+    queued.pop()()
+    assert panel.pop.layout.display == "none"
+
+
 def _git(cwd, *args, check=True) -> str:
     out = subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
