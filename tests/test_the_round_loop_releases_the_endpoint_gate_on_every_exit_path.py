@@ -343,3 +343,34 @@ def test_two_concurrent_sessions_never_exceed_the_limit(
     assert "answer" in results["two"]
     assert stats["max"] == 1, stats
     assert _held_slots_for_url(gate_root, client1._base_url) == 0
+
+
+def test_the_slot_is_free_during_a_retry_backoff(monkeypatch, tmp_path):
+    """A round that waits out a backoff before its retry holds no slot while
+    it sleeps: another session may use the endpoint in that time. The
+    congestion is reported once, not again by the round's finally."""
+    A, client, gate_root = _make_client(monkeypatch, tmp_path)
+    held_during_sleep = []
+    monkeypatch.setattr(A.time, "sleep", lambda *a, **k: held_during_sleep.append(
+        _held_slots_for_url(gate_root, client._base_url)))
+    reports = []
+    real_report = G.report_result
+    monkeypatch.setattr(G, "report_result", lambda gate, **kw: (
+        reports.append(kw.get("exception")), real_report(gate, **kw))[1])
+    calls = {"n": 0}
+
+    def _create(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise APITimeoutError("upstream timed out")
+        return _Stream([_Chunk(
+            [_Choice(_Delta(content="second"), finish="stop")],
+            usage=_Usage())])
+
+    client.client.chat.completions.create = _create
+    out = _drive(client)
+    assert "second" in "".join(out)
+    assert held_during_sleep and all(n == 0 for n in held_during_sleep), held_during_sleep
+    timeouts = [e for e in reports if isinstance(e, APITimeoutError)]
+    assert len(timeouts) == 1, reports
+    assert _held_slots_for_url(gate_root, client._base_url) == 0
