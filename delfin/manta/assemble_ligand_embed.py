@@ -14,6 +14,7 @@ from rdkit.Chem import AllChem
 from delfin.manta.assemble_donor_plane import (
     _trilaterate_donor_targets,
 )
+from delfin.manta import bv_embed_geom as _bvg
 
 
 SEED = 42
@@ -382,7 +383,12 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                             _setb(int(da), int(donor_idxs[b]),
                                   float(np.linalg.norm(_tp_use[a] - _tp_use[b])),
                                   tol=_dd_tol)
-                    if _bv_embed:
+                    if _bv_embed and _bvg.use_mrow():
+                        # DELFIN_FFFREE_BV_EMBED_GEOM: the metal row from the donor's hybridisation
+                        # (lone-pair direction), heavy substituents and H alike -- see bv_embed_geom
+                        _bvg.write_metal_row(bm, mh, mi, [int(d) for d in donor_idxs],
+                                             [float(np.linalg.norm(p)) for p in _tp_use])
+                    elif _bv_embed:
                         # the metal on the donor's lone-pair side: M-D-X >= 95 deg for every heavy
                         # neighbour X of a donor (the reset above left M...X at 1.2 A, so the
                         # ring could close with the metal beside the donor-X bond)
@@ -399,13 +405,37 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                                 _l, _h = min(_x, mi), max(_x, mi)
                                 bm[_h][_l] = max(float(bm[_h][_l]), _lo)
                                 bm[_l][_h] = max(float(bm[_l][_h]), _lo + 0.1)
+                _bm_geom = (_bv_embed and _bvg.geom_enabled() and tp is not None)
+                _bm_keep = np.array(bm, float) if _bm_geom else None   # pre-smoothing ligand bounds
                 _smooth = _DGs.DoTriangleSmoothing(bm)
                 if _smooth:
-                    ep = _DG.EmbedParameters()
-                    ep.randomSeed = SEED
-                    ep.useRandomCoords = True
-                    ep.SetBoundsMat(bm)
+                    if _bm_geom and _bvg.use_etkdg():
+                        ep = _bvg.embed_params(bm, SEED)
+                    else:
+                        ep = _DG.EmbedParameters()
+                        ep.randomSeed = SEED
+                        ep.useRandomCoords = True
+                        ep.SetBoundsMat(bm)
                     cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, params=ep))
+                    if _bm_geom and not cids and _bvg.use_etkdg():
+                        # ETKDG's extra terms can refuse a ring the plain DG embeds: never fewer
+                        # conformers than the historic path
+                        ep = _DG.EmbedParameters()
+                        ep.randomSeed = SEED
+                        ep.useRandomCoords = True
+                        ep.SetBoundsMat(bm)
+                        cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, params=ep))
+                    if _bm_geom and cids and _bvg.use_refine():
+                        _radii = [float(np.linalg.norm(p)) for p in _tp_use]
+                        for _cid in cids:
+                            _P0 = np.array(mh.GetConformer(_cid).GetPositions(), float)
+                            _Q = _bvg.refine_conformer(lmol, mh, mi, _P0,
+                                                       [int(d) for d in donor_idxs], _radii,
+                                                       _bm_keep)
+                            if _Q is not None:
+                                _cf = mh.GetConformer(_cid)
+                                for _ai in range(mh.GetNumAtoms()):
+                                    _cf.SetAtomPosition(_ai, _Q[_ai].tolist())
                 if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
                     from delfin.manta.converter_backend import _ff_trace_write as _tw
                     _tw("[EMBED_BM] metal=%s donors=%s r=%s bite_free=%s smooth=%s confs=%d"
