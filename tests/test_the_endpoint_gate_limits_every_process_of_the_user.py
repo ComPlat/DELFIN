@@ -361,3 +361,17 @@ def test_workers_wait_for_the_holder_to_release(runtime):
         for e in events:
             if e[0] == "in":
                 assert e[2] > 0.5, events   # waited for the holder
+
+
+def test_credentials_in_the_url_never_reach_the_key(runtime):
+    """The key names files on disk: user info, query and fragment of the
+    base URL are not part of it, so a password in the URL never becomes a
+    file name (and never goes into a hash)."""
+    key = G._endpoint_key("https://alice:s3cr3t-pw@kit.example.org/api/v1?token=t0k#frag")
+    assert "s3cr3t" not in key and "alice" not in key
+    assert "t0k" not in key and "frag" not in key
+    assert key == G._endpoint_key("https://kit.example.org/api/v1")
+    long_url = "https://bob:pw-9x@" + "a" * 200 + ".example.org/v1"
+    long_key = G._endpoint_key(long_url)
+    assert "pw-9x" not in long_key and "bob" not in long_key
+    assert len(long_key) <= 160
