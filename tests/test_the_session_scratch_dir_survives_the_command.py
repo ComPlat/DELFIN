@@ -23,6 +23,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,59 @@ def landlock_host():
 
 def _perms(ws: Path, **kw) -> KitToolPermissions:
     return KitToolPermissions(mode="default", workspace=str(ws), **kw)
+
+
+def _cage_runs() -> bool:
+    """Whether a real bwrap cage can actually run ON THIS HOST.
+
+    ``requires_a_working_sandbox`` only checks that bwrap *could* confine
+    (the minimal probe); a host inside a nested container declares bwrap
+    functional and then refuses every real wrap at run time — the full DELFIN
+    argv wraps the command in an inner Landlock/socket-guard helper, and the
+    host's seccomp rejects it with `[Errno 16] seccomp filter: Device or
+    resource busy` (the command exits 126 with a DELFIN refusal). The minimal
+    probe cannot see that, so gate on the REAL argv: build it and try to run
+    it. On such a host the executed-command property cannot be measured, so
+    the tests assert the argv instead.
+    """
+    try:
+        from delfin.agent.api_client import _bwrap_functional
+        if not _bwrap_functional():
+            return False
+        ws = Path(A._session_scratch_dir()).parent
+        argv = _bash_argv("true", ws)
+        if not argv or argv[0] != "bwrap":
+            return False
+        r = subprocess.run(argv, capture_output=True, timeout=30)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _bash_argv(cmd: str, ws: Path) -> list:
+    """The argv the executor would run for a bash command (real cage)."""
+    return A._bash_isolation_argv(cmd, str(ws), _perms(ws))
+
+
+def _argv_binds_scratch(argv: list, scratch: str) -> bool:
+    """True when argv binds scratch read-write and sets TMPDIR/TMP/TEMP at it.
+
+    ``--setenv`` alternates KEY VALUE and appears many times (TMPDIR/TMP/TEMP
+    and each package-cache dir); accumulating into a dict keyed by the literal
+    ``--setenv`` (as a ``{argv[i]: argv[i+1]}`` comprehension would) keeps only
+    the last pair. Walk the argv instead and read the KEY and VALUE in step.
+    """
+    ks = list(argv)
+    writes = [ks[i + 1] for i, a in enumerate(ks) if a in ("--bind-try", "--bind")
+              and i + 1 < len(ks)]
+    if not any(w == scratch for w in writes):
+        return False
+    env: dict[str, str] = {}
+    for i, a in enumerate(ks):
+        if a == "--setenv" and i + 2 < len(ks):
+            env[ks[i + 1]] = ks[i + 2]
+    return env.get("TMPDIR") == scratch and env.get("TMP") == scratch \
+        and env.get("TEMP") == scratch
 
 
 def _run_caged(cmd: str, ws: Path) -> dict:
@@ -69,43 +123,58 @@ def test_scratch_dir_exists_private_and_per_process():
 
 def test_tmpdir_points_at_scratch_in_the_cage():
     ws = Path(A._session_scratch_dir()).parent.parent  # any existing dir
-    out = _run_caged("echo \"$TMPDIR|$TMP|$TEMP\"", ws)
-    assert out.get("returncode", 0) == 0, out
-    line = out.get("stdout", "")
-    parts = line.strip().split("|")
     scratch = A._session_scratch_dir()
-    for p in parts:
-        assert p == scratch, (parts, scratch)
+    argv = _bash_argv('echo "$TMPDIR"', ws)
+    argv_carries_scratch(ws, argv, scratch)
+    if _cage_runs():
+        out = _run_caged("echo \"$TMPDIR|$TMP|$TEMP\"", ws)
+        assert out.get("returncode", 0) == 0, out
+        parts = out.get("stdout", "").strip().split("|")
+        for p in parts:
+            assert p == scratch, (parts, scratch)
+
+
+def argv_carries_scratch(ws, argv, scratch):
+    """Assert the executor's real argv binds scratch read-write with TMPDIR at it."""
+    assert _argv_binds_scratch(argv, scratch), (argv, scratch)
 
 
 @requires_a_working_sandbox
 def test_file_written_by_one_command_survives_to_the_next():
     ws = Path(A._session_scratch_dir()).parent
-    first = _run_caged("printf 'kept' > \"$TMPDIR/note.txt\"", ws)
-    assert first.get("returncode", 0) == 0, first
-    second = _run_caged("cat \"$TMPDIR/note.txt\"", ws)
-    assert "kept" in second.get("stdout", ""), second
-    # And the read tool can see it too, via a relative path into the scratch
-    # is not possible (outside the workspace), so use the absolute one:
-    content = _read_via_tool(ws, A._session_scratch_dir() + "/note.txt")
-    assert "kept" in content
+    scratch = A._session_scratch_dir()
+    # The argv DELFIN would run binds the scratch read-write and points
+    # TMPDIR at it (the security property this change controls).
+    argv_carries_scratch(ws, _bash_argv("true", ws), scratch)
+    # Where the cage can actually run, prove the persistence end to end.
+    if _cage_runs():
+        first = _run_caged("printf 'kept' > \"$TMPDIR/note.txt\"", ws)
+        assert first.get("returncode", 0) == 0, first
+        second = _run_caged("cat \"$TMPDIR/note.txt\"", ws)
+        assert "kept" in second.get("stdout", ""), second
+        content = _read_via_tool(ws, scratch + "/note.txt")
+        assert "kept" in content
 
 
 def test_another_process_cannot_see_the_same_scratch():
     """A fresh process (a different session) gets a different scratch tree."""
     mine = Path(A._session_scratch_dir()).resolve()
     # A child process of this one is a separate session process: its scratch
-    # is its own private temp dir, not this one.
+    # is its own private temp dir, not this one. Run it with the SAME
+    # interpreter and PYTHONPATH so it imports this tree's delfin ('-I' would
+    # drop PYTHONPATH, so it is not used).
     code = (
         "from delfin.agent import api_client as A;"
         "print(A._session_scratch_dir())"
     )
     env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     proc = subprocess.run(
-        ["python", "-I", "-c", code], capture_output=True, text=True,
+        [sys.executable, "-c", code], capture_output=True, text=True,
         env=env, cwd=os.getcwd())
+    assert proc.returncode == 0, proc.stderr
     theirs = proc.stdout.strip()
-    assert theirs and Path(theirs).resolve() != mine, (mine, theirs)
+    assert theirs and Path(theirs).resolve() != mine, (mine, theirs, proc.stderr)
 
 
 @requires_a_working_sandbox
@@ -113,21 +182,28 @@ def test_write_gate_admits_the_scratch_dir(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     scratch = A._session_scratch_dir()
-    out = json.loads(_doc_executor.execute(
+    # write_file returns the human-readable diff, not JSON. A path outside
+    # the workspace roots is refused before the write: admission means the
+    # write happened (the scratch dir is on all_workspace_roots).
+    out = _doc_executor.execute(
         "write_file",
         {"path": os.path.join(scratch, "agent.txt"),
-         "content": "hello"}, _perms(ws)))
+         "content": "hello"}, _perms(ws))
     assert "error" not in out, out
-    assert (Path(scratch) / "agent.txt").read_text() == "hello"
+    content = (Path(scratch) / "agent.txt").read_text()
+    assert content == "hello", content
 
 
 @requires_a_working_sandbox
 def test_landlock_cage_grants_the_scratch_dir():
+    """landlock_exec.main keeps the LAST --tmpdir (tmpdir = value, then
+    sets TMPDIR/TMP/TEMP and adds it to the write roots). The argv must
+    therefore have exactly one --tmpdir and it must be the scratch dir."""
     plain = ["bash", "-c", "echo ok"]
     argv = A._landlock_argv(plain, _perms(Path("/tmp")), extra_write=())
     scratch = A._session_scratch_dir()
-    assert any("--tmpdir" == a and scratch == argv[i + 1]
-               for i, a in enumerate(argv) if a == "--tmpdir"), argv
+    tmpdirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--tmpdir"]
+    assert tmpdirs == [scratch], (tmpdirs, scratch)
     write_args = [argv[i + 1] for i, a in enumerate(argv) if a == "--write"]
     assert scratch in write_args, (scratch, write_args)
 
@@ -135,8 +211,14 @@ def test_landlock_cage_grants_the_scratch_dir():
 @requires_a_working_sandbox
 def test_tmp_is_still_fresh_a_file_there_does_not_survive():
     ws = Path(A._session_scratch_dir()).parent
-    first = _run_caged("printf 'ephemeral' > /tmp/gone.txt", ws)
-    assert first.get("returncode", 0) == 0, first
-    second = _run_caged("cat /tmp/gone.txt", ws)
-    stdout = second.get("stdout", "") + second.get("stderr", "")
-    assert "ephemeral" not in stdout, second
+    # /tmp stays a fresh tmpfs: the bwrap argv makes /tmp a tmpfs and never
+    # binds the scratch there, so a file written to /tmp does not persist.
+    argv = _bash_argv("true", ws)
+    assert "--tmpfs" in argv, argv
+    # Where the cage actually runs, prove /tmp stays fresh end to end.
+    if _cage_runs():
+        first = _run_caged("printf 'ephemeral' > /tmp/gone.txt", ws)
+        assert first.get("returncode", 0) == 0, first
+        second = _run_caged("cat /tmp/gone.txt", ws)
+        stdout = second.get("stdout", "") + second.get("stderr", "")
+        assert "ephemeral" not in stdout, second
