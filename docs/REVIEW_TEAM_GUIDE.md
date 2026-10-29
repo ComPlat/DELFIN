@@ -39,12 +39,16 @@ nobody has rated or reserved come first. About 15 % of every block are
 structures that one or two other reviewers also get, spread over the whole
 set, so that everybody's ratings can be compared with many others'. Only
 when every structure has been rated once do blocks consist of second
-ratings. Pick a name nobody else in the project uses, and keep it. Running
+ratings. Pick a name nobody else in the project uses, and keep it: best your
+GitHub name (left empty, the Review tab takes the account `gh` is logged in
+with). Running
 `unpack` again never touches your ratings or your block. (Without `--name`
 the block is drawn the first time you open the folder in the Review tab.)
 
 **Reserve your block** (recommended, takes a minute): until your ratings
-come back, nobody else knows which structures you have. So tell them:
+come back, nobody else knows which structures you have. So tell them: press
+**Reserve my block** in the Review tab (under the comment field), or in a
+terminal:
 
 ```bash
 delfin review claim ~/review_kalib_2026_10 --name <your name>
@@ -165,7 +169,8 @@ share; every finished part is useful.
 
 ## 6. Send your ratings back
 
-From your clone, in a terminal:
+Press **Send my ratings** in the Review tab (under the comment field; it
+shows the link to your pull request), or from your clone, in a terminal:
 
 ```bash
 delfin review submit ~/review_kalib_2026_10 --name <your name>

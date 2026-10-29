@@ -435,6 +435,22 @@ class ReviewPanel:
                                     tooltip='append categories; the others keep their keys')
         self.export_btn = W.Button(description='Export CSV', icon='download',
                                    layout=L(width='130px'))
+        # A set shared out to a team: reserve the block and send the ratings back
+        # from here, each as a pull request (rt.claim / rt.submit, via gh).
+        self.claim_btn = W.Button(description='Reserve my block', icon='bookmark',
+                                  tooltip='tell the others which structures are yours '
+                                          '(a small pull request; renew after 28 days)',
+                                  layout=L(width='50%'))
+        self.send_btn = W.Button(description='Send my ratings', icon='paper-plane',
+                                 button_style='success',
+                                 tooltip='send your ratings back as a pull request '
+                                         '(any time; sending again updates it)',
+                                 layout=L(width='50%'))
+        self.team_html = W.HTML('')
+        self.team_box = W.VBox([W.HBox([self.claim_btn, self.send_btn],
+                                       layout=L(width='100%')), self.team_html],
+                               layout=L(width='100%', display='none'))
+        self._team_folder: str | None = None
         self.status_html = W.HTML('')
         self.keys_input = W.Text(value='', layout=L(display='none'))
         self.keys_input.add_class(KEYS_CLASS)
@@ -531,6 +547,7 @@ class ReviewPanel:
             W.HBox([self.note_input, self.unsure_btn],
                    layout=L(width='100%', align_items='stretch')),
             self.saved_html,
+            self.team_box,
             self.more,
         ], layout=L(width='390px', min_width='260px'))
         # No height of its own: an inner scroll bar hid half of the categories.
@@ -559,6 +576,8 @@ class ReviewPanel:
         self.pass_btn.on_click(lambda _b: self.rate('pass'))
         self.block_btn.on_click(lambda _b: self.rate('block'))
         self.export_btn.on_click(lambda _b: self.export())
+        self.claim_btn.on_click(lambda _b: self.send_back('claim'))
+        self.send_btn.on_click(lambda _b: self.send_back('submit'))
         self.categories_btn.on_click(lambda _b: self.apply_categories())
         self.add_cat_btn.on_click(lambda _b: self.add_categories(self.add_cat_input.value))
         self.reset_btn.on_click(lambda _b: self.reset_view())
@@ -682,8 +701,14 @@ class ReviewPanel:
             found = rt.find_assignment(raw) if Path(raw).expanduser().is_dir() else None
             if found is not None:
                 if not name.strip():
-                    self._say(f'This set is shared out ({found}): enter your name first. '
-                              'A name not listed there gets a block of its own.', error=True)
+                    # The GitHub account is the natural name: unique, and the
+                    # one the pull requests come from.
+                    name = rt._gh_login(rt._runner(None))
+                    self.name_input.value = name
+                if not name.strip():
+                    self._say(f'This set is shared out ({found}): enter your name first '
+                              '(best your GitHub name). A name not listed there gets a '
+                              'block of its own.', error=True)
                     return None
                 assignment = rt.load_assignment(found)
                 name, files, own = rt.share_of(raw, assignment, name)
@@ -708,6 +733,10 @@ class ReviewPanel:
             self._say(f'No XYZ frames in {raw}.', error=True)
             return None
         self.session = session
+        self._team_folder = raw if found is not None else None
+        self._team_name = name
+        self.team_box.layout.display = '' if found is not None else 'none'
+        self.team_html.value = ''
         self._busy = True
         try:
             self.categories_input.value = '\n'.join(session.categories)
@@ -737,6 +766,32 @@ class ReviewPanel:
             msg += '  |  ' + '; '.join(session.warnings)
         self._say(msg)
         return session
+
+    def send_back(self, what: str) -> dict[str, Any] | None:
+        """Reserve the block (*what* 'claim') or send the ratings ('submit') of a team
+        set as a pull request, as ``delfin review claim | submit`` does."""
+        if self.session is None or not self._team_folder:
+            return None
+        self.session.save()
+        self.team_html.value = '<span style="font-size:12px;color:#555">sending ...</span>'
+        try:
+            fn = rt.claim if what == 'claim' else rt.submit
+            out = fn(self._team_folder, self._team_name)
+        except (OSError, ValueError) as exc:
+            out = {'next': str(exc)}
+        pr, nxt = out.get('pr'), out.get('next')
+        if pr:
+            done = 'Block reserved' if what == 'claim' else 'Ratings sent'
+            self.team_html.value = (f'<span style="font-size:12px">{done}: '
+                                    f'<a href="{html.escape(pr)}" target="_blank">'
+                                    f'{html.escape(pr)}</a>'
+                                    + (f' &middot; {html.escape(nxt)}' if nxt else '')
+                                    + '</span>')
+        else:
+            self.team_html.value = (f'<span style="font-size:12px;color:{_BLOCK_COLOR}">'
+                                    f'Not sent: {html.escape(nxt or "unknown reason")}'
+                                    '</span>')
+        return out
 
     # -- moving and rating ------------------------------------------------------
     def _move(self, where: str):
