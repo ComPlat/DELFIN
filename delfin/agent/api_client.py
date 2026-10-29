@@ -30966,6 +30966,27 @@ def _infer_provider_from_base_url(base_url: str) -> str:
     return "openai"
 
 
+class _GateRound:
+    """Mutable outcome holder for one gate-guarded request round.
+
+    The round body fills ``first_byte_s`` (seconds to first byte on success)
+    and ``exception`` (the transient error that triggered a congested retry);
+    the request-``finally`` in ``OpenAIClient.stream_message`` reports both to
+    the shared adaptive limit and releases the slot on every exit path.
+    ``gate`` is the live ``endpoint_gate.EndpointGate`` (None when disabled).
+    Kept a plain mutable class so the round body can set fields without a
+    reporting protocol.
+    """
+
+    __slots__ = ("gate", "first_byte_s", "exception", "wait_notice")
+
+    def __init__(self) -> None:
+        self.gate = None
+        self.first_byte_s = None
+        self.exception = None
+        self.wait_notice = ""
+
+
 class OpenAIClient(_BaseClient):
     """Use the OpenAI Python SDK for GPT / o-series models.
 
@@ -32598,8 +32619,24 @@ class OpenAIClient(_BaseClient):
                 _cq.put(True)
 
             _ct = _threading_mod.Thread(target=_spawn_create, daemon=True)
-            _ct.start()
             try:
+                # Host-wide per-endpoint concurrency gate (endpoint_gate):
+                # acquire one slot for this round and release it in the single
+                # `finally` below, so no exit path -- success, retry `continue`,
+                # re-raise, a consumer closing the generator mid-round
+                # (GeneratorExit), KeyboardInterrupt -- leaves it held.
+                _gslot = _GateRound()
+                try:
+                    from .endpoint_gate import for_client as _gslot_for
+                    _gslot.gate = _gslot_for(self._base_url, self.model)
+                except Exception:
+                    _gslot.gate = None
+                if _gslot.gate is not None:
+                    _gslot.gate.acquire()
+                if _gslot.gate is not None and _gslot.gate.wait_notice:
+                    yield StreamEvent(type="notice", text=(
+                        f"⚠️ {_gslot.gate.wait_notice}\n"))
+                _ct.start()
                 # Watch the first byte instead of parking in it: emit a
                 # visible "waiting for the model … Ns" indicator while the
                 # endpoint has not answered, and abandon the round on the
@@ -32694,6 +32731,11 @@ class OpenAIClient(_BaseClient):
                             finish_reason = choice.finish_reason
                 finally:
                     stream.close()
+                # A response was streamed to the end: record its first-byte
+                # time on the holder so the `finally` below reports a quick
+                # success to the shared adaptive limit.
+                if _round_ttft is not None:
+                    _gslot.first_byte_s = _round_ttft - _round_t0
             except Exception as _stream_exc:
                 if self._stop_was_requested():
                     # The transport was cut on purpose (signal_stop): the
@@ -32733,6 +32775,22 @@ class OpenAIClient(_BaseClient):
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
                             _stream_attempt, _STREAM_RETRY_MAX, _delay))
+                        # A congestion signal triggered this retry: report it
+                        # and free the slot BEFORE the backoff, so another
+                        # session can use the endpoint while this round waits.
+                        # The gate is then cleared on the holder, so the
+                        # round's `finally` neither reports it a second time
+                        # nor releases again; the next round takes a new slot.
+                        if _gslot.gate is not None:
+                            try:
+                                from . import endpoint_gate as _endpoint_gate
+                                _endpoint_gate.report_result(
+                                    _gslot.gate, exception=_stream_exc,
+                                    first_byte_s=None)
+                            except Exception:
+                                pass
+                            _gslot.gate.release()
+                            _gslot.gate = None
                         time.sleep(_delay)
                         continue
                     # The endpoint does not serve the model — either it is not
@@ -32851,6 +32909,23 @@ class OpenAIClient(_BaseClient):
                 _tool_calls.update(_calls)
                 if _fin:
                     finish_reason = _fin
+
+            finally:
+                # Single release point for this round's slot, and one report
+                # to the shared adaptive limit. Runs on EVERY exit path of
+                # the request -- success, the retry/stop/fallback branches
+                # above, and an exception re-raise -- so a slot is never
+                # leaked for the rest of the turn. report_result swallows its
+                # own errors; release is idempotent when nothing was acquired.
+                if _gslot.gate is not None:
+                    try:
+                        from . import endpoint_gate as _endpoint_gate
+                        _endpoint_gate.report_result(
+                            _gslot.gate, exception=_gslot.exception,
+                            first_byte_s=_gslot.first_byte_s)
+                    except Exception:
+                        pass
+                    _gslot.gate.release()
 
             # A stream that ended having produced no ANSWER. Not an error
             # and not a refusal: finish_reason says stop, and no content
