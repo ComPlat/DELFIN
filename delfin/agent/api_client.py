@@ -32556,9 +32556,10 @@ class OpenAIClient(_BaseClient):
                         # nor releases again; the next round takes a new slot.
                         if _gslot.gate is not None:
                             try:
-                                from .endpoint_gate import report_result as _gslot_report
-                                _gslot_report(_gslot.gate, exception=_stream_exc,
-                                              first_byte_s=None)
+                                from . import endpoint_gate as _endpoint_gate
+                                _endpoint_gate.report_result(
+                                    _gslot.gate, exception=_stream_exc,
+                                    first_byte_s=None)
                             except Exception:
                                 pass
                             _gslot.gate.release()
@@ -32646,12 +32647,12 @@ class OpenAIClient(_BaseClient):
                 # own errors; release is idempotent when nothing was acquired.
                 if _gslot.gate is not None:
                     try:
-                        from .endpoint_gate import report_result as _gslot_report
+                        from . import endpoint_gate as _endpoint_gate
+                        _endpoint_gate.report_result(
+                            _gslot.gate, exception=_gslot.exception,
+                            first_byte_s=_gslot.first_byte_s)
                     except Exception:
-                        _gslot_report = None
-                    if _gslot_report is not None:
-                        _gslot_report(_gslot.gate, exception=_gslot.exception,
-                                      first_byte_s=_gslot.first_byte_s)
+                        pass
                     _gslot.gate.release()
 
             # A stream that ended having produced no ANSWER. Not an error
