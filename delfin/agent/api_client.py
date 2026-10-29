@@ -31110,8 +31110,10 @@ def _augment_api_error(exc: Exception, request_kwargs=None) -> Exception:
                 or getattr(exc, "message", "") or "")
         body = str(body) if body else ""
         # str(exc) already embeds the raw body ("Error code: 400 - {...}"),
-        # so masking must cover the whole final text, not just the body.
-        base = _redact_tool_result(str(exc))
+        # so masking must cover the whole final text, not just the body. The
+        # base is bounded too: a huge embedded body (providers repeat the
+        # full request) must not flood the log even though str(exc) carries it.
+        base = _redact_tool_result(str(exc))[:2000]
         body_masked = _redact_tool_result(body)[:1000] if body else ""
         extra = ""
         # Always append the server's body: str(exc) formatting differs per
@@ -33273,7 +33275,16 @@ class OpenAIClient(_BaseClient):
                 nk = dict(kwargs)
                 nk["stream"] = False
                 nk.pop("stream_options", None)
-                resp = self.client.chat.completions.create(**nk)
+                try:
+                    resp = self.client.chat.completions.create(**nk)
+                except Exception as _exc:
+                    # The non-streaming retry is itself subject to the model
+                    # endpoint's 4xx/5xx: a retry that still fails on a
+                    # status-coded error must carry the server body too, or
+                    # a KIT 400 here would reach the log as a bare "Error
+                    # code: 400". Augment in place, then re-raise.
+                    _augment_api_error(_exc, kwargs)
+                    raise
                 _round_served = _served_model_of(resp) or _round_served
                 _c, _calls, _fin, (_ti, _to, _tc_cached) = \
                     _absorb_non_streaming(resp)
