@@ -434,7 +434,10 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
 
     # Parallel / SCF controls
     modified_lines.append(f"%pal nprocs {config['PAL']} end\n")
-    modified_lines.append(f"%scf maxiter {config['maxiter_occupier']} end\n")
+    # Empty maxiter_occupier must not yield "%scf maxiter  end" (ORCA:
+    # "Invalid assignment ... Last token: END", v17 2026-10-29).
+    _maxiter = str(config.get('maxiter_occupier', '') or '').strip() or '500'
+    modified_lines.append(f"%scf maxiter {_maxiter} end\n")
     modified_lines.append(f"%maxcore {config['maxcore']}\n")
 
     # Extra blocks (e.g., %moinp, %scf BrokenSym, etc.)
@@ -932,7 +935,12 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
 
         # Parallel / SCF controls
         modified_lines.append(f"%pal nprocs {config['PAL']} end\n")
-        modified_lines.append(f"%scf maxiter {config['maxiter_occupier']} end\n")
+        # An empty maxiter_occupier must not produce "%scf maxiter  end":
+        # ORCA rejects the SCF block with "Invalid assignment ... Last
+        # token: END" (observed v17, 2026-10-29, input.inp:3). A default
+        # of 500 keeps the block valid; a real configured value is used.
+        _maxiter = str(config.get('maxiter_occupier', '') or '').strip() or '500'
+        modified_lines.append(f"%scf maxiter {_maxiter} end\n")
         modified_lines.append(f"%maxcore {config['maxcore']}\n")
 
         # Extra blocks (e.g., %moinp, %scf BrokenSym, etc.)
