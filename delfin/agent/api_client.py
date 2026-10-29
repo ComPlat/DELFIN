@@ -31077,6 +31077,72 @@ def _is_context_length_error(exc: Exception) -> bool:
     return "contextwindow" in name or "contextlength" in name
 
 
+def _augment_api_error(exc: Exception, request_kwargs=None) -> Exception:
+    """Attach the server's own error body to a 4xx/5xx API exception.
+
+    Input: a litellm-style exception with an integer ``status_code`` (or
+    ``status``) and the server's body in ``response.text`` / ``message``;
+    optionally ``request_kwargs`` with the request's ``messages``.
+    Output/semantics: rewrites ``exc.args`` IN PLACE -- same class, same
+    ``status_code`` -- to carry the server message/body cut to 1000
+    characters and scrubbed of credentials via :func:`_redact_tool_result`;
+    for a context-length 400 (:func:`_is_context_length_error`) adds a
+    plain-words explanation plus the measured prompt size from
+    ``estimate_schema_tokens`` over ``request_kwargs["messages"]``.
+    The final text is always the scrubbed one, so a credential inside the
+    raw ``str(exc)`` never reaches the log. Non-4xx/5xx exceptions and
+    unreadable bodies pass through unchanged. Rejected alternatives: a new
+    exception type (every classifier reads ``str(exc)`` / status), and a
+    dedupe rule that appends the body only when ``str(exc)`` does not
+    already embed it (provider-specific formatting must not decide the log
+    format). Best-effort and idempotent (guarded by
+    ``exc._delfin_augmented``).
+    """
+    if getattr(exc, "_delfin_augmented", False):
+        return exc
+    try:
+        status = getattr(exc, "status_code", None)
+        if not isinstance(status, int):
+            status = getattr(exc, "status", None)
+        if not isinstance(status, int) or not (400 <= status <= 599):
+            return exc
+        body = (getattr(getattr(exc, "response", None), "text", "") or ""
+                or getattr(exc, "message", "") or "")
+        body = str(body) if body else ""
+        # str(exc) already embeds the raw body ("Error code: 400 - {...}"),
+        # so masking must cover the whole final text, not just the body.
+        base = _redact_tool_result(str(exc))
+        body_masked = _redact_tool_result(body)[:1000] if body else ""
+        extra = ""
+        # Always append the server's body: str(exc) formatting differs per
+        # provider, so whether it already embeds the body is not something
+        # the log format should depend on. Bounded at 1000 chars.
+        if body_masked:
+            extra = f" [HTTP {status} from the model endpoint: {body_masked}]"
+        if status == 400 and _is_context_length_error(exc):
+            prompt_tokens = 0
+            try:
+                msgs = (request_kwargs or {}).get("messages") or []
+                prompt_tokens = sum(estimate_schema_tokens(m) for m in msgs)
+            except Exception:
+                prompt_tokens = 0
+            extra += (
+                " The server rejected the request because the conversation"
+                " context is too long for this model; the prompt sent"
+                f" measured about {prompt_tokens} tokens (house estimate)."
+                " Compact the conversation or shorten the request.")
+        if extra or base != str(exc):
+            # Rewrite args whenever the text differs from the original: even
+            # when extra is empty (body already embedded in str(exc)) the
+            # base is the scrubbed text, so a credential inside the raw
+            # str(exc) would otherwise reach the log unmasked.
+            exc.args = (base + extra,)
+            exc._delfin_augmented = True
+    except Exception:
+        return exc
+    return exc
+
+
 def _max_subagent_depth() -> int:
     """Deepest sub-agent nesting allowed. A child at this depth may not spawn
     further sub-agents, preventing 4^depth thread/worktree fan-out. Default 1
@@ -33194,6 +33260,10 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="message_delta", stop_reason="max_context")
                         return
+                    # The server's own error body belongs in whatever error
+                    # text reaches the user/log/JSON — not just "Error code:
+                    # 400". Augment IN PLACE before the bare raise.
+                    _stream_exc = _augment_api_error(_stream_exc, kwargs)
                     raise
                 # The proxy cannot stream this request (litellm 400:
                 # "'async for' requires ... got ModelResponse"). Retry ONCE
