@@ -124,3 +124,38 @@ def test_a_wrapper_alone_or_without_a_command_word_skips_nothing(tmp_path):
     # word -- a program path here is not read, so no target either.
     assert R("env FOO=bar") == []
     assert R("env FOO=bar python3") == []
+
+
+# ---------------------------------------------------------------------------
+# Wrapper argument shapes: taskset's leading mask, `--`, option values
+# ---------------------------------------------------------------------------
+
+def test_taskset_mask_comes_before_the_program():
+    idx = A._executed_command_index
+    assert idx("taskset", ["0x3", "prog", "a"]) == 1
+    # -a is a flag (all tasks), not an option with a value
+    assert idx("taskset", ["-a", "0x3", "prog"]) == 2
+    # -c LIST replaces the mask positional
+    assert idx("taskset", ["-c", "0,1", "prog"]) == 2
+    # -p works on an existing pid: there is no program word
+    assert idx("taskset", ["-p", "0x3", "1234"]) is None
+    assert idx("taskset", ["-cp", "0", "1234"]) is None
+
+
+def test_double_dash_ends_the_wrappers_options():
+    idx = A._executed_command_index
+    assert idx("env", ["--", "prog", "x"]) == 1
+    assert idx("timeout", ["--", "20", "prog"]) == 2
+    assert idx("nice", ["--", "-weird-name", "x"]) == 1
+
+
+def test_wrapper_option_values_are_still_scanned(tmp_path):
+    outside = str(tmp_path / "elsewhere")
+    assert outside in R(f"env -C {outside} cat x")
+    target = str(tmp_path / "secret.txt")
+    # env -S splits its argument into a new command line, like sh -c: the
+    # file it names is a read in both spellings (the unquoted one asked on
+    # main, the quoted one asked nowhere before this change).
+    assert target in R(f"env -S 'cat {target}'")
+    assert target in R(f"env -S cat {target}")
+    assert target in R(f"env --split-string='cat {target}'")
