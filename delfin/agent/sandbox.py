@@ -977,15 +977,23 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str, *,
     conf = confinement(SandboxConfig(mode, allow_network, 0))
     if conf.filesystem != "landlock":
         return base
-    from .api_client import _landlock_hide_paths, _private_tmp_dir
+    from .api_client import (_landlock_hide_paths, _private_tmp_dir,
+                             _session_scratch_dir)
     from . import landlock_exec as _ll
     repo = str(Path(repo_dir).resolve())
     argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
             "--write", repo]
+    # The session scratch dir: writable, and the tmpdir the helper maps.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch]
+        tmpdir = scratch
+    except Exception:
+        tmpdir = _private_tmp_dir()
     for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
         argv += ["--hide", h]
     strict = "1" if conf.network_restricted else "0"
-    return argv + ["--tmpdir", _private_tmp_dir(),
+    return argv + ["--tmpdir", tmpdir,
                    "--net", conf.landlock_net,
                    "--strict", strict, "--"] + base
 
@@ -1086,6 +1094,18 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
         elif is_file:
             args += ["--ro-bind", "/dev/null", str(p)]
     args += ["--bind", repo, repo]
+    # The session scratch dir: bound read-write, TMPDIR/TMP/TEMP point at
+    # it (in-cage path == host path, "/" is bound at itself), so a file
+    # one command writes survives to the next and the file tools reach it.
+    try:
+        from .api_client import _session_scratch_dir
+        scratch = _session_scratch_dir()
+        args += ["--bind-try", scratch, scratch]
+        args += ["--setenv", "TMPDIR", scratch,
+                 "--setenv", "TMP", scratch,
+                 "--setenv", "TEMP", scratch]
+    except Exception:
+        pass
     for d in late_masks:
         args += ["--tmpfs", d]
     args += [
