@@ -156,6 +156,26 @@ def category_key_label(i: int) -> str:
     return f'⇧{key[1:]}' if key.startswith('s') else key
 
 
+def category_help_html(categories) -> str:
+    """Key, label and meaning of every category, then where two are close."""
+    rows = []
+    for i, cat in enumerate(categories):
+        key = category_key_label(i) or '&ndash;'
+        rows.append(f'<tr><td style="padding-right:6px;white-space:nowrap"><b>{key}</b></td>'
+                    f'<td style="padding-right:6px;white-space:nowrap">'
+                    f'{html.escape(rv.category_label(cat))}</td>'
+                    f'<td>{html.escape(rv.category_meaning(cat))}</td></tr>')
+    shown = {rv.category_label(c) for c in categories}
+    bounds = [b for b in rv.CATEGORY_BOUNDARIES
+              if all(p.split('=')[1].strip() in shown for p in b.split(';'))]
+    out = ('<div style="font-size:12px;line-height:1.35">'
+           f'<table style="border-collapse:collapse">{"".join(rows)}</table>')
+    if bounds:
+        out += ('<div style="margin-top:6px"><b>Where two are close</b><br>'
+                + '<br>'.join(html.escape(b) for b in bounds) + '</div>')
+    return out + '</div>'
+
+
 def category_index(key: str) -> int | None:
     """The 0-based place of the category a key names, or None."""
     key = (key or '').strip().lower()
@@ -384,6 +404,11 @@ class ReviewPanel:
             width='100%', grid_template_columns='repeat(3, minmax(0, 1fr))',
             grid_gap='3px 3px'))
         self.category_buttons: list[Any] = []
+        # What each category means, folded under the buttons (filled with them).
+        self.cat_help_html = W.HTML('')
+        self.cat_help = W.Accordion(children=[self.cat_help_html])
+        self.cat_help.set_title(0, 'What the categories mean')
+        self.cat_help.selected_index = None
         self.unsure_btn = W.ToggleButton(value=False, description='Unsure (U)',
                                          icon='question',
                                          tooltip='adds or removes the word "unsicher" '
@@ -502,6 +527,7 @@ class ReviewPanel:
                    layout=L(width='100%', align_items='center',
                             justify_content='space-between')),
             self.category_box,
+            self.cat_help,
             W.HBox([self.note_input, self.unsure_btn],
                    layout=L(width='100%', align_items='stretch')),
             self.saved_html,
@@ -579,8 +605,10 @@ class ReviewPanel:
         for i, cat in enumerate(categories):
             key = category_key_label(i)
             hint = f'{key}  ' if key else ''
-            tip = f'{cat}  (key {key})' if key else f'{cat}  (no key)'
-            btn = widgets.ToggleButton(value=cat in chosen, description=f'{hint}{cat}',
+            label, meaning = rv.category_label(cat), rv.category_meaning(cat)
+            tip = f'{label}: {meaning}' if meaning else label
+            tip += f'  (code {cat}, key {key})' if key else f'  (code {cat}, no key)'
+            btn = widgets.ToggleButton(value=cat in chosen, description=f'{hint}{label}',
                                        tooltip=tip, disabled=self.session is None,
                                        layout=widgets.Layout(width='100%', height='26px'))
             btn.add_class('delfin-review-cat')
@@ -591,6 +619,7 @@ class ReviewPanel:
                 btn.button_style = 'warning'
             self.category_buttons.append(btn)
         self.category_box.children = tuple(self.category_buttons)
+        self.cat_help_html.value = category_help_html(categories)
 
     def _set_enabled(self, on: bool):
         for w in (self.prev_btn, self.next_btn, self.unrated_btn, self.pass_btn,
