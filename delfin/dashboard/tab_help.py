@@ -193,11 +193,14 @@ _FEATURE_GROUPS: tuple[tuple[str, str, tuple[tuple[str, str, str], ...]], ...] =
 # ---------------------------------------------------------------------------
 
 
-def _feature_block(on_open_key) -> W.DOMWidget:
+def _feature_block(on_open_key) -> tuple[W.DOMWidget, W.Accordion]:
     """The accordion of major functions with sub-function sections.
 
     ``on_open_key(name)`` is called when a key name is clicked: the tab
     switches to the CONTROL-keys subtab and filters to that key.
+
+    Returns ``(widget, accordion)`` -- the accordion handle so the key
+    table's "Used in" buttons can open a specific section.
     """
     from html import escape as esc
 
@@ -208,6 +211,33 @@ def _feature_block(on_open_key) -> W.DOMWidget:
         "<b>CONTROL keys</b> subtab filtered to that key.  In CONTROL.txt, "
         "write <code>KEY=?</code> for the same explanation.</p>"
     )
+    no_match = W.HTML("", layout=W.Layout(display="none"))
+
+    def _feature_filter(query: str) -> None:
+        """Cross-tab search: hide sections that match neither their group
+        title, a sub-function name nor any key; open the first match."""
+        q = (query or "").lower()
+        hits = []
+        for child, (title, summary, subs) in zip(
+            accordion.children, _FEATURE_GROUPS
+        ):
+            match = (
+                not q or q in title.lower() or q in summary.lower()
+                or any(
+                    q in sub.lower() or q in what.lower() or q in keys.lower()
+                    for sub, what, keys in subs
+                )
+            )
+            child.layout.display = "" if match else "none"
+            if match:
+                hits.append(child)
+        if q and hits:
+            accordion.selected_index = (
+                accordion.children.index(hits[0])
+                if hasattr(accordion.children, "index") else 0
+            )
+        no_match.layout.display = "none" if hits else ""
+
     children = []
     # Help text per key, for hover tooltips on the key buttons.
     help_of = {row[0]: row[3] for row in _key_rows()}
@@ -240,6 +270,9 @@ def _feature_block(on_open_key) -> W.DOMWidget:
                 ),
             ]))
         children.append(W.VBox(group_parts))
+    # Tag each section with its group title so "Used in" buttons can open it.
+    for (title, _summary, _subs), child in zip(_FEATURE_GROUPS, children):
+        child._feature_group = title
     # Accordion titles are PLAIN TEXT (ipywidgets renders them verbatim,
     # not as HTML) -- the screenshot showed literal <b>/<span> tags.
     titles = [f"{title} — {summary}" for title, summary, _ in _FEATURE_GROUPS]
@@ -247,7 +280,23 @@ def _feature_block(on_open_key) -> W.DOMWidget:
     # Start collapsed except the first group, so the page opens compact.
     accordion.selected_index = 0
 
-    return W.VBox([header, accordion])
+    return W.VBox([header, accordion]), accordion, _feature_filter
+
+
+def _key_to_group() -> dict[str, str]:
+    """Map every CONTROL key to the feature group that mentions it.
+
+    Keys no feature section names return "" -- they get no Used-in
+    button (the key reference stays complete regardless).
+    """
+    used: dict[str, str] = {}
+    for title, _summary, subs in _FEATURE_GROUPS:
+        for _sub, _what, keys in subs:
+            for k in keys.split(","):
+                k = k.strip()
+                if k and k not in used:
+                    used[k] = title
+    return used
 
 
 def _key_rows() -> list[tuple[str, str, str, str]]:
@@ -286,23 +335,32 @@ def _group_of(name: str) -> str:
     return "General"
 
 
-def _key_reference_block() -> tuple[W.DOMWidget, W.DOMWidget, Any]:
-    """Searchable key table, grouped by key family with per-group toggles."""
+def _key_reference_block(
+    on_open_feature=None,
+) -> tuple[W.DOMWidget, W.DOMWidget, Any]:
+    """Searchable key table, grouped by key family with per-group toggles.
+
+    ``on_open_feature(group_title)`` is called when a row's "Used in"
+    button is clicked: the tab switches to the Features subtab and opens
+    that accordion section.
+    """
     from html import escape as esc
 
     state: dict[str, Any] = {"rows": _key_rows(), "query": ""}
+    used_in = _key_to_group()
 
-    head = (
-        "<table style='border-collapse:collapse; width:100%'>"
-        "<tr>"
-        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>Key</th>"
-        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>Default</th>"
-        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>Required</th>"
-        "<th style='text-align:left; padding:4px 8px; border-bottom:2px solid #333'>What it does</th>"
-        "</tr>"
+    head = W.HTML(
+        "<div style='display:flex; gap:12px; padding:4px 0; "
+        "border-bottom:2px solid #333; font-weight:bold'>"
+        "<div style='flex:0 0 220px'>Key</div>"
+        "<div style='flex:0 0 90px'>Default</div>"
+        "<div style='flex:0 0 70px'>Required</div>"
+        "<div style='flex:1'>What it does</div>"
+        "<div style='flex:0 0 170px'>Used in</div>"
+        "</div>"
     )
 
-    out = W.HTML()
+    out = W.VBox()
 
     groups: dict[str, list[tuple[str, str, str, str]]] = {}
     for row in state["rows"]:
@@ -339,37 +397,70 @@ def _key_reference_block() -> tuple[W.DOMWidget, W.DOMWidget, Any]:
         query = state["query"].lower()
         total = len(state["rows"])
         shown = 0
-        blocks: list[str] = []
+        children: list[W.DOMWidget] = []
         for group in order:
             if group not in state["active_groups"]:
                 continue
-            rows_html: list[str] = []
+            group_header = W.HTML(
+                f"<div style='padding:10px 0 2px; color:#4a86c8'>"
+                f"<b>{esc(group)}</b></div>"
+            )
+            children.append(group_header)
             for name, default, required, help_text in groups[group]:
                 if query and query not in name.lower() and query not in help_text.lower():
                     continue
                 shown += 1
-                style = "border-top:1px solid #ddd; padding:4px 8px; vertical-align:top"
-                rows_html.append(
-                    "<tr>"
-                    f"<td style='{style}'><code title='{esc(help_text, quote=True)}'>"
-                    f"{esc(name)}</code></td>"
-                    f"<td style='{style}'>{esc(default)}</td>"
-                    f"<td style='{style}'>{esc(required)}</td>"
-                    f"<td style='{style}'>{help_text}</td>"
-                    "</tr>"
+                used_group = used_in.get(name, "")
+                if used_group and on_open_feature:
+                    btn = W.Button(
+                        description=f"Used in: {used_group}",
+                        button_style="",
+                        style=W.ButtonStyle(
+                            text_color="#4a86c8", font_size="12px",
+                            padding="0", background="none",
+                        ),
+                        layout=W.Layout(margin="0", padding="0"),
+                    )
+                    btn.on_click(
+                        lambda _b, g=used_group: on_open_feature(g)
+                    )
+                    used_slot = btn
+                else:
+                    used_slot = W.HTML(
+                        f"<div style='flex:0 0 170px; color:#999'>"
+                        f"{esc(used_group or '—')}</div>"
+                    )
+                cells = W.HBox(
+                    [
+                        W.HTML(
+                            f"<div style='flex:0 0 220px'><code "
+                            f"title='{esc(help_text, quote=True)}'>"
+                            f"{esc(name)}</code></div>"
+                        ),
+                        W.HTML(
+                            f"<div style='flex:0 0 90px'>{esc(default)}</div>"
+                        ),
+                        W.HTML(
+                            f"<div style='flex:0 0 70px'>{esc(required)}</div>"
+                        ),
+                        W.HTML(f"<div style='flex:1'>{help_text}</div>"),
+                        used_slot,
+                    ],
+                    layout=W.Layout(
+                        display="flex", flex_flow="row", width="100%",
+                        border_top="1px solid #ddd", padding="4px 0",
+                    ),
                 )
-            if rows_html:
-                blocks.append(
-                    f"<tr><td colspan='4' style='padding:10px 0 2px; "
-                    f"color:#4a86c8'><b>{esc(group)}</b></td></tr>"
-                    + "".join(rows_html)
-                )
+                cells.add_class("help-key-row")
+                children.append(cells)
         if not shown:
-            blocks.append(
-                f"<tr><td colspan='4' style='padding:8px'>no key matches "
-                f"'{esc(query)}' (of {total} keys)</td></tr>"
+            children.append(
+                W.HTML(
+                    f"<div style='padding:8px'>no key matches "
+                    f"'{esc(query)}' (of {total} keys)</div>"
+                )
             )
-        out.value = head + "".join(blocks) + "</table>"
+        out.children = tuple(children)
         state["shown"] = shown
         state["total"] = total
 
@@ -425,8 +516,19 @@ def create_tab(ctx: Any):
         "<p>An overview of what DELFIN can do and which CONTROL.txt keys "
         "configure it.  Read-only: nothing here starts a calculation.</p>"
     )
-    keys_box, _keys_html, keys_state = _key_reference_block()
     tabs = W.Tab()
+
+    def _open_feature(group_title: str) -> None:
+        """A "Used in" button was clicked: show Features, open the section."""
+        for idx, child in enumerate(accordion.children):
+            if getattr(child, "_feature_group", "") == group_title:
+                accordion.selected_index = idx
+                break
+        tabs.selected_index = 0
+
+    keys_box, _keys_html, keys_state = _key_reference_block(
+        on_open_feature=_open_feature
+    )
 
     def _open_key(name: str) -> None:
         """A key button was clicked: show the key subtab, filtered to it."""
@@ -434,11 +536,33 @@ def create_tab(ctx: Any):
         keys_state["rerender"]()
         tabs.selected_index = 1
 
-    feature = _feature_block(_open_key)
+    feature, accordion, feature_filter = _feature_block(_open_key)
+
+    global_search = W.Text(
+        placeholder="search features and keys…",
+        layout=W.Layout(width="40%", margin="4px 0"),
+    )
+    _search_hint = W.HTML(
+        "<span style='color:#999; font-size:12px'>searches both subtabs"
+        "</span>"
+    )
+
+    def _on_global_search(change: Any) -> None:
+        q = change["new"] or ""
+        feature_filter(q)
+        # Only touch the key subtab's filter when the user is looking at it
+        # (or the query is empty), so a Features search does not clobber a
+        # key the user had pinned there via a "Keys:" button.
+        if tabs.selected_index == 1 or not q:
+            keys_state["query"] = q
+            keys_state["rerender"]()
+
+    global_search.observe(_on_global_search, names="value")
+
     tabs.children = [feature, keys_box]
     tabs.set_title(0, "Features")
     tabs.set_title(1, "CONTROL keys")
-    widget = W.VBox([header, tabs])
+    widget = W.VBox([header, W.HBox([global_search, _search_hint]), tabs])
     return widget, {"help_key_state": keys_state}
 
 

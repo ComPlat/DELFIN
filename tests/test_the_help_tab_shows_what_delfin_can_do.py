@@ -45,9 +45,18 @@ def test_the_key_reference_covers_every_spec_key():
     from delfin.dashboard import tab_help
 
     widget, refs = tab_help.create_tab(type('_Ctx', (), {})())
-    html = refs['help_key_state'] and ''
     box, out, state = tab_help._key_reference_block()
-    rendered = out.value
+
+    def _texts(w):
+        """Every HTML string in a rendered widget tree, flattened."""
+        if isinstance(w, str):
+            yield w
+        elif hasattr(w, 'value'):
+            yield str(w.value)
+        for c in getattr(w, 'children', ()):
+            yield from _texts(c)
+
+    rendered = '\n'.join(_texts(out))
     for spec in CONTROL_FIELD_SPECS:
         assert spec.name in rendered, (
             f'{spec.name} is validated by CONTROL_FIELD_SPECS but missing '
