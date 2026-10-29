@@ -119,16 +119,163 @@ def test_404_and_502_body_recorded():
         assert msg in text
 
 
-def test_augmented_text_survives_json_result_round_trip():
-    # cli.py builds the JSON "error" field as str(exc) and the session log
-    # records the same string; the augmented text must survive both
-    # unchanged.
-    out = _augment_api_error(FakeApiError(400, _body("bad request",
-                                                     api_key=FAKE_KEY)))
+def test_base_error_text_is_bounded():
+    # The provider's own str(exc) may already embed a huge body (litellm
+    # repeats the request body in the 400 message). The base must be capped
+    # too, or that embedded copy floods the log even though the standalone
+    # body is cut to 1000.
+    huge = "h" * 60000
+    out = _augment_api_error(FakeApiError(400, huge))
     text = str(out)
-    payload = json.loads(json.dumps({"error": text}))
-    assert "bad request" in payload["error"]
-    assert FAKE_KEY not in payload["error"]
+    assert len(text) <= 2000 + 1000 + 200  # base cap + body cap + marker slack
+    assert "h" * 4000 not in text
+
+
+def _kit_400(detail: str) -> FakeApiError:
+    """A KIT-proxy-shaped 400: its body is a JSON "detail" string."""
+    return FakeApiError(400, json.dumps({"detail": detail}))
+
+
+def test_run_once_json_error_carries_body_without_key():
+    # cli._run_once builds the JSON result's "error" field as str(exc) and
+    # the session log records the same string. Drive that contract: a stub
+    # engine whose stream_response raises the augmented 400 - the same
+    # exception shape OpenAIClient.stream_message produces at the bare
+    # raise - and assert result["error"] keeps the server body, loses the
+    # key.
+    from delfin.agent.cli import _run_once
+
+    body = _kit_400("Model 'glm-5.3-flash' is temporarily unavailable "
+                    + "(api_key=" + FAKE_KEY + ")")
+    exc = _augment_api_error(body)
+
+    class _StubEngine:
+        last_turn_stop_reason = ""
+        token_usage = {}
+
+        def stream_response(self, **kw):
+            raise exc
+
+    result = _run_once(_StubEngine(), "hi", max_tokens=8)
+    assert "glm-5.3-flash" in result["error"]
+    assert "temporarily unavailable" in result["error"]
+    assert FAKE_KEY not in result["error"]
+
+
+def test_stream_400_body_reaches_the_raised_error():
+    # End-to-end through the REAL raise site: OpenAIClient.stream_message
+    # with the one HTTP call scripted to return KIT's 400 body. The
+    # exception the generator raises must carry the server message and not
+    # the key - this is exactly what cli._run_once turns into the JSON
+    # result's "error".
+    import threading
+
+    from delfin.agent import api_client as ac
+
+    body = _kit_400("Model 'glm-5.3-flash' is temporarily unavailable "
+                    + "(api_key=" + FAKE_KEY + ")")
+
+    class _RaisingStub:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    # _kit_400 already returns a FakeApiError whose body is
+                    # json.dumps({"detail": ...}); raise it verbatim so the
+                    # augment path sees the real KIT 400 shape.
+                    raise body
+
+    c = ac.OpenAIClient.__new__(ac.OpenAIClient)
+    c.client = _RaisingStub()
+    c.model = "kit.glm-5.3"
+    c._provider = "kit"
+    c._base_url = "https://ki-toolbox.scc.kit.edu/api/v1"
+    c._api_key = "x"
+    c.effort = ""
+    c._permissions = None
+    c.on_model_switched = None
+    c._steer_lock = threading.Lock()
+    c._steer_queue = []
+    c._run_notes = []
+    c._stop_flag = False
+    c.metrics_session = None
+
+    raised = None
+    try:
+        for _ev in c.stream_message(
+                messages=[{"role": "user", "content": "hi"}],
+                system="t", max_tokens=32):
+            pass
+    except Exception as exc:  # noqa: BLE001 - we assert on this exact raise
+        raised = exc
+    assert raised is not None, "stream_message should have raised"
+    text = str(raised)
+    assert "glm-5.3-flash" in text
+    assert "temporarily unavailable" in text
+    assert FAKE_KEY not in text
+
+
+def test_fallback_non_streaming_400_body_recorded():
+    # The stream-unsupported 400 is retried ONCE without streaming; if that
+    # non-streaming retry hits a 400 of its own, the body must still reach
+    # the log. The first create (stream=True) fails with litellm's
+    # __aiter__/ModelResponse shape; the fallback create (stream=False)
+    # returns KIT's 400 body.
+    import threading
+
+    from delfin.agent import api_client as ac
+
+    body = json.dumps({"detail": "Model 'glm-5.3-flash' is temporarily "
+                       + "unavailable (api_key=" + FAKE_KEY + ")"})
+
+    class _FakeStreamUnsupported(Exception):
+        def __init__(self):
+            super().__init__(
+                "'async for' requires an object with __aiter__ method, "
+                "got ModelResponse")
+
+    raw_kw = {}
+
+    class _FallbackStub:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    raw_kw.update(kw)
+                    if kw.get("stream", True) is True:
+                        raise _FakeStreamUnsupported()
+                    raise FakeApiError(400, body)
+
+    c = ac.OpenAIClient.__new__(ac.OpenAIClient)
+    c.client = _FallbackStub()
+    c.model = "kit.glm-5.3"
+    c._provider = "kit"
+    c._base_url = "https://ki-toolbox.scc.kit.edu/api/v1"
+    c._api_key = "x"
+    c.effort = ""
+    c._permissions = None
+    c.on_model_switched = None
+    c._steer_lock = threading.Lock()
+    c._steer_queue = []
+    c._run_notes = []
+    c._stop_flag = False
+    c.metrics_session = None
+
+    raised = None
+    try:
+        for _ev in c.stream_message(
+                messages=[{"role": "user", "content": "hi"}],
+                system="t", max_tokens=32):
+            pass
+    except Exception as exc:  # noqa: BLE001 - assert on this raise
+        raised = exc
+    assert raised is not None, "fallback create's 400 should have raised"
+    # The fallback must actually have been taken (stream=False issued).
+    assert any(kw.get("stream") is False for kw in [raw_kw])
+    text = str(raised)
+    assert "glm-5.3-flash" in text
+    assert "temporarily unavailable" in text
+    assert FAKE_KEY not in text
 
 
 if __name__ == "__main__":
