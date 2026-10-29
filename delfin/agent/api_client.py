@@ -4690,12 +4690,33 @@ def _links_to_a_secret(perms: Any, rel: str, base: Any = None) -> bool:
         return False
 
 
+def _is_run_hidden(resolved: Path) -> bool:
+    """Whether ``resolved`` is, or lies beneath, a path the run hides from
+    its cage (``DELFIN_CAGE_HIDE``). Without the variable nothing is hidden
+    and nothing can fail; with it, an error counts as hidden (fails closed
+    only where hiding was asked for)."""
+    if not str(os.environ.get("DELFIN_CAGE_HIDE") or "").strip():
+        return False
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        for h in run_hidden_paths():
+            hp = Path(h)
+            if resolved == hp or hp in resolved.parents:
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
-    in, else absolute. Fails closed."""
+    in, else absolute -- or is hidden from the run (``DELFIN_CAGE_HIDE``).
+    Fails closed."""
     try:
         resolved = Path(path).expanduser().resolve()
+        if _is_run_hidden(resolved):
+            return True
         in_root = perms.find_readable_root_for(resolved)
         if in_root is not None:
             try:
@@ -20897,6 +20918,13 @@ class _DocToolExecutor:
         except Exception:
             resolved = path
 
+        # A path the run hides from its cage (DELFIN_CAGE_HIDE) is refused
+        # like a secret: no root, grant or confirmation reaches it.
+        if _is_run_hidden(Path(resolved)):
+            _record_gate_refusal("run_hidden", "", str(label or resolved))
+            return (f"read denied: '{label or resolved}' is hidden from this "
+                    "run (DELFIN_CAGE_HIDE).")
+
         # Build the string we test against deny-globs: workspace-relative
         # when possible (so globs like ".env" match), else absolute. READS are
         # allowed in any REACHABLE root (writable + read-only archive/delfin +
@@ -28638,6 +28666,12 @@ def _home_secret_paths() -> list[str]:
         out += [d for d in runtime_masked_dirs() if d not in out]
     except Exception:
         pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE).
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        out += [d for d in run_hidden_paths() if d not in out]
+    except Exception:
+        pass
     return out
 
 
@@ -30367,6 +30401,12 @@ def _bash_isolation_argv(
         from delfin.agent.sandbox import runtime_masked_dirs
         for d in runtime_masked_dirs():
             args += ["--tmpfs", d]
+    except Exception:
+        pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE), after every bind.
+    try:
+        from delfin.agent.sandbox import _bwrap_hide_args, run_hidden_paths
+        args += _bwrap_hide_args(run_hidden_paths())
     except Exception:
         pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
