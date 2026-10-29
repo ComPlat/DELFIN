@@ -40,6 +40,98 @@ _CONF_CACHE = {}
 _CONF_CACHE_MAX = 256
 
 
+def _cache_atom_order_enabled() -> bool:
+    """DELFIN_FFFREE_CONF_CACHE_ATOM_ORDER (default OFF -> byte-identical).
+
+    THE DEFECT (geometry audit 29.10.2026, RAGLUJ).  The memo above is keyed on the CANONICAL
+    SMILES, which forgets the atom order.  Two fragments of one complex that are the same ligand
+    but were cut out in different atom orders -- RAGLUJ has one thiocyanate as (S, C, N) and one
+    as (N, C, S) -- share one entry, so the second receives coordinates in the FIRST fragment's
+    order.  Every caller indexes those coordinates with its own donor indices (``dons[0]``), so the
+    donor index then points at another atom: the NCS is seated through S (Zn...S at the covalent
+    sum, Zn-N about 5.5 A, M-N-C 0 deg) in every frame.  It can hit any ligand whose canonical
+    SMILES is shared by fragments of different atom order (ambidentate NCS/SCN, CN, NO2, OCN,
+    DMSO, and symmetric-canonical ligands generally).
+
+    THE FIX.  A cache hit is re-expressed in the caller's atom order: both H-added graphs get
+    canonical ranks with ties broken; equal rank is the same atom of the canonical form, so the
+    rank match is a graph isomorphism from the caller's fragment onto the cached one (checked
+    atom for atom and bond for bond; a failed check embeds the fragment afresh in its own order
+    and leaves the entry alone).  The cached conformers are permuted, not re-embedded, so
+    identical ligands still share one conformer pool.  An identity permutation returns the
+    cached tuple itself."""
+    return os.environ.get("DELFIN_FFFREE_CONF_CACHE_ATOM_ORDER", "0") == "1"
+
+
+def _atom_order_map(cached_mol, query_mol):
+    """perm with perm[i] = atom of ``cached_mol`` that is atom i of ``query_mol``, or None.
+
+    Both mols are H-added copies of the same ligand.  The map is verified to be an isomorphism
+    (element, formal charge, degree and every bond), so coordinates permuted by it describe the
+    caller's fragment exactly."""
+    n = query_mol.GetNumAtoms()
+    if cached_mol.GetNumAtoms() != n:
+        return None
+    try:
+        rq = list(Chem.CanonicalRankAtoms(query_mol, breakTies=True))
+        rc = list(Chem.CanonicalRankAtoms(cached_mol, breakTies=True))
+    except Exception:
+        return None
+    by_rank = {r: j for j, r in enumerate(rc)}
+    if len(by_rank) != n:
+        return None
+    perm = [by_rank.get(r) for r in rq]
+    if any(p is None for p in perm):
+        return None
+    for i in range(n):
+        a, b = query_mol.GetAtomWithIdx(i), cached_mol.GetAtomWithIdx(perm[i])
+        if (a.GetAtomicNum() != b.GetAtomicNum() or a.GetFormalCharge() != b.GetFormalCharge()
+                or a.GetDegree() != b.GetDegree()):
+            return None
+    if query_mol.GetNumBonds() != cached_mol.GetNumBonds():
+        return None
+    for bd in query_mol.GetBonds():
+        if cached_mol.GetBondBetweenAtoms(perm[bd.GetBeginAtomIdx()],
+                                          perm[bd.GetEndAtomIdx()]) is None:
+            return None
+    return perm
+
+
+_REMAP_FAILED = object()
+
+
+def _remap_cached_confs(entry, frag_mol):
+    """A cache entry re-expressed in ``frag_mol``'s atom order (DELFIN_FFFREE_CONF_CACHE_ATOM_ORDER).
+
+    The entry itself when the order already agrees (or the entry is None), the permuted copy when
+    a verified isomorphism exists, ``_REMAP_FAILED`` otherwise (the caller then embeds afresh)."""
+    if entry is None:
+        return None
+    syms_c, coords_c, mol_c = entry
+    try:
+        mq = Chem.AddHs(frag_mol)
+    except Exception:
+        return _REMAP_FAILED
+    perm = _atom_order_map(mol_c, mq)
+    if perm is None:
+        return _REMAP_FAILED
+    if perm == list(range(len(perm))):
+        return entry
+    idx = np.asarray(perm, int)
+    coords_q = [np.asarray(P, float)[idx] for P in coords_c]
+    try:
+        for conf in mol_c.GetConformers():
+            P = np.asarray(conf.GetPositions(), float)[idx]
+            c = Chem.Conformer(mq.GetNumAtoms())
+            for i in range(mq.GetNumAtoms()):
+                c.SetAtomPosition(i, P[i].tolist())
+            c.SetId(conf.GetId())
+            mq.AddConformer(c, assignId=False)
+    except Exception:
+        pass
+    return [a.GetSymbol() for a in mq.GetAtoms()], coords_q, mq
+
+
 def _relax_confs_ffree(m, cids):
     """Minimise each conformer with U_total instead of MMFF.
 
@@ -108,7 +200,12 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     except Exception:
         key = None
     if key is not None and key in _CONF_CACHE:
-        return _CONF_CACHE[key]
+        if not _cache_atom_order_enabled():
+            return _CONF_CACHE[key]
+        _hit = _remap_cached_confs(_CONF_CACHE[key], frag_mol)
+        if _hit is not _REMAP_FAILED:
+            return _hit
+        key = None        # embed this fragment in its own order; the entry stays as it is
     m = Chem.AddHs(frag_mol)
     try:
         cids = list(AllChem.EmbedMultipleConfs(m, numConfs=k, randomSeed=SEED,
