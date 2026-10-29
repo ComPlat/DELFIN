@@ -32548,10 +32548,21 @@ class OpenAIClient(_BaseClient):
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
                             _stream_attempt, _STREAM_RETRY_MAX, _delay))
-                        # A congestion signal triggered this retry: record it
-                        # so the `finally` folds the outcome (and releases the
-                        # slot) before the round runs again.
-                        _gslot.exception = _stream_exc
+                        # A congestion signal triggered this retry: report it
+                        # and free the slot BEFORE the backoff, so another
+                        # session can use the endpoint while this round waits.
+                        # The gate is then cleared on the holder, so the
+                        # round's `finally` neither reports it a second time
+                        # nor releases again; the next round takes a new slot.
+                        if _gslot.gate is not None:
+                            try:
+                                from .endpoint_gate import report_result as _gslot_report
+                                _gslot_report(_gslot.gate, exception=_stream_exc,
+                                              first_byte_s=None)
+                            except Exception:
+                                pass
+                            _gslot.gate.release()
+                            _gslot.gate = None
                         time.sleep(_delay)
                         continue
                     # The endpoint does not serve the model (a KIT roster
