@@ -103,7 +103,20 @@ def _endpoint_key(base_url: str, model: str = "",
     cased, with a scheme marker so ``http://a:1`` never collides with
     ``https://a:1``. With ``per_model`` the model joins it -- for
     endpoints that limit per model, not per endpoint."""
-    u = (base_url or "").strip().lower().rstrip("/")
+    # Only scheme, host, port and path: user info (a password in the URL),
+    # query and fragment never become part of a file name.
+    from urllib.parse import urlsplit
+    raw = (base_url or "").strip()
+    try:
+        parts = urlsplit(raw)
+        if parts.scheme and parts.hostname:
+            host = parts.hostname + (f":{parts.port}" if parts.port else "")
+            raw = f"{parts.scheme}://{host}{parts.path}"
+        else:
+            raw = raw.split("?", 1)[0].split("#", 1)[0].rsplit("@", 1)[-1]
+    except ValueError:
+        raw = raw.split("?", 1)[0].split("#", 1)[0].rsplit("@", 1)[-1]
+    u = raw.lower().rstrip("/")
     if not u:
         return ""
     key = u.replace("://", "_")
@@ -111,11 +124,12 @@ def _endpoint_key(base_url: str, model: str = "",
     if per_model:
         safe += "@" + "".join(
             c if c.isalnum() or c in "-._" else "_" for c in (model or ""))
-    # Long keys overflow filename limits (255); a readable hash suffix
-    # keeps them unique.
+    # Long keys overflow filename limits (255); a checksum suffix keeps
+    # them unique. A checksum, not a cryptographic hash: it protects
+    # nothing, it only tells two long keys apart.
     if len(safe) > 160:
-        import hashlib
-        digest = hashlib.sha256(safe.encode("utf-8")).hexdigest()[:12]
+        import zlib
+        digest = f"{zlib.crc32(safe.encode('utf-8')) & 0xffffffff:08x}"
         safe = safe[:140] + "-" + digest
     return safe
 
