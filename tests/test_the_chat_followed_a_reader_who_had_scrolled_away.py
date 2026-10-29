@@ -312,12 +312,12 @@ const writesAtEnd = scrollWrites;
 tick();
 seen.idle_poll_does_not_write_scroll_again = scrollWrites === writesAtEnd;
 
-// An offset past the end of what is now shown belongs to another
-// conversation, so the reader is put at the end rather than mid-history.
+// A transient shrink/reflow is not a session switch and must not revoke
+// the reader's decision to pause. Each session has its own follow record.
 userScroll(400);
 chat.scrollHeight = 500;
 sync();
-seen.swapped_conversation_starts_at_the_end = S().follow === true;
+seen.shrinking_content_does_not_resume_following = S().follow === false;
 
 // A cleared conversation drops the carried offset.
 window.__delfinChatReset();
@@ -330,6 +330,37 @@ userScroll(200);
 clickSend();
 seen.sending_returns_to_the_end =
   S().follow === true && chat.scrollTop === end();
+
+// Input arrives while an automatic scroll event is still queued. A new
+// token/poll before the reader's scroll event must not steal the viewport.
+chat.scrollHeight += 200;
+window.__delfinChatSync(chat); // deliberately do NOT flush its scroll event
+for (const fn of docListeners.wheel) fn({target: chat, deltaY: -12});
+const beforeGesture = chat.scrollTop;
+chat.scrollHeight += 100;
+tick();
+seen.input_pauses_before_scroll_event = !S().follow && chat.scrollTop === beforeGesture;
+chat._top -= 12;
+for (const fn of docListeners.scroll) fn({target: chat});
+sync();
+seen.pending_auto_event_does_not_swallow_reader = !S().follow && chat.scrollTop === beforeGesture - 12;
+
+// A tiny upward gesture inside the old 60px tolerance also stays paused.
+window.__delfinChatToBottom(jump); flush();
+for (const fn of docListeners.wheel) fn({target: chat, deltaY: -12});
+chat._top -= 12;
+for (const fn of docListeners.scroll) fn({target: chat});
+sync();
+seen.small_upward_gesture_stays_paused = !S().follow && chat.scrollTop === end() - 12;
+
+// Manipulating a viewer must pause follow even before any scrolling occurs.
+window.__delfinChatToBottom(jump); flush();
+for (const fn of docListeners.pointerdown) fn({target: chat});
+const viewerTop = chat.scrollTop;
+chat.scrollHeight += 300;
+tick(); sync();
+for (const fn of docListeners.pointerup) fn({target: chat});
+seen.viewer_interaction_keeps_position = !S().follow && chat.scrollTop === viewerTop;
 
 console.log(JSON.stringify(seen));
 """
