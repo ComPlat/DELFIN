@@ -1159,6 +1159,27 @@ def _firejail_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
     return args
 
 
+def _command_env(mode: str) -> dict:
+    """The scrubbed environment for a command run under sandbox ``mode``.
+
+    ``_scrubbed_bash_env`` points TMPDIR/TMP/TEMP at the session scratch dir,
+    which is correct for the layers that bind that dir read-write into their
+    cage (bwrap, Landlock, Seatbelt, and no lock): a file one command writes
+    to $TMPDIR survives to the next and the file tools reach it. firejail is
+    the exception: it runs ``--private-tmp`` and does not bind the scratch
+    dir, so inside its cage a TMPDIR naming the host scratch would point at a
+    path that does not exist and mktemp plus every TMPDIR/TMP/TEMP user would
+    fail. For firejail keep the variables at /tmp (firejail's private
+    writable tmp), restoring the behaviour that predates the scratch dir.
+    """
+    from .api_client import _scrubbed_bash_env
+    env = _scrubbed_bash_env()
+    if mode == "firejail":
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            env[key] = "/tmp"
+    return env
+
+
 # ---------------------------------------------------------------------------
 # Layer 3 — audit log
 
@@ -1311,13 +1332,14 @@ def run_agent_command(
     try:
         # Every mode: the shell's scrubbed environment (no provider keys),
         # its own session and process group, no terminal, the whole group
-        # ended at exit and at the timeout.
-        from .api_client import _scrubbed_bash_env
+        # ended at exit and at the timeout. TMPDIR points at the session
+        # scratch dir except under firejail (which does not bind it): see
+        # ``_command_env`` (which applies _scrubbed_bash_env itself).
         from . import contained_run as _contained
         proc = _contained.run(
             argv,
             cwd=str(repo_dir),
-            env=_scrubbed_bash_env(),
+            env=_command_env(cfg.mode),
             timeout=cfg.timeout_s,
             budget=True,
         )
