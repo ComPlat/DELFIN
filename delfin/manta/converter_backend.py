@@ -2715,6 +2715,13 @@ def _coord_filter(results):
         return results
 
 
+def _bv_geom_on() -> bool:
+    """DELFIN_FFFREE_BV_EMBED_GEOM together with the bond-valence embed it repairs."""
+    from delfin.manta import bv_embed_geom as _bvg
+    from delfin.manta import _ml_targets_bv as _bvt
+    return _bvg.geom_enabled() and _bvt.embed_at_targets()
+
+
 def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                     ) -> Optional[List[Tuple[str, str]]]:
     # `union`: the caller says whether it places our frames ALONGSIDE legacy's instead
@@ -2782,7 +2789,13 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
         # good fallback, and REGRESSES the system (DIPZOV 0.14 -> 0.56).  Purely additive:
         # where the default chelate succeeds, the opposite geometry is still added (YEGGUO
         # wins via the separate non-chelate path, unaffected).
-        if (_cn4_both_enabled() and d.get("cn") == 4 and chel
+        # DELFIN_FFFREE_BV_EMBED_GEOM under UNION: the guard above protects the legacy fallback, and under
+        # UNION the legacy frames are built and merged in any case, so an EMPTY default polyhedron no longer
+        # has to hide its partner.  Needed because the chemically right embed (bv_embed_geom) rejects what
+        # the distorted one let through: a planar Te,N,O pincer (EBOKUC) cannot be tetrahedral, T-4 comes out
+        # empty, and with the guard the SP-4 chelate frames the crystal has were never built (30.10.2026).
+        _both_any = bool(chel) or (union and _bv_geom_on())
+        if (_cn4_both_enabled() and d.get("cn") == 4 and _both_any
                 and _cn4_opposite_geometry(d["geometry"]) is not None):
             opp = _cn4_opposite_geometry(d["geometry"])
             opp_key = _GEOM_TO_POLYA.get(opp)
@@ -2805,7 +2818,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
         # JOQBAU (Cu(II), N,N,N-tridentate + 2 Cl, crystal tau5 0.55) got two TBP frames
         # (tau5 0.93) and nothing between; URUGOF (Ni, crystal tau5 0.29) three at 0.88.
         # Same never-worse shape as CN4_BOTH: only on top of a non-empty default.
-        if (_cn5_both_enabled() and d.get("cn") == 5 and chel
+        if (_cn5_both_enabled() and d.get("cn") == 5 and (bool(chel) or (union and _bv_geom_on()))
                 and _cn5_opposite_geometry(d["geometry"]) is not None):
             opp5 = _cn5_opposite_geometry(d["geometry"])
             opp5_key = _GEOM_TO_POLYA.get(opp5)
