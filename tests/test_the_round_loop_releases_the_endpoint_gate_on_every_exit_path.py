@@ -213,24 +213,29 @@ def test_slot_released_when_closed_at_wait_notice_yield(monkeypatch, tmp_path):
     sits before any stream-iteration try in the round, so it is the one path
     a naive release can miss."""
     A, client, gate_root = _make_client(monkeypatch, tmp_path)
-    # Pre-hold every slot of this endpoint so acquire() has to poll and
-    # publish a wait_notice before it can take a slot.
+    # Hold a slot long enough for acquire() to poll and publish a wait_notice,
+    # then release it so acquire() completes and the wiring can yield that
+    # notice. endpoint_gate sleeps on its own clock, so acquire really waits.
     gate = G.EndpointGate(client._base_url)
     dirpath = gate_root / gate._key
     dirpath.mkdir(parents=True, exist_ok=True)
-    held_fds = []
-    for i in range(gate.current_limit(dirpath)):
-        fd = os.open(str(dirpath / f"slot-{i}"), os.O_RDWR | os.O_CREAT, 0o600)
+    held_ev = threading.Event()
+
+    def _hold_then_release():
+        fd = os.open(str(dirpath / "slot-0"), os.O_RDWR | os.O_CREAT, 0o600)
         import fcntl
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        held_fds.append(fd)
-    # Drop the pre-hold only after the gate dir is built: the round then
-    # acquires quickly, but acquire() has already published wait_notice
-    # (in_use was >= 1 on its first poll). The notice event is what we close
-    # on.
-    for fd in held_fds:
-        import fcntl
+        held_ev.set()                        # slot is now contended
+        # Wait on a real timer, NOT time.sleep: _make_client no-ops the global
+        # time.sleep, so the slot must be held via an Event timeout to let the
+        # round's acquire() poll and publish its wait_notice.
+        threading.Event().wait(0.3)
         fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+    holder = threading.Thread(target=_hold_then_release)
+    holder.start()
+    assert held_ev.wait(timeout=5), "background slot holder never started"
 
     def _create(**kwargs):
         return _Stream([_Chunk(
@@ -240,15 +245,17 @@ def test_slot_released_when_closed_at_wait_notice_yield(monkeypatch, tmp_path):
     gen = client.stream_message(
         "sys", [{"role": "user", "content": "go"}], max_tokens=100)
     # Drive until the waiting notice is actually yielded, then close right
-    # there -- the yield is inside the acquire block, before the stream try.
-    for _ in range(20):
+    # there -- the yield is inside the gate try, so closing releases the slot.
+    noticed = False
+    for _ in range(60):
         ev = next(gen)
         if ev.type == "notice":
+            noticed = True
             break
     gen.close()
+    holder.join(timeout=5)
+    assert noticed, "the round did not publish a waiting-for-a-slot notice"
     assert _held_slots_for_url(gate_root, client._base_url) == 0
-    for fd in held_fds:
-        os.close(fd)
 
 
 def test_slot_released_when_consumer_stops_early(monkeypatch, tmp_path):
@@ -279,12 +286,14 @@ def test_cancel_releases_the_slot(monkeypatch, tmp_path):
         raise RateLimited("429 too many requests")
 
     client.client.chat.completions.create = _create
-    # The stop path: signal_stop before driving, the round error arrives
-    # while stopped -> the loop returns cleanly instead of raising.
-    # signal_stop REPLACES self.client with a fresh SDK client
-    # (api_client.py OpenAIClient.signal_stop), so the fake is re-attached
-    # to the new one afterwards.
+    # The stop path: signal_stop (cuts the in-flight transport) before driving,
+    # plus the engine's stop probe (the flag the loop checks -- real stopping
+    # sets both), so the round error arrives "while stopped" and the loop
+    # returns cleanly instead of retrying/re-raising. signal_stop REPLACES
+    # self.client with a fresh SDK client (OpenAIClient.signal_stop
+    # in api_client.py), so the fake is re-attached to the new one afterwards.
     client.signal_stop()
+    client.should_stop = lambda: True
     client.client.chat.completions.create = _create
     events = list(client.stream_message(
         "sys", [{"role": "user", "content": "go"}], max_tokens=100))
