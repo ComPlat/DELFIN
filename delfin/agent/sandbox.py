@@ -1020,6 +1020,51 @@ _HOME_SECRET_DIRS = (
 )
 
 
+#: Paths a run hides from its own cage: absolute paths joined by
+#: ``os.pathsep``, set by whoever starts the session (a swarm launcher).
+RUN_HIDE_ENV = "DELFIN_CAGE_HIDE"
+
+
+def run_hidden_paths() -> list[str]:
+    """The existing absolute paths named by ``DELFIN_CAGE_HIDE``, resolved.
+
+    Input: the environment of the session that builds the cage. Output:
+    each entry that is absolute and exists, resolved, once. Semantics:
+    hiding only removes access -- every cage layer masks these AFTER its
+    binds like the home secret directories, and the file tools refuse them
+    inside a readable root. Relative, empty and missing entries are
+    ignored (a mount point must exist). Read per cage build, from the
+    session's own environment, so a command inside the cage cannot change
+    what its cage hides. Never raises."""
+    out: list[str] = []
+    for raw in str(os.environ.get(RUN_HIDE_ENV) or "").split(os.pathsep):
+        raw = raw.strip()
+        if not raw or not os.path.isabs(raw):
+            continue
+        try:
+            p = Path(raw).resolve()
+            if p.exists() and str(p) not in out:
+                out.append(str(p))
+        except OSError:
+            continue
+    return out
+
+
+def _bwrap_hide_args(paths) -> list[str]:
+    """bubblewrap masks for ``paths``: tmpfs over a directory, /dev/null
+    over a file -- the same two forms the home secret paths use."""
+    args: list[str] = []
+    for p in paths:
+        try:
+            if os.path.isdir(p):
+                args += ["--tmpfs", p]
+            elif os.path.isfile(p):
+                args += ["--ro-bind", "/dev/null", p]
+        except OSError:
+            continue
+    return args
+
+
 def runtime_masked_dirs() -> list[str]:
     """The masked directories that appear at run time, created now and
     resolved: a cage built now masks them instead of skipping a path that
@@ -1088,6 +1133,8 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
     args += ["--bind", repo, repo]
     for d in late_masks:
         args += ["--tmpfs", d]
+    # The run's own hidden paths, after every bind like the masks above.
+    args += _bwrap_hide_args(run_hidden_paths())
     args += [
         "--chdir", repo,
         "--unshare-pid",
@@ -1135,6 +1182,12 @@ def _firejail_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
     ]
     if not allow_network:
         args.append("--net=none")
+    for p in run_hidden_paths():
+        if any(ch in _FIREJAIL_PATTERN_CHARS or ord(ch) < 0x20 for ch in p):
+            raise ValueError(
+                f"firejail cannot blacklist {p!r}: it contains a pattern or "
+                "control character")
+        args.append(f"--blacklist={p}")
     args += [f"--chdir={repo}", "bash", "-c", cmd]
     return args
 
