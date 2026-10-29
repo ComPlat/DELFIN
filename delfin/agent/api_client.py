@@ -28975,6 +28975,11 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
         argv += ["--write", scratch, "--tmpdir", scratch]
     except Exception:
         scratch = None
+        # Keep the TMPDIR invariant when the scratch dir cannot be made:
+        # exactly one --tmpdir, falling back to the private tmp dir (what
+        # this argv had before the scratch work), so landlock_exec still
+        # controls TMPDIR/TMP/TEMP for every program in the cage.
+        argv += ["--tmpdir", _private_tmp_dir()]
     argv += ["--write", _private_tmp_dir(), "--strict",
              "1" if strict else "0", "--"]
     return argv + plain
