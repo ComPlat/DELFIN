@@ -224,6 +224,24 @@ def test_landlock_cage_falls_back_to_private_tmp_when_scratch_unavailable(monkey
     assert tmpdirs == [A._private_tmp_dir()], (tmpdirs, A._private_tmp_dir())
 
 
+def test_two_kit_tool_permissions_in_one_process_share_the_scratch_dir(tmp_path):
+    """The scratch dir is per PROCESS, not per KitToolPermissions instance:
+    ``_SESSION_SCRATCH`` is a module global. Two instances in the same
+    process -- the scheduler daemon's several runs and sub-agents on threads
+    all live in one process -- therefore see the SAME scratch dir. This pins
+    and documents that sharing rather than hiding it: the TMPDIR exported to
+    every cage and the file tools' writable roots both come from that one
+    global, so every instance admits and writes the same directory."""
+    one = _perms(Path(tmp_path) / "sa")
+    two = _perms(Path(tmp_path) / "sb")
+    scratch = A._session_scratch_dir()
+    one_root = next(r for r in one.all_workspace_roots() if r == Path(scratch))
+    two_root = next(r for r in two.all_workspace_roots() if r == Path(scratch))
+    assert one_root == two_root == Path(scratch), (one_root, two_root, scratch)
+    # stable across calls too: the global is cached once made
+    assert A._session_scratch_dir() == scratch
+
+
 @requires_a_working_sandbox
 def test_tmp_is_still_fresh_a_file_there_does_not_survive():
     ws = Path(A._session_scratch_dir()).parent
