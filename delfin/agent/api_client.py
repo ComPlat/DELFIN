@@ -20778,7 +20778,8 @@ class _DocToolExecutor:
         return None
 
     def _check_read_access(
-        self, perms: "KitToolPermissions", path: Path, label: str = ""
+        self, perms: "KitToolPermissions", path: Path, label: str = "",
+        command: str = "",
     ) -> Optional[str]:
         """Gate read-style tools (read_file, grep_file).
 
@@ -20918,10 +20919,20 @@ class _DocToolExecutor:
         _grant_dir = resolved if _is_dir else resolved.parent
         _grantable = _is_grantable_read_dir(_grant_dir)
         _what = "directory" if _is_dir else "file"
+        # A shell command's read names the command too: the path alone does
+        # not say what the yes lets run. Masked like a tool result, cut to
+        # 400 characters.
+        _cmd_line = ""
+        if command:
+            _shown = _redact_tool_result(str(command))
+            if len(_shown) > 400:
+                _shown = _shown[:400] + " …"
+            _cmd_line = f"It is read by this shell command:\n  {_shown}\n\n"
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
             f"The agent wants to read a {_what} outside the allowed roots:\n"
             f"  {resolved}\n\n"
+            + _cmd_line
             + (("Approving allows READING this file and other files in\n"
                 if not _is_dir else
                 "Approving allows READING the files in\n")
@@ -24391,7 +24402,7 @@ class _DocToolExecutor:
                         "not make the write run. Grant the directory via "
                         "--add-dir / extra_workspace_dirs to make it work."
                     )})
-                err = self._check_read_access(perms, path)
+                err = self._check_read_access(perms, path, command=cmd)
                 if err is not None:
                     return json.dumps({"error": (
                         f"blocked: this command would print '{target}'. {err}"
