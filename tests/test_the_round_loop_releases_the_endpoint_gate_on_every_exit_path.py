@@ -351,8 +351,13 @@ def test_the_slot_is_free_during_a_retry_backoff(monkeypatch, tmp_path):
     congestion is reported once, not again by the round's finally."""
     A, client, gate_root = _make_client(monkeypatch, tmp_path)
     held_during_sleep = []
-    monkeypatch.setattr(A.time, "sleep", lambda *a, **k: held_during_sleep.append(
-        _held_slots_for_url(gate_root, client._base_url)))
+    # Only the backoff before the retry (>= 1 s, _STREAM_RETRY delay) is
+    # measured: the short ticks while a round waits for its first byte run
+    # with the slot held on purpose.
+    def _sleep(seconds=0, *a, **k):
+        if float(seconds or 0) >= 1.0:
+            held_during_sleep.append(_held_slots_for_url(gate_root, client._base_url))
+    monkeypatch.setattr(A.time, "sleep", _sleep)
     reports = []
     real_report = G.report_result
     monkeypatch.setattr(G, "report_result", lambda gate, **kw: (
