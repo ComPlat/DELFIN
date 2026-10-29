@@ -203,3 +203,37 @@ def test_the_switch_is_bounded(client):
     assert len(asked) <= 1 + A._MODEL_FALLBACK_MAX + 1
     switches = getattr(client, "_turn_model_switches", [])
     assert len(switches) <= A._MODEL_FALLBACK_MAX
+
+
+def test_two_models_down_the_turn_ends_on_the_third(client, monkeypatch):
+    # GLM and DeepSeek both report themselves unavailable, Mistral answers.
+    # The turn leaves GLM, then DeepSeek, and lands on Mistral -- it never
+    # hands the rank slot back to a model it already left (GLM -> DeepSeek
+    # -> GLM until the budget is spent).
+    monkeypatch.setattr(mc, "kit_models_served", lambda *a, **k: {
+        "kit.glm-5.3-flash", "kit.deepseek-v4-flash",
+        "kit.mistral-small-4-119b-a8b"})
+    client.model = "kit.glm-5.3-flash"
+    asked = []
+
+    def _create(**kw):
+        asked.append(kw.get("model"))
+        if kw.get("model") in ("kit.glm-5.3-flash", "kit.deepseek-v4-flash"):
+            raise _Status400(f"Model '{kw.get('model')}' is temporarily "
+                             "unavailable. Please try again later.")
+        return _Stream([_Chunk([_Choice(_Delta("Fertig."), finish="stop")],
+                               usage=_Usage())])
+
+    client.client.chat.completions.create = _create
+    events = list(client.stream_message(
+        "sys", [{"role": "user", "content": "hi"}], max_tokens=50))
+    text = "".join(getattr(e, "text", "") or "" for e in events
+                   if getattr(e, "type", "") == "text_delta")
+    assert text == "Fertig."
+    assert client.model == "kit.mistral-small-4-119b-a8b"
+    switches = getattr(client, "_turn_model_switches", [])
+    assert [(s["before"], s["after"]) for s in switches] == [
+        ("kit.glm-5.3-flash", "kit.deepseek-v4-flash"),
+        ("kit.deepseek-v4-flash", "kit.mistral-small-4-119b-a8b")]
+    first_left = asked.index("kit.deepseek-v4-flash")
+    assert "kit.glm-5.3-flash" not in asked[first_left:]
