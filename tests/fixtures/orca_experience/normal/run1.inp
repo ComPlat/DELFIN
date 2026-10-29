@@ -1,0 +1,9 @@
+! PBE0 DEF2-TZVP D4 RIJCOSX FREQ TightSCF
+%pal nprocs 8 end
+%maxcore 4000
+
+* xyz 0 1
+O   0.0 0.0 0.0
+H   0.9 0.0 0.0
+H  -0.3 0.9 0.0
+*

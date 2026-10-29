@@ -132,11 +132,13 @@ def _elements_match(wanted: list, present: list) -> bool:
     return False
 
 
-def condition_problems(cond: Any, known_keyword=None, _path: str = "applies") -> list[str]:
+def condition_problems(cond: Any, known_keyword=None, known_block_option=None,
+                       _path: str = "applies") -> list[str]:
     """Every reason ``cond`` is not a well-formed condition; [] when it is.
 
     ``known_keyword`` (the :func:`delfin.orca_knowledge.known_keyword`
-    callable) makes keywords inside conditions checked like the card's own.
+    callable) makes keywords inside conditions checked like the card's own;
+    ``known_block_option`` does the same for ``block_option`` conditions.
     """
     if not isinstance(cond, dict):
         return [f"{_path}: a condition is a JSON object"]
@@ -148,10 +150,12 @@ def condition_problems(cond: Any, known_keyword=None, _path: str = "applies") ->
             return [f"{_path}.{key}: a non-empty list of conditions"]
         out = []
         for i, sub in enumerate(value):
-            out += condition_problems(sub, known_keyword, f"{_path}.{key}[{i}]")
+            out += condition_problems(sub, known_keyword, known_block_option,
+                                      f"{_path}.{key}[{i}]")
         return out
     if key == "not":
-        return condition_problems(value, known_keyword, f"{_path}.not")
+        return condition_problems(value, known_keyword, known_block_option,
+                                  f"{_path}.not")
     if key == "keyword":
         if not isinstance(value, str) or not value.strip():
             return [f"{_path}.keyword: a keyword name"]
@@ -163,6 +167,14 @@ def condition_problems(cond: Any, known_keyword=None, _path: str = "applies") ->
         if (not isinstance(value, list) or len(value) != 2
                 or not all(isinstance(p, str) and _BLOCK_OPTION.match(p) for p in value)):
             return [f"{_path}.block_option: [block, option], lowercase names"]
+        block, option = value
+        if known_block_option:
+            if not known_block_option(block, ""):
+                return [f"{_path}.block_option: block {block!r} is not one ORCA "
+                        "knows (OPI catalog, ORCA's parser)"]
+            if not known_block_option(block, option):
+                return [f"{_path}.block_option: option {option!r} is not one "
+                        f"block {block!r} knows (OPI catalog, ORCA's parser)"]
         return []
     if key in ("method_family", "job"):
         if not isinstance(value, list) or not value or not all(
@@ -263,7 +275,8 @@ def applies(card: dict, calc: dict) -> bool:
 
 # -------------------------------------------------------------------- checks
 
-def check_problems(check: Any, known_keyword=None, _path: str = "check") -> list[str]:
+def check_problems(check: Any, known_keyword=None, known_block_option=None,
+                   _path: str = "check") -> list[str]:
     """Every reason ``check`` is not a well-formed check spec."""
     if not isinstance(check, dict) or not check:
         return [f"{_path}: a non-empty object"]
@@ -276,6 +289,15 @@ def check_problems(check: Any, known_keyword=None, _path: str = "check") -> list
             if not _pairs(value):
                 out.append(f"{_path}.{key}: [block, option], [[block, option], ...] "
                            "or \"block.option\"")
+                continue
+            if known_block_option:
+                for block, option in _pairs(value):
+                    if not known_block_option(block, ""):
+                        out.append(f"{_path}.{key}: block {block!r} is not one "
+                                   "ORCA knows (OPI catalog, ORCA's parser)")
+                    elif not known_block_option(block, option):
+                        out.append(f"{_path}.{key}: option {option!r} is not one "
+                                   f"block {block!r} knows (OPI catalog, ORCA's parser)")
             continue
         if not isinstance(value, list) or not value or not all(
                 isinstance(v, str) and v.strip() for v in value):
@@ -287,6 +309,10 @@ def check_problems(check: Any, known_keyword=None, _path: str = "check") -> list
             if "." in entry and len(entry.split(".")) == 2:
                 if not all(_BLOCK_OPTION.match(p) for p in entry.split(".")):
                     out.append(f"{_path}.{key}[{i}]: {entry!r} is not \"block.option\"")
+                elif (known_block_option
+                      and not known_block_option(*entry.split("."))):
+                    out.append(f"{_path}.{key}[{i}]: {entry!r} is not a block option "
+                               "ORCA knows (OPI catalog, ORCA's parser)")
                 continue
             if known_keyword and not known_keyword(entry):
                 out.append(f"{_path}.{key}[{i}] {entry!r} is not one ORCA knows "
