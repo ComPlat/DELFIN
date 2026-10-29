@@ -1,0 +1,1082 @@
+[
+ {
+  "id": "relativistic.three-hamiltonians-x2c-preferred",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "ORCA offers three relativistic Hamiltonians: X2C, second-order Douglas-Kroll-Hess (DKH) and ZORA with a model potential. The manual states X2C has the best feature set and recommends users to preferentially use this method; it is the Hamiltonian pursued in further development. X2C requires switching the WHOLE basis to all-electron x2c-XVPall (H-Rn) with x2c/J or AutoAux and removing any ECP; for elements beyond Rn no built-in x2c basis exists. For energies/geometries of heavy-element compounds, a def2 basis with def2-ECP and NO relativistic Hamiltonian is an equally valid route; all-electron scalar-relativistic Hamiltonians are needed mainly for core-sensitive properties (NMR, EPR hyperfine, EFG, contact density, XAS).",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C",
+   "ZORA",
+   "DKH",
+   "x2c/J",
+   "AutoAux"
+  ],
+  "when": {
+   "topic": "any calculation intended to include scalar relativistic effects"
+  },
+  "recommend": {
+   "set": [
+    "X2C with all-electron x2c-XVPall (H-Rn) basis + x2c/J or AutoAux and no ECP; otherwise use a def2 basis with def2-ECP and no relativistic Hamiltonian"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12 Relativistic Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Facts match 2.12 (X2C preferred, pursued in development). But recommend {set:[X2C]} for 'any calculation intended to include scalar relativistic effects' is too broad for an autonomous agent: adding X2C to an existing input that uses def2 bases puts a relativistic Hamiltonian on top of def2-ECP for Rb-Rn (scalar relativity counted twice / ECP basis not meant for an all-electron Hamiltonian; basisset.txt Table 2.34: def2/J 'do not use with DKH/ZORA/X2C'). Also omits that ECPs are the manual's stated alternative for heavy elements (2.12.1.1 'or even an ECP-based calculation'; 2.7.5 'good alterna"
+ },
+ {
+  "id": "relativistic.no-spin-orbit-scf",
+  "topic": "relativistic",
+  "kind": "limit",
+  "statement": "Scalar relativistic corrections to the two-electron interaction are not available in ORCA, and self-consistent field calculations (HF, DFT, CASSCF) with inclusion of spin-orbit coupling are not available. The three Hamiltonians (X2C, DKH, ZORA) cover scalar relativity only. Spin-orbit coupling is available only a posteriori (e.g. quasi-degenerate perturbation theory after CASSCF/NEVPT2, SOC-TDDFT, EPR/ZFS) with SOMF-type operators; when X2C or DKH is used, only the one-electron part of these SOC integrals is relativistically corrected (2.12.5.2). The x2c-*-2c bases are meant for two-component calculations, which ORCA does not implement (2.7.3.5).",
+  "orca": ">=6.0",
+  "when": {
+   "topic": "a user expects SOC in an SCF calculation or two-electron relativistic corrections"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12 Relativistic Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "keywords": [
+   "X2C",
+   "DKH",
+   "ZORA"
+  ],
+  "verified_by": "expert-relativistic",
+  "review_note": "First two sentences are verbatim-correct (2.12). The last clause 'spin-orbit effects enter only through property-specific SOC integrals that include a relativistic correction to the one-electron term' misreads 2.12.5.2: that sentence says the SOC integrals used for properties carry a (scalar) relativistic correction only in their one-electron part. SOC itself is available perturbatively (SOMF operator incl. two-electron mean-field terms) in QDPT (CASSCF/NEVPT2), SOC-TDDFT, EPR g-tensor/ZFS; the card as written suggests SOC is one-electron only."
+ },
+ {
+  "id": "relativistic.older-approximations-removed",
+  "topic": "relativistic",
+  "kind": "limit",
+  "statement": "Earlier ORCA versions offered a number of additional relativistic approximations which are no longer supported in ORCA 6: only X2C, DKH (to second order) and ZORA with a model potential remain. Do not carry older inputs using other relativistic keywords forward.",
+  "orca": ">=6.0",
+  "when": {
+   "topic": "porting an older ORCA 4.x/5.x input that used a relativistic Hamiltonian"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12 Relativistic Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.basis-must-be-requested-explicitly",
+  "topic": "relativistic",
+  "kind": "requirement",
+  "statement": "ORCA no longer performs automatic basis set substitution or aliasing when a relativistic Hamiltonian is detected: the basis must match the Hamiltonian. ZORA -> ZORA-def2-* (H-Kr) + SARC-ZORA-* (Rb-Rn, Ac-Lr; SVP only Hf-Hg); DKH2 -> DKH-def2-*/cc-pVnZ-DK/ANO-RCC + SARC-DKH-*; X2C -> x2c-XVPall (H-Rn); AuxJ: SARC/J for ZORA/DKH, x2c/J or AutoAux for X2C, never def2/J. Never combine an ECP (def2-ECP, dhf-ECP) with DKH/ZORA/X2C. Severity: error for ECP+relativistic Hamiltonian and for an element not covered by the named basis; warning for a non-recontracted all-electron basis on light elements.",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA",
+   "DKH",
+   "X2C",
+   "ZORA-def2-TZVP",
+   "DKH-def2-TZVP",
+   "SARC-ZORA-TZVP",
+   "SARC-DKH-TZVP",
+   "SARC/J",
+   "x2c/J",
+   "AutoAux"
+  ],
+  "when": {
+   "topic": "any calculation with DKH, ZORA or X2C"
+  },
+  "avoid": [
+   "running DKH/ZORA/X2C with an ECP basis (def2-ECP, dhf-ECP)",
+   "running DKH/ZORA/X2C with a plain (non-prefixed) all-electron basis set",
+   "using def2/J as auxiliary basis with a relativistic Hamiltonian"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.1 Basic Usage (Warning)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Core statement matches the 2.12.1 Warning. Problems: (1) severity 'error' is attached to the wrong case: a non-relativistic all-electron basis (e.g. def2-TZVP on H-Kr) with ZORA/DKH runs and gives a degraded, inconsistently contracted core, not a refused/garbage run -> warning. The case that IS wrong is an ECP basis (def2-* beyond Kr carries def2-ECP) combined with DKH/ZORA/X2C, and a prefixed basis that does not cover the element (ZORA-def2-*/DKH-def2-* are H-Kr only, Table 2.27; beyond Kr the SARC-ZORA-*/SARC-DKH-* orbital basis must be named, e.g. via %basis NewGTO) -- the card does not sta"
+ },
+ {
+  "id": "relativistic.matching-hamiltonian-basis-pairs",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "Pair the Hamiltonian with matching basis sets: e.g. '! TPSS Opt ZORA ZORA-def2-TZVP SARC/J', '! DLPNO-CCSD(T) DKH cc-pVTZ-DK cc-pVTZ/C', or '! DSD-PBEP86/2013 NMR X2C x2c-TZVPall-s x2c/J'. Coverage: ZORA-/DKH-def2-*: H-Kr; SARC-ZORA-/SARC-DKH-TZVP(P): Rb-Rn, Ac-Lr (SVP: Hf-Hg only), combine with ZORA-/DKH-def2 for lighter atoms, AuxJ SARC/J; SARC2-*-QZV(P) for lanthanides in correlated WF methods; x2c-XVPall: H-Rn with x2c/J; x2c-*-s only for NMR shieldings; cc-pVnZ-DK: H-Ar, Sc-Kr. Use the SARC variant whose name matches the Hamiltonian.",
+  "orca": ">=6.0",
+  "keywords": [
+   "TPSS",
+   "Opt",
+   "ZORA",
+   "ZORA-def2-TZVP",
+   "SARC/J",
+   "DLPNO-CCSD(T)",
+   "DKH",
+   "cc-pVTZ-DK",
+   "cc-pVTZ/C",
+   "DSD-PBEP86/2013",
+   "NMR",
+   "X2C",
+   "x2c-TZVPall-s",
+   "x2c/J",
+   "SARC-ZORA-TZVP",
+   "SARC-DKH-TZVP"
+  ],
+  "when": {
+   "topic": "choosing basis sets for a relativistic calculation"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.1 Basic Usage, 2.12.6 Basis Sets in Relativistic Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Examples are verbatim from 2.12.1 and correct. Missing element coverage and Hamiltonian specificity that an agent needs: ZORA-def2/DKH-def2 cover only H-Kr; SARC-*-TZVP(P) cover Rb-Rn and Ac-Lr, SARC-*-SVP only Hf-Hg; SARC bases are contracted for DKH2 or ZORA (named SARC-DKH-*/SARC-ZORA-*) and are not X2C bases; x2c-XVPall only up to Rn; cc-pVnZ-DK covers H-Ar, Sc-Kr only (K, Ca missing) (Tables 2.27, 2.28, 2.30, 2.32). '-s' x2c variants carry tight functions for NMR shielding, which is why the NMR example uses x2c-TZVPall-s."
+ },
+ {
+  "id": "relativistic.decontract-for-any-hamiltonian",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "An uncontracted all-electron basis set of sufficient size always works with any relativistic Hamiltonian, and uncontracted fitting basis sets are always appropriate in RI calculations. Use the Decontract keyword to decontract the chosen basis set and make it suitable for any relativistic Hamiltonian, as well as for comparisons between them. Condition: only when the chosen basis is all-electron for every atom (no ECP) -- decontracting an ECP basis does not make it all-electron. Combine with %rel FiniteNuc true end for DKH/X2C; with ZORA no finite nucleus exists, so prefer DKH or X2C for large uncontracted bases on heavy atoms. Cost rises substantially, ! Decontract decontracts orbital and auxiliary bases.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Decontract"
+  ],
+  "when": {
+   "topic": "a suitable relativistically recontracted all-electron basis set is not available, or Hamiltonians are being compared"
+  },
+  "recommend": {
+   "set": [
+    "Decontract"
+   ],
+   "block": "%rel FiniteNuc true end (for DKH/X2C)"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.6 Basis Sets in Relativistic Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Matches 2.12.6 text. Missing conditions that make it dangerous: Decontract of an ECP basis (def2-* beyond Kr) does not make it all-electron -- the ECP stays and the result is still wrong with a relativistic Hamiltonian; 'of sufficient size' is not something an agent can judge from a contracted ECP basis. 2.12.6 continues immediately that large uncontracted bases risk variational collapse for a point nucleus -> FiniteNuc (DKH/X2C only; ZORA has no finite-nucleus model). Cost increase from decontraction (and ! Decontract also decontracts all aux sets, %basis Decontract) is not mentioned."
+ },
+ {
+  "id": "relativistic.dkh-zora-opt-use-one-center-by-default",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "Geometry optimizations with DKH and ZORA (but not X2C) automatically use the one-center approximation. It is enabled by default for DKH and ZORA calculations that require analytic gradients or Hessians, and such calculations are not implemented without it (although fully numerical gradients/Hessians are available). All relativistic methods can be used for geometry optimizations and frequency calculations at negligible additional cost relative to the non-relativistic calculation.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH",
+   "ZORA"
+  ],
+  "when": {
+   "job": "geometry optimization or frequency calculation",
+   "hamiltonian": "DKH or ZORA"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.1 Basic Usage (Warning), 2.12.2.1 One-Center Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.one-center-energies-not-comparable",
+  "topic": "relativistic",
+  "kind": "check",
+  "statement": "Energies obtained with and without the one-center approximation are not comparable. When computing relative energies, do not mix energies from single-point calculations without the one-center approximation with those from geometry optimizations that use this feature (automatic for DKH and ZORA optimizations). DELFIN must not mix such energies in one energy table without flagging the provenance.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Rel1C",
+   "RelFull"
+  ],
+  "when": {
+   "topic": "combining single-point energies with optimization results of DKH/ZORA calculations"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.1 Basic Usage (Warning), 2.12.1.1 Scalar-Relativistic Gradients and Properties"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.one-center-can-give-wrong-geometries",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "The one-center approximation is usually of sufficient accuracy, but cases have been observed in actual applications where it leads to clearly wrong geometries. Of the three Hamiltonians only X2C features analytic gradients, so for geometry optimizations the manual strongly recommends X2C (or an ECP-based calculation) over DKH/ZORA with their automatic one-center switch. Replace ZORA/DKH by X2C AND the basis by x2c-XVPall + x2c/J (elements up to Rn), or use a def2 basis with def2-ECP and no relativistic Hamiltonian for the optimization. Note X2C gradients use PictureChange=1 by default (2.12.7).",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C",
+   "x2c/J"
+  ],
+  "when": {
+   "job": "geometry optimization",
+   "hamiltonian": "DKH or ZORA"
+  },
+  "recommend": {
+   "set": [
+    "X2C with x2c-XVPall + x2c/J (up to Rn)",
+    "or def2 basis with def2-ECP and no relativistic Hamiltonian"
+   ]
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.1.1 Scalar-Relativistic Gradients and Properties"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Facts match 2.12.1.1. recommend {set:[X2C]} without the basis change will make the agent append X2C to a ZORA-def2/SARC input, i.e. an X2C run in a ZORA-contracted basis with SARC/J -- inconsistent. Omits that x2c bases stop at Rn and that ECP-based optimization is the other recommended route."
+ },
+ {
+  "id": "relativistic.rel1c-relfull-simple-keywords",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "The one-center approximation is controlled explicitly via the simple keyword Rel1C (on) and RelFull (off), or via the OneCenter keyword in the %rel block. RelFull disables both the one-center and the DLU approximations. With DKH/ZORA, RelFull is only for single points (or with fully numerical gradients/Hessians); for X2C, RelFull is the default behaviour for gradients.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Rel1C",
+   "RelFull"
+  ],
+  "when": {
+   "topic": "explicitly controlling the one-center approximation"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.2.1 One-Center Approximation, 2.12.9 Keywords (Table 2.54)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Keywords and meanings match 2.12.2.1 and Table 2.54. Missing condition: RelFull in a DKH/ZORA Opt/Freq job removes the only implemented analytic gradient/Hessian path (2.12.2.1: 'not implemented without it, although fully numerical gradients/Hessians are available'), so the agent may produce a job that fails or silently becomes very expensive."
+ },
+ {
+  "id": "relativistic.zora-needs-model-potential",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "In ORCA's ZORA implementation the potential in the ZORA kinetic operator is replaced by a model potential built from a sum of spherically symmetric neutral atomic densities (Van Wuellen). The model density has neither the correct electron number for charged species nor spin polarization, but is a reasonable approximation near the nucleus where relativistic effects matter. Fitting densities are available for elements up to Rn and the actinoids.",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA"
+  ],
+  "when": {
+   "hamiltonian": "ZORA"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.3.2 The Regular Approximation with Model Potential"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.modeldens-choice",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "ModelDens (rhoDKH, rhoZORA, rhoHF; %rel) selects the fitted atomic density used for the ZORA/IORA Coulomb model potential and for the PModel guess. Results should depend only slightly on the choice except perhaps for heavier elements; rhoHF is not recommended.",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA",
+   "IORA"
+  ],
+  "when": {
+   "hamiltonian": "ZORA or IORA",
+   "topic": "checking model-potential dependence of results, especially for heavy elements"
+  },
+  "recommend": {
+   "block": "%rel ModelDens rhoZORA end"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.3.2 The Regular Approximation with Model Potential, Table 2.55"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Statement garbles Table 2.55: ModelDens chooses WHICH fitted atomic density (rhoDKH/rhoZORA/rhoHF) is used, and that density serves both the Coulomb model potential and the PModel guess; it is not a choice 'between' model potential and PModel guess. Since the density also feeds the PModel guess, the variable is not ZORA/IORA-only in effect."
+ },
+ {
+  "id": "relativistic.zora-grid-accuracy",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "ZORA is highly dependent on numerical integration and it is very important to pay attention to radial integration accuracy. By default, since ORCA 5.0, grid construction handles this and the defaults should work very well. Only for very problematic cases use a higher IntAcc parameter, or at least increase the radial integration accuracy around the heavy atoms using SpecialGridAtoms and SpecialGridIntAcc (see Section 2.10.4).",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA"
+  ],
+  "when": {
+   "hamiltonian": "ZORA",
+   "topic": "strange results or difficult cases"
+  },
+  "recommend": {
+   "block": "%method SpecialGridAtoms <Z1>,<Z2> SpecialGridIntAcc <a1>,<a2> end"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.3.2 The Regular Approximation with Model Potential (Attention note)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Content matches the Attention note in 2.12.3.2, but the recommend block is wrong input: IntAcc, SpecialGridAtoms and SpecialGridIntAcc are %method keywords (numericalintegration.txt 2.10.4/2.10.5: '%METHOD ... SpecialGridAtoms ... IntAcc'), there is no '%grid' block, so ORCA would reject the input. Also SpecialGridAtoms takes atomic numbers (>0) or negative atom indices."
+ },
+ {
+  "id": "relativistic.zora-not-gauge-invariant",
+  "topic": "relativistic",
+  "kind": "limit",
+  "statement": "The ZORA method is not gauge invariant: a constant change of the potential V does not shift the energy by the same constant as in the Dirac and Schrodinger equations. The model potential and the scaled ZORA variant are ORCA's remedies; the scaled ZORA variant produces exact Dirac energies for hydrogen-like atoms but still no simple constant energy shift for many-electron systems.",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA"
+  ],
+  "when": {
+   "hamiltonian": "ZORA"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.3 The Regular Approximation, 2.12.3.1 The Scaled ZORA Variant"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.scalezora-single-points-only",
+  "topic": "relativistic",
+  "kind": "limit",
+  "statement": "The ScaleZORA flag in the %rel block (default false) scales the orbital energies, and per Table 2.55 it is for single points only. Do not use it in optimization or frequency jobs; scaled and unscaled orbital energies are different quantities and must not be mixed in one comparison. Use it only for single-point orbital-energy analysis, e.g. ionization energies.",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA"
+  ],
+  "when": {
+   "hamiltonian": "ZORA",
+   "topic": "using scaled ZORA"
+  },
+  "recommend": {
+   "block": "%rel ScaleZORA true end"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.9 Keywords (Table 2.55)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Table 2.55: ScaleZORA 'Whether to scale the orbital energies (single points only)', default false. The card's inference (no Opt/Freq, do not mix) is reasonable, but a limit card whose recommend block is '%rel ScaleZORA true end' invites the agent to switch it on. 'Scaled ZORA energies' overstates what the table says (orbital energies)."
+ },
+ {
+  "id": "relativistic.dkh1-dkh2-simple-keywords",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "The first- and second-order DKH methods are requested via the simple input keywords DKH1 or DKH2, respectively; DKH is an alias for DKH2 (second order). Together with appropriate basis sets, for most calculations no other settings are needed. Example: '! DKH DKH-def2-TZVP SARC/J'. DKH-def2-* covers H-Kr; for Rb-Rn and Ac-Lr assign SARC-DKH-TZVP(P) (e.g. %basis NewGTO <El> \"SARC-DKH-TZVP\" end end). FiniteNuc is recommended (2.12.6).",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH1",
+   "DKH2",
+   "DKH",
+   "DKH-def2-TZVP",
+   "SARC-DKH-TZVP",
+   "SARC/J"
+  ],
+  "when": {
+   "hamiltonian": "DKH"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.4 The Douglas-Kroll-Hess Method, 2.12.9 Keywords (Table 2.54)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Keywords match 2.12.4 and Table 2.54. The example '! DKH DKH-def2-TZVP SARC/J' with 'no other settings needed' only works for H-Kr; DKH-def2-* has no functions beyond Kr (Table 2.27), so a heavy-element input needs SARC-DKH-TZVP assigned explicitly."
+ },
+ {
+  "id": "relativistic.dkh-decontraction-step",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "Every DKH calculation starts with a decontraction of the basis set to ensure a good resolution of the identity (the relativistic kinetic energy E_p is not well-defined in position space): the non-relativistic kinetic energy is diagonalized, the E_p-dependent operators are calculated in that space, and the basis is recontracted afterwards. This is internal to the program and requires no user action.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH"
+  ],
+  "when": {
+   "hamiltonian": "DKH"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.4 The Douglas-Kroll-Hess Method"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.dkh-cleaner-than-regular",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "The spin-free DKH Hamiltonians contain all spin-free relativistic correction terms (e.g. mass-velocity and Darwin terms) and, because the potential enters linearly, need no scaling or model potential for correct behaviour under V -> V + const. In these respects the DKH Hamiltonians are much cleaner than the regular approximation (ZORA/IORA) Hamiltonians, which contain only part of the Darwin term and no mass-velocity term.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH",
+   "ZORA",
+   "IORA"
+  ],
+  "when": {
+   "topic": "choosing between DKH and ZORA/IORA"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.4 The Douglas-Kroll-Hess Method"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.dkh-hyperfine-fpfw-only",
+  "topic": "relativistic",
+  "kind": "limit",
+  "statement": "With DKH, the hyperfine-coupling tensor is only implemented for the fpFW DKH Hamiltonian (the f-pi-FW variant's derivatives produce divergent property operators). For the g-tensor both versions are implemented and selectable via the %rel block fpFWtrafo keyword (true: fpFW, default; false: f-pi-FW). fpi-FW is gauge invariant and its eigenvalues converge to Dirac; fpFW is not gauge invariant and its convergence is not established.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH"
+  ],
+  "when": {
+   "hamiltonian": "DKH",
+   "property": "EPR g-tensor or hyperfine coupling"
+  },
+  "recommend": {
+   "block": "%rel fpFWtrafo false end"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.4.1 Magnetic Properties with DKH, Table 2.55"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Overstates Table 2.53: for fpFW the 'convergence of eigenvalues to Dirac eigenvalues' entry is '?' (unknown), not 'no'. recommend block '%rel fpFWtrafo true/false end' is not valid input (literal 'true/false')."
+ },
+ {
+  "id": "relativistic.x2c-is-scalar-only",
+  "topic": "relativistic",
+  "kind": "limit",
+  "statement": "Despite the name, ORCA's X2C implementation provides only a scalar relativistic (spin-free) version, effectively a one-component method ('SF-X2C-1e'), very similar to DKH and ZORA; its distinguishing feature is that the decoupling of the one-electron Dirac Hamiltonian is exact rather than approximate. SF-X2C-1e is implemented for energies, gradients and various properties, with both point- and finite-nucleus models.",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "X2C"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.5 Exact Two-Component Theory (X2C)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.x2c-basic-usage",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "In the simplest case it is sufficient to add the X2C simple keyword to the input and choose an appropriate basis set, e.g. '! X2C X2C-TZVPall X2C/J'. The x2c-XVPall basis family and variants serve X2C; DLU-X2C activates X2C in the DLU approximation.",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C",
+   "X2C-TZVPall",
+   "X2C/J",
+   "DLU-X2C"
+  ],
+  "when": {
+   "hamiltonian": "X2C"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.5 Exact Two-Component Theory (X2C), 2.12.9 Keywords (Table 2.54)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.x2c-external-point-charges",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "In the X2C potential operator only the electron-nuclear Coulomb interaction is included by default. External point charges may optionally be included via %rel ModelPot[4]=1 (default 0); this affects energy and NMR shielding calculations but is presently not available for gradients or Hessians. Point charges are always part of the one-electron Hamiltonian; ModelPot[4]=1 only adds them to the X2C decoupling. Do not set ModelPot[4]=1 in Opt/Freq/QM-MM gradient jobs (not available).",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "X2C",
+   "topic": "calculations with external point charges (embeddings, QM/MM-like point-charge fields)"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.5 Exact Two-Component Theory (X2C)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Text matches 2.12.5, but severity 'warning' and the when (QM/MM/embedding) suggest the default is a problem. With ModelPot[4]=0 the point charges still enter the Hamiltonian; they are only left out of the X2C decoupling potential, which is the normal, consistent default for gradients. The real hazard is the opposite: setting ModelPot[4]=1 in a job with gradients/Hessians, where it is not available."
+ },
+ {
+  "id": "relativistic.dlu-approximation",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "The diagonal local approximation to the unitary transformation matrix (DLU, Peng and Reiher) reduces the cost of the X2C transformation by approximating R and X as atomic-block-diagonal matrices. It leads to very minor loss of accuracy and is particularly suited for gradient/Hessian calculations. Request it via the simple keyword DLU-X2C, RelDLU, or via %rel DLU true (default false). Atoms with Z <= LightAtomThresh (default 0: none) are treated non-relativistically. StorageLevel must be >= 2 with DLU.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DLU-X2C",
+   "RelDLU",
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "X2C",
+   "topic": "gradients/Hessians where the X2C transformation cost matters"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.5.1 DLU Approximation, Table 2.55"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Mostly matches 2.12.5.1/Table 2.55, but LightAtomThresh is the 'highest atomic number treated as non-relativistic', i.e. atoms with Z <= threshold, not 'below'. RelDLU (Table 2.54) is the simple keyword to add DLU to X2C and is missing; StorageLevel must be >= 2 with DLU."
+ },
+ {
+  "id": "relativistic.dlu-vs-one-center-mutually-exclusive",
+  "topic": "relativistic",
+  "kind": "incompatibility",
+  "statement": "The DLU option in the %rel block (X2C only) is mutually exclusive with OneCenter. Do not set both; use RelFull to disable both the one-center and DLU approximations if the full transformation is required. Also relevant for Rel1C + DLU-X2C/RelDLU on the simple-input line.",
+  "orca": ">=6.0",
+  "keywords": [
+   "RelFull",
+   "RelDLU",
+   "DLU-X2C",
+   "Rel1C"
+  ],
+  "when": {
+   "hamiltonian": "X2C",
+   "topic": "setting both DLU and OneCenter"
+  },
+  "avoid": [
+   "setting %rel DLU true together with %rel OneCenter true",
+   "setting Rel1C together with DLU-X2C or RelDLU on the simple-input line"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.9 Keywords (Table 2.55: 'mutually exclusive with OneCenter')"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Table 2.55 does state 'mutually exclusive with OneCenter'. Severity 'error' requires that ORCA refuses or the result is wrong; the manual does not say ORCA aborts, and no orca-run/orca-message source is given."
+ },
+ {
+  "id": "relativistic.storagex2c-levels",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "For X2C second-derivative properties whose number scales with the atom count (e.g. the DSO term of NMR couplings), first derivatives of intermediate quantities are stored on disk. StorageLevel (0-5, default 2; 2 is the minimum for DLU) reduces storage at the price of recomputing missing intermediates on-the-fly: 0 store nothing (not always available), 1 integral derivatives, 2 = 1 + derivatives of R and X (default, minimum for DLU), 3 = 2 + derivatives of L, 4 = 3 + derivatives of S-tilde, 5 = 4 + derivatives of D and M.",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "X2C",
+   "property": "second-derivative properties such as NMR spin-spin coupling",
+   "topic": "disk usage too high or too low"
+  },
+  "recommend": {
+   "block": "%rel StorageLevel <0-5> end"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.5.2 X2C Derivatives and Properties, Table 2.55"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.x2c-magnetic-balance",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "For X2C magnetic properties, the restricted magnetic balance (RMB) is used for the small component basis functions whenever GIAOs are requested (e.g. NMR shielding), while the restricted kinetic balance (RKB) is used otherwise (e.g. NMR spin-spin coupling). The spin-orbit coupling integrals used for various properties include only a relativistic correction to the one-electron term, as with DKH.",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "X2C",
+   "property": "NMR shielding or spin-spin coupling"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.5.2 X2C Derivatives and Properties"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.picturechange-meaning",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "Picture change removes the mismatch between non-relativistically calculated property integrals and the relativistic Hamiltonian; it is controlled by the PictureChange variable in the %rel block: 0: non-relativistic operator; 1: DKH first-order property transformation / X2C without R,X derivatives; 2: full (DKH/X2C). Default: chosen automatically per property (see relativistic.picturechange-default-automatic). For ZORA, picture change is implemented only partially. A fully consistent calculation requires the wave function determined at the relativistic level AND the relativistic property operator. Picture-change effects are implemented for DKH and X2C and to some extent for ZORA, but not for all properties ORCA can calculate; the property programs explicitly state which picture-change effects are included in the molecular integrals.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH",
+   "X2C",
+   "ZORA"
+  ],
+  "when": {
+   "topic": "molecular properties with a relativistic Hamiltonian"
+  },
+  "recommend": {
+   "block": "%rel PictureChange <0|1|2> end"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.1.1 Scalar-Relativistic Gradients and Properties, 2.12.7 Picture-Change Effects, Table 2.55"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Mostly matches 2.12.1.1, 2.12.7, Table 2.55. '1: first-order' is the DKH meaning; for X2C PictureChange 1 means 'neglect derivatives of R and X' (2.12.5.2), not first order. Also the manual's X2C block calls 0 the default while Table 2.55 says 'determine automatically' -- the card should not imply a fixed default."
+ },
+ {
+  "id": "relativistic.picturechange-on-for-core-properties",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "Property calculations involving operators that carry inverse powers of the electron-nucleus distance can be wildly inaccurate if picture-change effects are ignored, so it is highly recommended to turn on picture change in all (quasi)relativistic property calculations. PictureChange=0 may be acceptable for valence-shell-dominated properties such as the electric dipole and polarizability, where relativistic and non-relativistic operators give similar results.",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C",
+   "DKH"
+  ],
+  "when": {
+   "topic": "core-sensitive properties (EPR/NMR) with a relativistic Hamiltonian"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.7 Picture-Change Effects"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.picturechange-2-for-consistency",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "For DKH2 the fully consistent picture-change effects use the same transformation order for the property operator as for the one-electron Hamiltonian, i.e. PictureChange=2; PictureChange=1 only includes first-order changes on the property operators. Since this brings no significant cost reduction, PictureChange=1 for DKH2 is not recommended. For X2C, PictureChange=2 is formally exact and PictureChange=1 (no R,X derivatives) an approximation; ORCA uses 1 for gradients because it is much cheaper and 2 for core-sensitive properties.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH2",
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "DKH2 or X2C",
+   "topic": "property calculations"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.7 Picture-Change Effects"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "DKH2 part matches 2.12.7. 'The same applies to X2C' extends 'not recommended / no significant cost reduction' to X2C, which is wrong for geometric perturbations: for X2C gradients PictureChange=1 'significantly reduces the computational cost' and is ORCA's default choice (2.12.7); the manual only says PC=2 is formally correct for X2C."
+ },
+ {
+  "id": "relativistic.picturechange-default-automatic",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "By default ORCA tries to choose the most appropriate value of the PictureChange variable depending on the requested properties (issuing a warning at the start of the output), but explicit user input is always respected. For geometric perturbations with DKH or ZORA the one-center approximation is activated and picture-change corrections are not needed; with X2C, PictureChange=1 is chosen for geometric perturbations because it significantly reduces cost. For other properties, in particular core-sensitive ones (EPR/NMR), the full picture-change correction is applied.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH",
+   "ZORA",
+   "X2C"
+  ],
+  "when": {
+   "topic": "checking which picture-change level ORCA chose for a property calculation"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.7 Picture-Change Effects, Table 2.55"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.picturechange-not-implemented-combinations",
+  "topic": "relativistic",
+  "kind": "limit",
+  "statement": "Certain combinations of relativistic Hamiltonian and property operator are not implemented. ORCA then prints a warning, or aborts entirely if picture-change effects are expected to be significant. Check the start of the output for such warnings before trusting a property result.",
+  "orca": ">=6.0",
+  "when": {
+   "topic": "property calculation with a relativistic Hamiltonian"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.7 Picture-Change Effects"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.finitenuc-default-false",
+  "topic": "relativistic",
+  "kind": "default",
+  "statement": "The Gaussian finite nucleus model (Dyall/Visscher model of Ref. 138) is available for DKH and X2C but not ZORA, via %rel FiniteNuc true; by default FiniteNuc is false. With FiniteNuc true, finite-nucleus effects enter the nucleus potential V and its derivatives, the relativistic potential integral V(p) in DKH and X2C, the one-electron part of SOC integrals, the electric-field gradient, contact density, Fermi-contact and spin-dipole EPR hyperfine terms and NMR indirect spin-spin coupling tensors, nucleus-orbit and angular-momentum integrals, and NMR shielding integrals over GIAOs.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH",
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "DKH or X2C",
+   "topic": "deciding whether to use the finite nucleus model"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.8 Finite Nucleus Model, Table 2.55"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.finitenuc-recommended-heavy-basis",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "With large, uncontracted basis sets in scalar relativistic calculations there is a distinct danger of variational collapse, because relativistic orbitals diverge for a point nucleus. ORCA's Gaussian finite nucleus model is available for DKH and X2C, and the manual recommends to always use it (FiniteNuc) in relativistic calculations. Not available for ZORA; with large uncontracted bases on heavy atoms prefer DKH/X2C + FiniteNuc. Keep FiniteNuc identical across all energies that are compared.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH",
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "any DKH or X2C calculation (especially heavy elements, uncontracted or very steep basis sets)"
+  },
+  "recommend": {
+   "block": "%rel FiniteNuc true end"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.6 Basis Sets in Relativistic Calculations, 2.12.8 Finite Nucleus Model"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "2.12.6 recommends FiniteNuc 'always ... in relativistic calculations', but the card's when narrows it to large uncontracted bases. Missing: ZORA has no finite-nucleus model, so the variational-collapse risk with large uncontracted bases cannot be mitigated there; energies with/without FiniteNuc are not comparable."
+ },
+ {
+  "id": "relativistic.heavy-element-grids",
+  "topic": "relativistic",
+  "kind": "recommendation",
+  "statement": "Relativistic all-electron calculations on heavy-element compounds have very steep core basis functions, which makes numeric integration (DFT and COSX) challenging. ORCA has automatic procedures adapting the integration grids for steep basis functions, but if strange results occur, numeric integration is one potential source of the problem: the cure is larger integration grids, in particular increased radial integration accuracy (IntAcc).",
+  "orca": ">=6.0",
+  "keywords": [
+   "X2C",
+   "DKH",
+   "ZORA"
+  ],
+  "when": {
+   "hamiltonian": "any relativistic Hamiltonian",
+   "topic": "strange results in DFT/COSX calculations with steep core basis functions"
+  },
+  "recommend": {
+   "block": "%method IntAcc <higher value> end"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.6 Basis Sets in Relativistic Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic",
+  "review_note": "Content matches 2.12.6, but the recommend block '%grid IntAcc ...' names a block that does not exist; IntAcc is a %method keyword (2.10.5), so ORCA would reject the input. keywords omit ZORA although the card applies to any Hamiltonian (and ZORA is the most grid-sensitive, 2.12.3.2)."
+ },
+ {
+  "id": "relativistic.simple-keyword-list",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "Simple-input keywords for relativistic methods (Table 2.54): DKH1 activates the first-order DKH Hamiltonian; DKH2 (alias DKH) the second-order DKH Hamiltonian; ZORA the ZORA Hamiltonian; IORA the IORA Hamiltonian; X2C the X2C Hamiltonian; DLU-X2C X2C in the DLU approximation; RelDLU enables the DLU approximation (X2C only); Rel1C enables the one-center approximation; RelFull disables the one-center and DLU approximations. The three Hamiltonian choices are mutually exclusive.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DKH1",
+   "DKH2",
+   "DKH",
+   "ZORA",
+   "IORA",
+   "X2C",
+   "DLU-X2C",
+   "RelDLU",
+   "Rel1C",
+   "RelFull"
+  ],
+  "when": {
+   "topic": "writing the simple-input line for a relativistic calculation"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.9 Keywords (Table 2.54)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.rel-block-keyword-reference",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "Finer relativistic control is via the %rel block (Table 2.55): Method (DKH/ZORA/IORA/X2C); ModelPot with five flags <VeN> nuclear attraction, <VC> Coulomb (ZORA/IORA only), <VXa> Xalpha (ZORA/IORA only), <VLDA> VWN-5 correlation (ZORA/IORA only), <VPC> point charges (X2C only), each 1 included / 0 not; ModelDens (rhoDKH/rhoZORA/rhoHF); OneCenter; C = 137.0359895 speed of light in a.u. (synonyms VELIT, VELOCITY); PictureChange 0/1/2; FiniteNuc; PrintLevel 0-4 (alias for %output Print[P_Rel], DKH-specific); Order (1 or 2, DKH Hamiltonian order); fpFWtrafo; Xalpha 0.7 (only if VXa included); ScaleZORA; DLU; LightAtomThresh; StorageLevel.",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA",
+   "IORA",
+   "X2C"
+  ],
+  "when": {
+   "topic": "fine control of a relativistic calculation via the %rel block"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.9 Keywords (Table 2.55)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ },
+ {
+  "id": "relativistic.modelpot-component-flags",
+  "topic": "relativistic",
+  "kind": "keyword",
+  "statement": "The components of the ZORA/IORA/X2C model potential are turned on or off through the ModelPot variable in the %rel block, e.g. '%rel ModelPot 1,1,1,1 end' with flags for <VeN> nuclear attraction, <VC> Coulomb, <VXa> Xalpha, <VLDA> VWN-5 correlation and (as a fifth, X2C-only flag addressed as ModelPot[4] with default 0) <VPC> point charges. Xalpha (default 0.7) has effect only if VXa is included.",
+  "orca": ">=6.0",
+  "keywords": [
+   "ZORA",
+   "IORA",
+   "X2C"
+  ],
+  "when": {
+   "hamiltonian": "ZORA, IORA or X2C",
+   "topic": "adjusting which model-potential components are included"
+  },
+  "recommend": {
+   "block": "%rel ModelPot 1,1,1,1 end"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/relativistic.html",
+    "section": "2.12.9 Keywords (Table 2.55), 2.12.5 Exact Two-Component Theory (X2C)"
+   }
+  ],
+  "status": "verified",
+  "author": "w06",
+  "verified_by": "expert-relativistic"
+ }
+]
