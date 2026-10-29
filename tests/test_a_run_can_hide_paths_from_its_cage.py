@@ -69,11 +69,19 @@ def test_both_bwrap_builders_mask_them(lockbox, tmp_path):
     joined = list(zip(argv, argv[1:], argv[2:]))
     assert ("--tmpfs", str(box.resolve())) in list(zip(argv, argv[1:]))
     assert ("--ro-bind", "/dev/null", str(single.resolve())) in joined
+    # The shell path builds the cage this host can run: bubblewrap where it
+    # works, Landlock where it does not (a CI runner). Either way the
+    # hidden paths are hidden, in that layer's own form.
     perms = A.KitToolPermissions(workspace=ws, mode="default")
     argv2 = A._bash_isolation_argv("true", str(ws), perms, mode="bwrap")
-    assert ("--tmpfs", str(box.resolve())) in list(zip(argv2, argv2[1:]))
-    assert ("--ro-bind", "/dev/null", str(single.resolve())) in list(
-        zip(argv2, argv2[1:], argv2[2:]))
+    pairs = list(zip(argv2, argv2[1:]))
+    if argv2 and Path(argv2[0]).name == "bwrap":
+        assert ("--tmpfs", str(box.resolve())) in pairs
+        assert ("--ro-bind", "/dev/null", str(single.resolve())) in list(
+            zip(argv2, argv2[1:], argv2[2:]))
+    else:
+        assert ("--hide", str(box.resolve())) in pairs, argv2[:12]
+        assert ("--hide", str(single.resolve())) in pairs, argv2[:12]
 
 
 def test_firejail_blacklists_them(lockbox, tmp_path):
