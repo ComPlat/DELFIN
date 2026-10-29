@@ -209,6 +209,22 @@ def test_landlock_cage_grants_the_scratch_dir():
 
 
 @requires_a_working_sandbox
+def test_landlock_cage_falls_back_to_private_tmp_when_scratch_unavailable(monkeypatch):
+    """When _session_scratch_dir() cannot be made the code must still pass a
+    --tmpdir: it falls back to the private tmp dir (what the argv had before
+    the scratch work). Otherwise landlock_exec sets no TMPDIR/TMP/TEMP at all
+    and every program in the cage uses whatever the host had, breaking the
+    invariant that TMPDIR is under our control."""
+    def _boom():
+        raise RuntimeError("scratch unavailable")
+    monkeypatch.setattr(A, "_session_scratch_dir", _boom)
+    plain = ["bash", "-c", "echo ok"]
+    argv = A._landlock_argv(plain, _perms(Path("/tmp")), extra_write=())
+    tmpdirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--tmpdir"]
+    assert tmpdirs == [A._private_tmp_dir()], (tmpdirs, A._private_tmp_dir())
+
+
+@requires_a_working_sandbox
 def test_tmp_is_still_fresh_a_file_there_does_not_survive():
     ws = Path(A._session_scratch_dir()).parent
     # /tmp stays a fresh tmpfs: the bwrap argv makes /tmp a tmpfs and never
