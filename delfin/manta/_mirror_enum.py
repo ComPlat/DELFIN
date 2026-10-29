@@ -384,7 +384,23 @@ def expand_results(results):
         _LOG.debug("mirror_enum: EIN-REPRAESENTANT -- es liegt bereits ein Spiegel "
                    "vor, dieser Aufruf haengt nichts an (Wiedereintritt)")
         return results
-    for (xyz, label) in results:
+    # ===== THE TEMPLATE IS THE BEST FRAME OF ITS CONFIGURATION (DELFIN_FRAME_REALISM_RANK, default OFF) =====
+    # A mirror is an isometry: it inherits every defect of its template.  The template was the FIRST frame
+    # of the configuration in emission order (x9 dev300 29.10.: new mirror frames hard 0.75 against 0.68 of
+    # the d7 frames).  With the realism ranking on, the frames are visited best first, so each
+    # configuration's mirror is made from its most realistic frame.  Only the visiting order changes; the
+    # mirrors are appended as before and the final ranking places them.
+    _visit = results
+    if _per_iso:
+        try:
+            from delfin.manta import frame_realism as _frr
+            if _frr.rank_enabled() and _frr.current_smiles():
+                _sc = _frr.score_frames([_x for _x, _l in results])
+                if _sc is not None and len(_sc) == len(results):
+                    _visit = [results[_i] for _i in _frr.order_by_realism(_sc)]
+        except Exception:
+            _visit = results
+    for (xyz, label) in _visit:
         if len(added) >= max_added:
             break
         if _per_iso and not str(label).endswith("_mirror"):

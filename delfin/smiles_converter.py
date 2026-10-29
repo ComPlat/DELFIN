@@ -691,6 +691,9 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # set_context does nothing, byte-identical); cleared in the finally below.
         from delfin.manta import _ml_targets_bv as _bvt
         _bvt.set_context(_smiles_arg(args, kwargs))
+        from delfin.manta import frame_realism as _frr_ctx
+        if _frr_ctx.rank_enabled():
+            _frr_ctx.set_context(_smiles_arg(args, kwargs))   # the mirror template pick reads it
         # Both spin states (DELFIN_FFFREE_ML_TARGETS_BV_SPIN_BOTH, default OFF -> never entered):
         # where the measured crystals of this metal, oxidation state, CN and donor field are not
         # clearly one spin state, the first pass builds low-spin lengths and a second one below
@@ -781,16 +784,23 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # highest-symmetry form need both frames").  Achiral / symmetrizable frames stay single.
         _smi = _smiles_arg(args, kwargs)
         _emir = (lambda x: _enantiomer_mirror_filter(x, _smi)) if outermost else (lambda x: x)
+        # DELFIN_FRAME_REALISM_RANK (default OFF -> identity): the whole emitted ensemble best first
+        # by the crystal-free realism score, as the very last step (after the mirror filter)
+        from delfin.manta import frame_realism as _frr_mod
+        _frr = ((lambda x: _frr_mod.rank_isomers_realism(x, _smi))
+                if (outermost and _frr_mod.rank_enabled()) else (lambda x: x))
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _emir(_rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))))))))), r[1]
+            return _frr(_emir(_rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))))))), r[1]
         if isinstance(r, list):
-            return _emir(_rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))))))))
+            return _frr(_emir(_rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))))))
         return r
     finally:
         if outermost:
             _CONF_COMPLETE_ACTIVE.value = False
             from delfin.manta import _ml_targets_bv as _bvt
             _bvt.clear_context()
+            from delfin.manta import frame_realism as _frr_ctx
+            _frr_ctx.clear_context()
             if _det_env_set:
                 if _det_env_prev is None:
                     os.environ.pop("DELFIN_DETERMINISTIC", None)
