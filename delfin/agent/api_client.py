@@ -30618,17 +30618,24 @@ def _is_model_not_found_error(exc: Exception) -> bool:
 
 
 def _kit_fallback_model(current: str, provider: str, base_url: str = "",
-                        api_key: str = "") -> str:
+                        api_key: str = "", already_left: set = ()) -> str:
     """The best KIT model to continue on when ``current`` is not served, or
     "" (not a KIT session). The ranked roster's first entry the endpoint
     lists; when the listing cannot be read, the first ranked entry that is
-    not ``current`` -- it was the ranking that named ``current`` too."""
+    neither ``current`` nor in ``already_left``. ``already_left`` collects
+    the models this turn has already left behind, so a turn that bounced
+    A->B after only A was excluded does not hand the rank slot back to A
+    (A->B->A until the switch budget ran out). Only ``kit.*`` models in
+    ``_KIT_PREFERENCE`` are ever returned -- never the paid ``azure.*``,
+    ``google.*``, ``alias.*`` or ``standard-*`` routes, and no embedding,
+    reranker, speech or image models."""
     if str(provider or "").lower() != "kit":
         return ""
     try:
         from . import model_capabilities as _mc
         served = _mc.kit_models_served(base_url, api_key, fetch=True)
-        ranked = [m for m in _mc._KIT_PREFERENCE if m != current]
+        skip = set(already_left or ()) | {current}
+        ranked = [m for m in _mc._KIT_PREFERENCE if m not in skip]
         if served:
             return next((m for m in ranked if m in served), "")
         return ranked[0] if ranked else ""
@@ -32618,7 +32625,9 @@ class OpenAIClient(_BaseClient):
                         _alt = _kit_fallback_model(
                             _old_model, getattr(self, "_provider", ""),
                             str(getattr(self, "_base_url", "") or ""),
-                            str(getattr(self, "_api_key", "") or ""))
+                            str(getattr(self, "_api_key", "") or ""),
+                            already_left={s.get("before", "") for s in
+                                          self._turn_model_switches})
                         if _alt:
                             self.model = _alt
                             kwargs["model"] = _alt
