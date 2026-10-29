@@ -320,27 +320,35 @@ def _fr_hparents(el, X) -> Dict[int, int]:
     return hp
 
 
-def _fr_query(ch: dict, with_h: bool):
+def _fr_label_mol(labels, edges):
+    """Plain mol of a labelled graph: element per atom, isotope = H count + 1 (or 0 = unlabelled), single bonds."""
     from rdkit import Chem
-    from rdkit.Chem import rdqueries
-    sg = ch["sg"]
-    q = Chem.RWMol()
-    qidx = {}
-    for s in ch["Gs_nodes"]:
-        e = sg["el"][s]
-        z = Chem.GetPeriodicTable().GetAtomicNumber(e)
-        qa = rdqueries.AtomNumEqualsQueryAtom(z)
-        if with_h:
-            qa.ExpandQuery(rdqueries.IsotopeEqualsQueryAtom(int(sg["nh"][s]) + 1))
-        qidx[s] = q.AddAtom(qa)
-    for a, b in ch["Gs_edges"]:
-        q.AddBond(qidx[a], qidx[b], Chem.BondType.SINGLE)
-    return q, [s for s in ch["Gs_nodes"]]
+    t = Chem.RWMol()
+    for e, h in labels:
+        a = Chem.Atom(e)
+        if h is not None:
+            a.SetIsotope(int(h) + 1)
+        a.SetNoImplicit(True)
+        t.AddAtom(a)
+    for a, b in edges:
+        t.AddBond(int(a), int(b), Chem.BondType.SINGLE)
+    m = t.GetMol()
+    m.UpdatePropertyCache(strict=False)
+    return m
+
+
+def _fr_canon(m):
+    from rdkit import Chem
+    return Chem.MolToSmiles(m), list(Chem.CanonicalRankAtoms(m, breakTies=True))
 
 
 def _fr_map_frame(ch: dict, el, X, prev) -> Optional[Dict[int, int]]:
-    """SMILES non-metal heavy index -> xyz index for one frame (prev reused if all its bonds hold)."""
-    from rdkit import Chem
+    """SMILES non-metal heavy index -> xyz index for one frame (prev reused if all its bonds hold).
+
+    Isomorphism only, by canonical form: the frame's distance graph (1.20, then 1.25 and 1.30 x the covalent sum)
+    must have the canonical SMILES of the labelled SMILES graph; equal canonical rank (ties broken) is then the
+    same atom.  Polynomial, no backtracking search (a subgraph search on BEXVAC's menthyl/cyclohexyl phosphine
+    ran for hours).  A frame whose bond graph is not the SMILES graph is unmappable and ranks last."""
     sg = ch["sg"]
     n = len(el)
     nm = [i for i in range(n) if el[i] != "H" and not _fr_is_metal(el[i])]
@@ -358,34 +366,31 @@ def _fr_map_frame(ch: dict, el, X, prev) -> Optional[Dict[int, int]]:
         nhx[p] += 1
     lab_ok = (sorted((sg["el"][s], sg["nh"][s]) for s in ch["Gs_nodes"])
               == sorted((el[i], nhx[i]) for i in nm))
-    key = "q_h" if lab_ok else "q_el"
+    key = "canon_h" if lab_ok else "canon_el"
+    qorder = ch["Gs_nodes"]
     if key not in ch:
-        ch[key] = _fr_query(ch, lab_ok)
-    q, qorder = ch[key]
-    for fac, exact in ((1.20, True), (1.30, False)):
-        t = Chem.RWMol()
-        for i in nm:
-            a = Chem.Atom(el[i])
-            a.SetIsotope(int(nhx[i]) + 1)
-            a.SetNoImplicit(True)
-            t.AddAtom(a)
-        sub = D[np.ix_(nm, nm)] < fac * lim[np.ix_(nm, nm)]
-        nb = 0
-        for a in range(len(nm)):
-            for b in range(a + 1, len(nm)):
-                if sub[a, b]:
-                    t.AddBond(a, b, Chem.BondType.SINGLE)
-                    nb += 1
-        if exact and nb != len(ch["Gs_edges"]):
+        pos = {s: k for k, s in enumerate(qorder)}
+        qm = _fr_label_mol([(sg["el"][s], sg["nh"][s] if lab_ok else None) for s in qorder],
+                           [(pos[a], pos[b]) for a, b in ch["Gs_edges"]])
+        ch[key] = _fr_canon(qm)
+    qsmi, qrank = ch[key]
+    by_rank = {rk: qorder[k] for k, rk in enumerate(qrank)}
+    sub_all = D[np.ix_(nm, nm)]
+    lim_nm = lim[np.ix_(nm, nm)]
+    labels = [(el[i], nhx[i] if lab_ok else None) for i in nm]
+    for fac in (1.20, 1.25, 1.30):
+        ia, ib = np.nonzero(np.triu(sub_all < fac * lim_nm, 1))
+        if len(ia) != len(ch["Gs_edges"]):
             continue
         try:
-            tm = t.GetMol()
-            tm.UpdatePropertyCache(strict=False)
-            match = tm.GetSubstructMatch(q, useChirality=False)
+            tsmi, trank = _fr_canon(_fr_label_mol(labels, zip(ia.tolist(), ib.tolist())))
         except Exception:
-            match = ()
-        if match:
-            return {qorder[k]: nm[match[k]] for k in range(len(qorder))}
+            continue
+        if tsmi != qsmi:
+            continue
+        mp = {by_rank[trank[k]]: nm[k] for k in range(len(nm))}
+        if all(D[mp[a], mp[b]] < fac * lim[mp[a], mp[b]] for a, b in ch["Gs_edges"]):
+            return mp
     return None
 
 
@@ -677,34 +682,44 @@ def score_frames(xyzs: Sequence[str], smiles: Optional[str] = None) -> Optional[
 _AUTO_CAP = 16
 
 
+_AUTO_STEPS = 200000
+
+
+class _FrStepCap(Exception):
+    pass
+
+
 def _fr_automorphisms(ch: dict) -> List[Dict[int, int]]:
-    """Up to _AUTO_CAP automorphisms of the organic SMILES graph ((element, nH) labels), identity first."""
+    """Up to _AUTO_CAP automorphisms of the organic SMILES graph ((element, nH) labels), identity first.
+
+    VF2 (networkx) with a STEP budget (_AUTO_STEPS feasibility checks), not a time limit, so the result is the
+    same on every machine; the search stops with what it has found when the budget is spent."""
     if "autos" in ch:
         return ch["autos"]
-    from rdkit import Chem
+    import networkx as nx
+    from networkx.algorithms import isomorphism as iso
     sg = ch["sg"]
     ident = {s: s for s in ch["Gs_nodes"]}
     autos = [ident]
+    G = nx.Graph()
+    for s in ch["Gs_nodes"]:
+        G.add_node(s, lab=(sg["el"][s], sg["nh"][s]))
+    G.add_edges_from(ch["Gs_edges"])
+    steps = [0]
+
+    def nm(a, b):
+        steps[0] += 1
+        if steps[0] > _AUTO_STEPS:
+            raise _FrStepCap()
+        return a["lab"] == b["lab"]
     try:
-        if "q_h" not in ch:
-            ch["q_h"] = _fr_query(ch, True)
-        q, qorder = ch["q_h"]
-        t = Chem.RWMol()
-        for s in qorder:
-            a = Chem.Atom(sg["el"][s])
-            a.SetIsotope(int(sg["nh"][s]) + 1)
-            a.SetNoImplicit(True)
-            t.AddAtom(a)
-        pos = {s: k for k, s in enumerate(qorder)}
-        for a, b in ch["Gs_edges"]:
-            t.AddBond(pos[a], pos[b], Chem.BondType.SINGLE)
-        tm = t.GetMol()
-        tm.UpdatePropertyCache(strict=False)
-        for match in tm.GetSubstructMatches(q, uniquify=False, useChirality=False,
-                                            maxMatches=_AUTO_CAP + 1):
-            sig = {qorder[k]: qorder[match[k]] for k in range(len(qorder))}
-            if sig != ident and len(autos) < _AUTO_CAP:
-                autos.append(sig)
+        for au in iso.GraphMatcher(G, G, node_match=nm).isomorphisms_iter():
+            if au != ident:
+                autos.append(dict(au))
+            if len(autos) >= _AUTO_CAP:
+                break
+    except _FrStepCap:
+        pass
     except Exception:
         autos = [ident]
     ch["autos"] = autos
