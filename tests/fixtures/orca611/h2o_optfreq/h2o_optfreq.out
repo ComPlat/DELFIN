@@ -174,7 +174,7 @@ interface, adapt or use parts of their codes:
   * Starting time: Thu Oct 29 19:31:14 2026
   * Host name:     qmchemserver
   * Process ID:    1622785
-  * Working dir.:  /home/qmchem_max/delfin-knowledge/orca_fixtures/611/h2o_optfreq
+  * Working dir.:  tests/fixtures/orca611/h2o_optfreq
   ***********************************
 
 NOTE: MaxCore=1000 MB was set to SCF,MP2,MDCI,CIPSI,MRCI,RASCI and CIS

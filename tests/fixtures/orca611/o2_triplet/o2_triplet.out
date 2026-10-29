@@ -174,7 +174,7 @@ interface, adapt or use parts of their codes:
   * Starting time: Thu Oct 29 19:32:09 2026
   * Host name:     qmchemserver
   * Process ID:    1700231
-  * Working dir.:  /home/qmchem_max/delfin-knowledge/orca_fixtures/611/o2_triplet
+  * Working dir.:  tests/fixtures/orca611/o2_triplet
   ***********************************
 
 NOTE: MaxCore=1000 MB was set to SCF,MP2,MDCI,CIPSI,MRCI,RASCI and CIS
