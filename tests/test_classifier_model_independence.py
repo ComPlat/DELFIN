@@ -194,25 +194,29 @@ class _Runner:
         return self.answers.get(model, ALLOW)
 
 
-def _bounded_gate(tmp_path, monkeypatch, runner, models, dialog, *, timeout=0.1):
+def _bounded_gate(tmp_path, monkeypatch, runner, models, dialog, *,
+                   timeout=0.1, message="phase 1 done, please review", perms=None):
     """Drive the second opinion for a message to another agent (an action
-    that leaves the workspace; a missing verdict would ask the human)."""
+    that leaves the workspace; a missing verdict would ask the human).
+    Returns ``(out, perms)`` so a test can inspect the per-turn latch. Pass
+    a prior ``perms`` to keep the turn's latch across two actions."""
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", timeout)
     monkeypatch.setattr(A, "_CLASSIFIER_RETRY_DELAY_S", 0.0, raising=False)
-    ws = tmp_path / "ws"
-    ws.mkdir(exist_ok=True)
-    perms = A.KitToolPermissions(workspace=ws.resolve(), mode="acceptEdits")
-    perms.classifier_runner = runner
-    perms.classifier_messages = TASK
-    if models:
-        perms.classifier_model = models[0]
-        if len(models) > 1:
-            perms.classifier_alt_model = models[1]
-    perms.confirm_callback = dialog.ask
-    return A._DocToolExecutor()._classifier_second_opinion(
-        perms, "session_message",
-        {"to": "ec9c6393", "message": "phase 1 done, please review"},
+    if perms is None:
+        ws = tmp_path / "ws"
+        ws.mkdir(exist_ok=True)
+        perms = A.KitToolPermissions(workspace=ws.resolve(), mode="acceptEdits")
+        perms.classifier_runner = runner
+        perms.classifier_messages = TASK
+        if models:
+            perms.classifier_model = models[0]
+            if len(models) > 1:
+                perms.classifier_alt_model = models[1]
+        perms.confirm_callback = dialog.ask
+    out = A._DocToolExecutor()._classifier_second_opinion(
+        perms, "session_message", {"to": "ec9c6393", "message": message},
         perms.mode)
+    return out, perms
 
 
 def test_slow_primary_then_fast_alternate_asks_nobody(
@@ -223,7 +227,7 @@ def test_slow_primary_then_fast_alternate_asks_nobody(
     runner.slow.add("kit.deepseek-v4-flash")
     runner.answers["kit.mistral-small-4-119b-a8b"] = ALLOW
     dialog = Dialog()
-    out = _bounded_gate(
+    out, _ = _bounded_gate(
         tmp_path, monkeypatch, runner,
         ["kit.deepseek-v4-flash", "kit.mistral-small-4-119b-a8b"], dialog,
         timeout=0.15)
@@ -241,29 +245,43 @@ def test_a_refusal_from_the_alternate_is_still_a_refusal(
     runner.slow.add("kit.deepseek-v4-flash")
     runner.answers["kit.mistral-small-4-119b-a8b"] = ASK
     dialog = Dialog()
-    out = _bounded_gate(
+    out, _ = _bounded_gate(
         tmp_path, monkeypatch, runner,
         ["kit.deepseek-v4-flash", "kit.mistral-small-4-119b-a8b"], dialog,
         timeout=0.15)
-    assert out is not None
+    # The ask verdict from the alternate reached the human (Dialog.ask True
+    # means the user approves, so out is None) -- the strictness is that the
+    # ask was SHOWN, never turned into a silent allow.
     assert len(dialog.shown) == 1            # the ask verdict reached the user
 
 
 def test_stall_latch_is_per_classifier_model(tmp_path, monkeypatch):
     # After the primary stalls once in a turn, the NEXT action is tried
-    # directly on the alternate (the latch is per classifier model), so one
-    # slow model does not block every later action of the turn.
+    # directly on the alternate: the latch is keyed per classifier model, so
+    # one slow model does not block every later action of the turn.
     runner = _Runner()
-    runner.broken.add("kit.deepseek-v4-flash")   # fast failure, not a hang
+    runner.slow.add("kit.deepseek-v4-flash")   # primary hangs past the wait
     runner.answers["kit.mistral-small-4-119b-a8b"] = ALLOW
     dialog = Dialog()
     args = dict(tmp_path=tmp_path, monkeypatch=monkeypatch, runner=runner,
                 models=["kit.deepseek-v4-flash", "kit.mistral-small-4-119b-a8b"],
                 dialog=dialog, timeout=0.15)
-    assert _bounded_gate(**args) is None
-    # The latch after the primary's failure is keyed per classifier model, so
-    # a later action is not blocked by the stalled primary.
-    state = {"turn": 0, "stalled_models": {"kit.deepseek-v4-flash"},
-             "allowed": set(), "refused": set(), "refusals": 0, "calls": []}
-    assert "kit.deepseek-v4-flash" in state["stalled_models"]
-    assert "kit.mistral-small-4-119b-a8b" not in state["stalled_models"]
+    out, perms = _bounded_gate(**args)
+    assert out is None                        # allowed via the alternate
+    latch = perms.classifier_state["stalled_models"]
+    assert "kit.deepseek-v4-flash" in latch   # the slow primary is latched
+    assert "kit.mistral-small-4-119b-a8b" not in latch
+    # A second, different action in the same turn must not be blocked by the
+    # stalled primary: reused perms keep the latch; the alternate answers
+    # directly, nobody asked.
+    out2, _ = _bounded_gate(
+        tmp_path, monkeypatch, runner,
+        ["kit.deepseek-v4-flash", "kit.mistral-small-4-119b-a8b"], dialog,
+        timeout=0.15, message="phase 2 done, another review please",
+        perms=perms)
+    assert out2 is None
+    assert dialog.shown == []
+    # First action: primary (times out) then alternate; second action: the
+    # latched primary is skipped, the alternate answers directly.
+    assert runner.calls == ["kit.deepseek-v4-flash", "kit.mistral-small-4-119b-a8b",
+                            "kit.mistral-small-4-119b-a8b"]

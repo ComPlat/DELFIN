@@ -997,6 +997,123 @@ def kit_models_served(base_url: str = "", api_key: str = "",
     return set(hit[1]) if hit else set()
 
 
+# ---------------------------------------------------------------------------
+# The action classifier's model: independent of the session's.
+# ---------------------------------------------------------------------------
+# The classifier (action_classifier) ran on the same model as the agents
+# (kit.deepseek-v4-flash). With ten agents on that model it produced no verdict
+# within 20 s and every later action of the turn latched to a human (measured
+# 2026-10-29: 6 harmless worktree tests asked in 20 min). The classifier is
+# moved to a fast kit.* chat model from a DIFFERENT vendor family, and its
+# own stall latches only itself, so a slow model does not gate every action.
+
+# Paid / non-local routes the endpoint never reports as served, but that a
+# stale or cross-provider roster may list; never chosen.
+_CLASSIFIER_FOREIGN_PREFIXES = ("azure.", "google.", "alias.", "standard-")
+
+# Fast-first vendor families for the classifier. Measured on the KIT proxy:
+# deepseek is 6/6 speed (~5 s cold for 15k tokens, the models comment), glm is
+# 2/6 (~200 s cold). The classifier sits in front of an action, so speed wins
+# over strength; ordering here is speed, not quality.
+_CLASSIFIER_FAST_FAMILIES = (
+    "deepseek", "mistral", "glm", "qwen", "minimax", "gemma", "gpt",
+)
+
+
+def model_family(model: str) -> str:
+    """Vendor family of a served model id (lower-case).
+
+    ``kit.deepseek-v4-flash`` -> ``deepseek``, ``kit.glm-5.3-flash`` -> ``glm``,
+    ``kit.mistral-small-4-119b-a8b`` -> ``mistral``. Strips a known gateway
+    prefix (kit./azure./google.), then the leading alphabetic run. An
+    unrecognised vendor still returns its first token, so "different family"
+    stays a sane comparison.
+    """
+    base = ((model or "").strip() or "").lower()
+    if not base:
+        return ""
+    base = _base_name(model).lower()
+    for p in ("alias.", "standard-"):
+        if base.startswith(p):
+            base = base[len(p):]
+    m = _re.match(r"[a-z]+", base)
+    return m.group(0) if m else ""
+
+
+def _served_chat_kit_local(served: set) -> list:
+    """Served ids usable by the classifier: chat, on KIT's local kit.* route.
+
+    Filters out foreign/paid prefixes (azure./google./alias./standard-),
+    non-chat modalities (embedding / reranker / speech / image) and bare
+    ``/v1/models`` entries that are not kit.* locals.
+    """
+    out = []
+    for mid in served or ():
+        m = (mid or "").strip()
+        if not m:
+            continue
+        low = m.lower()
+        if low.startswith(_CLASSIFIER_FOREIGN_PREFIXES):
+            continue
+        # Only KIT's local route is free; a served id without the prefix but
+        # inside a KIT /v1/models response is still that endpoint's, so accept
+        # it when it is not a foreign route and is chat.
+        if nonchat_reason(m):
+            continue
+        out.append(m)
+    return out
+
+
+def classifier_choice(*, served: set, session_model: str,
+                      cfg_model: str, cfg_explicit: bool) -> str:
+    """The classifier's primary model id.
+
+    When ``agent.classifier.model`` was set explicitly, that. Otherwise a
+    fast kit.* chat model the endpoint serves from a family OTHER than the
+    session's; only the session's family served means that family (never no
+    classifier). Nothing pickable from a stale/empty roster falls back to
+    ``cfg_model`` (the default), never disabling the classifier.
+    """
+    if cfg_explicit:
+        return cfg_model
+    locals_ = _served_chat_kit_local(served)
+    session_fam = model_family(session_model)
+    for fam in _CLASSIFIER_FAST_FAMILIES:
+        if fam == session_fam:
+            continue
+        for mid in locals_:
+            if model_family(mid) == fam:
+                return mid
+    # Only the session's family served (or no distinct fast family): use it.
+    for mid in locals_:
+        if model_family(mid) == session_fam:
+            return mid
+    # A roster that offered nothing usable: fall back, never drop the watch.
+    return cfg_model
+
+
+def classifier_alternate(*, served: set, from_model: str,
+                         cfg_model: str) -> str:
+    """The classifier's retry-once model: a different family than *from_model*.
+
+    Only reached when the primary classifiers stalls or fails; the "other
+    family" keeps the retry independent of what just failed. With no other
+    family served, falls back to ``cfg_model`` (a second call to the same
+    lineup is still better than a human for every harmless action).
+    """
+    fam = model_family(from_model)
+    locals_ = _served_chat_kit_local(served)
+    # Fastest-first across the fast-family order, so the retry after a stall
+    # lands on a different, fast model -- not whatever order the set yields.
+    for cand_fam in _CLASSIFIER_FAST_FAMILIES:
+        if cand_fam == fam:
+            continue
+        for cand in locals_:
+            if model_family(cand) == cand_fam:
+                return cand
+    return cfg_model
+
+
 def kit_best_model(base_url: str = "", api_key: str = "",
                    *, fetch: bool = False) -> str:
     """The best KIT model for agent work that the endpoint actually serves.

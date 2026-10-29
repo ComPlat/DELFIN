@@ -9357,6 +9357,15 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The classifier's resolved model ids, set by the client's
+    # ``_attach_classifier_runner`` (model_capabilities): ``classifier_model``
+    # is the one asked first, ``classifier_alt_model`` the "other family"
+    # retried once when the first stalls or fails. Leaves them unset for
+    # callers that drive _classifier_second_opinion directly (tests), which
+    # then use cfg["model"]. A dataclass field so a sub-agent's copy
+    # (dataclasses.replace) carries the same models.
+    classifier_model: Optional[str] = None
+    classifier_alt_model: Optional[str] = None
     # Keys of actions the USER approved in a second-opinion dialog: not
     # asked again in this session (see _classifier_second_opinion).
     classifier_user_allowed: set = field(default_factory=set)
@@ -15180,8 +15189,13 @@ def _classifier_settings() -> Optional[dict]:
         return None
     from . import action_classifier as _ac
     rules = cfg.get("user_rules")
+    # ``explicit_model``: the user actually set agent.classifier.model. When
+    # false the model is the default and the classifier is moved onto a fast
+    # model from a family different from the session's (model_capabilities).
+    explicit_model = bool(str(cfg.get("model") or "").strip())
     return {
         "model": str(cfg.get("model") or "").strip() or _ac.DEFAULT_MODEL,
+        "explicit_model": explicit_model,
         "broad": broad,
         "rules": [str(r) for r in rules if str(r or "").strip()][:20]
         if isinstance(rules, (list, tuple)) else [],
@@ -21518,7 +21532,7 @@ class _DocToolExecutor:
         if state.get("turn") != turn:
             state.clear()
             state.update(turn=turn, allowed=set(), refused=set(),
-                         refusals=0, calls=[], stalled=False)
+                         refusals=0, calls=[], stalled_models=set())
         # The lockout holds at every point that reaches this method, in
         # every scope: after three refusals an auto-allowed command or an
         # auto-accepted edit waits for the user too. No model call.
@@ -21630,53 +21644,78 @@ class _DocToolExecutor:
         failed: list = []
         called: list = []
 
+        # The classifier's models, primary first then the "other family"
+        # retry. cfg["model"] is the configured or default; perms carried the
+        # client's independence choice (model_capabilities) when the setting
+        # was not explicit. Tests and direct drivers leave perms unset and
+        # fall back to a single model -- the old behaviour.
+        _primary = str(getattr(perms, "classifier_model", None)
+                       or cfg.get("model") or _ac.DEFAULT_MODEL)
+        _models = [_primary]
+        _alt = getattr(perms, "classifier_alt_model", None)
+        if _alt and _alt != _primary:
+            _models.append(_alt)
+
         def _bounded(prompt: str, model: str) -> str:
             # The runner is the client's; the bound is the gate's, so a
-            # runner that hangs cannot hold an action for minutes. After
-            # one timeout in a turn, or while the watcher is down, the
-            # model is not waited for again until the probe interval has
-            # passed: the error behaviour applies at once (user rules and
-            # the claim guard still run, they need no model).
-            last = health.get("last_attempt_at")
-            recent = (last is not None and _classifier_clock() - last
-                      < _CLASSIFIER_PROBE_INTERVAL_S)
-            if (health.get("down") or state.get("stalled")) and recent:
-                failed.append("down" if health.get("down") else "stalled")
-                raise TimeoutError(
-                    "no verdict: the watcher is down" if health.get("down")
-                    else "no verdict: the model timed out earlier in this "
-                    "turn")
-            for attempt in (1, 2):
-                health["last_attempt_at"] = _classifier_clock()
-                called.append(attempt)
-                box: dict = {}
+            # runner that hangs cannot hold an action for minutes. A stall or
+            # failure of one family is retried once on the next family in
+            # ``_models`` before the error behaviour. The per-turn latch is
+            # per classifier model (``state["stalled_models"]``), so one slow
+            # model does not block the others.
+            #
+            # Probe semantics are kept: a model the watcher marks down, or one
+            # that stalled this turn, is skipped only while ``recent`` -- after
+            # _CLASSIFIER_PROBE_INTERVAL_S it is asked again, so one outage
+            # does not send every action of the session to a human forever.
+            #
+            # ``_reasons`` is local: a verdict from a later model is a success,
+            # so the outer ``failed`` list must not carry the earlier model's
+            # skip or timeout. It is merged into ``failed`` only when every
+            # model gave nothing.
+            _reasons: list = []
+            for m in _models:
+                last = health.get("last_attempt_at")
+                recent = (last is not None and _classifier_clock() - last
+                          < _CLASSIFIER_PROBE_INTERVAL_S)
+                skip = ((health.get("down") or
+                         m in state.setdefault("stalled_models", set()))
+                        and recent)
+                if skip:
+                    _reasons.append("down" if health.get("down")
+                                    else "stalled")
+                    continue
+                for attempt in (1, 2):
+                    health["last_attempt_at"] = _classifier_clock()
+                    called.append(attempt)
+                    box: dict = {}
 
-                def _work() -> None:
-                    try:
-                        box["out"] = runner(prompt, model)
-                    except BaseException as exc:      # noqa: BLE001
-                        box["exc"] = exc
+                    def _work() -> None:
+                        try:
+                            box["out"] = runner(prompt, m)
+                        except BaseException as exc:      # noqa: BLE001
+                            box["exc"] = exc
 
-                worker = threading.Thread(
-                    target=_work, name="action-classifier", daemon=True)
-                worker.start()
-                wait_s = _classifier_timeout_s()
-                worker.join(wait_s)
-                if worker.is_alive():
-                    failed.append("timeout")
-                    state["stalled"] = True
-                    raise TimeoutError(
-                        f"no verdict within {wait_s:.0f} s")
-                if "exc" in box:
-                    if attempt == 1:
-                        # One short retry: a dropped connection or a 502
-                        # from the proxy is usually gone a moment later.
-                        time.sleep(_CLASSIFIER_RETRY_DELAY_S)
-                        continue
-                    failed.append(type(box["exc"]).__name__)
-                    raise box["exc"]
-                return str(box.get("out") or "")
-            raise TimeoutError("no verdict")      # pragma: no cover
+                    worker = threading.Thread(
+                        target=_work, name="action-classifier", daemon=True)
+                    worker.start()
+                    wait_s = _classifier_timeout_s()
+                    worker.join(wait_s)
+                    if worker.is_alive():
+                        _reasons.append("timeout")
+                        state.setdefault("stalled_models", set()).add(m)
+                        break  # this model timed out; try the next family
+                    if "exc" in box:
+                        if attempt == 1:
+                            # One short retry: a dropped connection or a 502
+                            # from the proxy is usually gone a moment later.
+                            time.sleep(_CLASSIFIER_RETRY_DELAY_S)
+                            continue
+                        _reasons.append(type(box["exc"]).__name__)
+                        break  # this model failed; try the next family
+                    return str(box.get("out") or "")
+            failed.extend(_reasons)
+            raise TimeoutError("no verdict")
 
         # The watcher failing. An action that leaves the workspace asks,
         # or is refused when nobody can be asked: the second look was the
@@ -21701,7 +21740,7 @@ class _DocToolExecutor:
                                "allow", "screened without the model."))
             else:
                 verdict = _ac.judge(
-                    action, context, model=cfg["model"], runner=_bounded,
+                    action, context, model=_primary, runner=_bounded,
                     rules=cfg["rules"], default_on_error=on_error)
             decision, reason = verdict.decision, str(verdict.reason or "")
         except Exception as exc:
@@ -31323,6 +31362,34 @@ class OpenAIClient(_BaseClient):
         try:
             permissions.classifier_runner = self._classifier_complete
         except Exception:
+            return
+        # Resolve the classifier's models from the served roster once. The
+        # classifier must be independent of the session's model (a slow one
+        # with many agents latched every action to a human, 2026-10-29). The
+        # client is the only place with both the session model and the
+        # endpoint, so it stows the resolved ids here. Cached roster only
+        # (no fetch): re-attaching on every set_permissions must not spend a
+        # /v1/models round trip each time.
+        try:
+            from . import model_capabilities as _mc
+            from .action_classifier import DEFAULT_MODEL as _default_cls
+            cfg = _classifier_settings() or {}
+            base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
+            api_key = getattr(self, "_api_key", "") or ""
+            served = _mc.kit_models_served(base_url, api_key)
+            model = getattr(self, "model", "") or ""
+            cfg_model = str(cfg.get("model") or _default_cls)
+            explicit = bool(cfg.get("explicit_model"))
+            primary = _mc.classifier_choice(
+                served=served, session_model=model,
+                cfg_model=cfg_model, cfg_explicit=explicit)
+            alt = None if explicit else _mc.classifier_alternate(
+                served=served, from_model=primary, cfg_model=cfg_model)
+            permissions.classifier_model = primary
+            permissions.classifier_alt_model = alt
+        except Exception:
+            # A roster that could not be asked leaves the configured default:
+            # the old behaviour, never a missing classifier.
             pass
 
     def _attach_subagent_runner(
