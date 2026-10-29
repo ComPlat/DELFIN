@@ -97,3 +97,123 @@ class TestValidateMethod:
         assert errors == []
         assert any(w.get("id") == "test.card-warns" for w in warnings)
 
+
+# ---------------------------------------------------------------------------
+# Run + read path: a fake ORCA stands in for the binary, copying a fixture
+# run's outputs into the working directory.  The fixtures were measured once
+# against ORCA 6.1.1 (H2O opt+freq, O2 triplet, SCF-not-converged).
+# ---------------------------------------------------------------------------
+
+from pathlib import Path  # noqa: E402
+
+import delfin.orca as orca_mod  # noqa: E402
+from delfin.tools.adapters.orca_sp_opi import run_sp_dft  # noqa: E402
+
+FIXTURE_DIR = Path("tests/fixtures/orca611")
+
+
+@pytest.fixture()
+def fake_orca(monkeypatch, tmp_path):
+    """Point DELFIN's launcher at tests/scripts/fake_orca.sh so a run copies a
+    fixture's outputs into the working directory instead of launching ORCA."""
+    script = Path("tests/scripts/fake_orca.sh").resolve()
+    assert script.is_file()
+
+    def patch(fixture_name: str) -> Path:
+        fix_dir = (FIXTURE_DIR / fixture_name).resolve()
+        assert fix_dir.is_dir(), f"fixture {fixture_name!r} missing"
+        monkeypatch.setattr(orca_mod, "find_orca_executable", lambda: str(script))
+        import delfin.qm_runtime as qmr
+
+        qmr.clear_resolver_cache()
+        monkeypatch.setenv("FAKE_ORCA_FIXTURE", str(fix_dir))
+        return fix_dir
+
+    return patch
+
+
+class TestRunAndRead:
+    """run_sp_dft drives DELFIN's own launcher with a fake ORCA and reads the
+    result back with OPI, gating every number on the convergence flags."""
+
+    def test_converged_o2_reports_meaningful_values(self, fake_orca, tmp_path):
+        fake_orca("o2_triplet")
+        res = run_sp_dft(
+            elements=["O", "O"],
+            coordinates=[(0.0, 0.0, 0.0), (0.0, 0.0, 1.207)],
+            charge=0,
+            mult=3,
+            functional="B3LYP",
+            basis="def2-SVP",
+            ri="RIJCOSX",
+            aux_basis="def2/J",
+            work_dir=tmp_path / "o2",
+        )
+        assert res.ok is True
+        assert res.meaningful is True
+        assert res.terminated_normally is True
+        assert res.scf_converged is True
+        assert res.energy_Eh is not None and res.energy_Eh < 0
+        assert res.hl_gap_eV is not None and res.hl_gap_eV > 0
+        assert res.s2 is not None and res.s2[0] > 2.0  # open-shell <S^2> ~ 2.007
+        assert res.failure_lines == ()
+        # the input file really was written by OPI into the working dir
+        assert (res.work_dir / "calc.inp").is_file()
+
+    def test_converged_h2o_reports_meaningful_values(self, fake_orca, tmp_path):
+        fake_orca("h2o_optfreq")
+        res = run_sp_dft(
+            elements=["O", "H", "H"],
+            coordinates=[(0.0, 0.0, 0.1173), (0.0, 0.7572, -0.4692),
+                         (0.0, -0.7572, -0.4692)],
+            charge=0,
+            mult=1,
+            functional="B3LYP",
+            basis="def2-SVP",
+            work_dir=tmp_path / "h2o",
+        )
+        assert res.ok is True and res.meaningful is True
+        assert res.energy_Eh is not None and res.energy_Eh < 0
+        assert res.hl_gap_eV is not None
+        assert res.s2 is None or res.s2[0] == 0.0  # closed shell
+
+    def test_failed_run_never_reports_numbers(self, fake_orca, tmp_path):
+        """A run OPI marks failed must not produce a HOMO-LUMO gap from
+        unconverged orbitals: every number stays None, the failure is
+        explained by .out lines."""
+        fake_orca("scf_not_converged")
+        res = run_sp_dft(
+            elements=["O", "O"],
+            coordinates=[(0.0, 0.0, 0.0), (0.0, 0.0, 1.207)],
+            charge=0,
+            mult=3,
+            functional="B3LYP",
+            basis="def2-SVP",
+            work_dir=tmp_path / "fail",
+        )
+        assert res.ok is False
+        assert res.meaningful is False
+        assert res.terminated_normally is False
+        assert res.scf_converged is False
+        assert res.energy_Eh is None
+        assert res.hl_gap_eV is None
+        assert res.s2 is None
+        assert any("SCF NOT CONVERGED" in ln for ln in res.failure_lines)
+
+    def test_unknown_keyword_never_launches(self, fake_orca, tmp_path):
+        """Validation errors stop the step before any ORCA launch."""
+        fake_orca("o2_triplet")
+        res = run_sp_dft(
+            elements=["O", "O"],
+            coordinates=[(0.0, 0.0, 0.0), (0.0, 0.0, 1.207)],
+            charge=0,
+            mult=3,
+            functional="NOTAFUNCTIONAL",
+            basis="def2-SVP",
+            work_dir=tmp_path / "nolaunch",
+        )
+        assert res.ok is False
+        assert "NOTAFUNCTIONAL" in (res.error or "")
+        assert not (res.work_dir / "calc.out").exists()
+
+
