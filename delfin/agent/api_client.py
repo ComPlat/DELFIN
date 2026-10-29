@@ -1707,6 +1707,33 @@ _SYSTEM_INFO_FILES: frozenset[str] = frozenset({
 })
 
 
+#: Programs that hand the REST of their words to another program to run.
+#: The first non-option, non-`NAME=value` word is the REAL command word,
+#: and its path must not be scanned as a read -- executing a program is
+#: not reading it. Each value lists the option spellings that take a
+#: SEPARATE value (skipped together with that value while the wrapper's
+#: options are walked); a flag or a self-contained `-n5`/`--x=5` needs no
+#: entry. `timeout` is the one with two leading positionals (DURATION
+#: then COMMAND); every other wrapper's first bare word is its program.
+#:
+#: The wrappers' own operands that ARE files (``env -C /dir``) are not
+#: touched here: only the command-word index is skipped, so the wrapper's
+#: file-like operands and every following argument are still scanned.
+_COMMAND_WORD_WRAPPERS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "-P",
+                      "--default-signal", "--block-signal", "--list-signal"}),
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata",
+                         "-p", "--pid"}),
+    "taskset": frozenset({"-c", "-p", "-a",
+                          "-d", "-m", "-A", "-i", "-N", "--cpu-list"}),
+    "nohup": frozenset(),
+    "setsid": frozenset(),
+    "command": frozenset(),
+}
+
+
 def _home_expanded(word: str) -> str:
     home = str(Path.home())
     for spelling in ("${HOME}", "$HOME"):
@@ -1828,6 +1855,52 @@ def _script_argument_index(prog: str, args: list) -> Optional[int]:
     return None
 
 
+def _executed_command_index(prog: str, args: list) -> Optional[int]:
+    """Index in *args* of the program the wrapper `prog` delegates to.
+
+    A delegating wrapper (``env``, ``timeout``, ``nice``, …) hands the
+    rest of its words to another program to run. That inner program is
+    a simple command's command word: its PATH must not be scanned as a
+    read -- executing a program is not reading it (2026-10-29: a venv
+    interpreter run under ``env X=1`` was asked about as an
+    outside-workspace read). Returns the index of that word so the caller
+    can skip exactly it, leaving every sibling argument -- the wrapper's
+    own operands and the program's following arguments -- scanned as
+    before. ``--`` ends the wrapper's options. ``timeout`` has a leading
+    DURATION positional before its COMMAND, so its program is the second
+    bare word; every other wrapper's first bare word is the program.
+    Returns None when `prog` is not a delegation wrapper, or when no bare
+    word occupies the command-word slot (a wrapper with only options or
+    only a duration leaves nothing to skip).
+    """
+    value_opts = _COMMAND_WORD_WRAPPERS.get(prog)
+    if value_opts is None:
+        return None
+    positional = 0
+    skip = False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if a == "--":
+            positional += 1
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            continue               # env's NAME=value, not the program
+        if not a.startswith("-"):
+            positional += 1
+            if prog == "timeout":
+                if positional == 2:
+                    return i
+                continue           # the DURATION, not yet the program
+            return i
+        opt = a.split("=", 1)[0]
+        if opt in value_opts and "=" not in a:
+            skip = True            # the option takes a separate value
+        # a value-less flag, or a self-contained -n5 / --x=5: nothing to skip
+    return None
+
+
 def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                         _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
@@ -1933,13 +2006,17 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
         if prog in _BASH_NO_FILE_PROGRAMS:
             return
         script_at = _script_argument_index(prog, args)
+        # A delegating wrapper's program word (env X=1 prog, timeout 20
+        # prog, nice prog) is the command word of a simple command: its
+        # path is not a read, whatever position the shell resolved it to.
+        cmd_at = _executed_command_index(prog, args)
         skip_next = False
         for i, a in enumerate(args):
             if skip_next:
                 skip_next = False
                 continue
-            if i == script_at:
-                continue    # the program's script or pattern, not a file
+            if i == script_at or i == cmd_at:
+                continue    # the program's script/pattern or command word, not a file
             if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
                 skip_next = True    # the redirection's own target
                 continue
