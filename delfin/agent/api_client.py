@@ -30569,6 +30569,19 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
 _STREAM_RETRY_MAX = 3
 
+# How many times a single turn may switch to another model because KIT does
+# not serve the one it asked for (either "Model not found" or "…temporarily
+# unavailable"). A headless run is ONE long turn that can ask several models;
+# bounding the count keeps a roster where nothing answers from looping forever,
+# while still letting the run get past one or two down models.
+_MODEL_FALLBACK_MAX = 3
+
+# The short pause before resending a model that reported itself "temporarily
+# unavailable": one retry on the same model, then the switch. Long enough to
+# ride out a blip, short enough to not hold the turn for the real outage's
+# whole hour.
+_MODEL_UNAVAILABLE_RETRY_S = 1.5
+
 # A request that produced no byte for this long was not a hiccup: the KIT
 # gateway answers 504 at 600 s when the model has not started, and the
 # SDK's own read timeout is 600 s. Measured 2026-09-11 with a 12.6k-token
@@ -30681,8 +30694,53 @@ def _is_transient_api_error(exc: Exception) -> bool:
     # without ever retrying a genuine bad request.
     low = msg.lower()
     if any(marker in low for marker in _INFRA_EXHAUSTION_MARKERS):
+        # ...except a MODEL that is itself unavailable: that is a property
+        # of the model, fixed by switching to another family KIT serves,
+        # not of the gateway. "Model 'X' is temporarily unavailable" is
+        # NOT gateway exhaustion; "_is_model_unavailable_error" decides it
+        # and the switch path handles it. (The gateway-wide "service
+        # temporarily unavailable" has no model scope and stays here.)
+        if _is_model_unavailable_error(exc):
+            return False
         return True
     return False
+
+
+_MODEL_UNAVAILABLE_PHRASES = (
+    "is temporarily unavailable",
+    "is currently unavailable",
+    "is temporarily down",
+    "is not available",
+)
+
+
+def _is_model_unavailable_error(exc: Exception) -> bool:
+    """Whether a 400 says the MODEL (not the gateway) is unavailable.
+
+    Measured 2026-10-29 for about an hour: KIT answered every request to one
+    model with "Model 'glm-5.3-flash' is temporarily unavailable. Please try
+    again later." That is a property of the model, fixed by switching to the
+    next family KIT serves — NOT gateway exhaustion ("too many connections",
+    "service temporarily unavailable"), which switching would not fix. This
+    deliberately tells the two apart: a model-unavailability NAMES the model
+    (the word "model" near a down-phrase, or a quoted model id), a gateway
+    message does not.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int) and status != 400:
+        return False
+    low = str(exc).lower()
+    if not any(p in low for p in _MODEL_UNAVAILABLE_PHRASES):
+        return False
+    # The message must name a model to be a MODEL unavailability. The word
+    # "model" in a scope that picks one out ("Model 'X' is …", "the model X
+    # is …"), or a quoted id next to an availability word, both count. The
+    # gateway's own "service temporarily unavailable" names no model.
+    if "model'" in low or 'model"' in low or " the model " in low:
+        return True
+    if low.strip().startswith("model ") or " model " in low:
+        return True
+    return "'" in low and "available" in low
 
 
 _MODEL_NOT_FOUND_HINTS = (
@@ -30701,17 +30759,24 @@ def _is_model_not_found_error(exc: Exception) -> bool:
 
 
 def _kit_fallback_model(current: str, provider: str, base_url: str = "",
-                        api_key: str = "") -> str:
+                        api_key: str = "", already_left: set = ()) -> str:
     """The best KIT model to continue on when ``current`` is not served, or
     "" (not a KIT session). The ranked roster's first entry the endpoint
     lists; when the listing cannot be read, the first ranked entry that is
-    not ``current`` -- it was the ranking that named ``current`` too."""
+    neither ``current`` nor in ``already_left``. ``already_left`` collects
+    the models this turn has already left behind, so a turn that bounced
+    A->B after only A was excluded does not hand the rank slot back to A
+    (A->B->A until the switch budget ran out). Only ``kit.*`` models in
+    ``_KIT_PREFERENCE`` are ever returned -- never the paid ``azure.*``,
+    ``google.*``, ``alias.*`` or ``standard-*`` routes, and no embedding,
+    reranker, speech or image models."""
     if str(provider or "").lower() != "kit":
         return ""
     try:
         from . import model_capabilities as _mc
         served = _mc.kit_models_served(base_url, api_key, fetch=True)
-        ranked = [m for m in _mc._KIT_PREFERENCE if m != current]
+        skip = set(already_left or ()) | {current}
+        ranked = [m for m in _mc._KIT_PREFERENCE if m not in skip]
         if served:
             return next((m for m in ranked if m in served), "")
         return ranked[0] if ranked else ""
@@ -32100,7 +32165,17 @@ class OpenAIClient(_BaseClient):
             except Exception:
                 pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
-        _model_fallback_done = False   # once per turn: see _kit_fallback_model
+        # The model-switch budget for THIS turn (both "Model not found" and
+        # "…temporarily unavailable"). A headless run is one long turn, so
+        # "once per turn" meant a single flapping model stood the whole run
+        # still; bounded, not unlimited. Reset at each new turn, never mid-turn.
+        _model_fallback_count = 0
+        # The one switch-collection per turn, read by turn_metrics and by a
+        # headless `chat -p --output-format json` result (repl.TURN_KEYS).
+        self._turn_model_switches: list[dict] = []
+        # "At most one short retry" guard for a model that reports itself
+        # unavailable, reset at the start of each new round below.
+        _mod_unav_retried = False
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
@@ -32660,38 +32735,83 @@ class OpenAIClient(_BaseClient):
                             _stream_attempt, _STREAM_RETRY_MAX, _delay))
                         time.sleep(_delay)
                         continue
-                    # The endpoint does not serve the model (a KIT roster
-                    # change): once per turn, the best KIT model it serves
-                    # takes over, said in the stream, and the round is sent
-                    # again. Measured 2026-10-19: kit.glm-5.3 answered
-                    # "400 - Model not found" with no explanation.
-                    if (_is_model_not_found_error(_stream_exc)
-                            and not _model_fallback_done):
-                        _model_fallback_done = True
+                    # The endpoint does not serve the model — either it is not
+                    # on the KIT roster AT ALL ("Model not found", measured
+                    # 2026-10-19: kit.glm-5.3 answered "400 - Model not found")
+                    # or it is TEMPORARILY unavailable ("Model 'X' is
+                    # temporarily unavailable", measured 2026-10-29 for about
+                    # an hour, ten agents stood still). Both are properties
+                    # of the MODEL, not of the gateway: the best KIT model it
+                    # serves takes over, said in the stream, and the round is
+                    # sent again. A headless run is one long turn, so the
+                    # switch is allowed up to _MODEL_FALLBACK_MAX times per
+                    # turn, never a loop. An unavailable model gets at most
+                    # ONE short retry on itself first (a blip); a "Model not
+                    # found" is definitive and switches at once.
+                    _is_unavail = _is_model_unavailable_error(_stream_exc)
+                    _is_missing = _is_model_not_found_error(_stream_exc)
+                    if (_is_unavail or _is_missing) \
+                            and _model_fallback_count < _MODEL_FALLBACK_MAX:
+                        if _is_unavail and not _mod_unav_retried:
+                            _mod_unav_retried = True
+                            yield StreamEvent(type="notice", text=(
+                                f"\n⏳ The endpoint says `{self.model}` is "
+                                "temporarily unavailable; trying it once more "
+                                "briefly before switching models.\n"))
+                            time.sleep(_MODEL_UNAVAILABLE_RETRY_S)
+                            continue
+                        _mod_unav_retried = False
+                        _model_fallback_count += 1
                         _old_model = self.model
                         _alt = _kit_fallback_model(
                             _old_model, getattr(self, "_provider", ""),
                             str(getattr(self, "_base_url", "") or ""),
-                            str(getattr(self, "_api_key", "") or ""))
+                            str(getattr(self, "_api_key", "") or ""),
+                            already_left={s.get("before", "") for s in
+                                          self._turn_model_switches})
                         if _alt:
                             self.model = _alt
                             kwargs["model"] = _alt
+                            self._turn_model_switches.append({
+                                "before": _old_model, "after": _alt,
+                                "reason": ("model unavailable" if _is_unavail
+                                           else "model not found")})
                             _text_chunks = []
                             _tool_calls = {}
                             _round_in = 0
                             finish_reason = None
-                            yield StreamEvent(type="notice", text=(
-                                f"\n⚠️ KIT does not serve `{_old_model}` right "
-                                "now (\"Model not found\"). This session "
-                                f"continues on `{_alt}`, the best KIT model it "
-                                "serves; /model or the dashboard's model menu "
-                                "picks another.\n"))
+                            if _is_unavail:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT is not serving `{_old_model}` "
+                                    "right now (\"temporarily unavailable\"). "
+                                    f"This session continues on `{_alt}`, the "
+                                    "best KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
+                            else:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT does not serve `{_old_model}` "
+                                    "right now (\"Model not found\"). This "
+                                    f"session continues on `{_alt}`, the best "
+                                    "KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
                             continue
+                        # No alternative model to continue on.
                         yield StreamEvent(type="notice", text=(
                             f"\n⚠️ The endpoint does not serve `{_old_model}` "
-                            "(\"Model not found\"). Pick a model it serves: "
-                            "/model lists them in the terminal, the model menu "
-                            "in the dashboard.\n"))
+                            f"(\"{'temporarily unavailable' if _is_unavail else 'Model not found'}\") "
+                            "and no other KIT model is ranked for it. Pick a "
+                            "model it serves: /model lists them in the "
+                            "terminal, the model menu in the dashboard.\n"))
+                    elif (_is_unavail or _is_missing) \
+                            and _model_fallback_count >= _MODEL_FALLBACK_MAX:
+                        # The model-switch budget for this turn is spent:
+                        # switching again cannot help (every ranked model is
+                        # gone or down). End like any unfixable model error
+                        # rather than loop.
+                        yield StreamEvent(type="notice", text=(
+                            f"\n⚠️ `{self.model}` is unavailable and the "
+                            "model-switch budget for this turn is used up. "
+                            "No KIT model answered; try again later.\n"))
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which
@@ -32819,6 +32939,8 @@ class OpenAIClient(_BaseClient):
                         input_tokens=_round_in, cached_tokens=_round_cached,
                         output_tokens=_round_out, tool_calls=len(_tool_calls),
                         finish_reason=str(finish_reason or ""),
+                        model_switches=list(getattr(
+                            self, "_turn_model_switches", []) or []),
                         **_prompt_fingerprints(
                             api_messages,
                             int(getattr(self, "_turn_rows_base", 0) or 0)))
