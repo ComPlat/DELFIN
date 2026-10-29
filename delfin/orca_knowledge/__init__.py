@@ -88,7 +88,7 @@ KINDS = frozenset({
     "requirement", "recommendation", "default", "incompatibility", "error-pattern",
     "keyword", "limit", "procedure", "check",
 })
-SOURCE_TYPES = frozenset({"manual", "paper", "orca-message", "orca-run", "archive"})
+SOURCE_TYPES = frozenset({"manual", "paper", "orca-message", "orca-run", "archive", "delfin-doc"})
 STATUSES = frozenset({"proposed", "verified", "rejected"})
 SEVERITIES = frozenset({"error", "warning", "info"})
 
@@ -252,8 +252,21 @@ def _source_problems(src: Any) -> list[str]:
         return out
     if kind == "orca-message":
         return [] if len(str(src.get("text") or "")) >= 8 else ["an ORCA message source quotes the message"]
-    count = src.get("count")
-    return [] if isinstance(count, int) and count > 0 else ["an archive source gives the count of runs"]
+    if kind == "archive":
+        count = src.get("count")
+        return [] if isinstance(count, int) and count > 0 else ["an archive source gives the count of runs"]
+    if kind == "delfin-doc":
+        path = str(src.get("path") or "")
+        if not path:
+            return ["a delfin-doc source names its path (docs/... or delfin/...)"]
+        if ".." in path or path.startswith("/"):
+            return ["a delfin-doc source path stays inside the repository (no '..', not absolute)"]
+        if not path.startswith(("docs/", "delfin/")):
+            return ["a delfin-doc source path is under docs/ or delfin/"]
+        # Existence is checked by a test in the repository, not here: an
+        # installed DELFIN has no docs/, and the working folder of a session
+        # is not the repository.
+        return []
 
 
 def _files() -> list[Path]:
