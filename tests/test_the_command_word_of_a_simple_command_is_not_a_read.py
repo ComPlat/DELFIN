@@ -1,9 +1,9 @@
 """The command word of a simple command is not a read target.
 
 Measured 2026-10-29: an agent that runs a Python script with its own
-interpreter -- /home/qmchem_max/delfin-swarm/venv/bin/python, a venv
+interpreter -- /opt/project/venv/bin/python, a venv
 whose python is a symlink into
-/home/qmchem_max/micromamba/envs/delfin/bin/python3.12 -- was asked for
+/opt/conda/envs/delfin/bin/python3.12 -- was asked for
 an OUTSIDE-WORKSPACE READ of the interpreter's resolved path. Executing
 a program is not reading it, and the interpreter DELFIN itself runs on
 is not user data.
@@ -38,7 +38,7 @@ def R(cmd, cwd="."):
 # ---------------------------------------------------------------------------
 
 def test_the_wrapped_interpreter_path_is_not_a_read_target(tmp_path):
-    interp = "/home/qmchem_max/delfin-swarm/venv/bin/python"
+    interp = str(tmp_path / "venv" / "bin" / "python")
     script = str(tmp_path / "outside.py")
     # The executed program's own path, however it is reached, is not a read.
     assert R(f"{interp} -u {script}", "") != []
@@ -87,7 +87,7 @@ def test_interpreters_are_not_exempt_as_generic_paths(tmp_path):
     # this change does not touch it. What must survive is the rule that a
     # NON-system interpreter path read as DATA (not executed) is still a
     # read: `cat` on the venv python exposes its bytes to the shell.
-    interp = "/home/qmchem_max/delfin-swarm/venv/bin/python"
+    interp = str(tmp_path / "venv" / "bin" / "python")
     assert interp in R(f"cat {interp}")
 
 
@@ -109,7 +109,7 @@ def test_the_gate_does_not_ask_for_a_wrapped_interpreter(tmp_path):
     (other / "outside.py").write_text("print('x')\n")
     perms = A.KitToolPermissions(workspace=ws, mode="default")
     ex = A._DocToolExecutor()
-    interp = "/home/qmchem_max/delfin-swarm/venv/bin/python"
+    interp = str(tmp_path / "venv" / "bin" / "python")
     cmd = f"env X=1 {interp} -u {other}/outside.py"
     # The interpreter path (resolved and not) must not trip the read gate;
     # only the script it runs stays an outside read.
