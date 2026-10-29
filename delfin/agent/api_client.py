@@ -1726,8 +1726,7 @@ _COMMAND_WORD_WRAPPERS: dict[str, frozenset[str]] = {
     "nice": frozenset({"-n", "--adjustment"}),
     "ionice": frozenset({"-c", "--class", "-n", "--classdata",
                          "-p", "--pid"}),
-    "taskset": frozenset({"-c", "-p", "-a",
-                          "-d", "-m", "-A", "-i", "-N", "--cpu-list"}),
+    "taskset": frozenset({"-c", "--cpu-list"}),
     "nohup": frozenset(),
     "setsid": frozenset(),
     "command": frozenset(),
@@ -1876,24 +1875,34 @@ def _executed_command_index(prog: str, args: list) -> Optional[int]:
     value_opts = _COMMAND_WORD_WRAPPERS.get(prog)
     if value_opts is None:
         return None
+    # How many bare words precede the program: timeout's DURATION, and
+    # taskset's MASK unless -c/--cpu-list gave the CPU list as an option
+    # value. taskset -p works on an existing pid and runs no program.
+    leading = 1 if prog == "timeout" else 0
+    if prog == "taskset":
+        if any(a in ("-p", "--pid") or (a.startswith("-") and not a.startswith("--")
+                                        and "p" in a[1:]) for a in args):
+            return None
+        if not any(a in ("-c", "--cpu-list") or a.startswith("--cpu-list=")
+                   for a in args):
+            leading = 1
     positional = 0
     skip = False
+    options_done = False
     for i, a in enumerate(args):
         if skip:
             skip = False
             continue
-        if a == "--":
-            positional += 1
+        if not options_done and a == "--":
+            options_done = True     # every later word is positional
             continue
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+        if not options_done and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
             continue               # env's NAME=value, not the program
-        if not a.startswith("-"):
+        if options_done or not a.startswith("-"):
+            if positional == leading:
+                return i
             positional += 1
-            if prog == "timeout":
-                if positional == 2:
-                    return i
-                continue           # the DURATION, not yet the program
-            return i
+            continue               # the DURATION or MASK, not yet the program
         opt = a.split("=", 1)[0]
         if opt in value_opts and "=" not in a:
             skip = True            # the option takes a separate value
@@ -1997,6 +2006,21 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 out.extend(_bash_outside_reads(
                     args[i + 1], here, _depth + 1))
             return
+        # `env -S "STRING"` (--split-string) splits STRING into a new command
+        # line, like `sh -c`: judge that line, with the words after it.
+        if prog == "env" and _depth < 3:
+            for i, a in enumerate(args):
+                split = None
+                if a in ("-S", "--split-string") and i + 1 < len(args):
+                    split, tail = args[i + 1], args[i + 2:]
+                elif a.startswith("--split-string="):
+                    split, tail = a.split("=", 1)[1], args[i + 1:]
+                elif a.startswith("-S") and len(a) > 2:
+                    split, tail = a[2:], args[i + 1:]
+                if split is not None:
+                    line = " ".join([split] + [shlex.quote(t) for t in tail])
+                    out.extend(_bash_outside_reads(line, here, _depth + 1))
+                    return
         # Input redirection reads, whatever the program.
         for i, a in enumerate(args):
             if a == "<" and i + 1 < len(args):
