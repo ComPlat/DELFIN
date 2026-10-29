@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+from conftest import child_env
 from delfin.agent import endpoint_gate as G
 
 
@@ -227,7 +228,7 @@ def test_release_in_a_with_block_always_happens(runtime):
     g2.release()
 
 
-def test_a_killed_holder_frees_its_slot(runtime):
+def test_a_killed_holder_frees_its_slot(runtime, tmp_path):
     """The core promise: a slot held by a dead process is free, because
     the flock dies with the file descriptor."""
     import os as _os
@@ -251,7 +252,8 @@ def test_a_killed_holder_frees_its_slot(runtime):
     """)
     proc = subprocess.Popen(
         [sys.executable, "-c", child],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=child_env(tmp_path))
     try:
         line = proc.stdout.readline().strip()
         assert line == "0"
