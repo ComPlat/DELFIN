@@ -1335,7 +1335,8 @@ _AGENT_CSS = """\
    which an update does not replace. */
 .delfin-agent-chat-host > .widget-html-content { display: none; }
 .delfin-agent-chat-host > .delfin-agent-chat { display: flex;
-    flex-direction: column; min-height: 100%; }
+    flex-direction: column; min-height: 100%; box-sizing: border-box;
+    width: 100%; flex-shrink: 0; }
 /* Return to the newest output. Sticky rather than absolute: the chat is its
    own scrollport, so an absolutely placed control would ride away with the
    content instead of staying within reach. Hidden while the reader is
@@ -8815,14 +8816,8 @@ def create_tab(ctx):
             // own record while it waits to be looked at.
             if (!c.clientHeight) return;
             var st = stateFor(c);
-            var max = c.scrollHeight - c.clientHeight;
-            // An offset past the end belongs to a longer transcript than the
-            // one now shown -- the conversation was swapped, so start at the
-            // end rather than somewhere arbitrary in the middle of it.
-            if (!st.follow && st.top > max) {
-                st.follow = true;
-                st.unseen = false;
-            }
+            // A reflow or a temporarily shorter streaming message is not
+            // permission to resume following. Session changes/reset own that.
             if (st.follow) {
                 // At the end: come along with the agent. This is the half
                 // that is wanted and is unchanged.
@@ -8915,22 +8910,41 @@ def create_tab(ctx):
         function readerInput() {
             inputUntil = Date.now() + 300;
         }
+        function pauseForReader(e) {
+            var c = e.target && e.target.closest
+                ? e.target.closest('.delfin-agent-chat-host') : null;
+            if (!c) return;
+            var st = stateFor(c);
+            st.auto = false;
+            if (st.timer) clearTimeout(st.timer);
+            st.follow = false;
+            st.top = c.scrollTop;
+            st.mark = c.scrollHeight;
+            paint(c, st);
+        }
         function onChat(e) {
             return !!(e.target && e.target.closest
                       && e.target.closest('.delfin-agent-chat-host'));
         }
         document.addEventListener('wheel', function(e) {
-            if (onChat(e)) readerInput();
+            if (onChat(e)) {
+                readerInput();
+                // Stop before the browser scroll event: a streaming update
+                // can otherwise reach the end first and swallow that event.
+                if (e.deltaY < 0) pauseForReader(e);
+                else stateFor(e.target.closest('.delfin-agent-chat-host')).auto = false;
+            }
         }, {capture: true, passive: true});
         document.addEventListener('touchmove', function(e) {
-            if (onChat(e)) readerInput();
+            if (onChat(e)) { readerInput(); pauseForReader(e); }
         }, {capture: true, passive: true});
         document.addEventListener('keydown', function(e) {
             if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
                 readerInput();
+            if (/^(PageUp|ArrowUp|Home)$/.test(e.key)) pauseForReader(e);
         }, true);
         document.addEventListener('pointerdown', function(e) {
-            if (onChat(e)) { pressed = true; readerInput(); }
+            if (onChat(e)) { pressed = true; readerInput(); pauseForReader(e); }
         }, true);
         function released() {
             if (pressed) { pressed = false; readerInput(); }
@@ -8947,6 +8961,7 @@ def create_tab(ctx):
             if (!c || !c.classList ||
                 !c.classList.contains('delfin-agent-chat-host')) return;
             var st = stateFor(c);
+            var previousTop = st.top;
             st.top = c.scrollTop;
             if (st.auto) { st.auto = false; return; }
             // Following, moved, and not by the reader: back to the end in
@@ -8958,7 +8973,11 @@ def create_tab(ctx):
                 st.top = c.scrollTop;
                 return;
             }
-            var end = atEnd(c);
+            // Once deliberately paused, even a small upward wheel gesture
+            // must stick. The generous tolerance only applies while following.
+            var end = atEnd(c) && (st.follow ||
+                (!pressed && c.scrollTop > previousTop &&
+                 c.scrollHeight - c.scrollTop - c.clientHeight <= 1));
             if (end === st.follow) return;
             st.follow = end;
             if (end) { st.unseen = false; } else { st.mark = c.scrollHeight; }

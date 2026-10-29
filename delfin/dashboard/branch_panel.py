@@ -424,7 +424,9 @@ class BranchPanel:
         if self.view.value != "Mine":
             self.view.value = "Mine"
         self.pop.layout.display = ""
-        self.refresh()
+        # Git/gh and preview discovery must not hold up the next click
+        # (including closing this menu) on the kernel's widget event loop.
+        self._run(self.refresh)
 
     def close_menu(self) -> None:
         self.pop.layout.display = "none"
