@@ -218,62 +218,60 @@ class ResultsOverviewPanel:
             return
         self._status.value = rows_to_markdownish(
             self._table["columns"], self._table["rows"], self._sort)
+        # Gallery: ONE cross-calculation grid. Each calc contributes its
+        # relative scan (per-calc chunking can never fill a row, since
+        # one calc has only one relative PNG).
         png_html = []
+        cells = []
         for row in self._table["rows"]:
             rels = list_rss_pngs(row["path"])
-            if not rels:
+            if self._png_mode == "paths":
+                if rels:
+                    items = "".join(
+                        f"<li><code>{_html.escape(p['rel'])}</code></li>"
+                        for p in rels)
+                    png_html.append(
+                        f"<details><summary>RSS-PNGs: "
+                        f"{_html.escape(row['label'])}"
+                        f" ({len(rels)})</summary><ul>{items}</ul></details>")
                 continue
-            if self._png_mode == "inline":
-                # Only the RELATIVE scan inline (user request: never the
-                # absolute one); file:// URLs are blocked by the Jupyter
-                # browser, so embed as base64 data URIs instead.
-                rel_only = [
-                    p for p in rels
-                    if p["rel"].endswith("scan_relative.png")
-                ]
-                shown = rel_only or rels[:1]
-                width = int(640 * self._png_size.value / 100)
-                cols = self._png_cols.value
-                wrap_width = cols * (width + 8)
-                rows_png = []
-                # Explicit rows: the dashboard panel can be narrower
-                # than cols*width, so a max-width container would be
-                # clamped and show fewer images per row than asked.
-                for i in range(0, len(shown), cols):
-                    chunk = shown[i:i + cols]
-                    cells = ""
-                    for p in chunk:
-                        try:
-                            with open(p["abs"], "rb") as fh:
-                                data = fh.read(8 * 1024 * 1024)
-                            b64 = _base64.b64encode(data).decode("ascii")
-                            cells += (
-                                f"<img src='data:image/png;base64,{b64}'"
-                                f" alt='' style='width:{width}px;height:auto;"
-                                f"vertical-align:top;margin:4px'>")
-                        except OSError:
-                            cells += (
-                                f"<p style='color:#dc3545'>PNG nicht lesbar: "
-                                f"{_html.escape(p['rel'])}</p>")
-                    rows_png.append(f"<div>{cells}</div>")
-                imgs = "".join(rows_png)
-                png_html.append(
-                    f"<details open><summary>RSS-PNGs: "
-                    f"{_html.escape(row['label'])}"
-                    f" ({len(rels)})</summary>"
-                    f"<div style='max-width:{wrap_width}px'>"
-                    f"{imgs}</div></details>")
-            else:
-                items = "".join(
-                    f"<li><code>{_html.escape(p['rel'])}</code></li>"
-                    for p in rels
-                )
-                png_html.append(
-                    f"<details><summary>RSS-PNGs: "
-                    f"{_html.escape(row['label'])}"
-                    f" ({len(rels)})</summary><ul>{items}</ul></details>")
-        self._pngs.value = "<h4>Relaxed-Surface-Scan PNGs</h4>" + "".join(
-            png_html) if png_html else ""
+            rel_only = [
+                p for p in rels
+                if p["rel"].endswith("scan_relative.png")
+            ]
+            shown = rel_only or rels[:1]
+            if not shown:
+                continue
+            width = int(640 * self._png_size.value / 100)
+            for p in shown:
+                try:
+                    with open(p["abs"], "rb") as fh:
+                        data = fh.read(8 * 1024 * 1024)
+                    b64 = _base64.b64encode(data).decode("ascii")
+                    cells.append(
+                        f"<td style='padding:6px;text-align:center;"
+                        f"vertical-align:top'>"
+                        f"<img src='data:image/png;base64,{b64}'"
+                        f" alt='' style='width:{width}px;height:auto'>"
+                        f"<br><small>{_html.escape(row['label'])}</small></td>")
+                except OSError:
+                    cells.append(
+                        f"<td style='color:#dc3545'>{_html.escape(p['rel'])}"
+                        f"</td>")
+        if self._png_mode == "inline" and cells:
+            cols = self._png_cols.value
+            rows_png = []
+            # Explicit rows: the dashboard panel can be narrower than
+            # cols*width, so a max-width container would be clamped and
+            # show fewer images per row than asked.
+            for i in range(0, len(cells), cols):
+                rows_png.append("<tr>" + "".join(cells[i:i + cols]) + "</tr>")
+            png_html.append(
+                "<table style='border-collapse:collapse'>"
+                + "".join(rows_png) + "</table>")
+        self._pngs.value = (
+            "<h4>Relaxed-Surface-Scan PNGs</h4>" + "".join(png_html)
+            if png_html else "")
         # Click-to-sort wiring: the column headers carry an onclick
         # attribute that calls window.__roSort(idx); that function (sent
         # once via ctx.add_init_js) clicks the matching hidden button.
