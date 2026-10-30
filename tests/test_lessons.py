@@ -36,7 +36,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from delfin.agent import lessons
 
@@ -159,3 +158,15 @@ def test_off_by_default_when_dir_unset(monkeypatch, tmp_path: Path):
         "delfin.user_settings.load_settings", lambda *a, **k: {})
     loader = PromptLoader(tmp_path)
     assert loader._load_lessons_context("orca dispersion") == ""
+
+
+def test_a_symlink_out_of_the_lessons_dir_is_not_read(tmp_path):
+    from delfin.agent.lessons import load_lessons_dir
+    outside = tmp_path / "outside.md"
+    outside.write_text("- [git] text from outside the lessons dir\n")
+    d = tmp_path / "lessons"
+    d.mkdir()
+    (d / "inside.md").write_text("- [git] text from inside\n")
+    (d / "link.md").symlink_to(outside)
+    texts = [l.text for l in load_lessons_dir(d)]
+    assert texts == ["text from inside"]

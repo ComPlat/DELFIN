@@ -134,9 +134,17 @@ def load_lessons_dir(lessons_dir: Path | str) -> list[Lesson]:
         files = sorted(lessons_dir.glob("*.md"))
     except OSError:
         return []
+    try:
+        root = lessons_dir.resolve()
+    except OSError:
+        return []
     out: list[Lesson] = []
     for f in files:
         try:
+            # A symlink (or a name resolving elsewhere) must not pull in a
+            # file outside the configured directory.
+            if f.resolve().parent != root or not f.resolve().is_file():
+                continue
             out.extend(parse_lessons_file(f))
         except Exception:
             continue

@@ -163,7 +163,3 @@ RESTORE/
 # address to come back to. Generated, never edited, and it must not make
 # every dashboard start look like an uncommitted change.
 delfin_voila_runtime/
-
-# Per-worktree agent scratch (measurement/helper scripts, sample catalogs).
-# Never committed: it is local working material for one task.
-scratch/
