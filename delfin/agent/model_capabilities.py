@@ -1011,12 +1011,19 @@ def kit_models_served(base_url: str = "", api_key: str = "",
 # stale or cross-provider roster may list; never chosen.
 _CLASSIFIER_FOREIGN_PREFIXES = ("azure.", "google.", "alias.", "standard-")
 
-# Fast-first vendor families for the classifier. Measured on the KIT proxy:
-# deepseek is 6/6 speed (~5 s cold for 15k tokens, the models comment), glm is
-# 2/6 (~200 s cold). The classifier sits in front of an action, so speed wins
-# over strength; ordering here is speed, not quality.
-_CLASSIFIER_FAST_FAMILIES = (
-    "deepseek", "mistral", "glm", "qwen", "minimax", "gemma", "gpt",
+# ONE table: the classifier's model lineup, in bench order. The orchestrator's
+# classifier bench (36 labelled actions x 3 repeats, DELFIN's real judge)
+# measured dangerous-autions-let-through then latency:
+#   kit.mistral-small-4-119b-a8b  1/51 dangerous,  0.8  s
+#   kit.deepseek-v4-flash         3/51              29.7 s (18 no-verdict)
+#   kit.glm-5.3-flash             0/51              91.5 s
+# The first served model here is the PRIMARY (asks first), the rest are the
+# ALLOW-confirmation chain, in this order. The lineup is one table so the
+# ranking can be re-set from a future measurement without touching code paths.
+_CLASSIFIER_MODELS = (
+    "kit.mistral-small-4-119b-a8b",
+    "kit.deepseek-v4-flash",
+    "kit.glm-5.3-flash",
 )
 
 
@@ -1068,50 +1075,45 @@ def classifier_choice(*, served: set, session_model: str,
                       cfg_model: str, cfg_explicit: bool) -> str:
     """The classifier's primary model id.
 
-    When ``agent.classifier.model`` was set explicitly, that. Otherwise a
-    fast kit.* chat model the endpoint serves from a family OTHER than the
-    session's; only the session's family served means that family (never no
-    classifier). Nothing pickable from a stale/empty roster falls back to
-    ``cfg_model`` (the default), never disabling the classifier.
+    When ``agent.classifier.model`` was set explicitly, that. Otherwise the
+    first served model in the bench lineup (_CLASSIFIER_MODELS), which is
+    kit.mistral-small-4-119b-a8b when the endpoint serves it (fastest). Only
+    the session's family served, or a roster outside the lineup, falls back to
+    any served chat local (sole family decides alone, today's behaviour); a
+    stale/empty roster falls back to ``cfg_model`` -- never no classifier.
     """
     if cfg_explicit:
         return cfg_model
     locals_ = _served_chat_kit_local(served)
-    session_fam = model_family(session_model)
-    for fam in _CLASSIFIER_FAST_FAMILIES:
-        if fam == session_fam:
-            continue
-        for mid in locals_:
-            if model_family(mid) == fam:
-                return mid
-    # Only the session's family served (or no distinct fast family): use it.
-    for mid in locals_:
-        if model_family(mid) == session_fam:
+    served_ids = {m.lower() for m in locals_}
+    for mid in _CLASSIFIER_MODELS:
+        if mid in served_ids:
             return mid
+    # Nothing from the lineup served: whatever the endpoint offers decides
+    # alone (the whole session runs on a family no bench covers). Preserve
+    # set/roster stability by picking the first in a stable order.
+    for mid in sorted(locals_):
+        return mid
     # A roster that offered nothing usable: fall back, never drop the watch.
     return cfg_model
 
 
-def classifier_alternate(*, served: set, from_model: str,
-                         cfg_model: str) -> str:
-    """The classifier's retry-once model: a different family than *from_model*.
+def classifier_confirmation(*, served: set, primary: str,
+                            cfg_model: str) -> tuple:
+    """The ordered ALLOW-confirmation chain for the primary model.
 
-    Only reached when the primary classifiers stalls or fails; the "other
-    family" keeps the retry independent of what just failed. With no other
-    family served, falls back to ``cfg_model`` (a second call to the same
-    lineup is still better than a human for every harmless action).
+    ``primary``'s own refuse/ask stands at once; only an allow needs a second
+    opinion. This returns the bench models the endpoint serves from a family
+    OTHER than the primary's, in bench order. Empty tuple exactly when only
+    the primary's family is served (the primary decides alone, today's
+    behaviour) -- ``cfg_model`` is deliberately not appended: a lone family
+    is a legitimate one-vote decision, and inventing a second model the
+    endpoint does not serve would only 404 in the confirmation.
     """
-    fam = model_family(from_model)
-    locals_ = _served_chat_kit_local(served)
-    # Fastest-first across the fast-family order, so the retry after a stall
-    # lands on a different, fast model -- not whatever order the set yields.
-    for cand_fam in _CLASSIFIER_FAST_FAMILIES:
-        if cand_fam == fam:
-            continue
-        for cand in locals_:
-            if model_family(cand) == cand_fam:
-                return cand
-    return cfg_model
+    fam = model_family(primary)
+    served_ids = {m.lower() for m in _served_chat_kit_local(served)}
+    return tuple(m for m in _CLASSIFIER_MODELS
+                 if model_family(m) != fam and m in served_ids)
 
 
 def kit_best_model(base_url: str = "", api_key: str = "",

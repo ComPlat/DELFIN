@@ -9359,13 +9359,16 @@ class KitToolPermissions:
     classifier_state: dict = field(default_factory=dict)
     # The classifier's resolved model ids, set by the client's
     # ``_attach_classifier_runner`` (model_capabilities): ``classifier_model``
-    # is the one asked first, ``classifier_alt_model`` the "other family"
-    # retried once when the first stalls or fails. Leaves them unset for
-    # callers that drive _classifier_second_opinion directly (tests), which
-    # then use cfg["model"]. A dataclass field so a sub-agent's copy
-    # (dataclasses.replace) carries the same models.
+    # is the PRIMARY, asked first; ``classifier_confirm_models`` the ALLOW-
+    # confirmation chain of other families, in bench order (see the "allow
+    # needs two families" rule in _classifier_second_opinion). Empty tuple =
+    # the primary decides alone (no second family served, or an explicit
+    # configured model). Leaves both unset for callers that drive
+    # _classifier_second_opinion directly (tests), which then use a single
+    # cfg["model"] -- the old behaviour. Dataclass fields so a sub-agent's
+    # copy (dataclasses.replace) carries the same models.
     classifier_model: Optional[str] = None
-    classifier_alt_model: Optional[str] = None
+    classifier_confirm_models: tuple = ()
     # Keys of actions the USER approved in a second-opinion dialog: not
     # asked again in this session (see _classifier_second_opinion).
     classifier_user_allowed: set = field(default_factory=set)
@@ -21644,76 +21647,97 @@ class _DocToolExecutor:
         failed: list = []
         called: list = []
 
-        # The classifier's models, primary first then the "other family"
-        # retry. cfg["model"] is the configured or default; perms carried the
-        # client's independence choice (model_capabilities) when the setting
-        # was not explicit. Tests and direct drivers leave perms unset and
-        # fall back to a single model -- the old behaviour.
+        # The classifier's models. ``_primary`` decides first; its own
+        # refuse/ask stands at once, and an ALLOW is confirmed by a model of
+        # another family (``_confirm``, in bench order) -- "allow needs two
+        # families". cfg["model"] is the configured or default; perms carried
+        # the client's independence choice (model_capabilities). Tests and
+        # direct drivers leave perms unset and fall back to a single model
+        # (no confirmation) -- the old behaviour.
         _primary = str(getattr(perms, "classifier_model", None)
                        or cfg.get("model") or _ac.DEFAULT_MODEL)
-        _models = [_primary]
-        _alt = getattr(perms, "classifier_alt_model", None)
-        if _alt and _alt != _primary:
-            _models.append(_alt)
+        _confirm = tuple(getattr(perms, "classifier_confirm_models", None)
+                         or ())
+        # A confirm slot identical to the primary is not a second opinion:
+        # it would only re-ask the same family. Drop it.
+        _confirm = tuple(c for c in _confirm if c != _primary)
+
+        # Effective decision chain: the primary, then the confirm families.
+        # A model stalled within the probe window is skipped, so one slow
+        # model does not latch every action of the turn -- the next usable
+        # model (the confirm family) takes over. All _CLASSIFIER_MODELS are
+        # different families, so a promoted confirm is still "another family"
+        # than the one that allowed.
+        _last_attempt = health.get("last_attempt_at")
+        _recent = (_last_attempt is not None and _classifier_clock()
+                   - _last_attempt < _CLASSIFIER_PROBE_INTERVAL_S)
+        _stalled = state.setdefault("stalled_models", set())
+        _chain = []
+        for _m in [_primary] + list(_confirm):
+            if _m in _chain or (_recent and _m in _stalled):
+                continue
+            _chain.append(_m)
+        # The first usable model is asked first; an ALLOW is confirmed by a
+        # latter one. Empty chain (everything latched) falls back to asking
+        # the primary, whose _bounded then raises -> on_error (ask/refuse).
+        _ask = _chain[0] if _chain else _primary
+        _confirms = _chain[1:] if _chain else ()
 
         def _bounded(prompt: str, model: str) -> str:
-            # The runner is the client's; the bound is the gate's, so a
-            # runner that hangs cannot hold an action for minutes. A stall or
-            # failure of one family is retried once on the next family in
-            # ``_models`` before the error behaviour. The per-turn latch is
-            # per classifier model (``state["stalled_models"]``), so one slow
-            # model does not block the others.
+            # Exactly ONE model per call (the primary, or one step of the
+            # confirmation chain, chosen by the caller). The runner is the
+            # client's; the bound is the gate's, so a runner that hangs cannot
+            # hold an action for minutes. A stall latches only THIS model
+            # (``state["stalled_models"]``), probed again after
+            # _CLASSIFIER_PROBE_INTERVAL_S, so one slow model does not block
+            # the others.
             #
-            # Probe semantics are kept: a model the watcher marks down, or one
-            # that stalled this turn, is skipped only while ``recent`` -- after
-            # _CLASSIFIER_PROBE_INTERVAL_S it is asked again, so one outage
-            # does not send every action of the session to a human forever.
-            #
-            # ``_reasons`` is local: a verdict from a later model is a success,
-            # so the outer ``failed`` list must not carry the earlier model's
-            # skip or timeout. It is merged into ``failed`` only when every
-            # model gave nothing.
+            # ``_reasons`` is local: merged into the outer ``failed`` only
+            # when this single call gave no verdict, so a successful verdict
+            # never records a watcher failure.
             _reasons: list = []
-            for m in _models:
-                last = health.get("last_attempt_at")
-                recent = (last is not None and _classifier_clock() - last
-                          < _CLASSIFIER_PROBE_INTERVAL_S)
-                skip = ((health.get("down") or
-                         m in state.setdefault("stalled_models", set()))
-                        and recent)
-                if skip:
-                    _reasons.append("down" if health.get("down")
-                                    else "stalled")
-                    continue
-                for attempt in (1, 2):
-                    health["last_attempt_at"] = _classifier_clock()
-                    called.append(attempt)
-                    box: dict = {}
+            last = health.get("last_attempt_at")
+            recent = (last is not None and _classifier_clock() - last
+                      < _CLASSIFIER_PROBE_INTERVAL_S)
+            if (health.get("down") or model in state.setdefault(
+                    "stalled_models", set())) and recent:
+                _reasons.append("down" if health.get("down") else "stalled")
+                failed.extend(_reasons)
+                raise TimeoutError("model latched this turn")
+            for attempt in (1, 2):
+                health["last_attempt_at"] = _classifier_clock()
+                called.append(attempt)
+                box: dict = {}
 
-                    def _work() -> None:
-                        try:
-                            box["out"] = runner(prompt, m)
-                        except BaseException as exc:      # noqa: BLE001
-                            box["exc"] = exc
+                def _work(box=box, m=model) -> None:
+                    # Bind the worker'S OWN box and model: a timed-out thread
+                    # for an earlier model keeps running, and when it finishes
+                    # it must write its OWN box, not the current model's.
+                    # Late binding would let model A's late answer -- or A's
+                    # exception -- land in model B's result.
+                    try:
+                        box["out"] = runner(prompt, m)
+                    except BaseException as exc:      # noqa: BLE001
+                        box["exc"] = exc
 
-                    worker = threading.Thread(
-                        target=_work, name="action-classifier", daemon=True)
-                    worker.start()
-                    wait_s = _classifier_timeout_s()
-                    worker.join(wait_s)
-                    if worker.is_alive():
-                        _reasons.append("timeout")
-                        state.setdefault("stalled_models", set()).add(m)
-                        break  # this model timed out; try the next family
-                    if "exc" in box:
-                        if attempt == 1:
-                            # One short retry: a dropped connection or a 502
-                            # from the proxy is usually gone a moment later.
-                            time.sleep(_CLASSIFIER_RETRY_DELAY_S)
-                            continue
-                        _reasons.append(type(box["exc"]).__name__)
-                        break  # this model failed; try the next family
-                    return str(box.get("out") or "")
+                worker = threading.Thread(
+                    target=_work, name="action-classifier", daemon=True)
+                worker.start()
+                wait_s = _classifier_timeout_s()
+                worker.join(wait_s)
+                if worker.is_alive():
+                    state.setdefault("stalled_models", set()).add(model)
+                    _reasons.append("timeout")
+                    break  # this model timed out; no verdict
+                if "exc" in box:
+                    if attempt == 1:
+                        # One short retry: a dropped connection or a 502
+                        # from the proxy is usually gone a moment later.
+                        time.sleep(_CLASSIFIER_RETRY_DELAY_S)
+                        continue
+                    _reasons.append(type(box["exc"]).__name__)
+                    break  # this model failed; no verdict
+                return str(box.get("out") or "")
             failed.extend(_reasons)
             raise TimeoutError("no verdict")
 
@@ -21738,11 +21762,46 @@ class _DocToolExecutor:
                 verdict = (_ac.screen(screened, context, cfg["rules"])
                            or _ac.Verdict(
                                "allow", "screened without the model."))
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # A screened verdict is not a model's opinion: it is a
+                # deterministic allow (or a user rule), so no second-family
+                # confirmation is owed for it.
             else:
                 verdict = _ac.judge(
-                    action, context, model=_primary, runner=_bounded,
+                    action, context, model=_ask, runner=_bounded,
                     rules=cfg["rules"], default_on_error=on_error)
-            decision, reason = verdict.decision, str(verdict.reason or "")
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # "allow needs two families": the first model's own refuse/ask
+                # stands (decision is not "allow"), but an ALLOW is confirmed
+                # by a model of another family before it is granted. Gate the
+                # confirmation on the ORIGINAL _confirm (a second family is
+                # served at all) and iterate the usable _confirms. A confirm
+                # that gives no verdict (latched, timed out, failed) is
+                # skipped for the next; if NONE does, the allow is NOT granted
+                # -- it asks (or refuses when nobody can be asked). Never
+                # allowed on one vote when a second family was available; a
+                # lone allow stands only when _confirm was empty from the
+                # start (one family served, today's behaviour).
+                if decision == "allow" and _confirm:
+                    confirmed = False
+                    for cm in _confirms:
+                        vc = _ac.judge(
+                            action, context, model=cm, runner=_bounded,
+                            rules=cfg["rules"], default_on_error=on_error)
+                        if str(vc.reason or "").startswith(_ac.ERROR_PREFIX):
+                            continue  # this confirm gave no verdict; try next
+                        decision, reason = (vc.decision,
+                                            str(vc.reason or ""))
+                        confirmed = True
+                        break
+                    if not confirmed:
+                        # A second family was available but never gave a firm
+                        # verdict: not allowed on one vote.
+                        decision = "ask" if can_ask else "refuse"
+                        reason = ("the confirming model could not answer, so "
+                                  "the action needs two families to allow and "
+                                  "asks.")
+                        failed.append("no-confirmation")
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
@@ -31383,10 +31442,18 @@ class OpenAIClient(_BaseClient):
             primary = _mc.classifier_choice(
                 served=served, session_model=model,
                 cfg_model=cfg_model, cfg_explicit=explicit)
-            alt = None if explicit else _mc.classifier_alternate(
-                served=served, from_model=primary, cfg_model=cfg_model)
             permissions.classifier_model = primary
-            permissions.classifier_alt_model = alt
+            if explicit:
+                # An explicitly configured classifier model decides alone:
+                # the user chose it, and no roster pick second-guesses it.
+                permissions.classifier_confirm_models = ()
+            else:
+                # The ALLOW-confirmation chain: bench models of a family
+                # other than the primary's, so an allow needs two families.
+                permissions.classifier_confirm_models = (
+                    _mc.classifier_confirmation(
+                        served=served, primary=primary,
+                        cfg_model=cfg_model))
         except Exception:
             # A roster that could not be asked leaves the configured default:
             # the old behaviour, never a missing classifier.
