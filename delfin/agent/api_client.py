@@ -2067,7 +2067,7 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
 
     try:
         import shlex
-        for segment in _shell_segments(cmd):
+        for segment in _shell_segments(_strip_heredoc_bodies(cmd)):
             segment = segment.strip()
             if not segment:
                 continue
@@ -9059,6 +9059,62 @@ def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
             end = line_start + len(line)
             return cmd[i:end], end
     return cmd[i:], len(cmd)
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """``cmd`` with every here-document body (and its ``<<tag`` token) gone.
+
+    A heredoc body is DATA -- the program the interpreter runs, or file
+    content delivered to cat/tee -- never a shell argument of the outer
+    command. When the read scan shlex-split it together with the command
+    line, a string in the body was asked about as an outside-workspace
+    read: ``python - <<'PY' … '/agent' … PY`` asked about the nonexistent
+    /agent, and a body carrying ``'/'`` asked about the filesystem root --
+    approving the second would have opened the whole filesystem for the
+    session (2026-10-29). Blanked so the read scan never sees it.
+
+    Only the body lines and the ``<<tag`` token are removed. The REST of
+    the redirect's own line is kept verbatim: ``cat <<EOF > /outside/x``
+    must still let the write gate see ``/outside/x``, and
+    ``python - <<'PY'; cat /outside/secret`` must still let the read scan
+    see ``/outside/secret``. Blanking the whole ``<<tag … tag`` span would
+    hide both -- a new hole. When there is no newline at all the body is
+    empty (``cat <<EOF > /outside/x`` in one line), so only the token is
+    removed and ``/outside/x`` stays. Position is preserved so upstream
+    offset-based annotations keep their meaning. Here-strings (``<<<``)
+    need no terminator and are left as they are.
+    """
+    out: list[str] = []
+    i, n = 0, len(cmd)
+    while i < n:
+        if cmd[i:i + 3] == "<<<":
+            # A here-STRING needs no terminator and is ordinary text here;
+            # stepping one or two of its three `<<` would let the rest be
+            # re-read as a heredoc named after the string's first word.
+            out.append(cmd[i:i + 3])
+            i += 3
+            continue
+        if cmd[i:i + 2] == "<<":
+            consumed = _consume_heredoc(cmd, i)
+            if consumed is None:
+                out.append(cmd[i])
+                i += 1
+                continue
+            _, end = consumed
+            m = _HEREDOC_START_RE.match(cmd, i)
+            token_end = m.end() if m is not None else i + 2
+            nl = cmd.find("\n", token_end, end)
+            out.append(" " * (token_end - i))      # the <<TAG token
+            if nl == -1:
+                out.append(cmd[token_end:end])     # one line, no body: keep it all
+            else:
+                out.append(cmd[token_end:nl + 1])  # the redirect line's own words
+                out.append(" " * (end - (nl + 1))) # blank the body lines
+            i = end
+            continue
+        out.append(cmd[i])
+        i += 1
+    return "".join(out)
 
 
 def _lines_from(text: str, start: int):
@@ -21275,6 +21331,31 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    @staticmethod
+    def _shell_write_command_line(name: str, args: dict,
+                                  rel_str: str) -> str:
+        """A bash write request seen whole: the command and the file.
+
+        A shell request targeting a protected/calc/store file reached an
+        approval whose body was only the guard's warning text -- the
+        command lived elsewhere on the record and `approvals show` did
+        not print it, so an approval one could not read was one one
+        could not give. This line names the command (credentials masked,
+        cut to 400 characters with a marker when cut) and the file it
+        would write, exactly as the outside-read preview of a shell read
+        does. Empty for any non-shell tool: a write tool shows its diff
+        instead.
+        """
+        if name != "bash":
+            return ""
+        _cmd = str(args.get("command") or "").strip()
+        _shown = _redact_tool_result(_cmd) if _cmd else ""
+        if len(_shown) > 400:
+            _shown = _shown[:400] + " …"
+        return (
+            f"It would be run as:\n  {_shown}\n\n"
+            f"It writes:\n  {rel_str}\n\n")
+
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
         name: str, args: dict,
@@ -21470,12 +21551,16 @@ class _DocToolExecutor:
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
+            # A bash request names the command and the file it would
+            # write; a write tool shows its diff instead ("" for bash).
+            _shell_line = self._shell_write_command_line(name, args, rel_str)
             if _is_gitcfg:
                 preview = (
                     "[GIT CONFIGURATION FILE]\n"
                     "git reads this file as configuration: it can name a "
                     "filter, diff driver or hook program that the next "
                     "git status or git add runs.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif _is_store:
@@ -21484,6 +21569,7 @@ class _DocToolExecutor:
                     "Later sessions are shown this file: shared lessons or "
                     "stored memory. Approving lets the agent change what "
                     "they are told.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_protected:
@@ -21492,6 +21578,7 @@ class _DocToolExecutor:
                     "This file is part of the agent's own safety layer.\n"
                     "Approving this will let the agent rewrite the code that "
                     "controls its own permissions.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_calc:
@@ -21499,6 +21586,7 @@ class _DocToolExecutor:
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             else:
@@ -21506,6 +21594,7 @@ class _DocToolExecutor:
                     "[REFUSED EARLIER]\n"
                     "You refused a write to this file earlier in this "
                     "session. This is a different change to it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
