@@ -22,7 +22,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "Property.NMR",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "property.g-tensor",
@@ -48,7 +48,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "Property.G_TENSOR",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "property.uco",
@@ -128,7 +128,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "Property.UNO",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "property.nouno",
@@ -181,7 +181,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "Property.NBO",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "property.nonbo",
@@ -286,7 +286,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.ALLPOP",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.nopop",
@@ -338,7 +338,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.CHELPG",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.chelpglarge",
@@ -416,7 +416,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.FMOPOP",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.nofmopop",
@@ -468,7 +468,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.HIRSHFELD",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.nohirshfeld",
@@ -521,7 +521,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.LOEWDIN",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.noloewdin",
@@ -573,7 +573,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.MAYER",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.nomayer",
@@ -625,7 +625,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.MBIS",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.nombis",
@@ -677,7 +677,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.MULLIKEN",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.nomulliken",
@@ -731,7 +731,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.NPA",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.nonpa",
@@ -782,7 +782,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.REDUCEDPOP",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "atomiccharge.noreducedpop",
@@ -834,7 +834,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "AtomicCharge.RESP",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "esd.esd",
@@ -859,7 +859,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "Esd.ESD",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "esd.esd_abs",
@@ -1620,7 +1620,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "BlockEprnmr",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "eprnmr.gtensor_1el2el",
@@ -1804,7 +1804,7 @@
   "parser": "accepted",
   "parser_note": "name accepted; full calc exceeded probe timeout",
   "opi": "BlockEprnmr",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "eprnmr.hfcgaugecorrection_numeric",
@@ -2011,7 +2011,7 @@
   "parser": "accepted",
   "parser_note": "name accepted; full calc exceeded probe timeout",
   "opi": "BlockEprnmr",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "eprnmr.spinspinrthresh",
@@ -2034,7 +2034,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "BlockEprnmr",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "eprnmr.printreducedcoupling",
@@ -2333,7 +2333,7 @@
   "parser": "accepted",
   "parser_note": "name accepted; full calc exceeded probe timeout",
   "opi": "BlockEprnmr",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "eprnmr.tol",
@@ -3299,7 +3299,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "BlockFreq",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "freq.anfreq",
@@ -3345,7 +3345,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "BlockFreq",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "freq.centraldiff",
@@ -3483,7 +3483,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "BlockFreq",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "freq.qrrhoreffreq",
@@ -3851,7 +3851,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "BlockLoc",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "loc.locmetvirt",
@@ -3897,7 +3897,7 @@
   "parser": "accepted",
   "parser_note": "",
   "opi": "BlockLoc",
-  "status": "draft"
+  "status": "grounded"
  },
  {
   "id": "loc.maxiter",
