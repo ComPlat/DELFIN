@@ -9638,17 +9638,9 @@ class KitToolPermissions:
                     or _workspace_is_locked(self.workspace))
 
     def all_workspace_roots(self) -> tuple[Path, ...]:
-        # The session's own scratch dir is writable always, locked scope
-        # included: it is this session's private state under
-        # _private_tmp_dir(), not a user-granted root, and the cage binds
-        # it read-write in every layer — the file tools must admit it too.
-        try:
-            scratch = (Path(_session_scratch_dir()),)
-        except Exception:
-            scratch = ()
         if self.scope_locked:
-            return (self.workspace,) + scratch
-        return (self.workspace,) + scratch + tuple(self.extra_workspace_dirs)
+            return (self.workspace,)
+        return (self.workspace,) + tuple(self.extra_workspace_dirs)
 
     def add_extra_dir(self, path) -> Path:
         """Add ``path`` to the WRITABLE workspace roots.
@@ -9811,14 +9803,11 @@ class KitToolPermissions:
         session has no business reading either, and "reachable" is what
         every read gate is built on.
         """
-        # The session scratch dir is readable in every scope: it is the
-        # session's own private state (all_workspace_roots includes it).
-        try:
-            scratch = (Path(_session_scratch_dir()),)
-        except Exception:
-            scratch = ()
+        # The session scratch dir is NOT a file-tool root: it is private
+        # shell-state (TMPDIR for caged commands); the file tools use the
+        # workspace, so a locked scope reaches only the workspace.
         if self.scope_locked:
-            return (self.workspace,) + scratch
+            return (self.workspace,)
         return (self.all_workspace_roots()
                 + tuple(self.read_only_workspace_dirs)
                 + tuple(self.confirm_write_dirs)
@@ -28906,10 +28895,11 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    # TMPDIR/TMP/TEMP point at the session scratch dir (already writable
-    # via all_workspace_roots); the private tmp dir is the fallback when
-    # the scratch dir could not be built. Package cache dirs stay under
-    # the private tmp dir.
+    # TMPDIR/TMP/TEMP point at the session scratch dir. The scratch dir is
+    # writable here because it lies under _private_tmp_dir(), which is in
+    # the profile's write roots (roots + [tmp] below); it is NOT one of
+    # all_workspace_roots. The private tmp dir is the fallback when the
+    # scratch dir could not be built. Package cache dirs stay under it.
     try:
         _scratch = _session_scratch_dir()
     except Exception:
