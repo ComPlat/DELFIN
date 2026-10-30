@@ -1,0 +1,6728 @@
+{
+  "3conv": {
+    "keyword": "3conv",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.G3CONV",
+    "status": "draft"
+  },
+  "allowrhf": {
+    "keyword": "allowrhf",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mrci.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.ALLOWRHF",
+    "status": "grounded"
+  },
+  "angs": {
+    "keyword": "angs",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.ANGS",
+    "status": "grounded"
+  },
+  "aodiis": {
+    "keyword": "aodiis",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.AODIIS",
+    "status": "draft"
+  },
+  "aodiistrah": {
+    "keyword": "aodiistrah",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.AODIISTRAH",
+    "status": "draft"
+  },
+  "autofrag": {
+    "keyword": "autofrag",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "preface/changes.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.AUTOFRAG",
+    "status": "draft"
+  },
+  "autostart": {
+    "keyword": "autostart",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.AUTOSTART",
+    "status": "grounded"
+  },
+  "bohrs": {
+    "keyword": "bohrs",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/integralhandling.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.BOHRS",
+    "status": "grounded"
+  },
+  "bpop": {
+    "keyword": "bpop",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/CASSCF.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.BPOP",
+    "status": "grounded"
+  },
+  "calcesthess": {
+    "keyword": "calcesthess",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.CALCESTHESS",
+    "status": "draft"
+  },
+  "calcguessenergy": {
+    "keyword": "calcguessenergy",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.CALCGUESSENERGY",
+    "status": "grounded"
+  },
+  "cheapints": {
+    "keyword": "cheapints",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.CHEAPINTS",
+    "status": "draft"
+  },
+  "ci-opt": {
+    "keyword": "ci-opt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/neb.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.CI_OPT",
+    "status": "draft"
+  },
+  "cim": {
+    "keyword": "cim",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.CIM",
+    "status": "draft"
+  },
+  "clusterall": {
+    "keyword": "clusterall",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.CLUSTERALL",
+    "status": "draft"
+  },
+  "conv": {
+    "keyword": "conv",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.CONV",
+    "status": "grounded"
+  },
+  "copt": {
+    "keyword": "copt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.COPT",
+    "status": "draft"
+  },
+  "cosjxc": {
+    "keyword": "cosjxc",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.COSJXC",
+    "status": "draft"
+  },
+  "cosxclusterall": {
+    "keyword": "cosxclusterall",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.COSXCLUSTERALL",
+    "status": "draft"
+  },
+  "crudeopt": {
+    "keyword": "crudeopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.CRUDEOPT",
+    "status": "draft"
+  },
+  "damp": {
+    "keyword": "damp",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "2.6.2 Damping"
+    },
+    "parser": "accepted",
+    "opi": "Scf.DAMP",
+    "status": "grounded"
+  },
+  "deltascf": {
+    "keyword": "deltascf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.DELTASCF",
+    "status": "grounded"
+  },
+  "diis": {
+    "keyword": "diis",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "2.6.3 DIIS"
+    },
+    "parser": "accepted",
+    "opi": "Scf.DIIS",
+    "status": "grounded"
+  },
+  "diistrah": {
+    "keyword": "diistrah",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.DIISTRAH",
+    "status": "draft"
+  },
+  "direct": {
+    "keyword": "direct",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.DIRECT",
+    "status": "grounded"
+  },
+  "doeq": {
+    "keyword": "doeq",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/coordinates.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.DOEQ",
+    "status": "grounded"
+  },
+  "easyconv": {
+    "keyword": "easyconv",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.EASYCONV",
+    "status": "draft"
+  },
+  "eda": {
+    "keyword": "eda",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.EDA",
+    "status": "draft"
+  },
+  "ehtano": {
+    "keyword": "ehtano",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.EHTANO",
+    "status": "draft"
+  },
+  "engrad": {
+    "keyword": "engrad",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/MP2.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.ENGRAD",
+    "status": "grounded"
+  },
+  "enmgrad": {
+    "keyword": "enmgrad",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.ENMGRAD",
+    "status": "draft"
+  },
+  "extremescf": {
+    "keyword": "extremescf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.EXTREMESCF",
+    "status": "grounded"
+  },
+  "fmm": {
+    "keyword": "fmm",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/integralhandling.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.FMM",
+    "status": "grounded"
+  },
+  "fracocc": {
+    "keyword": "fracocc",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.FRACOCC",
+    "status": "draft"
+  },
+  "freq": {
+    "keyword": "freq",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.FREQ",
+    "status": "grounded"
+  },
+  "frozencore": {
+    "keyword": "frozencore",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Freezes core electrons in the correlation treatment of post-Hartree-Fock methods, excluding the deep core orbitals from correlation to gain efficiency with a small, valence-focused error. The default core selection can be refined through the %method FrozenCore options.",
+    "requires": "a correlated (post-HF) method where freezing core orbitals is meaningful.",
+    "excludes": "correlation of the frozen core orbitals.",
+    "pairs_with": "%method FrozenCore options (FC_ELECTRONS, FC_EWIN).",
+    "defaults": "Frozen-core is the default for correlated calculations (frozencore.txt).",
+    "typical_use": "CCSD, MP2 and other correlated single points and gradients where core correlation is negligible.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/frozencore.txt",
+      "section": "2.21 Frozen core"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.FROZENCORE",
+    "status": "grounded"
+  },
+  "frsoscf": {
+    "keyword": "frsoscf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.FRSOSCF",
+    "status": "grounded"
+  },
+  "gmf": {
+    "keyword": "gmf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.GMF",
+    "status": "grounded"
+  },
+  "gridprint": {
+    "keyword": "gridprint",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.GRIDPRINT",
+    "status": "draft"
+  },
+  "hcore": {
+    "keyword": "hcore",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/CASSCF.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.HCORE",
+    "status": "draft"
+  },
+  "hf": {
+    "keyword": "hf",
+    "aliases": [],
+    "category": "method",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Method.HF",
+    "status": "grounded"
+  },
+  "hf-3c": {
+    "keyword": "hf-3c",
+    "aliases": [],
+    "category": "method",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/basisset.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Method.HF_3C",
+    "status": "grounded"
+  },
+  "hueckel": {
+    "keyword": "hueckel",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.HUECKEL",
+    "status": "grounded"
+  },
+  "interpopt": {
+    "keyword": "interpopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.INTERPOPT",
+    "status": "draft"
+  },
+  "kdiis": {
+    "keyword": "kdiis",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "2.6.5 KDIIS"
+    },
+    "parser": "accepted",
+    "opi": "Scf.KDIIS",
+    "status": "grounded"
+  },
+  "kdiistrah": {
+    "keyword": "kdiistrah",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.KDIISTRAH",
+    "status": "draft"
+  },
+  "keepdensity": {
+    "keyword": "keepdensity",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.KEEPDENSITY",
+    "status": "draft"
+  },
+  "keepfock": {
+    "keyword": "keepfock",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.KEEPFOCK",
+    "status": "draft"
+  },
+  "keepints": {
+    "keyword": "keepints",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.KEEPINTS",
+    "status": "grounded"
+  },
+  "keeprespdensity": {
+    "keyword": "keeprespdensity",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.KEEPRESPDENSITY",
+    "status": "draft"
+  },
+  "keeptransdensity": {
+    "keyword": "keeptransdensity",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.KEEPTRANSDENSITY",
+    "status": "draft"
+  },
+  "l-opt": {
+    "keyword": "l-opt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.L_OPT",
+    "status": "draft"
+  },
+  "l-opth": {
+    "keyword": "l-opth",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mm.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.L_OPTH",
+    "status": "grounded"
+  },
+  "largeprint": {
+    "keyword": "largeprint",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/CASSCF.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.LARGEPRINT",
+    "status": "grounded"
+  },
+  "libint": {
+    "keyword": "libint",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mrci.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.LIBINT",
+    "status": "grounded"
+  },
+  "looseopt": {
+    "keyword": "looseopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/irc.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.LOOSEOPT",
+    "status": "grounded"
+  },
+  "loosescf": {
+    "keyword": "loosescf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "SCF convergence"
+    },
+    "parser": "accepted",
+    "opi": "Scf.LOOSESCF",
+    "status": "grounded"
+  },
+  "lshift": {
+    "keyword": "lshift",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "2.6.4 level shifting"
+    },
+    "parser": "accepted",
+    "opi": "Scf.LSHIFT",
+    "status": "draft"
+  },
+  "mass2016": {
+    "keyword": "mass2016",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/nmr.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.MASS2016",
+    "status": "grounded"
+  },
+  "md": {
+    "keyword": "md",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.MD",
+    "status": "grounded"
+  },
+  "mecp-numfreq": {
+    "keyword": "mecp-numfreq",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.MECP_NUMFREQ",
+    "status": "draft"
+  },
+  "mecp-opt": {
+    "keyword": "mecp-opt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/mecp.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.MECP_OPT",
+    "status": "draft"
+  },
+  "miniprint": {
+    "keyword": "miniprint",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.MINIPRINT",
+    "status": "draft"
+  },
+  "moread": {
+    "keyword": "moread",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.MOREAD",
+    "status": "grounded"
+  },
+  "mt": {
+    "keyword": "mt",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.MT",
+    "status": "draft"
+  },
+  "nearir": {
+    "keyword": "nearir",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/vpt2.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NEARIR",
+    "status": "grounded"
+  },
+  "nmscan": {
+    "keyword": "nmscan",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/asageneral.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.NMSCAN",
+    "status": "grounded"
+  },
+  "noallowrhf": {
+    "keyword": "noallowrhf",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOALLOWRHF",
+    "status": "draft"
+  },
+  "noaodiis": {
+    "keyword": "noaodiis",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOAODIIS",
+    "status": "draft"
+  },
+  "noautostart": {
+    "keyword": "noautostart",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOAUTOSTART",
+    "status": "grounded"
+  },
+  "nobupo": {
+    "keyword": "nobupo",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NOBUPO",
+    "status": "draft"
+  },
+  "nocheapints": {
+    "keyword": "nocheapints",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOCHEAPINTS",
+    "status": "draft"
+  },
+  "nocosx": {
+    "keyword": "nocosx",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Deactivates the chain-of-spheres (COSX) exchange part of the RIJCOSX scheme, so only the Split-RI-J Coulomb treatment remains. The manual describes it as turning the COSX part off while keeping the RI-J Coulomb part, effectively falling back toward an RIJONX-style calculation for hybrid DFT.",
+    "requires": null,
+    "excludes": "the COSX exchange grid evaluation.",
+    "pairs_with": "RIJCOSX (which it partially disables); grouped with NORIJCOSX in the RI keyword table.",
+    "defaults": "RIJCOSX is the default for hybrid DFT since ORCA 5; NOCOSX disables its COSX part (RI.txt 2.8.4).",
+    "typical_use": "Hybrid DFT jobs where the numerical COSX exchange must be replaced by analytic exchange.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.4 RIJCOSX"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NOCOSX",
+    "status": "grounded"
+  },
+  "nodamp": {
+    "keyword": "nodamp",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NODAMP",
+    "status": "draft"
+  },
+  "nodiis": {
+    "keyword": "nodiis",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NODIIS",
+    "status": "grounded"
+  },
+  "noeq": {
+    "keyword": "noeq",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOEQ",
+    "status": "draft"
+  },
+  "nofrozencore": {
+    "keyword": "nofrozencore",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Includes all electrons in the correlation treatment, overriding the default frozen-core approximation for correlated methods.",
+    "requires": "a correlated (post-HF) method.",
+    "excludes": "the frozen-core default.",
+    "pairs_with": "correlated methods.",
+    "defaults": "Including all electrons is requested with NoFrozenCore (frozencore.txt).",
+    "typical_use": "Accurate total correlation energies where core correlation matters.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/frozencore.txt",
+      "section": "2.21 Frozen core"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NOFROZENCORE",
+    "status": "grounded"
+  },
+  "noincremental": {
+    "keyword": "noincremental",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOINCREMENTAL",
+    "status": "draft"
+  },
+  "noiter": {
+    "keyword": "noiter",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/symmetry.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOITER",
+    "status": "grounded"
+  },
+  "nokdiis": {
+    "keyword": "nokdiis",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOKDIIS",
+    "status": "draft"
+  },
+  "nokeepdensity": {
+    "keyword": "nokeepdensity",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOKEEPDENSITY",
+    "status": "draft"
+  },
+  "nokeepfock": {
+    "keyword": "nokeepfock",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOKEEPFOCK",
+    "status": "draft"
+  },
+  "nokeepints": {
+    "keyword": "nokeepints",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOKEEPINTS",
+    "status": "grounded"
+  },
+  "nolibint": {
+    "keyword": "nolibint",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOLIBINT",
+    "status": "draft"
+  },
+  "nolshift": {
+    "keyword": "nolshift",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOLSHIFT",
+    "status": "draft"
+  },
+  "nomoprint": {
+    "keyword": "nomoprint",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/tddft.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.NOMOPRINT",
+    "status": "grounded"
+  },
+  "noprintmos": {
+    "keyword": "noprintmos",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.NOPRINTMOS",
+    "status": "draft"
+  },
+  "nopropfile": {
+    "keyword": "nopropfile",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.NOPROPFILE",
+    "status": "draft"
+  },
+  "norcsinglesfock": {
+    "keyword": "norcsinglesfock",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mdci.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NORCSINGLESFOCK",
+    "status": "grounded"
+  },
+  "noreadints": {
+    "keyword": "noreadints",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOREADINTS",
+    "status": "draft"
+  },
+  "nori": {
+    "keyword": "nori",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Turns off the default RI-J Coulomb approximation so the exact two-electron Coulomb integrals are evaluated directly, at higher cost. The manual warns this is generally not recommended, as RI introduces only a very small error; exact Coulomb is normally reserved for verification or small systems.",
+    "requires": null,
+    "excludes": "the automatic RI-J default for non-hybrid DFT.",
+    "pairs_with": null,
+    "defaults": "Overrides the RI-J default for non-hybrid DFT (RI.txt 2.8.1).",
+    "typical_use": "Small-system verification runs or where the exact Coulomb term is explicitly required.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8 RI approximation"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NORI",
+    "status": "grounded"
+  },
+  "norijcosx": {
+    "keyword": "norijcosx",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NORIJCOSX",
+    "status": "draft"
+  },
+  "norijksinglesfock": {
+    "keyword": "norijksinglesfock",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mdci.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NORIJKSINGLESFOCK",
+    "status": "grounded"
+  },
+  "normalconv": {
+    "keyword": "normalconv",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NORMALCONV",
+    "status": "draft"
+  },
+  "normalopt": {
+    "keyword": "normalopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/goat.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.NORMALOPT",
+    "status": "grounded"
+  },
+  "normalprint": {
+    "keyword": "normalprint",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/neb.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.NORMALPRINT",
+    "status": "draft"
+  },
+  "normalscf": {
+    "keyword": "normalscf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NORMALSCF",
+    "status": "draft"
+  },
+  "noscfstab": {
+    "keyword": "noscfstab",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOSCFSTAB",
+    "status": "draft"
+  },
+  "nosfitting": {
+    "keyword": "nosfitting",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Deactivates the overlap fitting scheme (the default) in the SCF. The manual notes the simple keyword NoSFitting is equivalent to setting %method UseSFitting false.",
+    "requires": null,
+    "excludes": "the overlap-fit metric.",
+    "pairs_with": "SCF solver alternatives.",
+    "defaults": "Overlap fitting is on by default; NoSFitting turns it off (RI.txt).",
+    "typical_use": "Selected SCF convergence tuning cases where the overlap fit is counterproductive.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.6"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NOSFITTING",
+    "status": "grounded"
+  },
+  "noshark": {
+    "keyword": "noshark",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOSHARK",
+    "status": "draft"
+  },
+  "nosloppyscfcheck": {
+    "keyword": "nosloppyscfcheck",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOSLOPPYSCFCHECK",
+    "status": "draft"
+  },
+  "nosmear": {
+    "keyword": "nosmear",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOSMEAR",
+    "status": "draft"
+  },
+  "nososcf": {
+    "keyword": "nososcf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "multiscalesimulations/qmmm-molecules.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOSOSCF",
+    "status": "grounded"
+  },
+  "nosplitrij": {
+    "keyword": "nosplitrij",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Disables the Split-RI-J algorithm when RI is enabled, reverting to the standard (non-split) RI-J evaluation. The manual states that if you do not want Split-RI-J you should also add this keyword alongside RI (or NoSplit-RI-J).",
+    "requires": "RI enabled.",
+    "excludes": "the Split-RI-J algorithm.",
+    "pairs_with": "RI.",
+    "defaults": "Split-RI-J is the default with RI; NoSplit-RI-J overrides it (RI.txt 2.8.2).",
+    "typical_use": "Cases where the extra memory of Split-RI-J is not wanted or the non-split path is preferred.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.2 Split-RI-J"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.NOSPLITRIJ",
+    "status": "grounded"
+  },
+  "nosym": {
+    "keyword": "nosym",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/poly_aniso.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOSYM",
+    "status": "draft"
+  },
+  "nosymmetry": {
+    "keyword": "nosymmetry",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/poly_aniso.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOSYMMETRY",
+    "status": "draft"
+  },
+  "notrah": {
+    "keyword": "notrah",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOTRAH",
+    "status": "grounded"
+  },
+  "notrahrandomize": {
+    "keyword": "notrahrandomize",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.NOTRAHRANDOMIZE",
+    "status": "draft"
+  },
+  "nouseshark": {
+    "keyword": "nouseshark",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOUSESHARK",
+    "status": "draft"
+  },
+  "nousesym": {
+    "keyword": "nousesym",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOUSESYM",
+    "status": "draft"
+  },
+  "nousesymmetry": {
+    "keyword": "nousesymmetry",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOUSESYMMETRY",
+    "status": "draft"
+  },
+  "noxcfun": {
+    "keyword": "noxcfun",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NOXCFUN",
+    "status": "draft"
+  },
+  "numfreq": {
+    "keyword": "numfreq",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.NUMFREQ",
+    "status": "grounded"
+  },
+  "numgrad": {
+    "keyword": "numgrad",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.NUMGRAD",
+    "status": "grounded"
+  },
+  "numnac": {
+    "keyword": "numnac",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/tddft.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.NUMNAC",
+    "status": "grounded"
+  },
+  "opt": {
+    "keyword": "opt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.OPT",
+    "status": "grounded"
+  },
+  "opth": {
+    "keyword": "opth",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mm.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.OPTH",
+    "status": "grounded"
+  },
+  "optts": {
+    "keyword": "optts",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/irc.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.OPTTS",
+    "status": "grounded"
+  },
+  "optts(gmf)": {
+    "keyword": "optts(gmf)",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.OPTTS_GMF",
+    "status": "draft"
+  },
+  "paf": {
+    "keyword": "paf",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/eom.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.PAF",
+    "status": "draft"
+  },
+  "patom": {
+    "keyword": "patom",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.PATOM",
+    "status": "grounded"
+  },
+  "pmodel": {
+    "keyword": "pmodel",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.PMODEL",
+    "status": "grounded"
+  },
+  "pmodelx": {
+    "keyword": "pmodelx",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.PMODELX",
+    "status": "draft"
+  },
+  "pmodelxav": {
+    "keyword": "pmodelxav",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.PMODELXAV",
+    "status": "draft"
+  },
+  "pmodelxpm": {
+    "keyword": "pmodelxpm",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.PMODELXPM",
+    "status": "draft"
+  },
+  "preferc2v": {
+    "keyword": "preferc2v",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/symmetry.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.PREFERC2V",
+    "status": "grounded"
+  },
+  "preferd2": {
+    "keyword": "preferd2",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.PREFERD2",
+    "status": "draft"
+  },
+  "printbasis": {
+    "keyword": "printbasis",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/integralhandling.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.PRINTBASIS",
+    "status": "grounded"
+  },
+  "printgap": {
+    "keyword": "printgap",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/tddft.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.PRINTGAP",
+    "status": "grounded"
+  },
+  "printmos": {
+    "keyword": "printmos",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/nmr.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.PRINTMOS",
+    "status": "grounded"
+  },
+  "printthermochem": {
+    "keyword": "printthermochem",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/vibrations.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.PRINTTHERMOCHEM",
+    "status": "grounded"
+  },
+  "propertiesonly": {
+    "keyword": "propertiesonly",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/relativistic.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.PROPERTIESONLY",
+    "status": "draft"
+  },
+  "qmmmopt": {
+    "keyword": "qmmmopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "multiscalesimulations/qmmminterfaces.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.QMMMOPT",
+    "status": "grounded"
+  },
+  "qmmmopt/pdynamo": {
+    "keyword": "qmmmopt/pdynamo",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "multiscalesimulations/qmmminterfaces.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.QMMMOPT_PDYNAMO",
+    "status": "grounded"
+  },
+  "rcsinglesfock": {
+    "keyword": "rcsinglesfock",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mdci.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RCSINGLESFOCK",
+    "status": "grounded"
+  },
+  "readints": {
+    "keyword": "readints",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.READINTS",
+    "status": "grounded"
+  },
+  "rescue": {
+    "keyword": "rescue",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.RESCUE",
+    "status": "grounded"
+  },
+  "ri": {
+    "keyword": "ri",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Enables the resolution-of-the-identity (RI) approximation for the Coulomb (J) term, which fits two-electron integrals to an auxiliary basis to speed up DFT/HF SCF calculations. The manual notes the introduced error is very small and that RI is generally recommended for large systems. Turning RI on uses the Split-RI-J variant by default.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": "a Coulomb fitting (/J) auxiliary basis; Split-RI-J is its default companion.",
+    "defaults": "RI-J is the default for non-hybrid DFT; Split-RI-J is the default when RI is enabled (RI.txt 2.8.1/2.8.2).",
+    "typical_use": "DFT and HF calculations on large systems where exact Coulomb integrals dominate cost.",
+    "literature": "none printed in the manual.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.1 RI-J"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RI",
+    "status": "grounded"
+  },
+  "ri-bupo/j": {
+    "keyword": "ri-bupo/j",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/integralhandling.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RI_BUPO_J",
+    "status": "grounded"
+  },
+  "riao": {
+    "keyword": "riao",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RIAO",
+    "status": "draft"
+  },
+  "ricosj": {
+    "keyword": "ricosj",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RICOSJ",
+    "status": "draft"
+  },
+  "ricosjx": {
+    "keyword": "ricosjx",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser rejected.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": "Approximation.RICOSJX",
+    "status": "draft"
+  },
+  "rigidbodyopt": {
+    "keyword": "rigidbodyopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/goat.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.RIGIDBODYOPT",
+    "status": "grounded"
+  },
+  "rijcosx": {
+    "keyword": "rijcosx",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Combines the Split-RI-J approximation for the Coulomb term with the chain-of-spheres (COSX) numerical treatment of exchange, accelerating Hartree-Fock and hybrid DFT. It needs a Coulomb fitting basis and adds a separate, usually much smaller, integration grid. Since ORCA 5 it is the standard default for hybrid DFT but is not turned on for HF automatically.",
+    "requires": "a Coulomb fitting (/J) auxiliary basis (e.g. def2/J); a COSX integration grid.",
+    "excludes": null,
+    "pairs_with": "a /J auxiliary basis, COSX grid settings, def2/J; NOCOSX disables the COSX part.",
+    "defaults": "Default for hybrid DFT since ORCA 5; not on by default for HF (RI.txt 2.8.4).",
+    "typical_use": "Default hybrid DFT for single points, gradients, frequencies and properties across system sizes, with near-linear scaling.",
+    "literature": "manual cites references [119] and [120] for the COSX approximation.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.4 RIJCOSX"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RIJCOSX",
+    "status": "grounded"
+  },
+  "rijk": {
+    "keyword": "rijk",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Uses the RI approximation for both the Coulomb (J) and exchange (K) terms (full RI-JK), giving large speedups for Hartree-Fock and hybrid DFT. It requires an auxiliary fitting basis that can represent both the J and K integrals. The same approximation is reused in CP-SCF when active.",
+    "requires": "an auxiliary fitting basis for both J and K.",
+    "excludes": "fully analytical J and K evaluation in the SCF.",
+    "pairs_with": "a fitting basis for (J) and (K); propagates into CP-SCF when active.",
+    "defaults": "Not a default; must be requested. The manual notes RI-K is not especially efficient for response terms.",
+    "typical_use": "Large HF and hybrid DFT single points, gradients and properties where RI-JK is affordable and accurate exchange is wanted.",
+    "literature": "manual cites references [111],[112] for the RI-JK method.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.5 RI-JK"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RIJK",
+    "status": "grounded"
+  },
+  "rijksinglesfock": {
+    "keyword": "rijksinglesfock",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mdci.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RIJKSINGLESFOCK",
+    "status": "grounded"
+  },
+  "rijonx": {
+    "keyword": "rijonx",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Applies the RI approximation to the Coulomb (J) term only and keeps the standard treatment for exchange, aiming for near-linear scaling of the exchange term on large molecules. It is intended for Hartree-Fock and hybrid DFT calculations.",
+    "requires": "a Coulomb fitting (/J) auxiliary basis.",
+    "excludes": "RI treatment of the exchange term.",
+    "pairs_with": "a Coulomb fitting basis; alternatives to full RI-JK for hybrid methods.",
+    "defaults": "RIJONX applies RI to Coulomb and standard treatment to exchange (RI.txt 2.8.3).",
+    "typical_use": "HF and hybrid DFT on larger systems where full RI-JK is not needed but efficiency of the Coulomb term matters.",
+    "literature": "the manual cites RI references in the RI section.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.3 RIJONX"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RIJONX",
+    "status": "grounded"
+  },
+  "rijxc": {
+    "keyword": "rijxc",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Approximation.RIJXC",
+    "status": "draft"
+  },
+  "scalepc": {
+    "keyword": "scalepc",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.SCALEPC",
+    "status": "draft"
+  },
+  "scfcheckgrad": {
+    "keyword": "scfcheckgrad",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCHECKGRAD",
+    "status": "grounded"
+  },
+  "scfconv10": {
+    "keyword": "scfconv10",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/mrcc.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONV10",
+    "status": "grounded"
+  },
+  "scfconv11": {
+    "keyword": "scfconv11",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONV11",
+    "status": "draft"
+  },
+  "scfconv12": {
+    "keyword": "scfconv12",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONV12",
+    "status": "draft"
+  },
+  "scfconv6": {
+    "keyword": "scfconv6",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONV6",
+    "status": "draft"
+  },
+  "scfconv7": {
+    "keyword": "scfconv7",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONV7",
+    "status": "draft"
+  },
+  "scfconv8": {
+    "keyword": "scfconv8",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONV8",
+    "status": "grounded"
+  },
+  "scfconv9": {
+    "keyword": "scfconv9",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONV9",
+    "status": "draft"
+  },
+  "scfconvforced": {
+    "keyword": "scfconvforced",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFCONVFORCED",
+    "status": "draft"
+  },
+  "scflbfgs": {
+    "keyword": "scflbfgs",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFLBFGS",
+    "status": "draft"
+  },
+  "scflbofill": {
+    "keyword": "scflbofill",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFLBOFILL",
+    "status": "draft"
+  },
+  "scflpowell": {
+    "keyword": "scflpowell",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFLPOWELL",
+    "status": "draft"
+  },
+  "scflsr1": {
+    "keyword": "scflsr1",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFLSR1",
+    "status": "draft"
+  },
+  "scfsolvertime": {
+    "keyword": "scfsolvertime",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.SCFSOLVERTIME",
+    "status": "draft"
+  },
+  "scfstab": {
+    "keyword": "scfstab",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SCFSTAB",
+    "status": "draft"
+  },
+  "semidirect": {
+    "keyword": "semidirect",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SEMIDIRECT",
+    "status": "draft"
+  },
+  "shark": {
+    "keyword": "shark",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.SHARK",
+    "status": "grounded"
+  },
+  "sloppyopt": {
+    "keyword": "sloppyopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/goat.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.SLOPPYOPT",
+    "status": "grounded"
+  },
+  "sloppyscf": {
+    "keyword": "sloppyscf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SLOPPYSCF",
+    "status": "grounded"
+  },
+  "sloppyscfcheck": {
+    "keyword": "sloppyscfcheck",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SLOPPYSCFCHECK",
+    "status": "draft"
+  },
+  "slowconv": {
+    "keyword": "slowconv",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SLOWCONV",
+    "status": "grounded"
+  },
+  "smallprint": {
+    "keyword": "smallprint",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.SMALLPRINT",
+    "status": "grounded"
+  },
+  "smear": {
+    "keyword": "smear",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SMEAR",
+    "status": "grounded"
+  },
+  "solvator": {
+    "keyword": "solvator",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/docker.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.SOLVATOR",
+    "status": "grounded"
+  },
+  "soscf": {
+    "keyword": "soscf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SOSCF",
+    "status": "grounded"
+  },
+  "sp": {
+    "keyword": "sp",
+    "aliases": [],
+    "category": "task",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Task.SP",
+    "status": "grounded"
+  },
+  "splitrij": {
+    "keyword": "splitrij",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Selects the Split-RI-J variant of the RI Coulomb approximation, which yields the same Coulomb energy as standard RI but is significantly faster when the basis contains many high angular momentum (d-, f-, g-) functions. It uses a bit more memory than standard RI. Split-RI-J is the default whenever RI is enabled and is only available for SCF and gradient calculations.",
+    "requires": "a Coulomb fitting (/J) auxiliary basis.",
+    "excludes": "the non-split RI-J path (unless NoSplit-RI-J is also given).",
+    "pairs_with": "RI, a /J auxiliary basis.",
+    "defaults": "Default when RI is on (RI.txt 2.8.2); available for SCF and gradients only.",
+    "typical_use": "DFT/HF calculations with basis sets rich in d-, f-, g-functions where Coulomb speed matters.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.2 Split-RI-J"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.SPLITRIJ",
+    "status": "grounded"
+  },
+  "strongscf": {
+    "keyword": "strongscf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.STRONGSCF",
+    "status": "grounded"
+  },
+  "surfcrossnumfreq": {
+    "keyword": "surfcrossnumfreq",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/mecp.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.SURFCROSSNUMFREQ",
+    "status": "grounded"
+  },
+  "symbreakguess": {
+    "keyword": "symbreakguess",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.SYMBREAKGUESS",
+    "status": "draft"
+  },
+  "tightopt": {
+    "keyword": "tightopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/cpscf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.TIGHTOPT",
+    "status": "grounded"
+  },
+  "tightscf": {
+    "keyword": "tightscf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "SCF convergence"
+    },
+    "parser": "accepted",
+    "opi": "Scf.TIGHTSCF",
+    "status": "grounded"
+  },
+  "trah": {
+    "keyword": "trah",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "2.6.7.4 TRAH-SCF"
+    },
+    "parser": "accepted",
+    "opi": "Scf.TRAH",
+    "status": "grounded"
+  },
+  "unitmatrixguess": {
+    "keyword": "unitmatrixguess",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.UNITMATRIXGUESS",
+    "status": "draft"
+  },
+  "usec2v": {
+    "keyword": "usec2v",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.USEC2V",
+    "status": "draft"
+  },
+  "used2": {
+    "keyword": "used2",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.USED2",
+    "status": "draft"
+  },
+  "usegramschmidt": {
+    "keyword": "usegramschmidt",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.USEGRAMSCHMIDT",
+    "status": "draft"
+  },
+  "useincremental": {
+    "keyword": "useincremental",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.USEINCREMENTAL",
+    "status": "draft"
+  },
+  "usesfitting": {
+    "keyword": "usesfitting",
+    "aliases": [],
+    "category": "approximation",
+    "purpose": "Enables the use of the overlap fitting scheme in the SCF (active by default), which fits a metric to stabilise the linear equations. It can be disabled with NoSFitting (or %method UseSFitting false).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": "the SCF solver; controls the overlap-fit metric.",
+    "defaults": "UseSFitting default is true (RI.txt, %method block; NoSFitting disables it).",
+    "typical_use": "Helps SCF convergence in difficult cases; disabled when it destabilises convergence.",
+    "literature": "none printed.",
+    "manual": {
+      "page": "contents/essentialelements/RI.txt",
+      "section": "2.8.6"
+    },
+    "parser": "accepted",
+    "opi": "Approximation.USESFITTING",
+    "status": "grounded"
+  },
+  "useshark": {
+    "keyword": "useshark",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.USESHARK",
+    "status": "draft"
+  },
+  "usesym": {
+    "keyword": "usesym",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/symmetry.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.USESYM",
+    "status": "grounded"
+  },
+  "usesymmetry": {
+    "keyword": "usesymmetry",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/symmetry.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.USESYMMETRY",
+    "status": "grounded"
+  },
+  "veryslowconv": {
+    "keyword": "veryslowconv",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Scf.VERYSLOWCONV",
+    "status": "grounded"
+  },
+  "verytightopt": {
+    "keyword": "verytightopt",
+    "aliases": [],
+    "category": "opt",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/cpscf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Opt.VERYTIGHTOPT",
+    "status": "grounded"
+  },
+  "verytightscf": {
+    "keyword": "verytightscf",
+    "aliases": [],
+    "category": "scf",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "contents/essentialelements/scf.txt",
+      "section": "SCF convergence"
+    },
+    "parser": "accepted",
+    "opi": "Scf.VERYTIGHTSCF",
+    "status": "grounded"
+  },
+  "vpt2": {
+    "keyword": "vpt2",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Documented in the ORCA 6.1.1 manual (see manual page). Semantics reconciled with the parser verdict (accepted).",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.VPT2",
+    "status": "grounded"
+  },
+  "writeonlyinitialpropfile": {
+    "keyword": "writeonlyinitialpropfile",
+    "aliases": [],
+    "category": "output_control",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "OutputControl.WRITEONLYINITIALPROPFILE",
+    "status": "draft"
+  },
+  "xcfun": {
+    "keyword": "xcfun",
+    "aliases": [],
+    "category": "miscellaneous",
+    "purpose": "Not documented under this exact spelling in the ORCA 6.1.1 manual text; ORCA parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/MP2.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": "Miscellaneous.XCFUN",
+    "status": "draft"
+  },
+  "method.cbetapbe": {
+    "keyword": "method.cbetapbe",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.correlation": {
+    "keyword": "method.correlation",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.d3a1": {
+    "keyword": "method.d3a1",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/dispersioncorrections.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.d3a2": {
+    "keyword": "method.d3a2",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/dispersioncorrections.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.d3s6": {
+    "keyword": "method.d3s6",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/dispersioncorrections.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.d3s8": {
+    "keyword": "method.d3s8",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/dispersioncorrections.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.exchange": {
+    "keyword": "method.exchange",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.ext_params": {
+    "keyword": "method.ext_params",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/optimizations.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.extparamc": {
+    "keyword": "method.extparamc",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.extparamx": {
+    "keyword": "method.extparamx",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.extparamxc": {
+    "keyword": "method.extparamxc",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.ldaopt": {
+    "keyword": "method.ldaopt",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.method": {
+    "keyword": "method.method",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.progext": {
+    "keyword": "method.progext",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "structurereactivity/optimizations.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.rangesepexx": {
+    "keyword": "method.rangesepexx",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.rangesepmu": {
+    "keyword": "method.rangesepmu",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.rangesepscal": {
+    "keyword": "method.rangesepscal",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.scaldfx": {
+    "keyword": "method.scaldfx",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.scalggac": {
+    "keyword": "method.scalggac",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.scalhfx": {
+    "keyword": "method.scalhfx",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.scalldac": {
+    "keyword": "method.scalldac",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.xalpha": {
+    "keyword": "method.xalpha",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/relativistic.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "method.xbeta": {
+    "keyword": "method.xbeta",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.xkappa": {
+    "keyword": "method.xkappa",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "method.xmuepbe": {
+    "keyword": "method.xmuepbe",
+    "aliases": [],
+    "category": "method block",
+    "purpose": "Option of the %method block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "output.jsongbwfile": {
+    "keyword": "output.jsongbwfile",
+    "aliases": [],
+    "category": "output block",
+    "purpose": "Option of the %output block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "utilitiesvisualization/orca_2json.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "output.jsonpropfile": {
+    "keyword": "output.jsonpropfile",
+    "aliases": [],
+    "category": "output block",
+    "purpose": "Option of the %output block. Not located verbatim in the manual text; parser unavailable.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.adip": {
+    "keyword": "scf.adip",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/epr.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.aiso": {
+    "keyword": "scf.aiso",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/autoci.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.alphaconf": {
+    "keyword": "scf.alphaconf",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.annealthresh": {
+    "keyword": "scf.annealthresh",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.apmethod": {
+    "keyword": "scf.apmethod",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/magnx.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.autostart": {
+    "keyword": "scf.autostart",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.autotrah": {
+    "keyword": "scf.autotrah",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.autotrahforcestartiter": {
+    "keyword": "scf.autotrahforcestartiter",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.autotrahiter": {
+    "keyword": "scf.autotrahiter",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.autotrahninter": {
+    "keyword": "scf.autotrahninter",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.autotrahtol": {
+    "keyword": "scf.autotrahtol",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.averageocc": {
+    "keyword": "scf.averageocc",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.betaconf": {
+    "keyword": "scf.betaconf",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.brokensym": {
+    "keyword": "scf.brokensym",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/magnx.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.calcguessen": {
+    "keyword": "scf.calcguessen",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.cmatinp": {
+    "keyword": "scf.cmatinp",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser unavailable.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.cnvdamp": {
+    "keyword": "scf.cnvdamp",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.cnvdiis": {
+    "keyword": "scf.cnvdiis",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.cnvkdiis": {
+    "keyword": "scf.cnvkdiis",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.cnvshift": {
+    "keyword": "scf.cnvshift",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.cnvsoscf": {
+    "keyword": "scf.cnvsoscf",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.cnvtrah": {
+    "keyword": "scf.cnvtrah",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.convcheck": {
+    "keyword": "scf.convcheck",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.convergence": {
+    "keyword": "scf.convergence",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.damp": {
+    "keyword": "scf.damp",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser rejected",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/index_essentialelements.txt",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.damperr": {
+    "keyword": "scf.damperr",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.dampfac": {
+    "keyword": "scf.dampfac",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.dampmax": {
+    "keyword": "scf.dampmax",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.dampmin": {
+    "keyword": "scf.dampmin",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.decompositionpath": {
+    "keyword": "scf.decompositionpath",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/magnx.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.deltascf": {
+    "keyword": "scf.deltascf",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.deltascffromgs": {
+    "keyword": "scf.deltascffromgs",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.diffsthresh": {
+    "keyword": "scf.diffsthresh",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/basisset.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.diis": {
+    "keyword": "scf.diis",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser rejected",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/coordinates.txt",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.diisbfac": {
+    "keyword": "scf.diisbfac",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.diismaxc": {
+    "keyword": "scf.diismaxc",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.diismaxeq": {
+    "keyword": "scf.diismaxeq",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.diismaxit": {
+    "keyword": "scf.diismaxit",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.diisstart": {
+    "keyword": "scf.diisstart",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.directresetfreq": {
+    "keyword": "scf.directresetfreq",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/integralhandling.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.doannealing": {
+    "keyword": "scf.doannealing",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.domom": {
+    "keyword": "scf.domom",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.doreortho": {
+    "keyword": "scf.doreortho",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.dryrun": {
+    "keyword": "scf.dryrun",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/dmrg.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.eda": {
+    "keyword": "scf.eda",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/CASSCF.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.efield": {
+    "keyword": "scf.efield",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/finEfield.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.efieldorigin": {
+    "keyword": "scf.efieldorigin",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/finEfield.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.fermi": {
+    "keyword": "scf.fermi",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/relativistic.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.fgrad": {
+    "keyword": "scf.fgrad",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/epr.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.finalms": {
+    "keyword": "scf.finalms",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/CASSCF.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.flipspin": {
+    "keyword": "scf.flipspin",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/CASSCF.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.fmopt": {
+    "keyword": "scf.fmopt",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.fracocc": {
+    "keyword": "scf.fracocc",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.guessmix": {
+    "keyword": "scf.guessmix",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.ignoreconv": {
+    "keyword": "scf.ignoreconv",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "modelchemistries/DensityFunctionalTheory.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.ionizealpha": {
+    "keyword": "scf.ionizealpha",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.ionizebeta": {
+    "keyword": "scf.ionizebeta",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.kdiistransformation": {
+    "keyword": "scf.kdiistransformation",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.keepall4intsinmem": {
+    "keyword": "scf.keepall4intsinmem",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.keepdensity": {
+    "keyword": "scf.keepdensity",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.keepfock": {
+    "keyword": "scf.keepfock",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.keepinitialref": {
+    "keyword": "scf.keepinitialref",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.keepints": {
+    "keyword": "scf.keepints",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.keeporbitals": {
+    "keyword": "scf.keeporbitals",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.lambdamax": {
+    "keyword": "scf.lambdamax",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.lambdamin": {
+    "keyword": "scf.lambdamin",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.ledorb": {
+    "keyword": "scf.ledorb",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.levelshift": {
+    "keyword": "scf.levelshift",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/cpscf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.lshift": {
+    "keyword": "scf.lshift",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/cpscf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.maxiter": {
+    "keyword": "scf.maxiter",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/cpscf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.minallowedgap": {
+    "keyword": "scf.minallowedgap",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.mingap": {
+    "keyword": "scf.mingap",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.moinp": {
+    "keyword": "scf.moinp",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.pmom": {
+    "keyword": "scf.pmom",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.qfield": {
+    "keyword": "scf.qfield",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/finEfield.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.readints": {
+    "keyword": "scf.readints",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.reduceethresh": {
+    "keyword": "scf.reduceethresh",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.removealpha": {
+    "keyword": "scf.removealpha",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.removebeta": {
+    "keyword": "scf.removebeta",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.restartfile": {
+    "keyword": "scf.restartfile",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser unavailable.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.robustsoscf": {
+    "keyword": "scf.robustsoscf",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.rotate": {
+    "keyword": "scf.rotate",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser unavailable",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/frozencore.txt",
+      "section": ""
+    },
+    "parser": "unavailable",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.scflambda": {
+    "keyword": "scf.scflambda",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser rejected.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.scfmode": {
+    "keyword": "scf.scfmode",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/initialguess.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.setalpha": {
+    "keyword": "scf.setalpha",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.setbeta": {
+    "keyword": "scf.setbeta",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.shift": {
+    "keyword": "scf.shift",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser rejected",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/basisset.txt",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.shifterr": {
+    "keyword": "scf.shifterr",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.smeartemp": {
+    "keyword": "scf.smeartemp",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.smeartempmax": {
+    "keyword": "scf.smeartempmax",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.smeartempmin": {
+    "keyword": "scf.smeartempmin",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.soscf": {
+    "keyword": "scf.soscf",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser rejected",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/coordinates.txt",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.soscfblockdiag": {
+    "keyword": "scf.soscfblockdiag",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.soscfconstrainedhessup": {
+    "keyword": "scf.soscfconstrainedhessup",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.soscfconstraints": {
+    "keyword": "scf.soscfconstraints",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.soscfconvfactor": {
+    "keyword": "scf.soscfconvfactor",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.soscfhessup": {
+    "keyword": "scf.soscfhessup",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.soscfmaxit": {
+    "keyword": "scf.soscfmaxit",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.soscfmaxstep": {
+    "keyword": "scf.soscfmaxstep",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.soscfonlyconstrainedopt": {
+    "keyword": "scf.soscfonlyconstrainedopt",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser rejected.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.soscfstart": {
+    "keyword": "scf.soscfstart",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.soscfwriteconstrainedgbw": {
+    "keyword": "scf.soscfwriteconstrainedgbw",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "spectroscopyproperties/deltascf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stab": {
+    "keyword": "scf.stab",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser rejected",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.stabdtol": {
+    "keyword": "scf.stabdtol",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stablambda": {
+    "keyword": "scf.stablambda",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabmaxdim": {
+    "keyword": "scf.stabmaxdim",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabmaxiter": {
+    "keyword": "scf.stabmaxiter",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabmaxretries": {
+    "keyword": "scf.stabmaxretries",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.stabnguess": {
+    "keyword": "scf.stabnguess",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabnroots": {
+    "keyword": "scf.stabnroots",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.staborbwin": {
+    "keyword": "scf.staborbwin",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabotol": {
+    "keyword": "scf.stabotol",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.stabperform": {
+    "keyword": "scf.stabperform",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabrestartuhfifunstable": {
+    "keyword": "scf.stabrestartuhfifunstable",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabrtol": {
+    "keyword": "scf.stabrtol",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/stabilityanalysis.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.stabskip2ndstab": {
+    "keyword": "scf.stabskip2ndstab",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.sthresh": {
+    "keyword": "scf.sthresh",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/basisset.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.tcost": {
+    "keyword": "scf.tcost",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.tcut": {
+    "keyword": "scf.tcut",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/basisset.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.thresh": {
+    "keyword": "scf.thresh",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.tole": {
+    "keyword": "scf.tole",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/cpscf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.tolerr": {
+    "keyword": "scf.tolerr",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.tolg": {
+    "keyword": "scf.tolg",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.tolmaxp": {
+    "keyword": "scf.tolmaxp",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/input.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.tolrmsp": {
+    "keyword": "scf.tolrmsp",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.tolx": {
+    "keyword": "scf.tolx",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/scf.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.trah": {
+    "keyword": "scf.trah",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser rejected",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "essentialelements/RI.txt",
+      "section": ""
+    },
+    "parser": "rejected",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.trahstart": {
+    "keyword": "scf.trahstart",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  },
+  "scf.tsize": {
+    "keyword": "scf.tsize",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Documented in the manual (see page); parser accepted",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "workflowsautomatization/compound_examples.txt",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "grounded"
+  },
+  "scf.usegramschmidt": {
+    "keyword": "scf.usegramschmidt",
+    "aliases": [],
+    "category": "scf block",
+    "purpose": "Option of the %scf block. Not located verbatim in the manual text; parser accepted.",
+    "requires": null,
+    "excludes": null,
+    "pairs_with": null,
+    "defaults": null,
+    "typical_use": null,
+    "literature": null,
+    "manual": {
+      "page": "",
+      "section": ""
+    },
+    "parser": "accepted",
+    "opi": null,
+    "status": "draft"
+  }
+}
