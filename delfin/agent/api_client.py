@@ -9993,6 +9993,9 @@ class KitToolPermissions:
         session has no business reading either, and "reachable" is what
         every read gate is built on.
         """
+        # The session scratch dir is NOT a file-tool root: it is private
+        # shell-state (TMPDIR for caged commands); the file tools use the
+        # workspace, so a locked scope reaches only the workspace.
         if self.scope_locked:
             return (self.workspace,)
         return (self.all_workspace_roots()
@@ -28838,6 +28841,35 @@ def _private_tmp_dir() -> str:
     return _PRIVATE_TMP
 
 
+_SESSION_SCRATCH: Optional[str] = None
+
+
+def _session_scratch_dir() -> str:
+    """The session's persistent scratch directory, 0700, private to it.
+
+    /tmp inside a cage is fresh for every command, so a file one command
+    writes there is gone for the next, and the file tools cannot reach it
+    either. The scratch dir sits under this process's own private temp
+    directory (:func:`_private_tmp_dir`), so it inherits three properties
+    for free: 0700, never shared with another session (one process = one
+    session), and pruned when the session ends (the atexit rmtree of the
+    parent). It is exported as TMPDIR/TMP/TEMP in every cage layer and
+    bound read-write into each one, and it is on the file tools' writable
+    and readable root lists -- see KitToolPermissions.all_workspace_roots.
+    /tmp itself stays private and fresh; nothing else becomes writable.
+    """
+    global _SESSION_SCRATCH
+    if _SESSION_SCRATCH and Path(_SESSION_SCRATCH).is_dir():
+        return _SESSION_SCRATCH
+    # Created the way _private_tmp_dir is: tempfile.mkdtemp, mode 0700,
+    # inside this process's private tmp dir -- private per-process state,
+    # never a user path.
+    import tempfile
+    _SESSION_SCRATCH = tempfile.mkdtemp(prefix="scratch-",
+                                        dir=_private_tmp_dir())
+    return _SESSION_SCRATCH
+
+
 def _home_secret_paths() -> list[str]:
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -29202,7 +29234,17 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"] + [
+    # TMPDIR/TMP/TEMP point at the session scratch dir. The scratch dir is
+    # writable here because it lies under _private_tmp_dir(), which is in
+    # the profile's write roots (roots + [tmp] below); it is NOT one of
+    # all_workspace_roots. The private tmp dir is the fallback when the
+    # scratch dir could not be built. Package cache dirs stay under it.
+    try:
+        _scratch = _session_scratch_dir()
+    except Exception:
+        _scratch = ""
+    env_prefix = ["/usr/bin/env", f"TMPDIR={_scratch or tmp}",
+                  f"TMP={_scratch or tmp}", f"TEMP={_scratch or tmp}"] + [
         f"{k}={tmp}/{sub}" for k, sub in _package_cache_dirs()]
     port = 0
     if mode == "proxy":
@@ -29250,7 +29292,25 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     # refuses the command; an unattended run proceeds on Landlock alone.
     net_args, _proxy_dir = _sandbox_network_args(perms)
     argv += net_args
-    argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
+    # The session scratch dir: writable, and TMPDIR points at it (the
+    # helper maps the in-cage path; it equals the host path here).
+    # landlock_exec.main keeps the LAST --tmpdir (tmpdir = value, which it
+    # also adds to the write roots), so there must be exactly ONE --tmpdir
+    # and it must be the scratch dir; the private tmp dir stays a write
+    # root of its own (--write) so its non-scratch uses still work, but is
+    # no longer the TMPDIR target.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch, "--tmpdir", scratch]
+    except Exception:
+        scratch = None
+        # Keep the TMPDIR invariant when the scratch dir cannot be made:
+        # exactly one --tmpdir, falling back to the private tmp dir (what
+        # this argv had before the scratch work), so landlock_exec still
+        # controls TMPDIR/TMP/TEMP for every program in the cage.
+        argv += ["--tmpdir", _private_tmp_dir()]
+    argv += ["--write", _private_tmp_dir(), "--strict",
+             "1" if strict else "0", "--"]
     return argv + plain
 
 
@@ -29313,6 +29373,16 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # The session scratch dir: where the commands of THIS session keep
+    # files they need across commands and the file tools must find. It
+    # replaces TMPDIR/TMP/TEMP so nothing points at the fresh per-cage
+    # /tmp; paths are absolute so a child that chdirs stays correct.
+    try:
+        _scratch = _session_scratch_dir()
+        for _t in ("TMPDIR", "TMP", "TEMP"):
+            env[_t] = _scratch
+    except Exception:
+        pass
     # Every process an agent session starts says so: `delfin-agent
     # approvals approve` and the answer functions refuse under it
     # (approval_guard), and a nested DELFIN ignores DELFIN_CLASSIFIER=off
@@ -30493,10 +30563,24 @@ def _bash_isolation_argv(
         # The host's TMPDIR (a cluster scratch path) is read-only under the
         # "/" bind; the cage's own /tmp is the writable one. Landlock and
         # Seatbelt set their private directory the same way.
+        # The session scratch dir is the exception: it is bound read-write
+        # and TMPDIR points AT it, so a file one command of this session
+        # writes there is visible to the next and to the file tools. The
+        # path inside the cage equals the host path because "/" is bound
+        # at itself; _bind-try keeps a cage from failing should the
+        # directory have been pruned between build and run.
         "--setenv", "TMPDIR", "/tmp",
         "--setenv", "TMP", "/tmp",
         "--setenv", "TEMP", "/tmp",
     ]
+    try:
+        _scratch = _session_scratch_dir()
+        args += ["--bind-try", _scratch, _scratch]
+        args += ["--setenv", "TMPDIR", _scratch,
+                 "--setenv", "TMP", _scratch,
+                 "--setenv", "TEMP", _scratch]
+    except Exception:
+        pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
     for rel in _HOME_SECRET_DIRS:
