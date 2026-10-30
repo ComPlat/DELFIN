@@ -79,13 +79,13 @@ def test_tddft_excited_states():
 
 
 def test_nth_occurrence_selection():
-    # h2o_optfreq has four FINAL SINGLE POINT ENERGY sections (one per cycle).
-    assert starts("h2o_optfreq")["FINAL SINGLE POINT ENERGY"] == 905
+    # h2o_optfreq has five FINAL SINGLE POINT ENERGY sections (four cycles
+    # plus the final post-optimization energy).
     sec2 = orca_out_index(out("h2o_optfreq"))
     fsec = [s for s in sec2 if s.title == "FINAL SINGLE POINT ENERGY"]
-    assert len(fsec) == 4
-    assert fsec[1].start_line == 1372
-    assert fsec[3].start_line == 3086
+    assert len(fsec) == 5
+    assert fsec[0].start_line == 905
+    assert fsec[4].start_line == 3086
     # orca_out_section picks the n-th (1-based) occurrence.
     lines3 = orca_out_section(out("h2o_optfreq"), "FINAL SINGLE POINT ENERGY", n=3)
     assert "-76.321266086023" in "\n".join(lines3)
