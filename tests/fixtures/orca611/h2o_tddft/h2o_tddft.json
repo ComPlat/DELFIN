@@ -473,7 +473,7 @@
         "NuclearCharge": 1.0
       }
     ],
-    "BaseName": "/home/qmchem_max/delfin-knowledge/orca_fixtures/611/h2o_tddft/h2o_tddft",
+    "BaseName": "tests/fixtures/orca611/h2o_tddft/h2o_tddft",
     "MolecularOrbitals": {
       "EnergyUnit": "Eh",
       "MOs": [

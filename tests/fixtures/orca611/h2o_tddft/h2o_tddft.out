@@ -174,7 +174,7 @@ interface, adapt or use parts of their codes:
   * Starting time: Thu Oct 29 19:32:18 2026
   * Host name:     qmchemserver
   * Process ID:    1712869
-  * Working dir.:  WFIXTURES/h2o_tddft
+  * Working dir.:  tests/fixtures/orca611/h2o_tddft
   ***********************************
 
 NOTE: MaxCore=1000 MB was set to SCF,MP2,MDCI,CIPSI,MRCI,RASCI and CIS
