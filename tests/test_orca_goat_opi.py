@@ -175,7 +175,7 @@ class TestRunGoat:
         assert res.ok is True
         assert res.meaningful is True
         assert res.terminated_normally is True
-        assert res.ensemble is not None
+        assert res.ensemble_file is not None
         assert len(res.energies_kcal_mol) >= 1
         # lowest conformer defines zero
         assert min(res.energies_kcal_mol) == pytest.approx(0.0, abs=1e-6)
@@ -201,7 +201,7 @@ class TestRunGoat:
         )
         assert res.ok is False
         assert res.meaningful is False
-        assert res.ensemble is None
+        assert res.ensemble_file is None
         assert res.energies_kcal_mol == ()
         assert res.failure_lines != ()
 
