@@ -47,7 +47,7 @@ class TestBasisRules:
         block = [b for b in blocks if isinstance(b, BlockBasis)][0]
         assert block.newgto is not None
         assert str(block.newgto.element) == "Fe"
-        assert "def2-TZVP" in str(block.newgto.basis)
+        assert "def2-TZVP".upper() in str(block.newgto.basis).upper()
 
     def test_newgto_for_heavy_element_without_ecp_is_an_error(self):
         """MISTAKES.md: NewGTO never loads an ECP — under an all-electron
@@ -255,3 +255,74 @@ class TestSolvation:
         assert any("refrac" in (s.reason or "").lower() for s in suggestions) or any(
             "refrac" in w for w in warnings
         )
+
+
+# ---------------------------------------------------------------------------
+# Rendered .inp: the blocks/keywords really reach an ORCA input written by OPI
+# ---------------------------------------------------------------------------
+
+
+class TestRenderedInput:
+    def test_ru_cpcm_input_is_written_with_ecp_lines(self, tmp_path):
+        """[Ru(NH3)6]2+ def2-TZVP CPCM(water): the %basis NewECP block and the
+        CPCM keyword appear in the .inp OPI writes.  The structure is built
+        here from ideal octahedral geometry (no external structure source)."""
+        from delfin.tools.adapters.orca_basis_solv_opi import _build_input_path
+        import math
+
+        els = ["Ru"]
+        coords = [(0.0, 0.0, 0.0)]
+        axes = ((1, 0, 0), (-1, 0, 0), (0, 1, 0),
+                (0, -1, 0), (0, 0, 1), (0, 0, -1))
+        for dx, dy, dz in axes:
+            els.append("N")
+            coords.append((2.14 * dx, 2.14 * dy, 2.14 * dz))
+        for dx, dy, dz in axes:
+            n = (2.14 * dx, 2.14 * dy, 2.14 * dz)
+            for phi in (0.0, 2 * math.pi / 3, 4 * math.pi / 3):
+                els.append("H")
+                coords.append((
+                    n[0] + 1.01 * math.cos(phi),
+                    n[1] + 1.01 * math.sin(phi),
+                    n[2] + (1.01 if dz else 0.0),
+                ))
+        inp_path, errors, warnings, suggestions = _build_input_path(
+            tmp_path,
+            elements=els,
+            coordinates=coords,
+            charge=2,
+            mult=1,
+            functional="PBE",
+            basis="def2-SVP",
+            ri="RIJCOSX",
+            aux_basis="def2/J",
+            dispersion="",
+            extra_keywords=(),
+            scf_options=None,
+            per_element={"Ru": "def2-TZVP"},
+            per_element_ecp={"Ru": "def2-ECP"},
+            ecp="",
+            aux_j="", aux_jk="", aux_c="", aux="",
+            rel_hamiltonian="",
+            ghost_atom_indices=(),
+            solvent_model="CPCM",
+            solvent="water",
+            solvation_block_form=False,
+            method_family="dft",
+            job="",
+            maxcore=2000,
+            ncores=2,
+            base_name="calc",
+        )
+        assert errors == [], errors
+        text = inp_path.read_text()
+        assert "%basis" in text.lower()
+        # OPI renders the block keywords lowercase; ORCA input is case-blind.
+        assert "newecp ru" in text.lower()
+        assert "cpcm(water)" in text.lower()
+        assert "%cpcm" not in text.lower()  # keyword form, not the block
+
+    def test_adapter_is_registered(self):
+        from delfin.tools._registry import get
+
+        assert get("orca_sp_opi_basis_solv") is not None
